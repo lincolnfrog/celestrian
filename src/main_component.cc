@@ -128,6 +128,15 @@ MainComponent::MainComponent()
                       audio_engine.rename_node(args[0].toString(),
                                                args[1].toString());
                     completion(true);
+                  })
+              .withNativeFunction(
+                  "native_log",
+                  [](const juce::Array<juce::var> &args,
+                     juce::WebBrowserComponent::NativeFunctionCompletion
+                         completion) {
+                    if (args.size() > 0)
+                      juce::Logger::writeToLog("[JS] " + args[0].toString());
+                    completion(true);
                   })) {
 
   addAndMakeVisible(web_browser);

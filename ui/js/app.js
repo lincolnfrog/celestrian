@@ -155,7 +155,10 @@ function syncUI(state) {
             peaks.push(p);
             if (peaks.length > 300) peaks.shift();
 
-            if (Math.random() < 0.01) console.log(`DRAW LIVE: Node ${node.id}, peaks: ${peaks.length}, last_p: ${p}`);
+            if (Math.random() < 0.05) {
+                const samples = peaks.slice(-3).map(v => v.toFixed(3)).join(', ');
+                log(`REC ${node.name}: [${samples}] count=${peaks.length}`);
+            }
             drawWaveform(div.querySelector('.node-waveform'), peaks);
         } else if (node.duration > 0) {
             // Check if we just stopped recording - the size will be small if it's the live buffer
@@ -163,9 +166,13 @@ function syncUI(state) {
                 fetchWaveform(node.id);
             }
             const pks = livePeaks.get(node.id) || [];
-            if (Math.random() < 0.01) console.log(`DRAW STATIC: Node ${node.id}, peaks: ${pks.length}`);
+            if (Math.random() < 0.05) {
+                const samples = pks.slice(0, 3).map(v => v ? v.toFixed(3) : '0').join(', ');
+                console.log(`SYNC STATIC: uuid=${node.id.slice(0, 4)}, name=${node.name}, peaks=${pks.length}, head=${samples}`);
+            }
             drawWaveform(div.querySelector('.node-waveform'), pks);
-        } else {
+        }
+        else {
             // Only clear if we really have no data
             if (livePeaks.has(node.id)) {
                 drawWaveform(div.querySelector('.node-waveform'), livePeaks.get(node.id));
@@ -175,6 +182,7 @@ function syncUI(state) {
         }
     });
 
+    // Removal check
     uiNodeIds.forEach(id => {
         if (!newNodeIds.includes(id)) {
             const el = document.getElementById(id);
@@ -182,12 +190,6 @@ function syncUI(state) {
             livePeaks.delete(id);
         }
     });
-
-    // Debug log to the screen
-    if (window.lastSyncCount !== nodes.length) {
-        log(`Sync: ${nodes.length} nodes active.`);
-        window.lastSyncCount = nodes.length;
-    }
 }
 
 function createNodeElement(node) {
@@ -238,9 +240,16 @@ export async function toggleRecord(id) {
     console.log(`toggleRecord called for ${id}`);
     const div = document.getElementById(id);
     if (!div) return;
-    const active = div.querySelector('.node-btn-record').classList.contains('active');
-    log(`Toggling record for ${id} (currently ${active ? 'ACTIVE' : 'IDLE'})`);
-    await callNative(active ? 'stop_recording_in_node' : 'start_recording_in_node', id);
+    const isActive = div.querySelector('.node-btn-record').classList.contains('active');
+
+    if (!isActive) {
+        // Start recording: Clear stale peaks
+        livePeaks.delete(id);
+        log(`Recording started for ${id}: Cleared stale peaks.`);
+    }
+
+    log(`Toggling record for ${id} (currently ${isActive ? 'ACTIVE' : 'IDLE'})`);
+    await callNative(isActive ? 'stop_recording_in_node' : 'start_recording_in_node', id);
 }
 export async function createNode(type) {
     creationMenu.classList.remove('active');

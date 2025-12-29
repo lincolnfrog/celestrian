@@ -4,6 +4,7 @@ let resultIdCounter = 0;
 
 export function log(m) {
     console.log("[Celestrian] " + m);
+    callNative('native_log', m); // Route to terminal as requested
     if (!logArea) return;
     const line = document.createElement('div');
     line.style.borderBottom = "1px solid #ffffff11";
