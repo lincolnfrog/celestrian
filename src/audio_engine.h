@@ -1,46 +1,61 @@
 #pragma once
 
-#include <atomic>
-#include <juce_audio_basics/juce_audio_basics.h>
+#include "audio_node.h"
+#include "clip_node.h"
 #include <juce_audio_devices/juce_audio_devices.h>
-#include <juce_audio_utils/juce_audio_utils.h>
+#include <memory>
+#include <vector>
 
 class AudioEngine : public juce::AudioIODeviceCallback {
 public:
   AudioEngine();
   ~AudioEngine() override;
 
-  void startRecording();
-  void stopRecording();
-  void startPlayback();
-  void stopPlayback();
+  // Global Transport
+  void toggle_playback();
+  bool is_playing() const { return is_playing_global; }
 
-  bool isRecording() const { return recording; }
-  bool isPlaying() const { return playing; }
+  // Node Recording
+  void start_recording_in_node(const juce::String &uuid);
+  void stop_recording_in_node(const juce::String &uuid);
 
-  juce::var getWaveformAsJSON(int num_peaks) const;
+  // State API
+  juce::var get_graph_state() const;
+  juce::var get_waveform(const juce::String &uuid, int num_peaks) const;
 
+  // Navigation API
+  void enter_box(const juce::String &uuid);
+  void exit_box();
+  void create_node(const juce::String &type);
+  void rename_node(const juce::String &uuid, const juce::String &new_name);
+
+  // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
-      const float *const *inputChannelData, int numInputChannels,
-      float *const *outputChannelData, int numOutputChannels, int numSamples,
+      const float *const *input_channel_data, int num_input_channels,
+      float *const *output_channel_data, int num_output_channels,
+      int num_samples,
       const juce::AudioIODeviceCallbackContext &context) override;
+
   void audioDeviceAboutToStart(juce::AudioIODevice *device) override;
   void audioDeviceStopped() override;
 
 private:
   void init(int inputs, int outputs);
+  celestrian::ClipNode *get_clip_by_uuid(celestrian::AudioNode *node,
+                                         const juce::String &uuid);
 
   juce::AudioDeviceManager device_manager;
 
-  juce::AudioBuffer<float> recorded_buffer;
-  std::atomic<int> write_pos{0};
-  std::atomic<int> read_pos{0};
+  // The root of the hierarchical audio graph
+  std::unique_ptr<celestrian::AudioNode> root_node;
 
-  std::atomic<bool> recording{false};
-  std::atomic<bool> playing{false};
+  // Navigation focus items
+  celestrian::AudioNode *focused_node = nullptr;
+  std::vector<celestrian::AudioNode *> navigation_stack;
 
-  double sample_rate = 44100.0;
-  std::atomic<float> current_max_peak{0.0f};
+  // Global Transport
+  bool is_playing_global = false;
+  int64_t global_transport_pos = 0;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

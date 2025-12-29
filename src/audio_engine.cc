@@ -1,168 +1,220 @@
 #include "audio_engine.h"
+#include "box_node.h"
+#include "clip_node.h"
+#include <juce_audio_basics/juce_audio_basics.h>
 
 AudioEngine::AudioEngine() {
-  juce::Logger::writeToLog("AudioEngine: Initializing...");
+  init(1, 2);
 
-  juce::RuntimePermissions::request(
-      juce::RuntimePermissions::recordAudio, [this](bool granted) {
-        if (granted) {
-          juce::Logger::writeToLog(
-              "AudioEngine: Permission granted on startup.");
-          init(1, 2);
-        } else {
-          juce::Logger::writeToLog(
-              "AudioEngine: Permission denied on startup.");
-          init(0, 2);
-        }
-      });
-}
-
-void AudioEngine::init(int inputs, int outputs) {
-  auto error = device_manager.initialiseWithDefaultDevices(inputs, outputs);
-  if (error.isNotEmpty()) {
-    juce::Logger::writeToLog("AudioEngine: Init error: " + error);
-  }
-
-  auto current_setup = device_manager.getAudioDeviceSetup();
-  juce::Logger::writeToLog(
-      "AudioEngine: Current Setup - In: " +
-      juce::String(current_setup.inputChannels.countNumberOfSetBits()) +
-      ", Out: " +
-      juce::String(current_setup.outputChannels.countNumberOfSetBits()));
-
-  device_manager.addAudioCallback(this);
+  // Start with an empty root box
+  root_node = std::make_unique<celestrian::BoxNode>("SessionRoot");
+  focused_node = root_node.get();
 }
 
 AudioEngine::~AudioEngine() { device_manager.removeAudioCallback(this); }
 
-// Initialize with a larger buffer to prevent early cutoffs
-void AudioEngine::startRecording() {
-  recorded_buffer.setSize(1, 44100 * 60); // 60 seconds at 44.1k
-  recorded_buffer.clear();
-  write_pos = 0;
-  current_max_peak = 0.0f;
-  recording = true;
-  playing = false;
-  juce::Logger::writeToLog("AudioEngine: Recording started.");
-}
-
-void AudioEngine::stopRecording() {
-  recording = false;
-  juce::Logger::writeToLog(
-      "AudioEngine: Recording stopped. Samples: " + juce::String(write_pos) +
-      " | Max Peak: " + juce::String(current_max_peak.load()));
-
-  // We don't shrink the buffer anymore to avoid concurrency issues during
-  // playback The numSamples check in getWaveform/playback handles the logical
-  // length
-}
-
-void AudioEngine::startPlayback() {
-  if (write_pos > 0) {
-    read_pos = 0;
-    playing = true;
-    juce::Logger::writeToLog("AudioEngine: Playback started at position 0.");
+void AudioEngine::init(int inputs, int outputs) {
+  device_manager.initialiseWithDefaultDevices(inputs, outputs);
+  auto *device = device_manager.getCurrentAudioDevice();
+  if (device) {
+    juce::Logger::writeToLog(
+        "AudioEngine: Initialized with " +
+        juce::String(device->getActiveInputChannels().countNumberOfSetBits()) +
+        " input channels.");
   } else {
     juce::Logger::writeToLog(
-        "AudioEngine: Playback failed (no samples recorded).");
+        "AudioEngine: FAILED to get current audio device.");
   }
+  device_manager.addAudioCallback(this);
 }
 
-void AudioEngine::stopPlayback() {
-  playing = false;
-  juce::Logger::writeToLog("AudioEngine: Playback stopped.");
-}
+celestrian::ClipNode *AudioEngine::get_clip_by_uuid(celestrian::AudioNode *node,
+                                                    const juce::String &uuid) {
+  if (node->getUuid() == uuid)
+    return dynamic_cast<celestrian::ClipNode *>(node);
 
-juce::var AudioEngine::getWaveformAsJSON(int num_peaks) const {
-  juce::Array<juce::var> peaks;
-  int num_samples = (int)write_pos;
-  if (num_samples == 0)
-    return peaks;
-
-  int step = std::max(1, num_samples / num_peaks);
-  auto *data = recorded_buffer.getReadPointer(0);
-
-  for (int i = 0; i < num_peaks; ++i) {
-    int start = i * step;
-    int end = std::min(num_samples, start + step);
-    float max_val = 0.0f;
-    for (int s = start; s < end; ++s) {
-      max_val = std::max(max_val, std::abs(data[s]));
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
+    for (int i = 0; i < box->getNumChildren(); ++i) {
+      if (auto *found = get_clip_by_uuid(box->getChild(i), uuid))
+        return found;
     }
-    peaks.add(max_val);
   }
+  return nullptr;
+}
 
-  return peaks;
+void AudioEngine::start_recording_in_node(const juce::String &uuid) {
+  juce::Logger::writeToLog("AudioEngine: start_recording requested for " +
+                           uuid);
+  if (auto *clip = get_clip_by_uuid(root_node.get(), uuid)) {
+    juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
+    // If this is the FIRST clip in the current focused box, it will set the
+    // quantum We'll handle that when recording STOPS.
+    clip->startRecording();
+  } else {
+    juce::Logger::writeToLog("AudioEngine: CLIP NOT FOUND for " + uuid);
+  }
+}
+
+void AudioEngine::stop_recording_in_node(const juce::String &uuid) {
+  juce::Logger::writeToLog("AudioEngine: stop_recording requested for " + uuid);
+  if (auto *clip = get_clip_by_uuid(root_node.get(), uuid)) {
+    clip->stopRecording();
+
+    // Quantum Propagation logic:
+    // If the box has no quantum yet, this clip sets it.
+    if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+      if (box->get_primary_quantum() == 0) {
+        // We'll wait for the clip to actually stop (it might be magnetic)
+        // For now, let's assume it stops and sets the box quantum.
+        // A more robust way would be a callback from ClipNode to BoxNode.
+        // Simplified: Box checks its children for the first one with duration >
+        // 0.
+      }
+    }
+  }
+}
+
+void AudioEngine::toggle_playback() {
+  is_playing_global = !is_playing_global;
+  if (!is_playing_global) {
+    global_transport_pos = 0;
+  }
+}
+
+juce::var AudioEngine::get_graph_state() const {
+  juce::DynamicObject::Ptr state = new juce::DynamicObject();
+  state->setProperty("is_playing", is_playing_global);
+  state->setProperty("focused_id", focused_node ? focused_node->getUuid() : "");
+
+  juce::Array<juce::var> children;
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+    for (int i = 0; i < box->getNumChildren(); ++i) {
+      children.add(box->getChild(i)->getMetadata());
+    }
+  }
+  state->setProperty("nodes", children);
+  return juce::var(state.get());
+}
+
+static celestrian::AudioNode *find_node_by_uuid(celestrian::AudioNode *node,
+                                                const juce::String &uuid) {
+  if (node->getUuid() == uuid)
+    return node;
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
+    for (int i = 0; i < box->getNumChildren(); ++i) {
+      if (auto *found = find_node_by_uuid(box->getChild(i), uuid))
+        return found;
+    }
+  }
+  return nullptr;
+}
+
+juce::var AudioEngine::get_waveform(const juce::String &uuid,
+                                    int num_peaks) const {
+  if (auto *node = find_node_by_uuid(root_node.get(), uuid)) {
+    return node->getWaveform(num_peaks);
+  }
+  return juce::Array<juce::var>();
+}
+
+// --- Navigation ---
+
+void AudioEngine::enter_box(const juce::String &uuid) {
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+    for (int i = 0; i < box->getNumChildren(); ++i) {
+      auto *child = box->getChild(i);
+      if (child->getUuid() == uuid &&
+          dynamic_cast<celestrian::BoxNode *>(child)) {
+        navigation_stack.push_back(focused_node);
+        focused_node = child;
+        return;
+      }
+    }
+  }
+}
+
+void AudioEngine::exit_box() {
+  if (!navigation_stack.empty()) {
+    focused_node = navigation_stack.back();
+    navigation_stack.pop_back();
+  }
+}
+
+void AudioEngine::create_node(const juce::String &type) {
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+    std::unique_ptr<celestrian::AudioNode> new_node;
+    if (type == "clip") {
+      new_node = std::make_unique<celestrian::ClipNode>("New Clip", 44100.0);
+    } else {
+      new_node = std::make_unique<celestrian::BoxNode>("New Box");
+    }
+
+    new_node->x_pos = 120.0;
+    new_node->y_pos = box->getNumChildren() * 70.0;
+    box->addChild(std::move(new_node));
+  }
+}
+
+void AudioEngine::rename_node(const juce::String &uuid,
+                              const juce::String &new_name) {
+  if (auto *node = find_node_by_uuid(root_node.get(), uuid)) {
+    node->set_name(new_name);
+  }
 }
 
 void AudioEngine::audioDeviceIOCallbackWithContext(
-    const float *const *inputChannelData, int numInputChannels,
-    float *const *outputChannelData, int numOutputChannels, int numSamples,
+    const float *const *input_channel_data, int num_input_channels,
+    float *const *output_channel_data, int num_output_channels, int num_samples,
     const juce::AudioIODeviceCallbackContext &context) {
 
-  // Handle recording (Mono)
-  if (recording && inputChannelData != nullptr && numInputChannels > 0) {
-    const float *in = inputChannelData[0];
-    if (in != nullptr) {
-      int samples_to_write = std::min(
-          numSamples, (int)recorded_buffer.getNumSamples() - (int)write_pos);
-
-      if (samples_to_write > 0) {
-        recorded_buffer.copyFrom(0, (int)write_pos, in, samples_to_write);
-
-        // Track peak for diagnostics
-        float peak = 0.0f;
-        for (int i = 0; i < samples_to_write; ++i) {
-          peak = std::max(peak, std::abs(in[i]));
-        }
-        if (peak > current_max_peak)
-          current_max_peak = peak;
-
-        write_pos += samples_to_write;
-      } else {
-        recording = false;
-      }
-    }
+  for (int i = 0; i < num_output_channels; ++i) {
+    if (output_channel_data[i] != nullptr)
+      juce::FloatVectorOperations::clear(output_channel_data[i], num_samples);
   }
 
-  // Handle playback (Stereo output from Mono buffer)
-  if (playing) {
-    int samples_to_read = std::min(numSamples, (int)write_pos - (int)read_pos);
+  if (root_node) {
+    celestrian::ProcessContext pc;
+    pc.sample_rate = 44100.0;
+    pc.num_samples = num_samples;
+    pc.is_playing = is_playing_global;
+    pc.is_recording = true; // Enable recording capture from inputs
+    pc.master_pos = global_transport_pos;
 
-    if (samples_to_read > 0) {
-      auto *buffer_data = recorded_buffer.getReadPointer(0);
-      for (int ch = 0; ch < numOutputChannels; ++ch) {
-        if (outputChannelData[ch] != nullptr) {
-          juce::FloatVectorOperations::copy(
-              outputChannelData[ch], buffer_data + read_pos, samples_to_read);
+    static int log_count = 0;
+    if (++log_count % 100 == 0) {
+      juce::Logger::writeToLog(
+          "AudioEngine: Processing " + juce::String(num_samples) +
+          " samples, Inputs: " + juce::String(num_input_channels));
+    }
 
-          if (samples_to_read < numSamples) {
-            juce::FloatVectorOperations::clear(outputChannelData[ch] +
-                                                   samples_to_read,
-                                               numSamples - samples_to_read);
+    // Update Global Quantum Propagation:
+    // If focused box has no quantum, check if its children have a finished
+    // recording.
+    if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+      if (box->get_primary_quantum() == 0) {
+        for (int i = 0; i < box->getNumChildren(); ++i) {
+          if (box->getChild(i)->duration_samples > 0) {
+            box->set_primary_quantum(box->getChild(i)->duration_samples);
+            // Tell other clips about this quantum
+            for (int j = 0; j < box->getNumChildren(); ++j) {
+              if (auto *clip =
+                      dynamic_cast<celestrian::ClipNode *>(box->getChild(j)))
+                clip->primary_quantum_samples = box->get_primary_quantum();
+            }
+            break;
           }
         }
       }
-      read_pos += samples_to_read;
-    } else {
-      playing = false;
-      for (int ch = 0; ch < numOutputChannels; ++ch) {
-        if (outputChannelData[ch] != nullptr) {
-          juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-        }
-      }
     }
-  } else {
-    for (int ch = 0; ch < numOutputChannels; ++ch) {
-      if (outputChannelData[ch] != nullptr) {
-        juce::FloatVectorOperations::clear(outputChannelData[ch], numSamples);
-      }
+
+    root_node->process(input_channel_data, output_channel_data,
+                       num_input_channels, num_output_channels, pc);
+
+    if (is_playing_global) {
+      global_transport_pos += num_samples;
     }
   }
 }
 
-void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {
-  sample_rate = device->getCurrentSampleRate();
-}
-
+void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {}
 void AudioEngine::audioDeviceStopped() {}

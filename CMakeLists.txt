@@ -42,6 +42,8 @@ target_sources(Celestrian PRIVATE
     src/main_component.cc
     src/audio_engine.h
     src/audio_engine.cc
+    src/clip_node.cc
+    src/box_node.cc
 )
 
 # Link JUCE modules
@@ -69,4 +71,25 @@ add_custom_command(TARGET Celestrian POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     $<TARGET_FILE_DIR:Celestrian>/ui
+)
+
+# --- Unit Tests ---
+juce_add_console_app(CelestrianTests
+    PRODUCT_NAME "CelestrianTests"
+)
+
+target_sources(CelestrianTests PRIVATE
+    tests/test_runner.cc
+    tests/clip_node_tests.cc
+    tests/box_node_tests.cc
+    src/clip_node.cc
+    src/box_node.cc
+)
+
+target_link_libraries(CelestrianTests PRIVATE
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_core
 )

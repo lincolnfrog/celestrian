@@ -76,8 +76,8 @@ Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
 * **Recording Quantization**: All subsequent recordings in that structure are constrained to clean multiples (x2, x4) or divisions (/2, /4) of the Primary Quantum. 
     - If a user stops recording "early," the engine continues capturing until the next clean quantum threshold is met.
 * **Stack Interaction**: 
-    - **Creation Menu**: A top-aligned [+] button allows choosing between "New Clip" (Recording) or "New Box" (Nesting).
-    - **Recording Flow**: Dedicated Record/Stop buttons per node. Spacebar toggles global transport or current recording.
+    - **Creation Menu**: A floating **[+]** button at the bottom of the stack allows adding "New Clip" or "New Box". 
+    - **Interaction**: The [+] button is a simple circle that reveals a creation dropdown on click.
 
 ### 7. Playback & Focus Logic
 * **The Global Super-Structure**: Play/stop behaves as a single unit by default. 

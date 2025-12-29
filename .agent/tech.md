@@ -2,6 +2,27 @@
 
 This document captures technical insights discovered while resolving the audio input and JS-C++ bridge issues in Celestrian.
 
+## Architecture
+
+- **Magnetic Quantum**: ClipNode uses a "magnetic" stop logic where it continues recording until it hits a quantum boundary (set by the first clip in a box) for perfect loop alignment.
+
+## Interaction & Rendering Lessons
+
+### 1. Transport Event Handling
+- **Problem**: Mouse clicks on transport buttons were inconsistent compared to the spacebar.
+- **Solution**: Use `mousedown` instead of `click`. JUCE's `WebBrowserComponent` (especially on certain platforms) can be picky about click release timing. `mousedown` provides immediate feedback and higher reliability.
+- **Problem**: JS Global Hooks race conditions.
+- **Solution**: Always assign global hooks (e.g., `window.togglePlayback`) at the very top of `app.js` to ensure they are available before the UI starts rendering or polling.
+
+### 2. UI Conflict & Hit Areas
+- **Problem**: Overlapping transparent overlays (like the Creation UI) can "steal" mouse events from the header or other nodes even if they look empty.
+- **Solution**: Use `pointer-events: none` on container overlays and `pointer-events: auto` only on specific interactive children. Ensure `z-index` hierarchies are explicit and standard.
+
+### 3. Waveform Rendering Pipeline
+- **Problem**: Real-time waveform drawing is expensive and sensitive to canvas sizing.
+- **Solution**: Always validate canvas dimensions before drawing. Implement a "visibility floor" (e.g., a tiny 1-2px line during recording) to provide visual heartbeat even when audio signals are low or silence is being recorded.
+- **Critical**: JS `ReferenceError` or `TypeError` in the drawing loop will crash the entire `syncUI` polling, making the whole app feel "frozen" or "unresponsive." Always use robust checks.
+
 ## 1. Native Integration Bridge (JUCE 8)
 
 ### Invisibility of Registered Functions
@@ -36,8 +57,17 @@ async function callNative(name, ...args) {
 
 ### ResourceProvider
 The most stable way to load local content in JUCE 8 is via `withResourceProvider`.
-- Use `juce::WebBrowserComponent::getResourceProviderRoot()` to get the correct URL (e.g., `juce://juce.backend/` on Mac).
-- This provides a "Virtual Server" origin that allows native integration to function without cross-origin or `file://` security restrictions.
+- Use a custom URL scheme (e.g., `http://celestrian.local/`) to map requests to local files.
+- This bypasses CORS and `file://` protocol restrictions.
+- In `main_component.cc`, we implement a lambda that maps these URLs to the `ui/` directory.
+
+### UI Modularity
+For maintainability, the WebView frontend is split into:
+- `css/style.css`: Central design system.
+- `js/bridge.js`: Native-JS communication layer.
+- `js/canvas_renderer.js`: Specialized audio visualization.
+- `js/viewport.js`: ZUI logic (Pan/Zoom).
+- `js/app.js`: Main state synchronization and DOM orchestration.
 
 ### Platform-Specific Paths
 In a macOS bundle, the `ui/` folder should be placed inside `Contents/MacOS/` alongside the executable for easy path resolution:
@@ -53,5 +83,17 @@ auto ui_file = exe_dir.getChildFile("ui/index.html");
 ## 4. Permissions (macOS)
 JUCE 8 specific CMake flags for permissions:
 - `MICROPHONE_PERMISSION_ENABLED TRUE`
-- `CAMERA_PERMISSION_ENABLED TRUE`
 - These automatically populate the `Info.plist` with necessary usage descriptions.
+
+## 5. Recursive Audio Mixing & Thread Safety
+
+### Hierarchical Processing
+In a "boxes-within-boxes" architecture, each `BoxNode` acts as a sub-mixer.
+1. **Local Scratch Buffer**: To prevent direct feedback or summing errors, each `BoxNode` uses a local `mixBuffer` to capture the output of its children.
+2. **Summing**: The output of each child is summed into the parent's `outputChannels` using `juce::FloatVectorOperations::add`.
+3. **Lazy Resizing**: Buffers should be resized lazily in the `process()` call to avoid reallocations while still handling dynamic channel/sample changes.
+
+### Thread Safety (Audio vs. Message)
+Modifying the graph (adding/removing tracks) from the UI thread while the Audio thread is processing:
+- **Mutex Protection**: Use a `std::mutex` in `BoxNode` around child additions and the `process()` loop.
+- **Lock-Free Guidelines**: While mutexes are used for now to ensure structural integrity during layout changes, performance-critical nodes should transition to lock-free queues for realtime parameter updates.

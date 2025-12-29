@@ -13,14 +13,8 @@ public:
   void timerCallback() override;
 
 private:
-  void setupNativeFunctions();
-
   juce::WebBrowserComponent web_browser;
   AudioEngine audio_engine;
-
-  juce::TextButton native_record_btn{"NATIVE RECORD"};
-  juce::TextButton native_play_btn{"NATIVE PLAY"};
-  juce::Label status_label;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

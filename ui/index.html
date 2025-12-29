@@ -3,307 +3,61 @@
 
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Celestrian DAW</title>
-    <style>
-        :root {
-            --bg-color: #0f172a;
-            --panel-color: #1e293b;
-            --accent-color: #38bdf8;
-            --text-color: #f8fafc;
-            --record-color: #ef4444;
-            --play-color: #22c55e;
-        }
+    <link rel="stylesheet" href="css/style.css">
+</head>
 
-        body {
-            margin: 0;
-            padding: 20px;
-            background-color: var(--bg-color);
-            color: var(--text-color);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            box-sizing: border-box;
-            overflow: hidden;
-        }
+<body style="background-color: #0f172a;">
+    <div id="loading-overlay"
+        style="position:fixed;top:0;left:0;width:100%;height:100%;background:#0f172a;display:flex;justify-content:center;align-items:center;color:#38bdf8;z-index:9999;font-family:sans-serif;">
+        <div style="text-align:center;">
+            <div style="font-size:24px;font-weight:900;margin-bottom:10px;">CELESTIAN</div>
+            <div id="loading-status">Loading modules...</div>
+        </div>
+    </div>
 
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        h1 {
-            margin: 0;
-            font-size: 24px;
-            font-weight: 700;
-            letter-spacing: -0.025em;
-            color: var(--accent-color);
-        }
-
-        .status-badge {
-            background: #1e293b;
-            padding: 4px 12px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.05em;
-            border: 1px solid #334155;
-        }
-
-        .controls {
-            display: flex;
-            gap: 12px;
-            background: var(--panel-color);
-            padding: 16px;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
-            margin-bottom: 20px;
-            align-items: center;
-        }
-
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 8px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
-            background: #334155;
-            color: white;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        button:hover {
-            background: #475569;
-            transform: translateY(-1px);
-        }
-
-        button:active {
-            transform: translateY(0);
-        }
-
-        .btn-record.active {
-            background-color: var(--record-color);
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0% {
-                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
-            }
-
-            70% {
-                box-shadow: 0 0 0 10px rgba(239, 68, 68, 0);
-            }
-
-            100% {
-                box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
-            }
-        }
-
-        .waveform-container {
-            flex-grow: 1;
-            background: #020617;
-            border-radius: 12px;
-            position: relative;
-            overflow: hidden;
-            border: 1px solid #1e293b;
-        }
-
-        canvas {
-            width: 100%;
-            height: 100%;
-        }
-
-        #debug-log {
-            margin-top: 15px;
-            background: #000;
-            color: #10b981;
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 11px;
-            padding: 12px;
-            border-radius: 8px;
-            height: 120px;
-            overflow-y: auto;
-            border: 1px solid #064e3b;
-            opacity: 0.8;
-        }
-
-        .placeholder-text {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: #475569;
-            font-size: 14px;
-            pointer-events: none;
-        }
-
-        </script></head><body><header><h1>Celestrian</h1><div id="bridge-status" class="status-badge" style="color: #64748b;">CONNECTING...</div></header><div class="controls"><button id="record-btn" class="btn-record" onclick="toggleRecord()"><span id="record-icon">●</span><span id="record-text">Record</span></button><button id="play-btn" onclick="togglePlay()"><span>▶</span>Play </button><div style="flex-grow: 1;"></div><div id="info-text" style="font-size: 11px; color: #64748b;">Waiting for bridge...</div></div><div class="waveform-container"><div id="no-data" class="placeholder-text">Record audio to see waveform</div><canvas id="waveform"></canvas></div><div id="debug-log">Log Loaded.</div><script>const canvas=document.getElementById('waveform');
-        const ctx=canvas.getContext('2d');
-        const logArea=document.getElementById('debug-log');
-        const statusBadge=document.getElementById('bridge-status');
-
-        function log(m) {
-            const line=document.createElement('div');
-
-            line.textContent=`[$ {
-                new Date().toLocaleTimeString()
-            }
-
-            ] $ {
-                m
-            }
-
-            `;
-            logArea.appendChild(line);
-            logArea.scrollTop=logArea.scrollHeight;
-        }
-
-        // --- JUCE 8 Low Level Bridge Implementation ---
-        let resultIdCounter=0;
-        const pendingCalls=new Map();
-
-        async function callNative(name, ...args) {
-            const b=window.__JUCE__;
-
-            if ( !b || !b.backend) {
-                log("Err: Bridge not found.");
-                return null;
-            }
-
-            return new Promise((resolve)=> {
-                    const resultId=resultIdCounter++;
-                    pendingCalls.set(resultId, resolve);
-
-                    b.backend.emitEvent('__juce__invoke', {
-                        name: name,
-                        params: args,
-                        resultId: resultId
-                    });
-
-                setTimeout(()=> {
-                        if (pendingCalls.has(resultId)) {
-                            log(`Warning: $ {
-                                    name
-                                }
-
-                                timed out.`);
-                            pendingCalls.delete(resultId);
-                            resolve(null);
-                        }
-                    }
-
-                    , 5000);
-            });
-        }
-
-        function initBridge() {
-            const b=window.__JUCE__;
-
-            if (b && b.backend && !window.bridgeInited) {
-                log("JUCE 8 Bridge Online.");
-
-                b.backend.addEventListener('__juce__complete', (res)=> {
-                        if (pendingCalls.has(res.promiseId)) {
-                            pendingCalls.get(res.promiseId)(res.result);
-                            pendingCalls.delete(res.promiseId);
-                        }
-                    });
-                window.bridgeInited=true;
-
-                if (b.initialisationData && b.initialisationData.__juce__functions) {
-                    const funcs=b.initialisationData.__juce__functions;
-
-                    document.getElementById('info-text').innerText=`API: $ {
-                        funcs.join(', ')
-                    }
-
-                    `;
+    <script>
+        console.log("HTML Loaded. Checking JS dependencies...");
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log("DOM Content Loaded.");
+            setTimeout(() => {
+                const status = document.getElementById('loading-status');
+                if (status && status.innerText === "Loading modules...") {
+                    status.innerHTML = '<span style="color:#ef4444">Module load timeout. Check bridge/CORS.</span>';
                 }
+            }, 5000);
+        });
+    </script>
 
-                statusBadge.innerText="CONNECTED";
-                statusBadge.style.color="#10b981";
-                statusBadge.style.borderColor="#064e3b";
-            }
-        }
+    <header>
+        <h1>CELESTIAN</h1>
+        <div class="transport-controls">
+            <button class="btn-transport" id="back-btn">BACK (Esc)</button>
+            <button class="btn-transport" id="play-btn">PLAY</button>
+        </div>
+    </header>
 
-        setInterval(initBridge, 500);
+    <div class="stack-container" id="canvas-root">
+        <!-- FIXED UI OVERLAY -->
+        <div id="creation-ui"
+            style="position: absolute; top: 80px; left: 40px; z-index: 500; width: 60px; height: 60px;">
+            <div id="creation-menu" class="creation-dropdown">
+                <div class="menu-item" onclick="createNode('clip')">RECORD NEW CLIP</div>
+                <div class="menu-item" onclick="createNode('box')">CREATE SUB-BOX</div>
+            </div>
+            <button class="btn-plus-circle" onclick="window.toggleCreationMenu(event)">+</button>
+        </div>
 
-        let isRecording=false;
+        <div id="viewport">
+            <div id="node-layer"></div>
+        </div>
+    </div>
 
-        async function toggleRecord() {
-            isRecording= !isRecording;
-            log(isRecording ? "Rec Start" : "Rec Stop");
+    <div id="debug-log">Log initialized...</div>
 
-            const btn=document.getElementById('record-btn');
-            const text=document.getElementById('record-text');
-            const icon=document.getElementById('record-icon');
+    <!-- Modular JS -->
+    <script type="module" src="js/app.js"></script>
+</body>
 
-            btn.classList.toggle('active', isRecording);
-            text.innerText=isRecording ? "Stop": "Record";
-            icon.innerText=isRecording ? "■": "●";
-
-            await callNative(isRecording ? 'startRecording' : 'stopRecording');
-
-            if ( !isRecording) {
-                document.getElementById('no-data').style.display='none';
-                updateWaveform();
-            }
-        }
-
-        async function togglePlay() {
-            log("Playback Triggered");
-            await callNative('startPlayback');
-        }
-
-        async function updateWaveform() {
-            log("Fetching Peaks...");
-            const peaks=await callNative('getWaveform', 500);
-
-            if ( !peaks || peaks.length===0) {
-                log("No audio data received.");
-                return;
-            }
-
-            log(`Rendering $ {
-                    peaks.length
-                }
-
-                samples.`);
-            renderWaveform(peaks);
-        }
-
-        function renderWaveform(peaks) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            const centerY=canvas.height / 2;
-            const barWidth=canvas.width / peaks.length;
-
-            ctx.fillStyle='#38bdf8';
-
-            peaks.forEach((peak, i)=> {
-                    const h=Math.max(2, peak * canvas.height * 2.5);
-                    ctx.fillRect(i * barWidth, centerY - h/2, barWidth - 1, h);
-                });
-        }
-
-        window.onresize=()=> {
-            canvas.width=canvas.clientWidth;
-            canvas.height=canvas.clientHeight;
-        }
-
-        ;
-
-        window.onload=()=> {
-            window.onresize();
-            log("System Ready.");
-        }
-
-        ;
-        </script></body></html>
+</html>
