@@ -130,6 +130,24 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "get_input_list",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    completion(audio_engine.get_input_list());
+                  })
+              .withNativeFunction(
+                  "set_node_input",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 1) {
+                      audio_engine.set_node_input(args[0].toString(),
+                                                  (int)args[1]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "native_log",
                   [](const juce::Array<juce::var> &args,
                      juce::WebBrowserComponent::NativeFunctionCompletion

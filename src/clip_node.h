@@ -21,7 +21,9 @@ public:
 
   juce::var getWaveform(int numPeaks) const override;
   juce::String getNodeType() const override { return "clip"; }
+  juce::var getMetadata() const override;
 
+  void setInputChannel(int index) { preferred_input_channel = index; }
   // Clip-specific methods
   void startRecording();
   void stopRecording();
@@ -52,6 +54,8 @@ private:
   double sample_rate;
   std::atomic<float> current_max_peak{0.0f};
   std::atomic<float> last_block_peak{0.0f};
+
+  int preferred_input_channel = 0;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipNode)
 };

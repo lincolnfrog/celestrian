@@ -10,6 +10,13 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
   buffer.clear();
 }
 
+juce::var ClipNode::getMetadata() const {
+  auto base = AudioNode::getMetadata();
+  auto *obj = base.getDynamicObject();
+  obj->setProperty("input_channel", preferred_input_channel);
+  return base;
+}
+
 void ClipNode::process(const float *const *input_channels,
                        float *const *output_channels, int num_input_channels,
                        int num_output_channels, const ProcessContext &context) {
@@ -29,7 +36,8 @@ void ClipNode::process(const float *const *input_channels,
 
     if (context.is_recording && input_channels != nullptr &&
         num_input_channels > 0) {
-      const float *in = input_channels[0];
+      const float *in = input_channels[std::min(preferred_input_channel,
+                                                num_input_channels - 1)];
       int samples_to_write = std::min(
           context.num_samples, buffer.getNumSamples() - write_pos.load());
 

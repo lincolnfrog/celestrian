@@ -23,6 +23,13 @@ This document captures technical insights discovered while resolving the audio i
 - **Solution**: Always validate canvas dimensions before drawing. Implement a "visibility floor" (e.g., a tiny 1-2px line during recording) to provide visual heartbeat even when audio signals are low or silence is being recorded.
 - **Critical**: JS `ReferenceError` or `TypeError` in the drawing loop will crash the entire `syncUI` polling, making the whole app feel "frozen" or "unresponsive." Always use robust checks.
 
+### 4. Debugging Invisibility & Layout Clipping
+- **The Flexbox Trap**: Using `height: 100%` on a canvas within a `flex-grow: 1` container can cause the canvas to inherit the *parent's full height* instead of the remaining space. This results in the canvas bottom (and its center) being clipped by the parent `overflow: hidden`.
+- **The Grid Fix**: Switching to `display: grid` with `grid-template-rows: auto 1fr` provides strict vertical containment, ensuring the canvas mid-line is actually visible.
+- **Radical Proof-of-Life**: When elements are invisible despite valid data, use "Nuclear" diagnostics:
+    - **Purple BG**: Fill the canvas with a unique color *inside* the data-processing loop.
+    - **Spatial Markers**: Draw a solid "X" through the entire canvas and 10px borders to detect clipping.
+- **Terminal Bridge**: Implement a native C++ `native_log` function to tunnel JavaScript logs to the host terminal. This bypasses browser console limitations and provides immediate visibility into dimension/loop math.
 ## 1. Native Integration Bridge (JUCE 8)
 
 ### Invisibility of Registered Functions

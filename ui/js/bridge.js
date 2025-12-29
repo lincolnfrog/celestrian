@@ -23,7 +23,9 @@ export async function callNative(name, ...args) {
     // 1. Try Direct Function Call (Official JUCE 8 API)
     try {
         if (b && b.backend && typeof b.backend[name] === 'function') {
-            return await b.backend[name](...args);
+            const res = await b.backend[name](...args);
+            console.log(`Direct call [${name}] result:`, res);
+            return res;
         }
     } catch (e) {
         log(`Direct call failed for ${name}: ${e.message}`);
@@ -63,6 +65,7 @@ export function initBridge(onReady) {
         window.bridgeInited = true;
         log("Bridge Linked.");
         if (onReady) onReady();
+        window.dispatchEvent(new CustomEvent('bridge-ready'));
     }
 }
 

@@ -29,6 +29,9 @@ public:
   void create_node(const juce::String &type);
   void rename_node(const juce::String &uuid, const juce::String &new_name);
 
+  juce::var get_input_list() const;
+  void set_node_input(const juce::String &uuid, int channel_index);
+
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
       const float *const *input_channel_data, int num_input_channels,

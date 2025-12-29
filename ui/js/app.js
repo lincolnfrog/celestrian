@@ -9,7 +9,7 @@ const playBtn = document.getElementById('play-btn');
 
 const livePeaks = new Map();
 let viewport;
-
+let availableInputs = [];
 // Global API Hooks (Moved to top for reliable early initialization)
 window.toggleCreationMenu = (e) => {
     if (e) e.stopPropagation();
@@ -82,6 +82,20 @@ export function initApp() {
     }
 
     startPolling();
+    window.addEventListener('bridge-ready', () => {
+        fetchInputs();
+    });
+}
+
+async function fetchInputs() {
+    try {
+        const result = await callNative('get_input_list');
+        if (result && Array.isArray(result.inputs)) {
+            availableInputs = result.inputs;
+        }
+    } catch (err) {
+        console.error("fetchInputs error:", err);
+    }
 }
 
 async function startPolling() {
@@ -131,6 +145,28 @@ function syncUI(state) {
         recBtn.classList.toggle('active', node.is_recording);
         const playhead = div.querySelector('.playhead');
         playhead.style.left = `${node.playhead * 100}%`;
+
+        // Update input selection
+        const inputSelect = div.querySelector('.node-input-select');
+        const inputs = availableInputs || [];
+        if (inputSelect) {
+            if (inputSelect.options.length === 0) {
+                if (inputs.length === 0) {
+                    const opt = document.createElement('option');
+                    opt.value = -1;
+                    opt.textContent = "-- No Inputs --";
+                    inputSelect.appendChild(opt);
+                } else {
+                    inputs.forEach((name, idx) => {
+                        const opt = document.createElement('option');
+                        opt.value = idx;
+                        opt.textContent = name;
+                        inputSelect.appendChild(opt);
+                    });
+                }
+            }
+            inputSelect.value = node.input_channel || 0;
+        }
 
         // Diagnostic: Peak text
         const peakInfo = div.querySelector('.peak-debug');
@@ -199,12 +235,13 @@ function createNodeElement(node) {
     div.innerHTML = `
         <div class="node-header">
             <input class="node-name-input" value="${node.name}" />
-            <span class="peak-debug" style="font-size: 9px; color: #10b981; opacity: 0.6; pointer-events: none; flex-grow: 1; text-align: right; padding-right: 8px;"></span>
-            <div class="node-btn-record" style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center;">
-                <div class="record-dot" style="width: 12px; height: 12px; border-radius: 50%; background: #334155;"></div>
+            <span class="peak-debug" style="font-size: 9px; color: #10b981; opacity: 0.6; pointer-events: none; width: 44px; text-align: right; padding-right: 4px; font-family: monospace;"></span>
+            <div class="node-btn-record">
+                <div class="record-dot"></div>
             </div>
+            <select class="node-input-select"></select>
         </div>
-        <div class="node-content">
+       <div class="node-content">
             <canvas class="node-waveform" style="position: relative; z-index: 5;"></canvas>
             <div class="playhead"></div>
         </div>
@@ -223,6 +260,14 @@ function createNodeElement(node) {
         console.log(`RECORD BUTTON PRESSED for node ${node.id}`);
         toggleRecord(node.id);
     };
+
+    const inputSelect = div.querySelector('.node-input-select');
+    if (inputSelect) {
+        inputSelect.onmousedown = (e) => e.stopPropagation();
+        inputSelect.onchange = (e) => {
+            callNative('set_node_input', node.id, parseInt(e.target.value));
+        };
+    }
 
     div.ondblclick = (e) => {
         if (e.target.tagName !== 'INPUT') {

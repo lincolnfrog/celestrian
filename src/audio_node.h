@@ -73,7 +73,7 @@ public:
 
   // Spatial arrangement in the parent stack/plane
   double x_pos = 0.0, y_pos = 0.0;
-  double width = 200.0, height = 60.0;
+  double width = 200.0, height = 100.0;
 
   // Transport state
   double playhead_pos = 0.0;    // 0.0 to 1.0 (normalized)

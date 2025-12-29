@@ -108,7 +108,7 @@ h1 {
 }
 
 .node-header {
-    padding: 6px 10px;
+    padding: 4px 8px;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -116,6 +116,8 @@ h1 {
     border-bottom: 1px solid #0002;
     z-index: 20;
     position: relative;
+    height: 28px;
+    box-sizing: border-box;
 }
 
 .node-name-input {
@@ -124,7 +126,9 @@ h1 {
     color: white;
     font-size: 11px;
     font-weight: 700;
-    width: 120px;
+    flex-grow: 1;
+    width: 0;
+    min-width: 40px;
     outline: none;
     opacity: 0.8;
 }
@@ -140,6 +144,11 @@ h1 {
     position: relative;
     z-index: 50;
     pointer-events: auto;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .node-btn-record:hover {
@@ -148,6 +157,13 @@ h1 {
 
 .record-dot {
     transition: all 0.2s;
+    position: relative;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #334155;
+    /* translateZ(0) triggers GPU acceleration to fix sub-pixel 'giggle' */
+    transform: translateZ(0);
 }
 
 .node-btn-record.active .record-dot {
@@ -158,31 +174,56 @@ h1 {
 .node-btn-record.active .record-dot::after {
     content: '';
     position: absolute;
-    top: -4px;
-    left: -4px;
-    right: -4px;
-    bottom: -4px;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    transform: translate(-50%, -50%) scale(1);
     border-radius: 50%;
     border: 1px solid var(--record-color);
     animation: pulse 1.5s infinite;
+    pointer-events: none;
 }
 
 @keyframes pulse {
     0% {
         opacity: 1;
-        transform: scale(0.8);
+        transform: translate(-50%, -50%) scale(0.8);
     }
 
     100% {
         opacity: 0;
-        transform: scale(1.8);
+        transform: translate(-50%, -50%) scale(2.0);
     }
+}
+
+.node-input-select {
+    background: #000a;
+    color: var(--accent-color);
+    border: 1px solid var(--accent-color);
+    font-size: 9px;
+    font-weight: 700;
+    outline: none;
+    margin-left: 8px;
+    border-radius: 4px;
+    padding: 1px 4px;
+    cursor: pointer;
+    max-width: 100px;
+    transition: all 0.2s;
+    appearance: none;
+    text-align: center;
+}
+
+.node-input-select:hover {
+    background: #0006;
+    border-color: var(--accent-color);
 }
 
 .node-content {
     position: relative;
     background: #0004;
     overflow: hidden;
+    min-height: 20px;
 }
 
 .node-waveform {

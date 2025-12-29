@@ -14,7 +14,8 @@ AudioEngine::AudioEngine() {
 AudioEngine::~AudioEngine() { device_manager.removeAudioCallback(this); }
 
 void AudioEngine::init(int inputs, int outputs) {
-  device_manager.initialiseWithDefaultDevices(inputs, outputs);
+  // Try for 8 inputs, but default to whatever the hardware provides
+  device_manager.initialiseWithDefaultDevices(8, outputs);
   auto *device = device_manager.getCurrentAudioDevice();
   if (device) {
     juce::Logger::writeToLog(
@@ -162,6 +163,27 @@ void AudioEngine::rename_node(const juce::String &uuid,
   }
 }
 
+juce::var AudioEngine::get_input_list() const {
+  juce::Array<juce::var> names;
+  if (auto *device = device_manager.getCurrentAudioDevice()) {
+    auto inputNames = device->getInputChannelNames();
+    juce::Logger::writeToLog("AudioEngine: Found " +
+                             juce::String(inputNames.size()) +
+                             " input channel names.");
+    for (const auto &name : inputNames) {
+      names.add(name);
+    }
+  }
+  juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+  obj->setProperty("inputs", names);
+  return juce::var(obj.get());
+}
+
+void AudioEngine::set_node_input(const juce::String &uuid, int channel_index) {
+  if (auto *clip = get_clip_by_uuid(root_node.get(), uuid)) {
+    clip->setInputChannel(channel_index);
+  }
+}
 void AudioEngine::audioDeviceIOCallbackWithContext(
     const float *const *input_channel_data, int num_input_channels,
     float *const *output_channel_data, int num_output_channels, int num_samples,
