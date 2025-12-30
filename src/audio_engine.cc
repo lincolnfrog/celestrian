@@ -59,41 +59,31 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
 void AudioEngine::stopRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: stop_recording requested for " + uuid);
   if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
+    // Quantum aligned stopping is handled inside ClipNode::stopRecording()
+    // based on the derived/effective quantum.
     clip->stopRecording();
-
-    // Quantum Propagation logic:
-    // If the box has no quantum yet, this clip sets it.
-    if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-      if (box->getPrimaryQuantum() == 0) {
-        // We'll wait for the clip to actually stop (it might be magnetic)
-        // For now, let's assume it stops and sets the box quantum.
-        // A more robust way would be a callback from ClipNode to BoxNode.
-        // Simplified: Box checks its children for the first one with duration >
-        // 0.
-      }
-    }
   }
 }
 
 void AudioEngine::togglePlayback() {
-  is_playing_global = !is_playing_global;
-  if (!is_playing_global) {
+  is_playing_global = !is_playing_global.load();
+  if (!is_playing_global.load()) {
     global_transport_pos = 0;
   }
 }
 
 juce::var AudioEngine::getGraphState() const {
-  juce::DynamicObject::Ptr state = new juce::DynamicObject();
-  state->setProperty("isPlaying", is_playing_global);
-  state->setProperty("focusedId", focused_node ? focused_node->getUuid() : "");
-
-  juce::Array<juce::var> children;
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-    for (int i = 0; i < box->getNumChildren(); ++i) {
-      children.add(box->getChild(i)->getMetadata());
-    }
+  if (focused_node) {
+    auto metadata = focused_node->getMetadata();
+    auto *obj = metadata.getDynamicObject();
+    obj->setProperty("isPlaying", (bool)is_playing_global.load());
+    obj->setProperty("focusedId", focused_node->getUuid());
+    return metadata;
   }
-  state->setProperty("nodes", children);
+
+  juce::DynamicObject::Ptr state = new juce::DynamicObject();
+  state->setProperty("isPlaying", (bool)is_playing_global.load());
+  state->setProperty("nodes", juce::Array<juce::var>());
   return juce::var(state.get());
 }
 
@@ -150,6 +140,7 @@ void AudioEngine::createNode(const juce::String &type) {
       new_node = std::make_unique<celestrian::BoxNode>("New Box");
     }
 
+    new_node->setParent(box);
     new_node->x_pos = 120.0;
     new_node->y_pos = box->getNumChildren() * 70.0;
     box->addChild(std::move(new_node));
@@ -212,27 +203,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished
     // recording.
-    if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-      if (box->getPrimaryQuantum() == 0) {
-        for (int i = 0; i < box->getNumChildren(); ++i) {
-          if (box->getChild(i)->duration_samples > 0) {
-            box->setPrimaryQuantum(box->getChild(i)->duration_samples);
-            // Tell other clips about this quantum
-            for (int j = 0; j < box->getNumChildren(); ++j) {
-              if (auto *clip =
-                      dynamic_cast<celestrian::ClipNode *>(box->getChild(j)))
-                clip->primary_quantum_samples = box->getPrimaryQuantum();
-            }
-            break;
-          }
-        }
-      }
-    }
-
     root_node->process(input_channel_data, output_channel_data,
                        num_input_channels, num_output_channels, pc);
 
-    if (is_playing_global) {
+    if (is_playing_global.load()) {
       global_transport_pos += num_samples;
     }
   }

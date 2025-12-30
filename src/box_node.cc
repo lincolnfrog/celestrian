@@ -8,28 +8,70 @@ BoxNode::BoxNode(juce::String node_name) : AudioNode(std::move(node_name)) {
 }
 
 juce::var BoxNode::getMetadata() const {
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
   auto base = AudioNode::getMetadata();
   auto *obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)children.size());
-  obj->setProperty("primaryQuantum", (juce::int64)primary_quantum_samples);
+  juce::Array<juce::var> childData;
+  for (const auto &child : children) {
+    childData.add(child->getMetadata());
+  }
+  obj->setProperty("nodes", childData);
   return base;
 }
 
+int64_t BoxNode::getIntrinsicDuration() const {
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  if (children.empty())
+    return 0;
+
+  int64_t minDuration = 0;
+  for (const auto &child : children) {
+    int64_t d = child->getIntrinsicDuration();
+    if (d > 0) {
+      if (minDuration == 0 || d < minDuration)
+        minDuration = d;
+    }
+  }
+  return minDuration;
+}
+
+int64_t BoxNode::getEffectiveQuantum() const {
+  // 1. Try children
+  int64_t d = getIntrinsicDuration();
+  if (d > 0)
+    return d;
+
+  // 2. Try parent
+  if (parent)
+    return parent->getEffectiveQuantum();
+
+  return 0;
+}
+
 void BoxNode::addChild(std::unique_ptr<AudioNode> child) {
-  std::lock_guard<std::mutex> lock(children_mutex);
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  child->setParent(this);
   children.push_back(std::move(child));
 }
 
-void BoxNode::removeChild(const AudioNode *child) {
-  std::lock_guard<std::mutex> lock(children_mutex);
-  children.erase(
-      std::remove_if(children.begin(), children.end(),
-                     [child](const auto &ptr) { return ptr.get() == child; }),
-      children.end());
+void BoxNode::removeChild(const juce::String &uuid) {
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  auto it = std::find_if(children.begin(), children.end(),
+                         [&uuid](const std::unique_ptr<AudioNode> &node) {
+                           return node->getUuid() == uuid;
+                         });
+  if (it != children.end()) {
+    (*it)->setParent(nullptr);
+    children.erase(it);
+  }
 }
 
 void BoxNode::clearChildren() {
-  std::lock_guard<std::mutex> lock(children_mutex);
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  for (auto &child : children) {
+    child->setParent(nullptr);
+  }
   children.clear();
 }
 
@@ -44,7 +86,7 @@ void BoxNode::process(const float *const *input_channels,
                        true);
   }
 
-  std::lock_guard<std::mutex> lock(children_mutex);
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
 
   // Process each child and sum their results
   for (const auto &child : children) {
@@ -68,7 +110,7 @@ void BoxNode::process(const float *const *input_channels,
 }
 
 juce::var BoxNode::getWaveform(int num_peaks) const {
-  std::lock_guard<std::mutex> lock(children_mutex);
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
 
   if (children.empty())
     return juce::Array<juce::var>();

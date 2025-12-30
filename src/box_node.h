@@ -45,6 +45,12 @@ public:
    */
   NodeType getNodeType() const override { return NodeType::Box; }
 
+  juce::String getNodeTypeString() const override { return "box"; }
+  float getCurrentPeak() const override { return last_block_peak.load(); }
+
+  int64_t getIntrinsicDuration() const override;
+  int64_t getEffectiveQuantum() const override;
+
   // Box-specific methods
   /**
    * Adds a child node to this container.
@@ -54,7 +60,7 @@ public:
   /**
    * Removes a child node from this container.
    */
-  void removeChild(const AudioNode *child);
+  void removeChild(const juce::String &uuid);
 
   /**
    * Removes and deletes all child nodes.
@@ -71,21 +77,10 @@ public:
    */
   AudioNode *getChild(int index) { return children[index].get(); }
 
-  /**
-   * Returns the primary quantum (loop length) in samples.
-   */
-  int64_t getPrimaryQuantum() const { return primary_quantum_samples; }
-
-  /**
-   * Sets the primary quantum for this box.
-   */
-  void setPrimaryQuantum(int64_t samples) { primary_quantum_samples = samples; }
-
 private:
-  int64_t primary_quantum_samples = 0;
   std::vector<std::unique_ptr<AudioNode>> children;
 
-  mutable std::mutex children_mutex;
+  mutable std::recursive_mutex children_mutex;
 
   // Scratch buffer for summing children without affecting parent output
   // directly until ready

@@ -32,6 +32,11 @@ public:
    */
   NodeType getNodeType() const override { return NodeType::Clip; }
 
+  int64_t getIntrinsicDuration() const override {
+    return duration_samples.load();
+  }
+  int64_t getEffectiveQuantum() const override;
+
   /**
    * Returns clip-specific metadata (sample rate, etc.).
    */
@@ -62,8 +67,10 @@ public:
    */
   void stopPlayback();
 
-  bool isRecording() const { return is_recording; }
-  bool isPlaying() const { return is_playing; }
+  bool isRecording() const { return is_recording.load(); }
+  bool isPlaying() const { return is_playing.load(); }
+  bool isPendingStart() const { return is_pending_start.load(); }
+  bool isAwaitingStop() const { return is_awaiting_stop.load(); }
 
   /**
    * Returns the total recorded sample count in the buffer.
@@ -80,7 +87,7 @@ public:
    */
   float getCurrentPeak() const override { return last_block_peak.load(); }
 
-  int64_t primary_quantum_samples = 0;
+  void commitRecording(int64_t final_duration = -1);
 
 private:
   juce::AudioBuffer<float> buffer;
@@ -89,12 +96,15 @@ private:
   std::atomic<int> read_pos{0};
 
   std::atomic<bool> is_recording{false};
+  std::atomic<bool> is_pending_start{false};
   std::atomic<bool> is_awaiting_stop{false};
   std::atomic<bool> is_playing{false};
 
+  std::atomic<int64_t> trigger_master_pos{0};
+  std::atomic<int64_t> awaiting_stop_at{0};
+
   double sample_rate;
   std::atomic<float> current_max_peak{0.0f};
-  std::atomic<float> last_block_peak{0.0f};
 
   int preferred_input_channel = 0;
 

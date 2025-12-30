@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 
@@ -60,21 +61,24 @@ public:
     obj->setProperty("id", node_uuid);
     obj->setProperty("name", node_name);
     obj->setProperty("type", getNodeTypeString());
-    obj->setProperty("x", x_pos);
-    obj->setProperty("y", y_pos);
-    obj->setProperty("w", width);
-    obj->setProperty("h", height);
-    obj->setProperty("playhead", playhead_pos);
-    obj->setProperty("duration", duration_samples);
-    obj->setProperty("isRecording", is_node_recording);
-    obj->setProperty("currentPeak", getCurrentPeak());
+    obj->setProperty("x", (double)x_pos.load());
+    obj->setProperty("y", (double)y_pos.load());
+    obj->setProperty("w", (double)width.load());
+    obj->setProperty("h", (double)height.load());
+    obj->setProperty("currentPeak", (float)last_block_peak.load());
+    obj->setProperty("duration", (double)duration_samples.load());
+    obj->setProperty("loopStart", (double)loop_start_samples.load());
+    obj->setProperty("loopEnd", (double)loop_end_samples.load());
+    obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
+    obj->setProperty("playhead", (double)playhead_pos.load());
+    obj->setProperty("isRecording", (bool)is_node_recording.load());
     return juce::var(obj);
   }
 
-  virtual juce::String getName() const { return node_name; }
-  virtual void setName(const juce::String &new_name) { node_name = new_name; }
+  void setName(const juce::String &new_name) { node_name = new_name; }
+  juce::String getName() const { return node_name; }
+  juce::String getUuid() const { return node_uuid; }
 
-  virtual juce::String getUuid() const { return node_uuid; }
   virtual NodeType getNodeType() const = 0;
 
   virtual juce::String getNodeTypeString() const {
@@ -91,16 +95,41 @@ public:
   /**
    * Returns the latest peak sample level for real-time visualization.
    */
-  virtual float getCurrentPeak() const { return 0.0f; }
+  virtual float getCurrentPeak() const = 0;
+
+  // Hierarchy
+  void setParent(AudioNode *p) { parent = p; }
+  AudioNode *getParent() const { return parent; }
+
+  void setLoopPoints(int64_t start, int64_t end) {
+    loop_start_samples.store(start);
+    loop_end_samples.store(end);
+  }
+
+  int64_t getLoopStart() const { return loop_start_samples.load(); }
+  int64_t getLoopEnd() const { return loop_end_samples.load(); }
+
+  // Quantum Logic
+  virtual int64_t getIntrinsicDuration() const = 0;
+  virtual int64_t getEffectiveQuantum() const {
+    if (parent)
+      return parent->getEffectiveQuantum();
+    return 0;
+  }
 
   // Spatial arrangement in the parent stack/plane
-  double x_pos = 0.0, y_pos = 0.0;
-  double width = 200.0, height = 100.0;
+  std::atomic<double> x_pos{0.0}, y_pos{0.0};
+  std::atomic<double> width{200.0}, height{100.0};
 
   // Transport state
-  double playhead_pos = 0.0;    // 0.0 to 1.0 (normalized)
-  int64_t duration_samples = 0; // Length of the loop
-  bool is_node_recording = false;
+  std::atomic<double> playhead_pos{0.0};    // 0.0 to 1.0 (normalized)
+  std::atomic<int64_t> duration_samples{0}; // Length of the loop
+  std::atomic<int64_t> loop_start_samples{0};
+  std::atomic<int64_t> loop_end_samples{0};
+  std::atomic<bool> is_node_recording{false};
+  std::atomic<float> last_block_peak{0.0f};
+
+  AudioNode *parent = nullptr;
 
 protected:
   juce::String node_name;

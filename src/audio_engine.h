@@ -100,8 +100,8 @@ private:
   std::vector<celestrian::AudioNode *> navigation_stack;
 
   // Global Transport
-  bool is_playing_global = false;
-  int64_t global_transport_pos = 0;
+  std::atomic<bool> is_playing_global{false};
+  std::atomic<int64_t> global_transport_pos{0};
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

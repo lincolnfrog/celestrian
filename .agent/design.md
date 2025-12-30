@@ -10,10 +10,10 @@ Celestrian is an open-source Digital Audio Workstation (DAW) built with JUCE and
 - **Target Platforms**: macOS, Windows, Linux.
 
 ## Project Structure
-- `src/`: C++ Source code (`snake_case`, `.h`/`.cc`).
-- `ui/`: Frontend code (HTML, CSS, JS).
-- `external/`: External dependencies (if not managed by CPM).
-- `.agent/`: Agent-specific documentation and workflows.
+- `src/`: C++ Source code
+- `ui/`: Frontend code (HTML, CSS, JS)
+- `external/`: External dependencies (if not managed by CPM)
+- `.agent/`: Agent-specific documentation and workflows
 
 ## Build System Details
 We use CMake as the primary build system. CPM.cmake is used for dependency management to keep the project setup simple and reproducible.
@@ -45,8 +45,13 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 ## Features
 
 ### 1. Recording & Live Creation
-* **Ad-hoc Tempo Discovery**: Record audio without a pre-set BPM. The system derives the session tempo/quantum from the user's first defined loop length.
-* **Latency Compensation**: Establish a baseline latency via a "click-track" calibration, ensuring overdubs align perfectly with existing material.
+* **Phase-Locked Loop (PLL) Recording**:
+    - **Instant Capture**: New recordings begin immediately on user request to capture the creative spark.
+    - **Cyclic Alignment**: The system anchors the recording to the master quantum phase. Upon completion, the buffer is cyclically shifted (rotated) so that its internal phase matches the global transport.
+    - **Hysteresis-Based Snapping**:
+        - **Anticipatory Stop (Early)**: If the user stops within the tolerance *before* a clean boundary, recording continues until that boundary is reached to avoid cutting off audio.
+        - **Late Snap (Late)**: If the user stops within the tolerance *after* a clean boundary, recording ends immediately and the clip is truncated to that boundary.
+        - **Instant Stop (Future: Loop Region)**: If stopped outside the tolerance, recording ends immediately. The **Loop Region** is automatically set to the previous clean multiple, preserving the "tail" for later editing.
 * **Multi-threaded Parallel Processing**: High-performance audio engine that leverages multi-core CPUs for simultaneous recording, playback, and effect processing.
 
 ### 2. Nesting & Arrangement
@@ -73,23 +78,30 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 ### 6. The "Stack" Architecture
 Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
 * **Primary Quantum**: The first clip recorded in an empty structure defines the **Quantum Length** (in samples).
-* **Recording Quantization**: All subsequent recordings in that structure are constrained to clean multiples (x2, x4) or divisions (/2, /4) of the Primary Quantum. 
-    - If a user stops recording "early," the engine continues capturing until the next clean quantum threshold is met.
+* **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
+    - **Seamless Rotation**: Recordings utilize "Cyclic Shift" logic: they start immediately but are post-processed via buffer rotation to align with the master loop's start point.
 * **Stack Interaction**: 
     - **Creation Menu**: A floating **[+]** button at the bottom of the stack allows adding "New Clip" or "New Box". 
     - **Interaction**: The [+] button is a simple circle that reveals a creation dropdown on click.
+* **Stack Templates**: The user can create a template for a stack and save it to the corpus. Example: the user has a drum kit with 5 microphones. The user can create a template for a drum kit with 5 microphones and save it to the corpus. The user can then create a new drum kit by clicking the [+] button and selecting "Templates" -> "Drum Kit" from the dropdown.
+    
 
 ### 7. Playback & Focus Logic
 * **The Global Super-Structure**: Play/stop behaves as a single unit by default. 
 * **Focus Playhead**: Selected nodes show a **Playhead Cursor** looping at `master_time % node_duration`.
 * **Contextual Solo**: Users can solo the current box context while editing to hear it in isolation.
 
-### 3. Advanced Loop Editing
-* **Multi-range Selection**: Define a loop by selecting multiple non-contiguous ranges from a single audio clip.
+### 3. Loop Region Selection
+* **Decoupled Playback**: Every `ClipNode` maintains a distinct **Loop Start** and **Loop End** (in samples).
+* **Automatic Provisioning**: Upon capture, these are set based on the Hysteresis Snap logic (see Section 1).
+* **Manual Manipulation**: The UI provides handles to resize or slide the loop region within the larger recorded buffer.
+* **Multi-range Selection**: Define a complex loop by selecting multiple non-contiguous ranges from a single audio clip.
 * **Intelligent Edge Analysis**: Automatic waveform analysis to find optimal zero-crossing or low-transient points at selection boundaries to prevent pops/clicks.
 * **Crossfade Synthesis**: Automatic smoothing and phase alignment between non-contiguous loop ranges.
 
 ### 4. Corpus & Automation
+* **Global Settings**: A centralized store for user-tunable engine parameters.
+    - **Hysteresis Tolerance**: Percentage (default 15%) determining if a recording stop should snap to the nearest quantum boundary.
 * **Loop/Box Library**: A metadata-rich catalog storing BPM, length, and music key for every asset.
 * **Procedural Automation**: Features to automatically combine existing library elements into new structures.
 * **Infinite Radio Mode**: An offline operation mode that generates an infinite stream of music from the user’s clip and box catalog.

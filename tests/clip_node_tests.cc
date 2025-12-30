@@ -14,10 +14,19 @@ public:
       expect(!node.isRecording());
 
       node.startRecording();
+      expect(node.isPendingStart()); // New behavior: waits for audio thread
+      expect(!node.isRecording());
+
+      // Trigger the audio thread start
+      ProcessContext ctx;
+      ctx.num_samples = 1;
+      ctx.is_recording = true;
+      node.process(nullptr, nullptr, 0, 0, ctx);
+
       expect(node.isRecording());
+      expect(!node.isPendingStart());
 
       node.stopRecording();
-      // Test might fail if no samples, but let's check current logic
       expect(!node.isRecording());
     }
 
@@ -36,6 +45,7 @@ public:
       context.num_samples = 100;
       context.is_recording = true;
 
+      // First process starts it and captures 100 samples
       node.process(inputs, nullptr, 1, 0, context);
 
       expectEquals(node.getWritePos(), 100);
@@ -92,14 +102,21 @@ public:
       ClipNode node("TestClip", 44100.0);
       node.startRecording();
 
+      // First process call to start the recording
+      ProcessContext context;
+      context.num_samples = 1;
+      context.is_recording = true;
+      node.process(nullptr, nullptr, 0, 0, context);
+      expect(node.isRecording());
+      int initialWritePos = node.getWritePos();
+
       float input[10] = {0.8f};
       float *const inputs[] = {input};
-      ProcessContext context;
       context.num_samples = 10;
       context.is_recording = false; // If false, node should NOT capture
 
       node.process(inputs, nullptr, 1, 0, context);
-      expectEquals(node.getWritePos(), 0);
+      expectEquals(node.getWritePos(), initialWritePos);
     }
 
     beginTest("Peak Tracking");

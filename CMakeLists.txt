@@ -82,6 +82,8 @@ target_sources(CelestrianTests PRIVATE
     tests/test_runner.cc
     tests/clip_node_tests.cc
     tests/box_node_tests.cc
+    tests/quantum_propagation_tests.cc
+    tests/regression_tests.cc
     src/clip_node.cc
     src/box_node.cc
 )

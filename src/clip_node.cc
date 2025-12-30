@@ -13,27 +13,34 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
 juce::var ClipNode::getMetadata() const {
   auto base = AudioNode::getMetadata();
   auto *obj = base.getDynamicObject();
+  obj->setProperty("sampleRate", sample_rate);
   obj->setProperty("inputChannel", preferred_input_channel);
+  obj->setProperty("isPendingStart", (bool)is_pending_start.load());
+  obj->setProperty("isAwaitingStop", (bool)is_awaiting_stop.load());
   return base;
+}
+
+int64_t ClipNode::getEffectiveQuantum() const {
+  if (parent)
+    return parent->getEffectiveQuantum();
+  return 0;
 }
 
 void ClipNode::process(const float *const *input_channels,
                        float *const *output_channels, int num_input_channels,
                        int num_output_channels, const ProcessContext &context) {
 
-  // Handle Recording
-  if (is_recording || is_awaiting_stop) {
-    if (!context.is_recording) {
-      static int log_limit = 0;
-      if (log_limit++ % 100 == 0)
-        juce::Logger::writeToLog("ClipNode: context.is_recording is FALSE");
-    } else if (input_channels == nullptr || num_input_channels <= 0) {
-      static int log_limit2 = 0;
-      if (log_limit2++ % 100 == 0)
-        juce::Logger::writeToLog(
-            "ClipNode: No input hardware channels available.");
-    }
+  // Handle PLL Start Anchor
+  if (is_pending_start.load()) {
+    trigger_master_pos.store(context.master_pos);
+    is_pending_start.store(false);
+    is_recording.store(true);
+    is_node_recording.store(true);
+    write_pos.store(0);
+  }
 
+  // Handle Recording
+  if (is_recording.load()) {
     if (context.is_recording && input_channels != nullptr &&
         num_input_channels > 0) {
       const float *in = input_channels[std::min(preferred_input_channel,
@@ -42,62 +49,53 @@ void ClipNode::process(const float *const *input_channels,
           context.num_samples, buffer.getNumSamples() - write_pos.load());
 
       if (samples_to_write > 0) {
-        // juce::Logger::writeToLog("ClipNode: Capturing " +
-        // juce::String(samples_to_write) + " samples into buffer.");
         buffer.copyFrom(0, write_pos.load(), in, samples_to_write);
 
-        // Peak tracking across all input channels
-        float block_peak = 0.0f;
+        // Peak tracking
+        float blockPeak = 0.0f;
         for (int ch = 0; ch < num_input_channels; ++ch) {
           if (input_channels[ch] != nullptr) {
             for (int i = 0; i < samples_to_write; ++i) {
-              block_peak =
-                  std::max(block_peak, std::abs(input_channels[ch][i]));
+              blockPeak = std::max(blockPeak, std::abs(input_channels[ch][i]));
             }
           }
         }
-        last_block_peak.store(block_peak);
+        last_block_peak.store(blockPeak);
 
-        if (block_peak > current_max_peak.load()) {
-          current_max_peak.store(block_peak);
+        if (blockPeak > current_max_peak.load()) {
+          current_max_peak.store(blockPeak);
         }
 
-        int start_pos = write_pos.load();
-        write_pos += samples_to_write;
-        int end_pos = write_pos.load();
+        int64_t start_p = write_pos.load();
+        write_pos.fetch_add(samples_to_write);
+        int64_t end_p = write_pos.load();
 
-        // "Magnetic" Quantum Stop Logic
-        if (is_awaiting_stop && primary_quantum_samples > 0) {
-          // Check if we crossed a quantum boundary in this block
-          int64_t last_q = start_pos / primary_quantum_samples;
-          int64_t curr_q = end_pos / primary_quantum_samples;
-          if (curr_q > last_q) {
-            // Snap write_pos to the boundary and stop
-            is_recording = false;
-            is_awaiting_stop = false;
-            duration_samples = write_pos.load();
-            is_playing = true; // Auto-playback after recording stops
-            is_node_recording = false;
+        if (is_awaiting_stop.load()) {
+          int64_t target = awaiting_stop_at.load();
+          if (start_p < target && end_p >= target) {
+            commitRecording(target);
+            is_awaiting_stop.store(false);
+            return;
           }
         }
       } else {
-        is_recording = false;
-        is_awaiting_stop = false;
-        duration_samples = write_pos.load();
-        is_playing = true; // Auto-playback
-        is_node_recording = false;
+        commitRecording();
       }
     }
   }
 
   // Handle Playback
   if (context.is_playing && is_playing) {
-    int duration = (int)duration_samples;
-    if (duration > 0) {
+    int64_t start = loop_start_samples.load();
+    int64_t end = loop_end_samples.load();
+    int64_t dur = end - start;
+
+    if (dur > 0) {
       for (int i = 0; i < context.num_samples; ++i) {
-        // Phase-lock to master position for perfectly synchronized loops
+        // Phase-lock to master position within the loop region
         int64_t current_master_pos = context.master_pos + i;
-        int current_read_pos = (int)(current_master_pos % duration);
+        int64_t phase = current_master_pos % dur;
+        int current_read_pos = (int)((start + phase) % buffer.getNumSamples());
 
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] != nullptr) {
@@ -106,40 +104,163 @@ void ClipNode::process(const float *const *input_channels,
           }
         }
       }
-      playhead_pos = (double)(context.master_pos % duration) / (double)duration;
+      int64_t pos = context.master_pos % dur;
+      playhead_pos.store((double)pos / (double)dur);
+    } else {
+      playhead_pos.store(0.0);
     }
   }
 }
 
 void ClipNode::startRecording() {
   buffer.clear();
-  write_pos = 0;
-  read_pos = 0;
-  current_max_peak = 0.0f;
-  is_recording = true;
-  is_awaiting_stop = false;
-  is_node_recording = true;
+  write_pos.store(0);
+  read_pos.store(0);
+  current_max_peak.store(0.0f);
+
+  is_pending_start.store(true);
+  is_recording.store(false);
+  is_node_recording.store(true);
+
+  duration_samples.store(0);
+  is_playing.store(false);
 }
 
 void ClipNode::stopRecording() {
-  if (primary_quantum_samples > 0) {
-    is_awaiting_stop = true;
-  } else {
-    is_recording = false;
-    duration_samples = write_pos.load();
-    is_node_recording = false;
-    is_playing = true; // Auto-playback
+  if (is_node_recording.load()) {
+    int64_t L = (int64_t)write_pos.load();
+    int64_t Q = getEffectiveQuantum();
+
+    if (Q > 0) {
+      const double TOLERANCE = 0.10; // 10% tolerance for anticipatory stop
+      int64_t threshold = (int64_t)(TOLERANCE * (double)Q);
+
+      // Candidates
+      std::vector<int64_t> candidates;
+      candidates.push_back(Q);
+      for (int k : {2, 4, 6, 8, 10, 12, 16})
+        candidates.push_back(k * Q);
+      for (int d : {2, 4, 8})
+        candidates.push_back(Q / d);
+
+      int64_t nextB = -1;
+      int64_t minB = std::numeric_limits<int64_t>::max();
+
+      for (int64_t B : candidates) {
+        if (B > L && B < minB) {
+          minB = B;
+          nextB = B;
+        }
+      }
+
+      if (nextB != -1 && (nextB - L) < threshold) {
+        awaiting_stop_at.store(nextB);
+        is_awaiting_stop.store(true);
+        juce::Logger::writeToLog("ClipNode: Anticipatory Stop. Waiting for B=" +
+                                 juce::String(nextB));
+        return;
+      }
+    }
+
+    commitRecording();
+  }
+}
+
+void ClipNode::commitRecording(int64_t final_duration) {
+  if (is_node_recording.load()) {
+    is_recording.store(false);
+    is_pending_start.store(false);
+    is_awaiting_stop.store(false);
+    is_node_recording.store(false);
+
+    int64_t L = (int64_t)write_pos.load();
+    int64_t Q = getEffectiveQuantum();
+    int64_t dur = L;
+
+    if (Q > 0 && final_duration <= 0) {
+      // Hysteresis Snapping Logic
+      const double HYSTERESIS_THRESHOLD = 0.15; // 15% tolerance
+
+      // Candidates: Even multiples (2, 4, 6, 8...) and power-of-2 divisions
+      std::vector<int64_t> candidates;
+      candidates.push_back(Q); // 1x
+      for (int k : {2, 4, 6, 8, 10, 12, 16})
+        candidates.push_back(k * Q);
+      for (int d : {2, 4, 8})
+        candidates.push_back(Q / d);
+
+      int64_t bestB = -1;
+      int64_t minDiff = std::numeric_limits<int64_t>::max();
+
+      for (int64_t B : candidates) {
+        if (B <= 0)
+          continue;
+        int64_t diff = std::abs(L - B);
+        if (diff < minDiff) {
+          minDiff = diff;
+          bestB = B;
+        }
+      }
+
+      if (bestB != -1 &&
+          minDiff < (int64_t)(HYSTERESIS_THRESHOLD * (double)Q)) {
+        dur = bestB;
+        juce::Logger::writeToLog(
+            "ClipNode: Late Snap to B=" + juce::String(bestB) +
+            " (L=" + juce::String(L) + ")");
+      } else {
+        // TODO (Loop Selection): Once UX exists, auto-set loop region to
+        // previous multiple.
+        juce::Logger::writeToLog("ClipNode: Instant Stop at L=" +
+                                 juce::String(L) + " (Outside tolerance)");
+      }
+    } else if (final_duration > 0) {
+      dur = final_duration;
+      juce::Logger::writeToLog("ClipNode: Anticipatory Snap to B=" +
+                               juce::String(dur));
+    }
+
+    duration_samples.store(dur);
+    loop_start_samples.store(0);
+    loop_end_samples.store(dur);
+
+    // Phase-Locked Cyclic Shift (Rotation)
+    if (dur > 0) {
+      int64_t anchor = trigger_master_pos.load();
+      int64_t phase = anchor % dur;
+
+      if (phase > 0) {
+        // Right-rotate buffer by phase to align master_pos=0 with buffer start
+        // If master_pos anchor was at phase P, then buffer[0] is master_pos P.
+        // We want buffer[P] to be what was originally buffer[0].
+        // So we need to shift the buffer right by P.
+        int shift = (int)phase;
+
+        juce::AudioBuffer<float> temp(1, (int)dur);
+        temp.clear();
+
+        // Copy original to temp with shift
+        for (int i = 0; i < dur; ++i) {
+          int targetIdx = (i + shift) % (int)dur;
+          temp.setSample(0, targetIdx, buffer.getSample(0, i));
+        }
+
+        buffer.copyFrom(0, 0, temp, 0, 0, (int)dur);
+      }
+    }
+
+    is_playing.store(true); // Auto-playback after recording stops
   }
 }
 
 void ClipNode::startPlayback() {
-  if (duration_samples > 0) {
-    read_pos = 0;
-    is_playing = true;
+  if (duration_samples.load() > 0) {
+    read_pos.store(0);
+    is_playing.store(true);
   }
 }
 
-void ClipNode::stopPlayback() { is_playing = false; }
+void ClipNode::stopPlayback() { is_playing.store(false); }
 
 juce::var ClipNode::getWaveform(int num_peaks) const {
   juce::Array<juce::var> peaks;

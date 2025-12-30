@@ -190,9 +190,9 @@ function syncUI(state) {
         }
 
         // Diagnostic: Log recording state change
-        if (node.is_recording !== div._last_rec_state) {
-            log(`Node ${node.id} is_recording: ${node.is_recording}`);
-            div._last_rec_state = node.is_recording;
+        if (node.isRecording !== div._last_rec_state) {
+            log(`Node ${node.id} isRecording: ${node.isRecording}`);
+            div._last_rec_state = node.isRecording;
         }
 
         if (node.isRecording) {
