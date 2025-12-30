@@ -42,6 +42,14 @@ celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
 void AudioEngine::startRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: start_recording requested for " +
                            uuid);
+
+  // If the whole song is stopped when clicking record, automatically play
+  if (!is_playing_global.load()) {
+    is_playing_global.store(true);
+    juce::Logger::writeToLog(
+        "AudioEngine: Auto-starting transport for recording.");
+  }
+
   if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
           findNodeByUuid(root_node.get(), uuid))) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
