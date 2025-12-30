@@ -86,6 +86,7 @@ target_sources(CelestrianTests PRIVATE
     tests/regression_tests.cc
     src/clip_node.cc
     src/box_node.cc
+    src/audio_engine.cc
 )
 
 target_link_libraries(CelestrianTests PRIVATE

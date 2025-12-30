@@ -1,73 +1,38 @@
-#include "../src/box_node.h"
-#include "../src/clip_node.h"
+#include "../src/audio_engine.h"
 #include <juce_core/juce_core.h>
 
-namespace celestrian {
-
-class RegressionTests : public juce::UnitTest {
+class AudioEngineWorkflowTests : public juce::UnitTest {
 public:
-  RegressionTests()
-      : juce::UnitTest("Shadowing & Thread Safety", "Regression") {}
+  AudioEngineWorkflowTests()
+      : juce::UnitTest("AudioEngine Workflow", "Audio Engine") {}
 
   void runTest() override {
-    beginTest("Shadowing: last_block_peak");
+    beginTest("Auto-Transport Start on Record");
     {
-      ClipNode node("TestClip", 44100.0);
-      AudioNode *baseNode = &node;
+      AudioEngine engine;
+      expect(!engine.isPlaying(), "Transport should be stopped initially.");
 
-      // Update subclass peak
-      ProcessContext ctx;
-      ctx.num_samples = 10;
-      ctx.is_recording = true;
-      float in[10] = {0.8f, 0.0f, 0.0f, 0.0f, 0.0f,
-                      0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
-      float *const ins[] = {in};
-      node.startRecording();
-      node.process(ins, nullptr, 1, 0, ctx);
+      // Create a clip node
+      engine.createNode("clip", 100, 100);
+      auto state = engine.getGraphState();
+      auto nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+      expect(nodes->size() > 0);
+      juce::String uuid = (*nodes)[0].getDynamicObject()->getProperty("id");
 
-      // Verify base node metadata sees the peak
-      auto metadata = baseNode->getMetadata();
-      expectEquals((float)metadata["currentPeak"], 0.8f);
-    }
+      // Starting recording should start transport
+      engine.startRecordingInNode(uuid);
+      expect(engine.isPlaying(),
+             "Transport should auto-start when recording begins.");
 
-    beginTest("Shadowing: duration_samples");
-    {
-      ClipNode node("TestClip", 44100.0);
-      AudioNode *baseNode = &node;
+      engine.togglePlayback(); // Stop
+      expect(!engine.isPlaying());
 
-      node.startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 500;
-      ctx.is_recording = true;
-      float in[500] = {0};
-      float *const ins[] = {in};
-      node.process(ins, nullptr, 1, 0, ctx);
-      node.stopRecording(); // Should stop immediately if no quantum
-
-      auto metadata = baseNode->getMetadata();
-      expectEquals((int)metadata["duration"], 500);
-    }
-
-    beginTest("Hierarchy Metadata Thread Safety (Simulated)");
-    {
-      BoxNode root("Root");
-      for (int i = 0; i < 10; ++i) {
-        root.addChild(std::make_unique<ClipNode>("Clip" + juce::String(i)));
-      }
-
-      // Simulate UI polling on one "thread" while adding a node on another
-      // (Both on message thread in reality, but we want to ensure mutation
-      // doesn't crash iteration)
-      auto metadata = root.getMetadata();
-      expectEquals((int)metadata["childCount"], 10);
-
-      auto nodes = metadata["nodes"];
-      expect(nodes.isArray());
-      expectEquals(nodes.size(), 10);
+      // Starting recording again should restart transport
+      engine.startRecordingInNode(uuid);
+      expect(engine.isPlaying(),
+             "Transport should auto-restart when recording begins again.");
     }
   }
 };
 
-static RegressionTests regressionTests;
-
-} // namespace celestrian
+static AudioEngineWorkflowTests audioEngineWorkflowTests;

@@ -431,17 +431,33 @@ function createNodeElement(node) {
                 if (quantum > 0) {
                     snappedSamples = Math.round(samples / quantum) * quantum;
                 }
+
+                // Constraint: Prevent crossing/zero-length
+                const minGap = (quantum > 0) ? quantum : 1;
+                if (isStart) {
+                    // Cannot snap to or past the END handle
+                    const maxAllowed = latestNode.loopEnd - minGap;
+                    if (snappedSamples > maxAllowed) snappedSamples = maxAllowed;
+                } else {
+                    // Cannot snap to or past the START handle
+                    const minAllowed = latestNode.loopStart + minGap;
+                    if (snappedSamples < minAllowed) snappedSamples = minAllowed;
+                }
+
                 let pctSnap = snappedSamples / duration;
                 marker.style.left = `${pctSnap * 100}%`;
 
                 // 3. Arrow direction and visibility
                 const diff = (pctSnap - pctRaw) * rect.width;
-                if (Math.abs(diff) > 2) {
+                // If we are extremely close to the snap point, hide the arrow/ghost to avoid "visual vibrating"
+                if (Math.abs(diff) > 4) {
                     arrow.style.display = 'block';
                     arrow.style.left = `${(pctRaw + (pctSnap - pctRaw) / 2) * 100}%`;
                     arrow.style.transform = `translateY(-50%) rotate(${diff > 0 ? 45 : 225}deg)`;
+                    ghost.style.opacity = '1';
                 } else {
                     arrow.style.display = 'none';
+                    ghost.style.opacity = '0'; // Hide ghost when perfectly snapped
                 }
 
                 // 4. Grid Ghosts (Clear and redraw for the current duration)
