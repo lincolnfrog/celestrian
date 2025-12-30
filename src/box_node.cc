@@ -146,4 +146,23 @@ juce::var BoxNode::getWaveform(int num_peaks) const {
   return aggregatePeaks;
 }
 
+AudioNode *BoxNode::findNodeByUuid(const juce::String &uuid) {
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+
+  if (getUuid() == uuid)
+    return this;
+
+  for (auto &child : children) {
+    if (child->getUuid() == uuid)
+      return child.get();
+
+    if (auto *box = dynamic_cast<BoxNode *>(child.get())) {
+      if (auto *found = box->findNodeByUuid(uuid))
+        return found;
+    }
+  }
+
+  return nullptr;
+}
+
 } // namespace celestrian

@@ -58,7 +58,7 @@ public:
   /**
    * Creates a new node of the specified type in the current box.
    */
-  void createNode(const juce::String &type);
+  void createNode(const juce::String &type, double x = -1.0, double y = -1.0);
 
   /**
    * Renames a specific node.
@@ -75,6 +75,11 @@ public:
    */
   void setNodeInput(const juce::String &uuid, int channel_index);
 
+  /**
+   * Sets the non-destructive loop points for a specific node.
+   */
+  void setLoopPoints(const juce::String &uuid, int64_t start, int64_t end);
+
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
       const float *const *input_channel_data, int num_input_channels,
@@ -87,8 +92,8 @@ public:
 
 private:
   void init(int inputs, int outputs);
-  celestrian::ClipNode *getClipByUuid(celestrian::AudioNode *node,
-                                      const juce::String &uuid);
+  celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
+                                        const juce::String &uuid);
 
   juce::AudioDeviceManager device_manager;
 

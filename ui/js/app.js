@@ -11,23 +11,26 @@ const livePeaks = new Map();
 let viewport;
 let availableInputs = [];
 // Global API Hooks (Moved to top for reliable early initialization)
-window.toggleCreationMenu = (e) => {
+window.toggleCreationMenu = (e, x, y) => {
     if (e) e.stopPropagation();
     const menu = document.getElementById('creation-menu');
     const active = menu.classList.toggle('active');
-    console.log("Toggle Menu (v2.0.2):", active);
 
-    const btn = document.querySelector('.btn-plus-circle');
-    if (btn) {
+    // Store spawn target for the menu items
+    menu._spawnX = x;
+    menu._spawnY = y;
+
+    const btn = e ? e.currentTarget : null;
+    if (btn && btn.classList.contains('btn-plus-circle')) {
         btn.style.background = '#ffffff';
         setTimeout(() => btn.style.background = '', 100);
     }
 };
 
-window.createNode = (type) => {
+window.createNode = (type, x, y) => {
     const menu = document.getElementById('creation-menu');
     if (menu) menu.classList.remove('active');
-    callNative('createNode', type);
+    callNative('createNode', type, x || -1, y || -1);
 };
 
 window.exitBox = () => callNative('exitBox');
@@ -153,10 +156,39 @@ function syncUI(state) {
         minX = Math.min(minX, node.x);
         maxX = Math.max(maxX, node.x + node.w);
 
+        div._latestNode = node; // Store latest state for drag handlers
+
         const recBtn = div.querySelector('.node-btn-record');
         recBtn.classList.toggle('active', node.isRecording);
         const playhead = div.querySelector('.playhead');
         playhead.style.left = `${node.playhead * 100}%`;
+
+        // Loop Handles & Dim Layers
+        const dur = node.duration || 1;
+        let loopStart = node.loopStart;
+        let loopEnd = node.loopEnd;
+
+        // Fallback: If loop points are not set or invalid, use full duration
+        if (loopEnd <= loopStart) {
+            loopStart = 0;
+            loopEnd = node.duration;
+        }
+
+        const startPct = (loopStart / dur) * 100;
+        const endPct = (loopEnd / dur) * 100;
+
+        const hStart = div.querySelector('.loop-handle-start');
+        const hEnd = div.querySelector('.loop-handle-end');
+        const dimLeft = div.querySelector('.dim-left');
+        const dimRight = div.querySelector('.dim-right');
+
+        if (hStart && hEnd && dimLeft && dimRight) {
+            hStart.style.left = `${startPct}%`;
+            hEnd.style.left = `${endPct}%`;
+            dimLeft.style.width = `${startPct}%`;
+            dimRight.style.left = `${endPct}%`;
+            dimRight.style.width = `${100 - endPct}%`;
+        }
 
         // Update input selection
         const inputSelect = div.querySelector('.node-input-select');
@@ -230,12 +262,72 @@ function syncUI(state) {
         }
     });
 
+    // 0. Stability Sort: Ensure anchor selection is identical across polls
+    const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+
+    // Render Stack (+) buttons: Group nodes by their X-alignment (overlap)
+    const activeStackButtons = new Set();
+    const groups = []; // Array of node arrays
+
+    sortedNodes.forEach(node => {
+        let found = false;
+        for (const group of groups) {
+            const anchor = group[0];
+            if (Math.abs(node.x - anchor.x) < 50) {
+                group.push(node);
+                found = true;
+                break;
+            }
+        }
+        if (!found) groups.push([node]);
+    });
+
+    groups.forEach(group => {
+        const anchor = group[0];
+        const stackX = Math.round(anchor.x);
+        const maxY = Math.round(Math.max(...group.map(n => n.y + n.h)));
+
+        // Use anchor UUID prefix for a rock-solid persistent ID
+        const stackBtnId = `stack-btn-${anchor.id.slice(0, 8)}`;
+        activeStackButtons.add(stackBtnId);
+
+        let btn = document.getElementById(stackBtnId);
+        if (!btn) {
+            btn = document.createElement('div');
+            btn.id = stackBtnId;
+            btn.className = 'stack-btn';
+            btn.innerText = '+';
+            nodeLayer.appendChild(btn);
+        }
+
+        // Update position only if meaningfully changed to avoid jitter/flicker
+        const nextLeft = `${stackX + 84}px`;
+        const nextTop = `${maxY + 10}px`;
+        if (btn.style.left !== nextLeft) btn.style.left = nextLeft;
+        if (btn.style.top !== nextTop) btn.style.top = nextTop;
+
+        // Refresh mousedown to capture latest stackX/maxY closure
+        btn.onmousedown = (e) => {
+            e.stopPropagation();
+            createNode('clip', stackX, maxY + 20);
+        };
+    });
+
+    // Cleanup old stack buttons
+    nodeLayer.querySelectorAll('.stack-btn').forEach(btn => {
+        if (!activeStackButtons.has(btn.id)) {
+            btn.remove();
+        }
+    });
+
     // Removal check
     uiNodeIds.forEach(id => {
         if (!newNodeIds.includes(id)) {
             const el = document.getElementById(id);
-            if (el) el.remove();
-            livePeaks.delete(id);
+            if (el && !el.classList.contains('stack-btn')) {
+                el.remove();
+                livePeaks.delete(id);
+            }
         }
     });
 }
@@ -253,8 +345,15 @@ function createNodeElement(node) {
             </div>
             <select class="node-input-select"></select>
         </div>
-       <div class="node-content">
+        <div class="node-content">
             <canvas class="node-waveform" style="position: relative; z-index: 5;"></canvas>
+            <div class="dim-layer dim-left" style="left: 0;"></div>
+            <div class="dim-layer dim-right"></div>
+            <div class="loop-handle loop-handle-start"></div>
+            <div class="loop-handle loop-handle-end"></div>
+            <div class="loop-ghost"></div>
+            <div class="snap-marker"></div>
+            <div class="snap-arrow"></div>
             <div class="playhead"></div>
         </div>
     `;
@@ -288,6 +387,100 @@ function createNodeElement(node) {
         }
     };
 
+    // Dragging Loop Handles
+    const setupHandle = (handle, isStart) => {
+        if (!handle) return;
+
+        // Custom Cursors: [ and ]
+        const cursorSvg = (isStart, text) => {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><text x="${isStart ? 4 : 12}" y="18" fill="white" font-family="monospace" font-size="20" font-weight="bold">${text}</text></svg>`;
+            return `url('data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}') 12 12, col-resize`;
+        };
+        handle.style.cursor = cursorSvg(isStart, isStart ? '[' : ']');
+
+        handle.onmousedown = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            const content = div.querySelector('.node-content');
+            const rect = content.getBoundingClientRect();
+            const ghost = div.querySelector('.loop-ghost');
+            const marker = div.querySelector('.snap-marker');
+            const arrow = div.querySelector('.snap-arrow');
+
+            // Show feedback elements
+            ghost.style.display = 'block';
+            marker.style.display = 'block';
+            arrow.style.display = 'block';
+
+            const onMouseMove = (moveE) => {
+                const latestNode = div._latestNode;
+                if (!latestNode) return;
+
+                const duration = latestNode.duration;
+                const quantum = latestNode.effectiveQuantum;
+                if (duration <= 0 || rect.width <= 0) return;
+
+                // 1. Raw Position (Ghost)
+                let x = moveE.clientX - rect.left;
+                let pctRaw = Math.max(0, Math.min(1, x / rect.width));
+                ghost.style.left = `${pctRaw * 100}%`;
+
+                // 2. Snapped Position (Marker)
+                let samples = pctRaw * duration;
+                let snappedSamples = samples;
+                if (quantum > 0) {
+                    snappedSamples = Math.round(samples / quantum) * quantum;
+                }
+                let pctSnap = snappedSamples / duration;
+                marker.style.left = `${pctSnap * 100}%`;
+
+                // 3. Arrow direction and visibility
+                const diff = (pctSnap - pctRaw) * rect.width;
+                if (Math.abs(diff) > 2) {
+                    arrow.style.display = 'block';
+                    arrow.style.left = `${(pctRaw + (pctSnap - pctRaw) / 2) * 100}%`;
+                    arrow.style.transform = `translateY(-50%) rotate(${diff > 0 ? 45 : 225}deg)`;
+                } else {
+                    arrow.style.display = 'none';
+                }
+
+                // 4. Grid Ghosts (Clear and redraw for the current duration)
+                div.querySelectorAll('.snap-point-grid').forEach(p => p.remove());
+                if (quantum > 0 && (duration / quantum) < 50) { // Don't over-render
+                    for (let s = 0; s <= duration; s += quantum) {
+                        const gp = document.createElement('div');
+                        gp.className = 'snap-point-grid';
+                        gp.style.left = `${(s / duration) * 100}%`;
+                        content.appendChild(gp);
+                    }
+                }
+
+                // Actually update engine (throttled/batched ideally, but keeping as is for now)
+                let newStart = isStart ? snappedSamples : latestNode.loopStart;
+                let newEnd = isStart ? latestNode.loopEnd : snappedSamples;
+                if (isStart && newStart >= newEnd) newStart = newEnd - (quantum || 1);
+                if (!isStart && newEnd <= newStart) newEnd = newStart + (quantum || 1);
+
+                callNative('setLoopPoints', node.id, Math.round(newStart), Math.round(newEnd));
+            };
+
+            const onMouseUp = () => {
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+                ghost.style.display = 'none';
+                marker.style.display = 'none';
+                arrow.style.display = 'none';
+                div.querySelectorAll('.snap-point-grid').forEach(p => p.remove());
+            };
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        };
+    };
+
+    setupHandle(div.querySelector('.loop-handle-start'), true);
+    setupHandle(div.querySelector('.loop-handle-end'), false);
+
     return div;
 }
 
@@ -308,9 +501,11 @@ export async function toggleRecord(id) {
     log(`Toggling record for ${id} (currently ${isActive ? 'ACTIVE' : 'IDLE'})`);
     await callNative(isActive ? 'stopRecordingInNode' : 'startRecordingInNode', id);
 }
-export async function createNode(type) {
+export async function createNode(type, x, y) {
     creationMenu.classList.remove('active');
-    await callNative('createNode', type);
+    const spawnX = (x !== undefined) ? x : creationMenu._spawnX;
+    const spawnY = (y !== undefined) ? y : creationMenu._spawnY;
+    await callNative('createNode', type, spawnX || -1, spawnY || -1);
 }
 export async function enterBox(id) {
     await callNative('enterBox', id);

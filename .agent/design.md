@@ -38,6 +38,18 @@ It is critical that audio can be recorded in parallel with existing audio clips 
 Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single-song, "session"-view experience. It is designed for the following key UX flows:
 * Building a song from live loops - the user should be able to record without first choosing a tempo. The user can then select a range of the clip to act as the loop. That loop length should be used as the core quantum & bpm for the rest of the clips in that group.
 * There is no such thing as an isolated song, only nested grooves or "boxes". An audio clip is the lowest possible "leaf" element. Audio clips can be stacked in parallel to create music. Those stacks can then be bundled into a node (think the user "stepping outside" or "wrapping the current groove into a box"). Bundled boxes can also be stacked in parallel with new audio clips or other boxed grooves. The user can "step inside" a box to edit its contents. It should be very easy to navigate the nested structure of boxes.
+* **Layout**: Nodes are arranged in vertical stacks. New clips are appended to the bottom of the stack where the user clicks (+).
+
+## Roadmap / Future Considerations
+
+- [ ] **Prettier Waveforms**: Replace the simple line renderer with discrete vertical bars at a granularity appropriate for the zoom level (e.g., 16 bars per clip). This will make them more legible and professional.
+- [ ] **Visual Loop Snapping**: (Implemented) Real-time ghosts and snap markers during loop dragging provide clear rhythmic guidance.
+- [ ] **Drag and Drop**: Reorder clips within stacks or move them between stacks.
+- [ ] **Non-Contiguous Loop Regions**:
+    - **Idea: Clip Splitting**: Add a "Slice" tool or hotkey (e.g., 'Cmd+E') to split a `ClipNode` at the playhead. The resulting nodes can then be looped independently, effectively allowing non-contiguous playback of the same source audio.
+    - **Idea: Multi-Region Selection**: Allow the user to define multiple `loopStart/End` pairs. The engine would cycle through these regions in order.
+    - **Idea: Masking/Muting**: Instead of choosing what plays, allow the user to select regions of the clip to "mute" or "skip" while the rest plays normally.
+- [ ] **Multiple Stacks in Boxes**: Support side-by-side stacks within a single box container.
 * Boxes can be arranged in a graph of connections. The user can place boxes and connect them using various primitives, ex: loop, branch-with-chance, etc.
 * Library of loops & clips - the user should be able to slowly build up a library of loops and clips that can be used in boxes. Loops, clips, and boxes should have associated metadata about their bpm, length, and music key. It should be possible to start building some automation features that can generate new music by combining existing clips and boxes in new ways.
 * Thus there are sort of three modes of operation: 1) recording & creating new stacks of clips & boxes, 2) editing and designing flows of music through connections between boxes w/ transitions etc. and 3) runnning a large corpus of structure in a sort of "infinite playlist". The user should be able to bounce between (1) and (2) to create live music. (3) shoudl be able to create an infinite offline "radio station" of the user's clip & box catalog.
@@ -64,6 +76,13 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 * **Editing**: When a user zooms out of the inside of a box to see the box as a single unit, that box displays an **Aggregate Waveform** (a recursive mixdown of all child nodes). 
     - **Unitized Editing**: Loop ranges and cuts applied to a Box affect the timing of all internal clips simultaneously as a single logical block.
     - **Hierarchical Automation**: Automation envelopes applied to a Box act as a global "VCA" or offset for all internal child automation/parameters.
+
+### 6. Interaction & UI Design
+* **The Plus (+) Button**:
+    - **Contextual Spawning**: Clips and Boxes should spawn near the originating interaction point.
+    - **Stack-Specific (+)**: Every vertical stack has its own `(+)` button anchored to its base. This button adds a new clip to that specific stack.
+    - **Box (+)**: Boxes have a global `(+)` button that spawns new child elements (Clips, Stacks, or smaller Boxes).
+* **Grid-Based Arrangement**: New elements snap to a dynamic grid layout, keeping the workspace organized automatically.
 
 ### 5. Navigation & Viewport (ZUI)
 * **Contextual Zoom**: The screen represents the "Current Active Box."

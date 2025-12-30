@@ -68,6 +68,12 @@ public:
   void clearChildren();
 
   /**
+   * Recursively searches for a node by its UUID within this box and its
+   * sub-boxes.
+   */
+  AudioNode *findNodeByUuid(const juce::String &uuid);
+
+  /**
    * Returns the number of children in this box.
    */
   int getNumChildren() const { return (int)children.size(); }

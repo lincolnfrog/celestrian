@@ -29,27 +29,22 @@ void AudioEngine::init(int inputs, int outputs) {
   device_manager.addAudioCallback(this);
 }
 
-celestrian::ClipNode *AudioEngine::getClipByUuid(celestrian::AudioNode *node,
-                                                 const juce::String &uuid) {
-  if (node->getUuid() == uuid)
-    return dynamic_cast<celestrian::ClipNode *>(node);
-
+celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
+                                                   const juce::String &uuid) {
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
-    for (int i = 0; i < box->getNumChildren(); ++i) {
-      if (auto *found = getClipByUuid(box->getChild(i), uuid))
-        return found;
-    }
+    return box->findNodeByUuid(uuid);
   }
+  if (node && node->getUuid() == uuid)
+    return node;
   return nullptr;
 }
 
 void AudioEngine::startRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: start_recording requested for " +
                            uuid);
-  if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
+  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+          findNodeByUuid(root_node.get(), uuid))) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
-    // If this is the FIRST clip in the current focused box, it will set the
-    // quantum We'll handle that when recording STOPS.
     clip->startRecording();
   } else {
     juce::Logger::writeToLog("AudioEngine: CLIP NOT FOUND for " + uuid);
@@ -58,9 +53,8 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
 
 void AudioEngine::stopRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: stop_recording requested for " + uuid);
-  if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
-    // Quantum aligned stopping is handled inside ClipNode::stopRecording()
-    // based on the derived/effective quantum.
+  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+          findNodeByUuid(root_node.get(), uuid))) {
     clip->stopRecording();
   }
 }
@@ -87,22 +81,10 @@ juce::var AudioEngine::getGraphState() const {
   return juce::var(state.get());
 }
 
-static celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
-                                             const juce::String &uuid) {
-  if (node->getUuid() == uuid)
-    return node;
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
-    for (int i = 0; i < box->getNumChildren(); ++i) {
-      if (auto *found = findNodeByUuid(box->getChild(i), uuid))
-        return found;
-    }
-  }
-  return nullptr;
-}
-
 juce::var AudioEngine::getWaveform(const juce::String &uuid,
                                    int num_peaks) const {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+  auto *self = const_cast<AudioEngine *>(this);
+  if (auto *node = self->findNodeByUuid(root_node.get(), uuid)) {
     return node->getWaveform(num_peaks);
   }
   return juce::Array<juce::var>();
@@ -131,7 +113,7 @@ void AudioEngine::exitBox() {
   }
 }
 
-void AudioEngine::createNode(const juce::String &type) {
+void AudioEngine::createNode(const juce::String &type, double x, double y) {
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
     std::unique_ptr<celestrian::AudioNode> new_node;
     if (type == "clip") {
@@ -141,8 +123,13 @@ void AudioEngine::createNode(const juce::String &type) {
     }
 
     new_node->setParent(box);
-    new_node->x_pos = 120.0;
-    new_node->y_pos = box->getNumChildren() * 70.0;
+    if (x >= 0 && y >= 0) {
+      new_node->x_pos = x;
+      new_node->y_pos = y;
+    } else {
+      new_node->x_pos = 120.0;
+      new_node->y_pos = box->getNumChildren() * 70.0;
+    }
     box->addChild(std::move(new_node));
   }
 }
@@ -171,8 +158,16 @@ juce::var AudioEngine::getInputList() const {
 }
 
 void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
-  if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
+  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+          findNodeByUuid(root_node.get(), uuid))) {
     clip->setInputChannel(channel_index);
+  }
+}
+
+void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
+                                int64_t end) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    node->setLoopPoints(start, end);
   }
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(

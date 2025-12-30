@@ -104,8 +104,14 @@ void ClipNode::process(const float *const *input_channels,
           }
         }
       }
-      int64_t pos = context.master_pos % dur;
-      playhead_pos.store((double)pos / (double)dur);
+      int64_t phase = context.master_pos % dur;
+      int64_t absolute_read_pos = start + phase;
+
+      int64_t total = duration_samples.load();
+      if (total > 0)
+        playhead_pos.store((double)absolute_read_pos / (double)total);
+      else
+        playhead_pos.store(0.0);
     } else {
       playhead_pos.store(0.0);
     }
@@ -208,21 +214,39 @@ void ClipNode::commitRecording(int64_t final_duration) {
         juce::Logger::writeToLog(
             "ClipNode: Late Snap to B=" + juce::String(bestB) +
             " (L=" + juce::String(L) + ")");
+        loop_start_samples.store(0);
+        loop_end_samples.store(dur);
       } else {
-        // TODO (Loop Selection): Once UX exists, auto-set loop region to
-        // previous multiple.
-        juce::Logger::writeToLog("ClipNode: Instant Stop at L=" +
-                                 juce::String(L) + " (Outside tolerance)");
+        // Outside tolerance: Keep raw duration but snap loop region to previous
+        // clean multiple.
+        int64_t loop_end = L;
+        if (Q > 0) {
+          loop_end = (L / Q) * Q;
+          if (loop_end == 0)
+            loop_end = Q / 2; // Default subdivision if too short
+        }
+
+        loop_start_samples.store(0);
+        loop_end_samples.store(loop_end);
+
+        juce::Logger::writeToLog(
+            "ClipNode: Instant Stop at L=" + juce::String(L) +
+            " (Outside tolerance). " + "Loop Region set to " +
+            juce::String(loop_end));
       }
     } else if (final_duration > 0) {
       dur = final_duration;
       juce::Logger::writeToLog("ClipNode: Anticipatory Snap to B=" +
                                juce::String(dur));
+      loop_start_samples.store(0);
+      loop_end_samples.store(dur);
+    } else {
+      // No quantum or fallback
+      loop_start_samples.store(0);
+      loop_end_samples.store(dur);
     }
 
     duration_samples.store(dur);
-    loop_start_samples.store(0);
-    loop_end_samples.store(dur);
 
     // Phase-Locked Cyclic Shift (Rotation)
     if (dur > 0) {

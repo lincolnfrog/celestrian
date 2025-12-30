@@ -65,6 +65,7 @@ public:
 
       slavePtr->stopRecording();
       expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
+      expectEquals((int)slavePtr->getLoopEnd(), 1000);
     }
 
     beginTest("Hysteresis Snapping (Anticipatory Stop)");
@@ -87,7 +88,7 @@ public:
       root.addChild(std::move(slaveClip));
 
       slavePtr->startRecording();
-      ctx.num_samples = 950; // 0.95x Q. Tolerance is 10%.
+      ctx.num_samples = 950; // 0.95x Q. Tolerance is 10% (100 samples).
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       slavePtr->stopRecording();
@@ -99,9 +100,10 @@ public:
 
       expect(!slavePtr->isRecording());
       expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
+      expectEquals((int)slavePtr->getLoopEnd(), 1000);
     }
 
-    beginTest("Hysteresis Snapping (Early but outside threshold)");
+    beginTest("Hysteresis Snapping (Raw Stop + Loop Snap)");
     {
       BoxNode root("Root");
       auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
@@ -121,31 +123,44 @@ public:
       root.addChild(std::move(slaveClip));
 
       slavePtr->startRecording();
-      ctx.num_samples = 800; // 0.8x Q. Threshold 10%.
+      ctx.num_samples = 2500; // 2.5x Q. Threshold 15% (150 samples).
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       slavePtr->stopRecording();
       expect(!slavePtr->isRecording()); // Stopped immediately
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 800);
+      expectEquals((int)slavePtr->getIntrinsicDuration(), 2500);
+
+      // Loop Region should be snapped to 2000 (nearest previous multiple)
+      expectEquals((int)slavePtr->getLoopEnd(), 2000);
     }
 
-    beginTest("Loop Region Check");
+    beginTest("Hysteresis Snapping (Raw Stop + Short Q)");
     {
       BoxNode root("Root");
-      auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
-      auto clipPtr = clip.get();
-      root.addChild(std::move(clip));
+      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
+      auto masterPtr = masterClip.get();
+      root.addChild(std::move(masterClip));
 
-      clipPtr->startRecording();
+      masterPtr->startRecording();
       ProcessContext ctx;
-      ctx.num_samples = 1234;
+      ctx.num_samples = 1000;
       ctx.is_recording = true;
       ctx.master_pos = 0;
-      clipPtr->process(inputs, nullptr, 1, 0, ctx);
-      clipPtr->stopRecording();
+      masterPtr->process(inputs, nullptr, 1, 0, ctx);
+      masterPtr->stopRecording();
 
-      expectEquals((int)clipPtr->getLoopStart(), 0);
-      expectEquals((int)clipPtr->getLoopEnd(), 1234);
+      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
+      auto slavePtr = slaveClip.get();
+      root.addChild(std::move(slaveClip));
+
+      slavePtr->startRecording();
+      ctx.num_samples = 700; // Outside 150 samples of 500 or 1000.
+      slavePtr->process(inputs, nullptr, 1, 0, ctx);
+      slavePtr->stopRecording();
+
+      expectEquals((int)slavePtr->getIntrinsicDuration(), 700);
+      // Should default to Q/2 = 500
+      expectEquals((int)slavePtr->getLoopEnd(), 500);
     }
   }
 };

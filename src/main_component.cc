@@ -115,7 +115,10 @@ MainComponent::MainComponent()
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    if (args.size() > 0)
+                    if (args.size() > 2)
+                      audio_engine.createNode(args[0].toString(),
+                                              (double)args[1], (double)args[2]);
+                    else if (args.size() > 0)
                       audio_engine.createNode(args[0].toString());
                     completion(true);
                   })
@@ -144,6 +147,18 @@ MainComponent::MainComponent()
                     if (args.size() > 1) {
                       audio_engine.setNodeInput(args[0].toString(),
                                                 (int)args[1]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "setLoopPoints",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 2) {
+                      audio_engine.setLoopPoints(args[0].toString(),
+                                                 (int64_t)args[1],
+                                                 (int64_t)args[2]);
                     }
                     completion(true);
                   })
