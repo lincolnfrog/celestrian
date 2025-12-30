@@ -11,7 +11,7 @@ juce::var BoxNode::getMetadata() const {
   auto base = AudioNode::getMetadata();
   auto *obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)children.size());
-  obj->setProperty("primary_quantum", (juce::int64)primary_quantum_samples);
+  obj->setProperty("primaryQuantum", (juce::int64)primary_quantum_samples);
   return base;
 }
 

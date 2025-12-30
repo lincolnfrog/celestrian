@@ -11,33 +11,74 @@ namespace celestrian {
  */
 class ClipNode : public AudioNode {
 public:
-  ClipNode(juce::String name, double sourceSampleRate = 44100.0);
+  ClipNode(juce::String name, double source_sample_rate = 44100.0);
   ~ClipNode() override = default;
 
   // AudioNode implementation
-  void process(const float *const *inputChannels, float *const *outputChannels,
-               int numInputChannels, int numOutputChannels,
-               const ProcessContext &context) override;
+  /**
+   * Processes the audio buffer for recording or playback.
+   */
+  void process(const float *const *input_channels,
+               float *const *output_channels, int num_input_channels,
+               int num_output_channels, const ProcessContext &context) override;
 
-  juce::var getWaveform(int numPeaks) const override;
-  juce::String getNodeType() const override { return "clip"; }
+  /**
+   * Overrides GetWaveform to return peak data from the internal buffer.
+   */
+  juce::var getWaveform(int num_peaks) const override;
+
+  /**
+   * Returns NodeType::Clip.
+   */
+  NodeType getNodeType() const override { return NodeType::Clip; }
+
+  /**
+   * Returns clip-specific metadata (sample rate, etc.).
+   */
   juce::var getMetadata() const override;
 
+  /**
+   * Assigns the preferred hardware input channel for this clip.
+   */
   void setInputChannel(int index) { preferred_input_channel = index; }
   // Clip-specific methods
+  /**
+   * Starts capturing hardware input into the internal buffer.
+   */
   void startRecording();
+
+  /**
+   * Signals the recording thread to stop and flush the buffer.
+   */
   void stopRecording();
 
+  /**
+   * Starts audio playback from the current read position.
+   */
   void startPlayback();
+
+  /**
+   * Stops audio playback.
+   */
   void stopPlayback();
 
   bool isRecording() const { return is_recording; }
   bool isPlaying() const { return is_playing; }
 
+  /**
+   * Returns the total recorded sample count in the buffer.
+   */
   int getNumSamples() const { return buffer.getNumSamples(); }
+
+  /**
+   * Returns the atomic write position for the recording process.
+   */
   int getWritePos() const { return write_pos.load(); }
 
-  float get_current_peak() const override { return last_block_peak.load(); }
+  /**
+   * Returns the latest peak sample level captured by the process loop.
+   */
+  float getCurrentPeak() const override { return last_block_peak.load(); }
 
   int64_t primary_quantum_samples = 0;
 

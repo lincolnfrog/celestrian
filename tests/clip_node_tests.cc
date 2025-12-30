@@ -115,7 +115,7 @@ public:
       context.is_recording = true;
 
       node.process(inputs, nullptr, 1, 0, context);
-      expectWithinAbsoluteError(node.get_current_peak(), 0.7f, 0.001f);
+      expectWithinAbsoluteError(node.getCurrentPeak(), 0.7f, 0.001f);
     }
   }
 };

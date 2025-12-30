@@ -12,25 +12,68 @@ public:
   ~AudioEngine() override;
 
   // Global Transport
-  void toggle_playback();
-  bool is_playing() const { return is_playing_global; }
+  /**
+   * Toggles global audio playback.
+   */
+  void togglePlayback();
+
+  /**
+   * Returns true if the transport is currently running.
+   */
+  bool isPlaying() const { return is_playing_global; }
 
   // Node Recording
-  void start_recording_in_node(const juce::String &uuid);
-  void stop_recording_in_node(const juce::String &uuid);
+  /**
+   * Enables recording mode for a specific clip node.
+   */
+  void startRecordingInNode(const juce::String &uuid);
+
+  /**
+   * Disables recording mode for a specific clip node.
+   */
+  void stopRecordingInNode(const juce::String &uuid);
 
   // State API
-  juce::var get_graph_state() const;
-  juce::var get_waveform(const juce::String &uuid, int num_peaks) const;
+  /**
+   * Returns a JSON-compatible representation of the entire audio graph.
+   */
+  juce::var getGraphState() const;
+
+  /**
+   * Returns peak data for the specified node.
+   */
+  juce::var getWaveform(const juce::String &uuid, int num_peaks) const;
 
   // Navigation API
-  void enter_box(const juce::String &uuid);
-  void exit_box();
-  void create_node(const juce::String &type);
-  void rename_node(const juce::String &uuid, const juce::String &new_name);
+  /**
+   * Moves the user focus into a sub-box.
+   */
+  void enterBox(const juce::String &uuid);
 
-  juce::var get_input_list() const;
-  void set_node_input(const juce::String &uuid, int channel_index);
+  /**
+   * Returns the focus to the parent box.
+   */
+  void exitBox();
+
+  /**
+   * Creates a new node of the specified type in the current box.
+   */
+  void createNode(const juce::String &type);
+
+  /**
+   * Renames a specific node.
+   */
+  void renameNode(const juce::String &uuid, const juce::String &new_name);
+
+  /**
+   * Returns a list of available hardware audio inputs.
+   */
+  juce::var getInputList() const;
+
+  /**
+   * Sets the input channel index for a specific node.
+   */
+  void setNodeInput(const juce::String &uuid, int channel_index);
 
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
@@ -44,8 +87,8 @@ public:
 
 private:
   void init(int inputs, int outputs);
-  celestrian::ClipNode *get_clip_by_uuid(celestrian::AudioNode *node,
-                                         const juce::String &uuid);
+  celestrian::ClipNode *getClipByUuid(celestrian::AudioNode *node,
+                                      const juce::String &uuid);
 
   juce::AudioDeviceManager device_manager;
 

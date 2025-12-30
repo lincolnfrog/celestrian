@@ -49,106 +49,106 @@ MainComponent::MainComponent()
                              juce::WebBrowserComponent::NativeFunctionCompletion
                                  completion) { completion("pong"); })
               .withNativeFunction(
-                  "toggle_playback",
+                  "togglePlayback",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    audio_engine.toggle_playback();
+                    audio_engine.togglePlayback();
                     completion(true);
                   })
               .withNativeFunction(
-                  "start_recording_in_node",
+                  "startRecordingInNode",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
-                      audio_engine.start_recording_in_node(args[0].toString());
+                      audio_engine.startRecordingInNode(args[0].toString());
                     completion(true);
                   })
               .withNativeFunction(
-                  "stop_recording_in_node",
+                  "stopRecordingInNode",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
-                      audio_engine.stop_recording_in_node(args[0].toString());
+                      audio_engine.stopRecordingInNode(args[0].toString());
                     completion(true);
                   })
               .withNativeFunction(
-                  "get_graph_state",
+                  "getGraphState",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    completion(audio_engine.get_graph_state());
+                    completion(audio_engine.getGraphState());
                   })
               .withNativeFunction(
-                  "get_waveform",
+                  "getWaveform",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() >= 2) {
-                      completion(audio_engine.get_waveform(args[0].toString(),
-                                                           (int)args[1]));
+                      completion(audio_engine.getWaveform(args[0].toString(),
+                                                          (int)args[1]));
                     } else {
                       completion(juce::Array<juce::var>());
                     }
                   })
               .withNativeFunction(
-                  "enter_box",
+                  "enterBox",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
-                      audio_engine.enter_box(args[0].toString());
+                      audio_engine.enterBox(args[0].toString());
                     completion(true);
                   })
               .withNativeFunction(
-                  "exit_box",
+                  "exitBox",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    audio_engine.exit_box();
+                    audio_engine.exitBox();
                     completion(true);
                   })
               .withNativeFunction(
-                  "create_node",
+                  "createNode",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
-                      audio_engine.create_node(args[0].toString());
+                      audio_engine.createNode(args[0].toString());
                     completion(true);
                   })
               .withNativeFunction(
-                  "rename_node",
+                  "renameNode",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1)
-                      audio_engine.rename_node(args[0].toString(),
-                                               args[1].toString());
+                      audio_engine.renameNode(args[0].toString(),
+                                              args[1].toString());
                     completion(true);
                   })
               .withNativeFunction(
-                  "get_input_list",
+                  "getInputList",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    completion(audio_engine.get_input_list());
+                    completion(audio_engine.getInputList());
                   })
               .withNativeFunction(
-                  "set_node_input",
+                  "setNodeInput",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
-                      audio_engine.set_node_input(args[0].toString(),
-                                                  (int)args[1]);
+                      audio_engine.setNodeInput(args[0].toString(),
+                                                (int)args[1]);
                     }
                     completion(true);
                   })
               .withNativeFunction(
-                  "native_log",
+                  "nativeLog",
                   [](const juce::Array<juce::var> &args,
                      juce::WebBrowserComponent::NativeFunctionCompletion
                          completion) {

@@ -13,7 +13,7 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
 juce::var ClipNode::getMetadata() const {
   auto base = AudioNode::getMetadata();
   auto *obj = base.getDynamicObject();
-  obj->setProperty("input_channel", preferred_input_channel);
+  obj->setProperty("inputChannel", preferred_input_channel);
   return base;
 }
 

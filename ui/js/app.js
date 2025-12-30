@@ -27,12 +27,24 @@ window.toggleCreationMenu = (e) => {
 window.createNode = (type) => {
     const menu = document.getElementById('creation-menu');
     if (menu) menu.classList.remove('active');
-    callNative('create_node', type);
+    callNative('createNode', type);
 };
 
-window.exitBox = () => callNative('exit_box');
-window.togglePlayback = () => callNative('toggle_playback');
+window.exitBox = () => callNative('exitBox');
+window.togglePlayback = () => callNative('togglePlayback');
 window.toggleRecord = (id) => toggleRecord(id);
+
+// DOM Content Timeout Monitor (Moved from index.html)
+if (typeof document !== 'undefined') {
+    document.addEventListener('DOMContentLoaded', () => {
+        setTimeout(() => {
+            const status = document.getElementById('loading-status');
+            if (status && status.innerText === "Loading modules...") {
+                status.innerHTML = '<span style="color:#ef4444">Module load timeout. Check bridge/CORS.</span>';
+            }
+        }, 5000);
+    });
+}
 
 export function initApp() {
     viewport = new Viewport(document.getElementById('viewport'), document.getElementById('canvas-root'));
@@ -89,7 +101,7 @@ export function initApp() {
 
 async function fetchInputs() {
     try {
-        const result = await callNative('get_input_list');
+        const result = await callNative('getInputList');
         if (result && Array.isArray(result.inputs)) {
             availableInputs = result.inputs;
         }
@@ -102,7 +114,7 @@ async function startPolling() {
     console.log("Starting state polling loop...");
     while (true) {
         try {
-            const state = await callNative('get_graph_state');
+            const state = await callNative('getGraphState');
             if (state) syncUI(state);
         } catch (err) {
             console.error("Polling error:", err);
@@ -113,7 +125,7 @@ async function startPolling() {
 
 function syncUI(state) {
     // Playback state
-    const isPlaying = state.is_playing;
+    const isPlaying = state.isPlaying;
     playBtn.classList.toggle('playing', isPlaying);
     playBtn.innerText = isPlaying ? "STOP" : "PLAY";
 
@@ -142,7 +154,7 @@ function syncUI(state) {
         maxX = Math.max(maxX, node.x + node.w);
 
         const recBtn = div.querySelector('.node-btn-record');
-        recBtn.classList.toggle('active', node.is_recording);
+        recBtn.classList.toggle('active', node.isRecording);
         const playhead = div.querySelector('.playhead');
         playhead.style.left = `${node.playhead * 100}%`;
 
@@ -165,13 +177,13 @@ function syncUI(state) {
                     });
                 }
             }
-            inputSelect.value = node.input_channel || 0;
+            inputSelect.value = node.inputChannel || 0;
         }
 
         // Diagnostic: Peak text
         const peakInfo = div.querySelector('.peak-debug');
         if (peakInfo) {
-            const pVal = node.current_peak || 0;
+            const pVal = node.currentPeak || 0;
             peakInfo.innerText = pVal.toFixed(4); // More precision to see activity
             if (pVal > 0.001) peakInfo.style.opacity = "1";
             else peakInfo.style.opacity = "0.4";
@@ -183,11 +195,11 @@ function syncUI(state) {
             div._last_rec_state = node.is_recording;
         }
 
-        if (node.is_recording) {
+        if (node.isRecording) {
             if (!livePeaks.has(node.id)) livePeaks.set(node.id, []);
             const peaks = livePeaks.get(node.id);
             // Visibility floor: ensure we see something even in silence
-            const p = node.current_peak > 0.005 ? node.current_peak : 0.01;
+            const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
             peaks.push(p);
             if (peaks.length > 300) peaks.shift();
 
@@ -265,7 +277,7 @@ function createNodeElement(node) {
     if (inputSelect) {
         inputSelect.onmousedown = (e) => e.stopPropagation();
         inputSelect.onchange = (e) => {
-            callNative('set_node_input', node.id, parseInt(e.target.value));
+            callNative('setNodeInput', node.id, parseInt(e.target.value));
         };
     }
 
@@ -280,7 +292,7 @@ function createNodeElement(node) {
 }
 
 // API Wrappers
-export async function togglePlayback() { await callNative('toggle_playback'); }
+export async function togglePlayback() { await callNative('togglePlayback'); }
 export async function toggleRecord(id) {
     console.log(`toggleRecord called for ${id}`);
     const div = document.getElementById(id);
@@ -294,24 +306,24 @@ export async function toggleRecord(id) {
     }
 
     log(`Toggling record for ${id} (currently ${isActive ? 'ACTIVE' : 'IDLE'})`);
-    await callNative(isActive ? 'stop_recording_in_node' : 'start_recording_in_node', id);
+    await callNative(isActive ? 'stopRecordingInNode' : 'startRecordingInNode', id);
 }
 export async function createNode(type) {
     creationMenu.classList.remove('active');
-    await callNative('create_node', type);
+    await callNative('createNode', type);
 }
 export async function enterBox(id) {
-    await callNative('enter_box', id);
+    await callNative('enterBox', id);
     nodeLayer.innerHTML = '';
     viewport.reset();
 }
 export async function exitBox() {
-    await callNative('exit_box');
+    await callNative('exitBox');
     nodeLayer.innerHTML = '';
 }
 // function renameNode moved to bottom section
 export async function renameNode(id, name) {
-    await callNative('rename_node', id, name);
+    await callNative('renameNode', id, name);
     log(`Renamed node to ${name}`);
 }
 
@@ -321,7 +333,7 @@ export async function fetchWaveform(id) {
 
     try {
         log(`Fetching static waveform for ${id}...`);
-        const peaks = await callNative('get_waveform', id, 200);
+        const peaks = await callNative('getWaveform', id, 200);
         if (peaks && peaks.length > 0) {
             livePeaks.set(id, peaks);
             log(`Fetched ${peaks.length} peaks for ${id}`);

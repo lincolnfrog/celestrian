@@ -128,7 +128,7 @@ public:
       root.process(ins, nullptr, 1, 0, ctx);
 
       expectEquals(clipPtr->getWritePos(), 1);
-      expectWithinAbsoluteError(clipPtr->get_current_peak(), 0.9f, 0.0001f);
+      expectWithinAbsoluteError(clipPtr->getCurrentPeak(), 0.9f, 0.0001f);
     }
   }
 };

@@ -13,11 +13,16 @@ trigger: always_on
 
 # C++ Style Guidelines
 * Class names are PascalCase
-* Function names are PascalCase (even simple "getters and setters")
-* Variable names are snake_case
+* Function names are camelCase. Exception: if overriding a virtual function from an external library, like JUCE, use the same name as the base class.
+* Variable names are snake_case.
+Exception: the JSON metadata we pass to the UI has camelCase keys.
 * Do not do `using namespace` aliases
 * Avoid hard-coded strings - use enums and/or constants instead
 * Avoid boolean parameters - use enums instead
+* Enum values are uppercase SNAKE_CASE.
+* Use Foo* for pointers, not Foo * (with a space) - the * is part of the type, not the variable name. This rule also applies to references and other similar syntax.
+* Try to ensure maximum const-correctness - use const where possible.
+* Classes should not have public member variables, use getters instead.
 
 # JS Style Guidelines
 * Class names are PascalCase

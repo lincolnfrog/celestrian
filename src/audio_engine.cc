@@ -29,24 +29,24 @@ void AudioEngine::init(int inputs, int outputs) {
   device_manager.addAudioCallback(this);
 }
 
-celestrian::ClipNode *AudioEngine::get_clip_by_uuid(celestrian::AudioNode *node,
-                                                    const juce::String &uuid) {
+celestrian::ClipNode *AudioEngine::getClipByUuid(celestrian::AudioNode *node,
+                                                 const juce::String &uuid) {
   if (node->getUuid() == uuid)
     return dynamic_cast<celestrian::ClipNode *>(node);
 
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
     for (int i = 0; i < box->getNumChildren(); ++i) {
-      if (auto *found = get_clip_by_uuid(box->getChild(i), uuid))
+      if (auto *found = getClipByUuid(box->getChild(i), uuid))
         return found;
     }
   }
   return nullptr;
 }
 
-void AudioEngine::start_recording_in_node(const juce::String &uuid) {
+void AudioEngine::startRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: start_recording requested for " +
                            uuid);
-  if (auto *clip = get_clip_by_uuid(root_node.get(), uuid)) {
+  if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
     // If this is the FIRST clip in the current focused box, it will set the
     // quantum We'll handle that when recording STOPS.
@@ -56,15 +56,15 @@ void AudioEngine::start_recording_in_node(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::stop_recording_in_node(const juce::String &uuid) {
+void AudioEngine::stopRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: stop_recording requested for " + uuid);
-  if (auto *clip = get_clip_by_uuid(root_node.get(), uuid)) {
+  if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
     clip->stopRecording();
 
     // Quantum Propagation logic:
     // If the box has no quantum yet, this clip sets it.
     if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-      if (box->get_primary_quantum() == 0) {
+      if (box->getPrimaryQuantum() == 0) {
         // We'll wait for the clip to actually stop (it might be magnetic)
         // For now, let's assume it stops and sets the box quantum.
         // A more robust way would be a callback from ClipNode to BoxNode.
@@ -75,17 +75,17 @@ void AudioEngine::stop_recording_in_node(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::toggle_playback() {
+void AudioEngine::togglePlayback() {
   is_playing_global = !is_playing_global;
   if (!is_playing_global) {
     global_transport_pos = 0;
   }
 }
 
-juce::var AudioEngine::get_graph_state() const {
+juce::var AudioEngine::getGraphState() const {
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
-  state->setProperty("is_playing", is_playing_global);
-  state->setProperty("focused_id", focused_node ? focused_node->getUuid() : "");
+  state->setProperty("isPlaying", is_playing_global);
+  state->setProperty("focusedId", focused_node ? focused_node->getUuid() : "");
 
   juce::Array<juce::var> children;
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
@@ -97,22 +97,22 @@ juce::var AudioEngine::get_graph_state() const {
   return juce::var(state.get());
 }
 
-static celestrian::AudioNode *find_node_by_uuid(celestrian::AudioNode *node,
-                                                const juce::String &uuid) {
+static celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
+                                             const juce::String &uuid) {
   if (node->getUuid() == uuid)
     return node;
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
     for (int i = 0; i < box->getNumChildren(); ++i) {
-      if (auto *found = find_node_by_uuid(box->getChild(i), uuid))
+      if (auto *found = findNodeByUuid(box->getChild(i), uuid))
         return found;
     }
   }
   return nullptr;
 }
 
-juce::var AudioEngine::get_waveform(const juce::String &uuid,
-                                    int num_peaks) const {
-  if (auto *node = find_node_by_uuid(root_node.get(), uuid)) {
+juce::var AudioEngine::getWaveform(const juce::String &uuid,
+                                   int num_peaks) const {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
     return node->getWaveform(num_peaks);
   }
   return juce::Array<juce::var>();
@@ -120,7 +120,7 @@ juce::var AudioEngine::get_waveform(const juce::String &uuid,
 
 // --- Navigation ---
 
-void AudioEngine::enter_box(const juce::String &uuid) {
+void AudioEngine::enterBox(const juce::String &uuid) {
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
     for (int i = 0; i < box->getNumChildren(); ++i) {
       auto *child = box->getChild(i);
@@ -134,14 +134,14 @@ void AudioEngine::enter_box(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::exit_box() {
+void AudioEngine::exitBox() {
   if (!navigation_stack.empty()) {
     focused_node = navigation_stack.back();
     navigation_stack.pop_back();
   }
 }
 
-void AudioEngine::create_node(const juce::String &type) {
+void AudioEngine::createNode(const juce::String &type) {
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
     std::unique_ptr<celestrian::AudioNode> new_node;
     if (type == "clip") {
@@ -156,14 +156,14 @@ void AudioEngine::create_node(const juce::String &type) {
   }
 }
 
-void AudioEngine::rename_node(const juce::String &uuid,
-                              const juce::String &new_name) {
-  if (auto *node = find_node_by_uuid(root_node.get(), uuid)) {
-    node->set_name(new_name);
+void AudioEngine::renameNode(const juce::String &uuid,
+                             const juce::String &new_name) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    node->setName(new_name);
   }
 }
 
-juce::var AudioEngine::get_input_list() const {
+juce::var AudioEngine::getInputList() const {
   juce::Array<juce::var> names;
   if (auto *device = device_manager.getCurrentAudioDevice()) {
     auto inputNames = device->getInputChannelNames();
@@ -179,8 +179,8 @@ juce::var AudioEngine::get_input_list() const {
   return juce::var(obj.get());
 }
 
-void AudioEngine::set_node_input(const juce::String &uuid, int channel_index) {
-  if (auto *clip = get_clip_by_uuid(root_node.get(), uuid)) {
+void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
+  if (auto *clip = getClipByUuid(root_node.get(), uuid)) {
     clip->setInputChannel(channel_index);
   }
 }
@@ -213,15 +213,15 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // If focused box has no quantum, check if its children have a finished
     // recording.
     if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-      if (box->get_primary_quantum() == 0) {
+      if (box->getPrimaryQuantum() == 0) {
         for (int i = 0; i < box->getNumChildren(); ++i) {
           if (box->getChild(i)->duration_samples > 0) {
-            box->set_primary_quantum(box->getChild(i)->duration_samples);
+            box->setPrimaryQuantum(box->getChild(i)->duration_samples);
             // Tell other clips about this quantum
             for (int j = 0; j < box->getNumChildren(); ++j) {
               if (auto *clip =
                       dynamic_cast<celestrian::ClipNode *>(box->getChild(j)))
-                clip->primary_quantum_samples = box->get_primary_quantum();
+                clip->primary_quantum_samples = box->getPrimaryQuantum();
             }
             break;
           }

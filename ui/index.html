@@ -17,18 +17,6 @@
         </div>
     </div>
 
-    <script>
-        console.log("HTML Loaded. Checking JS dependencies...");
-        document.addEventListener('DOMContentLoaded', () => {
-            console.log("DOM Content Loaded.");
-            setTimeout(() => {
-                const status = document.getElementById('loading-status');
-                if (status && status.innerText === "Loading modules...") {
-                    status.innerHTML = '<span style="color:#ef4444">Module load timeout. Check bridge/CORS.</span>';
-                }
-            }, 5000);
-        });
-    </script>
 
     <header>
         <h1>CELESTIAN</h1>

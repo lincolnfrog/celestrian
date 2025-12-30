@@ -19,6 +19,11 @@ struct ProcessContext {
 };
 
 /**
+ * Enumeration of available node types in the Celestrian ecosystem.
+ */
+enum class NodeType { Clip, Box, Unknown };
+
+/**
  * Interface for all audio-producing or processing nodes in the Celestrian
  * graph.
  */
@@ -30,6 +35,11 @@ public:
 
   /**
    * Processes audio into the provided output channels or captures from input.
+   * @param input_channels Pointer to input samples.
+   * @param output_channels Pointer to output samples to be filled.
+   * @param num_input_channels Number of available hardware input channels.
+   * @param num_output_channels Number of hardware output channels.
+   * @param context Current processing context (sample rate, transport, etc.).
    */
   virtual void process(const float *const *input_channels,
                        float *const *output_channels, int num_input_channels,
@@ -38,6 +48,7 @@ public:
 
   /**
    * Generates waveform peaks for visualization.
+   * @param num_peaks The number of peak samples to return.
    */
   virtual juce::var getWaveform(int num_peaks) const = 0;
 
@@ -48,28 +59,39 @@ public:
     auto *obj = new juce::DynamicObject();
     obj->setProperty("id", node_uuid);
     obj->setProperty("name", node_name);
-    obj->setProperty("type", getNodeType());
+    obj->setProperty("type", getNodeTypeString());
     obj->setProperty("x", x_pos);
     obj->setProperty("y", y_pos);
     obj->setProperty("w", width);
     obj->setProperty("h", height);
     obj->setProperty("playhead", playhead_pos);
     obj->setProperty("duration", duration_samples);
-    obj->setProperty("is_recording", is_node_recording);
-    obj->setProperty("current_peak", get_current_peak());
+    obj->setProperty("isRecording", is_node_recording);
+    obj->setProperty("currentPeak", getCurrentPeak());
     return juce::var(obj);
   }
 
   virtual juce::String getName() const { return node_name; }
-  virtual void set_name(const juce::String &new_name) { node_name = new_name; }
+  virtual void setName(const juce::String &new_name) { node_name = new_name; }
 
   virtual juce::String getUuid() const { return node_uuid; }
-  virtual juce::String getNodeType() const = 0;
+  virtual NodeType getNodeType() const = 0;
+
+  virtual juce::String getNodeTypeString() const {
+    switch (getNodeType()) {
+    case NodeType::Clip:
+      return "clip";
+    case NodeType::Box:
+      return "box";
+    default:
+      return "unknown";
+    }
+  }
 
   /**
    * Returns the latest peak sample level for real-time visualization.
    */
-  virtual float get_current_peak() const { return 0.0f; }
+  virtual float getCurrentPeak() const { return 0.0f; }
 
   // Spatial arrangement in the parent stack/plane
   double x_pos = 0.0, y_pos = 0.0;
