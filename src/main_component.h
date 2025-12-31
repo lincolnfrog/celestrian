@@ -16,5 +16,8 @@ private:
   juce::WebBrowserComponent web_browser;
   AudioEngine audio_engine;
 
+  std::optional<juce::WebBrowserComponent::Resource>
+  getResource(const juce::String &path);
+
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

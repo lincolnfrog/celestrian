@@ -29,3 +29,10 @@ Exception: the JSON metadata we pass to the UI has camelCase keys.
 * Function names are camelCase
 * Variable names are camelCase
 * Do not embed JS code in HTML as much as possible
+
+# JUCE WebView & Bridge
+* **The Three-Layer Handshake**: When adding a UI-triggered feature, you MUST update:
+  1. **C++ Logic** (The implementation)
+  2. **C++ Bridge** (Register with `withNativeFunction` in `MainComponent.cc` - **CRITICAL** or memory hangs)
+  3. **JS Call** (`callNative(...)`)
+* **Bridge Logging**: All native functions MUST log their invocation using `juce::Logger::writeToLog` for debugging (e.g., "[Bridge] togglePlay called").

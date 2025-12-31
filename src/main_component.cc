@@ -11,38 +11,7 @@ MainComponent::MainComponent()
               .withResourceProvider(
                   [this](const juce::String &path)
                       -> std::optional<juce::WebBrowserComponent::Resource> {
-                    juce::String cleanPath = path;
-                    if (cleanPath.startsWith("/"))
-                      cleanPath = cleanPath.substring(1);
-                    if (cleanPath.isEmpty())
-                      cleanPath = "index.html";
-
-                    juce::File uiDir("/Users/lincolnfrog/code/celestrian/ui");
-                    juce::File file = uiDir.getChildFile(cleanPath);
-
-                    if (!file.existsAsFile())
-                      return std::nullopt;
-
-                    juce::MemoryBlock mb;
-                    if (!file.loadFileAsData(mb))
-                      return std::nullopt;
-
-                    juce::String mimeType = "text/plain";
-                    auto ext = file.getFileExtension().toLowerCase();
-                    if (ext == ".html")
-                      mimeType = "text/html";
-                    else if (ext == ".css")
-                      mimeType = "text/css";
-                    else if (ext == ".js")
-                      mimeType = "application/javascript";
-                    else if (ext == ".png")
-                      mimeType = "image/png";
-
-                    std::vector<std::byte> data(mb.getSize());
-                    std::memcpy(data.data(), mb.getData(), mb.getSize());
-
-                    return juce::WebBrowserComponent::Resource{
-                        std::move(data), std::move(mimeType)};
+                    return getResource(path);
                   })
               .withNativeFunction(
                   "ping", [](const juce::Array<juce::var> &args,
@@ -163,6 +132,24 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "togglePlay",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 0)
+                      audio_engine.togglePlay(args[0].toString());
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "toggleSolo",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 0)
+                      audio_engine.toggleSolo(args[0].toString());
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "nativeLog",
                   [](const juce::Array<juce::var> &args,
                      juce::WebBrowserComponent::NativeFunctionCompletion
@@ -186,3 +173,39 @@ void MainComponent::paint(juce::Graphics &g) {
       getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 }
 void MainComponent::resized() { web_browser.setBounds(getLocalBounds()); }
+
+std::optional<juce::WebBrowserComponent::Resource>
+MainComponent::getResource(const juce::String &path) {
+  juce::String cleanPath = path;
+  if (cleanPath.startsWith("/"))
+    cleanPath = cleanPath.substring(1);
+  if (cleanPath.isEmpty())
+    cleanPath = "index.html";
+
+  juce::File uiDir("/Users/lincolnfrog/code/celestrian/ui");
+  juce::File file = uiDir.getChildFile(cleanPath);
+
+  if (!file.existsAsFile())
+    return std::nullopt;
+
+  juce::MemoryBlock mb;
+  if (!file.loadFileAsData(mb))
+    return std::nullopt;
+
+  juce::String mimeType = "text/plain";
+  auto ext = file.getFileExtension().toLowerCase();
+  if (ext == ".html")
+    mimeType = "text/html";
+  else if (ext == ".css")
+    mimeType = "text/css";
+  else if (ext == ".js")
+    mimeType = "application/javascript";
+  else if (ext == ".png")
+    mimeType = "image/png";
+
+  std::vector<std::byte> data(mb.getSize());
+  std::memcpy(data.data(), mb.getData(), mb.getSize());
+
+  return juce::WebBrowserComponent::Resource{std::move(data),
+                                             std::move(mimeType)};
+}

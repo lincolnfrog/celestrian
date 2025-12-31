@@ -88,6 +88,7 @@ public:
   float getCurrentPeak() const override { return last_block_peak.load(); }
 
   void commitRecording(int64_t final_duration = -1);
+  const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
 
 private:
   juce::AudioBuffer<float> buffer;

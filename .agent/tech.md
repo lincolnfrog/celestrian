@@ -25,6 +25,14 @@ This document captures technical insights, "gotchas", and debugging strategies d
 ### The "Invoke" Handshake (JS <-> C++)
 JUCE 8's `withNativeFunction` doesn't expose methods directly on `window`. You must use a specific event-based handshake.
 
+> [!IMPORTANT]
+> **The Three-Layer Handshake**: To add a new UI-triggered feature, you MUST update three places:
+> 1.  **C++ Logic**: The actual implementation in `AudioEngine` or elsewhere.
+> 2.  **C++ Bridge**: Register the name and lambda in `MainComponent.cc` using `.withNativeFunction("name", ...)`. **This is the most common place to forget.**
+> 3.  **JS Call**: Call it from the UI using `callNative("name", ...args)`.
+>
+> If you miss step #2, the JS promise will **hang forever** (timeout) because no native listener is registered for that specific name.
+
 **JS Implementation Pattern**:
 ```javascript
 // See ui/js/bridge.js for the full generic implementation
