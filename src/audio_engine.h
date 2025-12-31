@@ -65,6 +65,9 @@ public:
    */
   void renameNode(const juce::String &uuid, const juce::String &new_name);
 
+  void toggleSolo(const juce::String &uuid);
+  void togglePlay(const juce::String &uuid);
+
   /**
    * Returns a list of available hardware audio inputs.
    */
@@ -107,6 +110,8 @@ private:
   // Global Transport
   std::atomic<bool> is_playing_global{false};
   std::atomic<int64_t> global_transport_pos{0};
+
+  juce::String soloed_node_uuid;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

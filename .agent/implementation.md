@@ -19,17 +19,17 @@ The recursive engine that processes "Boxes" and "Clips".
     - `setPlaybackRange(ranges)`: Abstracted slicing/looping.
     - `setLooping(bool)`: Toggle repetition.
     - `setWarpFactor(float)`: Speed/timing offset.
-- **Status**: [/] Base interface defined; operations still being added as features are built.
+- **Status**: [x] Base interface defined.
 
 ### `ClipNode` (Leaf)
 - **Purpose**: Represents a single audio recording.
 - **Features**: Multi-range slicing, Loop points, Seed BPM.
-- **Status**: [ ] Not Started (Transitioning from legacy `AudioEngine` buffer)
+- **Status**: [/] Basic recording and playback implemented. Multi-range and deep editing pending.
 
 ### `BoxNode` (Container)
 - **Purpose**: A sub-mixer that sums children.
 - **Features**: Recursive `process()` calls, Aggregate Waveform generation, Warp Ratio calculation.
-- **Status**: [ ] Not Started
+- **Status**: [/] Basic summing and container logic implemented.
 
 ## 3. DSP & Timing (`src/dsp/`)
 The "Brain" of the alignment and warping logic.
@@ -50,8 +50,8 @@ To avoid overwhelming complexity, we are building in this specific order:
 
 1.  **Segment 1: Foundation** (COMPLETE) - `AudioNode` + `ClipNode` + Unit Tests.
 2.  **Segment 2: Recursive Mixing** (COMPLETE) - `BoxNode` + Summing logic + Aggregate waveforms.
-3.  **Segment 3: Navigation & Transport Core** (IN PROGRESS) - JS Viewport, C++ Focus API, and Playhead Synchronization.
-4.  **Segment 4: Focused Interaction** - Selective recording (Record into Slot), Solo logic, and Creation Menu.
+3.  **Segment 3: Navigation & Transport Core** (COMPLETE) - JS Viewport, C++ Focus API, and Playhead Synchronization.
+4.  **Segment 4: Focused Interaction** (IN PROGRESS) - Track Controls (Play/Solo/Record), Creation Menu, and Selective Recording.
 5.  **Segment 5: Clip Manipulation** - Basic editing (moving clips in 2D space, resizing durations).
 6.  **Segment 6: Save/Load** - Add ability to save the project to disk and load it back up.
 7.  **Segment 7: Multi-Range Implementation** - Multi-slice selection and conserved loop length math.
@@ -68,6 +68,9 @@ The communication hub between C++ nodes and WebView.
 #### `BridgeProtocol` (Navigation & State)
 - `get_graph_state()`: Returns JSON containing the `focused_node`, `global_transport` state, and child metadata (including dynamic `playhead_pos`).
 - `start_recording_in_node(uuid)`: Routes input to a specific node's buffer.
+- `stop_recording_in_node(uuid)`: Stops recording for the specified node.
+- `toggle_play(uuid)`: Toggles playback for a specific node.
+- `toggle_solo(uuid)`: Toggles solo state for a specific node.
 - `create_node(type)`: Instantiates a new `BoxNode` or `ClipNode` in the current focus.
 
 ### 5. UI Layer (`ui/`)

@@ -151,6 +151,55 @@ h1 {
     justify-content: center;
 }
 
+.node-btn-play,
+.node-btn-solo {
+    cursor: pointer;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    border-radius: 4px;
+    background: #1e293b;
+    color: #64748b;
+    font-weight: bold;
+    font-size: 11px;
+    user-select: none;
+}
+
+.node-btn-play:hover,
+.node-btn-solo:hover {
+    transform: scale(1.1);
+    background: #334155;
+}
+
+.node-btn-solo.active {
+    background: #eab308 !important;
+    /* Yellow-500 */
+    color: #0f172a !important;
+    box-shadow: 0 0 10px rgba(234, 179, 8, 0.4);
+}
+
+.node-btn-play.active {
+    background: #10b981 !important;
+    /* Emerald-500 */
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+}
+
+.play-icon {
+    width: 0;
+    height: 0;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+    border-left: 8px solid #64748b;
+    margin-left: 2px;
+}
+
+.node-btn-play.active .play-icon {
+    border-left-color: #fff;
+}
+
 .node-btn-record:hover {
     transform: scale(1.2);
 }

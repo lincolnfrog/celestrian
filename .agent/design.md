@@ -82,6 +82,10 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Contextual Spawning**: Clips and Boxes should spawn near the originating interaction point.
     - **Stack-Specific (+)**: Every vertical stack has its own `(+)` button anchored to its base. This button adds a new clip to that specific stack.
     - **Box (+)**: Boxes have a global `(+)` button that spawns new child elements (Clips, Stacks, or smaller Boxes).
+* **Track Controls**: Every node (Clip or Box) has immediate transport controls: 
+    - **Record**: Re-arm or toggle recording state (visible while recording to allow stop).
+    - **Play/Stop**: Toggle playback of the specific node.
+    - **Solo**: Isolate the node's output (muting siblings).
 * **Grid-Based Arrangement**: New elements snap to a dynamic grid layout, keeping the workspace organized automatically.
 
 * **Automatic Spatiotemporal Scaling (Growing Clips)**: 
@@ -100,6 +104,8 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 
 ### 6. The "Stack" Architecture
 Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
+* **Visual Grouping**: The UI automatically groups nodes that are vertically aligned (similar X coordinates) into visual stacks.
+* **Stack Creation**: Each stack gets a dedicated `(+)` button at the bottom, allowing users to extend that specific rhythmic/instrumental idea.
 * **Primary Quantum**: The first clip recorded in an empty structure defines the **Quantum Length** (in samples).
 * **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
     - **Seamless Rotation**: Recordings utilize "Cyclic Shift" logic: they start immediately but are post-processed via buffer rotation to align with the master loop's start point.

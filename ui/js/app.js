@@ -219,11 +219,26 @@ function syncUI(state) {
             else peakInfo.style.opacity = "0.4";
         }
 
-        // Update record button state
+        // Update button states
         const recBtn = div.querySelector('.node-btn-record');
-        if (recBtn) {
+        const playBtn = div.querySelector('.node-btn-play');
+        const soloBtn = div.querySelector('.node-btn-solo');
+
+        if (recBtn && playBtn) {
+            const hasAudio = node.duration > 0;
+            const showRecord = !hasAudio || node.isRecording || node.isPendingStart;
+            recBtn.style.display = showRecord ? 'flex' : 'none';
+            playBtn.style.display = showRecord ? 'none' : 'flex';
+
             recBtn.classList.toggle('active', node.isRecording);
             recBtn.classList.toggle('pending', node.isPendingStart);
+            playBtn.classList.toggle('active', node.isPlaying);
+        }
+
+        if (soloBtn) {
+            // state.soloedId comes from AudioEngine::getGraphState
+            const isSoloed = state.soloedId === node.id;
+            soloBtn.classList.toggle('active', isSoloed);
         }
 
         // Diagnostic: Log recording state change
@@ -372,9 +387,15 @@ function createNodeElement(node) {
         <div class="node-header">
             <input class="node-name-input" value="${node.name}" />
             <span class="peak-debug" style="font-size: 9px; color: #10b981; opacity: 0.6; pointer-events: none; width: 44px; text-align: right; padding-right: 4px; font-family: monospace;"></span>
+            
+            <div class="node-btn-solo">S</div>
             <div class="node-btn-record">
                 <div class="record-dot"></div>
             </div>
+            <div class="node-btn-play">
+                <div class="play-icon"></div>
+            </div>
+            
             <select class="node-input-select"></select>
         </div>
         <div class="node-content">
@@ -400,8 +421,17 @@ function createNodeElement(node) {
 
     div.querySelector('.node-btn-record').onmousedown = (e) => {
         e.stopPropagation();
-        console.log(`RECORD BUTTON PRESSED for node ${node.id}`);
         toggleRecord(node.id);
+    };
+
+    div.querySelector('.node-btn-play').onmousedown = (e) => {
+        e.stopPropagation();
+        togglePlay(node.id);
+    };
+
+    div.querySelector('.node-btn-solo').onmousedown = (e) => {
+        e.stopPropagation();
+        toggleSolo(node.id);
     };
 
     const inputSelect = div.querySelector('.node-input-select');
@@ -560,6 +590,9 @@ export async function enterBox(id) {
     nodeLayer.innerHTML = '';
     viewport.reset();
 }
+export async function togglePlay(id) { await callNative('togglePlay', id); }
+export async function toggleSolo(id) { await callNative('toggleSolo', id); }
+
 export async function exitBox() {
     await callNative('exitBox');
     nodeLayer.innerHTML = '';

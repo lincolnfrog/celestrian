@@ -17,6 +17,7 @@ juce::var ClipNode::getMetadata() const {
   obj->setProperty("inputChannel", preferred_input_channel);
   obj->setProperty("isPendingStart", (bool)is_pending_start.load());
   obj->setProperty("isAwaitingStop", (bool)is_awaiting_stop.load());
+  obj->setProperty("isPlaying", (bool)is_playing.load());
 
   int64_t Q = getEffectiveQuantum();
   if (Q > 0 && is_node_recording.load()) {
@@ -129,6 +130,19 @@ void ClipNode::process(const float *const *input_channels,
     int64_t dur = end - start;
 
     if (dur > 0) {
+      bool isMutedBySolo = (!context.solo_node_uuid.isEmpty());
+      if (isMutedBySolo) {
+        // Check if we or any ancestor is soloed
+        celestrian::AudioNode *curr = this;
+        while (curr != nullptr) {
+          if (curr->getUuid() == context.solo_node_uuid) {
+            isMutedBySolo = false;
+            break;
+          }
+          curr = curr->getParent();
+        }
+      }
+
       for (int i = 0; i < context.num_samples; ++i) {
         // Phase-lock to master position within the loop region
         int64_t current_master_pos = context.master_pos + i;
@@ -136,7 +150,7 @@ void ClipNode::process(const float *const *input_channels,
         int current_read_pos = (int)((start + phase) % buffer.getNumSamples());
 
         for (int ch = 0; ch < num_output_channels; ++ch) {
-          if (output_channels[ch] != nullptr) {
+          if (output_channels[ch] != nullptr && !isMutedBySolo) {
             output_channels[ch][i] +=
                 buffer.getReadPointer(0)[current_read_pos];
           }

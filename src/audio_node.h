@@ -21,6 +21,9 @@ struct ProcessContext {
   // Latency compensation (in samples)
   int input_latency = 0;
   int output_latency = 0;
+
+  // Solo state
+  juce::String solo_node_uuid;
 };
 
 /**

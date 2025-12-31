@@ -80,6 +80,7 @@ juce::var AudioEngine::getGraphState() const {
     auto *obj = metadata.getDynamicObject();
     obj->setProperty("isPlaying", (bool)is_playing_global.load());
     obj->setProperty("masterPos", (double)global_transport_pos.load());
+    obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
     return metadata;
   }
@@ -87,6 +88,7 @@ juce::var AudioEngine::getGraphState() const {
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
   state->setProperty("isPlaying", (bool)is_playing_global.load());
   state->setProperty("masterPos", (double)global_transport_pos.load());
+  state->setProperty("soloedId", soloed_node_uuid);
   state->setProperty("nodes", juce::Array<juce::var>());
   return juce::var(state.get());
 }
@@ -201,6 +203,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       pc.input_latency = device->getInputLatencyInSamples();
       pc.output_latency = device->getOutputLatencyInSamples();
     }
+    pc.solo_node_uuid = soloed_node_uuid;
 
     static int log_count = 0;
     if (++log_count % 100 == 0) {
@@ -223,3 +226,28 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {}
 void AudioEngine::audioDeviceStopped() {}
+
+void AudioEngine::toggleSolo(const juce::String &uuid) {
+  if (soloed_node_uuid == uuid) {
+    soloed_node_uuid = ""; // Unsolo
+  } else {
+    soloed_node_uuid = uuid; // New solo
+  }
+  juce::Logger::writeToLog("AudioEngine: Solo toggled for " + uuid +
+                           " (Active Solo: " + soloed_node_uuid + ")");
+}
+
+void AudioEngine::togglePlay(const juce::String &uuid) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    if (auto *clip = dynamic_cast<celestrian::ClipNode *>(node)) {
+      if (clip->isPlaying()) {
+        clip->stopPlayback();
+      } else {
+        clip->startPlayback();
+      }
+      juce::Logger::writeToLog(
+          "AudioEngine: Play toggled for " + uuid + " (New State: " +
+          juce::String(clip->isPlaying() ? "true" : "false") + ")");
+    }
+  }
+}
