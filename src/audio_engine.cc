@@ -197,6 +197,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.is_playing = is_playing_global;
     pc.is_recording = true; // Enable recording capture from inputs
     pc.master_pos = global_transport_pos;
+    if (auto *device = device_manager.getCurrentAudioDevice()) {
+      pc.input_latency = device->getInputLatencyInSamples();
+      pc.output_latency = device->getOutputLatencyInSamples();
+    }
 
     static int log_count = 0;
     if (++log_count % 100 == 0) {

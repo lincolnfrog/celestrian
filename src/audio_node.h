@@ -17,6 +17,10 @@ struct ProcessContext {
 
   // Global transport master position (in samples)
   int64_t master_pos = 0;
+
+  // Latency compensation (in samples)
+  int input_latency = 0;
+  int output_latency = 0;
 };
 
 /**

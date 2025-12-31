@@ -235,14 +235,16 @@ function syncUI(state) {
         if (node.isRecording) {
             const Q = node.effectiveQuantum;
             if (Q > 0) {
-                // Phase-Locked Growth: Start at 'recordingStartPhase' and grow as 'duration' (writePos) increases.
+                // Phase-Locked Growth: Start at 'recordingStartPhase' and grow as recorded duration increases.
                 const numPeaksPerQ = 400;
                 const startPhase = node.recordingStartPhase || 0;
                 const recordedSamples = node.duration || 0;
-                const totalSamplesSoFar = startPhase + recordedSamples;
 
-                // Calculate current peak index relative to the start of the first quantum
+                // Total samples relative to the hypothetical start of the first bar we touched
+                const totalSamplesSoFar = startPhase + recordedSamples;
                 const index = Math.floor((totalSamplesSoFar / Q) * numPeaksPerQ);
+
+                // Grow array to contain the new index
                 const requiredSize = index + 1;
 
                 if (!livePeaks.has(node.id) || livePeaks.get(node.id).length < requiredSize) {
@@ -259,7 +261,8 @@ function syncUI(state) {
                     peaks[index] = p;
                 }
                 drawWaveform(div.querySelector('.node-waveform'), peaks);
-            } else {
+            }
+            else {
                 // Fallback: Linear push if no quantum known
                 if (!livePeaks.has(node.id)) livePeaks.set(node.id, []);
                 const peaks = livePeaks.get(node.id);

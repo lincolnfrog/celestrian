@@ -84,6 +84,10 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Box (+)**: Boxes have a global `(+)` button that spawns new child elements (Clips, Stacks, or smaller Boxes).
 * **Grid-Based Arrangement**: New elements snap to a dynamic grid layout, keeping the workspace organized automatically.
 
+* **Automatic Spatiotemporal Scaling (Growing Clips)**: 
+    - **Visual Growth**: During recording, if the performance exceeds the initial quantum length (e.g., 3x quantum), the clip's horizontal representation in the UI grows proportionally to reflect its actual content.
+    - **Stepped Stepping Zoom**: If a growing clip starts to exceed the bounds of the current viewport, the system automatically "zooms out" in discrete steps (rather than a jarring continuous zoom) to ensure the entire active recording remains visible.
+
 ### 5. Navigation & Viewport (ZUI)
 * **Contextual Zoom**: The screen represents the "Current Active Box."
 * **Dive/Exit Mechanics**: 

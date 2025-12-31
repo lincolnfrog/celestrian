@@ -53,13 +53,25 @@ void ClipNode::process(const float *const *input_channels,
     }
 
     if (should_start) {
-      trigger_master_pos.store(context.master_pos);
+      // Latency Compensation:
+      // The user played in response to what they HEARD (delayed by
+      // output_latency). Their performance reached the software delayed by
+      // input_latency. Total compensation = input + output latency.
+      int64_t compensated_pos =
+          context.master_pos - (context.input_latency + context.output_latency);
+      if (compensated_pos < 0)
+        compensated_pos = 0;
+
+      trigger_master_pos.store(compensated_pos);
       is_pending_start.store(false);
       is_recording.store(true);
       is_node_recording.store(true);
       write_pos.store(0);
-      juce::Logger::writeToLog("ClipNode: Recording Started at master_pos=" +
-                               juce::String(context.master_pos));
+      juce::Logger::writeToLog(
+          "ClipNode: Recording Started (Latency Compensated) at master_pos=" +
+          juce::String(compensated_pos) +
+          " (Raw=" + juce::String(context.master_pos) + ", RoundTrip=" +
+          juce::String(context.input_latency + context.output_latency) + ")");
     }
   }
 
