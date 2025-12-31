@@ -67,6 +67,7 @@ void ClipNode::process(const float *const *input_channels,
       is_recording.store(true);
       is_node_recording.store(true);
       write_pos.store(0);
+      live_duration_samples.store(0);
       juce::Logger::writeToLog(
           "ClipNode: Recording Started (Latency Compensated) at master_pos=" +
           juce::String(compensated_pos) +
@@ -105,6 +106,7 @@ void ClipNode::process(const float *const *input_channels,
         int64_t start_p = write_pos.load();
         write_pos.fetch_add(samples_to_write);
         int64_t end_p = write_pos.load();
+        live_duration_samples.store(end_p); // Live update for UI visibility
 
         if (is_awaiting_stop.load()) {
           int64_t target = awaiting_stop_at.load();

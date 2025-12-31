@@ -70,7 +70,10 @@ public:
     obj->setProperty("w", (double)width.load());
     obj->setProperty("h", (double)height.load());
     obj->setProperty("currentPeak", (float)last_block_peak.load());
-    obj->setProperty("duration", (double)duration_samples.load());
+    if (is_node_recording.load())
+      obj->setProperty("duration", (double)live_duration_samples.load());
+    else
+      obj->setProperty("duration", (double)duration_samples.load());
     obj->setProperty("loopStart", (double)loop_start_samples.load());
     obj->setProperty("loopEnd", (double)loop_end_samples.load());
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
@@ -126,8 +129,9 @@ public:
   std::atomic<double> width{200.0}, height{100.0};
 
   // Transport state
-  std::atomic<double> playhead_pos{0.0};    // 0.0 to 1.0 (normalized)
-  std::atomic<int64_t> duration_samples{0}; // Length of the loop
+  std::atomic<double> playhead_pos{0.0};         // 0.0 to 1.0 (normalized)
+  std::atomic<int64_t> duration_samples{0};      // Length of the loop
+  std::atomic<int64_t> live_duration_samples{0}; // Live count during recording
   std::atomic<int64_t> loop_start_samples{0};
   std::atomic<int64_t> loop_end_samples{0};
   std::atomic<bool> is_node_recording{false};
