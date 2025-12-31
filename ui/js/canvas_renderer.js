@@ -36,6 +36,7 @@ export function drawWaveform(canvas, peaks) {
     }
 
     for (let i = 0; i < count; i++) {
+        if (peaks[i] === null) continue; // Skip un-recorded segments in circular fill
         const p = parseFloat(peaks[i]) || 0;
         const x = i * step;
         const h = Math.max(2, p * (canvas.height * 0.9));

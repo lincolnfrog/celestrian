@@ -158,8 +158,6 @@ function syncUI(state) {
 
         div._latestNode = node; // Store latest state for drag handlers
 
-        const recBtn = div.querySelector('.node-btn-record');
-        recBtn.classList.toggle('active', node.isRecording);
         const playhead = div.querySelector('.playhead');
         playhead.style.left = `${node.playhead * 100}%`;
 
@@ -221,6 +219,13 @@ function syncUI(state) {
             else peakInfo.style.opacity = "0.4";
         }
 
+        // Update record button state
+        const recBtn = div.querySelector('.node-btn-record');
+        if (recBtn) {
+            recBtn.classList.toggle('active', node.isRecording);
+            recBtn.classList.toggle('pending', node.isPendingStart);
+        }
+
         // Diagnostic: Log recording state change
         if (node.isRecording !== div._last_rec_state) {
             log(`Node ${node.id} isRecording: ${node.isRecording}`);
@@ -228,19 +233,43 @@ function syncUI(state) {
         }
 
         if (node.isRecording) {
-            if (!livePeaks.has(node.id)) livePeaks.set(node.id, []);
-            const peaks = livePeaks.get(node.id);
-            // Visibility floor: ensure we see something even in silence
-            const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
-            peaks.push(p);
-            if (peaks.length > 300) peaks.shift();
+            const Q = node.effectiveQuantum;
+            if (Q > 0) {
+                // Phase-Locked Growth: Start at 'recordingStartPhase' and grow as 'duration' (writePos) increases.
+                const numPeaksPerQ = 400;
+                const startPhase = node.recordingStartPhase || 0;
+                const recordedSamples = node.duration || 0;
+                const totalSamplesSoFar = startPhase + recordedSamples;
 
-            if (Math.random() < 0.05) {
-                const samples = peaks.slice(-3).map(v => v.toFixed(3)).join(', ');
-                log(`REC ${node.name}: [${samples}] count=${peaks.length}`);
+                // Calculate current peak index relative to the start of the first quantum
+                const index = Math.floor((totalSamplesSoFar / Q) * numPeaksPerQ);
+                const requiredSize = index + 1;
+
+                if (!livePeaks.has(node.id) || livePeaks.get(node.id).length < requiredSize) {
+                    const old = livePeaks.get(node.id) || [];
+                    const next = new Array(Math.max(requiredSize, numPeaksPerQ)).fill(null);
+                    for (let i = 0; i < old.length; i++) next[i] = old[i];
+                    livePeaks.set(node.id, next);
+                }
+                const peaks = livePeaks.get(node.id);
+
+                // Visibility floor: ensure we see something even in silence
+                const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
+                if (index >= 0 && index < peaks.length) {
+                    peaks[index] = p;
+                }
+                drawWaveform(div.querySelector('.node-waveform'), peaks);
+            } else {
+                // Fallback: Linear push if no quantum known
+                if (!livePeaks.has(node.id)) livePeaks.set(node.id, []);
+                const peaks = livePeaks.get(node.id);
+                const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
+                peaks.push(p);
+                if (peaks.length > 300) peaks.shift();
+                drawWaveform(div.querySelector('.node-waveform'), peaks);
             }
-            drawWaveform(div.querySelector('.node-waveform'), peaks);
-        } else if (node.duration > 0) {
+        }
+        else if (node.duration > 0) {
             // Check if we just stopped recording - the size will be small if it's the live buffer
             if (!livePeaks.has(node.id) || livePeaks.get(node.id).length < 20) {
                 fetchWaveform(node.id);

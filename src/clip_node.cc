@@ -17,6 +17,13 @@ juce::var ClipNode::getMetadata() const {
   obj->setProperty("inputChannel", preferred_input_channel);
   obj->setProperty("isPendingStart", (bool)is_pending_start.load());
   obj->setProperty("isAwaitingStop", (bool)is_awaiting_stop.load());
+
+  int64_t Q = getEffectiveQuantum();
+  if (Q > 0 && is_node_recording.load()) {
+    obj->setProperty("recordingStartPhase",
+                     (double)(trigger_master_pos.load() % Q));
+  }
+
   return base;
 }
 
@@ -32,11 +39,28 @@ void ClipNode::process(const float *const *input_channels,
 
   // Handle PLL Start Anchor
   if (is_pending_start.load()) {
-    trigger_master_pos.store(context.master_pos);
-    is_pending_start.store(false);
-    is_recording.store(true);
-    is_node_recording.store(true);
-    write_pos.store(0);
+    int64_t Q = getEffectiveQuantum();
+    bool should_start = true;
+
+    if (Q > 0) {
+      int64_t phase = context.master_pos % Q;
+      int64_t dist_to_next = Q - phase;
+      int64_t tolerance = (int64_t)(Q * 0.25); // 25% Anticipatory Start
+
+      if (dist_to_next < tolerance) {
+        should_start = false; // Wait for the next boundary
+      }
+    }
+
+    if (should_start) {
+      trigger_master_pos.store(context.master_pos);
+      is_pending_start.store(false);
+      is_recording.store(true);
+      is_node_recording.store(true);
+      write_pos.store(0);
+      juce::Logger::writeToLog("ClipNode: Recording Started at master_pos=" +
+                               juce::String(context.master_pos));
+    }
   }
 
   // Handle Recording

@@ -79,12 +79,14 @@ juce::var AudioEngine::getGraphState() const {
     auto metadata = focused_node->getMetadata();
     auto *obj = metadata.getDynamicObject();
     obj->setProperty("isPlaying", (bool)is_playing_global.load());
+    obj->setProperty("masterPos", (double)global_transport_pos.load());
     obj->setProperty("focusedId", focused_node->getUuid());
     return metadata;
   }
 
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
   state->setProperty("isPlaying", (bool)is_playing_global.load());
+  state->setProperty("masterPos", (double)global_transport_pos.load());
   state->setProperty("nodes", juce::Array<juce::var>());
   return juce::var(state.get());
 }

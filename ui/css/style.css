@@ -171,6 +171,13 @@ h1 {
     box-shadow: 0 0 10px var(--record-color);
 }
 
+.node-btn-record.pending .record-dot {
+    background: #eab308 !important;
+    /* Yellow-500 */
+    box-shadow: 0 0 10px #eab308;
+    animation: pulse 1s infinite alternate;
+}
+
 .node-btn-record.active .record-dot::after {
     content: '';
     position: absolute;
