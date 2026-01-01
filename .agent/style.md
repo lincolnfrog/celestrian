@@ -2,37 +2,38 @@
 trigger: always_on
 ---
 
-# Code Structure
-* Split code into small, self-contained files with small, self-contained classes with clear responsibilities.
-* Avoid large monolithic functions - in general, each function should only do one thing and should use each parameter exactly once (this last bit is a guideline, not a rule).
-* Always add detailed comments to explain the purpose of each public function and class.
+# Code Style Guide
 
-# Unit tests
-* Always add unit tests while writing code.
-* Aim for 90%+ test coverage.
+## C++ Style
+* **Classes**: PascalCase (e.g., `AudioBuffer`)
+* **Functions**: camelCase (e.g., `processAudio`)
+* **Variables**: snake_case (e.g., `write_pos`, `buffer_size_` for privates)
+* **Enums**: Values use UPPER_SNAKE_CASE
+* **Pointers**: `Foo*` not `Foo *` (type-aligned)
+* Prefer `std::unique_ptr`/`std::shared_ptr` over raw pointers
+* No `using namespace` aliases
+* Avoid boolean params—use enums; avoid magic numbers—use constants
+* Classes should not have public member variables—use getters
+* Maximum const-correctness
 
-# C++ Style Guidelines
-* Class names are PascalCase
-* Function names are camelCase. Exception: if overriding a virtual function from an external library, like JUCE, use the same name as the base class.
-* Variable names are snake_case.
-Exception: the JSON metadata we pass to the UI has camelCase keys.
-* Do not do `using namespace` aliases
-* Avoid hard-coded strings - use enums and/or constants instead
-* Avoid boolean parameters - use enums instead
-* Enum values are uppercase SNAKE_CASE.
-* Use Foo* for pointers, not Foo * (with a space) - the * is part of the type, not the variable name. This rule also applies to references and other similar syntax.
-* Try to ensure maximum const-correctness - use const where possible.
-* Classes should not have public member variables, use getters instead.
+## JS Style
+* Class names: PascalCase, functions/variables: camelCase
+* Modern ES6+ with `async/await` for Bridge calls
+* Vanilla JS/CSS preferred (no frameworks)
+* Avoid embedding JS in HTML
 
-# JS Style Guidelines
-* Class names are PascalCase
-* Function names are camelCase
-* Variable names are camelCase
-* Do not embed JS code in HTML as much as possible
+## Code Structure
+* Small, single-responsibility files and classes
+* Each function does one thing; detailed public API comments
+* Aim for 90%+ test coverage
 
-# JUCE WebView & Bridge
-* **The Three-Layer Handshake**: When adding a UI-triggered feature, you MUST update:
-  1. **C++ Logic** (The implementation)
-  2. **C++ Bridge** (Register with `withNativeFunction` in `MainComponent.cc` - **CRITICAL** or memory hangs)
-  3. **JS Call** (`callNative(...)`)
-* **Bridge Logging**: All native functions MUST log their invocation using `juce::Logger::writeToLog` for debugging (e.g., "[Bridge] togglePlay called").
+## JUCE WebView Bridge
+> [!IMPORTANT]
+> **Three-Layer Handshake**: New UI-triggered features require:
+> 1. **C++ Logic** (implementation)
+> 2. **C++ Bridge** (register via `withNativeFunction` in `MainComponent.cc`)
+> 3. **JS Call** (`callNative(...)`)
+>
+> Missing step #2 causes JS promises to hang forever.
+
+* All native functions MUST log invocation via `juce::Logger::writeToLog`

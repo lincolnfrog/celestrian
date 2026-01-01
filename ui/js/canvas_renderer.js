@@ -30,11 +30,6 @@ export function drawWaveform(canvas, peaks) {
     const count = peaks.length;
     const step = canvas.width / Math.max(1, count);
 
-    // Keep terminal session logging (reduced frequency)
-    if (Math.random() < 0.02) {
-        log(`DRAW: ${canvas.width}x${canvas.height}, peaks=${count}, first=${peaks[0]?.toFixed(3)}`);
-    }
-
     for (let i = 0; i < count; i++) {
         if (peaks[i] === null) continue; // Skip un-recorded segments in circular fill
         const p = parseFloat(peaks[i]) || 0;

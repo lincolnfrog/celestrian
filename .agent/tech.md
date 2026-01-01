@@ -22,26 +22,23 @@ This document captures technical insights, "gotchas", and debugging strategies d
 
 ## 2. JUCE 8 & WebView Integration
 
-### The "Invoke" Handshake (JS <-> C++)
-JUCE 8's `withNativeFunction` doesn't expose methods directly on `window`. You must use a specific event-based handshake.
+### The "Invoke" Pattern (JS <-> C++)
+JUCE 8's `withNativeFunction` uses an event-based handshake (not direct `window` exposure).
 
-> [!IMPORTANT]
-> **The Three-Layer Handshake**: To add a new UI-triggered feature, you MUST update three places:
-> 1.  **C++ Logic**: The actual implementation in `AudioEngine` or elsewhere.
-> 2.  **C++ Bridge**: Register the name and lambda in `MainComponent.cc` using `.withNativeFunction("name", ...)`. **This is the most common place to forget.**
-> 3.  **JS Call**: Call it from the UI using `callNative("name", ...args)`.
->
-> If you miss step #2, the JS promise will **hang forever** (timeout) because no native listener is registered for that specific name.
-
-**JS Implementation Pattern**:
+**JS Pattern** (see `ui/js/bridge.js`):
 ```javascript
-// See ui/js/bridge.js for the full generic implementation
 async function callNative(name, ...args) {
     // 1. Generate unique result ID
     // 2. Listen for __juce__complete
     // 3. Emit __juce__invoke
 }
 ```
+
+> See `style.md` for the **Three-Layer Handshake** checklist when adding new bridge functions.
+
+### Debugging & Logging
+*   **Rule**: Use `log()` (imported from `bridge.js`), **NOT** `console.log()`.
+*   **Why**: standard `console.log` messages in the WebView are often swallowed or not bridged to the native C++ stdout in production/release builds. The `log()` helper explicitly bridges the message to the C++ logger, ensuring it appears in your terminal.
 
 ### Resource Loading
 *   **Problem**: CORS blocking local file access (`file://`).
@@ -50,7 +47,13 @@ async function callNative(name, ...args) {
 
 ### Permissions (macOS)
 *   Required CMake Flag: `MICROPHONE_PERMISSION_ENABLED TRUE`
+*   Required CMake Flag: `MICROPHONE_PERMISSION_ENABLED TRUE`
 *   Effect: Automatically adds usage descriptions to `Info.plist`.
+
+### Stale Bundle Resources
+*   **Problem**: Changing JS/CSS files in `ui/` might not trigger a re-copy to the app bundle (`Celestrian.app/Contents/MacOS/ui`).
+*   **Symptom**: `[JS]` logs missing new messages, behavior unchanged after edits.
+*   **Fix**: Manually copy: `cp -r ui/ build/.../Celestrian.app/Contents/MacOS/ui/` or force a clean build.
 
 ---
 

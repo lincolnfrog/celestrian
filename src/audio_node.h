@@ -82,6 +82,8 @@ public:
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)is_node_recording.load());
+    obj->setProperty("anchorPhase", (double)anchor_phase_samples.load());
+    obj->setProperty("launchPoint", (double)launch_point_samples.load());
     return juce::var(obj);
   }
 
@@ -139,6 +141,11 @@ public:
   std::atomic<int64_t> loop_end_samples{0};
   std::atomic<bool> is_node_recording{false};
   std::atomic<float> last_block_peak{0.0f};
+
+  // Phase-aligned recording: where in the quantum grid this clip was recorded
+  std::atomic<int64_t> anchor_phase_samples{0};
+  // Launch point: where playback starts to maintain alignment (default: 0)
+  std::atomic<int64_t> launch_point_samples{0};
 
   AudioNode *parent = nullptr;
 

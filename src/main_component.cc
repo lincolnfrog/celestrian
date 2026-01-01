@@ -182,7 +182,16 @@ MainComponent::getResource(const juce::String &path) {
   if (cleanPath.isEmpty())
     cleanPath = "index.html";
 
-  juce::File uiDir("/Users/lincolnfrog/code/celestrian/ui");
+  // Find UI directory relative to executable (works for deployed app bundles)
+  juce::File execFile =
+      juce::File::getSpecialLocation(juce::File::currentExecutableFile);
+  juce::File uiDir = execFile.getParentDirectory().getChildFile("ui");
+
+  // Fallback for development: check if ui/ exists next to the source
+  if (!uiDir.isDirectory()) {
+    uiDir = juce::File::getCurrentWorkingDirectory().getChildFile("ui");
+  }
+
   juce::File file = uiDir.getChildFile(cleanPath);
 
   if (!file.existsAsFile())

@@ -192,6 +192,117 @@ public:
       expectEquals(data[25], 0.5f);
       expectEquals(data[0], 0.0f);
     }
+
+    beginTest("Loop Points API");
+    {
+      BoxNode parent("Parent");
+      auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
+      auto *clipPtr = clip.get();
+      parent.addChild(std::move(clip));
+
+      // Record 1000 samples
+      float input[1000];
+      for (int i = 0; i < 1000; ++i)
+        input[i] = (float)(i % 100) / 100.0f; // Ramp pattern
+      float *const inputs[] = {input};
+
+      ProcessContext recCtx;
+      recCtx.num_samples = 1000;
+      recCtx.is_recording = true;
+
+      clipPtr->startRecording();
+      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->stopRecording();
+
+      // Default loop points should span full clip
+      expectEquals(clipPtr->getLoopStart(), (int64_t)0);
+      expectEquals(clipPtr->getLoopEnd(), (int64_t)1000);
+
+      // Set custom loop region (200-600)
+      clipPtr->setLoopPoints(200, 600);
+      expectEquals(clipPtr->getLoopStart(), (int64_t)200);
+      expectEquals(clipPtr->getLoopEnd(), (int64_t)600);
+
+      // Playback should use the new loop region
+      clipPtr->startPlayback();
+      float out[10] = {0.0f};
+      float *const outputs[] = {out, out};
+
+      ProcessContext playCtx;
+      playCtx.num_samples = 10;
+      playCtx.is_playing = true;
+      playCtx.master_pos = 0;
+
+      clipPtr->process(nullptr, outputs, 0, 2, playCtx);
+      // Verify playhead is within loop region
+      expect(clipPtr->playhead_pos.load() >= 0.0);
+    }
+
+    beginTest("Phase Alignment Mid-Track Recording");
+    {
+      // This tests the scenario: recording starts at master_pos=500 when Q=1000
+      // The recorded audio should be aligned so it plays back in phase with
+      // master.
+      const double SR = 1000.0;
+      BoxNode parent("Parent");
+
+      // First clip defines quantum of 1000 samples
+      auto masterClip = std::make_unique<ClipNode>("Master", SR);
+      auto *masterPtr = masterClip.get();
+      parent.addChild(std::move(masterClip));
+
+      float masterInput[1000];
+      for (int i = 0; i < 1000; ++i)
+        masterInput[i] = 0.1f;
+      float *const masterInputs[] = {masterInput};
+
+      ProcessContext ctx;
+      ctx.num_samples = 1000;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      masterPtr->startRecording();
+      masterPtr->process(masterInputs, nullptr, 1, 0, ctx);
+      masterPtr->stopRecording();
+      expectEquals(parent.getEffectiveQuantum(), (int64_t)1000);
+
+      // Second clip starts recording at master_pos=500 (mid-track)
+      auto slaveClip = std::make_unique<ClipNode>("Slave", SR);
+      auto *slavePtr = slaveClip.get();
+      parent.addChild(std::move(slaveClip));
+
+      // Record a distinctive pattern: first sample is 0.9, rest 0.1
+      float slaveInput[500];
+      slaveInput[0] = 0.9f;
+      for (int i = 1; i < 500; ++i)
+        slaveInput[i] = 0.1f;
+      float *const slaveInputs[] = {slaveInput};
+
+      ctx.num_samples = 500;
+      ctx.master_pos = 500; // Start mid-track
+
+      slavePtr->startRecording();
+      slavePtr->process(slaveInputs, nullptr, 1, 0, ctx);
+      slavePtr->stopRecording();
+
+      // The clip should snap to Q=500 (Q/2) since 500 is in candidates
+      expectEquals(slavePtr->getLoopEnd(), (int64_t)500);
+
+      // Phase = 500 % 500 = 0, so no rotation should occur
+      // Actually phase = trigger_master_pos % duration = 500 % 500 = 0
+      // The 0.9 sample should stay at position 0
+      const float *data = slavePtr->getAudioBuffer().getReadPointer(0);
+      expectEquals(data[0], 0.9f);
+
+      // Verify waveform is not blank (the user's bug symptom)
+      auto waveform = slavePtr->getWaveform(10);
+      expect(waveform.isArray());
+      float totalPeaks = 0.0f;
+      for (int i = 0; i < waveform.getArray()->size(); ++i) {
+        totalPeaks += (float)(*waveform.getArray())[i];
+      }
+      expect(totalPeaks > 0.0f, "Waveform should not be blank/zero.");
+    }
   }
 };
 

@@ -130,6 +130,67 @@ public:
       expectEquals(clipPtr->getWritePos(), 1);
       expectWithinAbsoluteError(clipPtr->getCurrentPeak(), 0.9f, 0.0001f);
     }
+
+    beginTest("Solo Muting Behavior");
+    {
+      BoxNode root("Root");
+      auto clip1 = std::make_unique<ClipNode>("Clip1", 44100.0);
+      auto clip2 = std::make_unique<ClipNode>("Clip2", 44100.0);
+      auto clip1Ptr = clip1.get();
+      auto clip2Ptr = clip2.get();
+
+      // Record DC signals into each clip
+      float in1[10], in2[10];
+      for (int i = 0; i < 10; ++i) {
+        in1[i] = 0.3f;
+        in2[i] = 0.7f;
+      }
+      float *const inputs1[] = {in1};
+      float *const inputs2[] = {in2};
+
+      ProcessContext recCtx;
+      recCtx.num_samples = 10;
+      recCtx.is_recording = true;
+
+      clip1Ptr->startRecording();
+      clip1Ptr->process(inputs1, nullptr, 1, 0, recCtx);
+      clip1Ptr->stopRecording();
+
+      clip2Ptr->startRecording();
+      clip2Ptr->process(inputs2, nullptr, 1, 0, recCtx);
+      clip2Ptr->stopRecording();
+
+      root.addChild(std::move(clip1));
+      root.addChild(std::move(clip2));
+
+      clip1Ptr->startPlayback();
+      clip2Ptr->startPlayback();
+
+      // Playback without solo: should sum both clips (0.3 + 0.7 = 1.0)
+      float outL[10] = {0.0f};
+      float outR[10] = {0.0f};
+      float *const outputs[] = {outL, outR};
+
+      ProcessContext playCtx;
+      playCtx.num_samples = 10;
+      playCtx.is_playing = true;
+      playCtx.solo_node_uuid = ""; // No solo
+
+      root.process(nullptr, outputs, 0, 2, playCtx);
+      expect(std::abs(outL[0] - 1.0f) < 0.0001f,
+             "Without solo, both clips should play.");
+
+      // Playback with clip1 soloed: should only hear clip1 (0.3)
+      for (int i = 0; i < 10; ++i) {
+        outL[i] = 0.0f;
+        outR[i] = 0.0f;
+      }
+      playCtx.solo_node_uuid = clip1Ptr->getUuid();
+
+      root.process(nullptr, outputs, 0, 2, playCtx);
+      expect(std::abs(outL[0] - 0.3f) < 0.0001f,
+             "With clip1 soloed, only clip1 should play.");
+    }
   }
 };
 

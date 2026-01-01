@@ -1,6 +1,7 @@
 import { callNative, log } from './bridge.js';
 import { drawWaveform } from './canvas_renderer.js';
 import { Viewport } from './viewport.js';
+import { groupNodesByVisualX, calculateButtonPosition } from './stack_logic.js';
 
 const nodeLayer = document.getElementById('node-layer');
 const creationUI = document.getElementById('creation-ui');
@@ -58,7 +59,16 @@ export function initApp() {
 
         if (e.code === 'Space') {
             e.preventDefault();
-            togglePlayback();
+            // If any clip is recording, spacebar stops recording (not playback)
+            const recordingNodes = document.querySelectorAll('.node-btn-record.active');
+            if (recordingNodes.length > 0) {
+                recordingNodes.forEach(btn => {
+                    const nodeDiv = btn.closest('.node');
+                    if (nodeDiv) toggleRecord(nodeDiv.id);
+                });
+            } else {
+                togglePlayback();
+            }
         }
         if (e.key === 'Escape') exitBox();
 
@@ -136,9 +146,22 @@ function syncUI(state) {
     const newNodeIds = nodes.map(n => n.id);
     const uiNodeIds = Array.from(nodeLayer.children).map(c => c.id);
 
+    // Calculate the effective quantum for width scaling
+    // The first clip's duration becomes the quantum, subsequent clips scale relative to it
+    let effectiveQ = 1;
+    nodes.forEach(n => {
+        if (n.effectiveQuantum > 0) {
+            effectiveQ = n.effectiveQuantum;
+        }
+    });
+    const baseWidth = 200; // 1 quantum = 200px
+
     let maxY = 0;
     let minX = Infinity;
     let maxX = -Infinity;
+
+    // UI = Data: C++ sets x_pos based on anchor_phase
+    // JS displays node.x directly with no transformation
 
     nodes.forEach(node => {
         let div = document.getElementById(node.id);
@@ -147,14 +170,45 @@ function syncUI(state) {
             nodeLayer.appendChild(div);
         }
 
+        // Calculate dynamic width based on clip duration relative to quantum
+        // First clip (or during first recording): use base width
+        // Subsequent clips: scale proportionally to quantum
+        let displayWidth = node.w;
+
+        if (node.isRecording) {
+            // During recording: grow based on how much we've recorded relative to Q
+            // But only if quantum is established (not the first clip)
+            if (effectiveQ > 1) {
+                const recordedDuration = node.duration || 0;
+                displayWidth = Math.max(baseWidth, (recordedDuration / effectiveQ) * baseWidth);
+            } else {
+                displayWidth = baseWidth; // First clip: stay at base width
+            }
+        } else if (node.duration > 0 && effectiveQ > 1) {
+            // After recording: scale based on final duration
+            displayWidth = Math.max(baseWidth, (node.duration / effectiveQ) * baseWidth);
+        } else {
+            displayWidth = baseWidth;
+        }
+
+        // Detect one-shot (for visual styling only)
+        const clipDuration = node.duration || effectiveQ;
+        const isOneShot = effectiveQ > 1 && clipDuration < effectiveQ;
+
+        // Apply one-shot styling
+        div.classList.toggle('one-shot', isOneShot);
+
+        // UI = Data: Position comes directly from C++ data
         div.style.left = `${node.x}px`;
         div.style.top = `${node.y}px`;
-        div.style.width = `${node.w}px`;
+        div.style.width = `${displayWidth}px`;
         div.style.height = `${node.h}px`;
 
         maxY = Math.max(maxY, node.y + node.h);
         minX = Math.min(minX, node.x);
-        maxX = Math.max(maxX, node.x + node.w);
+        maxX = Math.max(maxX, node.x + displayWidth);
+
+        node._visualX = node.x; // UI = Data: visual position is node.x
 
         div._latestNode = node; // Store latest state for drag handlers
 
@@ -186,6 +240,15 @@ function syncUI(state) {
             dimLeft.style.width = `${startPct}%`;
             dimRight.style.left = `${endPct}%`;
             dimRight.style.width = `${100 - endPct}%`;
+        }
+
+        // Update launch marker (shows where playback starts)
+        const launchMarker = div.querySelector('.launch-marker');
+        if (launchMarker && dur > 0) {
+            const launchPct = ((node.launchPoint || 0) / dur) * 100;
+            launchMarker.style.left = `${launchPct}%`;
+            // Only show if clip has non-zero anchor (was recorded mid-quantum)
+            launchMarker.style.display = node.anchorPhase > 0 ? 'block' : 'none';
         }
 
         // Update input selection
@@ -248,44 +311,38 @@ function syncUI(state) {
         }
 
         if (node.isRecording) {
-            const Q = node.effectiveQuantum;
-            if (Q > 0) {
-                // Phase-Locked Growth: Start at 'recordingStartPhase' and grow as recorded duration increases.
-                const numPeaksPerQ = 400;
-                const startPhase = node.recordingStartPhase || 0;
-                const recordedSamples = node.duration || 0;
+            // Live waveform: Always show from index 0 and grow linearly.
+            // Phase alignment is handled by C++ rotation AFTER recording completes,
+            // so the live view shows the raw recording progress.
+            const recordedSamples = node.duration || 0;
+            const Q = node.effectiveQuantum || recordedSamples || 1;
+            const numPeaksPerQ = 400;
 
-                // Total samples relative to the hypothetical start of the first bar we touched
-                const totalSamplesSoFar = startPhase + recordedSamples;
-                const index = Math.floor((totalSamplesSoFar / Q) * numPeaksPerQ);
+            // Calculate index based on how much we've recorded
+            const index = Math.floor((recordedSamples / Q) * numPeaksPerQ);
+            const requiredSize = index + 1;
 
-                // Grow array to contain the new index
-                const requiredSize = index + 1;
-
-                if (!livePeaks.has(node.id) || livePeaks.get(node.id).length < requiredSize) {
-                    const old = livePeaks.get(node.id) || [];
-                    const next = new Array(Math.max(requiredSize, numPeaksPerQ)).fill(null);
-                    for (let i = 0; i < old.length; i++) next[i] = old[i];
-                    livePeaks.set(node.id, next);
-                }
-                const peaks = livePeaks.get(node.id);
-
-                // Visibility floor: ensure we see something even in silence
-                const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
-                if (index >= 0 && index < peaks.length) {
-                    peaks[index] = p;
-                }
-                drawWaveform(div.querySelector('.node-waveform'), peaks);
+            if (!livePeaks.has(node.id)) {
+                livePeaks.set(node.id, new Array(Math.max(requiredSize, numPeaksPerQ)).fill(0.01));
             }
-            else {
-                // Fallback: Linear push if no quantum known
-                if (!livePeaks.has(node.id)) livePeaks.set(node.id, []);
-                const peaks = livePeaks.get(node.id);
-                const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
-                peaks.push(p);
-                if (peaks.length > 300) peaks.shift();
-                drawWaveform(div.querySelector('.node-waveform'), peaks);
+
+            const peaks = livePeaks.get(node.id);
+
+            // Grow array if needed
+            if (peaks.length < requiredSize) {
+                const newSize = Math.max(requiredSize, peaks.length + numPeaksPerQ);
+                while (peaks.length < newSize) {
+                    peaks.push(0.01);
+                }
             }
+
+            // Visibility floor: ensure we see something even in silence
+            const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
+            if (index >= 0 && index < peaks.length) {
+                peaks[index] = Math.max(peaks[index] || 0.01, p);
+            }
+
+            drawWaveform(div.querySelector('.node-waveform'), peaks);
         }
         else if (node.duration > 0) {
             // Check if we just stopped recording - the size will be small if it's the live buffer
@@ -312,30 +369,12 @@ function syncUI(state) {
     // 0. Stability Sort: Ensure anchor selection is identical across polls
     const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
 
-    // Render Stack (+) buttons: Group nodes by their X-alignment (overlap)
+    // Render Stack (+) buttons: Group nodes by their visual X position
     const activeStackButtons = new Set();
-    const groups = []; // Array of node arrays
-
-    sortedNodes.forEach(node => {
-        let found = false;
-        for (const group of groups) {
-            const anchor = group[0];
-            if (Math.abs(node.x - anchor.x) < 50) {
-                group.push(node);
-                found = true;
-                break;
-            }
-        }
-        if (!found) groups.push([node]);
-    });
+    const groups = groupNodesByVisualX(nodes);
 
     groups.forEach(group => {
-        const anchor = group[0];
-        const stackX = Math.round(anchor.x);
-        const maxY = Math.round(Math.max(...group.map(n => n.y + n.h)));
-
-        // Use anchor UUID prefix for a rock-solid persistent ID
-        const stackBtnId = `stack-btn-${anchor.id.slice(0, 8)}`;
+        const { id: stackBtnId, x: stackX, y: maxY } = calculateButtonPosition(group);
         activeStackButtons.add(stackBtnId);
 
         let btn = document.getElementById(stackBtnId);
@@ -407,6 +446,7 @@ function createNodeElement(node) {
             <div class="loop-ghost"></div>
             <div class="snap-marker"></div>
             <div class="snap-arrow"></div>
+            <div class="launch-marker" title="Launch Point"></div>
             <div class="playhead"></div>
         </div>
     `;

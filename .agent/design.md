@@ -40,6 +40,12 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 * There is no such thing as an isolated song, only nested grooves or "boxes". An audio clip is the lowest possible "leaf" element. Audio clips can be stacked in parallel to create music. Those stacks can then be bundled into a node (think the user "stepping outside" or "wrapping the current groove into a box"). Bundled boxes can also be stacked in parallel with new audio clips or other boxed grooves. The user can "step inside" a box to edit its contents. It should be very easy to navigate the nested structure of boxes.
 * **Layout**: Nodes are arranged in vertical stacks. New clips are appended to the bottom of the stack where the user clicks (+).
 
+> [!IMPORTANT]
+> **Audio Memory Principle**: Recorded audio must always play back aligned with the audio the performer heard during recording. The performer's timing is relative to what they heard—this relationship is sacred and must be preserved by default. Only explicit user action (editing launch point or loop regions) should break this invariant.
+
+> [!IMPORTANT]
+> **UI = Data Principle**: The visual representation must be a **direct, faithful representation** of the underlying data model. The UI should not "play games" with the data—no transformations, no derived calculations that diverge from the base model. What the user sees is exactly what the data represents. If there's a discrepancy between what makes sense visually and what the data model says, **fix the data model**, not the UI.
+
 ## Roadmap / Future Considerations
 
 - [ ] **Prettier Waveforms**: Replace the simple line renderer with discrete vertical bars at a granularity appropriate for the zoom level (e.g., 16 bars per clip). This will make them more legible and professional.
@@ -59,11 +65,16 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 ### 1. Recording & Live Creation
 * **Phase-Locked Loop (PLL) Recording**:
     - **Instant Capture**: New recordings begin immediately on user request to capture the creative spark.
+    - **Anchor Phase**: Each clip remembers where in the quantum grid it was recorded (its "anchor phase"). This determines its visual X-offset position.
     - **Cyclic Alignment**: The system anchors the recording to the master quantum phase. Upon completion, the buffer is cyclically shifted (rotated) so that its internal phase matches the global transport.
     - **Hysteresis-Based Snapping**:
         - **Anticipatory Stop (Early)**: If the user stops within the tolerance *before* a clean boundary, recording continues until that boundary is reached to avoid cutting off audio.
         - **Late Snap (Late)**: If the user stops within the tolerance *after* a clean boundary, recording ends immediately and the clip is truncated to that boundary.
         - **Instant Stop (Future: Loop Region)**: If stopped outside the tolerance, recording ends immediately. The **Loop Region** is automatically set to the previous clean multiple, preserving the "tail" for later editing.
+* **Launch Point**: Each clip has a draggable "launch point" marker (like Ableton's clip start arrow). When global transport starts:
+    - Playback begins from the launch point, not position 0
+    - This ensures clips recorded mid-quantum stay aligned with their recording context
+    - For clips longer than the quantum grid, the launch point is auto-calculated so wrapping maintains alignment
 * **Multi-threaded Parallel Processing**: High-performance audio engine that leverages multi-core CPUs for simultaneous recording, playback, and effect processing.
 
 ### 2. Nesting & Arrangement
@@ -109,6 +120,29 @@ Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
 * **Primary Quantum**: The first clip recorded in an empty structure defines the **Quantum Length** (in samples).
 * **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
     - **Seamless Rotation**: Recordings utilize "Cyclic Shift" logic: they start immediately but are post-processed via buffer rotation to align with the master loop's start point.
+
+### 7. Virtual Timeline & Clip Types
+The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in a traditional DAW:
+
+* **Looping Clips** (`duration >= anchor_position % duration`):
+    - Standard behavior: clip repeats continuously
+    - Visual: Ghost/faded repetitions extend to the edge of the longest sibling clip
+    - These ghosts show where the loop "would be" if you unrolled the timeline
+
+* **One-Shot Clips** (`duration < anchor_position % duration`):
+    - Triggered once per cycle when master reaches the anchor position
+    - No ghost repetitions—just the single instance with dashed border
+    - **Progressive Disclosure**: During recording, a clip behaves as a one-shot (dashed) until it exceeds the context loop length, at which point it "snaps" into being a loop.
+
+* **Dynamic Timeline Building**:
+    - The longest clip in a stack determines the visual "timeline width"
+    - Shorter looping clips show ghosts extending to match
+    - Recording new clips dynamically extends the timeline as needed
+
+* **Stack Alignment**:
+    - All clips in a stack share the same X position
+    - `anchor_phase` is for audio timing (when the clip triggers during playback), not visual positioning
+
 * **Stack Interaction**: 
     - **Creation Menu**: A floating **[+]** button at the bottom of the stack allows adding "New Clip" or "New Box". 
     - **Interaction**: The [+] button is a simple circle that reveals a creation dropdown on click.

@@ -1,4 +1,5 @@
 #include "clip_node.h"
+#include "box_node.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 
 namespace celestrian {
@@ -64,16 +65,81 @@ void ClipNode::process(const float *const *input_channels,
         compensated_pos = 0;
 
       trigger_master_pos.store(compensated_pos);
+      anchor_phase_samples.store(compensated_pos);
+
+      // Calculate visual X position based on context loop
+      // context_loop = max(longest_existing_sibling_duration, Q)
+      int64_t Q = getEffectiveQuantum();
+      int64_t context_loop = Q > 0 ? Q : 1;
+
+      // Find longest sibling clip (the context loop)
+      if (parent != nullptr) {
+        auto *box = dynamic_cast<BoxNode *>(parent);
+        if (box != nullptr) {
+          for (int i = 0; i < box->getNumChildren(); ++i) {
+            auto *sibling = box->getChild(i);
+            if (sibling != this && !sibling->is_node_recording.load()) {
+              int64_t sib_dur = sibling->duration_samples.load();
+              if (sib_dur > context_loop) {
+                context_loop = sib_dur;
+              }
+            }
+          }
+        }
+      }
+
+      // base_width = 200px (1 quantum), base_x = column position
+      double base_width = 200.0;
+      double base_x = x_pos.load();
+      if (base_x == 0.0)
+        base_x = 100.0;
+
+      // Calculate visual X position based on EFFECTIVE position (what user
+      // sees) The user is watching the context clip's playhead, so we need to
+      // use the same offset calculation as playback to match what they heard.
+      int64_t context_launch_point = 0;
+      if (parent != nullptr) {
+        auto *box = dynamic_cast<BoxNode *>(parent);
+        if (box != nullptr) {
+          for (int i = 0; i < box->getNumChildren(); ++i) {
+            auto *sibling = box->getChild(i);
+            if (sibling != this && !sibling->is_node_recording.load()) {
+              int64_t sib_dur = sibling->duration_samples.load();
+              if (sib_dur == context_loop) {
+                // Found the context clip - use its launch point
+                context_launch_point = sibling->launch_point_samples.load();
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      // Calculate offset (same formula as playback uses)
+      int64_t playback_offset =
+          (context_loop - (context_launch_point % context_loop)) % context_loop;
+
+      // Effective position = what the user SAW (playhead position)
+      int64_t effective_pos =
+          (compensated_pos + playback_offset) % context_loop;
+      int64_t quantum_offset = effective_pos / Q;
+      x_pos.store(base_x + quantum_offset * base_width);
+
+      juce::Logger::writeToLog(
+          "  → effective_pos=" + juce::String(effective_pos) + " (" +
+          juce::String((double)effective_pos / Q) + "Q)");
+
       is_pending_start.store(false);
       is_recording.store(true);
       is_node_recording.store(true);
       write_pos.store(0);
       live_duration_samples.store(0);
-      juce::Logger::writeToLog(
-          "ClipNode: Recording Started (Latency Compensated) at master_pos=" +
-          juce::String(compensated_pos) +
-          " (Raw=" + juce::String(context.master_pos) + ", RoundTrip=" +
-          juce::String(context.input_latency + context.output_latency) + ")");
+      juce::Logger::writeToLog("ClipNode: Recording Started at master_pos=" +
+                               juce::String(compensated_pos) + " (anchor=" +
+                               juce::String(anchor_phase_samples.load()) +
+                               ", context_loop=" + juce::String(context_loop) +
+                               ", Q=" + juce::String(Q) +
+                               ", x_pos=" + juce::String(x_pos.load()) + ")");
     }
   }
 
@@ -143,11 +209,19 @@ void ClipNode::process(const float *const *input_channels,
         }
       }
 
+      // Audio Memory Principle: playback starts from launch_point to maintain
+      // alignment with the audio context during recording.
+      // Offset the master position so that master_pos=0 starts from
+      // launch_point.
+      int64_t launch = launch_point_samples.load();
+      int64_t offset = (dur - (launch % dur)) % dur;
+
       for (int i = 0; i < context.num_samples; ++i) {
-        // Phase-lock to master position within the loop region
+        // Calculate effective position with launch offset
         int64_t current_master_pos = context.master_pos + i;
-        int64_t phase = current_master_pos % dur;
-        int current_read_pos = (int)((start + phase) % buffer.getNumSamples());
+        int64_t effective_pos = (current_master_pos + offset) % dur;
+        int current_read_pos =
+            (int)((start + effective_pos) % buffer.getNumSamples());
 
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] != nullptr && !isMutedBySolo) {
@@ -156,9 +230,10 @@ void ClipNode::process(const float *const *input_channels,
           }
         }
       }
-      int64_t phase = context.master_pos % dur;
-      int64_t absolute_read_pos = start + phase;
 
+      // Update playhead position for UI
+      int64_t effective_pos = (context.master_pos + offset) % dur;
+      int64_t absolute_read_pos = start + effective_pos;
       int64_t total = duration_samples.load();
       if (total > 0)
         playhead_pos.store((double)absolute_read_pos / (double)total);
@@ -190,10 +265,9 @@ void ClipNode::stopRecording() {
     int64_t Q = getEffectiveQuantum();
 
     if (Q > 0) {
-      const double TOLERANCE = 0.10; // 10% tolerance for anticipatory stop
-      int64_t threshold = (int64_t)(TOLERANCE * (double)Q);
+      const double TOLERANCE = 0.15; // 15% tolerance for anticipatory stop
 
-      // Candidates
+      // Candidates: multiples and subdivisions of Q
       std::vector<int64_t> candidates;
       candidates.push_back(Q);
       for (int k : {2, 4, 6, 8, 10, 12, 16})
@@ -211,12 +285,19 @@ void ClipNode::stopRecording() {
         }
       }
 
-      if (nextB != -1 && (nextB - L) < threshold) {
-        awaiting_stop_at.store(nextB);
-        is_awaiting_stop.store(true);
-        juce::Logger::writeToLog("ClipNode: Anticipatory Stop. Waiting for B=" +
-                                 juce::String(nextB));
-        return;
+      // Tolerance is based on the target boundary, not just Q
+      // This ensures longer recordings have proportionally larger grace periods
+      if (nextB != -1) {
+        int64_t threshold = (int64_t)(TOLERANCE * (double)nextB);
+        if ((nextB - L) < threshold) {
+          awaiting_stop_at.store(nextB);
+          is_awaiting_stop.store(true);
+          juce::Logger::writeToLog(
+              "ClipNode: Anticipatory Stop. Waiting for B=" +
+              juce::String(nextB) + " (L=" + juce::String(L) +
+              ", threshold=" + juce::String(threshold) + ")");
+          return;
+        }
       }
     }
 
@@ -324,6 +405,15 @@ void ClipNode::commitRecording(int64_t final_duration) {
         buffer.copyFrom(0, 0, temp, 0, 0, (int)dur);
       }
     }
+
+    // Set launch point to anchor phase so playback maintains alignment
+    // This ensures the Audio Memory Principle is preserved
+    launch_point_samples.store(anchor_phase_samples.load());
+
+    juce::Logger::writeToLog(
+        "ClipNode: Recording committed. Duration=" + juce::String(dur) +
+        ", anchor_phase=" + juce::String(anchor_phase_samples.load()) +
+        ", launch_point=" + juce::String(launch_point_samples.load()));
 
     is_playing.store(true); // Auto-playback after recording stops
   }
