@@ -157,6 +157,21 @@ MainComponent::MainComponent()
                     if (args.size() > 0)
                       juce::Logger::writeToLog("[JS] " + args[0].toString());
                     completion(true);
+                  })
+              .withNativeFunction(
+                  "dumpStateToFile",
+                  [](const juce::Array<juce::var> &args,
+                     juce::WebBrowserComponent::NativeFunctionCompletion
+                         completion) {
+                    if (args.size() > 0) {
+                      auto stateFile =
+                          juce::File::getCurrentWorkingDirectory().getChildFile(
+                              "celestrian_state.json");
+                      stateFile.replaceWithText(args[0].toString());
+                      juce::Logger::writeToLog("State dumped to: " +
+                                               stateFile.getFullPathName());
+                    }
+                    completion(true);
                   })) {
 
   addAndMakeVisible(web_browser);

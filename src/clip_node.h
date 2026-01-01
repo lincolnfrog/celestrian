@@ -80,7 +80,7 @@ public:
   /**
    * Returns the atomic write position for the recording process.
    */
-  int getWritePos() const { return write_pos.load(); }
+  int getWritePos() const { return write_position.load(); }
 
   /**
    * Returns the latest peak sample level captured by the process loop.
@@ -93,15 +93,16 @@ public:
 private:
   juce::AudioBuffer<float> buffer;
 
-  std::atomic<int> write_pos{0};
-  std::atomic<int> read_pos{0};
+  std::atomic<int> write_position{0};
+  std::atomic<int> read_position{0};
 
   std::atomic<bool> is_recording{false};
   std::atomic<bool> is_pending_start{false};
   std::atomic<bool> is_awaiting_stop{false};
   std::atomic<bool> is_playing{false};
 
-  std::atomic<int64_t> trigger_master_pos{0};
+  std::atomic<int64_t> trigger_master_position{0};
+  std::atomic<int64_t> awaiting_start_at{0}; // When to actually start recording
   std::atomic<int64_t> awaiting_stop_at{0};
 
   double sample_rate;

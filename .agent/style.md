@@ -4,6 +4,9 @@ trigger: always_on
 
 # Code Style Guide
 
+## General
+* Avoid truncated words like "pos" for "position" and "num" for number. Example: instead of "read_pos", just use "read_position". Also consider more legible alternatives, for example "num_peaks" should be "peak_count" instead.
+
 ## C++ Style
 * **Classes**: PascalCase (e.g., `AudioBuffer`)
 * **Functions**: camelCase (e.g., `processAudio`)

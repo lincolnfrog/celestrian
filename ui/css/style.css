@@ -135,20 +135,19 @@ h1 {
 }
 
 .node-header {
-    padding: 4px 8px;
+    padding: 6px 10px;
     display: flex;
     justify-content: flex-start;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
     background: #0005;
     border-bottom: 1px solid #0002;
     z-index: 20;
     position: relative;
-    height: 28px;
+    height: 42px;
     box-sizing: border-box;
-    width: 200px;
-    /* Fixed width - controls don't move as clip grows */
     min-width: 200px;
+    /* Header grows with content but has minimum */
 }
 
 .node-name-input {
@@ -157,11 +156,15 @@ h1 {
     color: white;
     font-size: 11px;
     font-weight: 700;
-    flex-grow: 1;
-    width: 0;
-    min-width: 40px;
+    flex: 1 1 60px;
+    /* Grow, shrink, base 60px */
+    min-width: 60px;
+    max-width: 150px;
     outline: none;
     opacity: 0.8;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    white-space: nowrap;
 }
 
 .node-name-input:focus {
@@ -175,8 +178,10 @@ h1 {
     position: relative;
     z-index: 50;
     pointer-events: auto;
-    width: 24px;
-    height: 24px;
+    width: 36px;
+    /* 50% larger */
+    height: 36px;
+    /* 50% larger */
     display: flex;
     align-items: center;
     justify-content: center;
@@ -185,17 +190,20 @@ h1 {
 .node-btn-play,
 .node-btn-solo {
     cursor: pointer;
-    width: 24px;
-    height: 24px;
+    width: 36px;
+    /* 50% larger */
+    height: 36px;
+    /* 50% larger */
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all 0.2s;
-    border-radius: 4px;
+    border-radius: 6px;
     background: #1e293b;
     color: #64748b;
     font-weight: bold;
-    font-size: 11px;
+    font-size: 13px;
+    /* larger text */
     user-select: none;
 }
 
@@ -311,6 +319,15 @@ h1 {
     background: #0004;
     overflow: hidden;
     min-height: 20px;
+}
+
+/* Collapsed state: just show header, hide waveform area */
+.node.collapsed .node-content {
+    display: none;
+}
+
+.node.collapsed {
+    height: auto !important;
 }
 
 .node-waveform {
@@ -431,11 +448,9 @@ h1 {
 }
 
 #debug-log {
-    position: absolute;
-    bottom: 10px;
-    right: 10px;
+    position: relative;
     width: 240px;
-    height: 80px;
+    height: 50px;
     background: #000000aa;
     backdrop-filter: blur(4px);
     color: #10b981;

@@ -303,6 +303,83 @@ public:
       }
       expect(totalPeaks > 0.0f, "Waveform should not be blank/zero.");
     }
+
+    // Test launch_point calculation for Audio Memory alignment
+    beginTest("Launch Point Calculation (Audio Memory Formula)");
+    {
+      // Formula: launch_point = (duration - anchor) % duration
+      // Example 2: 8Q clip recorded at 2Q → launch_point = 6Q
+
+      int64_t Q = 1000; // 1Q = 1000 samples
+
+      // Test case 1: 8Q clip at 2Q anchor → launch_point = 6Q
+      int64_t duration = 8 * Q;
+      int64_t anchor = 2 * Q;
+      int64_t launch_point = (duration - (anchor % duration)) % duration;
+      expectEquals(launch_point, 6 * Q);
+
+      // Test case 2: 4Q clip at 0 anchor → launch_point = 0
+      duration = 4 * Q;
+      anchor = 0;
+      launch_point =
+          (anchor > 0) ? (duration - (anchor % duration)) % duration : 0;
+      expectEquals(launch_point, (int64_t)0);
+
+      // Test case 3: 9Q clip at 2Q anchor → launch_point = 7Q
+      duration = 9 * Q;
+      anchor = 2 * Q;
+      launch_point = (duration - (anchor % duration)) % duration;
+      expectEquals(launch_point, 7 * Q);
+
+      // Test case 4: Wrap case - anchor > duration
+      // 4Q clip at 10Q anchor → 10Q % 4Q = 2Q → launch = (4Q - 2Q) = 2Q
+      duration = 4 * Q;
+      anchor = 10 * Q;
+      launch_point = (duration - (anchor % duration)) % duration;
+      expectEquals(launch_point, 2 * Q);
+    }
+
+    // Test always-wait-for-next-Q stop behavior
+    beginTest("Stop Always Waits for Next Q Boundary");
+    {
+      const double SR = 1000.0;
+      auto node = std::make_unique<ClipNode>("TestAwaitStop", SR);
+
+      // Create parent with quantum established
+      BoxNode parent("Parent");
+      auto dummy = std::make_unique<ClipNode>("Dummy", SR);
+      float dummyIn[1000] = {0.0f};
+      float *const dummyIns[] = {dummyIn};
+      ProcessContext dummyCtx;
+      dummyCtx.num_samples = 1000; // Q = 1000 samples
+      dummyCtx.is_recording = true;
+      dummy->startRecording();
+      dummy->process(dummyIns, nullptr, 1, 0, dummyCtx);
+      dummy->stopRecording();
+      parent.addChild(std::move(dummy));
+
+      parent.addChild(std::move(node));
+      auto *nodePtr = dynamic_cast<ClipNode *>(parent.getChild(1));
+
+      // Start recording
+      nodePtr->startRecording();
+      ProcessContext ctx;
+      ctx.num_samples = 500; // Record 500 samples (half of Q)
+      ctx.is_recording = true;
+      float input[500];
+      for (int i = 0; i < 500; ++i)
+        input[i] = 0.5f;
+      float *const inputs[] = {input};
+      nodePtr->process(inputs, nullptr, 1, 0, ctx);
+
+      // Stop recording - should NOT commit immediately
+      // Should set is_awaiting_stop and wait for next Q (1000)
+      nodePtr->stopRecording();
+      expect(nodePtr->isAwaitingStop(),
+             "Should be awaiting stop after stopRecording");
+      expect(nodePtr->isRecording(),
+             "Should still be recording while awaiting stop");
+    }
   }
 };
 

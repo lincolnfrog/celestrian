@@ -42,7 +42,12 @@
         </div>
     </div>
 
-    <div id="debug-log">Log initialized...</div>
+    <div id="debug-panel"
+        style="position: fixed; bottom: 10px; right: 10px; display: flex; flex-direction: column; gap: 5px; z-index: 1000; align-items: flex-end;">
+        <div id="debug-log">Log initialized...</div>
+        <button id="dump-state-btn" class="btn-transport" style="font-size: 10px; padding: 4px 8px;">📦 Dump
+            State</button>
+    </div>
 
     <!-- Modular JS -->
     <script type="module" src="js/app.js"></script>

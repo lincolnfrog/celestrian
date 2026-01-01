@@ -20,7 +20,11 @@ trigger: always_on
 ## Debugging
 * **Bridge Logging**: Use `log()` from `bridge.js` to tunnel to C++ stdout
 * **Canvas Issues**: Check CSS layout; JUCE WebViews need explicit dimensions
+* **Log File**: Check `celestrian_debug.log` in **project root** (not build dir)
 
 ## Coding Principles
 * **No Duplication**: Never duplicate logic in multiple places. Extract shared functionality into helper functions. This prevents regressions when one copy is updated but another is forgotten.
 * **Unit Tests**: Add tests for critical logic paths to prevent recurring regressions.
+
+## Reference
+* **Glossary**: See `.agent/glossary.md` for terminology alignment (Quantum, Launch Point, etc.)

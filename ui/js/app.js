@@ -106,6 +106,22 @@ export function initApp() {
         });
     }
 
+    // State dump button for debugging
+    const dumpBtn = document.getElementById('dump-state-btn');
+    if (dumpBtn) {
+        dumpBtn.addEventListener('click', async () => {
+            try {
+                const state = await callNative('getGraphState');
+                const stateJson = JSON.stringify(state, null, 2);
+                // Write to file via bridge
+                await callNative('dumpStateToFile', stateJson);
+                log('State dumped to celestrian_state.json');
+            } catch (err) {
+                log('Error dumping state: ' + err.message);
+            }
+        });
+    }
+
     startPolling();
     window.addEventListener('bridge-ready', () => {
         fetchInputs();
@@ -176,11 +192,11 @@ function syncUI(state) {
         let displayWidth = node.w;
 
         if (node.isRecording) {
-            // During recording: grow based on how much we've recorded relative to Q
-            // But only if quantum is established (not the first clip)
+            // During recording: width grows based on recorded samples
             if (effectiveQ > 1) {
                 const recordedDuration = node.duration || 0;
-                displayWidth = Math.max(baseWidth, (recordedDuration / effectiveQ) * baseWidth);
+                // Width grows from min 20px as recording progresses
+                displayWidth = Math.max(20, (recordedDuration / effectiveQ) * baseWidth);
             } else {
                 displayWidth = baseWidth; // First clip: stay at base width
             }
@@ -188,6 +204,7 @@ function syncUI(state) {
             // After recording: scale based on final duration
             displayWidth = Math.max(baseWidth, (node.duration / effectiveQ) * baseWidth);
         } else {
+            // New clip or collapsed: use base width (CSS hides content anyway)
             displayWidth = baseWidth;
         }
 
@@ -197,6 +214,14 @@ function syncUI(state) {
 
         // Apply one-shot styling
         div.classList.toggle('one-shot', isOneShot);
+
+        // Collapsed clip: show waveform ONLY when actually recording or has recorded audio
+        // During pending start = collapsed (waiting for Q)
+        // During pending stop = show waveform (still recording)
+        const isActivelyRecording = node.isRecording && !node.isPendingStart;
+        const hasRecordedAudio = node.duration > 0 && !node.isPendingStart;
+        const shouldCollapse = !isActivelyRecording && !hasRecordedAudio;
+        div.classList.toggle('collapsed', shouldCollapse);
 
         // UI = Data: Position comes directly from C++ data
         div.style.left = `${node.x}px`;
@@ -289,12 +314,14 @@ function syncUI(state) {
 
         if (recBtn && playBtn) {
             const hasAudio = node.duration > 0;
-            const showRecord = !hasAudio || node.isRecording || node.isPendingStart;
+            const isPending = node.isPendingStart || node.isAwaitingStop;
+            const showRecord = !hasAudio || node.isRecording || isPending;
             recBtn.style.display = showRecord ? 'flex' : 'none';
             playBtn.style.display = showRecord ? 'none' : 'flex';
 
-            recBtn.classList.toggle('active', node.isRecording);
-            recBtn.classList.toggle('pending', node.isPendingStart);
+            // Yellow pending state for both pending start and awaiting stop
+            recBtn.classList.toggle('active', node.isRecording && !node.isAwaitingStop);
+            recBtn.classList.toggle('pending', isPending);
             playBtn.classList.toggle('active', node.isPlaying);
         }
 
@@ -343,6 +370,22 @@ function syncUI(state) {
             }
 
             drawWaveform(div.querySelector('.node-waveform'), peaks);
+
+            // Show quantum grid marks during recording
+            // Marks at each Q boundary, positioned as percentage of current width
+            const content = div.querySelector('.node-content');
+            div.querySelectorAll('.recording-grid-mark').forEach(m => m.remove());
+            if (Q > 0 && recordedSamples > 0) {
+                const numQsRecorded = Math.floor(recordedSamples / Q);
+                for (let i = 1; i <= numQsRecorded && i < 20; i++) {
+                    // Mark at Q boundary i, positioned as percentage of recorded length
+                    const markPct = (i * Q / recordedSamples) * 100;
+                    const mark = document.createElement('div');
+                    mark.className = 'recording-grid-mark snap-point-grid';
+                    mark.style.left = `${markPct}%`;
+                    content.appendChild(mark);
+                }
+            }
         }
         else if (node.duration > 0) {
             // Check if we just stopped recording - the size will be small if it's the live buffer
@@ -379,49 +422,50 @@ function syncUI(state) {
     // Clean up old ghosts
     nodeLayer.querySelectorAll('.ghost-clip').forEach(g => g.remove());
 
-    // Only render ghosts if effectiveQ is established
-    if (effectiveQ <= 1) return;
+    // Render ghost repetitions only if effectiveQ is established
+    if (effectiveQ > 1) {
+        nodes.forEach(node => {
+            if (node.isRecording || !node.duration) return;
 
-    // Render ghost repetitions for each looping clip
-    nodes.forEach(node => {
-        if (node.isRecording || !node.duration) return;
+            const clipWidth = (node.duration / effectiveQ) * baseWidth;
+            const isOneShot = node.duration < effectiveQ;
 
-        const clipWidth = (node.duration / effectiveQ) * baseWidth;
-        const isOneShot = node.duration < effectiveQ;
+            // One-shots don't get ghosts
+            if (isOneShot) return;
 
-        // One-shots don't get ghosts
-        if (isOneShot) return;
+            // Skip if this is already the longest clip (no ghosts needed)
+            if (node.duration >= longestDuration) return;
 
-        // Skip if this is already the longest clip (no ghosts needed)
-        if (node.duration >= longestDuration) return;
+            // Calculate how many ghosts fit in the remaining timeline
+            const clipStartX = node.x;
+            const remainingWidth = timelineWidth - clipWidth;
+            const numGhosts = Math.floor(remainingWidth / clipWidth);
 
-        // Calculate how many ghosts fit in the remaining timeline
-        const clipStartX = node.x;
-        const remainingWidth = timelineWidth - clipWidth;
-        const numGhosts = Math.floor(remainingWidth / clipWidth);
+            console.log(`[Ghost] Clip ${node.id.slice(0, 4)}: clipWidth=${clipWidth}, remainingWidth=${remainingWidth}, numGhosts=${numGhosts}`);
 
-        for (let i = 1; i <= numGhosts && i < 20; i++) {
-            const ghostX = clipStartX + i * clipWidth;
+            for (let i = 1; i <= numGhosts && i < 20; i++) {
+                const ghostX = clipStartX + i * clipWidth;
 
-            const ghost = document.createElement('div');
-            ghost.className = 'ghost-clip';
-            ghost.style.left = `${ghostX}px`;
-            ghost.style.top = `${node.y}px`;
-            ghost.style.width = `${clipWidth}px`;
-            ghost.style.height = `${node.h}px`;
+                const ghost = document.createElement('div');
+                ghost.className = 'ghost-clip';
+                ghost.style.left = `${ghostX}px`;
+                ghost.style.top = `${node.y}px`;
+                ghost.style.width = `${clipWidth}px`;
+                ghost.style.height = `${node.h}px`;
 
-            // Add faded waveform canvas
-            const canvas = document.createElement('canvas');
-            ghost.appendChild(canvas);
+                // Add faded waveform canvas
+                const canvas = document.createElement('canvas');
+                ghost.appendChild(canvas);
 
-            // Draw the same waveform but faded
-            if (cachedWaveforms.has(node.id)) {
-                drawWaveform(canvas, cachedWaveforms.get(node.id));
+                // Draw the same waveform but faded
+                if (cachedWaveforms.has(node.id)) {
+                    drawWaveform(canvas, cachedWaveforms.get(node.id));
+                }
+
+                nodeLayer.appendChild(ghost);
             }
-
-            nodeLayer.appendChild(ghost);
-        }
-    });
+        });
+    }
 
     // 0. Stability Sort: Ensure anchor selection is identical across polls
     const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
