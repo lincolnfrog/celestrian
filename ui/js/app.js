@@ -366,6 +366,63 @@ function syncUI(state) {
         }
     });
 
+    // Ghost Repetition Rendering: Looping clips show faded repetitions
+    // Show ghosts to fill timeline extent (longest clip determines width)
+    let longestDuration = effectiveQ;
+    nodes.forEach(n => {
+        if (!n.isRecording && n.duration > longestDuration) {
+            longestDuration = n.duration;
+        }
+    });
+    const timelineWidth = (longestDuration / effectiveQ) * baseWidth;
+
+    // Clean up old ghosts
+    nodeLayer.querySelectorAll('.ghost-clip').forEach(g => g.remove());
+
+    // Only render ghosts if effectiveQ is established
+    if (effectiveQ <= 1) return;
+
+    // Render ghost repetitions for each looping clip
+    nodes.forEach(node => {
+        if (node.isRecording || !node.duration) return;
+
+        const clipWidth = (node.duration / effectiveQ) * baseWidth;
+        const isOneShot = node.duration < effectiveQ;
+
+        // One-shots don't get ghosts
+        if (isOneShot) return;
+
+        // Skip if this is already the longest clip (no ghosts needed)
+        if (node.duration >= longestDuration) return;
+
+        // Calculate how many ghosts fit in the remaining timeline
+        const clipStartX = node.x;
+        const remainingWidth = timelineWidth - clipWidth;
+        const numGhosts = Math.floor(remainingWidth / clipWidth);
+
+        for (let i = 1; i <= numGhosts && i < 20; i++) {
+            const ghostX = clipStartX + i * clipWidth;
+
+            const ghost = document.createElement('div');
+            ghost.className = 'ghost-clip';
+            ghost.style.left = `${ghostX}px`;
+            ghost.style.top = `${node.y}px`;
+            ghost.style.width = `${clipWidth}px`;
+            ghost.style.height = `${node.h}px`;
+
+            // Add faded waveform canvas
+            const canvas = document.createElement('canvas');
+            ghost.appendChild(canvas);
+
+            // Draw the same waveform but faded
+            if (cachedWaveforms.has(node.id)) {
+                drawWaveform(canvas, cachedWaveforms.get(node.id));
+            }
+
+            nodeLayer.appendChild(ghost);
+        }
+    });
+
     // 0. Stability Sort: Ensure anchor selection is identical across polls
     const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
 

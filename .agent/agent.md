@@ -20,3 +20,7 @@ trigger: always_on
 ## Debugging
 * **Bridge Logging**: Use `log()` from `bridge.js` to tunnel to C++ stdout
 * **Canvas Issues**: Check CSS layout; JUCE WebViews need explicit dimensions
+
+## Coding Principles
+* **No Duplication**: Never duplicate logic in multiple places. Extract shared functionality into helper functions. This prevents regressions when one copy is updated but another is forgotten.
+* **Unit Tests**: Add tests for critical logic paths to prevent recurring regressions.

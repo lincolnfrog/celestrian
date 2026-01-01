@@ -267,22 +267,20 @@ void ClipNode::stopRecording() {
     if (Q > 0) {
       const double TOLERANCE = 0.15; // 15% tolerance for anticipatory stop
 
-      // Candidates: multiples and subdivisions of Q
-      std::vector<int64_t> candidates;
-      candidates.push_back(Q);
-      for (int k : {2, 4, 6, 8, 10, 12, 16})
-        candidates.push_back(k * Q);
-      for (int d : {2, 4, 8})
-        candidates.push_back(Q / d);
+      // Find the NEXT clean multiple of Q that is > L
+      // No hard-coded limit - works for any quantum multiple
+      int64_t nextB = ((L / Q) + 1) * Q;
 
-      int64_t nextB = -1;
-      int64_t minB = std::numeric_limits<int64_t>::max();
-
-      for (int64_t B : candidates) {
-        if (B > L && B < minB) {
-          minB = B;
-          nextB = B;
-        }
+      // Also check subdivisions for short recordings
+      std::vector<int64_t> subdivisions;
+      for (int d : {2, 4, 8}) {
+        int64_t sub = Q / d;
+        if (sub > L)
+          subdivisions.push_back(sub);
+      }
+      for (int64_t sub : subdivisions) {
+        if (sub > L && sub < nextB)
+          nextB = sub;
       }
 
       // Tolerance is based on the target boundary, not just Q
@@ -320,13 +318,18 @@ void ClipNode::commitRecording(int64_t final_duration) {
       // Hysteresis Snapping Logic
       const double HYSTERESIS_THRESHOLD = 0.15; // 15% tolerance
 
-      // Candidates: Even multiples (2, 4, 6, 8...) and power-of-2 divisions
-      std::vector<int64_t> candidates;
-      candidates.push_back(Q); // 1x
-      for (int k : {2, 4, 6, 8, 10, 12, 16})
-        candidates.push_back(k * Q);
-      for (int d : {2, 4, 8})
-        candidates.push_back(Q / d);
+      // Find the CLOSEST clean multiple of Q to L (either floor or ceiling)
+      // No hard-coded limit - works for any quantum multiple
+      int64_t floorMultiple = (L / Q) * Q;
+      int64_t ceilMultiple = floorMultiple + Q;
+
+      // Also consider subdivisions for short recordings
+      std::vector<int64_t> candidates = {floorMultiple, ceilMultiple};
+      for (int d : {2, 4, 8}) {
+        int64_t sub = Q / d;
+        if (sub > 0)
+          candidates.push_back(sub);
+      }
 
       int64_t bestB = -1;
       int64_t minDiff = std::numeric_limits<int64_t>::max();
