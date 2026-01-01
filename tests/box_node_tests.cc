@@ -127,7 +127,7 @@ public:
       clipPtr->startRecording();
       root.process(ins, nullptr, 1, 0, ctx);
 
-      expectEquals(clipPtr->getWritePos(), 1);
+      expectEquals(clipPtr->getWritePosition(), 1);
       expectWithinAbsoluteError(clipPtr->getCurrentPeak(), 0.9f, 0.0001f);
     }
 

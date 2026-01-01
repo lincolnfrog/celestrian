@@ -1,7 +1,8 @@
 #pragma once
 
-#include "audio_node.h"
 #include <juce_audio_basics/juce_audio_basics.h>
+
+#include "audio_node.h"
 
 namespace celestrian {
 
@@ -10,7 +11,7 @@ namespace celestrian {
  * Handles storage, playback, and slicing logic.
  */
 class ClipNode : public AudioNode {
-public:
+ public:
   ClipNode(juce::String name, double source_sample_rate = 44100.0);
   ~ClipNode() override = default;
 
@@ -75,12 +76,12 @@ public:
   /**
    * Returns the total recorded sample count in the buffer.
    */
-  int getNumSamples() const { return buffer.getNumSamples(); }
+  int getSampleCount() const { return buffer.getNumSamples(); }
 
   /**
    * Returns the atomic write position for the recording process.
    */
-  int getWritePos() const { return write_position.load(); }
+  int getWritePosition() const { return write_position.load(); }
 
   /**
    * Returns the latest peak sample level captured by the process loop.
@@ -90,7 +91,7 @@ public:
   void commitRecording(int64_t final_duration = -1);
   const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
 
-private:
+ private:
   juce::AudioBuffer<float> buffer;
 
   std::atomic<int> write_position{0};
@@ -102,7 +103,8 @@ private:
   std::atomic<bool> is_playing{false};
 
   std::atomic<int64_t> trigger_master_position{0};
-  std::atomic<int64_t> awaiting_start_at{0}; // When to actually start recording
+  std::atomic<int64_t> awaiting_start_at{
+      0};  // When to actually start recording
   std::atomic<int64_t> awaiting_stop_at{0};
 
   double sample_rate;
@@ -113,4 +115,4 @@ private:
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipNode)
 };
 
-} // namespace celestrian
+}  // namespace celestrian

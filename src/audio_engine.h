@@ -1,13 +1,15 @@
 #pragma once
 
-#include "audio_node.h"
-#include "clip_node.h"
 #include <juce_audio_devices/juce_audio_devices.h>
+
 #include <memory>
 #include <vector>
 
+#include "audio_node.h"
+#include "clip_node.h"
+
 class AudioEngine : public juce::AudioIODeviceCallback {
-public:
+ public:
   AudioEngine();
   ~AudioEngine() override;
 
@@ -67,6 +69,7 @@ public:
 
   void toggleSolo(const juce::String &uuid);
   void togglePlay(const juce::String &uuid);
+  void toggleMute(const juce::String &uuid);
 
   /**
    * Returns a list of available hardware audio inputs.
@@ -93,7 +96,7 @@ public:
   void audioDeviceAboutToStart(juce::AudioIODevice *device) override;
   void audioDeviceStopped() override;
 
-private:
+ private:
   void init(int inputs, int outputs);
   celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
                                         const juce::String &uuid);

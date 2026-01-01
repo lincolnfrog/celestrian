@@ -88,14 +88,12 @@ h1 {
 /* Node Slots */
 .node {
     position: absolute;
-    background: #1e293b;
-    border-radius: 8px;
-    border: 1px solid #334155;
-    display: grid;
-    grid-template-rows: auto 1fr;
-    overflow: hidden;
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
-    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.22s;
+    background: transparent;
+    border: none;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     z-index: 10;
 }
 
@@ -118,7 +116,8 @@ h1 {
     /* Slightly dimmer waveform */
 }
 
-.node:hover {
+.node:hover .node-header,
+.node:hover .node-content {
     border-color: var(--accent-color);
 }
 
@@ -135,31 +134,73 @@ h1 {
 }
 
 .node-header {
-    padding: 6px 10px;
+    padding: 2px 10px;
     display: flex;
     justify-content: flex-start;
     align-items: center;
     gap: 6px;
-    background: #0005;
-    border-bottom: 1px solid #0002;
+    background: linear-gradient(to bottom, #2d3748, #1a202c);
+    border: 1px solid #000;
+    border-top: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
     z-index: 20;
     position: relative;
-    height: 42px;
+    height: 38px;
     box-sizing: border-box;
-    min-width: 200px;
-    /* Header grows with content but has minimum */
+    min-width: 260px;
+    width: fit-content;
+}
+
+.node:not(.collapsed) .node-header {
+    border-radius: 8px 8px 0 0;
+}
+
+.node-content {
+    position: relative;
+    background: #0f172a;
+    /* Grid background */
+    background-image:
+        linear-gradient(rgba(56, 189, 248, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56, 189, 248, 0.05) 1px, transparent 1px);
+    background-size: 100% 20px, 50px 100%;
+    border: 1px solid #000;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+    min-height: 20px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+.node.collapsed .node-content {
+    display: none !important;
+}
+
+.node.collapsed {
+    height: 38px !important;
+}
+
+.playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #fff;
+    box-shadow: 0 0 10px #fff, 0 0 20px var(--accent-color);
+    pointer-events: none;
+    z-index: 5;
 }
 
 .node-name-input {
     background: transparent;
     border: none;
     color: white;
-    font-size: 11px;
+    font-size: 13px;
+    /* Slightly larger matching buttons */
     font-weight: 700;
-    flex: 1 1 60px;
-    /* Grow, shrink, base 60px */
-    min-width: 60px;
-    max-width: 150px;
+    flex: 1 1 auto;
+    min-width: 80px;
+    max-width: 180px;
     outline: none;
     opacity: 0.8;
     text-overflow: ellipsis;
@@ -178,60 +219,67 @@ h1 {
     position: relative;
     z-index: 50;
     pointer-events: auto;
-    width: 36px;
-    /* 50% larger */
-    height: 36px;
-    /* 50% larger */
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
+    background: #1a202c;
+    border: 1px solid #334155;
+    border-radius: 50%;
 }
 
 .node-btn-play,
-.node-btn-solo {
+.node-btn-solo,
+.node-btn-mute {
     cursor: pointer;
-    width: 36px;
-    /* 50% larger */
-    height: 36px;
-    /* 50% larger */
+    width: 28px;
+    height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.2s;
-    border-radius: 6px;
-    background: #1e293b;
-    color: #64748b;
-    font-weight: bold;
-    font-size: 13px;
-    /* larger text */
+    transition: all 0.1s;
+    border-radius: 4px;
+    background: #1a202c;
+    border: 1px solid #334155;
+    color: #94a3b8;
+    font-weight: 800;
+    font-size: 11px;
     user-select: none;
 }
 
 .node-btn-play:hover,
-.node-btn-solo:hover {
-    transform: scale(1.1);
-    background: #334155;
+.node-btn-solo:hover,
+.node-btn-mute:hover {
+    background: #2d3748;
+    border-color: #4a5568;
+}
+
+.node-btn-mute.active {
+    background: #64748b !important;
+    color: #fff !important;
+    border-color: #94a3b8 !important;
 }
 
 .node-btn-solo.active {
     background: #eab308 !important;
-    /* Yellow-500 */
     color: #0f172a !important;
-    box-shadow: 0 0 10px rgba(234, 179, 8, 0.4);
+    border-color: #fbd38d !important;
+    box-shadow: 0 0 12px rgba(234, 179, 8, 0.4);
 }
 
 .node-btn-play.active {
     background: #10b981 !important;
-    /* Emerald-500 */
-    box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+    border-color: #34d399 !important;
+    box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
 }
 
 .play-icon {
     width: 0;
     height: 0;
-    border-top: 5px solid transparent;
-    border-bottom: 5px solid transparent;
-    border-left: 8px solid #64748b;
+    border-top: 4px solid transparent;
+    border-bottom: 4px solid transparent;
+    border-left: 7px solid #94a3b8;
     margin-left: 2px;
 }
 
@@ -263,7 +311,7 @@ h1 {
     background: #eab308 !important;
     /* Yellow-500 */
     box-shadow: 0 0 10px #eab308;
-    animation: pulse 1s infinite alternate;
+    animation: pulse-dot 1s infinite alternate ease-in-out;
 }
 
 .node-btn-record.active .record-dot::after {
@@ -276,11 +324,21 @@ h1 {
     transform: translate(-50%, -50%) scale(1);
     border-radius: 50%;
     border: 1px solid var(--record-color);
-    animation: pulse 1.5s infinite;
+    animation: pulse-ring 1.5s infinite;
     pointer-events: none;
 }
 
-@keyframes pulse {
+@keyframes pulse-dot {
+    0% {
+        transform: translateZ(0) scale(0.9);
+    }
+
+    100% {
+        transform: translateZ(0) scale(1.2);
+    }
+}
+
+@keyframes pulse-ring {
     0% {
         opacity: 1;
         transform: translate(-50%, -50%) scale(0.8);
@@ -314,20 +372,14 @@ h1 {
     border-color: var(--accent-color);
 }
 
-.node-content {
-    position: relative;
-    background: #0004;
-    overflow: hidden;
-    min-height: 20px;
-}
-
-/* Collapsed state: just show header, hide waveform area */
-.node.collapsed .node-content {
-    display: none;
-}
-
-.node.collapsed {
-    height: auto !important;
+/* Marker styles moved or cleaned up */
+.recording-grid-mark {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(56, 189, 248, 0.4);
+    z-index: 4;
 }
 
 .node-waveform {
@@ -345,6 +397,16 @@ h1 {
     box-shadow: 0 0 8px #fff;
     pointer-events: none;
     z-index: 10;
+}
+
+.ghost-clip .playhead {
+    display: none;
+    /* Hidden by default, shown by JS */
+}
+
+.ghost-clip.active-ghost .playhead {
+    display: block;
+    opacity: 0.7;
 }
 
 .dim-layer {

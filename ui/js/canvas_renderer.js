@@ -20,10 +20,14 @@ export function drawWaveform(canvas, peaks) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (!peaks || peaks.length === 0) {
-        ctx.fillStyle = 'rgba(56, 189, 248, 0.1)';
-        ctx.fillRect(0, midY - 1, canvas.width, 2);
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.05)';
+        ctx.fillRect(0, midY, canvas.width, 1);
         return;
     }
+
+    // Horizontal center line
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.1)';
+    ctx.fillRect(0, midY, canvas.width, 1);
 
     // Actual Bars
     ctx.fillStyle = 'rgb(0, 255, 255)'; // Luminous Cyan

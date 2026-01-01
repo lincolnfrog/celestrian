@@ -49,7 +49,7 @@ public:
       // First process starts it and captures 100 samples
       node.process(inputs, nullptr, 1, 0, context);
 
-      expectEquals(node.getWritePos(), 100);
+      expectEquals(node.getWritePosition(), 100);
 
       // Verify peek
       auto waveform = node.getWaveform(1);
@@ -95,7 +95,7 @@ public:
       node.stopRecording();
 
       expect(node.isPlaying()); // New behavior: auto-starts playback
-      expectEquals(node.getWritePos(), 10);
+      expectEquals(node.getWritePosition(), 10);
     }
 
     beginTest("Capture Validation (Requires Context Flag)");
@@ -109,7 +109,7 @@ public:
       context.is_recording = true;
       node.process(nullptr, nullptr, 0, 0, context);
       expect(node.isRecording());
-      int initialWritePos = node.getWritePos();
+      int initialWritePos = node.getWritePosition();
 
       float input[10] = {0.8f};
       float *const inputs[] = {input};
@@ -117,7 +117,7 @@ public:
       context.is_recording = false; // If false, node should NOT capture
 
       node.process(inputs, nullptr, 1, 0, context);
-      expectEquals(node.getWritePos(), initialWritePos);
+      expectEquals(node.getWritePosition(), initialWritePos);
     }
 
     beginTest("Peak Tracking");

@@ -1,7 +1,9 @@
 #include "audio_engine.h"
+
+#include <juce_audio_basics/juce_audio_basics.h>
+
 #include "box_node.h"
 #include "clip_node.h"
-#include <juce_audio_basics/juce_audio_basics.h>
 
 AudioEngine::AudioEngine() {
   init(1, 2);
@@ -34,8 +36,7 @@ celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
   if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
     return box->findNodeByUuid(uuid);
   }
-  if (node && node->getUuid() == uuid)
-    return node;
+  if (node && node->getUuid() == uuid) return node;
   return nullptr;
 }
 
@@ -186,7 +187,6 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     const float *const *input_channel_data, int num_input_channels,
     float *const *output_channel_data, int num_output_channels, int num_samples,
     const juce::AudioIODeviceCallbackContext &context) {
-
   for (int i = 0; i < num_output_channels; ++i) {
     if (output_channel_data[i] != nullptr)
       juce::FloatVectorOperations::clear(output_channel_data[i], num_samples);
@@ -197,7 +197,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.sample_rate = 44100.0;
     pc.num_samples = num_samples;
     pc.is_playing = is_playing_global;
-    pc.is_recording = true; // Enable recording capture from inputs
+    pc.is_recording = true;  // Enable recording capture from inputs
     pc.master_pos = global_transport_pos;
     if (auto *device = device_manager.getCurrentAudioDevice()) {
       pc.input_latency = device->getInputLatencyInSamples();
@@ -229,9 +229,9 @@ void AudioEngine::audioDeviceStopped() {}
 
 void AudioEngine::toggleSolo(const juce::String &uuid) {
   if (soloed_node_uuid == uuid) {
-    soloed_node_uuid = ""; // Unsolo
+    soloed_node_uuid = "";  // Unsolo
   } else {
-    soloed_node_uuid = uuid; // New solo
+    soloed_node_uuid = uuid;  // New solo
   }
   juce::Logger::writeToLog("AudioEngine: Solo toggled for " + uuid +
                            " (Active Solo: " + soloed_node_uuid + ")");
@@ -249,5 +249,14 @@ void AudioEngine::togglePlay(const juce::String &uuid) {
           "AudioEngine: Play toggled for " + uuid + " (New State: " +
           juce::String(clip->isPlaying() ? "true" : "false") + ")");
     }
+  }
+}
+void AudioEngine::toggleMute(const juce::String &uuid) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    bool newState = !node->is_muted.load();
+    node->is_muted.store(newState);
+    juce::Logger::writeToLog(
+        "AudioEngine: Mute toggled for " + uuid +
+        " (New State: " + juce::String(newState ? "true" : "false") + ")");
   }
 }

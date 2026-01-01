@@ -1,7 +1,9 @@
 #include "main_component.h"
+
+#include <juce_core/juce_core.h>
+
 #include <cstddef>
 #include <cstring>
-#include <juce_core/juce_core.h>
 #include <vector>
 
 MainComponent::MainComponent()
@@ -150,6 +152,20 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "toggleMute",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 0) {
+                      if (args[0].isString())
+                        audio_engine.toggleMute(args[0].toString());
+                      else if (auto *obj = args[0].getDynamicObject())
+                        audio_engine.toggleMute(
+                            obj->getProperty("uuid").toString());
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "nativeLog",
                   [](const juce::Array<juce::var> &args,
                      juce::WebBrowserComponent::NativeFunctionCompletion
@@ -173,7 +189,6 @@ MainComponent::MainComponent()
                     }
                     completion(true);
                   })) {
-
   addAndMakeVisible(web_browser);
 
   web_browser.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());
@@ -189,13 +204,11 @@ void MainComponent::paint(juce::Graphics &g) {
 }
 void MainComponent::resized() { web_browser.setBounds(getLocalBounds()); }
 
-std::optional<juce::WebBrowserComponent::Resource>
-MainComponent::getResource(const juce::String &path) {
+std::optional<juce::WebBrowserComponent::Resource> MainComponent::getResource(
+    const juce::String &path) {
   juce::String cleanPath = path;
-  if (cleanPath.startsWith("/"))
-    cleanPath = cleanPath.substring(1);
-  if (cleanPath.isEmpty())
-    cleanPath = "index.html";
+  if (cleanPath.startsWith("/")) cleanPath = cleanPath.substring(1);
+  if (cleanPath.isEmpty()) cleanPath = "index.html";
 
   // Find UI directory relative to executable (works for deployed app bundles)
   juce::File execFile =
@@ -209,12 +222,10 @@ MainComponent::getResource(const juce::String &path) {
 
   juce::File file = uiDir.getChildFile(cleanPath);
 
-  if (!file.existsAsFile())
-    return std::nullopt;
+  if (!file.existsAsFile()) return std::nullopt;
 
   juce::MemoryBlock mb;
-  if (!file.loadFileAsData(mb))
-    return std::nullopt;
+  if (!file.loadFileAsData(mb)) return std::nullopt;
 
   juce::String mimeType = "text/plain";
   auto ext = file.getFileExtension().toLowerCase();

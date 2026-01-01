@@ -1,6 +1,8 @@
 #include "clip_node.h"
-#include "box_node.h"
+
 #include <juce_audio_basics/juce_audio_basics.h>
+
+#include "box_node.h"
 
 namespace celestrian {
 
@@ -29,6 +31,8 @@ juce::var ClipNode::getMetadata() const {
   }
 
   int64_t Q = getEffectiveQuantum();
+  obj->setProperty("effectiveQuantum", (double)Q);
+
   if (Q > 0 && is_node_recording.load()) {
     obj->setProperty("recordingStartPhase",
                      (double)(trigger_master_position.load() % Q));
@@ -38,15 +42,13 @@ juce::var ClipNode::getMetadata() const {
 }
 
 int64_t ClipNode::getEffectiveQuantum() const {
-  if (parent)
-    return parent->getEffectiveQuantum();
+  if (parent) return parent->getEffectiveQuantum();
   return 0;
 }
 
 void ClipNode::process(const float *const *input_channels,
                        float *const *output_channels, int num_input_channels,
                        int num_output_channels, const ProcessContext &context) {
-
   // Handle PLL Start Anchor
   if (is_pending_start.load()) {
     int64_t Q = getEffectiveQuantum();
@@ -55,10 +57,10 @@ void ClipNode::process(const float *const *input_channels,
     if (Q > 0) {
       int64_t phase = context.master_pos % Q;
       int64_t dist_to_next = Q - phase;
-      int64_t tolerance = (int64_t)(Q * 0.25); // 25% Anticipatory Start
+      int64_t tolerance = (int64_t)(Q * 0.25);  // 25% Anticipatory Start
 
       if (dist_to_next < tolerance) {
-        should_start = false; // Wait for the next boundary
+        should_start = false;  // Wait for the next boundary
       }
     }
 
@@ -69,8 +71,7 @@ void ClipNode::process(const float *const *input_channels,
       // input_latency. Total compensation = input + output latency.
       int64_t compensated_pos =
           context.master_pos - (context.input_latency + context.output_latency);
-      if (compensated_pos < 0)
-        compensated_pos = 0;
+      if (compensated_pos < 0) compensated_pos = 0;
 
       trigger_master_position.store(compensated_pos);
       // Note: anchor_phase will be set AFTER we calculate effective_pos (below)
@@ -99,8 +100,7 @@ void ClipNode::process(const float *const *input_channels,
       // base_width = 200px (1 quantum), base_x = column position
       double base_width = 200.0;
       double base_x = x_pos.load();
-      if (base_x == 0.0)
-        base_x = 100.0;
+      if (base_x == 0.0) base_x = 100.0;
 
       // Calculate EFFECTIVE position = what the user SAW (playhead position)
       // This is LOOP-RELATIVE, not global time. The user's intent is:
@@ -138,7 +138,7 @@ void ClipNode::process(const float *const *input_channels,
 
         // If we're already exactly at Q, snap forward to the NEXT Q
         if (compensated_pos % Q == 0) {
-          next_q_master = compensated_pos; // Already at boundary, start now
+          next_q_master = compensated_pos;  // Already at boundary, start now
         }
 
         // Calculate what the effective_pos will be at that Q boundary
@@ -239,7 +239,7 @@ void ClipNode::process(const float *const *input_channels,
         int64_t start_p = write_position.load();
         write_position.fetch_add(samples_to_write);
         int64_t end_p = write_position.load();
-        live_duration_samples.store(end_p); // Live update for UI visibility
+        live_duration_samples.store(end_p);  // Live update for UI visibility
 
         if (is_awaiting_stop.load()) {
           int64_t target = awaiting_stop_at.load();
@@ -262,13 +262,13 @@ void ClipNode::process(const float *const *input_channels,
     int64_t dur = end - start;
 
     if (dur > 0) {
-      bool isMutedBySolo = (!context.solo_node_uuid.isEmpty());
-      if (isMutedBySolo) {
+      bool isSilenced = is_muted.load() || (!context.solo_node_uuid.isEmpty());
+      if (isSilenced && !is_muted.load()) {
         // Check if we or any ancestor is soloed
         celestrian::AudioNode *curr = this;
         while (curr != nullptr) {
           if (curr->getUuid() == context.solo_node_uuid) {
-            isMutedBySolo = false;
+            isSilenced = false;
             break;
           }
           curr = curr->getParent();
@@ -280,7 +280,7 @@ void ClipNode::process(const float *const *input_channels,
       // launch_point is already calculated as (duration - anchor) % duration
       // so it represents the correct offset to start playback
       int64_t launch = launch_point_samples.load();
-      int64_t offset = launch; // Use launch_point directly - it's the offset
+      int64_t offset = launch;  // Use launch_point directly - it's the offset
 
       for (int i = 0; i < context.num_samples; ++i) {
         // Calculate effective position with launch offset
@@ -290,7 +290,7 @@ void ClipNode::process(const float *const *input_channels,
             (int)((start + effective_pos) % buffer.getNumSamples());
 
         for (int ch = 0; ch < num_output_channels; ++ch) {
-          if (output_channels[ch] != nullptr && !isMutedBySolo) {
+          if (output_channels[ch] != nullptr && !isSilenced) {
             output_channels[ch][i] +=
                 buffer.getReadPointer(0)[current_read_position];
           }
@@ -339,8 +339,7 @@ void ClipNode::stopRecording() {
       if (L < Q / 2) {
         for (int d : {2, 4, 8}) {
           int64_t sub = Q / d;
-          if (sub > L && sub < nextB)
-            nextB = sub;
+          if (sub > L && sub < nextB) nextB = sub;
         }
       }
 
@@ -369,7 +368,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
 
     if (Q > 0 && final_duration <= 0) {
       // Hysteresis Snapping Logic
-      const double HYSTERESIS_THRESHOLD = 0.15; // 15% tolerance
+      const double HYSTERESIS_THRESHOLD = 0.15;  // 15% tolerance
 
       // Find the CLOSEST clean multiple of Q to L (either floor or ceiling)
       // No hard-coded limit - works for any quantum multiple
@@ -380,16 +379,14 @@ void ClipNode::commitRecording(int64_t final_duration) {
       std::vector<int64_t> candidates = {floor_multiple, ceil_multiple};
       for (int d : {2, 4, 8}) {
         int64_t sub = Q / d;
-        if (sub > 0)
-          candidates.push_back(sub);
+        if (sub > 0) candidates.push_back(sub);
       }
 
       int64_t best_B = -1;
       int64_t min_diff = std::numeric_limits<int64_t>::max();
 
       for (int64_t B : candidates) {
-        if (B <= 0)
-          continue;
+        if (B <= 0) continue;
         int64_t diff = std::abs(L - B);
         if (diff < min_diff) {
           min_diff = diff;
@@ -412,7 +409,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
         if (Q > 0) {
           loop_end = (L / Q) * Q;
           if (loop_end == 0)
-            loop_end = Q / 2; // Default subdivision if too short
+            loop_end = Q / 2;  // Default subdivision if too short
         }
 
         loop_start_samples.store(0);
@@ -479,7 +476,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
         ", anchor_phase=" + juce::String(anchor) +
         ", launch_point=" + juce::String(launch_point));
 
-    is_playing.store(true); // Auto-playback after recording stops
+    is_playing.store(true);  // Auto-playback after recording stops
   }
 }
 
@@ -495,11 +492,9 @@ void ClipNode::stopPlayback() { is_playing.store(false); }
 juce::var ClipNode::getWaveform(int num_peaks) const {
   juce::Array<juce::var> peaks;
   int total_samples = (int)duration_samples;
-  if (total_samples <= 0)
-    total_samples = write_position.load();
+  if (total_samples <= 0) total_samples = write_position.load();
 
-  if (total_samples <= 0)
-    return peaks;
+  if (total_samples <= 0) return peaks;
 
   int window_size = std::max(1, total_samples / num_peaks);
   const float *data = buffer.getReadPointer(0);
@@ -519,4 +514,4 @@ juce::var ClipNode::getWaveform(int num_peaks) const {
   return peaks;
 }
 
-} // namespace celestrian
+}  // namespace celestrian

@@ -1,8 +1,9 @@
 #pragma once
 
-#include <atomic>
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
+
+#include <atomic>
 
 namespace celestrian {
 
@@ -36,7 +37,7 @@ enum class NodeType { Clip, Box, Unknown };
  * graph.
  */
 class AudioNode {
-public:
+ public:
   AudioNode(juce::String node_name)
       : node_name(std::move(node_name)), node_uuid(juce::Uuid().toString()) {}
   virtual ~AudioNode() = default;
@@ -82,6 +83,7 @@ public:
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)is_node_recording.load());
+    obj->setProperty("isMuted", (bool)is_muted.load());
     obj->setProperty("anchorPhase", (double)anchor_phase_samples.load());
     obj->setProperty("launchPoint", (double)launch_point_samples.load());
     return juce::var(obj);
@@ -95,12 +97,12 @@ public:
 
   virtual juce::String getNodeTypeString() const {
     switch (getNodeType()) {
-    case NodeType::Clip:
-      return "clip";
-    case NodeType::Box:
-      return "box";
-    default:
-      return "unknown";
+      case NodeType::Clip:
+        return "clip";
+      case NodeType::Box:
+        return "box";
+      default:
+        return "unknown";
     }
   }
 
@@ -124,8 +126,7 @@ public:
   // Quantum Logic
   virtual int64_t getIntrinsicDuration() const = 0;
   virtual int64_t getEffectiveQuantum() const {
-    if (parent)
-      return parent->getEffectiveQuantum();
+    if (parent) return parent->getEffectiveQuantum();
     return 0;
   }
 
@@ -134,12 +135,13 @@ public:
   std::atomic<double> width{200.0}, height{100.0};
 
   // Transport state
-  std::atomic<double> playhead_pos{0.0};         // 0.0 to 1.0 (normalized)
-  std::atomic<int64_t> duration_samples{0};      // Length of the loop
-  std::atomic<int64_t> live_duration_samples{0}; // Live count during recording
+  std::atomic<double> playhead_pos{0.0};          // 0.0 to 1.0 (normalized)
+  std::atomic<int64_t> duration_samples{0};       // Length of the loop
+  std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
   std::atomic<int64_t> loop_start_samples{0};
   std::atomic<int64_t> loop_end_samples{0};
   std::atomic<bool> is_node_recording{false};
+  std::atomic<bool> is_muted{false};
   std::atomic<float> last_block_peak{0.0f};
 
   // Phase-aligned recording: where in the quantum grid this clip was recorded
@@ -149,9 +151,9 @@ public:
 
   AudioNode *parent = nullptr;
 
-protected:
+ protected:
   juce::String node_name;
   juce::String node_uuid;
 };
 
-} // namespace celestrian
+}  // namespace celestrian

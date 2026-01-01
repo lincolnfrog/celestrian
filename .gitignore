@@ -16,6 +16,7 @@
 
 # Debugger Files
 *.pdb
+celestrian_debug.log
 
 # Compiled Dynamic libraries
 *.so

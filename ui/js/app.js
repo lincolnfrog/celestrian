@@ -215,19 +215,34 @@ function syncUI(state) {
         // Apply one-shot styling
         div.classList.toggle('one-shot', isOneShot);
 
-        // Collapsed clip: show waveform ONLY when actually recording or has recorded audio
-        // During pending start = collapsed (waiting for Q)
-        // During pending stop = show waveform (still recording)
+        // Collapsed clip: host waveform area logic
         const isActivelyRecording = node.isRecording && !node.isPendingStart;
-        const hasRecordedAudio = node.duration > 0 && !node.isPendingStart;
+        const hasRecordedAudio = (node.duration || 0) > 10 && !node.isPendingStart;
         const shouldCollapse = !isActivelyRecording && !hasRecordedAudio;
         div.classList.toggle('collapsed', shouldCollapse);
 
         // UI = Data: Position comes directly from C++ data
-        div.style.left = `${node.x}px`;
-        div.style.top = `${node.y}px`;
-        div.style.width = `${displayWidth}px`;
-        div.style.height = `${node.h}px`;
+        div.style.left = `${node.x || 0}px`;
+        div.style.top = `${node.y || 0}px`;
+
+        // Node container width: Match rhythmic duration but NEVER narrower than the header
+        const nodeWidth = Math.max(260, shouldCollapse ? 0 : (displayWidth || 0));
+        div.style.width = isFinite(nodeWidth) ? `${nodeWidth}px` : '260px';
+
+        const headerH = 38;
+        const contentH = Math.max(20, (node.h || 100) - headerH);
+
+        // Final node height depends on collapsed state
+        const finalNodeH = shouldCollapse ? headerH : (node.h || 100);
+        div.style.height = isFinite(finalNodeH) ? `${finalNodeH}px` : '38px';
+
+        // Content width/height
+        const content = div.querySelector('.node-content');
+        if (content) {
+            const cWidth = isFinite(displayWidth) ? displayWidth : 200;
+            content.style.width = `${cWidth}px`;
+            content.style.height = `${contentH}px`;
+        }
 
         maxY = Math.max(maxY, node.y + node.h);
         minX = Math.min(minX, node.x);
@@ -239,6 +254,8 @@ function syncUI(state) {
 
         const playhead = div.querySelector('.playhead');
         playhead.style.left = `${node.playhead * 100}%`;
+        // Ensure visible by default (ghost logic may hide it later)
+        playhead.style.display = node.isPlaying ? 'block' : 'none';
 
         // Loop Handles & Dim Layers
         const dur = node.duration || 1;
@@ -325,11 +342,19 @@ function syncUI(state) {
             playBtn.classList.toggle('active', node.isPlaying);
         }
 
+        const muteBtn = div.querySelector('.node-btn-mute');
+
+        if (muteBtn) {
+            muteBtn.classList.toggle('active', node.isMuted);
+        }
+
         if (soloBtn) {
             // state.soloedId comes from AudioEngine::getGraphState
             const isSoloed = state.soloedId === node.id;
             soloBtn.classList.toggle('active', isSoloed);
         }
+
+        div.classList.toggle('muted', node.isMuted);
 
         // Diagnostic: Log recording state change
         if (node.isRecording !== div._last_rec_state) {
@@ -413,7 +438,8 @@ function syncUI(state) {
     // Show ghosts to fill timeline extent (longest clip determines width)
     let longestDuration = effectiveQ;
     nodes.forEach(n => {
-        if (!n.isRecording && n.duration > longestDuration) {
+        // Include recording nodes so ghosts appear as the recording grows
+        if (n.duration > longestDuration) {
             longestDuration = n.duration;
         }
     });
@@ -439,9 +465,12 @@ function syncUI(state) {
             // Calculate how many ghosts fit in the remaining timeline
             const clipStartX = node.x;
             const remainingWidth = timelineWidth - clipWidth;
-            const numGhosts = Math.floor(remainingWidth / clipWidth);
+            // Use Math.ceil or a small epsilon to ensure we fill the timeline
+            const numGhosts = Math.floor((remainingWidth + 1) / clipWidth);
 
-            console.log(`[Ghost] Clip ${node.id.slice(0, 4)}: clipWidth=${clipWidth}, remainingWidth=${remainingWidth}, numGhosts=${numGhosts}`);
+            if (numGhosts > 0) {
+                console.log(`[Ghost] Clip ${node.id.slice(0, 4)}: clipWidth=${clipWidth}, timelineWidth=${timelineWidth}, numGhosts=${numGhosts}`);
+            }
 
             for (let i = 1; i <= numGhosts && i < 20; i++) {
                 const ghostX = clipStartX + i * clipWidth;
@@ -451,15 +480,116 @@ function syncUI(state) {
                 ghost.style.left = `${ghostX}px`;
                 ghost.style.top = `${node.y}px`;
                 ghost.style.width = `${clipWidth}px`;
+
+                const headerHeight = 42;
+                const contentHeight = Math.max(20, node.h - headerHeight);
                 ghost.style.height = `${node.h}px`;
+
+                // Keep background only for the content part? 
+                // Actually ghosts are just the waveform, so they mimic .node-content
+                ghost.classList.add('node-content');
+                ghost.style.borderTop = '1px solid #334155';
+                ghost.style.borderRadius = '8px';
 
                 // Add faded waveform canvas
                 const canvas = document.createElement('canvas');
                 ghost.appendChild(canvas);
 
                 // Draw the same waveform but faded
-                if (cachedWaveforms.has(node.id)) {
-                    drawWaveform(canvas, cachedWaveforms.get(node.id));
+                if (livePeaks.has(node.id)) {
+                    drawWaveform(canvas, livePeaks.get(node.id));
+                }
+
+                // Ghost Playhead
+                const ghostPlayhead = document.createElement('div');
+                ghostPlayhead.className = 'playhead';
+                ghost.appendChild(ghostPlayhead);
+
+                // Tracking Logic:
+                // Check if global playhead is inside this ghost
+                // Global Master Pos (samples) relative to Node Anchor
+                // We need to convert masterPos to Visual X relative to Node X
+                if (state.masterPos !== undefined && effectiveQ > 0) {
+                    const pixelsPerSameple = baseWidth / effectiveQ; // 200px / Q samples
+
+                    // Node Anchor Phase is where the node starts in the grid relative to Q
+                    // node.x is purely visual based on anchor_phase
+                    // Global Visual Playhead X = (masterPos wrapped?) No, linear.
+                    // We need relative offset:
+                    // deltaSamples = masterPos - (trigger_master_pos ?? implied_start)
+
+                    // Simpler: state.masterPos is global transport.
+                    // node.anchorPhase is local offset.
+                    // We need the "Global Phase" relative to the CLIP's Loop.
+                    // activeIndex = floor((masterPos - anchorAdjusted) / duration)
+                    // Wait, node.anchorPhase is phase within context?
+
+                    // Visual Approach:
+                    // Main Node Start X (visual) = node.x
+                    // Playhead Visual X = (masterPos % (something? No linear)) * scale?
+                    // If we assume linear scrolling... but it's a loop.
+
+                    // Let's use the local 'playhead' (0..1) as the truth.
+                    // If node is playing, the playhead IS valid.
+                    // Which ghost is it in?
+                    // We rely on 'masterPos' effectively.
+
+                    const qSamples = effectiveQ; // Samples per quantum
+                    const clipsPerTimeline = timelineWidth / clipWidth;
+
+                    // Relative Sample Position from the anchor
+                    // anchorPhase is where in the context loop (0..MaxDuration) the clip starts.
+                    // But here we just want to know "Global Time % Timeline Duration"?
+                    // No, simpler:
+                    // The clip repeats every 'node.duration'.
+                    // offset = masterPos - (some zero reference).
+                    // Let's assume Master Pos 0 aligns with Quantum 0.
+                    // Clip Anchor Phase 0 aligns with Quantum 0.
+
+                    // relativePos = (masterPos - node.recordingStartPhase??) 
+                    // Use anchorPhase (which is loop-relative).
+                    // If the timeline is consistent:
+
+                    // We know the Main Node is technically at "Iteration 0" relative to... itself?
+                    // Actually, if we just check if (masterPos % duration) is roughly playhead * duration...
+                    // That doesn't tell us the iteration.
+
+                    // Valid approach: 
+                    // startGlobal = node.recordingStartPhase ?? 0 ? No.
+                    // Let's use the visual position provided by the node. 
+                    // node.x is based on anchor_phase.
+                    // Global Playhead wrapped to Context Loop (e.g. 4Q).
+                    // node.x is within 0..ContextLoopVisual.
+
+                    // Wait, ghost rendering is for "filling timeline extent". 
+                    // Does the timeline imply a linear scroll or a wrapped view?
+                    // User says "longer clips".
+                    // Implies Context Loop logic.
+                    // The "Timeline" is effectively the duration of the LONGEST clip.
+                    // Ghosts fill the Longest Clip.
+
+                    // So:
+                    // contextDuration = longestDuration.
+                    // playheadOffset = (masterPos % contextDuration).
+                    // We want to find which Visual Block (Main or Ghost N) overlaps with `playheadOffset`.
+                    // Main Block X range: [node.x, node.x + node.w] (wrapped?)
+                    // Ghost N X range: [node.x + N*w, ...]
+
+                    // Calculate Global Visual Cursor X relative to Timeline Start (0)
+                    const globalCursorSamples = state.masterPos % longestDuration;
+                    const globalCursorPx = (globalCursorSamples / effectiveQ) * baseWidth;
+
+                    // Check if cursor is in this ghost
+                    // ghostX is relative to container (0..TimelineWidth)
+                    // If (globalCursorPx >= ghostX && globalCursorPx < ghostX + clipWidth)
+                    if (globalCursorPx >= ghostX && globalCursorPx < ghostX + clipWidth) {
+                        ghost.classList.add('active-ghost');
+                        ghostPlayhead.style.left = `${node.playhead * 100}%`;
+
+                        // Hide main node playhead since we are in a ghost
+                        const mainPlayhead = div.querySelector('.playhead');
+                        if (mainPlayhead) mainPlayhead.style.display = 'none';
+                    }
                 }
 
                 nodeLayer.appendChild(ghost);
@@ -528,6 +658,7 @@ function createNodeElement(node) {
             <input class="node-name-input" value="${node.name}" />
             <span class="peak-debug" style="font-size: 9px; color: #10b981; opacity: 0.6; pointer-events: none; width: 44px; text-align: right; padding-right: 4px; font-family: monospace;"></span>
             
+            <div class="node-btn-mute">M</div>
             <div class="node-btn-solo">S</div>
             <div class="node-btn-record">
                 <div class="record-dot"></div>
@@ -568,6 +699,11 @@ function createNodeElement(node) {
     div.querySelector('.node-btn-play').onmousedown = (e) => {
         e.stopPropagation();
         togglePlay(node.id);
+    };
+
+    div.querySelector('.node-btn-mute').onmousedown = (e) => {
+        e.stopPropagation();
+        callNative('toggleMute', { uuid: node.id });
     };
 
     div.querySelector('.node-btn-solo').onmousedown = (e) => {
