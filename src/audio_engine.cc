@@ -230,7 +230,14 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                        num_input_channels, num_output_channels, pc);
 
     if (is_playing_global.load()) {
-      global_transport_pos += num_samples;
+      // LCM Timeline: Wrap transport at the LCM of all clip durations
+      // This ensures all clips reach 0% simultaneously when timeline completes
+      int64_t timeline_length = calculateTimelineLength();
+      int64_t new_pos = global_transport_pos.load() + num_samples;
+      if (timeline_length > 0) {
+        new_pos = new_pos % timeline_length;
+      }
+      global_transport_pos.store(new_pos);
     }
   }
 }
@@ -270,4 +277,46 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
         "AudioEngine: Mute toggled for " + uuid +
         " (New State: " + juce::String(newState ? "true" : "false") + ")");
   }
+}
+
+// --- LCM Timeline Helpers ---
+
+namespace {
+int64_t gcd(int64_t a, int64_t b) {
+  while (b != 0) {
+    int64_t t = b;
+    b = a % b;
+    a = t;
+  }
+  return a;
+}
+
+int64_t lcm(int64_t a, int64_t b) {
+  if (a == 0 || b == 0) return std::max(a, b);
+  return (a / gcd(a, b)) * b;
+}
+}  // namespace
+
+int64_t AudioEngine::calculateTimelineLength() const {
+  if (!focused_node) {
+    return 44100;  // Default 1 second at 44.1kHz
+  }
+
+  int64_t quantum = focused_node->getEffectiveQuantum();
+  if (quantum <= 0) quantum = 44100;
+
+  int64_t result = quantum;  // Start with quantum as base
+
+  // Calculate LCM of all children's durations
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+    for (int i = 0; i < box->getNumChildren(); ++i) {
+      auto *child = box->getChild(i);
+      int64_t dur = child->getIntrinsicDuration();
+      if (dur > 0) {
+        result = lcm(result, dur);
+      }
+    }
+  }
+
+  return result;
 }

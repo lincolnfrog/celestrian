@@ -101,6 +101,10 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
                                         const juce::String &uuid);
 
+  // LCM Timeline: Calculate the length at which the timeline wraps
+  // Returns LCM of all clip durations in focused_node
+  int64_t calculateTimelineLength() const;
+
   juce::AudioDeviceManager device_manager;
 
   // The root of the hierarchical audio graph

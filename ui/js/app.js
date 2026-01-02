@@ -188,24 +188,30 @@ function syncUI(state) {
         }
 
         // Calculate dynamic width based on clip duration relative to quantum
-        // First clip (or during first recording): use base width
-        // Subsequent clips: scale proportionally to quantum
+        // Dual-mode rendering per docs/implementation.md Section 7:
+        // - Pre-quantum: Fixed canvas (200px), compressing waveform
+        // - Post-quantum: Growing canvas from 0, stable waveform
         let displayWidth = node.w;
+        const isPreQuantum = effectiveQ <= 1;  // Q not yet established
 
         if (node.isRecording) {
-            // During recording: width grows based on recorded samples
-            if (effectiveQ > 1) {
-                const recordedDuration = node.duration || 0;
-                // Width grows from min 20px as recording progresses
-                displayWidth = Math.max(20, (recordedDuration / effectiveQ) * baseWidth);
+            if (isPreQuantum) {
+                // PRE-QUANTUM: Fixed canvas, waveform compresses to fit
+                displayWidth = baseWidth;
             } else {
-                displayWidth = baseWidth; // First clip: stay at base width
+                // POST-QUANTUM: Canvas grows from 0, peaks stay fixed
+                const recordedDuration = node.duration || 0;
+                displayWidth = (recordedDuration / effectiveQ) * baseWidth;
+                // Note: No Math.max - true zero width is acceptable
             }
-        } else if (node.duration > 0 && effectiveQ > 1) {
-            // After recording: scale based on final duration
-            displayWidth = Math.max(baseWidth, (node.duration / effectiveQ) * baseWidth);
+        } else if (node.duration > 0 && !isPreQuantum) {
+            // After recording (post-quantum): scale based on final duration
+            displayWidth = (node.duration / effectiveQ) * baseWidth;
+        } else if (node.duration > 0) {
+            // After recording (pre-quantum clip that established Q): use baseWidth
+            displayWidth = baseWidth;
         } else {
-            // New clip or collapsed: use base width (CSS hides content anyway)
+            // New clip or collapsed: use base width
             displayWidth = baseWidth;
         }
 
@@ -365,26 +371,35 @@ function syncUI(state) {
         }
 
         if (node.isRecording) {
-            // Live waveform: Always show from index 0 and grow linearly.
-            // Phase alignment is handled by C++ rotation AFTER recording completes,
-            // so the live view shows the raw recording progress.
+            // Live waveform: Dual-mode peak allocation
             const recordedSamples = node.duration || 0;
-            const Q = node.effectiveQuantum || recordedSamples || 1;
-            const numPeaksPerQ = 400;
 
-            // Calculate index based on how much we've recorded
-            const index = Math.floor((recordedSamples / Q) * numPeaksPerQ);
+            // DUAL MODE:
+            // - First clip (Q not established): Use fixed rate for stable performance
+            // - Subsequent clips (Q established): Use Q-based rate for visual alignment
+            let samplesPerPeak;
+            if (effectiveQ > 1) {
+                // Q is established from previous clip - use it for stable visual alignment
+                // 400 peaks per Q = 2 peaks per pixel at baseWidth (200px per Q)
+                samplesPerPeak = effectiveQ / 400;
+            } else {
+                // First clip - use fixed rate for performance
+                samplesPerPeak = 110; // ~400 peaks/sec at 44.1kHz
+            }
+
+            // Calculate index based on fixed samples-per-peak rate
+            const index = Math.floor(recordedSamples / samplesPerPeak);
             const requiredSize = index + 1;
 
             if (!livePeaks.has(node.id)) {
-                livePeaks.set(node.id, new Array(Math.max(requiredSize, numPeaksPerQ)).fill(0.01));
+                livePeaks.set(node.id, new Array(Math.max(requiredSize, 400)).fill(0.01));
             }
 
             const peaks = livePeaks.get(node.id);
 
-            // Grow array if needed
+            // Grow array if needed (in chunks of 400 to reduce reallocation)
             if (peaks.length < requiredSize) {
-                const newSize = Math.max(requiredSize, peaks.length + numPeaksPerQ);
+                const newSize = Math.max(requiredSize, peaks.length + 400);
                 while (peaks.length < newSize) {
                     peaks.push(0.01);
                 }
@@ -396,17 +411,25 @@ function syncUI(state) {
                 peaks[index] = Math.max(peaks[index] || 0.01, p);
             }
 
-            drawWaveform(div.querySelector('.node-waveform'), peaks);
+            // CRITICAL FIX: Only pass peaks up to current index to renderer.
+            // Passing the full array (with pre-allocated empty slots) causes
+            // the renderer to stretch peaks, making them appear to "drift".
+            const validPeaks = peaks.slice(0, index + 1);
 
-            // Show quantum grid marks during recording
-            // Marks at each Q boundary, positioned as percentage of current width
+            // DUAL-MODE STEP:
+            // - Pre-quantum: Pass null (renderer calculates dynamic step -> compression)
+            // - Post-quantum: Fixed step (0.5 px/peak) for stable peak positions
+            const fixedStep = (effectiveQ > 1) ? (baseWidth / 400) : null;
+            drawWaveform(div.querySelector('.node-waveform'), validPeaks, fixedStep);
+
+            // Show quantum grid marks during recording (only if Q is established)
             const content = div.querySelector('.node-content');
             div.querySelectorAll('.recording-grid-mark').forEach(m => m.remove());
-            if (Q > 0 && recordedSamples > 0) {
-                const numQsRecorded = Math.floor(recordedSamples / Q);
+            if (effectiveQ > 1 && recordedSamples > 0) {
+                const numQsRecorded = Math.floor(recordedSamples / effectiveQ);
                 for (let i = 1; i <= numQsRecorded && i < 20; i++) {
                     // Mark at Q boundary i, positioned as percentage of recorded length
-                    const markPct = (i * Q / recordedSamples) * 100;
+                    const markPct = (i * effectiveQ / recordedSamples) * 100;
                     const mark = document.createElement('div');
                     mark.className = 'recording-grid-mark snap-point-grid';
                     mark.style.left = `${markPct}%`;
@@ -445,13 +468,15 @@ function syncUI(state) {
             longestDuration = n.duration;
         }
     });
-
     // Stabilize timeline width: Round up to next full quantum to avoid jitter while recording
-    const timelineQuantums = Math.ceil((longestDuration || effectiveQ) / effectiveQ);
+    // CRITICAL FIX: If effectiveQ is not established (first recording), use longestDuration as Q
+    // to prevent timeline from exploding (e.g., 40960 samples / 1 = 40960 quantums = 8M pixels!)
+    const stableQ = (effectiveQ > 1) ? effectiveQ : (longestDuration || baseWidth);
+    const timelineQuantums = Math.ceil((longestDuration || stableQ) / stableQ);
     const timelineWidth = timelineQuantums * baseWidth;
 
     // DEBUG: Log timeline calculation  
-    log(`[Timeline] longestDur=${longestDuration}, effectiveQ=${effectiveQ}, timelineWidth=${timelineWidth}`);
+    log(`[Timeline] longestDur=${longestDuration}, effectiveQ=${effectiveQ}, stableQ=${stableQ}, timelineWidth=${timelineWidth}`);
 
     // Clean up old ghosts
     nodeLayer.querySelectorAll('.ghost-clip').forEach(g => g.remove());
@@ -871,7 +896,10 @@ export async function fetchWaveform(id) {
 
     try {
         log(`Fetching static waveform for ${id}...`);
-        const peaks = await callNative('getWaveform', id, 200);
+        // Fix Waveform Drift: Request peaks based on actual pixel width to maintain 1:1 resolution
+        // and prevent "stretching" artifacts as the clip grows.
+        const width = parseFloat(div.querySelector('.node-content').style.width) || 200;
+        const peaks = await callNative('getWaveform', id, Math.ceil(width));
         if (peaks && peaks.length > 0) {
             livePeaks.set(id, peaks);
             log(`Fetched ${peaks.length} peaks for ${id}`);

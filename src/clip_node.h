@@ -68,10 +68,11 @@ class ClipNode : public AudioNode {
    */
   void stopPlayback();
 
-  bool isRecording() const { return is_recording.load(); }
+  bool isRecording() const override { return is_recording.load(); }
   bool isPlaying() const { return is_playing.load(); }
   bool isPendingStart() const { return is_pending_start.load(); }
   bool isAwaitingStop() const { return is_awaiting_stop.load(); }
+  int64_t getCommitMasterPos() const { return commit_master_pos.load(); }
 
   /**
    * Returns the total recorded sample count in the buffer.
@@ -106,11 +107,14 @@ class ClipNode : public AudioNode {
   std::atomic<int64_t> awaiting_start_at{
       0};  // When to actually start recording
   std::atomic<int64_t> awaiting_stop_at{0};
+  std::atomic<int64_t> commit_master_pos{
+      0};  // Master pos when recording commits
 
   double sample_rate;
   std::atomic<float> current_max_peak{0.0f};
 
   int preferred_input_channel = 0;
+  mutable bool debug_playback_logged_ = false;  // DEBUG: One-time playback log
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipNode)
 };

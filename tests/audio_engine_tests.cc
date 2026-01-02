@@ -1,12 +1,13 @@
+#include <juce_core/juce_core.h>
+
 #include "../src/audio_engine.h"
 #include "../src/box_node.h"
 #include "../src/clip_node.h"
-#include <juce_core/juce_core.h>
 
 namespace celestrian {
 
 class AudioEngineTests : public juce::UnitTest {
-public:
+ public:
   AudioEngineTests() : juce::UnitTest("AudioEngine", "Audio Engine") {}
 
   void runTest() override {
@@ -83,7 +84,7 @@ public:
                        .toString(),
                    uuid);
 
-      engine.toggleSolo(uuid); // Toggle off
+      engine.toggleSolo(uuid);  // Toggle off
       expect(engine.getGraphState()
                  .getDynamicObject()
                  ->getProperty("soloedId")
@@ -124,9 +125,88 @@ public:
       expect(!nodeDataStop->getProperty("isPlaying"),
              "Should NOT be playing after togglePlay");
     }
+
+    // --- LCM Timeline Tests ---
+
+    beginTest("LCM Timeline: Basic LCM Calculation");
+    {
+      // Test that 1Q + 4Q = 4Q LCM
+      int64_t Q = 44100;
+      int64_t clip1_dur = Q;
+      int64_t clip2_dur = 4 * Q;
+
+      // Manual LCM calculation
+      auto gcd = [](int64_t a, int64_t b) -> int64_t {
+        while (b != 0) {
+          int64_t t = b;
+          b = a % b;
+          a = t;
+        }
+        return a;
+      };
+      auto lcm = [&gcd](int64_t a, int64_t b) -> int64_t {
+        return (a / gcd(a, b)) * b;
+      };
+
+      expectEquals(lcm(clip1_dur, clip2_dur), (int64_t)(4 * Q));
+      expectEquals(lcm(Q, 8 * Q), (int64_t)(8 * Q));
+      expectEquals(lcm(3 * Q, 5 * Q), (int64_t)(15 * Q));  // Coprime
+    }
+
+    beginTest("LCM Timeline: 1Q + 4Q Synchronization");
+    {
+      int64_t Q = 44100;
+      int64_t timeline_length = 4 * Q;  // LCM of 1Q and 4Q
+
+      // At position 0: both clips at 0%
+      int64_t pos = 0;
+      int64_t clip1_launch = 0;
+      int64_t clip2_launch = 0;
+
+      int64_t clip1_phase = (pos + clip1_launch) % Q;
+      int64_t clip2_phase = (pos + clip2_launch) % (4 * Q);
+
+      expectEquals(clip1_phase, (int64_t)0);
+      expectEquals(clip2_phase, (int64_t)0);
+
+      // At position 2Q: clip1 at 0%, clip2 at 50%
+      pos = 2 * Q;
+      clip1_phase = (pos + clip1_launch) % Q;
+      clip2_phase = (pos + clip2_launch) % (4 * Q);
+
+      expectEquals(clip1_phase, (int64_t)0);        // 2Q % 1Q = 0
+      expectEquals(clip2_phase, (int64_t)(2 * Q));  // 2Q % 4Q = 2Q
+
+      // At position 4Q (wrapped to 0): both at 0%
+      pos = 4 * Q % timeline_length;
+      clip1_phase = (pos + clip1_launch) % Q;
+      clip2_phase = (pos + clip2_launch) % (4 * Q);
+
+      expectEquals(pos, (int64_t)0);
+      expectEquals(clip1_phase, (int64_t)0);
+      expectEquals(clip2_phase, (int64_t)0);
+    }
+
+    beginTest("LCM Timeline: Example 2 - Clip at 2Q Offset");
+    {
+      int64_t Q = 44100;
+      int64_t clip3_duration = 8 * Q;
+      int64_t clip3_launch_point =
+          6 * Q;  // Recorded at 2Q: (8Q - 2Q) % 8Q = 6Q
+
+      // At timeline=2Q: Clip 3 should be at phase 0 (aligned with recording!)
+      int64_t pos = 2 * Q;
+      int64_t phase = (pos + clip3_launch_point) % clip3_duration;
+      expectEquals(phase, (int64_t)0);
+
+      // At timeline=0: Clip 3 should be at phase 6Q (75%)
+      pos = 0;
+      phase = (pos + clip3_launch_point) % clip3_duration;
+      expectEquals(phase, (int64_t)(6 * Q));
+    }
   }
 };
 
 static AudioEngineTests audioEngineTests;
 
-} // namespace celestrian
+}  // namespace celestrian

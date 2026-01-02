@@ -107,6 +107,10 @@ Clip 2:    [██████████████████████�
 
 ---
 
+### Invariants
+1. **Perceptual Alignment**: Clips must ALWAYS play back such that they align with what the performer heard while recording. If I record starting at "Phrase A", playback must start with "Phrase A" aligned to that same musical moment.
+2. **Visual Stability**: Clips should not "jump" visually when recording ends. If a clip is recorded starting at the beginning of the context (0Q), it should remain anchored at 0Q, even if its internal phase differs from the global transport.
+
 ### Example 2: Mid-Loop Recording (Core Example)
 The canonical example demonstrating phase alignment:
 ```
@@ -118,14 +122,13 @@ Clip 3:          [████████████████████�
 ```
 **Key points:**
 - Clip 3 recorded when playhead was at 2Q position in the 4Q context
-- X-offset = 2 quantums × 200px = 400px
+- X-offset = 2 quantums × 200px = 400px (Matches alignment relative to context)
 - **launch_point = (8Q - 2Q) % 8Q = 6Q** 
 - When master=0, Clip 3 plays from 6Q position
 - When master=2Q, Clip 3 is at position 0 (**aligned with recording!**)
 
----
-
-### Example 3: One-Shot at 3Q
+**Note on Buffer Rotation:**
+In cases where the `visual_start` (determined by context) differs from the `audio_phase` (determined by global transport), the audio buffer must be **rotated** to align the waveform with the playhead. For example, if recording starts at Global 14Q (Phase 2 of 4Q) but context implies Visual 0Q, we capture at Phase 2 but display at Phase 0. To align, we rotate buffer so "Start Audio" moves to "Phase 2".
 Short clip recorded mid-timeline, doesn't fill context:
 ```
 Timeline:  |----Q----|----Q----|----Q----|----Q----|
@@ -197,27 +200,112 @@ If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 
 
 ---
 
-## Implementation Checklist
+## LCM-Based Timeline Model
 
-### Data Model
-- [x] Store raw `trigger_master_pos` as `anchor_phase_samples`
-- [ ] Add `is_one_shot` flag (or derive from anchor vs duration)
-- [ ] Add `user_color` property for clip customization
+### The Problem with Global Time
+A naive implementation uses a "global clock" that counts up forever (0, 1, 2, 3...). Each clip calculates its playhead as `(global_time + offset) % clip_duration`. This creates synchronization problems:
 
-### X-Offset Calculation
-- [ ] Calculate X-offset: `floor((anchor % max(dur, Q)) / Q) * baseWidth`
-- [ ] Apply offset during AND after recording
+- A 1Q clip and 4Q clip have different loop periods
+- When you stop recording at an arbitrary global time, your new clip's playhead won't be at 0%
+- The clips drift apart visually
 
-### Playback
-- [ ] Detect one-shot: `anchor_phase % duration > duration - Q`
-- [ ] Calculate launch_point for aligned playback
-- [ ] One-shots: trigger only when master reaches anchor position
+### The Solution: LCM Timeline
 
-### Visual
-- [ ] Render ghost repetitions (faded waveform + quantum markers)
-- [ ] Dashed border for one-shot clips
-- [ ] Ghosts extend only where clip will actually play
-- [ ] Convert one-shot to loop: bi-directional ghosts
+The timeline wraps at the **Least Common Multiple (LCM)** of all clip durations. This ensures:
+
+1. **All clips reach 0% simultaneously** when the timeline completes a full cycle
+2. **Each clip loops at its own rate** (1Q loops 4 times while 4Q loops once)
+3. **No infinite global time** - the range is bounded by LCM
+
+### Mathematical Foundation
+
+```
+timeline_length = LCM(duration_1, duration_2, ..., duration_n)
+current_position = global_transport % timeline_length
+clip_i_phase = (current_position + launch_point_i) % duration_i
+clip_i_playhead = clip_i_phase / duration_i
+```
+
+### Example: 1Q + 4Q Clips
+
+```
+Durations: 1Q, 4Q
+LCM = 4Q (timeline loops every 4Q)
+
+Timeline:  |----Q----|----Q----|----Q----|----Q----|  (wraps to 0)
+Clip 1:    [████████][████████][████████][████████]   (1Q × 4 = 4Q)
+Clip 2:    [████████████████████████████████████████]   (4Q × 1 = 4Q)
+
+At position 0Q: Clip 1 = 0%, Clip 2 = 0%
+At position 1Q: Clip 1 = 0%, Clip 2 = 25%
+At position 2Q: Clip 1 = 0%, Clip 2 = 50%
+At position 3Q: Clip 1 = 0%, Clip 2 = 75%
+At position 4Q → 0Q: Both reset to 0%
+```
+
+### Example: 1Q + 4Q + 8Q Clips (Example 2 Extended)
+
+```
+Durations: 1Q, 4Q, 8Q
+LCM = 8Q
+
+Timeline:  |--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|  (wraps to 0)
+Clip 1:    [████][████][████][████][████][████][████][████]  (1Q × 8)
+Clip 2:    [████████████████][████████████████]              (4Q × 2)
+Clip 3:          [██████████████████████████████████████████████]  (8Q @ 2Q offset)
+
+Clip 3 has launch_point = 6Q (from Example 2):
+- At timeline=2Q: Clip 3 phase = (2 + 6) % 8 = 0 (aligned with recording!)
+- At timeline=0Q: Clip 3 phase = (0 + 6) % 8 = 6Q = 75%
+```
+
+### The User's Bug Case (Fixed!)
+
+```
+Durations: 1Q (Clip 1), 4Q (Clip 2)
+LCM = 4Q
+
+Clip 2 recorded when Clip 1 was at position 0 (trigger % context = 0)
+→ ideal_anchor = 0
+→ launch_point = (4Q - 0) % 4Q = 0
+→ x_pos = 0
+
+At timeline=0: Clip 2 phase = (0 + 0) % 4Q = 0 = 0%  ✓
+At timeline=2Q: Clip 2 phase = (2Q + 0) % 4Q = 2Q = 50%
+
+When you stop recording at timeline=6Q:
+→ Current position = 6Q % 4Q = 2Q (within LCM cycle)
+→ Clip 2 playhead = 50%
+→ But timeline CONTINUES and at 8Q (= 0 mod LCM), Clip 2 resets to 0%!
+```
+
+### Implementation Requirements
+
+1. **Calculate Timeline Length**:
+   ```cpp
+   int64_t timeline_length = LCM(all_clip_durations);
+   ```
+
+2. **Wrap Global Transport**:
+   ```cpp
+   global_transport_pos = global_transport_pos % timeline_length;
+   ```
+
+3. **Recalculate LCM When Clips Change**:
+   - When a new clip is added
+   - When a clip's duration changes
+   - When a clip is deleted
+
+### Edge Cases
+
+| Scenario | LCM | Behavior |
+|----------|-----|----------|
+| Single 1Q clip | 1Q | Loops every quantum |
+| 1Q + 4Q | 4Q | 1Q loops 4×, 4Q loops 1× |
+| 3Q + 5Q | 15Q | Large cycle, rare full reset |
+| Prime durations | product | Very large LCM |
+
+> **Note**: For very long LCMs (e.g., clips with coprime durations), we may want to warn the user or offer a "force sync" option.
 
 ---
 
@@ -227,3 +315,4 @@ If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 
 - Add a setting to disable the auto-snap-to-next-Q behavior
 - Use case: user needs precise control for overdubs or non-loop-aligned recordings
 - Could be a per-clip toggle or global setting
+

@@ -164,6 +164,7 @@ void ClipNode::process(const float *const *input_channels,
           is_pending_start.store(false);
           is_recording.store(true);
           is_node_recording.store(true);
+          trigger_master_position.store(next_q_master);  // Capture start time
           write_position.store(0);
           live_duration_samples.store(0);
           juce::Logger::writeToLog(
@@ -181,6 +182,8 @@ void ClipNode::process(const float *const *input_channels,
         is_pending_start.store(false);
         is_recording.store(true);
         is_node_recording.store(true);
+        trigger_master_position.store(
+            compensated_pos);  // Capture start time (immediate)
         write_position.store(0);
         live_duration_samples.store(0);
         juce::Logger::writeToLog("ClipNode: Recording Started at master_pos=" +
@@ -200,6 +203,7 @@ void ClipNode::process(const float *const *input_channels,
         awaiting_start_at.store(0);
         is_recording.store(true);
         is_node_recording.store(true);
+        trigger_master_position.store(target);  // Capture start time (delayed)
         write_position.store(0);
         live_duration_samples.store(0);
         juce::Logger::writeToLog(
@@ -244,12 +248,14 @@ void ClipNode::process(const float *const *input_channels,
         if (is_awaiting_stop.load()) {
           int64_t target = awaiting_stop_at.load();
           if (start_p < target && end_p >= target) {
+            commit_master_pos.store(context.master_pos);
             commitRecording(target);
             is_awaiting_stop.store(false);
             return;
           }
         }
       } else {
+        commit_master_pos.store(context.master_pos);
         commitRecording();
       }
     }
@@ -281,6 +287,17 @@ void ClipNode::process(const float *const *input_channels,
       // so it represents the correct offset to start playback
       int64_t launch = launch_point_samples.load();
       int64_t offset = launch;  // Use launch_point directly - it's the offset
+
+      // DEBUG: Log first playback frame for this clip only
+      if (!debug_playback_logged_) {
+        debug_playback_logged_ = true;
+        juce::Logger::writeToLog(
+            "PLAYBACK DEBUG [" + getName() +
+            "]: master=" + juce::String(context.master_pos) +
+            ", launch=" + juce::String(launch) + ", dur=" + juce::String(dur) +
+            ", effective_pos=" +
+            juce::String((context.master_pos + offset) % dur));
+      }
 
       for (int i = 0; i < context.num_samples; ++i) {
         // Calculate effective position with launch offset
@@ -427,29 +444,163 @@ void ClipNode::commitRecording(int64_t final_duration) {
       loop_end_samples.store(duration);
     } else {
       // No quantum or fallback
-      loop_start_samples.store(0);
       loop_end_samples.store(duration);
     }
 
-    duration_samples.store(duration);
+    duration_samples.store(
+        duration);  // CRITICAL: Store final duration so UI knows clip is valid!
 
-    // Launch point calculation for Audio Memory alignment
-    // Formula: (duration - anchor) % duration
-    // This ensures playback is aligned with what the user heard during
-    // recording. Example 2: 8Q clip recorded at 2Q (Anchor=2Q) launch_point =
-    // (8Q - 2Q) % 8Q = 6Q
-    int64_t anchor = anchor_phase_samples.load();
-    int64_t launch_point = (duration > 0 && anchor > 0)
-                               ? (duration - (anchor % duration)) % duration
-                               : 0;
+    // 1. Determine Context Loop (siblings) to find preferred Visual Position
+    // note: Q is already defined at top of function
+    int64_t context_loop = (Q > 0) ? Q : 1;
+
+    // Find longest sibling to define the context grid
+    if (parent != nullptr) {
+      if (auto *box = dynamic_cast<BoxNode *>(parent)) {
+        for (int i = 0; i < box->getNumChildren(); ++i) {
+          auto *sibling = box->getChild(i);
+          // Use generic AudioNode interface (NO CASTING)
+          if (sibling != this && !sibling->isRecording()) {
+            int64_t sd = sibling->getIntrinsicDuration();
+            if (sd > context_loop) context_loop = sd;
+          }
+        }
+      }
+    }
+
+    // 2. Calculate Preferred Visual Position (based on Context)
+    // Example: Trigger=14Q. Context=1Q. Ideal X = 14%1 = 0Q.
+    // Example: Trigger=2Q. Context=4Q. Ideal X = 2%4 = 2Q.
+    int64_t trigger_pos = trigger_master_position.load();
+    int64_t ideal_anchor =
+        (context_loop > 0) ? (trigger_pos % context_loop) : 0;
+
+    // 3. Calculate Audio Phase (based on LCM Context)
+    // Per LCM model: anchor is ALWAYS relative to context_loop, not self
+    // duration. With 1Q context, any trigger_pos % 1Q = 0. Clip MUST anchor at
+    // 0Q.
+    int64_t audio_anchor =
+        (context_loop > 0) ? (trigger_pos % context_loop) : 0;
+
+    // 4. Resolve Mismatch via Buffer Rotation
+    // If Visual desires 0 but Audio is at 2, we must Rotate Buffer by -2
+    // so that "Audio Start" moves to "Visual 2" (Middle).
+    // Wait... If Visual is 0. Cursor at 2Q (Global).
+    // Cursor matches Audio Phase (2Q).
+    // So if we don't rotate, Cursor (at Middle) plays Audio (at Middle).
+    // But Audio Middle IS Start of Recording.
+    // So we hear Start.
+    // So NO ROTATION needed if we trust the Global Cursor position?
+    // BUT User wants "Clip 2 starts at 0Q".
+    // If x=0. Cursor at 2Q.
+    // User sees Cursor at Middle. Hears Start.
+    // This is CORRECT operationally.
+    // So we just need to enforce x_pos = ideal_anchor.
+
+    // 4. Resolve Mismatch via Buffer Rotation
+    // If Visual desires 0 but Audio is at 2, we must Rotate Buffer by -2
+    // so that "Audio Start" moves to "Visual 2" (Middle).
+
+    // Check if we need rotation
+    // Mismatch exists if (ideal_anchor % duration) != (audio_anchor %
+    // duration) Note: ideal_anchor is based on Context, audio_anchor on Self
+    // Duration. We only rotate if the visual placement implies a different
+    // START point within the loop.
+
+    // For User Case: ideal=0. audio=2.
+    // If x=0. Cursor at 2Q.
+    // If we DON'T rotate: At 2Q Global, we read 2Q Local.
+    // 2Q Local = Middle of buffer.
+    // But we want to hear Start of buffer (Audio Phase Match).
+    // So "Start of Buffer" must move to "2Q Local".
+    // This is a rotation of +2Q (Right shift) or -2Q (Left shift)?
+    // Index 2 should contain Old Index 0.
+    // So New[2] = Old[0].
+
+    bool rotated = false;
+
+    // In User Case (x=0, master=2), the visual cursor is at 2.
+    // The Audio Engine reads at index 2.
+    // We want index 2 to contain the Start of Audio (Old Index 0).
+    // So we need to SHIFT the buffer contents such that 0 moves to 2.
+    // New[i] = Old[i - 2].
+    // This is a RIGHT SHIFT by `audio_anchor`.
+
+    int64_t final_anchor = audio_anchor;  // Initialize final_anchor
+
+    if (audio_anchor != 0) {
+      // Only rotate if we are forcing a visual override (x=0) that mismatches
+      // actual phase If x was 2Q (ideal_anchor=2), then Global Cursor at 2Q
+      // matches Local 0Q? No. If x=2Q. Cursor at 4Q?
+
+      // Let's stick to the invariant:
+      // "Perceptual Alignment".
+      // We assume App renders Cursor at `(Master % Dur)`.
+      // At Start Time, Master % Dur = 2.
+      // So Cursor is at Index 2.
+      // We MUST hear Start Audio at Index 2.
+      // So Start Audio (Old 0) must move to Index 2.
+      // Rotation = +2.
+
+      int64_t rotation = audio_anchor;
+
+      if (rotation > 0 && rotation < duration) {
+        juce::AudioBuffer<float> temp;
+        temp.makeCopyOf(buffer);
+
+        // Rotate: New[i] = Old[i - rotation]
+        // Part A: [0..rotation-1] comes from End of buffer
+        // Part B: [rotation..end] comes from Start of buffer
+
+        int64_t partA_len = rotation;
+        int64_t partB_len = duration - rotation;
+
+        // Copy Part B (Old Start) to New [rotation]
+        buffer.copyFrom(0, rotation, temp.getReadPointer(0), partB_len);
+        // Copy Part A (Old End) to New [0]
+        buffer.copyFrom(0, 0, temp.getReadPointer(0, partB_len), partA_len);
+
+        rotated = true;
+
+        juce::Logger::writeToLog("ClipNode: Rotated buffer by " +
+                                 juce::String(rotation) + " samples.");
+
+        // Reset phases because we physically moved the audio
+        final_anchor = 0;
+      }
+    }
+
+    // Visual Position adheres to Context Grid (USER REQUEST)
+    if (Q > 0) {
+      // Quantize ideal anchor to Q
+      int64_t offset_units = ideal_anchor / Q;
+      x_pos.store(offset_units * 200.0);
+    } else {
+      x_pos.store(0.0);
+    }
+
+    // 5. Update Anchor/Launch Point to match AUDIO Reality
+    // Anchor represents the phase offset of the content relative to Global 0
+    anchor_phase_samples.store(final_anchor);
+
+    // FIX: Calculate launch_point so that at commit_master_pos, effective_pos =
+    // 0 This ensures the clip starts at 0% immediately upon commit. Formula:
+    // effective_pos = (master + launch) % dur = 0
+    //          launch = (dur - master % dur) % dur
+    int64_t current_pos = commit_master_pos.load();
+    int64_t launch_point =
+        (duration > 0) ? (duration - (current_pos % duration)) % duration : 0;
     launch_point_samples.store(launch_point);
 
     juce::Logger::writeToLog(
-        "ClipNode: Recording committed. Duration=" + juce::String(duration) +
-        ", anchor_phase=" + juce::String(anchor) +
-        ", launch_point=" + juce::String(launch_point));
+        "ClipNode: Commit. Duration=" + juce::String(duration) +
+        ", StartTime=" + juce::String(trigger_pos) +
+        ", IdealX=" + juce::String(ideal_anchor) +
+        ", AudioPhase=" + juce::String(audio_anchor) +
+        ", Rotated=" + juce::String(rotated ? "YES" : "NO") +
+        ", FinalAnchor=" + juce::String(final_anchor));
 
-    is_playing.store(true);  // Auto-playback after recording stops
+    is_playing.store(true);
   }
 }
 

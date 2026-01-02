@@ -1,8 +1,8 @@
 # Celestrian Technical Learnings & Reference
 
-This document captures technical insights, "gotchas", and debugging strategies discovered during development.
-
-> **LOG ACCESS**: The agent has access to `celestrian_debug.log` and `celestrian_state.json` in the project root. Always check these when debugging! Use `tail -100 celestrian_debug.log` and `cat celestrian_state.json`.
+This document captures technical insights, "gotchas", and debugging strategies- **Use `log()` for Debugging**: In JS, always use `log()` instead of `console.log()` to ensure output writes to `celestrian_debug.log`.
+- **Generic AudioNode Abstraction**: Logic should be generic on `AudioNode`. Avoid casting to `ClipNode` or `BoxNode` unless absolutely necessary. Arbitrary nesting (Box containing Boxes) is a core requirement.
+- **State Dumps**: Use the "📦 Dump State" button in the UI (or `getGraphState()` in C++) to inspect the full JSON tree of the session for debugging.! Use `tail -100 celestrian_debug.log` and `cat celestrian_state.json`.
 
 # Technology & Logic
 

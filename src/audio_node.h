@@ -74,7 +74,7 @@ class AudioNode {
     obj->setProperty("w", (double)width.load());
     obj->setProperty("h", (double)height.load());
     obj->setProperty("currentPeak", (float)last_block_peak.load());
-    if (is_node_recording.load())
+    if (isRecording())
       obj->setProperty("duration", (double)live_duration_samples.load());
     else
       obj->setProperty("duration", (double)duration_samples.load());
@@ -105,6 +105,8 @@ class AudioNode {
         return "unknown";
     }
   }
+
+  virtual bool isRecording() const { return is_node_recording.load(); }
 
   /**
    * Returns the latest peak sample level for real-time visualization.
