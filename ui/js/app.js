@@ -602,7 +602,8 @@ function syncUI(state) {
         }
 
         // Update position only if meaningfully changed to avoid jitter/flicker
-        const nextLeft = `${stackX + 84}px`;
+        // Align with left edge of stack (includes VISUAL_OFFSET)
+        const nextLeft = `${stackX + VISUAL_OFFSET}px`;
         const nextTop = `${maxY + 10}px`;
         if (btn.style.left !== nextLeft) btn.style.left = nextLeft;
         if (btn.style.top !== nextTop) btn.style.top = nextTop;
