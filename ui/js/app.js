@@ -178,6 +178,7 @@ function syncUI(state) {
 
     // UI = Data: C++ sets x_pos based on anchor_phase
     // JS displays node.x directly with no transformation
+    const VISUAL_OFFSET = 120; // Shift for UI rendering
 
     nodes.forEach(node => {
         let div = document.getElementById(node.id);
@@ -222,7 +223,8 @@ function syncUI(state) {
         div.classList.toggle('collapsed', shouldCollapse);
 
         // UI = Data: Position comes directly from C++ data
-        div.style.left = `${node.x || 0}px`;
+        // Apply VISUAL_OFFSET for View
+        div.style.left = `${(node.x || 0) + VISUAL_OFFSET}px`;
         div.style.top = `${node.y || 0}px`;
 
         // Node container width: Match rhythmic duration but NEVER narrower than the header
@@ -443,7 +445,13 @@ function syncUI(state) {
             longestDuration = n.duration;
         }
     });
-    const timelineWidth = (longestDuration / effectiveQ) * baseWidth;
+
+    // Stabilize timeline width: Round up to next full quantum to avoid jitter while recording
+    const timelineQuantums = Math.ceil((longestDuration || effectiveQ) / effectiveQ);
+    const timelineWidth = timelineQuantums * baseWidth;
+
+    // DEBUG: Log timeline calculation  
+    log(`[Timeline] longestDur=${longestDuration}, effectiveQ=${effectiveQ}, timelineWidth=${timelineWidth}`);
 
     // Clean up old ghosts
     nodeLayer.querySelectorAll('.ghost-clip').forEach(g => g.remove());
@@ -459,37 +467,31 @@ function syncUI(state) {
             // One-shots don't get ghosts
             if (isOneShot) return;
 
-            // Skip if this is already the longest clip (no ghosts needed)
-            if (node.duration >= longestDuration) return;
-
-            // Calculate how many ghosts fit in the remaining timeline
+            // Calculate how many ghosts fit in the stabilized timeline
             const clipStartX = node.x;
-            const remainingWidth = timelineWidth - clipWidth;
-            // Use Math.ceil or a small epsilon to ensure we fill the timeline
-            const numGhosts = Math.floor((remainingWidth + 1) / clipWidth);
 
-            if (numGhosts > 0) {
-                console.log(`[Ghost] Clip ${node.id.slice(0, 4)}: clipWidth=${clipWidth}, timelineWidth=${timelineWidth}, numGhosts=${numGhosts}`);
-            }
-
-            for (let i = 1; i <= numGhosts && i < 20; i++) {
-                const ghostX = clipStartX + i * clipWidth;
+            // Visual Wrapping: Check if we need a ghost on the LEFT (start wrapping)
+            // If clip extends beyond timeline on the right, it should appear at the start
+            // E.g. x=2, w=4, TL=4. x+w=6 > 4. Wrap to 2-4=-2.
+            const clipEndX = clipStartX + clipWidth;
+            if (clipEndX > timelineWidth + 0.1) {
+                // Render ONE wrapped instance at x - timelineWidth
+                // This fills the visual gap at the start of the timeline
+                const ghostX = clipStartX - timelineWidth;
 
                 const ghost = document.createElement('div');
                 ghost.className = 'ghost-clip';
-                ghost.style.left = `${ghostX}px`;
-                ghost.style.top = `${node.y}px`;
+                ghost.style.position = 'absolute'; // Force absolute to override .node-content
+                ghost.style.left = `${ghostX + VISUAL_OFFSET}px`; // Apply Offset
+                ghost.style.top = `${node.y + 38}px`; // Corrected vertical alignment
                 ghost.style.width = `${clipWidth}px`;
+                ghost.style.height = `${node.h - 38}px`; // Corrected height
 
-                const headerHeight = 42;
-                const contentHeight = Math.max(20, node.h - headerHeight);
-                ghost.style.height = `${node.h}px`;
-
-                // Keep background only for the content part? 
-                // Actually ghosts are just the waveform, so they mimic .node-content
                 ghost.classList.add('node-content');
-                ghost.style.borderTop = '1px solid #334155';
-                ghost.style.borderRadius = '8px';
+                ghost.style.borderRadius = '0 0 8px 8px'; // Match node-content
+                ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
+                ghost.style.borderTop = 'none';
+                ghost.style.background = 'rgba(30, 41, 59, 0.3)';
 
                 // Add faded waveform canvas
                 const canvas = document.createElement('canvas');
@@ -505,94 +507,76 @@ function syncUI(state) {
                 ghostPlayhead.className = 'playhead';
                 ghost.appendChild(ghostPlayhead);
 
-                // Tracking Logic:
-                // Check if global playhead is inside this ghost
-                // Global Master Pos (samples) relative to Node Anchor
-                // We need to convert masterPos to Visual X relative to Node X
-                if (state.masterPos !== undefined && effectiveQ > 0) {
-                    const pixelsPerSameple = baseWidth / effectiveQ; // 200px / Q samples
+                nodeLayer.appendChild(ghost);
+            }
 
-                    // Node Anchor Phase is where the node starts in the grid relative to Q
-                    // node.x is purely visual based on anchor_phase
-                    // Global Visual Playhead X = (masterPos wrapped?) No, linear.
-                    // We need relative offset:
-                    // deltaSamples = masterPos - (trigger_master_pos ?? implied_start)
+            // Render Standard Ghosts to the RIGHT
+            // Simple loop: Fill space until timelineWidth
+            let currentGhostX = clipStartX + clipWidth;
+            let ghostCount = 0;
 
-                    // Simpler: state.masterPos is global transport.
-                    // node.anchorPhase is local offset.
-                    // We need the "Global Phase" relative to the CLIP's Loop.
-                    // activeIndex = floor((masterPos - anchorAdjusted) / duration)
-                    // Wait, node.anchorPhase is phase within context?
+            while (currentGhostX < timelineWidth - 0.1 && ghostCount < 50) {
+                const ghost = document.createElement('div');
+                ghost.className = 'ghost-clip';
+                ghost.style.position = 'absolute';
+                ghost.style.left = `${currentGhostX + VISUAL_OFFSET}px`;
+                ghost.style.top = `${node.y + 38}px`;
+                ghost.style.width = `${clipWidth}px`;
+                ghost.style.height = `${node.h - 38}px`;
 
-                    // Visual Approach:
-                    // Main Node Start X (visual) = node.x
-                    // Playhead Visual X = (masterPos % (something? No linear)) * scale?
-                    // If we assume linear scrolling... but it's a loop.
+                // Styling
+                ghost.classList.add('node-content');
+                ghost.style.borderRadius = '0 0 8px 8px';
+                ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
+                ghost.style.borderTop = 'none';
+                ghost.style.background = 'rgba(30, 41, 59, 0.3)';
 
-                    // Let's use the local 'playhead' (0..1) as the truth.
-                    // If node is playing, the playhead IS valid.
-                    // Which ghost is it in?
-                    // We rely on 'masterPos' effectively.
-
-                    const qSamples = effectiveQ; // Samples per quantum
-                    const clipsPerTimeline = timelineWidth / clipWidth;
-
-                    // Relative Sample Position from the anchor
-                    // anchorPhase is where in the context loop (0..MaxDuration) the clip starts.
-                    // But here we just want to know "Global Time % Timeline Duration"?
-                    // No, simpler:
-                    // The clip repeats every 'node.duration'.
-                    // offset = masterPos - (some zero reference).
-                    // Let's assume Master Pos 0 aligns with Quantum 0.
-                    // Clip Anchor Phase 0 aligns with Quantum 0.
-
-                    // relativePos = (masterPos - node.recordingStartPhase??) 
-                    // Use anchorPhase (which is loop-relative).
-                    // If the timeline is consistent:
-
-                    // We know the Main Node is technically at "Iteration 0" relative to... itself?
-                    // Actually, if we just check if (masterPos % duration) is roughly playhead * duration...
-                    // That doesn't tell us the iteration.
-
-                    // Valid approach: 
-                    // startGlobal = node.recordingStartPhase ?? 0 ? No.
-                    // Let's use the visual position provided by the node. 
-                    // node.x is based on anchor_phase.
-                    // Global Playhead wrapped to Context Loop (e.g. 4Q).
-                    // node.x is within 0..ContextLoopVisual.
-
-                    // Wait, ghost rendering is for "filling timeline extent". 
-                    // Does the timeline imply a linear scroll or a wrapped view?
-                    // User says "longer clips".
-                    // Implies Context Loop logic.
-                    // The "Timeline" is effectively the duration of the LONGEST clip.
-                    // Ghosts fill the Longest Clip.
-
-                    // So:
-                    // contextDuration = longestDuration.
-                    // playheadOffset = (masterPos % contextDuration).
-                    // We want to find which Visual Block (Main or Ghost N) overlaps with `playheadOffset`.
-                    // Main Block X range: [node.x, node.x + node.w] (wrapped?)
-                    // Ghost N X range: [node.x + N*w, ...]
-
-                    // Calculate Global Visual Cursor X relative to Timeline Start (0)
-                    const globalCursorSamples = state.masterPos % longestDuration;
-                    const globalCursorPx = (globalCursorSamples / effectiveQ) * baseWidth;
-
-                    // Check if cursor is in this ghost
-                    // ghostX is relative to container (0..TimelineWidth)
-                    // If (globalCursorPx >= ghostX && globalCursorPx < ghostX + clipWidth)
-                    if (globalCursorPx >= ghostX && globalCursorPx < ghostX + clipWidth) {
-                        ghost.classList.add('active-ghost');
-                        ghostPlayhead.style.left = `${node.playhead * 100}%`;
-
-                        // Hide main node playhead since we are in a ghost
-                        const mainPlayhead = div.querySelector('.playhead');
-                        if (mainPlayhead) mainPlayhead.style.display = 'none';
-                    }
+                // Canvas for waveform
+                const canvas = document.createElement('canvas');
+                ghost.appendChild(canvas);
+                if (livePeaks.has(node.id)) {
+                    drawWaveform(canvas, livePeaks.get(node.id));
                 }
 
+                // Ghost Playhead - only show in the ghost aligned with longer loop position
+                const ghostPlayhead = document.createElement('div');
+                ghostPlayhead.className = 'playhead';
+                ghostPlayhead.style.left = `${node.playhead * 100}%`;
+                ghostPlayhead.style.opacity = '0.4';  // Faded compared to main
+
+                // Determine global playhead position in pixels
+                // ----------------------------------------------------
+                let timelinePosPx;
+                const recordingNode = nodes.find(n => n.isRecording);
+
+                if (recordingNode) {
+                    // Linear Recording Mode: Playhead follows the linear growth of the recording
+                    // We map the growing recording duration to visual pixels
+                    // normalized from the recording's start position (x)
+                    const recDurationPx = (recordingNode.duration / effectiveQ) * baseWidth;
+                    timelinePosPx = (recordingNode.x || 0) + recDurationPx;
+                } else {
+                    // Loop Mode: Wrap masterPos by longestDuration (Timeline Length)
+                    const timelinePos = state.masterPos % longestDuration;
+                    timelinePosPx = (timelinePos / effectiveQ) * baseWidth;
+                }
+
+                // Active if pixel position falls within this ghost's bounds
+                const isActiveGhost = (timelinePosPx >= currentGhostX && timelinePosPx < currentGhostX + clipWidth);
+
+                if (isActiveGhost) {
+                    ghost.classList.add('active-ghost');
+                    ghostPlayhead.style.display = 'block'; // Ensure visibility
+                } else {
+                    ghost.classList.remove('active-ghost');
+                    ghostPlayhead.style.display = 'none';
+                }
+
+                ghost.appendChild(ghostPlayhead);
+
                 nodeLayer.appendChild(ghost);
+                currentGhostX += clipWidth;
+                ghostCount++;
             }
         });
     }

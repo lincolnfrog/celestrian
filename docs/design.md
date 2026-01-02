@@ -189,3 +189,10 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
 4. **WebView Scheduling Jitter**: Web browsers lack sample-accurate timing. We must implement a "Lookahead Wrapper" where the JS UI schedules events in advance, and the C++ engine executes them with 100% sample precision.
 5. **Data Model Scalability & Persistence**: Representing a nested, non-deterministic graph of audio states requires a robust data model that can handle large corpora of structures without performance degradation.
 6. **UI Information Density**: Navigating "boxes-within-boxes" requires a high-fidelity navigation system (e.g., zoomable interface or deep breadcrumbs) to prevent user disorientation in complex projects.
+
+## 8. Multi-Stack & Meta-Management
+- **Stack Independence**: Future versions will support multiple "Stacks". Each stack should be able to define its own Quantum/Time origin.
+- **Quantum Inheritance**: When creating a new stack, the user should be able to choose between:
+    - **Inherit**: Inherit the quantum/grid from an existing stack (sync).
+    - **New Song**: Start fresh with a new quantum and time origin (polyrhythm/independent).
+- **Transport Reset**: For the *First Clip* in a "New Song" stack, the Transport should reset to 0 to ensure the recording defines the origin (No start offset).

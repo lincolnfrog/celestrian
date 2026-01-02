@@ -173,6 +173,30 @@ Clip 3:          [████████████████████�
 
 ---
 
+## Visual Ghosts & Timeline Wrapping
+
+The "Ghost" system visualizes the cyclical nature of loops on a linear timeline.
+
+### 1. The "Unrolled" Timeline
+Imagine unrolling the loop infinitely. "Ghosts" are simply the repetitions of the clip that appear before and after the "primary" instance.
+- **Primary Instance**: The visual block representing the actual recorded buffer.
+- **Right Ghosts**: Future repetitions (Loop 2, Loop 3...).
+- **Left Ghosts (Wrapping)**: Past repetitions (Loop -1, Loop 0...).
+
+### 2. Wrapping Logic (The "Left Ghost")
+If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 in a 4Q loop):
+- The Primary Instance appears at Q=2.
+- The timeline from Q=0 to Q=2 is empty *unless* we wrap.
+- Since it is a loop, the "Tail" of the clip (Q=2 to Q=4) logically wraps around to fill Q=0.
+- A **Ghost** is drawn at `x = start_x - timeline_width` to visualize this wrap.
+
+### 3. The "First Clip" Case
+- **Ideal State**: The first clip defines the timeline origin (Q=0). It should have **Anchor Offset = 0**.
+- **Result**: Primary Instance at 0. No gap at the start. **No Left Ghost**.
+- **Edge Case**: If the transport is running *before* the first recording, the first clip might capture a non-zero anchor. This causes it to appear offset (e.g., at Q=2) and generate a Left Ghost. This is visually confusing for the first clip and is considered a bug/artifact of an un-reset transport.
+
+---
+
 ## Implementation Checklist
 
 ### Data Model

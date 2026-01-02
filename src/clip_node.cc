@@ -100,7 +100,7 @@ void ClipNode::process(const float *const *input_channels,
       // base_width = 200px (1 quantum), base_x = column position
       double base_width = 200.0;
       double base_x = x_pos.load();
-      if (base_x == 0.0) base_x = 100.0;
+      // REMOVED: if (base_x == 0.0) base_x = 100.0; - Let layout determine x
 
       // Calculate EFFECTIVE position = what the user SAW (playhead position)
       // This is LOOP-RELATIVE, not global time. The user's intent is:
@@ -298,11 +298,10 @@ void ClipNode::process(const float *const *input_channels,
       }
 
       // Update playhead position for UI
+      // Use effective_pos/dur for clean 0..1 range within the loop
       int64_t effective_pos = (context.master_pos + offset) % dur;
-      int64_t absolute_read_position = start + effective_pos;
-      int64_t total = duration_samples.load();
-      if (total > 0)
-        playhead_pos.store((double)absolute_read_position / (double)total);
+      if (dur > 0)
+        playhead_pos.store((double)effective_pos / (double)dur);
       else
         playhead_pos.store(0.0);
     } else {
@@ -434,37 +433,11 @@ void ClipNode::commitRecording(int64_t final_duration) {
 
     duration_samples.store(duration);
 
-    // Phase-Locked Cyclic Shift (Rotation)
-    if (duration > 0) {
-      int64_t anchor = trigger_master_position.load();
-      int64_t phase = anchor % duration;
-
-      if (phase > 0) {
-        // Right-rotate buffer by phase to align master_pos=0 with buffer start
-        // If master_pos anchor was at phase P, then buffer[0] is master_pos P.
-        // We want buffer[P] to be what was originally buffer[0].
-        // So we need to shift the buffer right by P.
-        int shift = (int)phase;
-
-        juce::AudioBuffer<float> temp(1, (int)duration);
-        temp.clear();
-
-        // Copy original to temp with shift
-        for (int i = 0; i < duration; ++i) {
-          int targetIdx = (i + shift) % (int)duration;
-          temp.setSample(0, targetIdx, buffer.getSample(0, i));
-        }
-
-        buffer.copyFrom(0, 0, temp, 0, 0, (int)duration);
-      }
-    }
-
-    // Calculate launch_point for Audio Memory alignment
+    // Launch point calculation for Audio Memory alignment
     // Formula: (duration - anchor) % duration
     // This ensures playback is aligned with what the user heard during
-    // recording Example: 8Q clip recorded at 2Q → launch_point = 6Q
-    //   When master=0, clip plays from 6Q
-    //   When master=2Q, clip is at position 0 (aligned with recording!)
+    // recording. Example 2: 8Q clip recorded at 2Q (Anchor=2Q) launch_point =
+    // (8Q - 2Q) % 8Q = 6Q
     int64_t anchor = anchor_phase_samples.load();
     int64_t launch_point = (duration > 0 && anchor > 0)
                                ? (duration - (anchor % duration)) % duration

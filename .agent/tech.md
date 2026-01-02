@@ -2,6 +2,21 @@
 
 This document captures technical insights, "gotchas", and debugging strategies discovered during development.
 
+> **LOG ACCESS**: The agent has access to `celestrian_debug.log` and `celestrian_state.json` in the project root. Always check these when debugging! Use `tail -100 celestrian_debug.log` and `cat celestrian_state.json`.
+
+# Technology & Logic
+
+## Debugging
+
+### Logging Pipeline
+To debug JS issues without a browser console:
+1.  **Usage**: Import `log` from `bridge.js` (`import { log } from './bridge.js';`).
+2.  **Call**: `log("Your message");` inside `app.js`.
+3.  **Route**: JS `log` -> `callNative('nativeLog')` -> C++ `juce::Logger` -> `celestrian_debug.log`.
+4.  **View**: Check `celestrian_debug.log` in the root directory.
+
+*Note: Standard `console.log` only prints to the invisible browser console.*
+
 ## 1. Architecture & Audio Engine
 
 ### "Magnetic Quantum" Audio Recording

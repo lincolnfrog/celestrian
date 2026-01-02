@@ -54,6 +54,17 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
   if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
           findNodeByUuid(root_node.get(), uuid))) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
+
+    // INITIAL RECORDING RESET:
+    // If we are starting a recording and there is NO existing quantum
+    // (i.e., this is the First Clip), we reset the global transport to 0.
+    // This ensures the first clip defines "Time Zero" and has no offset.
+    if (root_node->getEffectiveQuantum() == 0) {
+      global_transport_pos.store(0);
+      juce::Logger::writeToLog(
+          "AudioEngine: First Clip detected -> Reset Global Transport to 0.");
+    }
+
     clip->startRecording();
   } else {
     juce::Logger::writeToLog("AudioEngine: CLIP NOT FOUND for " + uuid);
@@ -140,8 +151,8 @@ void AudioEngine::createNode(const juce::String &type, double x, double y) {
       new_node->x_pos = x;
       new_node->y_pos = y;
     } else {
-      new_node->x_pos = 120.0;
-      new_node->y_pos = box->getNumChildren() * 70.0;
+      new_node->x_pos = 0.0;  // Default to Time 0 (was 120.0)
+      new_node->y_pos = box->getNumChildren() * 120.0;  // 120px per clip row
     }
     box->addChild(std::move(new_node));
   }

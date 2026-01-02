@@ -5,11 +5,16 @@ trigger: always_on
 # Agent Context
 
 ## Workflow
-* **Living Documents**: `.agent/` contains project context:
-    * `design.md`: Goals, UX flows, feature specs
-    * `implementation.md`: Roadmap, status, architecture
-    * `tech.md`: Technical learnings and debugging tips
-    * `style.md`: Code style rules (C++, JS, JUCE patterns)
+* **Living Documents**:
+    * `docs/` contains project context:
+        * `design.md`: Goals, UX flows, feature specs
+        * `implementation.md`: Roadmap, status, architecture
+        * `recording.md`: Recording workflow
+    * `.agent/` contains agent context:
+        * `agent.md`: Agent context
+        * `glossary.md`: Terminology alignment (Quantum, Launch Point, etc.)
+        * `tech.md`: Technical learnings and debugging tips
+        * `style.md`: Code style rules (C++, JS, JUCE patterns)
 * **Update First**: Check these docs before complex tasks; update them after.
 
 ## Architecture
