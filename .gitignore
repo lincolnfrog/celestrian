@@ -44,3 +44,4 @@ celestrian_debug.log
 # Build directory
 build/
 .DS_Store
+.cache

@@ -148,9 +148,13 @@ void ClipNode::process(const float *const *input_channels,
         int64_t future_effective_pos =
             (next_q_master + playback_offset) % context_loop;
 
-        anchor_phase_samples.store(future_effective_pos);
+        // Store the anchor modulo Q for correct positioning
+        // (full effective_pos is used for phase alignment, but x_pos only needs
+        // slot)
+        int64_t anchor_in_q = future_effective_pos % Q;
+        anchor_phase_samples.store(anchor_in_q);
 
-        int64_t quantum_offset = future_effective_pos / Q;
+        int64_t quantum_offset = anchor_in_q / Q;  // Should always be 0 now
         x_pos.store(base_x + quantum_offset * base_width);
 
         juce::Logger::writeToLog(
@@ -254,9 +258,8 @@ void ClipNode::process(const float *const *input_channels,
             return;
           }
         }
-      } else {
-        commit_master_pos.store(context.master_pos);
-        commitRecording();
+        // Note: if samples_to_write <= 0, buffer is full - just stop writing
+        // Do NOT call commitRecording here; wait for explicit stop
       }
     }
   }
@@ -367,6 +370,9 @@ void ClipNode::stopRecording() {
       return;
     }
 
+    // For immediate stop (First Clip), assume commit pos equals duration
+    // (since global transport resets to 0 at start of first clip)
+    commit_master_pos.store(write_position.load());
     commitRecording();
   }
 }
@@ -419,8 +425,8 @@ void ClipNode::commitRecording(int64_t final_duration) {
         loop_start_samples.store(0);
         loop_end_samples.store(duration);
       } else {
-        // Outside tolerance: Keep raw duration but snap loop region to previous
-        // clean multiple.
+        // Outside tolerance: Keep raw duration but snap loop region to
+        // previous clean multiple.
         int64_t loop_end = L;
         if (Q > 0) {
           loop_end = (L / Q) * Q;
@@ -447,8 +453,8 @@ void ClipNode::commitRecording(int64_t final_duration) {
       loop_end_samples.store(duration);
     }
 
-    duration_samples.store(
-        duration);  // CRITICAL: Store final duration so UI knows clip is valid!
+    duration_samples.store(duration);  // CRITICAL: Store final duration so UI
+                                       // knows clip is valid!
 
     // 1. Determine Context Loop (siblings) to find preferred Visual Position
     // note: Q is already defined at top of function
@@ -477,8 +483,8 @@ void ClipNode::commitRecording(int64_t final_duration) {
 
     // 3. Calculate Audio Phase (based on LCM Context)
     // Per LCM model: anchor is ALWAYS relative to context_loop, not self
-    // duration. With 1Q context, any trigger_pos % 1Q = 0. Clip MUST anchor at
-    // 0Q.
+    // duration. With 1Q context, any trigger_pos % 1Q = 0. Clip MUST anchor
+    // at 0Q.
     int64_t audio_anchor =
         (context_loop > 0) ? (trigger_pos % context_loop) : 0;
 
@@ -583,9 +589,9 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // Anchor represents the phase offset of the content relative to Global 0
     anchor_phase_samples.store(final_anchor);
 
-    // FIX: Calculate launch_point so that at commit_master_pos, effective_pos =
-    // 0 This ensures the clip starts at 0% immediately upon commit. Formula:
-    // effective_pos = (master + launch) % dur = 0
+    // FIX: Calculate launch_point so that at commit_master_pos, effective_pos
+    // = 0 This ensures the clip starts at 0% immediately upon commit.
+    // Formula: effective_pos = (master + launch) % dur = 0
     //          launch = (dur - master % dur) % dur
     int64_t current_pos = commit_master_pos.load();
     int64_t launch_point =

@@ -138,6 +138,93 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expectWithinAbsoluteError(playhead, 0.0, 0.15,
                                 "Playhead should be ~0% at commit time");
     }
+
+    // New Test: Clip 1 (First clip) should always result in launch_point=0
+    {
+      beginTest("Clip 1 (First Clip) Should have Launch=0");
+      const double SR = 44100.0;
+      celestrian::BoxNode parent("Parent");
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clipPtr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 512;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;  // Transport reset to 0
+
+      clipPtr->startRecording();
+      // Process 2 blocks (1024 samples)
+      ctx.master_pos = 0;
+      clipPtr->process(nullptr, nullptr, 0, 0, ctx);
+      ctx.master_pos = 512;
+      clipPtr->process(nullptr, nullptr, 0, 0, ctx);
+
+      // Stop recording immediately (First Clip => immediate stop)
+      clipPtr->stopRecording();
+
+      int64_t launch = clipPtr->launch_point_samples.load();
+      expectEquals(launch, (int64_t)0,
+                   "First Clip launch point should default to 0");
+
+      // Verify commit master pos correctness
+      // It should be equal to duration (1024)
+      int64_t duration = clipPtr->duration_samples.load();
+      int64_t commitPos = clipPtr->getCommitMasterPos();
+      expectEquals(commitPos, duration,
+                   "Commit pos should match duration for first clip");
+    }
+
+    // New Test: Clip 1 Stopped Mid-Block (Partial process check)
+    {
+      beginTest("Clip 1 Stopped Mid-Block (Immediate Commit)");
+      const double SR = 44100.0;
+      celestrian::BoxNode parent("Parent");
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clipPtr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 512;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      clipPtr->startRecording();
+      // Process block 0
+      clipPtr->process(nullptr, nullptr, 0, 0, ctx);  // master 0, dur->512
+
+      // Simulate stopping mid-way through next block?
+      // Actually stopRecording() wraps up current state.
+      // If we call stopRecording, it uses write_position.
+      // Let's process block 1 fully.
+      ctx.master_pos = 512;
+      clipPtr->process(nullptr, nullptr, 0, 0, ctx);  // master 512, dur->1024
+
+      // So current durability is 1024.
+      // And global master pos would be 1024 for next block.
+
+      clipPtr->stopRecording();
+
+      int64_t launch = clipPtr->launch_point_samples.load();
+      expectEquals(launch, (int64_t)0, "Launch should be 0 even with blocks");
+
+      // Wait, let's verify Playhead at Commit Time.
+      // commitPos = 1024. duration = 1024.
+      // launch = (1024 - 1024 % 1024) % 1024 = 0.
+
+      // Playback at master=1024 should be 0%.
+      // effective = (1024 + 0) % 1024 = 0.
+
+      ctx.is_recording = false;
+      ctx.is_playing = true;
+      ctx.master_pos = 1024;
+      clipPtr->process(nullptr, nullptr, 0, 2, ctx);
+
+      double playhead = clipPtr->playhead_pos.load();
+      expectWithinAbsoluteError(
+          playhead, 0.0, 0.001,
+          "Playhead at commit time (end of loop) should be 0");
+    }
   }
 };
 

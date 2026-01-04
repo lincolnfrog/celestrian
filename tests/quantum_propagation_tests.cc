@@ -1,11 +1,12 @@
+#include <juce_core/juce_core.h>
+
 #include "../src/box_node.h"
 #include "../src/clip_node.h"
-#include <juce_core/juce_core.h>
 
 namespace celestrian {
 
 class QuantumPropagationTests : public juce::UnitTest {
-public:
+ public:
   QuantumPropagationTests()
       : juce::UnitTest("Quantum Propagation", "Audio Engine") {}
 
@@ -60,12 +61,17 @@ public:
       root.addChild(std::move(slaveClip));
 
       slavePtr->startRecording();
-      ctx.num_samples = 1100; // 1.1x Q. Threshold 15%.
+      ctx.num_samples = 1100;  // 1.1x Q. Threshold 15%.
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       slavePtr->stopRecording();
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
-      expectEquals((int)slavePtr->getLoopEnd(), 1000);
+      // Need to process past the 2000 boundary (next Q after 1100)
+      ctx.master_pos = 1100;
+      ctx.num_samples = 1000;
+      slavePtr->process(inputs, nullptr, 1, 0, ctx);
+
+      expectEquals((int)slavePtr->getIntrinsicDuration(), 2000);
+      expectEquals((int)slavePtr->getLoopEnd(), 2000);
     }
 
     beginTest("Hysteresis Snapping (Anticipatory Stop)");
@@ -88,11 +94,11 @@ public:
       root.addChild(std::move(slaveClip));
 
       slavePtr->startRecording();
-      ctx.num_samples = 950; // 0.95x Q. Tolerance is 10% (100 samples).
+      ctx.num_samples = 950;  // 0.95x Q. Tolerance is 10% (100 samples).
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       slavePtr->stopRecording();
-      expect(slavePtr->isRecording()); // Still recording!
+      expect(slavePtr->isRecording());  // Still recording!
 
       // Process past the 1000 boundary
       ctx.num_samples = 100;
@@ -123,15 +129,20 @@ public:
       root.addChild(std::move(slaveClip));
 
       slavePtr->startRecording();
-      ctx.num_samples = 2500; // 2.5x Q. Threshold 15% (150 samples).
+      ctx.num_samples = 2500;  // 2.5x Q. Threshold 15% (150 samples).
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       slavePtr->stopRecording();
-      expect(!slavePtr->isRecording()); // Stopped immediately
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 2500);
+      // Process past the 3000 boundary (next Q after 2500)
+      ctx.master_pos = 2500;
+      ctx.num_samples = 600;
+      slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
-      // Loop Region should be snapped to 2000 (nearest previous multiple)
-      expectEquals((int)slavePtr->getLoopEnd(), 2000);
+      expect(!slavePtr->isRecording());  // Should be stopped now
+      expectEquals((int)slavePtr->getIntrinsicDuration(), 3000);
+
+      // Loop Region should be snapped to 3000
+      expectEquals((int)slavePtr->getLoopEnd(), 3000);
     }
 
     beginTest("Hysteresis Snapping (Raw Stop + Short Q)");
@@ -154,17 +165,22 @@ public:
       root.addChild(std::move(slaveClip));
 
       slavePtr->startRecording();
-      ctx.num_samples = 700; // Outside 150 samples of 500 or 1000.
+      ctx.num_samples = 700;  // Outside 150 samples of 500 or 1000.
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
       slavePtr->stopRecording();
 
-      expectEquals((int)slavePtr->getIntrinsicDuration(), 700);
-      // Should default to Q/2 = 500
-      expectEquals((int)slavePtr->getLoopEnd(), 500);
+      // Process past the 1000 boundary (next Q after 700)
+      ctx.master_pos = 700;
+      ctx.num_samples = 400;
+      slavePtr->process(inputs, nullptr, 1, 0, ctx);
+
+      expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
+      // Should snap to Q = 1000
+      expectEquals((int)slavePtr->getLoopEnd(), 1000);
     }
   }
 };
 
 static QuantumPropagationTests quantumPropagationTests;
 
-} // namespace celestrian
+}  // namespace celestrian
