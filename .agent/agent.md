@@ -29,7 +29,11 @@ trigger: always_on
 
 ## Coding Principles
 * **No Duplication**: Never duplicate logic in multiple places. Extract shared functionality into helper functions. This prevents regressions when one copy is updated but another is forgotten.
-* **Unit Tests**: Add tests for critical logic paths to prevent recurring regressions.
+* **Unit Tests (REQUIRED)**: Every code change MUST include corresponding unit tests. 
+  Do not wait for user to request tests. Tests should verify:
+  - The fix works as intended
+  - Edge cases are covered  
+  - The bug cannot regress
 
 ## Reference
 * **Glossary**: See `.agent/glossary.md` for terminology alignment (Quantum, Launch Point, etc.)

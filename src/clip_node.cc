@@ -97,10 +97,9 @@ void ClipNode::process(const float *const *input_channels,
         }
       }
 
-      // base_width = 200px (1 quantum), base_x = column position
+      // base_width = 200px (1 quantum), base_x = fixed starting position
       double base_width = 200.0;
-      double base_x = x_pos.load();
-      // REMOVED: if (base_x == 0.0) base_x = 100.0; - Let layout determine x
+      double base_x = 0.0;  // Fixed base - slot determines position from 0
 
       // Calculate EFFECTIVE position = what the user SAW (playhead position)
       // This is LOOP-RELATIVE, not global time. The user's intent is:
@@ -131,36 +130,84 @@ void ClipNode::process(const float *const *input_channels,
           (compensated_pos + playback_offset) % context_loop;
 
       // ALWAYS SNAP to next Q boundary
-      // Calculate when the NEXT quantum boundary will occur in master_pos terms
+      // Key insight:
+      // - Single-clip: use compensated_pos (extending timeline)
+      // - Multi-clip: use effective_pos (visual position in loop)
       if (Q > 0) {
-        int64_t current_q_index = compensated_pos / Q;
-        int64_t next_q_master = (current_q_index + 1) * Q;
+        bool singleClipContext = (context_loop == Q);
 
-        // If we're already exactly at Q, snap forward to the NEXT Q
-        if (compensated_pos % Q == 0) {
-          next_q_master = compensated_pos;  // Already at boundary, start now
+        int64_t next_q_master;
+        if (singleClipContext) {
+          // Single clip context: extend timeline using absolute position
+          int64_t current_q_index = compensated_pos / Q;
+          next_q_master = (current_q_index + 1) * Q;
+          if (compensated_pos % Q == 0) {
+            next_q_master = compensated_pos;  // Already at boundary
+          }
+        } else {
+          // Multi-clip context: use visual position (what user sees)
+          int64_t visual_q_index = effective_pos / Q;
+          int64_t next_visual_q = (visual_q_index + 1) * Q;
+          if (effective_pos % Q == 0) {
+            next_visual_q = effective_pos;
+          }
+          // Convert visual next_q back to master_pos terms
+          int64_t loop_base = (compensated_pos / context_loop) * context_loop;
+          int64_t offset_in_loop =
+              (next_visual_q - playback_offset + context_loop) % context_loop;
+          // Handle the case where next_visual_q wraps to 0 (e.g., 4Q % 4Q = 0)
+          // In this case, we need to go to the next context loop
+          if (offset_in_loop == 0 && next_visual_q > 0) {
+            offset_in_loop = context_loop;  // Next cycle
+          }
+          next_q_master = loop_base + offset_in_loop;
+          juce::Logger::writeToLog(
+              "  DEBUG: eff_pos=" + juce::String(effective_pos) +
+              ", vis_q_idx=" + juce::String(visual_q_index) +
+              ", next_vis_q=" + juce::String(next_visual_q) +
+              ", pb_offset=" + juce::String(playback_offset) +
+              ", next_q=" + juce::String(next_q_master));
         }
 
         // Calculate what the effective_pos will be at that Q boundary
-        int64_t playback_offset =
+        int64_t playback_offset2 =
             (context_loop - (context_launch_point % context_loop)) %
             context_loop;
         int64_t future_effective_pos =
-            (next_q_master + playback_offset) % context_loop;
+            (next_q_master + playback_offset2) % context_loop;
 
-        // Store the anchor modulo Q for correct positioning
-        // (full effective_pos is used for phase alignment, but x_pos only needs
-        // slot)
-        int64_t anchor_in_q = future_effective_pos % Q;
-        anchor_phase_samples.store(anchor_in_q);
+        // anchor_phase_samples = position within Q (for audio alignment)
+        anchor_phase_samples.store(future_effective_pos % Q);
+        // Store full effective_pos for unified launch_point calculation
+        recording_start_phase.store(future_effective_pos);
+        juce::Logger::writeToLog(
+            "  RECORDING_START: next_q=" + juce::String(next_q_master) +
+            ", pb_offset2=" + juce::String(playback_offset2) +
+            ", context=" + juce::String(context_loop) +
+            ", future_eff_pos=" + juce::String(future_effective_pos) +
+            ", start_phase_stored=" + juce::String(future_effective_pos));
 
-        int64_t quantum_offset = anchor_in_q / Q;  // Should always be 0 now
-        x_pos.store(base_x + quantum_offset * base_width);
+        // slot = which Q slot visually
+        // Key insight: slot is VISUAL position, not audio phase position
+        // - future_effective_pos includes playback_offset for audio alignment
+        // - slot should be based on next_q_master (visual playhead position)
+        int64_t slot;
+
+        if (singleClipContext && next_q_master > context_loop) {
+          // Single clip extending beyond Q - use absolute next_q
+          slot = next_q_master / Q;
+        } else {
+          // Multi-clip OR within context - use visual position (wrapped)
+          slot = (next_q_master % context_loop) / Q;
+        }
+        x_pos.store(base_x + slot * base_width);
 
         juce::Logger::writeToLog(
             "  → Waiting for Q: master_pos=" + juce::String(compensated_pos) +
-            ", next_q=" + juce::String(next_q_master) + ", anchor will be " +
-            juce::String(future_effective_pos));
+            ", next_q=" + juce::String(next_q_master) +
+            ", context=" + juce::String(context_loop) +
+            ", eff_pos=" + juce::String(future_effective_pos) + ", slot=" +
+            juce::String(slot) + ", x_pos=" + juce::String(x_pos.load()));
 
         // If already at boundary, start immediately
         if (compensated_pos >= next_q_master ||
@@ -182,6 +229,7 @@ void ClipNode::process(const float *const *input_channels,
       } else {
         // No Q established yet (first clip) - start immediately at anchor=0
         anchor_phase_samples.store(0);
+        recording_start_phase.store(0);  // First clip starts at phase 0
         x_pos.store(base_x);
         is_pending_start.store(false);
         is_recording.store(true);
@@ -286,10 +334,9 @@ void ClipNode::process(const float *const *input_channels,
 
       // Audio Memory Principle: playback starts from launch_point to maintain
       // alignment with the audio context during recording.
-      // launch_point is already calculated as (duration - anchor) % duration
-      // so it represents the correct offset to start playback
+      // launch_point is calculated at commit so that effective_pos starts at 0
       int64_t launch = launch_point_samples.load();
-      int64_t offset = launch;  // Use launch_point directly - it's the offset
+      int64_t offset = launch;  // Use launch directly - ensures loop continuity
 
       // DEBUG: Log first playback frame for this clip only
       if (!debug_playback_logged_) {
@@ -318,7 +365,7 @@ void ClipNode::process(const float *const *input_channels,
       }
 
       // Update playhead position for UI
-      // Use effective_pos/dur for clean 0..1 range within the loop
+      // Show position within THIS clip as 0..1
       int64_t effective_pos = (context.master_pos + offset) % dur;
       if (dur > 0)
         playhead_pos.store((double)effective_pos / (double)dur);
@@ -589,21 +636,21 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // Anchor represents the phase offset of the content relative to Global 0
     anchor_phase_samples.store(final_anchor);
 
-    // FIX: Calculate launch_point so that at commit_master_pos, effective_pos
-    // = 0 This ensures the clip starts at 0% immediately upon commit.
-    // Formula: effective_pos = (master + launch) % dur = 0
-    //          launch = (dur - master % dur) % dur
-    int64_t current_pos = commit_master_pos.load();
+    // UNIFIED TIMING: Calculate launch_point from recording START phase
+    // This ensures all clips recorded at the same position have the same
+    // offset, keeping playheads synchronized regardless of when they commit.
+    // Formula: when context_phase = recording_start_phase, clip plays at
+    // position 0
+    int64_t start_phase = recording_start_phase.load();
     int64_t launch_point =
-        (duration > 0) ? (duration - (current_pos % duration)) % duration : 0;
+        (duration > 0) ? (duration - (start_phase % duration)) % duration : 0;
     launch_point_samples.store(launch_point);
 
     juce::Logger::writeToLog(
         "ClipNode: Commit. Duration=" + juce::String(duration) +
         ", StartTime=" + juce::String(trigger_pos) +
-        ", IdealX=" + juce::String(ideal_anchor) +
-        ", AudioPhase=" + juce::String(audio_anchor) +
-        ", Rotated=" + juce::String(rotated ? "YES" : "NO") +
+        ", StartPhase=" + juce::String(start_phase) +
+        ", LaunchPoint=" + juce::String(launch_point) +
         ", FinalAnchor=" + juce::String(final_anchor));
 
     is_playing.store(true);

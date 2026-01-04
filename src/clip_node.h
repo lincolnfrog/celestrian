@@ -73,6 +73,7 @@ class ClipNode : public AudioNode {
   bool isPendingStart() const { return is_pending_start.load(); }
   bool isAwaitingStop() const { return is_awaiting_stop.load(); }
   int64_t getCommitMasterPos() const { return commit_master_pos.load(); }
+  int64_t getAwaitingStartAt() const { return awaiting_start_at.load(); }
 
   /**
    * Returns the total recorded sample count in the buffer.

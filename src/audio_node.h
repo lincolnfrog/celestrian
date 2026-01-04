@@ -150,6 +150,9 @@ class AudioNode {
   std::atomic<int64_t> anchor_phase_samples{0};
   // Launch point: where playback starts to maintain alignment (default: 0)
   std::atomic<int64_t> launch_point_samples{0};
+  // Recording start phase: full effective_pos at recording start (for unified
+  // timing)
+  std::atomic<int64_t> recording_start_phase{0};
 
   AudioNode *parent = nullptr;
 

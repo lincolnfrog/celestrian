@@ -230,12 +230,47 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                        num_input_channels, num_output_channels, pc);
 
     if (is_playing_global.load()) {
-      // LCM Timeline: Wrap transport at the LCM of all clip durations
-      // This ensures all clips reach 0% simultaneously when timeline completes
-      int64_t timeline_length = calculateTimelineLength();
-      int64_t new_pos = global_transport_pos.load() + num_samples;
-      if (timeline_length > 0) {
-        new_pos = new_pos % timeline_length;
+      int64_t old_pos = global_transport_pos.load();
+      int64_t new_pos = old_pos + num_samples;
+
+      bool is_recording = isAnyNodeRecording();
+      bool just_started_recording = is_recording && !was_any_node_recording_;
+      bool just_finished_recording = was_any_node_recording_ && !is_recording;
+      was_any_node_recording_ = is_recording;
+
+      // Store LCM when recording starts (before the new clip is added)
+      if (just_started_recording) {
+        lcm_before_recording_ = calculateTimelineLength();
+      }
+
+      // Only wrap at LCM boundary when NOT recording
+      if (!is_recording) {
+        int64_t timeline_length = calculateTimelineLength();
+        if (timeline_length > 0) {
+          // When recording JUST ENDED and LCM GREW and transport OVERSHOT new
+          // LCM, snap to align transport. E.g., LCM grew from 1Q to 4Q,
+          // transport at 5Q > 4Q → snap to 4Q (0) But if LCM grew from 4Q to
+          // 12Q and transport at 7Q < 12Q → no snap
+          if (just_finished_recording &&
+              timeline_length > lcm_before_recording_ &&
+              old_pos >= timeline_length) {
+            int64_t lcm_index =
+                (old_pos + timeline_length / 2) / timeline_length;
+            int64_t snapped_pos =
+                (lcm_index * timeline_length) % timeline_length;
+            juce::Logger::writeToLog(
+                "LCM SNAP: pos=" + juce::String(old_pos) + " → boundary " +
+                juce::String(lcm_index * timeline_length) + " → " +
+                juce::String(snapped_pos) +
+                " (LCM grew: " + juce::String(lcm_before_recording_) + " → " +
+                juce::String(timeline_length) + ")");
+            old_pos = snapped_pos;
+            new_pos = old_pos + num_samples;
+          }
+
+          // Normal wrap at LCM boundary
+          new_pos = new_pos % timeline_length;
+        }
       }
       global_transport_pos.store(new_pos);
     }
@@ -319,4 +354,18 @@ int64_t AudioEngine::calculateTimelineLength() const {
   }
 
   return result;
+}
+
+bool AudioEngine::isAnyNodeRecording() const {
+  if (!focused_node) return false;
+
+  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+    for (int i = 0; i < box->getNumChildren(); ++i) {
+      auto *child = box->getChild(i);
+      if (child->is_node_recording.load()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }

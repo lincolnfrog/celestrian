@@ -92,6 +92,48 @@ The **context_loop determines wrapping behavior**:
 
 ---
 
+## Slot Positioning (Visual X-Offset)
+
+### Concept: Quantum Slots
+When a clip starts recording, it is placed at a **slot** in the visual timeline. Each slot represents one quantum (Q) width.
+
+```
+Slot:      |  0  |  1  |  2  |  3  |  4  | ...
+Position:  0Q   1Q   2Q   3Q   4Q   5Q
+```
+
+### Formula
+```cpp
+next_q_boundary = ceil(current_master_pos / Q) * Q  // Next Q boundary after record pressed
+slot = next_q_boundary / Q
+x_pos = base_x + slot * base_width
+```
+
+### Critical Constraint: No Maximum Timeline Length
+> [!CAUTION]
+> **There is no arbitrary maximum number of slots or timeline length.** The timeline expands as needed to accommodate clips recorded at any position.
+
+The maximum slot at any moment is determined by the **current timeline extent**:
+```cpp
+max_slot = (longest_anchor + longest_duration) / Q
+```
+
+For example:
+- Clip 1: 1Q at slot 0 → max_slot = (0 + 1Q) / Q = 1
+- Clip 2: 4Q at slot 0 → max_slot = (0 + 4Q) / Q = 4
+- Clip 3: 8Q at slot 2 → max_slot = (2Q + 8Q) / Q = 10
+
+### Why No Modulo?
+Earlier implementations used modulo to "wrap" slots within the current context:
+```cpp
+// BAD: This breaks Example 2 behavior!
+slot = (next_q / Q) % (context_loop / Q)
+```
+
+This fails when context_loop = Q (only one clip), because `slot % 1 = 0` always. The fix is to use the raw slot value, which naturally extends the timeline.
+
+---
+
 ## Examples
 
 ### Example 1: Basic Looping Stack
@@ -133,7 +175,7 @@ Short clip recorded mid-timeline, doesn't fill context:
 ```
 Timeline:  |----Q----|----Q----|----Q----|----Q----|
 Clip 1:    [████████][░░░░░░░░][░░░░░░░░][░░░░░░░░]  (1Q @ 0, loops)
-Clip 2:    [████████████████████████████████████████]  (4Q @ 0, loops)
+Clip 2:    [██████████████████████████████████████]  (4Q @ 0, loops)
 Clip 3:                        [┄┄┄1Q┄┄┄]             (1Q @ 3Q, ONE-SHOT)
                                ↑ dashed border, no ghosts
 ```
@@ -149,7 +191,7 @@ Recording always starts at the next quantum boundary:
 Timeline:  |----Q----|----Q----|----Q----|----Q----|
            0      0.62Q    1Q                      4Q
 Clip 1:    [████████]  (1Q @ 0)
-Clip 2:    [████████████████████████████████████████]  (4Q @ 0 AFTER snap)
+Clip 2:    [███████████████████████████████████████]  (4Q @ 0 AFTER snap)
            ↑ Snapped from 0.62Q to 1Q (= 0 mod 1Q context)
 ```
 - User pressed record at 0.62Q
@@ -234,7 +276,7 @@ LCM = 4Q (timeline loops every 4Q)
 
 Timeline:  |----Q----|----Q----|----Q----|----Q----|  (wraps to 0)
 Clip 1:    [████████][████████][████████][████████]   (1Q × 4 = 4Q)
-Clip 2:    [████████████████████████████████████████]   (4Q × 1 = 4Q)
+Clip 2:    [██████████████████████████████████████]   (4Q × 1 = 4Q)
 
 At position 0Q: Clip 1 = 0%, Clip 2 = 0%
 At position 1Q: Clip 1 = 0%, Clip 2 = 25%
@@ -257,6 +299,111 @@ Clip 3:          [████████████████████�
 Clip 3 has launch_point = 6Q (from Example 2):
 - At timeline=2Q: Clip 3 phase = (2 + 6) % 8 = 0 (aligned with recording!)
 - At timeline=0Q: Clip 3 phase = (0 + 6) % 8 = 6Q = 75%
+```
+
+### Example: LCM Ghost Extension (1Q + 8Q + 4Q)
+
+This example demonstrates the **LCM Ghost Principle**: when a shorter clip finishes recording, ghosts automatically extend it to fill the LCM cycle.
+
+```
+Scenario:
+1. Record Clip 1 (1Q) - establishes Q
+2. Record Clip 2 (8Q) - establishes 8Q context
+3. Record Clip 3 (4Q) - recorded from 0Q, stops between 3Q-4Q, snaps to 4Q
+
+Durations: 1Q, 8Q, 4Q
+LCM = 8Q
+
+Timeline:  |--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|  (wraps at 8Q → 0)
+Clip 1:    [████][████][████][████][████][████][████][████]  (1Q × 8)
+Clip 2:    [██████████████████████████████████████████████]  (8Q × 1)
+Clip 3:    [██████████████████████][░░░░░░░░░░░░░░░░░░░░░░]  (4Q solid + 4Q ghost)
+                                        ↑ Ghost appears at 4Q to fill LCM
+
+When Clip 3 commits at 4Q:
+- The playhead does NOT loop back to 0Q
+- A ghost instantly appears for the next 4Q
+- Timeline continues to 8Q, THEN all clips loop to 0Q together
+```
+
+### Example: Large LCM (1Q + 8Q + 3Q)
+
+When clip durations have no common factors, the LCM can be very large.
+
+```
+Scenario:
+1. Record Clip 1 (1Q)
+2. Record Clip 2 (8Q)
+3. Record Clip 3 (3Q)
+
+Durations: 1Q, 8Q, 3Q
+LCM = 24Q (8 × 3 = 24)
+
+Timeline (24Q):
+Clip 1:    [█]×24  (1Q repeats 24 times)
+Clip 2:    [████████]×3  (8Q repeats 3 times)
+Clip 3:    [███]×8  (3Q repeats 8 times)
+
+At 24Q, ALL clips simultaneously return to 0%
+```
+
+**Key Insight: The LCM is the True Loop Point**
+
+Individual clips don't loop at their own duration. ALL clips loop together at the LCM boundary. This ensures:
+1. All clips reach 0% playhead simultaneously
+2. The visual representation (ghosts) matches the audio behavior
+3. No clip "jumps ahead" of another when looping
+
+**Invariant**: At `timeline_position = LCM`, ALL clips are at playhead = 0%.
+
+### Example: Shorter Clip Mid-Cycle (1Q + 4Q + 2Q)
+
+This demonstrates that when a **shorter** clip finishes recording, it must NOT cause early looping.
+
+```
+Scenario:
+1. Record Clip 1 (1Q) - establishes Q
+2. Record Clip 2 (4Q) - LCM = 4Q
+3. Start Clip 3 at 0Q, stop between 1Q-2Q → snaps to 2Q
+
+Durations: 1Q, 4Q, 2Q
+LCM = 4Q (unchanged, since 2Q divides 4Q)
+
+Timeline:  |--Q--|--Q--|--Q--|--Q--|  (wraps at 4Q → 0)
+Clip 1:    [████][████][████][████]  (1Q × 4)
+Clip 2:    [████████████████████████████████]  (4Q × 1)
+Clip 3:    [████████████][░░░░░░░░░░░░]  (2Q solid + 2Q ghost)
+                        ↑ Clip 3 ends at 2Q but timeline continues to 4Q
+
+When Clip 3 commits at 2Q:
+- The playhead does NOT loop back to 0Q
+- Clip 2 continues playing (2Q → 4Q)
+- A ghost of Clip 3 appears (2Q → 4Q)
+- At 4Q, ALL clips loop to 0Q together
+```
+
+### Example: LCM Expansion (1Q + 4Q + 3Q)
+
+When a clip's duration doesn't divide the existing LCM, the LCM expands.
+
+```
+Scenario:
+1. Record Clip 1 (1Q) - establishes Q
+2. Record Clip 2 (4Q) - LCM = 4Q
+3. Record Clip 3, stop at 3Q - LCM expands to 12Q (LCM of 4 and 3)
+
+Durations: 1Q, 4Q, 3Q
+LCM = 12Q
+
+Timeline (12Q):
+Clip 1:    [█]×12  (1Q × 12)
+Clip 2:    [████████]×3  (4Q × 3 = 12Q)
+Clip 3:    [██████]×4  (3Q × 4 = 12Q)
+
+When Clip 3 commits at 3Q (transport at ~7Q):
+- Transport at 7Q < LCM of 12Q → NO SNAP, continue naturally
+- Playhead continues: 7Q → 8Q → ... → 12Q → 0 (all loop together)
+- Ghosts fill to complete 12Q cycle
 ```
 
 ### The User's Bug Case (Fixed!)

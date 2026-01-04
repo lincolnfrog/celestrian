@@ -105,6 +105,9 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   // Returns LCM of all clip durations in focused_node
   int64_t calculateTimelineLength() const;
 
+  // Returns true if any clip in focused_node is actively recording
+  bool isAnyNodeRecording() const;
+
   juce::AudioDeviceManager device_manager;
 
   // The root of the hierarchical audio graph
@@ -117,6 +120,11 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   // Global Transport
   std::atomic<bool> is_playing_global{false};
   std::atomic<int64_t> global_transport_pos{0};
+
+  // Track when recording just ended for LCM snap
+  bool was_any_node_recording_ = false;
+  // Track LCM before recording started - used to detect if LCM grew
+  int64_t lcm_before_recording_ = 0;
 
   juce::String soloed_node_uuid;
 
