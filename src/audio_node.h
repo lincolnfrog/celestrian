@@ -82,7 +82,7 @@ class AudioNode {
     obj->setProperty("loopEnd", (double)loop_end_samples.load());
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
     obj->setProperty("playhead", (double)playhead_pos.load());
-    obj->setProperty("isRecording", (bool)is_node_recording.load());
+    obj->setProperty("isRecording", (bool)isRecording());
     obj->setProperty("isMuted", (bool)is_muted.load());
     obj->setProperty("anchorPhase", (double)anchor_phase_samples.load());
     obj->setProperty("launchPoint", (double)launch_point_samples.load());

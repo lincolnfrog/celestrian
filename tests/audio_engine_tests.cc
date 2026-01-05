@@ -204,6 +204,111 @@ class AudioEngineTests : public juce::UnitTest {
       phase = (pos + clip3_launch_point) % clip3_duration;
       expectEquals(phase, (int64_t)(6 * Q));
     }
+
+    beginTest("LCM Timeline: 1Q + 4Q + 3Q Expansion Integration");
+    {
+      AudioEngine engine;
+
+      // Use a block size common in audio apps
+      const int BLOCK_SIZE = 512;
+      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
+      float *ins[] = {buffer.data()};
+      float *outs[] = {buffer.data(), buffer.data()};
+
+      auto process = [&](int total_samples) {
+        int remaining = total_samples;
+        while (remaining > 0) {
+          int n = std::min(remaining, BLOCK_SIZE);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          remaining -= n;
+        }
+      };
+
+      // 1Q = 44100 samples
+      const int Q = 44100;
+
+      // 1. Create and Record Clip 1 (1 sec)
+      engine.createNode("clip", 0, 0);
+      auto state = engine.getGraphState();
+      juce::String id1 = state.getDynamicObject()
+                             ->getProperty("nodes")
+                             .getArray()
+                             ->getReference(0)
+                             .getDynamicObject()
+                             ->getProperty("id");
+
+      engine.startRecordingInNode(id1);
+      process(100);  // Start
+      process(Q);    // Record 1Q
+      engine.stopRecordingInNode(id1);
+      process(100);  // Commit
+
+      // 2. Create and Record Clip 2 (4 sec)
+      engine.createNode("clip", 0, 0);
+      state = engine.getGraphState();
+      auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+      juce::String id2;
+      for (auto &n : *nodes) {
+        juce::String id = n.getDynamicObject()->getProperty("id");
+        if (id != id1) id2 = id;
+      }
+
+      engine.startRecordingInNode(id2);
+      process(100);    // Start
+      process(4 * Q);  // Record 4Q
+      engine.stopRecordingInNode(id2);
+      process(100);  // Commit
+
+      // 3. Create and Record Clip 3 (3 sec)
+      engine.createNode("clip", 0, 0);
+      state = engine.getGraphState();
+      nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+      juce::String id3;
+      for (auto &n : *nodes) {
+        juce::String id = n.getDynamicObject()->getProperty("id");
+        if (id != id1 && id != id2) id3 = id;
+      }
+
+      // Record 3Q. Even if we aren't perfectly aligned, the duration 3Q
+      // combined with existing 4Q should trigger LCM expansion to 12Q.
+      engine.startRecordingInNode(id3);
+      process(100);    // Start
+      process(3 * Q);  // Record 3Q
+      engine.stopRecordingInNode(id3);
+
+      // Now the crucial moment: logic runs on next callback
+      int64_t pos_before =
+          (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+              "masterPos");
+
+      process(100);  // Trigger snap/wrap logic
+
+      int64_t pos_after =
+          (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+              "masterPos");
+
+      // Verify:
+      // 1. Did we continue growing? (pos_after > pos_before)
+      // 2. Are we still wrapping correctly? (pos_after should be valid within
+      // 12Q)
+      // The bug reported is "loops to 0Q" immediately.
+      // If pos_before was large (e.g. 8Q), snapping to 0 would mean pos_after <
+      // pos_before.
+
+      juce::Logger::writeToLog(
+          "LCM TEST: pos_before=" + juce::String(pos_before) +
+          " pos_after=" + juce::String(pos_after));
+
+      // With 12Q LCM (529200), we should NOT snap to 0 unless we are at
+      // boundary. We recorded roughly 1Q + 4Q + 3Q = 8Q total time. 8Q < 12Q.
+      // So we should NOT snap.
+
+      expect(pos_after > pos_before,
+             "Transport should continue forward (no premature snap to 0). "
+             "Before: " +
+                 juce::String(pos_before) +
+                 ", After: " + juce::String(pos_after));
+    }
   }
 };
 

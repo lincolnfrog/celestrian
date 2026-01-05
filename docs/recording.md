@@ -401,9 +401,9 @@ Clip 2:    [████████]×3  (4Q × 3 = 12Q)
 Clip 3:    [██████]×4  (3Q × 4 = 12Q)
 
 When Clip 3 commits at 3Q (transport at ~7Q):
-- Transport at 7Q < LCM of 12Q → NO SNAP, continue naturally
-- Playhead continues: 7Q → 8Q → ... → 12Q → 0 (all loop together)
-- Ghosts fill to complete 12Q cycle
+- **Polyrhythmic Expansion**: Since 3Q is not a multiple of the previous LCM (4Q), the engine explicitly **disables** the snap-to-boundary logic.
+- **Result**: Transport continues naturally from 7Q → 8Q → ... → 12Q (end of new LCM).
+- **Looping**: At 12Q, ALL clips (1Q, 4Q, 3Q) loop to 0 simultaneously.
 ```
 
 ### The User's Bug Case (Fixed!)

@@ -67,11 +67,20 @@ target_compile_definitions(Celestrian PRIVATE
 )
 
 # Copy UI files to the build directory (for development)
-add_custom_command(TARGET Celestrian POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/ui
-    $<TARGET_FILE_DIR:Celestrian>/ui
-)
+if (APPLE)
+    # On macOS, the target directory is inside the .app bundle
+    add_custom_command(TARGET Celestrian POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui
+        $<TARGET_BUNDLE_DIR:Celestrian>/Contents/MacOS/ui
+    )
+else()
+    add_custom_command(TARGET Celestrian POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/ui
+        $<TARGET_FILE_DIR:Celestrian>/ui
+    )
+endif()
 
 # --- Unit Tests ---
 juce_add_console_app(CelestrianTests

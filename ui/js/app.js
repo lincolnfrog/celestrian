@@ -162,14 +162,14 @@ function syncUI(state) {
     const newNodeIds = nodes.map(n => n.id);
     const uiNodeIds = Array.from(nodeLayer.children).map(c => c.id);
 
-    // Calculate the effective quantum for width scaling
-    // The first clip's duration becomes the quantum, subsequent clips scale relative to it
-    let effectiveQ = 1;
+    // Calculate the effective quantum for width scaling (minimum of all reported quantums)
+    let effectiveQ = Infinity;
     nodes.forEach(n => {
-        if (n.effectiveQuantum > 0) {
+        if (n.effectiveQuantum > 0 && n.effectiveQuantum < effectiveQ) {
             effectiveQ = n.effectiveQuantum;
         }
     });
+    if (effectiveQ === Infinity) effectiveQ = 1;
     const baseWidth = 200; // 1 quantum = 200px
 
     let maxY = 0;
@@ -460,20 +460,32 @@ function syncUI(state) {
     });
 
     // Ghost Repetition Rendering: Looping clips show faded repetitions
-    // Show ghosts to fill timeline extent (longest clip determines width)
-    let longestDuration = effectiveQ;
+    // Show ghosts to fill timeline extent (Calculate LCM of stable clips)
+
+    const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+    const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a / gcd(a, b)) * b);
+
+    let committedLCM = effectiveQ;
+    let maxDuration = 0;
+
     nodes.forEach(n => {
-        // Include recording nodes so ghosts appear as the recording grows
-        if (n.duration > longestDuration) {
-            longestDuration = n.duration;
+        if (n.duration > maxDuration) maxDuration = n.duration;
+
+        // Only include STABLE (non-recording) clips in LCM Calculation
+        if (!n.isRecording && n.duration > 0) {
+            committedLCM = lcm(Math.round(committedLCM), Math.round(n.duration));
         }
     });
+
+    // Valid timeline length is at least the LCM, but must expand if a recording goes beyond it
+    let longestDuration = Math.max(committedLCM, maxDuration);
     // Stabilize timeline width: Round up to next full quantum to avoid jitter while recording
-    // CRITICAL FIX: If effectiveQ is not established (first recording), use longestDuration as Q
-    // to prevent timeline from exploding (e.g., 40960 samples / 1 = 40960 quantums = 8M pixels!)
-    const stableQ = (effectiveQ > 1) ? effectiveQ : (longestDuration || baseWidth);
-    const timelineQuantums = Math.ceil((longestDuration || stableQ) / stableQ);
+    const stableQ = (effectiveQ > 1) ? Math.round(effectiveQ) : (Math.round(longestDuration) || baseWidth);
+    const timelineQuantums = Math.max(1, Math.ceil((longestDuration - 10) / stableQ));
     const timelineWidth = timelineQuantums * baseWidth;
+
+    // Ensure viewport bounds include the expanded ghost timeline
+    maxX = Math.max(maxX, timelineWidth);
 
     // DEBUG: Log timeline calculation  
     log(`[Timeline] longestDur=${longestDuration}, effectiveQ=${effectiveQ}, stableQ=${stableQ}, timelineWidth=${timelineWidth}`);
@@ -540,7 +552,7 @@ function syncUI(state) {
             let currentGhostX = clipStartX + clipWidth;
             let ghostCount = 0;
 
-            while (currentGhostX < timelineWidth - 0.1 && ghostCount < 50) {
+            while (currentGhostX < (timelineWidth - 5) && ghostCount < 100) {
                 const ghost = document.createElement('div');
                 ghost.className = 'ghost-clip';
                 ghost.style.position = 'absolute';

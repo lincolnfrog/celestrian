@@ -247,13 +247,32 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       if (!is_recording) {
         int64_t timeline_length = calculateTimelineLength();
         if (timeline_length > 0) {
-          // When recording JUST ENDED and LCM GREW and transport OVERSHOT new
-          // LCM, snap to align transport. E.g., LCM grew from 1Q to 4Q,
-          // transport at 5Q > 4Q → snap to 4Q (0) But if LCM grew from 4Q to
-          // 12Q and transport at 7Q < 12Q → no snap
+          // Check for polyrhythmic expansion (e.g. 3Q clip added to 4Q context
+          // -> 12Q) If any clip's duration is NOT a multiple of the OLD LCM, we
+          // have a polyrhythmic expansion where the cycle length increased
+          // drastically. In this case, we MUST NOT snap, because the transport
+          // is likely mid-cycle in the new, longer timeline.
+          bool is_polyrhythmic_expansion = false;
+          if (lcm_before_recording_ > 0) {
+            if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+              for (int i = 0; i < box->getNumChildren(); ++i) {
+                int64_t dur = box->getChild(i)->getIntrinsicDuration();
+                if (dur > 0 && dur % lcm_before_recording_ != 0) {
+                  is_polyrhythmic_expansion = true;
+                  break;
+                }
+              }
+            }
+          }
+
+          // When recording JUST ENDED and LCM GREW, snap to align transport
+          // BUT only if:
+          // 1. It's a simple extension (not polyrhythmic)
+          // 2. Transport overshot the new LCM (for safety, though polyrhythm
+          // check covers most cases)
           if (just_finished_recording &&
               timeline_length > lcm_before_recording_ &&
-              old_pos >= timeline_length) {
+              !is_polyrhythmic_expansion && old_pos >= timeline_length) {
             int64_t lcm_index =
                 (old_pos + timeline_length / 2) / timeline_length;
             int64_t snapped_pos =

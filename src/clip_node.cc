@@ -31,8 +31,6 @@ juce::var ClipNode::getMetadata() const {
   }
 
   int64_t Q = getEffectiveQuantum();
-  obj->setProperty("effectiveQuantum", (double)Q);
-
   if (Q > 0 && is_node_recording.load()) {
     obj->setProperty("recordingStartPhase",
                      (double)(trigger_master_position.load() % Q));
