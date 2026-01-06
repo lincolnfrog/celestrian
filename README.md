@@ -27,6 +27,12 @@ An open-source Digital Audio Workstation (DAW) built with JUCE and modern web te
    ```bash
    open build/Celestrian_artefacts/Celestrian.app
    ```
+
+4. **Full Clean Build** (ensures UI files are synced):
+   ```bash
+   ./scripts/full_build.sh
+   ```
+
 ### Running Unit Tests
 
 Celestrian includes a suite of unit tests built with the `juce::UnitTest` framework.

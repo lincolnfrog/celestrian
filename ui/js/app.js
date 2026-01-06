@@ -587,11 +587,9 @@ function syncUI(state) {
                 const recordingNode = nodes.find(n => n.isRecording);
 
                 if (recordingNode) {
-                    // Linear Recording Mode: Playhead follows the linear growth of the recording
-                    // We map the growing recording duration to visual pixels
-                    // normalized from the recording's start position (x)
-                    const recDurationPx = (recordingNode.duration / effectiveQ) * baseWidth;
-                    timelinePosPx = (recordingNode.x || 0) + recDurationPx;
+                    // Linear Recording Mode: Cursor position = recording duration in pixels
+                    // This aligns all ghost cursors with how far recording has progressed
+                    timelinePosPx = (recordingNode.duration / effectiveQ) * baseWidth;
                 } else {
                     // Loop Mode: Wrap masterPos by longestDuration (Timeline Length)
                     const timelinePos = state.masterPos % longestDuration;

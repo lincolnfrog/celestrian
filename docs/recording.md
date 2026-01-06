@@ -456,6 +456,136 @@ When you stop recording at timeline=6Q:
 
 ---
 
+## Ghost Timeline Design
+
+Ghosts are the visual repetitions of clips that show how they tile across the LCM timeline. This section defines the precise behavior of ghost creation and cursor display.
+
+### Core Invariants
+
+1. **Minimal Ghosts**: Only create the minimum ghosts necessary for a coherent shared timeline
+2. **LCM-Boundary Expansion**: During recording, ghosts only expand when the recording crosses the **committed LCM** boundary
+3. **Stability After Recording**: When not recording, the ghost timeline should be stable and static
+4. **Cursor Alignment**: All clip cursors must be vertically aligned at the same timeline position at all times
+
+### Ghost Creation Rules
+
+#### During Recording
+When clip N is recording, ghosts for committed clips expand ONLY when recording crosses the **committed LCM boundary**:
+
+- **Committed LCM** = LCM of all non-recording clips
+- New ghosts are added in LCM-sized chunks (not Q-sized)
+- If recording stops before crossing the LCM, NO new ghosts are added during recording
+
+**Example: 1Q + 4Q committed, clip 3 starts recording**
+- Committed LCM = 4Q
+- Timeline extent = 4Q initially (800px)
+
+```
+Recording clip 3 at 0Q-3Q (before LCM boundary):
+Timeline:  |--Q--|--Q--|--Q--|--Q--|
+Clip 1:    [████][░░░░][░░░░][░░░░]  (1Q + 3 ghosts = 4Q total)
+Clip 2:    [████████████████████████]  (4Q, no ghosts needed)
+Clip 3:            [░░░░░░recording...]  (3Q so far)
+                                   ↑ No new ghosts - haven't crossed 4Q
+
+Recording clip 3 at 4Q+ (crossing LCM boundary):
+Timeline:  |--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|
+Clip 1:    [████][░░░░][░░░░][░░░░][░░░░][░░░░][░░░░][░░░░]  (+4 ghosts = 8Q total)
+Clip 2:    [████████████████████████][░░░░░░░░░░░░░░░░░░░░]  (+1 ghost = 8Q total)
+Clip 3:            [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░recording...]  (5Q+ so far)
+                                   ↑ Ghosts added at 4Q boundary
+```
+
+#### After Recording (Commit)
+When a clip commits:
+- LCM is recalculated immediately to include the new clip
+- All ghosts for all clips are updated to fill the new LCM
+- **No animation or delay** - ghosts snap to final positions
+
+**Example: Clip 3 commits at 3Q**
+- Old LCM = 4Q (clips 1+2)
+- New LCM = 12Q (clips 1+2+3: lcm(1,4,3) = 12)
+- Ghosts instantly expand: Clip 1 → 12 repetitions, Clip 2 → 3 repetitions, Clip 3 → 4 repetitions
+
+### Cursor Display Rules
+
+The playback cursor shows the current position in the **LCM timeline**. All clips share one logical cursor.
+
+#### Key Formula
+```javascript
+cursorPosPx = (masterPos % longestDuration) / effectiveQ * baseWidth
+```
+
+Where:
+- `masterPos` = global transport position (samples)
+- `longestDuration` = LCM of all committed clip durations
+- `effectiveQ` = quantum (first clip's duration)
+- `baseWidth` = 200px (width of 1Q in pixels)
+
+#### Cursor Behavior
+| Mode | Cursor Behavior |
+|------|-----------------|
+| **Playback** | `masterPos % LCM` wraps at LCM boundary |
+| **Recording** | `masterPos` grows linearly until commit |
+| **Commit** | If polyrhythmic expansion: no snap. Otherwise: snap to LCM boundary |
+
+#### Visual Alignment Invariant
+> **All clip cursors must appear at the same horizontal position at all times.**
+
+This means:
+- If cursor is at 150px in clip 1's main area, clip 2's cursor is at 150px too
+- If cursor is at 250px (in clip 1's first ghost), clip 2's cursor is at 250px (still in clip 2's main area if clip 2 is 4Q)
+
+### Example: 1Q + 4Q + 3Q Scenario
+
+This is the canonical test case for ghost behavior:
+
+```
+Step 1: Record Clip 1 (1Q)
+- Clip 1: [████] (main clip only, no ghosts)
+- Timeline = 1Q
+
+Step 2: Start recording Clip 2
+- As recording passes 1Q: Clip 1 ghost #1 appears
+- As recording passes 2Q: Clip 1 ghost #2 appears
+- Cursor moves through: main → ghost1 → ghost2 → ghost3...
+
+Step 3: Stop Clip 2 at 4Q
+- Clip 1: [█][░][░][░] (main + 3 ghosts)
+- Clip 2: [████████████████] (main only, fills 4Q)
+- Timeline = LCM(1,4) = 4Q
+- Cursor wraps at 4Q
+
+Step 4: Start recording Clip 3
+- As recording passes each Q: new ghosts appear for Clip 1 & 2
+
+Step 5: Stop Clip 3 at 3Q
+- Timeline = LCM(1,4,3) = 12Q
+- Clip 1: 12 repetitions (11 ghosts)
+- Clip 2: 3 repetitions (2 ghosts)
+- Clip 3: 4 repetitions (3 ghosts)
+- Cursor continues from position 3Q → 4Q → 5Q... (no snap)
+- At 12Q, cursor loops to 0Q
+```
+
+### Current Implementation Issues
+
+> [!CAUTION]
+> The current implementation has several known issues that violate these invariants.
+
+**Known Bugs (as of 2026-01-05):**
+1. **Ghost Extension Lag**: Ghosts are created based on `timelineWidth` but cursor position can exceed this during recording
+2. **Cursor Jump at Commit**: When clip 3 (3Q) commits, cursor may jump unexpectedly (e.g., 3Q → 6Q)
+3. **Abstraction Problem**: The UI calculates cursor position and ghost extents separately, leading to race conditions
+
+**Suggested Fix Direction:**
+The root issue is that ghost extent and cursor position are calculated using different values (`timelineWidth` vs `masterPos`). A cleaner abstraction would:
+- Use a single source of truth for "how far the timeline extends"
+- Create ghosts based on this extent, not on separate calculations
+- Ensure cursor position always falls within created ghost bounds
+
+---
+
 ## Future Features
 
 ### Disable Auto-Quantize (for fiddly overdubs)
