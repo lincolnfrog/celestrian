@@ -125,6 +125,8 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   bool was_any_node_recording_ = false;
   // Track LCM before recording started - used to detect if LCM grew
   int64_t lcm_before_recording_ = 0;
+  // Track the duration of the most recent recording for transport continuity
+  int64_t last_recording_duration_ = 0;
 
   juce::String soloed_node_uuid;
 

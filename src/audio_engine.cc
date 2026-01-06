@@ -234,6 +234,26 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       int64_t new_pos = old_pos + num_samples;
 
       bool is_recording = isAnyNodeRecording();
+
+      // Before updating state, capture the current recording duration
+      // (needed for transport continuity when recording ends)
+      if (was_any_node_recording_ && !is_recording) {
+        // Recording just finished - capture the duration of the just-finished
+        // clip This is the newest clip's duration (it was just committed)
+        if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+          int64_t max_dur = 0;
+          for (int i = 0; i < box->getNumChildren(); ++i) {
+            int64_t dur = box->getChild(i)->getIntrinsicDuration();
+            if (dur > max_dur) max_dur = dur;
+          }
+          // The just-finished recording's duration is the difference from old
+          // LCM Actually, simpler: it's the position in the old LCM cycle
+          last_recording_duration_ =
+              old_pos %
+              (lcm_before_recording_ > 0 ? lcm_before_recording_ : max_dur);
+        }
+      }
+
       bool just_started_recording = is_recording && !was_any_node_recording_;
       bool just_finished_recording = was_any_node_recording_ && !is_recording;
       was_any_node_recording_ = is_recording;
@@ -285,6 +305,17 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                 juce::String(timeline_length) + ")");
             old_pos = snapped_pos;
             new_pos = old_pos + num_samples;
+          }
+          // Polyrhythmic expansion: snap to the recording's final position
+          // This ensures the cursor continues smoothly from where it was during
+          // recording
+          else if (just_finished_recording && is_polyrhythmic_expansion) {
+            juce::Logger::writeToLog(
+                "POLYRHYTHM SNAP: pos=" + juce::String(old_pos) +
+                " → recording_dur " + juce::String(last_recording_duration_) +
+                " (LCM grew: " + juce::String(lcm_before_recording_) + " → " +
+                juce::String(timeline_length) + ")");
+            new_pos = last_recording_duration_ + num_samples;
           }
 
           // Normal wrap at LCM boundary
