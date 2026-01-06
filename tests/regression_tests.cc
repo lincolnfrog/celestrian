@@ -1,7 +1,7 @@
 #include <juce_core/juce_core.h>
 
 #include "../src/audio_engine.h"
-#include "../src/box_node.h"
+#include "../src/stack_node.h"
 #include "../src/clip_node.h"
 
 class AudioEngineWorkflowTests : public juce::UnitTest {
@@ -42,7 +42,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     beginTest("Clip 2 Should Loop to 0Q With 1Q Context");
     {
       const double SR = 1000.0;  // 1000 samples = 1Q
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       // === Clip 1: 1Q (1000 samples) ===
       auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
@@ -143,7 +143,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("Clip 1 (First Clip) Should have Launch=0");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
       auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
       auto* clipPtr = clip1.get();
       parent.addChild(std::move(clip1));
@@ -179,7 +179,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("Clip 1 Stopped Mid-Block (Immediate Commit)");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
       auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
       auto* clipPtr = clip1.get();
       parent.addChild(std::move(clip1));
@@ -231,7 +231,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("Clip 3 x_pos Should Stay In Bounds");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       // Dummy input data for recording
       float dummyBuf[10000] = {0.0f};
@@ -298,7 +298,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("Clip 3 After Multiple Loops Should Stay In Bounds");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       float dummyBuf[10000] = {0.0f};
       float* const inputs[] = {dummyBuf};
@@ -364,7 +364,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("x_pos Stability Across Multiple Process Calls");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       float dummyBuf[10000] = {0.0f};
       float* const inputs[] = {dummyBuf};
@@ -418,7 +418,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("Example 2: Mid-Loop Recording Anchors at Next Q Boundary");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       // Dummy input data for recording
       float dummyBuf[10000] = {0.0f};
@@ -468,7 +468,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       beginTest("Multi-Clip Mid-Loop Recording Uses Effective Position");
       const double SR = 44100.0;
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       float dummyBuf[10000] = {0.0f};
       float* const inputs[] = {dummyBuf};
@@ -531,7 +531,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     beginTest("LCM: All Clips at 0% at LCM Boundary");
     {
       const double SR = 1000.0;  // 1000 samples = 1Q
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       // Clip 1: 1Q (1000 samples)
       auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
@@ -628,7 +628,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     beginTest("LCM: Clip 3 Wait Logic at Q Boundary");
     {
       const double SR = 1000.0;  // 1Q = 1000 samples
-      celestrian::BoxNode parent("Parent");
+      celestrian::StackNode parent("Parent");
 
       // Setup Context: Clip 1 (4Q) -> Context 4000
       auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);

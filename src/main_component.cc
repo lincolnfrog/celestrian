@@ -65,20 +65,12 @@ MainComponent::MainComponent()
                     }
                   })
               .withNativeFunction(
-                  "enterBox",
+                  "toggleStackExpand",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
-                      audio_engine.enterBox(args[0].toString());
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "exitBox",
-                  [this](const juce::Array<juce::var> &args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    audio_engine.exitBox();
+                      audio_engine.toggleStackExpand(args[0].toString());
                     completion(true);
                   })
               .withNativeFunction(
@@ -86,11 +78,19 @@ MainComponent::MainComponent()
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    if (args.size() > 2)
+                    if (args.size() > 3) {
+                      // type, x, y, parent_uuid
+                      audio_engine.createNode(args[0].toString(),
+                                              (double)args[1], (double)args[2],
+                                              args[3].toString());
+                    } else if (args.size() > 2) {
+                      // type, x, y
                       audio_engine.createNode(args[0].toString(),
                                               (double)args[1], (double)args[2]);
-                    else if (args.size() > 0)
+                    } else if (args.size() > 0) {
+                      // type only
                       audio_engine.createNode(args[0].toString());
+                    }
                     completion(true);
                   })
               .withNativeFunction(
@@ -101,6 +101,27 @@ MainComponent::MainComponent()
                     if (args.size() > 1)
                       audio_engine.renameNode(args[0].toString(),
                                               args[1].toString());
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "moveNode",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 2)
+                      audio_engine.moveNode(args[0].toString(),
+                                            args[1].toString(),
+                                            (double)args[2]);
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "setNodePosition",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 2)
+                      audio_engine.setNodePosition(
+                          args[0].toString(), (double)args[1], (double)args[2]);
                     completion(true);
                   })
               .withNativeFunction(

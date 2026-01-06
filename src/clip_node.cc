@@ -2,7 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
-#include "box_node.h"
+#include "stack_node.h"
 
 namespace celestrian {
 
@@ -81,7 +81,7 @@ void ClipNode::process(const float *const *input_channels,
 
       // Find longest sibling clip (the context loop)
       if (parent != nullptr) {
-        auto *box = dynamic_cast<BoxNode *>(parent);
+        auto *box = dynamic_cast<StackNode *>(parent);
         if (box != nullptr) {
           for (int i = 0; i < box->getNumChildren(); ++i) {
             auto *sibling = box->getChild(i);
@@ -104,7 +104,7 @@ void ClipNode::process(const float *const *input_channels,
       // "I pressed record when the playhead was HERE in the loop"
       int64_t context_launch_point = 0;
       if (parent != nullptr) {
-        auto *box = dynamic_cast<BoxNode *>(parent);
+        auto *box = dynamic_cast<StackNode *>(parent);
         if (box != nullptr) {
           for (int i = 0; i < box->getNumChildren(); ++i) {
             auto *sibling = box->getChild(i);
@@ -507,7 +507,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
 
     // Find longest sibling to define the context grid
     if (parent != nullptr) {
-      if (auto *box = dynamic_cast<BoxNode *>(parent)) {
+      if (auto *box = dynamic_cast<StackNode *>(parent)) {
         for (int i = 0; i < box->getNumChildren(); ++i) {
           auto *sibling = box->getChild(i);
           // Use generic AudioNode interface (NO CASTING)

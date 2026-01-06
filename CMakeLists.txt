@@ -43,7 +43,7 @@ target_sources(Celestrian PRIVATE
     src/audio_engine.h
     src/audio_engine.cc
     src/clip_node.cc
-    src/box_node.cc
+    src/stack_node.cc
 )
 
 # Link JUCE modules
@@ -90,12 +90,12 @@ juce_add_console_app(CelestrianTests
 target_sources(CelestrianTests PRIVATE
     tests/test_runner.cc
     tests/clip_node_tests.cc
-    tests/box_node_tests.cc
+    tests/stack_node_tests.cc
     tests/quantum_propagation_tests.cc
     tests/regression_tests.cc
     tests/audio_engine_tests.cc
     src/clip_node.cc
-    src/box_node.cc
+    src/stack_node.cc
     src/audio_engine.cc
 )
 

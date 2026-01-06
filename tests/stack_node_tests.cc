@@ -1,23 +1,23 @@
-#include "../src/box_node.h"
+#include "../src/stack_node.h"
 #include "../src/clip_node.h"
 #include <juce_core/juce_core.h>
 
 namespace celestrian {
 
-class BoxNodeTests : public juce::UnitTest {
+class StackNodeTests : public juce::UnitTest {
 public:
-  BoxNodeTests() : juce::UnitTest("BoxNode", "Audio Engine") {}
+  StackNodeTests() : juce::UnitTest("StackNode", "Audio Engine") {}
 
   void runTest() override {
     beginTest("Hierarchy Management");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       expectEquals(root.getNumChildren(), 0);
 
       root.addChild(std::make_unique<ClipNode>("Clip1", 44100.0));
       expectEquals(root.getNumChildren(), 1);
 
-      root.addChild(std::make_unique<BoxNode>("SubBox"));
+      root.addChild(std::make_unique<StackNode>("SubBox"));
       expectEquals(root.getNumChildren(), 2);
 
       root.clearChildren();
@@ -26,7 +26,7 @@ public:
 
     beginTest("Audio Summing (Stereo)");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
 
       // Add two children that will produce specific DC signals
       auto clip1 = std::make_unique<ClipNode>("Clip1", 44100.0);
@@ -83,7 +83,7 @@ public:
 
     beginTest("Aggregate Waveform");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto clip1 = std::make_unique<ClipNode>("Clip1", 44100.0);
       auto clip2 = std::make_unique<ClipNode>("Clip2", 44100.0);
 
@@ -113,7 +113,7 @@ public:
 
     beginTest("Input Propagation");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
       auto clipPtr = clip.get();
       root.addChild(std::move(clip));
@@ -133,7 +133,7 @@ public:
 
     beginTest("Solo Muting Behavior");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto clip1 = std::make_unique<ClipNode>("Clip1", 44100.0);
       auto clip2 = std::make_unique<ClipNode>("Clip2", 44100.0);
       auto clip1Ptr = clip1.get();
@@ -194,6 +194,6 @@ public:
   }
 };
 
-static BoxNodeTests boxNodeTests;
+static StackNodeTests boxNodeTests;
 
 } // namespace celestrian

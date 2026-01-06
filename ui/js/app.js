@@ -2,39 +2,21 @@ import { callNative, log } from './bridge.js';
 import { drawWaveform } from './canvas_renderer.js';
 import { Viewport } from './viewport.js';
 import { groupNodesByVisualX, calculateButtonPosition } from './stack_logic.js';
+import { initDragDrop } from './drag_drop.js';
 
 const nodeLayer = document.getElementById('node-layer');
 const creationUI = document.getElementById('creation-ui');
-const creationMenu = document.getElementById('creation-menu');
 const playBtn = document.getElementById('play-btn');
 
 const livePeaks = new Map();
 let viewport;
 let availableInputs = [];
-// Global API Hooks (Moved to top for reliable early initialization)
-window.toggleCreationMenu = (e, x, y) => {
-    if (e) e.stopPropagation();
-    const menu = document.getElementById('creation-menu');
-    const active = menu.classList.toggle('active');
 
-    // Store spawn target for the menu items
-    menu._spawnX = x;
-    menu._spawnY = y;
-
-    const btn = e ? e.currentTarget : null;
-    if (btn && btn.classList.contains('btn-plus-circle')) {
-        btn.style.background = '#ffffff';
-        setTimeout(() => btn.style.background = '', 100);
-    }
-};
-
+// Global API Hooks
 window.createNode = (type, x, y) => {
-    const menu = document.getElementById('creation-menu');
-    if (menu) menu.classList.remove('active');
     callNative('createNode', type, x || -1, y || -1);
 };
 
-window.exitBox = () => callNative('exitBox');
 window.togglePlayback = () => callNative('togglePlayback');
 window.toggleRecord = (id) => toggleRecord(id);
 
@@ -180,11 +162,80 @@ function syncUI(state) {
     // JS displays node.x directly with no transformation
     const VISUAL_OFFSET = 120; // Shift for UI rendering
 
-    nodes.forEach(node => {
+    // Separate stacks from clips for different rendering
+    const stacks = nodes.filter(n => n.type === 'stack');
+    const clips = nodes.filter(n => n.type === 'clip');
+
+    // Render stacks first (they contain clips)
+    stacks.forEach(stack => {
+        let stackWrapper = document.getElementById(`stack-wrapper-${stack.id}`);
+        if (!stackWrapper) {
+            stackWrapper = createStackWrapper(stack);
+            nodeLayer.appendChild(stackWrapper);
+        }
+
+        // Update stack wrapper position and state
+        stackWrapper.style.left = `${stack.x + VISUAL_OFFSET}px`;
+        stackWrapper.style.top = `${stack.y}px`;
+        stackWrapper.classList.toggle('stack-collapsed', !stack.isExpanded);
+
+        // Render stack's children
+        const childContainer = stackWrapper.querySelector('.stack-children');
+        const stackChildren = stack.nodes || [];
+
+        if (stack.isExpanded && stackChildren.length > 0) {
+            // Show all children when expanded
+            // Track which children exist
+            const childIds = new Set(stackChildren.map(c => c.id));
+
+            // Remove children that no longer exist
+            childContainer.querySelectorAll('.node').forEach(childDiv => {
+                if (!childIds.has(childDiv.id)) {
+                    childDiv.remove();
+                }
+            });
+
+            // Add new children (they'll be updated in the main loop below)
+            stackChildren.forEach((child) => {
+                let childDiv = document.getElementById(child.id);
+                if (!childDiv) {
+                    childDiv = createNodeElement(child);
+                    childContainer.appendChild(childDiv);
+                }
+                // Apply stack-specific positioning (let natural sizing handle dimensions)
+                childDiv.style.position = 'relative';
+                childDiv.style.left = '0';
+                childDiv.style.top = '0';
+                childDiv.style.marginBottom = '12px';
+            });
+        } else if (!stack.isExpanded) {
+            // When collapsed, clear children only if they exist
+            if (childContainer.children.length > 0) {
+                childContainer.innerHTML = '';
+            }
+        }
+    });
+
+    // Collect all clips for update (both top-level and those inside stacks)
+    const allClips = [...clips];
+    stacks.forEach(stack => {
+        if (stack.nodes) {
+            allClips.push(...stack.nodes.filter(n => n.type === 'clip'));
+        }
+    });
+
+    // Update all clips (top-level and stack children)
+    allClips.forEach(node => {
         let div = document.getElementById(node.id);
         if (!div) {
-            div = createNodeElement(node);
-            nodeLayer.appendChild(div);
+            // For top-level clips only, create and append
+            if (clips.includes(node)) {
+                div = createNodeElement(node);
+                nodeLayer.appendChild(div);
+            } else {
+                // Stack children are already created above
+                return;
+            }
         }
 
         // Calculate dynamic width based on clip duration relative to quantum
@@ -226,23 +277,30 @@ function syncUI(state) {
         const isActivelyRecording = node.isRecording && !node.isPendingStart;
         const hasRecordedAudio = (node.duration || 0) > 10 && !node.isPendingStart;
         const shouldCollapse = !isActivelyRecording && !hasRecordedAudio;
-        div.classList.toggle('collapsed', shouldCollapse);
+        // Detect if this node is a child of a stack (vs top-level)
+        const isStackChild = !clips.includes(node);
 
         // UI = Data: Position comes directly from C++ data
-        // Apply VISUAL_OFFSET for View
-        div.style.left = `${(node.x || 0) + VISUAL_OFFSET}px`;
-        div.style.top = `${node.y || 0}px`;
+        // Apply VISUAL_OFFSET for View (but NOT for stack children - they use relative positioning)
+        if (!isStackChild) {
+            div.style.left = `${(node.x || 0) + VISUAL_OFFSET}px`;
+            div.style.top = `${node.y || 0}px`;
+        }
 
         // Node container width: Match rhythmic duration but NEVER narrower than the header
         const nodeWidth = Math.max(260, shouldCollapse ? 0 : (displayWidth || 0));
-        div.style.width = isFinite(nodeWidth) ? `${nodeWidth}px` : '260px';
+        if (!isStackChild) {
+            div.style.width = isFinite(nodeWidth) ? `${nodeWidth}px` : '260px';
+        }
 
         const headerH = 38;
         const contentH = Math.max(20, (node.h || 100) - headerH);
 
         // Final node height depends on collapsed state
         const finalNodeH = shouldCollapse ? headerH : (node.h || 100);
-        div.style.height = isFinite(finalNodeH) ? `${finalNodeH}px` : '38px';
+        if (!isStackChild) {
+            div.style.height = isFinite(finalNodeH) ? `${finalNodeH}px` : '38px';
+        }
 
         // Content width/height
         const content = div.querySelector('.node-content');
@@ -457,6 +515,17 @@ function syncUI(state) {
                 drawWaveform(div.querySelector('.node-waveform'), []);
             }
         }
+
+        // Initialize drag-and-drop for this node
+        const parent = stacks.find(s => s.nodes && s.nodes.some(n => n.id === node.id));
+        const nodeData = {
+            id: node.id,
+            type: node.type,
+            parent: parent ? parent.id : null,
+            isTopLevel: !parent
+        };
+        log(`[DragInit] ${node.id}: isTopLevel=${nodeData.isTopLevel}, parent=${nodeData.parent}`);
+        initDragDrop(div, nodeData);
     });
 
     // Ghost Repetition Rendering: Looping clips show faded repetitions
@@ -494,15 +563,32 @@ function syncUI(state) {
     nodeLayer.querySelectorAll('.ghost-clip').forEach(g => g.remove());
 
     // Render ghost repetitions only if effectiveQ is established
+    log(`[Ghost] effectiveQ=${effectiveQ}, nodes.length=${nodes.length}, clips.length=${clips.length}`);
+
     if (effectiveQ > 1) {
+        let ghostCount = 0;
         nodes.forEach(node => {
             if (node.isRecording || !node.duration) return;
+
+            // TEMP FIX: Skip ghost repetitions for stack children (coordinate mismatch issue)
+            // Only render ghosts for top-level clips
+            const isTopLevelClip = clips.includes(node);
+            if (!isTopLevelClip) {
+                log(`[Ghost] Skipping ${node.id} - not top-level clip`);
+                return;
+            }
 
             const clipWidth = (node.duration / effectiveQ) * baseWidth;
             const isOneShot = node.duration < effectiveQ;
 
             // One-shots don't get ghosts
-            if (isOneShot) return;
+            if (isOneShot) {
+                log(`[Ghost] Skipping ${node.id} - one-shot`);
+                return;
+            }
+
+            ghostCount++;
+            log(`[Ghost] Rendering ghosts for ${node.id}`);
 
             // Calculate how many ghosts fit in the stabilized timeline
             const clipStartX = node.x;
@@ -619,6 +705,7 @@ function syncUI(state) {
     // 0. Stability Sort: Ensure anchor selection is identical across polls
     const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
 
+    /* OLD STACK BUTTON LOGIC - DISABLED (replaced by stack wrappers)
     // Render Stack (+) buttons: Group nodes by their visual X position
     const activeStackButtons = new Set();
     const groups = groupNodesByVisualX(nodes);
@@ -656,15 +743,26 @@ function syncUI(state) {
             btn.remove();
         }
     });
+    */
 
-    // Removal check
+    // Removal check - clean up nodes that no longer exist
+    // Skip stack wrappers (they have 'stack-wrapper-' prefix and are managed separately)
     uiNodeIds.forEach(id => {
         if (!newNodeIds.includes(id)) {
             const el = document.getElementById(id);
-            if (el && !el.classList.contains('stack-btn')) {
+            if (el && !el.classList.contains('stack-btn') && !el.classList.contains('stack-wrapper')) {
                 el.remove();
                 livePeaks.delete(id);
             }
+        }
+    });
+
+    // Clean up orphaned stack wrappers (stacks that no longer exist)
+    const stackIds = new Set(stacks.map(s => s.id));
+    nodeLayer.querySelectorAll('.stack-wrapper').forEach(wrapper => {
+        const stackId = wrapper.id.replace('stack-wrapper-', '');
+        if (!stackIds.has(stackId)) {
+            wrapper.remove();
         }
     });
 }
@@ -673,16 +771,23 @@ function createNodeElement(node) {
     const div = document.createElement('div');
     div.id = node.id;
     div.className = `node ${node.type}`;
+
+    // Stacks should not show record button (they're containers, not recordable)
+    const showRecordBtn = node.type !== 'stack';
+
     div.innerHTML = `
+        <div class="grab-handle" title="Drag to reorder"></div>
         <div class="node-header">
             <input class="node-name-input" value="${node.name}" />
             <span class="peak-debug" style="font-size: 9px; color: #10b981; opacity: 0.6; pointer-events: none; width: 44px; text-align: right; padding-right: 4px; font-family: monospace;"></span>
             
             <div class="node-btn-mute">M</div>
             <div class="node-btn-solo">S</div>
+            ${showRecordBtn ? `
             <div class="node-btn-record">
                 <div class="record-dot"></div>
             </div>
+            ` : ''}
             <div class="node-btn-play">
                 <div class="play-icon"></div>
             </div>
@@ -711,10 +816,13 @@ function createNodeElement(node) {
         e.stopPropagation();
     };
 
-    div.querySelector('.node-btn-record').onmousedown = (e) => {
-        e.stopPropagation();
-        toggleRecord(node.id);
-    };
+    const recordBtn = div.querySelector('.node-btn-record');
+    if (recordBtn) {
+        recordBtn.onmousedown = (e) => {
+            e.stopPropagation();
+            toggleRecord(node.id);
+        };
+    }
 
     div.querySelector('.node-btn-play').onmousedown = (e) => {
         e.stopPropagation();
@@ -739,10 +847,11 @@ function createNodeElement(node) {
         };
     }
 
+    // Double-click functionality removed - stacks use expand/collapse instead
     div.ondblclick = (e) => {
         if (e.target.tagName !== 'INPUT') {
             e.stopPropagation();
-            if (node.type === 'box') enterBox(node.id);
+            // Stacks can be expanded/collapsed via the handle, not double-click
         }
     };
 
@@ -859,6 +968,90 @@ function createNodeElement(node) {
     return div;
 }
 
+function createStackWrapper(stack) {
+    const wrapper = document.createElement('div');
+    wrapper.id = `stack-wrapper-${stack.id}`;
+    wrapper.className = 'stack-wrapper';
+    // Position is set via CSS and updated in syncUI
+
+    wrapper.innerHTML = `
+        <div class="grab-handle" title="Drag to reorder"></div>
+        <div class="stack-expand-handle" data-stack-id="${stack.id}"></div>
+        <div class="stack-children"></div>
+        <div class="stack-add-container">
+            <div class="stack-add-button" data-stack-id="${stack.id}">+</div>
+            <div class="stack-add-menu">
+                <div class="menu-item" data-action="clip">New Clip</div>
+                <div class="menu-item" data-action="stack">New Stack</div>
+                <div class="menu-item" data-action="template">Load Template</div>
+            </div>
+        </div>
+    `;
+
+    // Expand/collapse handle click
+    const expandHandle = wrapper.querySelector('.stack-expand-handle');
+    expandHandle.onclick = (e) => {
+        e.stopPropagation();
+        toggleStackExpand(stack.id);
+    };
+
+    // Stack add button click
+    const addButton = wrapper.querySelector('.stack-add-button');
+    const addMenu = wrapper.querySelector('.stack-add-menu');
+
+    addButton.onclick = (e) => {
+        e.stopPropagation();
+        const isActive = addMenu.classList.toggle('active');
+
+        if (isActive) {
+            // Smart positioning: show above if space, below if near top
+            const buttonRect = addButton.getBoundingClientRect();
+            const menuHeight = 120; // Approximate menu height
+            const spaceAbove = buttonRect.top - 50; // Account for top bar
+
+            // Clear previous positioning
+            addMenu.style.bottom = '';
+            addMenu.style.top = '';
+
+            if (spaceAbove >= menuHeight) {
+                // Enough space above - show above button
+                addMenu.style.bottom = '40px';
+            } else {
+                // Not enough space above - show below button  
+                addMenu.style.top = '40px';
+            }
+
+            // Close menu on outside click
+            const closeMenu = (event) => {
+                if (!addMenu.contains(event.target) && !addButton.contains(event.target)) {
+                    addMenu.classList.remove('active');
+                    document.removeEventListener('click', closeMenu);
+                }
+            };
+            setTimeout(() => document.addEventListener('click', closeMenu), 0);
+        }
+    };
+
+    // Menu item clicks
+    addMenu.querySelectorAll('.menu-item').forEach(item => {
+        item.onclick = (e) => {
+            e.stopPropagation();
+            const action = item.dataset.action;
+            addMenu.classList.remove('active');
+
+            if (action === 'template') {
+                log('Load Template not yet implemented');
+                return;
+            }
+
+            // Create new node within this stack by passing parent ID
+            createNode(action, -1, -1, stack.id);
+        };
+    });
+
+    return wrapper;
+}
+
 // API Wrappers
 export async function togglePlayback() { await callNative('togglePlayback'); }
 export async function toggleRecord(id) {
@@ -876,24 +1069,16 @@ export async function toggleRecord(id) {
     log(`Toggling record for ${id} (currently ${isActive ? 'ACTIVE' : 'IDLE'})`);
     await callNative(isActive ? 'stopRecordingInNode' : 'startRecordingInNode', id);
 }
-export async function createNode(type, x, y) {
-    creationMenu.classList.remove('active');
-    const spawnX = (x !== undefined) ? x : creationMenu._spawnX;
-    const spawnY = (y !== undefined) ? y : creationMenu._spawnY;
-    await callNative('createNode', type, spawnX || -1, spawnY || -1);
+export async function createNode(type, x, y, parent) {
+    await callNative('createNode', type, x || -1, y || -1, parent || '');
 }
-export async function enterBox(id) {
-    await callNative('enterBox', id);
-    nodeLayer.innerHTML = '';
-    viewport.reset();
+
+export async function toggleStackExpand(id) {
+    await callNative('toggleStackExpand', id);
 }
+
 export async function togglePlay(id) { await callNative('togglePlay', id); }
 export async function toggleSolo(id) { await callNative('toggleSolo', id); }
-
-export async function exitBox() {
-    await callNative('exitBox');
-    nodeLayer.innerHTML = '';
-}
 // function renameNode moved to bottom section
 export async function renameNode(id, name) {
     await callNative('renameNode', id, name);

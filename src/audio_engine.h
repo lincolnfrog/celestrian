@@ -46,26 +46,35 @@ class AudioEngine : public juce::AudioIODeviceCallback {
    */
   juce::var getWaveform(const juce::String &uuid, int num_peaks) const;
 
-  // Navigation API
+  // Stack Management
   /**
-   * Moves the user focus into a sub-box.
+   * Toggles the expand/collapse state of a stack.
    */
-  void enterBox(const juce::String &uuid);
+  void toggleStackExpand(const juce::String &uuid);
 
   /**
-   * Returns the focus to the parent box.
+   * Creates a new node of the specified type.
+   * If parent_uuid is provided, adds to that stack; otherwise uses
+   * focused_node.
    */
-  void exitBox();
-
-  /**
-   * Creates a new node of the specified type in the current box.
-   */
-  void createNode(const juce::String &type, double x = -1.0, double y = -1.0);
+  void createNode(const juce::String &type, double x = -1.0, double y = -1.0,
+                  const juce::String &parent_uuid = "");
 
   /**
    * Renames a specific node.
    */
   void renameNode(const juce::String &uuid, const juce::String &new_name);
+
+  /**
+   * Moves a node to a new parent stack and position.
+   */
+  void moveNode(const juce::String &node_uuid,
+                const juce::String &new_parent_uuid, double new_y);
+
+  /**
+   * Updates a node's position (for freeform positioning of top-level stacks).
+   */
+  void setNodePosition(const juce::String &node_uuid, double x, double y);
 
   void toggleSolo(const juce::String &uuid);
   void togglePlay(const juce::String &uuid);
@@ -113,9 +122,8 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   // The root of the hierarchical audio graph
   std::unique_ptr<celestrian::AudioNode> root_node;
 
-  // Navigation focus items
+  // Navigation focus (no stack needed for single-level editing)
   celestrian::AudioNode *focused_node = nullptr;
-  std::vector<celestrian::AudioNode *> navigation_stack;
 
   // Global Transport
   std::atomic<bool> is_playing_global{false};

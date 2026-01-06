@@ -1,8 +1,8 @@
 #include <juce_core/juce_core.h>
 
 #include "../src/audio_engine.h"
-#include "../src/box_node.h"
 #include "../src/clip_node.h"
+#include "../src/stack_node.h"
 
 namespace celestrian {
 
@@ -11,30 +11,26 @@ class AudioEngineTests : public juce::UnitTest {
   AudioEngineTests() : juce::UnitTest("AudioEngine", "Audio Engine") {}
 
   void runTest() override {
-    beginTest("Navigation: Enter/Exit Box");
-    {
-      AudioEngine engine;
-      // Root is already a box
-      engine.createNode("box", 10, 10);
-      auto state = engine.getGraphState();
-      auto nodesVar = state.getDynamicObject()->getProperty("nodes");
-      expect(nodesVar.isArray());
-      auto *nodes = nodesVar.getArray();
-      expect(nodes->size() == 1);
-      juce::String subBoxUuid =
-          (*nodes)[0].getDynamicObject()->getProperty("id");
+    // Navigation tests removed - expand/collapse functionality replaces
+    // enter/exit
+    /*
+     beginTest("Navigation: Enter/Exit Stack");
+     {
+       AudioEngine engine;
+       // Root is already a stack
+       engine.createNode("stack", 10, 10);
+       auto state = engine.getGraphState();
+       auto nodesVar = state.getDynamicObject()->getProperty("nodes");
+       expect(nodesVar.isArray());
+       auto *nodes = nodesVar.getArray();
+       expect(nodes->size() == 1);
+       juce::String subStackUuid =
+           (*nodes)[0].getDynamicObject()->getProperty("id");
 
-      engine.enterBox(subBoxUuid);
-      auto newState = engine.getGraphState();
-      expectEquals(
-          newState.getDynamicObject()->getProperty("focusedId").toString(),
-          subBoxUuid);
-
-      engine.exitBox();
-      auto rootState = engine.getGraphState();
-      expect(rootState.getDynamicObject()->getProperty("focusedId") !=
-             subBoxUuid);
-    }
+       // NOTE: enterBox/exitBox removed - navigation via expand/collapse
+     instead
+     }
+     */
 
     beginTest("Node Management: Create/Rename/Input");
     {

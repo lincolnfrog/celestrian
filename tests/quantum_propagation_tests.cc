@@ -1,6 +1,6 @@
 #include <juce_core/juce_core.h>
 
-#include "../src/box_node.h"
+#include "../src/stack_node.h"
 #include "../src/clip_node.h"
 
 namespace celestrian {
@@ -16,12 +16,12 @@ class QuantumPropagationTests : public juce::UnitTest {
 
     beginTest("Recursive Discovery");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto clip1 = std::make_unique<ClipNode>("Clip1", 44100.0);
       auto clip1Ptr = clip1.get();
       root.addChild(std::move(clip1));
 
-      auto subBox = std::make_unique<BoxNode>("SubBox");
+      auto subBox = std::make_unique<StackNode>("SubBox");
       auto subBoxPtr = subBox.get();
       auto clip2 = std::make_unique<ClipNode>("Clip2", 44100.0);
       auto clip2Ptr = clip2.get();
@@ -43,7 +43,7 @@ class QuantumPropagationTests : public juce::UnitTest {
 
     beginTest("Hysteresis Snapping (Late Snap)");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
       auto masterPtr = masterClip.get();
       root.addChild(std::move(masterClip));
@@ -76,7 +76,7 @@ class QuantumPropagationTests : public juce::UnitTest {
 
     beginTest("Hysteresis Snapping (Anticipatory Stop)");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
       auto masterPtr = masterClip.get();
       root.addChild(std::move(masterClip));
@@ -111,7 +111,7 @@ class QuantumPropagationTests : public juce::UnitTest {
 
     beginTest("Hysteresis Snapping (Raw Stop + Loop Snap)");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
       auto masterPtr = masterClip.get();
       root.addChild(std::move(masterClip));
@@ -147,7 +147,7 @@ class QuantumPropagationTests : public juce::UnitTest {
 
     beginTest("Hysteresis Snapping (Raw Stop + Short Q)");
     {
-      BoxNode root("Root");
+      StackNode root("Root");
       auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
       auto masterPtr = masterClip.get();
       root.addChild(std::move(masterClip));

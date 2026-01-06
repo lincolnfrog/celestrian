@@ -2,14 +2,14 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
-#include "box_node.h"
 #include "clip_node.h"
+#include "stack_node.h"
 
 AudioEngine::AudioEngine() {
   init(1, 2);
 
-  // Start with an empty root box
-  root_node = std::make_unique<celestrian::BoxNode>("SessionRoot");
+  // Start with an empty root stack
+  root_node = std::make_unique<celestrian::StackNode>("SessionRoot");
   focused_node = root_node.get();
 }
 
@@ -33,8 +33,8 @@ void AudioEngine::init(int inputs, int outputs) {
 
 celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
                                                    const juce::String &uuid) {
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(node)) {
-    return box->findNodeByUuid(uuid);
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
+    return stack->findNodeByUuid(uuid);
   }
   if (node && node->getUuid() == uuid) return node;
   return nullptr;
@@ -114,54 +114,111 @@ juce::var AudioEngine::getWaveform(const juce::String &uuid,
   return juce::Array<juce::var>();
 }
 
-// --- Navigation ---
+// --- Stack Expand/Collapse ---
 
-void AudioEngine::enterBox(const juce::String &uuid) {
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-    for (int i = 0; i < box->getNumChildren(); ++i) {
-      auto *child = box->getChild(i);
-      if (child->getUuid() == uuid &&
-          dynamic_cast<celestrian::BoxNode *>(child)) {
-        navigation_stack.push_back(focused_node);
-        focused_node = child;
-        return;
-      }
-    }
+void AudioEngine::toggleStackExpand(const juce::String &uuid) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    bool currentState = node->is_expanded.load();
+    node->is_expanded.store(!currentState);
+    juce::Logger::writeToLog(
+        "AudioEngine: Toggled expand for " + uuid + " (New State: " +
+        juce::String(!currentState ? "expanded" : "collapsed") + ")");
   }
 }
 
-void AudioEngine::exitBox() {
-  if (!navigation_stack.empty()) {
-    focused_node = navigation_stack.back();
-    navigation_stack.pop_back();
-  }
-}
+void AudioEngine::createNode(const juce::String &type, double x, double y,
+                             const juce::String &parent_uuid) {
+  // Find target parent stack
+  celestrian::StackNode *target_stack = nullptr;
 
-void AudioEngine::createNode(const juce::String &type, double x, double y) {
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-    std::unique_ptr<celestrian::AudioNode> new_node;
-    if (type == "clip") {
-      new_node = std::make_unique<celestrian::ClipNode>("New Clip", 44100.0);
-    } else {
-      new_node = std::make_unique<celestrian::BoxNode>("New Box");
-    }
-
-    new_node->setParent(box);
-    if (x >= 0 && y >= 0) {
-      new_node->x_pos = x;
-      new_node->y_pos = y;
-    } else {
-      new_node->x_pos = 0.0;  // Default to Time 0 (was 120.0)
-      new_node->y_pos = box->getNumChildren() * 120.0;  // 120px per clip row
-    }
-    box->addChild(std::move(new_node));
+  if (!parent_uuid.isEmpty()) {
+    // Use specified parent
+    auto *parent_node = findNodeByUuid(root_node.get(), parent_uuid);
+    target_stack = dynamic_cast<celestrian::StackNode *>(parent_node);
+  } else {
+    // Default to focused_node
+    target_stack = dynamic_cast<celestrian::StackNode *>(focused_node);
   }
+
+  if (!target_stack) {
+    juce::Logger::writeToLog("createNode: No valid stack target found");
+    return;
+  }
+
+  std::unique_ptr<celestrian::AudioNode> new_node;
+  if (type == "clip") {
+    new_node = std::make_unique<celestrian::ClipNode>("New Clip", 44100.0);
+  } else if (type == "stack") {
+    new_node = std::make_unique<celestrian::StackNode>("New Stack");
+  } else {
+    // Fallback for any legacy "box" calls
+    new_node = std::make_unique<celestrian::StackNode>("New Stack");
+  }
+
+  new_node->setParent(target_stack);
+  if (x >= 0 && y >= 0) {
+    new_node->x_pos = x;
+    new_node->y_pos = y;
+  } else {
+    new_node->x_pos = 0.0;  // Default to Time 0
+    new_node->y_pos =
+        target_stack->getNumChildren() * 120.0;  // 120px per clip row
+  }
+  target_stack->addChild(std::move(new_node));
 }
 
 void AudioEngine::renameNode(const juce::String &uuid,
                              const juce::String &new_name) {
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
     node->setName(new_name);
+  }
+}
+
+void AudioEngine::moveNode(const juce::String &node_uuid,
+                           const juce::String &new_parent_uuid, double new_y) {
+  // Find the node to move
+  auto *node = findNodeByUuid(root_node.get(), node_uuid);
+  if (!node) {
+    juce::Logger::writeToLog("moveNode: Node not found: " + node_uuid);
+    return;
+  }
+
+  // Find the new parent stack
+  auto *new_parent = findNodeByUuid(root_node.get(), new_parent_uuid);
+  auto *new_parent_stack = dynamic_cast<celestrian::StackNode *>(new_parent);
+  if (!new_parent_stack) {
+    juce::Logger::writeToLog("moveNode: Invalid parent: " + new_parent_uuid);
+    return;
+  }
+
+  // Get current parent
+  auto *old_parent = node->getParent();
+  auto *old_parent_stack = dynamic_cast<celestrian::StackNode *>(old_parent);
+
+  // Remove from old parent
+  if (old_parent_stack) {
+    for (int i = 0; i < old_parent_stack->getNumChildren(); ++i) {
+      if (old_parent_stack->getChild(i) == node) {
+        auto owned_node = old_parent_stack->removeChild(i);
+
+        // Update position and parent
+        owned_node->y_pos = new_y;
+        owned_node->setParent(new_parent_stack);
+
+        // Add to new parent
+        new_parent_stack->addChild(std::move(owned_node));
+        return;
+      }
+    }
+  }
+}
+
+void AudioEngine::setNodePosition(const juce::String &node_uuid, double x,
+                                  double y) {
+  auto *node = findNodeByUuid(root_node.get(), node_uuid);
+  if (node) {
+    node->x_pos = x;
+    node->y_pos = y;
   }
 }
 
@@ -240,10 +297,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       if (was_any_node_recording_ && !is_recording) {
         // Recording just finished - capture the duration of the just-finished
         // clip This is the newest clip's duration (it was just committed)
-        if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
+        if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
           int64_t max_dur = 0;
-          for (int i = 0; i < box->getNumChildren(); ++i) {
-            int64_t dur = box->getChild(i)->getIntrinsicDuration();
+          for (int i = 0; i < stack->getNumChildren(); ++i) {
+            int64_t dur = stack->getChild(i)->getIntrinsicDuration();
             if (dur > max_dur) max_dur = dur;
           }
           // The just-finished recording's duration is the difference from old
@@ -274,9 +331,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
           // is likely mid-cycle in the new, longer timeline.
           bool is_polyrhythmic_expansion = false;
           if (lcm_before_recording_ > 0) {
-            if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-              for (int i = 0; i < box->getNumChildren(); ++i) {
-                int64_t dur = box->getChild(i)->getIntrinsicDuration();
+            if (auto *stack =
+                    dynamic_cast<celestrian::StackNode *>(focused_node)) {
+              for (int i = 0; i < stack->getNumChildren(); ++i) {
+                int64_t dur = stack->getChild(i)->getIntrinsicDuration();
                 if (dur > 0 && dur % lcm_before_recording_ != 0) {
                   is_polyrhythmic_expansion = true;
                   break;
@@ -393,9 +451,9 @@ int64_t AudioEngine::calculateTimelineLength() const {
   int64_t result = quantum;  // Start with quantum as base
 
   // Calculate LCM of all children's durations
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-    for (int i = 0; i < box->getNumChildren(); ++i) {
-      auto *child = box->getChild(i);
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
+    for (int i = 0; i < stack->getNumChildren(); ++i) {
+      auto *child = stack->getChild(i);
       int64_t dur = child->getIntrinsicDuration();
       if (dur > 0) {
         result = lcm(result, dur);
@@ -409,9 +467,9 @@ int64_t AudioEngine::calculateTimelineLength() const {
 bool AudioEngine::isAnyNodeRecording() const {
   if (!focused_node) return false;
 
-  if (auto *box = dynamic_cast<celestrian::BoxNode *>(focused_node)) {
-    for (int i = 0; i < box->getNumChildren(); ++i) {
-      auto *child = box->getChild(i);
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
+    for (int i = 0; i < stack->getNumChildren(); ++i) {
+      auto *child = stack->getChild(i);
       if (child->is_node_recording.load()) {
         return true;
       }

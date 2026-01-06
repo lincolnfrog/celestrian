@@ -1,6 +1,6 @@
 #include <juce_core/juce_core.h>
 
-#include "../src/box_node.h"
+#include "../src/stack_node.h"
 #include "../src/clip_node.h"
 
 namespace celestrian {
@@ -142,7 +142,7 @@ class ClipNodeTests : public juce::UnitTest {
       auto node = std::make_unique<ClipNode>("TestRotation", SR);
       auto *nodePtr = node.get();
 
-      BoxNode parent("Parent");
+      StackNode parent("Parent");
       // Set parent quantum by adding a dummy clip that defines it
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[100] = {0.0f};
@@ -198,7 +198,7 @@ class ClipNodeTests : public juce::UnitTest {
 
     beginTest("Loop Points API");
     {
-      BoxNode parent("Parent");
+      StackNode parent("Parent");
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
       auto *clipPtr = clip.get();
       parent.addChild(std::move(clip));
@@ -247,7 +247,7 @@ class ClipNodeTests : public juce::UnitTest {
       // The recorded audio should be aligned so it plays back in phase with
       // master.
       const double SR = 1000.0;
-      BoxNode parent("Parent");
+      StackNode parent("Parent");
 
       // First clip defines quantum of 1000 samples
       auto masterClip = std::make_unique<ClipNode>("Master", SR);
@@ -328,7 +328,7 @@ class ClipNodeTests : public juce::UnitTest {
       auto node = std::make_unique<ClipNode>("TestAwaitStop", SR);
 
       // Create parent with quantum established
-      BoxNode parent("Parent");
+      StackNode parent("Parent");
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[1000] = {0.0f};
       float *const dummyIns[] = {dummyIn};

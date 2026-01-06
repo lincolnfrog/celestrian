@@ -30,7 +30,7 @@ struct ProcessContext {
 /**
  * Enumeration of available node types in the Celestrian ecosystem.
  */
-enum class NodeType { Clip, Box, Unknown };
+enum class NodeType { Clip, Stack, Unknown };
 
 /**
  * Interface for all audio-producing or processing nodes in the Celestrian
@@ -99,8 +99,8 @@ class AudioNode {
     switch (getNodeType()) {
       case NodeType::Clip:
         return "clip";
-      case NodeType::Box:
-        return "box";
+      case NodeType::Stack:
+        return "stack";
       default:
         return "unknown";
     }
@@ -144,6 +144,8 @@ class AudioNode {
   std::atomic<int64_t> loop_end_samples{0};
   std::atomic<bool> is_node_recording{false};
   std::atomic<bool> is_muted{false};
+  std::atomic<bool> is_expanded{
+      true};  // UI state: expanded (true) or collapsed (false)
   std::atomic<float> last_block_peak{0.0f};
 
   // Phase-aligned recording: where in the quantum grid this clip was recorded

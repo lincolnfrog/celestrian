@@ -6,9 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Celestrian DAW</title>
     <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/stack-styles.css">
+    <link rel="stylesheet" href="css/drag-drop.css">
 </head>
 
 <body style="background-color: #0f172a;">
+    <!-- LOADING OVERLAY -->
     <div id="loading-overlay"
         style="position:fixed;top:0;left:0;width:100%;height:100%;background:#0f172a;display:flex;justify-content:center;align-items:center;color:#38bdf8;z-index:9999;font-family:sans-serif;">
         <div style="text-align:center;">
@@ -17,31 +20,28 @@
         </div>
     </div>
 
-
-    <header>
-        <h1>CELESTRIAN</h1>
-        <div class="transport-controls">
-            <button class="btn-transport" id="back-btn">BACK (Esc)</button>
-            <button class="btn-transport" id="play-btn">PLAY</button>
+    <!-- TOP BAR -->
+    <div class="top-bar"
+        style="position: fixed; top: 0; left: 0; right: 0; height: 50px; background: #0f172a; border-bottom: 1px solid #1e293b; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 1000;">
+        <div style="display: flex; align-items: center; gap: 16px;">
+            <div class="logo" style="font-size: 20px; font-weight: 900; letter-spacing: 2px; color: #38bdf8;">
+                CELESTRIAN</div>
+            <button class="btn-plus-circle" onclick="window.createNode('stack', 0, 0)"
+                style="font-size: 12px; padding: 6px 16px;">+ New Stack</button>
         </div>
-    </header>
-
-    <div class="stack-container" id="canvas-root">
-        <!-- FIXED UI OVERLAY -->
-        <div id="creation-ui"
-            style="position: absolute; top: 80px; left: 40px; z-index: 500; width: 60px; height: 60px;">
-            <div id="creation-menu" class="creation-dropdown">
-                <div class="menu-item" onclick="createNode('clip')">RECORD NEW CLIP</div>
-                <div class="menu-item" onclick="createNode('box')">CREATE SUB-BOX</div>
-            </div>
-            <button class="btn-plus-circle" onclick="window.toggleCreationMenu(event)">+</button>
+        <div style="display: flex; gap: 12px;">
+            <button id="play-btn" onclick="window.togglePlayback()" class="playback-btn">PLAY</button>
         </div>
+    </div>
 
+    <!-- MAIN CANVAS -->
+    <div class="stack-container" id="canvas-root" style="margin-top: 50px;">
         <div id="viewport">
             <div id="node-layer"></div>
         </div>
     </div>
 
+    <!-- DEBUG PANEL -->
     <div id="debug-panel"
         style="position: fixed; bottom: 10px; right: 10px; display: flex; flex-direction: column; gap: 5px; z-index: 1000; align-items: flex-end;">
         <div id="debug-log">Log initialized...</div>
