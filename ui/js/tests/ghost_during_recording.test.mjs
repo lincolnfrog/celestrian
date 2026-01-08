@@ -1,178 +1,170 @@
 /**
- * Ghost Cursor During Recording Tests
+ * Ghost During Recording - Unit Tests
  * 
- * These tests verify ghost cursor visibility behavior during:
- * 1. Recording of clip 2 (while clip 1 is committed)
- * 2. Playback after all clips are committed
+ * Tests verify ghost extension behavior per docs/recording.md:
+ * "Ghosts only expand when recording crosses the committed LCM boundary"
+ * "New ghosts are added in LCM-sized chunks (not Q-sized)"
  */
 
-// Constants matching app.js
-const VISUAL_OFFSET = 120;
-const baseWidth = 200;  // 200px per quantum
+const baseWidth = 200;
 
-// Test scenario: Clip 1 is 1Q, Clip 2 is recording
-function testDuringRecording() {
-    console.log("=== TEST: Ghost Cursor During Recording ===\n");
+// Simulate the correct LCM-boundary expansion logic from app.js
+function calculateTimelineWidth(committedClips, recordingClip, effectiveQ) {
+    const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+    const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a / gcd(a, b)) * b);
 
-    // Clip 1: 1Q committed
-    const clip1 = {
-        id: 'clip1',
-        duration: 83200,  // 1Q in samples (approx)
-        isRecording: false,
-        x: 0
-    };
-
-    // Clip 2: Recording, growing
-    const clip2 = {
-        id: 'clip2',
-        duration: 332800,  // 4Q worth of recording (growing)
-        isRecording: true,
-        x: 0
-    };
-
-    const effectiveQ = 83200;  // 1Q in samples
-    const longestDuration = 332800;  // Clip 2's growing duration
-
-    // Simulate ghosts for clip 1:
-    // - Main clip: [0, 200)
-    // - Ghost 0: [200, 400)
-    // - Ghost 1: [400, 600)
-    // - Ghost 2: [600, 800)
-
-    const clip1Width = (clip1.duration / effectiveQ) * baseWidth;  // 200px
-    const ghosts = [
-        { left: 200, width: 200, range: "[200, 400)" },
-        { left: 400, width: 200, range: "[400, 600)" },
-        { left: 600, width: 200, range: "[600, 800)" },
-        { left: 800, width: 200, range: "[800, 1000)" }
-    ];
-
-    // Test case: masterPos = 2.5Q (should be in ghost 1)
-    const masterPos = 2.5 * effectiveQ;  // 208000 samples
-    const anyRecording = true;
-
-    // Current app.js logic:
-    const timelinePos = anyRecording ? masterPos : (masterPos % longestDuration);
-    const timelinePosPx = (timelinePos / effectiveQ) * baseWidth;
-
-    console.log(`Input: masterPos=${masterPos}, effectiveQ=${effectiveQ}`);
-    console.log(`Calculated: timelinePos=${timelinePos}, timelinePosPx=${timelinePosPx}`);
-    console.log(`Expected: Ghost 1 [400, 600) should be active`);
-
-    // Check which ghost is active
-    let activeGhost = null;
-    for (let i = 0; i < ghosts.length; i++) {
-        const g = ghosts[i];
-        const isActive = (timelinePosPx >= g.left - 1 && timelinePosPx < g.left + g.width);
-        if (isActive) {
-            activeGhost = i;
-            console.log(`✓ Ghost ${i} ${g.range} IS ACTIVE at posPx=${timelinePosPx.toFixed(1)}`);
-        }
+    // Calculate committed LCM
+    let committedLCM = effectiveQ;
+    for (const clip of committedClips) {
+        committedLCM = lcm(Math.round(committedLCM), Math.round(clip.duration));
     }
 
-    // Also check main clip
-    const mainActive = (timelinePosPx >= 0 && timelinePosPx < 200);
-    if (mainActive) {
-        console.log(`Main clip [0, 200) IS ACTIVE at posPx=${timelinePosPx.toFixed(1)}`);
+    const lcmWidth = (committedLCM / effectiveQ) * baseWidth;
+    let timelineWidth = lcmWidth;
+
+    // During recording, extend in LCM chunks as recording crosses boundaries
+    if (recordingClip && recordingClip.duration > 0) {
+        const recordingWidthPx = (recordingClip.duration / effectiveQ) * baseWidth;
+        const lcmChunksCrossed = Math.floor(recordingWidthPx / lcmWidth);
+        timelineWidth = (lcmChunksCrossed + 1) * lcmWidth;
     }
 
-    // Verify expected result
-    if (activeGhost === 1) {
-        console.log("\n✓ PASS: Ghost 1 correctly activated at 2.5Q\n");
+    return { committedLCM, lcmWidth, timelineWidth };
+}
+
+function countGhosts(clipDuration, timelineWidth, effectiveQ) {
+    const clipWidth = (clipDuration / effectiveQ) * baseWidth;
+    let count = 0;
+    for (let x = clipWidth; x < (timelineWidth - 5); x += clipWidth) count++;
+    return count;
+}
+
+// ============================================================================
+// Test 1: Committed LCM = 1Q, Recording at 0.5Q → No extension yet
+// ============================================================================
+function test1() {
+    console.log("=== TEST 1: Recording at 0.5Q (before 1Q boundary) ===\n");
+    const effectiveQ = 44100;
+    const committed = [{ duration: 44100 }];  // 1Q
+    const recording = { duration: 22050 };     // 0.5Q
+
+    const result = calculateTimelineWidth(committed, recording, effectiveQ);
+    // 0.5Q is still within the first LCM chunk (1Q), so no extension
+    // floor(100/200) = 0 chunks crossed → timeline = 1 * 200 = 200px
+    const expected = 200;
+
+    console.log(`Committed LCM: ${result.committedLCM} (${result.lcmWidth}px)`);
+    console.log(`Recording at: 0.5Q (100px)`);
+    console.log(`Timeline width: ${result.timelineWidth}px`);
+    console.log(`Expected: ${expected}px (no extension - still in first chunk)`);
+
+    if (result.timelineWidth === expected) {
+        console.log("✓ PASS\n");
         return true;
-    } else {
-        console.log(`\n✗ FAIL: Expected ghost 1 to be active, got ghost ${activeGhost}`);
-        console.log("This indicates the ghost cursor logic is broken during recording.\n");
-        return false;
     }
+    console.log("✗ FAIL\n");
+    return false;
 }
 
-// Test: Verify ghost creation keeps pace with recording
-function testGhostCreationPace() {
-    console.log("=== TEST: Ghost Creation Pace ===\n");
+// ============================================================================
+// Test 2: Committed LCM = 1Q, Recording at 1.5Q → Extends to 2Q
+// ============================================================================
+function test2() {
+    console.log("=== TEST 2: Recording at 1.5Q (crossed 1Q boundary) ===\n");
+    const effectiveQ = 44100;
+    const committed = [{ duration: 44100 }];  // 1Q
+    const recording = { duration: 66150 };     // 1.5Q
 
-    // Simulate the ghost extension logic
-    const effectiveQ = 83200;
-    const baseWidth = 200;
-    const clip1Duration = effectiveQ;  // 1Q
-    const clip1Width = 200;  // 1Q in pixels
+    const result = calculateTimelineWidth(committed, recording, effectiveQ);
+    // 1.5Q = 300px. floor(300/200) = 1 chunk crossed → timeline = 2 * 200 = 400px
+    const expected = 400;
 
-    // Timeline width grows as clip 2 records
-    const testCases = [
-        { timelineWidth: 200, expectedGhosts: 0 },   // 1Q - no ghosts
-        { timelineWidth: 400, expectedGhosts: 1 },   // 2Q - 1 ghost
-        { timelineWidth: 600, expectedGhosts: 2 },   // 3Q - 2 ghosts
-        { timelineWidth: 800, expectedGhosts: 3 },   // 4Q - 3 ghosts
-    ];
+    console.log(`Recording at: 1.5Q (300px)`);
+    console.log(`Chunks crossed: ${Math.floor(300 / 200)}`);
+    console.log(`Timeline width: ${result.timelineWidth}px`);
+    console.log(`Expected: ${expected}px (extends by 1 LCM after crossing 1Q)`);
+    console.log(`Ghosts for 1Q clip: ${countGhosts(44100, result.timelineWidth, effectiveQ)}`);
 
-    let allPassed = true;
-
-    for (const tc of testCases) {
-        // Calculate how many ghosts fit
-        const clipStartX = 0;
-        let currentGhostX = clipStartX + clip1Width;  // Start after main clip
-        let ghostCount = 0;
-
-        while (currentGhostX < (tc.timelineWidth - 5) && ghostCount < 100) {
-            ghostCount++;
-            currentGhostX += clip1Width;
-        }
-
-        if (ghostCount === tc.expectedGhosts) {
-            console.log(`✓ Timeline ${tc.timelineWidth}px → ${ghostCount} ghosts (expected ${tc.expectedGhosts})`);
-        } else {
-            console.log(`✗ Timeline ${tc.timelineWidth}px → ${ghostCount} ghosts (expected ${tc.expectedGhosts})`);
-            allPassed = false;
-        }
+    if (result.timelineWidth === expected) {
+        console.log("✓ PASS\n");
+        return true;
     }
-
-    console.log(allPassed ? "\n✓ PASS: Ghost creation pace is correct\n" : "\n✗ FAIL: Ghost creation pace is incorrect\n");
-    return allPassed;
+    console.log("✗ FAIL\n");
+    return false;
 }
 
-// Test: Real log data reproduction
-function testRealLogData() {
-    console.log("=== TEST: Real Log Data Reproduction ===\n");
-    console.log("From celestrian_debug.log:");
-    console.log("  posPx=453, ghosts=1, firstGhost=[200, 400)\n");
+// ============================================================================
+// Test 3: Committed LCM = 4Q, Recording at 3Q → No extension (before 4Q)
+// ============================================================================
+function test3() {
+    console.log("=== TEST 3: LCM=4Q, Recording at 3Q (before 4Q boundary) ===\n");
+    const effectiveQ = 44100;
+    const committed = [{ duration: 44100 }, { duration: 176400 }];  // 1Q + 4Q = LCM 4Q
+    const recording = { duration: 132300 };  // 3Q
 
-    // At posPx=453, we should expect ghost 2 [400, 600) to be active
-    // But only ghost 1 exists (ghosts=1 means only [200, 400) was created)
+    const result = calculateTimelineWidth(committed, recording, effectiveQ);
+    // 3Q = 600px, LCM = 4Q = 800px
+    // floor(600/800) = 0 chunks crossed → timeline = 1 * 800 = 800px (no change)
+    const expected = 800;
 
-    // This reveals the BUG: Ghost creation is too slow!
-    // When posPx reaches 453, we need ghost 2 [400, 600)
-    // But timelineWidth hasn't grown enough yet to create ghost 2
+    console.log(`Committed LCM: 4Q (${result.lcmWidth}px)`);
+    console.log(`Recording at: 3Q (600px)`);
+    console.log(`Chunks crossed: ${Math.floor(600 / 800)}`);
+    console.log(`Timeline width: ${result.timelineWidth}px`);
+    console.log(`Expected: ${expected}px (no extension - still in first LCM)`);
 
-    const posPx = 453;
-    const ghostBounds = { left: 200, right: 400 };
-
-    const isInGhost1 = (posPx >= ghostBounds.left - 1 && posPx < ghostBounds.right);
-    console.log(`posPx=${posPx} in ghost 1 [200, 400)? ${isInGhost1}`);
-
-    if (!isInGhost1) {
-        console.log("\n✗ This confirms the bug: posPx has moved past the only available ghost!");
-        console.log("Solution: Ghosts must be created AHEAD of the cursor, not behind.");
-        return false;
+    if (result.timelineWidth === expected) {
+        console.log("✓ PASS\n");
+        return true;
     }
-
-    return true;
+    console.log("✗ FAIL\n");
+    return false;
 }
 
-// Run all tests
-console.log("\n" + "=".repeat(60) + "\n");
-const results = [];
-results.push(testDuringRecording());
-results.push(testGhostCreationPace());
-results.push(testRealLogData());
+// ============================================================================
+// Test 4: Committed LCM = 4Q, Recording at 5Q → Extends to 8Q
+// ============================================================================
+function test4() {
+    console.log("=== TEST 4: LCM=4Q, Recording at 5Q (crossed 4Q boundary) ===\n");
+    const effectiveQ = 44100;
+    const committed = [{ duration: 44100 }, { duration: 176400 }];  // LCM = 4Q
+    const recording = { duration: 220500 };  // 5Q
+
+    const result = calculateTimelineWidth(committed, recording, effectiveQ);
+    // 5Q = 1000px, LCM = 4Q = 800px
+    // floor(1000/800) = 1 chunk crossed → timeline = 2 * 800 = 1600px (8Q)
+    const expected = 1600;
+
+    console.log(`Recording at: 5Q (1000px)`);
+    console.log(`Chunks crossed: ${Math.floor(1000 / 800)}`);
+    console.log(`Timeline width: ${result.timelineWidth}px`);
+    console.log(`Expected: ${expected}px (8Q - extends by 1 LCM)`);
+
+    if (result.timelineWidth === expected) {
+        console.log("✓ PASS\n");
+        return true;
+    }
+    console.log("✗ FAIL\n");
+    return false;
+}
+
+// ============================================================================
+// Run All Tests
+// ============================================================================
+console.log("=".repeat(60));
+console.log("GHOST DURING RECORDING - LCM BOUNDARY TESTS");
+console.log("Per docs/recording.md: ghosts expand in LCM chunks");
+console.log("=".repeat(60) + "\n");
+
+const results = [test1(), test2(), test3(), test4()];
+const passed = results.filter(r => r).length;
 
 console.log("=".repeat(60));
-const passed = results.filter(r => r).length;
-const total = results.length;
-console.log(`\nResults: ${passed}/${total} tests passed\n`);
+console.log(`Results: ${passed}/${results.length} tests passed`);
 
-if (passed < total) {
-    console.log("DIAGNOSIS: The ghost extension logic creates ghosts TOO SLOWLY.");
-    console.log("The cursor (posPx) moves faster than ghosts are being created.");
-    console.log("FIX: Create ghosts ahead of the current cursor position, not just up to timelineWidth.");
+if (passed === results.length) {
+    console.log("\n✓ All tests pass!");
+} else {
+    console.log("\n✗ Tests failed.");
     process.exit(1);
 }

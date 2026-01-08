@@ -1,4 +1,18 @@
-import { callNative, log } from './bridge.js';
+// Detect environment: Use mock backend if window.celestrian exists, otherwise JUCE bridge
+let callNative, log, getState;
+
+if (typeof window !== 'undefined' && window.celestrian) {
+    // Test harness environment - use mock backend
+    ({ callNative, log, getState } = window.celestrian);
+    console.log('[App] Using MOCK backend');
+} else {
+    // Production environment - use JUCE bridge
+    const bridge = await import('./bridge.js');
+    ({ callNative, log } = bridge);
+    getState = null; // Not used in production (polling uses callNative('getGraphState'))
+    console.log('[App] Using JUCE bridge');
+}
+
 import { drawWaveform } from './canvas_renderer.js';
 import { Viewport } from './viewport.js';
 import { groupNodesByVisualX, calculateButtonPosition } from './stack_logic.js';
@@ -122,10 +136,13 @@ async function fetchInputs() {
 }
 
 async function startPolling() {
-    console.log("Starting state polling loop...");
+    const isMock = getState !== null;
+    console.log(`Starting state polling loop (${isMock ? 'MOCK BACKEND' : 'JUCE BRIDGE'})...`);
+
     while (true) {
         try {
-            const state = await callNative('getGraphState');
+            // Use appropriate backend method
+            const state = isMock ? getState() : await callNative('getGraphState');
             if (state) syncUI(state);
         } catch (err) {
             console.error("Polling error:", err);
@@ -145,12 +162,23 @@ function syncUI(state) {
     const uiNodeIds = Array.from(nodeLayer.children).map(c => c.id);
 
     // Calculate the effective quantum for width scaling (minimum of all reported quantums)
+    // Must include clips inside stacks, not just top-level nodes
     let effectiveQ = Infinity;
-    nodes.forEach(n => {
-        if (n.effectiveQuantum > 0 && n.effectiveQuantum < effectiveQ) {
-            effectiveQ = n.effectiveQuantum;
-        }
-    });
+
+    // Helper to collect all effectiveQuantum values recursively
+    function collectQuantums(nodeList) {
+        (nodeList || []).forEach(n => {
+            if (n.effectiveQuantum > 0 && n.effectiveQuantum < effectiveQ) {
+                effectiveQ = n.effectiveQuantum;
+            }
+            // Also check children (for stacks)
+            if (n.type === 'stack' && n.nodes) {
+                collectQuantums(n.nodes);
+            }
+        });
+    }
+    collectQuantums(nodes);
+
     if (effectiveQ === Infinity) effectiveQ = 1;
     const baseWidth = 200; // 1 quantum = 200px
 
@@ -529,176 +557,223 @@ function syncUI(state) {
     });
 
     // Ghost Repetition Rendering: Looping clips show faded repetitions
-    // Show ghosts to fill timeline extent (Calculate LCM of stable clips)
+    // Now calculated PER-STACK, not globally
 
     const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
     const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a / gcd(a, b)) * b);
 
-    let committedLCM = effectiveQ;
-    let maxDuration = 0;
+    // Helper: Calculate LCM for a stack's children (recursive for nested stacks)
+    function calculateStackLCM(stackNodes, effectiveQ) {
+        let stackLCM = effectiveQ;
+        let maxDuration = 0;
 
-    nodes.forEach(n => {
-        if (n.duration > maxDuration) maxDuration = n.duration;
+        (stackNodes || []).forEach(child => {
+            if (child.isRecording) return; // Skip recording clips
 
-        // Only include STABLE (non-recording) clips in LCM Calculation
-        if (!n.isRecording && n.duration > 0) {
-            committedLCM = lcm(Math.round(committedLCM), Math.round(n.duration));
-        }
-    });
+            if (child.type === 'clip' && child.duration > 0) {
+                stackLCM = lcm(Math.round(stackLCM), Math.round(child.duration));
+                maxDuration = Math.max(maxDuration, child.duration);
+            } else if (child.type === 'stack' && child.nodes) {
+                // Nested stack: its internal LCM becomes its composite duration
+                const childLCM = calculateStackLCM(child.nodes, effectiveQ);
+                stackLCM = lcm(Math.round(stackLCM), Math.round(childLCM));
+                maxDuration = Math.max(maxDuration, childLCM);
+            }
+        });
 
-    // Valid timeline length is at least the LCM, but must expand if a recording goes beyond it
-    let longestDuration = Math.max(committedLCM, maxDuration);
-    // Stabilize timeline width: Round up to next full quantum to avoid jitter while recording
-    const stableQ = (effectiveQ > 1) ? Math.round(effectiveQ) : (Math.round(longestDuration) || baseWidth);
-    const timelineQuantums = Math.max(1, Math.ceil((longestDuration - 10) / stableQ));
-    const timelineWidth = timelineQuantums * baseWidth;
-
-    // Ensure viewport bounds include the expanded ghost timeline
-    maxX = Math.max(maxX, timelineWidth);
-
-    // DEBUG: Log timeline calculation  
-    log(`[Timeline] longestDur=${longestDuration}, effectiveQ=${effectiveQ}, stableQ=${stableQ}, timelineWidth=${timelineWidth}`);
+        return Math.max(stackLCM, maxDuration);
+    }
 
     // Clean up old ghosts
     nodeLayer.querySelectorAll('.ghost-clip').forEach(g => g.remove());
 
     // Render ghost repetitions only if effectiveQ is established
-    log(`[Ghost] effectiveQ=${effectiveQ}, nodes.length=${nodes.length}, clips.length=${clips.length}`);
+    log(`[Ghost] effectiveQ=${effectiveQ}, stacks.length=${stacks.length}, clips.length=${clips.length}`);
 
     if (effectiveQ > 1) {
-        let ghostCount = 0;
-        nodes.forEach(node => {
-            if (node.isRecording || !node.duration) return;
+        // Process each stack independently
+        stacks.forEach(stack => {
+            const stackLCM = calculateStackLCM(stack.nodes, effectiveQ);
+            const stableQ = Math.round(effectiveQ);
+            const stackTimelineQuantums = Math.max(1, Math.ceil(stackLCM / stableQ));
+            let stackTimelineWidth = stackTimelineQuantums * baseWidth;
 
-            // TEMP FIX: Skip ghost repetitions for stack children (coordinate mismatch issue)
-            // Only render ghosts for top-level clips
-            const isTopLevelClip = clips.includes(node);
-            if (!isTopLevelClip) {
-                log(`[Ghost] Skipping ${node.id} - not top-level clip`);
-                return;
+            // During recording, extend timeline in LCM-sized chunks when recording crosses boundary
+            // Per docs/recording.md: "ghosts only expand when recording crosses the committed LCM boundary"
+            const recordingChild = (stack.nodes || []).find(n => n.isRecording && n.duration > 0);
+            if (recordingChild) {
+                const recordingWidthPx = (recordingChild.duration / effectiveQ) * baseWidth;
+                // Calculate how many LCM chunks the recording has crossed
+                const lcmWidthPx = (stackLCM / effectiveQ) * baseWidth;
+                const lcmChunksCrossed = Math.floor(recordingWidthPx / lcmWidthPx);
+                // Timeline extends by that many LCM chunks beyond the committed LCM
+                const requiredWidth = (lcmChunksCrossed + 1) * lcmWidthPx;
+                stackTimelineWidth = Math.max(stackTimelineWidth, requiredWidth);
+                log(`[Ghost] Recording: ${recordingWidthPx.toFixed(0)}px crossed ${lcmChunksCrossed} LCM boundaries, timeline=${stackTimelineWidth}px`);
             }
+
+            log(`[Ghost] Stack ${stack.id}: LCM=${stackLCM}, timelineWidth=${stackTimelineWidth}`);
+
+            // Track max timeline width for viewport bounds
+            maxX = Math.max(maxX, stack.x + stackTimelineWidth);
+
+            // Render ghosts for each clip in this stack
+            (stack.nodes || []).forEach(node => {
+                if (node.type !== 'clip' || node.isRecording || !node.duration) return;
+
+                const clipWidth = (node.duration / effectiveQ) * baseWidth;
+                const isOneShot = node.duration < effectiveQ;
+
+                // CRITICAL DEBUG: Log the clip details
+                log(`[Ghost] Clip ${node.id}: duration=${node.duration}, effectiveQ=${effectiveQ}, clipWidth=${clipWidth}, timelineWidth=${stackTimelineWidth}, willDrawGhosts=${clipWidth < stackTimelineWidth - 5}`);
+
+                // One-shots don't get ghosts
+                if (isOneShot) {
+                    log(`[Ghost] Skipping ${node.id} - one-shot`);
+                    return;
+                }
+
+                log(`[Ghost] Rendering ghosts for ${node.id} in stack ${stack.id}`);
+
+                // Stack children use relative positioning; ghosts need absolute positioning
+                // Stack wrapper padding (12px) + stack children padding (32px) + borders (2px) = 46px
+                const STACK_PADDING_OFFSET = 46;
+                const stackXOffset = stack.x + STACK_PADDING_OFFSET;
+
+                // Query actual DOM Y position for accurate vertical alignment
+                const clipElement = document.getElementById(node.id);
+                let ghostY;
+                if (clipElement) {
+                    const clipRect = clipElement.getBoundingClientRect();
+                    const nodeLayerRect = nodeLayer.getBoundingClientRect();
+                    ghostY = clipRect.top - nodeLayerRect.top + 38; // +38 for header
+                } else {
+                    // Fallback: calculate Y from data model
+                    ghostY = stack.y;
+                    const childIndex = stack.nodes.findIndex(n => n.id === node.id);
+                    let cumulativeY = 40; // Stack top padding
+                    for (let i = 0; i < childIndex; i++) {
+                        cumulativeY += (stack.nodes[i].h || 100) + 16;
+                    }
+                    ghostY += cumulativeY + 38;
+                }
+
+                // Clips inside stacks start at x=0 (relative to stack)
+                const clipStartX = node.x || 0;
+
+                // Visual Wrapping: Check if we need a ghost on the LEFT (start wrapping)
+                const clipEndX = clipStartX + clipWidth;
+                if (clipEndX > stackTimelineWidth + 0.1) {
+                    // Render the wrapped portion at the START of the timeline
+                    const overflowWidth = clipEndX - stackTimelineWidth;
+                    const wrapGhostVisualX = stackXOffset + VISUAL_OFFSET;
+
+                    const ghost = document.createElement('div');
+                    ghost.className = 'ghost-clip';
+                    ghost.style.position = 'absolute';
+                    ghost.style.left = `${wrapGhostVisualX}px`;
+                    ghost.style.top = `${ghostY}px`;
+                    ghost.style.width = `${overflowWidth}px`;
+                    ghost.style.height = `${node.h - 38}px`;
+
+                    ghost.classList.add('node-content');
+                    ghost.style.borderRadius = '0 0 8px 8px';
+                    ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
+                    ghost.style.borderTop = 'none';
+                    ghost.style.background = 'rgba(30, 41, 59, 0.3)';
+
+                    const canvas = document.createElement('canvas');
+                    ghost.appendChild(canvas);
+                    if (livePeaks.has(node.id)) {
+                        drawWaveform(canvas, livePeaks.get(node.id));
+                    }
+
+                    const ghostPlayhead = document.createElement('div');
+                    ghostPlayhead.className = 'playhead';
+                    ghost.appendChild(ghostPlayhead);
+
+                    nodeLayer.appendChild(ghost);
+                }
+
+                // Render Standard Ghosts to the RIGHT
+                let currentGhostX = clipStartX + clipWidth;
+                let rightGhostCount = 0;
+
+                while (currentGhostX < (stackTimelineWidth - 5) && rightGhostCount < 100) {
+                    const ghost = document.createElement('div');
+                    ghost.className = 'ghost-clip';
+                    ghost.style.position = 'absolute';
+                    ghost.style.left = `${currentGhostX + stackXOffset + VISUAL_OFFSET}px`;
+                    ghost.style.top = `${ghostY}px`;
+                    ghost.style.width = `${clipWidth}px`;
+                    ghost.style.height = `${node.h - 38}px`;
+
+                    ghost.classList.add('node-content');
+                    ghost.style.borderRadius = '0 0 8px 8px';
+                    ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
+                    ghost.style.borderTop = 'none';
+                    ghost.style.background = 'rgba(30, 41, 59, 0.3)';
+
+                    const canvas = document.createElement('canvas');
+                    ghost.appendChild(canvas);
+                    if (livePeaks.has(node.id)) {
+                        drawWaveform(canvas, livePeaks.get(node.id));
+                    }
+
+                    const ghostPlayhead = document.createElement('div');
+                    ghostPlayhead.className = 'playhead';
+                    ghostPlayhead.style.left = `${node.playhead * 100}%`;
+                    ghostPlayhead.style.opacity = '0.4';
+
+                    // Determine if this ghost is "active" (playhead is within it)
+                    let timelinePosPx;
+                    const recordingNode = nodes.find(n => n.isRecording);
+
+                    if (recordingNode) {
+                        timelinePosPx = (recordingNode.duration / effectiveQ) * baseWidth;
+                    } else {
+                        const timelinePos = state.masterPos % stackLCM;
+                        timelinePosPx = (timelinePos / effectiveQ) * baseWidth;
+                    }
+
+                    const isActiveGhost = (timelinePosPx >= currentGhostX && timelinePosPx < currentGhostX + clipWidth);
+
+                    if (isActiveGhost) {
+                        ghost.classList.add('active-ghost');
+                        ghostPlayhead.style.display = 'block';
+                    } else {
+                        ghost.classList.remove('active-ghost');
+                        ghostPlayhead.style.display = 'none';
+                    }
+
+                    ghost.appendChild(ghostPlayhead);
+                    nodeLayer.appendChild(ghost);
+                    currentGhostX += clipWidth;
+                    rightGhostCount++;
+                }
+            });
+        });
+
+        // Also handle top-level clips (not in any stack) - treat them as individual items
+        clips.forEach(node => {
+            if (node.isRecording || !node.duration) return;
 
             const clipWidth = (node.duration / effectiveQ) * baseWidth;
             const isOneShot = node.duration < effectiveQ;
 
-            // One-shots don't get ghosts
-            if (isOneShot) {
-                log(`[Ghost] Skipping ${node.id} - one-shot`);
-                return;
-            }
+            if (isOneShot) return;
 
-            ghostCount++;
-            log(`[Ghost] Rendering ghosts for ${node.id}`);
+            log(`[Ghost] Rendering ghosts for top-level clip ${node.id}`);
 
-            // Calculate how many ghosts fit in the stabilized timeline
-            const clipStartX = node.x;
+            const ghostX = node.x;
+            const ghostY = node.y;
 
-            // Visual Wrapping: Check if we need a ghost on the LEFT (start wrapping)
-            // If clip extends beyond timeline on the right, it should appear at the start
-            // E.g. x=2, w=4, TL=4. x+w=6 > 4. Wrap to 2-4=-2.
-            const clipEndX = clipStartX + clipWidth;
-            if (clipEndX > timelineWidth + 0.1) {
-                // Render ONE wrapped instance at x - timelineWidth
-                // This fills the visual gap at the start of the timeline
-                const ghostX = clipStartX - timelineWidth;
+            // For top-level clips, use their own duration as timeline (no LCM needed for single clip)
+            const clipTimelineWidth = clipWidth;
 
-                const ghost = document.createElement('div');
-                ghost.className = 'ghost-clip';
-                ghost.style.position = 'absolute'; // Force absolute to override .node-content
-                ghost.style.left = `${ghostX + VISUAL_OFFSET}px`; // Apply Offset
-                ghost.style.top = `${node.y + 38}px`; // Corrected vertical alignment
-                ghost.style.width = `${clipWidth}px`;
-                ghost.style.height = `${node.h - 38}px`; // Corrected height
-
-                ghost.classList.add('node-content');
-                ghost.style.borderRadius = '0 0 8px 8px'; // Match node-content
-                ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
-                ghost.style.borderTop = 'none';
-                ghost.style.background = 'rgba(30, 41, 59, 0.3)';
-
-                // Add faded waveform canvas
-                const canvas = document.createElement('canvas');
-                ghost.appendChild(canvas);
-
-                // Draw the same waveform but faded
-                if (livePeaks.has(node.id)) {
-                    drawWaveform(canvas, livePeaks.get(node.id));
-                }
-
-                // Ghost Playhead
-                const ghostPlayhead = document.createElement('div');
-                ghostPlayhead.className = 'playhead';
-                ghost.appendChild(ghostPlayhead);
-
-                nodeLayer.appendChild(ghost);
-            }
-
-            // Render Standard Ghosts to the RIGHT
-            // Simple loop: Fill space until timelineWidth
-            let currentGhostX = clipStartX + clipWidth;
-            let ghostCount = 0;
-
-            while (currentGhostX < (timelineWidth - 5) && ghostCount < 100) {
-                const ghost = document.createElement('div');
-                ghost.className = 'ghost-clip';
-                ghost.style.position = 'absolute';
-                ghost.style.left = `${currentGhostX + VISUAL_OFFSET}px`;
-                ghost.style.top = `${node.y + 38}px`;
-                ghost.style.width = `${clipWidth}px`;
-                ghost.style.height = `${node.h - 38}px`;
-
-                // Styling
-                ghost.classList.add('node-content');
-                ghost.style.borderRadius = '0 0 8px 8px';
-                ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
-                ghost.style.borderTop = 'none';
-                ghost.style.background = 'rgba(30, 41, 59, 0.3)';
-
-                // Canvas for waveform
-                const canvas = document.createElement('canvas');
-                ghost.appendChild(canvas);
-                if (livePeaks.has(node.id)) {
-                    drawWaveform(canvas, livePeaks.get(node.id));
-                }
-
-                // Ghost Playhead - only show in the ghost aligned with longer loop position
-                const ghostPlayhead = document.createElement('div');
-                ghostPlayhead.className = 'playhead';
-                ghostPlayhead.style.left = `${node.playhead * 100}%`;
-                ghostPlayhead.style.opacity = '0.4';  // Faded compared to main
-
-                // Determine global playhead position in pixels
-                // ----------------------------------------------------
-                let timelinePosPx;
-                const recordingNode = nodes.find(n => n.isRecording);
-
-                if (recordingNode) {
-                    // Linear Recording Mode: Cursor position = recording duration in pixels
-                    // This aligns all ghost cursors with how far recording has progressed
-                    timelinePosPx = (recordingNode.duration / effectiveQ) * baseWidth;
-                } else {
-                    // Loop Mode: Wrap masterPos by longestDuration (Timeline Length)
-                    const timelinePos = state.masterPos % longestDuration;
-                    timelinePosPx = (timelinePos / effectiveQ) * baseWidth;
-                }
-
-                // Active if pixel position falls within this ghost's bounds
-                const isActiveGhost = (timelinePosPx >= currentGhostX && timelinePosPx < currentGhostX + clipWidth);
-
-                if (isActiveGhost) {
-                    ghost.classList.add('active-ghost');
-                    ghostPlayhead.style.display = 'block'; // Ensure visibility
-                } else {
-                    ghost.classList.remove('active-ghost');
-                    ghostPlayhead.style.display = 'none';
-                }
-
-                ghost.appendChild(ghostPlayhead);
-
-                nodeLayer.appendChild(ghost);
-                currentGhostX += clipWidth;
-                ghostCount++;
-            }
+            // Top-level clips don't get right ghosts (no other clips to LCM with)
+            // They only get left-wrap ghosts if needed
+            maxX = Math.max(maxX, ghostX + clipWidth);
         });
     }
 
@@ -1093,7 +1168,8 @@ export async function fetchWaveform(id) {
         log(`Fetching static waveform for ${id}...`);
         // Fix Waveform Drift: Request peaks based on actual pixel width to maintain 1:1 resolution
         // and prevent "stretching" artifacts as the clip grows.
-        const width = parseFloat(div.querySelector('.node-content').style.width) || 200;
+        const nodeElement = document.getElementById(id);
+        const width = nodeElement ? parseFloat(nodeElement.querySelector('.node-content')?.style.width) || 200 : 200;
         const peaks = await callNative('getWaveform', id, Math.ceil(width));
         if (peaks && peaks.length > 0) {
             livePeaks.set(id, peaks);

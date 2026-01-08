@@ -448,18 +448,27 @@ int64_t AudioEngine::calculateTimelineLength() const {
   int64_t quantum = focused_node->getEffectiveQuantum();
   if (quantum <= 0) quantum = 44100;
 
-  int64_t result = quantum;  // Start with quantum as base
-
-  // Calculate LCM of all children's durations
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
-    for (int i = 0; i < stack->getNumChildren(); ++i) {
-      auto *child = stack->getChild(i);
-      int64_t dur = child->getIntrinsicDuration();
+  // Recursive helper to compute LCM across all clips, even nested in stacks
+  std::function<int64_t(celestrian::AudioNode *, int64_t)> computeLCM =
+      [&computeLCM](celestrian::AudioNode *node,
+                    int64_t current_lcm) -> int64_t {
+    if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
+      // Recursively process children of this stack
+      for (int i = 0; i < stack->getNumChildren(); ++i) {
+        auto *child = stack->getChild(i);
+        current_lcm = computeLCM(child, current_lcm);
+      }
+    } else {
+      // It's a clip - use its duration for LCM
+      int64_t dur = node->getIntrinsicDuration();
       if (dur > 0) {
-        result = lcm(result, dur);
+        current_lcm = lcm(current_lcm, dur);
       }
     }
-  }
+    return current_lcm;
+  };
+
+  int64_t result = computeLCM(focused_node, quantum);
 
   return result;
 }

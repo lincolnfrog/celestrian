@@ -29,6 +29,76 @@ The **first recorded clip** establishes the quantum:
 - All subsequent clips are measured/aligned relative to Q
 - Quantum represents "one bar" or "one loop" of the rhythmic grid
 
+---
+
+## Islands (Songs) and Quantum Inheritance
+
+### The Islands Model
+An **Island** is a group of connected stacks that share a common quantum (Q). Think of each island as a separate "song" that can coexist on the same canvas.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Island A (Q = 44100 samples ≈ 1 second @ 44.1kHz)                   │
+│                                                                      │
+│   ┌─────────────┐     ┌─────────────┐                               │
+│   │   Stack 1   │────▶│   Stack 2   │   (connected = same Q)        │
+│   └─────────────┘     └─────────────┘                               │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ Island B (Q = 88200 samples ≈ 2 seconds @ 44.1kHz)                  │
+│                                                                      │
+│   ┌─────────────┐                                                    │
+│   │   Stack 3   │   (independent = own Q)                           │
+│   └─────────────┘                                                    │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Quantum Inheritance Rules
+
+1. **New stack, connected before recording**: Inherits Q from the connected stack
+   - User creates Stack B, connects it to Stack A
+   - Stack B inherits Stack A's quantum
+   - Both stacks are now part of the same island
+
+2. **New stack, first clip recorded without connection**: Establishes its own Q
+   - User creates Stack C, immediately records a clip
+   - The clip's duration becomes Stack C's quantum
+   - Stack C becomes a new island
+
+3. **Connecting after Q established**: Not yet defined (potential polyrhythmic interaction)
+
+### Per-Stack LCM
+
+Within each stack, the **LCM (Least Common Multiple)** of all clip durations determines the timeline length for that stack:
+
+```javascript
+stack.timelineLength = LCM(clip1.duration, clip2.duration, ..., clipN.duration)
+```
+
+This LCM is calculated **per-stack**, not globally. Different stacks in the same island share Q but may have different LCMs based on their clip compositions.
+
+**Example:**
+```
+Island A (Q = 1 second):
+├── Stack 1: clips of 1Q, 4Q     → LCM = 4Q
+├── Stack 2: clips of 2Q, 3Q     → LCM = 6Q
+└── Stack 3: clips of 1Q, 2Q, 4Q → LCM = 4Q
+```
+
+### Nested Stacks and Composite Duration
+
+When a stack is nested inside another stack, its **internal LCM becomes its composite duration** for the parent's LCM calculation:
+
+```
+Outer Stack:
+├── Clip 1 (4Q)
+├── Inner Stack (internal LCM = 6Q) ← contributes 6Q to outer LCM
+│   ├── Clip 2 (2Q)
+│   └── Clip 3 (3Q)
+└── Outer LCM = LCM(4Q, 6Q) = 12Q
+```
+
 ### Clip Types
 1. **Looping Clips**: `duration >= Q` → clip loops continuously
 2. **One-Shot Clips**: `duration < anchor_position % duration` → triggered once per cycle

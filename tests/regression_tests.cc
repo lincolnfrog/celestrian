@@ -1,8 +1,8 @@
 #include <juce_core/juce_core.h>
 
 #include "../src/audio_engine.h"
-#include "../src/stack_node.h"
 #include "../src/clip_node.h"
+#include "../src/stack_node.h"
 
 class AudioEngineWorkflowTests : public juce::UnitTest {
  public:
@@ -680,6 +680,348 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Now it should start
       expect(clip3Ptr->isRecording(),
              "Clip 3 should have started recording at 4000 (4Q)");
+    }
+
+    // BUG FIX TEST: Clip 2 (4Q) should loop at its own duration, not at 1Q
+    beginTest("Clip 2 (4Q) Should Loop At 4Q, Not 1Q");
+    {
+      const double SR = 1000.0;  // 1000 samples = 1Q
+      celestrian::StackNode parent("Parent");
+
+      // Clip 1: 1Q (establishes quantum)
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clip1Ptr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      float input1[1000] = {0.5f};
+      float* const inputs1[] = {input1};
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 1000;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      clip1Ptr->startRecording();
+      clip1Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      clip1Ptr->stopRecording();
+
+      int64_t Q = parent.getEffectiveQuantum();
+      expectEquals(Q, (int64_t)1000, "Clip 1 should establish Q = 1000");
+
+      // Clip 2: 4Q (4000 samples)
+      auto clip2 = std::make_unique<celestrian::ClipNode>("Clip2", SR);
+      auto* clip2Ptr = clip2.get();
+      parent.addChild(std::move(clip2));
+
+      float input2[4000] = {0.3f};
+      float* const inputs2[] = {input2};
+      ctx.num_samples = 4000;
+      ctx.master_pos = 0;
+
+      clip2Ptr->startRecording();
+      clip2Ptr->process(inputs2, nullptr, 1, 0, ctx);
+      clip2Ptr->stopRecording();
+
+      // Process to commit
+      while (clip2Ptr->isAwaitingStop()) {
+        ctx.master_pos += 1000;
+        ctx.num_samples = 1000;
+        clip2Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      }
+
+      // CRITICAL: loop_end_samples must equal duration, NOT effectiveQuantum
+      int64_t loopEnd = clip2Ptr->getLoopEnd();
+      int64_t duration = clip2Ptr->duration_samples.load();
+
+      juce::Logger::writeToLog(
+          "LOOP BUG TEST: duration=" + juce::String(duration) +
+          ", loopEnd=" + juce::String(loopEnd) + ", Q=" + juce::String(Q));
+
+      expectEquals(loopEnd, duration,
+                   "loop_end_samples MUST equal duration, not Q!");
+      expect(loopEnd != Q,
+             "loop_end_samples should NOT equal Q (that was the bug!)");
+    }
+
+    // CRITICAL TEST: Verify actual audio output loops at correct position
+    // This tests the actual playback behavior, not just the settings
+    beginTest("Audio Playback Loops At Clip Duration, Not Q");
+    {
+      const double SR = 1000.0;  // 1000 samples = 1Q
+      celestrian::StackNode parent("Parent");
+
+      // Clip 1: 1Q (establishes quantum)
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clip1Ptr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      float input1[1000];
+      for (int i = 0; i < 1000; ++i) input1[i] = 0.1f;  // Uniform signal
+      float* const inputs1[] = {input1};
+
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 1000;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      clip1Ptr->startRecording();
+      clip1Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      clip1Ptr->stopRecording();
+
+      int64_t Q = parent.getEffectiveQuantum();
+      expectEquals(Q, (int64_t)1000, "Q should be 1000");
+
+      // Clip 2: 4Q with DISTINCT samples at each Q boundary
+      // Sample pattern: Q0=0.1, Q1=0.2, Q2=0.3, Q3=0.4
+      // If looping at 1Q wrongly, master_pos=1500 would read 0.1 (pos 500)
+      // If looping correctly at 4Q, master_pos=1500 reads 0.2 (pos 1500)
+      auto clip2 = std::make_unique<celestrian::ClipNode>("Clip2", SR);
+      auto* clip2Ptr = clip2.get();
+      parent.addChild(std::move(clip2));
+
+      float input2[4000];
+      for (int i = 0; i < 1000; ++i) input2[i] = 0.1f;     // Q0
+      for (int i = 1000; i < 2000; ++i) input2[i] = 0.2f;  // Q1
+      for (int i = 2000; i < 3000; ++i) input2[i] = 0.3f;  // Q2
+      for (int i = 3000; i < 4000; ++i) input2[i] = 0.4f;  // Q3
+      float* const inputs2[] = {input2};
+
+      ctx.num_samples = 4000;
+      ctx.master_pos = 0;
+
+      clip2Ptr->startRecording();
+      clip2Ptr->process(inputs2, nullptr, 1, 0, ctx);
+      clip2Ptr->stopRecording();
+
+      // Process to commit
+      while (clip2Ptr->isAwaitingStop()) {
+        ctx.master_pos += 1000;
+        ctx.num_samples = 1000;
+        clip2Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      }
+
+      // Verify setup
+      int64_t duration = clip2Ptr->duration_samples.load();
+      int64_t loopEnd = clip2Ptr->getLoopEnd();
+      expect(duration >= 4000, "Duration should be at least 4Q");
+      expectEquals(loopEnd, duration, "loopEnd must equal duration");
+
+      // === CRITICAL PLAYBACK TEST ===
+      // Play at master_pos = 1500 (1.5Q)
+      // If wrongly looping at 1Q: effective_pos = 1500 % 1000 = 500 → reads
+      // ~0.1 If correctly looping at 4Q+: effective_pos = 1500 % 4000+ = 1500 →
+      // reads ~0.2
+      ctx.is_recording = false;
+      ctx.is_playing = true;
+      ctx.master_pos = 1500;
+      ctx.num_samples = 1;
+
+      float out[2] = {0.0f, 0.0f};
+      float* const outputs[] = {out, out + 1};
+
+      clip2Ptr->process(nullptr, outputs, 0, 2, ctx);
+
+      juce::Logger::writeToLog(
+          "AUDIO LOOP TEST: master=1500, output=" + juce::String(out[0]) +
+          " (expected ~0.2, wrong if ~0.1)");
+
+      // Should be reading from Q1 region (0.2), not Q0 region (0.1)
+      expectWithinAbsoluteError(
+          out[0], 0.2f, 0.05f,
+          "At master=1.5Q, should read Q1 audio (0.2), not Q0 (0.1)!");
+
+      // Double-check: at master=500 (0.5Q), should read Q0 audio (0.1)
+      ctx.master_pos = 500;
+      out[0] = 0.0f;
+      clip2Ptr->process(nullptr, outputs, 0, 2, ctx);
+
+      expectWithinAbsoluteError(out[0], 0.1f, 0.05f,
+                                "At master=0.5Q, should read Q0 audio (0.1)");
+
+      // Triple-check: at master=2500 (2.5Q), should read Q2 audio (0.3)
+      ctx.master_pos = 2500;
+      out[0] = 0.0f;
+      clip2Ptr->process(nullptr, outputs, 0, 2, ctx);
+
+      expectWithinAbsoluteError(out[0], 0.3f, 0.05f,
+                                "At master=2.5Q, should read Q2 audio (0.3)");
+    }
+
+    // USER BUG REPORT: Record 1Q clip, then 2Q clip - 2Q clip loops at 1Q
+    // This is the EXACT scenario reported by the user
+    beginTest("User Bug: 2Q Clip Should Play Second Half, Not Loop At 1Q");
+    {
+      const double SR = 1000.0;  // 1000 samples = 1Q
+      celestrian::StackNode parent("Parent");
+
+      // Clip 1: 1Q (establishes quantum)
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clip1Ptr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      float input1[1000];
+      for (int i = 0; i < 1000; ++i) input1[i] = 0.1f;
+      float* const inputs1[] = {input1};
+
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 1000;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      clip1Ptr->startRecording();
+      clip1Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      clip1Ptr->stopRecording();
+
+      int64_t Q = parent.getEffectiveQuantum();
+      expectEquals(Q, (int64_t)1000, "Q should be 1000");
+
+      // Clip 2: EXACTLY 2Q (2000 samples) - user's scenario
+      // First half = 0.1, Second half = 0.5
+      auto clip2 = std::make_unique<celestrian::ClipNode>("Clip2", SR);
+      auto* clip2Ptr = clip2.get();
+      parent.addChild(std::move(clip2));
+
+      float input2[2000];
+      for (int i = 0; i < 1000; ++i) input2[i] = 0.1f;     // First half
+      for (int i = 1000; i < 2000; ++i) input2[i] = 0.5f;  // Second half
+      float* const inputs2[] = {input2};
+
+      ctx.num_samples = 2000;
+      ctx.master_pos = 0;
+
+      clip2Ptr->startRecording();
+      clip2Ptr->process(inputs2, nullptr, 1, 0, ctx);
+      clip2Ptr->stopRecording();
+
+      // Process to commit - should snap to 2Q
+      while (clip2Ptr->isAwaitingStop()) {
+        ctx.master_pos += 1000;
+        ctx.num_samples = 1000;
+        clip2Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      }
+
+      // Debug: Check duration and loopEnd
+      int64_t duration = clip2Ptr->duration_samples.load();
+      int64_t loopEnd = clip2Ptr->getLoopEnd();
+
+      juce::Logger::writeToLog(
+          "USER BUG TEST: duration=" + juce::String(duration) +
+          ", loopEnd=" + juce::String(loopEnd) + ", Q=" + juce::String(Q));
+
+      // Duration MUST be 2Q (2000), not 1Q (1000)
+      expect(duration >= 2000, "Duration should be at least 2Q (2000)");
+      expectEquals(loopEnd, duration, "loopEnd must equal duration");
+
+      // === THE CRITICAL TEST ===
+      // Play at master=1500 (1.5Q)
+      // If looping at 1Q: effective_pos = 1500 % 1000 = 500 → reads ~0.1 (FIRST
+      // half) If looping at 2Q: effective_pos = 1500 % 2000 = 1500 → reads ~0.5
+      // (SECOND half)
+      ctx.is_recording = false;
+      ctx.is_playing = true;
+      ctx.master_pos = 1500;
+      ctx.num_samples = 1;
+
+      float out[2] = {0.0f, 0.0f};
+      float* const outputs[] = {out, out + 1};
+
+      clip2Ptr->process(nullptr, outputs, 0, 2, ctx);
+
+      juce::Logger::writeToLog(
+          "USER BUG TEST: master=1500, output=" + juce::String(out[0]) +
+          " (expected 0.5 second half, bug if 0.1 first half)");
+
+      // This is THE bug test - should be 0.5 (second half), not 0.1 (first
+      // half)
+      expectWithinAbsoluteError(
+          out[0], 0.5f, 0.05f,
+          "At master=1.5Q, MUST read SECOND half (0.5), not first half (0.1)!");
+    }
+
+    // Test: Recording starts MID-LOOP and should still loop at correct duration
+    beginTest("Mid-Loop Start: 2Q Recording Should Loop At 2Q, Not 1Q");
+    {
+      const double SR = 1000.0;  // 1000 samples = 1Q
+      celestrian::StackNode parent("Parent");
+
+      // Clip 1: 1Q (establishes quantum)
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clip1Ptr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      float input1[1000];
+      for (int i = 0; i < 1000; ++i) input1[i] = 0.1f;
+      float* const inputs1[] = {input1};
+
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 1000;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      clip1Ptr->startRecording();
+      clip1Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      clip1Ptr->stopRecording();
+
+      int64_t Q = parent.getEffectiveQuantum();
+      expectEquals(Q, (int64_t)1000, "Q should be 1000");
+
+      // Clip 2: Start recording at master_pos=500 (mid-loop)
+      // First half = 0.1, Second half = 0.5
+      auto clip2 = std::make_unique<celestrian::ClipNode>("Clip2", SR);
+      auto* clip2Ptr = clip2.get();
+      parent.addChild(std::move(clip2));
+
+      float input2[2000];
+      for (int i = 0; i < 1000; ++i) input2[i] = 0.1f;     // First half
+      for (int i = 1000; i < 2000; ++i) input2[i] = 0.5f;  // Second half
+      float* const inputs2[] = {input2};
+
+      // Start recording at mid-loop
+      ctx.master_pos = 500;  // Mid-loop (0.5Q)
+      clip2Ptr->startRecording();
+
+      // Process to start recording at Q boundary (waits until 1Q)
+      ctx.num_samples = 500;
+      clip2Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      ctx.master_pos = 1000;
+      ctx.num_samples = 2000;
+      clip2Ptr->process(inputs2, nullptr, 1, 0, ctx);
+      clip2Ptr->stopRecording();
+
+      // Process to commit
+      while (clip2Ptr->isAwaitingStop()) {
+        ctx.master_pos += 1000;
+        ctx.num_samples = 1000;
+        clip2Ptr->process(inputs1, nullptr, 1, 0, ctx);
+      }
+
+      int64_t duration = clip2Ptr->duration_samples.load();
+      int64_t loopEnd = clip2Ptr->getLoopEnd();
+
+      juce::Logger::writeToLog(
+          "MID-LOOP TEST: duration=" + juce::String(duration) +
+          ", loopEnd=" + juce::String(loopEnd) + ", Q=" + juce::String(Q));
+
+      expect(duration >= 2000, "Duration should be at least 2Q");
+      expectEquals(loopEnd, duration, "loopEnd must equal duration");
+      expect(loopEnd != Q, "loopEnd should NOT equal Q (1Q)!");
+
+      // Key test: Play at 1.5Q - should read SECOND half (0.5), not first (0.1)
+      ctx.is_recording = false;
+      ctx.is_playing = true;
+      ctx.master_pos =
+          1500 + 1000;  // Offset by launch point (1Q since started at 1Q)
+      ctx.num_samples = 1;
+
+      float out[2] = {0.0f, 0.0f};
+      float* const outputs[] = {out, out + 1};
+
+      clip2Ptr->process(nullptr, outputs, 0, 2, ctx);
+
+      juce::Logger::writeToLog("MID-LOOP TEST: master=2500, output=" +
+                               juce::String(out[0]));
+
+      // At effective position 1500 (1.5Q within clip), should read 0.5
+      // NOT 0.1 (if wrongly looping at 1Q)
     }
   }
 };
