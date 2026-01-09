@@ -375,6 +375,37 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                 juce::String(timeline_length) + ")");
             new_pos = last_recording_duration_ + num_samples;
           }
+          // FIRST CLIP FIX: When the first clip finishes recording, snap to 0
+          // so playback starts from the beginning of the clip.
+          // This happens when lcm_before_recording was just the default quantum
+          // (no real clips existed yet).
+          else if (just_finished_recording && lcm_before_recording_ > 0 &&
+                   lcm_before_recording_ < timeline_length && old_pos > 0 &&
+                   old_pos < timeline_length) {
+            // Check if this is a "first clip" scenario: the old timeline was
+            // just the default quantum, not from real clips
+            bool is_first_clip = true;
+            if (auto *stack =
+                    dynamic_cast<celestrian::StackNode *>(focused_node)) {
+              // Count clips with duration > 0 (finished recording)
+              int clip_count = 0;
+              for (int i = 0; i < stack->getNumChildren(); ++i) {
+                if (stack->getChild(i)->getIntrinsicDuration() > 0) {
+                  clip_count++;
+                }
+              }
+              // More than 1 finished clip means we're NOT in first-clip
+              // scenario
+              is_first_clip = (clip_count <= 1);
+            }
+
+            if (is_first_clip) {
+              juce::Logger::writeToLog(
+                  "FIRST CLIP SNAP: pos=" + juce::String(old_pos) +
+                  " → 0 (first clip finished, start from beginning)");
+              new_pos = num_samples;  // Start from 0 + this block's samples
+            }
+          }
 
           // Normal wrap at LCM boundary
           new_pos = new_pos % timeline_length;
