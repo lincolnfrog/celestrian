@@ -52,6 +52,17 @@ void StackNode::addChild(std::unique_ptr<AudioNode> child) {
   children.push_back(std::move(child));
 }
 
+void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  child->setParent(this);
+  if (index < 0) index = 0;
+  if (index >= (int)children.size()) {
+    children.push_back(std::move(child));
+  } else {
+    children.insert(children.begin() + index, std::move(child));
+  }
+}
+
 void StackNode::removeChild(const juce::String &uuid) {
   std::lock_guard<std::recursive_mutex> lock(children_mutex);
   auto it = std::find_if(children.begin(), children.end(),

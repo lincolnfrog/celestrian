@@ -23,8 +23,8 @@ export async function callNative(method, ...args) {
             return deleteNode(...args);
         case 'renameNode':
             return renameNode(...args);
-        case 'moveNode':
-            return moveNode(...args);
+        case 'reorderNode':
+            return reorderNode(...args);
         case 'setNodePosition':
             return setNodePosition(...args);
         case 'togglePlay':
@@ -142,20 +142,24 @@ function renameNode(id, newName) {
     }
 }
 
-function moveNode(nodeId, newParentId, newY) {
+function reorderNode(nodeId, newParentId, newIndex) {
     const node = findNode(nodeId);
     if (!node) return;
 
     // Remove from current parent
     removeNodeFromParent(nodeId);
 
-    // Add to new parent
+    // Add to new parent at specified index
     const newParent = findNode(newParentId);
     if (newParent && newParent.type === 'stack') {
         newParent.nodes = newParent.nodes || [];
-        node.y = newY;
-        newParent.nodes.push(node);
-        console.log('[MockBackend] Moved node:', nodeId, 'to', newParentId, 'at y=', newY);
+
+        // Clamp index to valid range
+        const index = Math.max(0, Math.min(newIndex, newParent.nodes.length));
+
+        // Insert at specified index
+        newParent.nodes.splice(index, 0, node);
+        console.log('[MockBackend] Reordered node:', nodeId, 'to', newParentId, 'at index', index);
     }
 }
 

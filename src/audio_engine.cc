@@ -174,12 +174,13 @@ void AudioEngine::renameNode(const juce::String &uuid,
   }
 }
 
-void AudioEngine::moveNode(const juce::String &node_uuid,
-                           const juce::String &new_parent_uuid, double new_y) {
+void AudioEngine::reorderNode(const juce::String &node_uuid,
+                              const juce::String &new_parent_uuid,
+                              int new_index) {
   // Find the node to move
   auto *node = findNodeByUuid(root_node.get(), node_uuid);
   if (!node) {
-    juce::Logger::writeToLog("moveNode: Node not found: " + node_uuid);
+    juce::Logger::writeToLog("reorderNode: Node not found: " + node_uuid);
     return;
   }
 
@@ -187,7 +188,7 @@ void AudioEngine::moveNode(const juce::String &node_uuid,
   auto *new_parent = findNodeByUuid(root_node.get(), new_parent_uuid);
   auto *new_parent_stack = dynamic_cast<celestrian::StackNode *>(new_parent);
   if (!new_parent_stack) {
-    juce::Logger::writeToLog("moveNode: Invalid parent: " + new_parent_uuid);
+    juce::Logger::writeToLog("reorderNode: Invalid parent: " + new_parent_uuid);
     return;
   }
 
@@ -195,18 +196,18 @@ void AudioEngine::moveNode(const juce::String &node_uuid,
   auto *old_parent = node->getParent();
   auto *old_parent_stack = dynamic_cast<celestrian::StackNode *>(old_parent);
 
-  // Remove from old parent
+  // Remove from old parent and insert at new index
   if (old_parent_stack) {
     for (int i = 0; i < old_parent_stack->getNumChildren(); ++i) {
       if (old_parent_stack->getChild(i) == node) {
         auto owned_node = old_parent_stack->removeChild(i);
-
-        // Update position and parent
-        owned_node->y_pos = new_y;
         owned_node->setParent(new_parent_stack);
 
-        // Add to new parent
-        new_parent_stack->addChild(std::move(owned_node));
+        // Insert at the index specified by the frontend
+        juce::Logger::writeToLog("reorderNode: " + node_uuid + " to " +
+                                 new_parent_uuid + " at index " +
+                                 juce::String(new_index));
+        new_parent_stack->insertChildAt(std::move(owned_node), new_index);
         return;
       }
     }

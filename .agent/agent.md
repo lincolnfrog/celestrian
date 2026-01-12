@@ -64,6 +64,7 @@ python3 -m http.server 8001
 3. Fix code and test instantly
 4. Once fixed, rebuild C++ app to verify integration
 5. Remember: `app.js` is production, `app_test.js` is test version
+6. Always restart the HTTP server after making changes to JS files to avoid caching issues
 
 **See**: [`docs/test_harness.md`](file:///Users/lincolnfrog/code/celestrian/docs/test_harness.md) for full documentation
 
@@ -88,9 +89,6 @@ When testing JS changes, the browser may cache ES modules aggressively. If chang
 - ✅ Debug CSS positioning issues
 - ✅ Test click handlers and interactions
 - ✅ Capture evidence of bugs
-
-> [!CAUTION]
-> **Avoiding "about:blank" Stuck State**: The browser subagent can get stuck on `about:blank` if the task is too vague. To prevent this, ALWAYS follow these rules:
 
 **Required Task Structure for Browser Subagent**:
 1. **Specify exact URL first**: Always start with `Navigate to http://localhost:8000/index_test.html` (or port 8001)

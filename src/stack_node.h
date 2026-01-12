@@ -59,6 +59,11 @@ class StackNode : public AudioNode {
   void addChild(std::unique_ptr<AudioNode> child);
 
   /**
+   * Inserts a child node at a specific index.
+   */
+  void insertChildAt(std::unique_ptr<AudioNode> child, int index);
+
+  /**
    * Removes a child node from this container.
    */
   void removeChild(const juce::String &uuid);

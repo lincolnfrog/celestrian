@@ -16,7 +16,7 @@ if (typeof window !== 'undefined' && window.celestrian) {
 import { drawWaveform } from './canvas_renderer.js';
 import { Viewport } from './viewport.js';
 import { groupNodesByVisualX, calculateButtonPosition } from './stack_logic.js';
-import { initDragDrop } from './drag_drop.js';
+import { initDragDrop, isDragging, isDropAnimating, isAnyDragActive } from './drag_drop.js';
 
 const nodeLayer = document.getElementById('node-layer');
 const creationUI = document.getElementById('creation-ui');
@@ -230,11 +230,16 @@ function syncUI(state) {
                     childDiv = createNodeElement(child);
                     childContainer.appendChild(childDiv);
                 }
-                // Apply stack-specific positioning (let natural sizing handle dimensions)
-                childDiv.style.position = 'relative';
-                childDiv.style.left = '0';
-                childDiv.style.top = '0';
-                childDiv.style.marginBottom = '12px';
+                // Skip style updates during drag/drop to preserve slide transforms
+                // - isAnyDragActive(): prevents clearing sibling slide transforms during drag
+                // - isDropAnimating(): prevents clearing FLIP transforms during drop animation
+                if (!isAnyDragActive() && !isDropAnimating()) {
+                    // Apply stack-specific positioning (let natural sizing handle dimensions)
+                    childDiv.style.position = 'relative';
+                    childDiv.style.left = '0';
+                    childDiv.style.top = '0';
+                    childDiv.style.marginBottom = '12px';
+                }
             });
         } else if (!stack.isExpanded) {
             // When collapsed, clear children only if they exist
@@ -308,16 +313,19 @@ function syncUI(state) {
         // Detect if this node is a child of a stack (vs top-level)
         const isStackChild = !clips.includes(node);
 
+        // Skip position/size updates for nodes being dragged
+        const nodeIsBeingDragged = isDragging(node.id);
+
         // UI = Data: Position comes directly from C++ data
         // Apply VISUAL_OFFSET for View (but NOT for stack children - they use relative positioning)
-        if (!isStackChild) {
+        if (!isStackChild && !nodeIsBeingDragged) {
             div.style.left = `${(node.x || 0) + VISUAL_OFFSET}px`;
             div.style.top = `${node.y || 0}px`;
         }
 
         // Node container width: Match rhythmic duration but NEVER narrower than the header
         const nodeWidth = Math.max(260, shouldCollapse ? 0 : (displayWidth || 0));
-        if (!isStackChild) {
+        if (!isStackChild && !nodeIsBeingDragged) {
             div.style.width = isFinite(nodeWidth) ? `${nodeWidth}px` : '260px';
         }
 
@@ -326,7 +334,7 @@ function syncUI(state) {
 
         // Final node height depends on collapsed state
         const finalNodeH = shouldCollapse ? headerH : (node.h || 100);
-        if (!isStackChild) {
+        if (!isStackChild && !nodeIsBeingDragged) {
             div.style.height = isFinite(finalNodeH) ? `${finalNodeH}px` : '38px';
         }
 

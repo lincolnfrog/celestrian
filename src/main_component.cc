@@ -104,14 +104,13 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
-                  "moveNode",
+                  "reorderNode",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 2)
-                      audio_engine.moveNode(args[0].toString(),
-                                            args[1].toString(),
-                                            (double)args[2]);
+                      audio_engine.reorderNode(
+                          args[0].toString(), args[1].toString(), (int)args[2]);
                     completion(true);
                   })
               .withNativeFunction(

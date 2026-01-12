@@ -66,10 +66,12 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   void renameNode(const juce::String &uuid, const juce::String &new_name);
 
   /**
-   * Moves a node to a new parent stack and position.
+   * Reorders a node within its parent stack or moves to a new parent at the
+   * specified index. Frontend calculates the index from drag position; backend
+   * simply inserts at that index.
    */
-  void moveNode(const juce::String &node_uuid,
-                const juce::String &new_parent_uuid, double new_y);
+  void reorderNode(const juce::String &node_uuid,
+                   const juce::String &new_parent_uuid, int new_index);
 
   /**
    * Updates a node's position (for freeform positioning of top-level stacks).

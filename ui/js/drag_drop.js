@@ -7,8 +7,33 @@ let dragState = {
     nodeData: null,      // { id, type, parent, isTopLevel }
     startX: 0,
     startY: 0,
-    ghost: null          // Ghost preview element
+    originalIndex: -1,   // Original DOM index before drag
+    currentDropIndex: -1 // Current target drop index
 };
+
+// Animation lock - prevents syncUI from interfering during FLIP animation
+let isAnimatingDrop = false;
+
+/**
+ * Check if a node is currently being dragged
+ */
+export function isDragging(nodeId) {
+    return dragState.isDragging && dragState.nodeData && dragState.nodeData.id === nodeId;
+}
+
+/**
+ * Check if any drag operation is in progress
+ */
+export function isAnyDragActive() {
+    return dragState.isDragging;
+}
+
+/**
+ * Check if drop animation is in progress (used by syncUI to skip style updates)
+ */
+export function isDropAnimating() {
+    return isAnimatingDrop;
+}
 
 /**
  * Initialize drag-and-drop for a node element
@@ -21,11 +46,11 @@ export function initDragDrop(nodeElement, nodeData) {
         log('[initDragDrop] Already initialized, skipping');
         return;
     }
-    nodeElement.dataset.dragInitialized = 'true';
 
     const grabHandle = nodeElement.querySelector('.grab-handle');
     if (!grabHandle) {
         log('[initDragDrop] No grab handle found!');
+        // Don't set the flag - allow retry on next call
         return;
     }
 
@@ -37,6 +62,9 @@ export function initDragDrop(nodeElement, nodeData) {
 
         startDrag(nodeElement, nodeData, e.pageX, e.pageY);
     });
+
+    // Only set flag AFTER successfully attaching listener
+    nodeElement.dataset.dragInitialized = 'true';
 }
 
 function startDrag(nodeElement, nodeData, startX, startY) {
@@ -45,6 +73,7 @@ function startDrag(nodeElement, nodeData, startX, startY) {
     dragState.nodeData = nodeData;
     dragState.startX = startX;
     dragState.startY = startY;
+    dragState.currentDropIndex = -1;
 
     // Store initial element position for offset calculation
     const rect = nodeElement.getBoundingClientRect();
@@ -57,7 +86,16 @@ function startDrag(nodeElement, nodeData, startX, startY) {
         dragState.originalTop = parseFloat(nodeElement.style.top) || 0;
     }
 
-    // Add dragging class (keeps element visible, changes cursor)
+    // Store original index in parent for stack children
+    if (!nodeData.isTopLevel) {
+        const parent = nodeElement.parentElement;
+        if (parent) {
+            const siblings = Array.from(parent.querySelectorAll('.node'));
+            dragState.originalIndex = siblings.indexOf(nodeElement);
+        }
+    }
+
+    // Add dragging class
     nodeElement.classList.add('dragging');
 
     // Add global handlers
@@ -76,50 +114,131 @@ function onDragMove(e) {
         dragState.node.style.top = `${newTop}px`;
     }
 
-    // Find drop target
-    const dropTarget = findDropTarget(e.pageX, e.pageY);
+    // For clips inside stacks: use transform for visual feedback
+    if (!dragState.nodeData.isTopLevel && dragState.node) {
+        const deltaY = e.pageY - dragState.startY;
+        dragState.node.style.transform = `translateY(${deltaY}px)`;
+    }
 
-    // Update drop indicators
+    // Find drop target and update visual indicators (use clientX/Y for elementFromPoint)
+    const dropTarget = findDropTarget(e.clientX, e.clientY);
     updateDropIndicators(dropTarget);
 
-    // Dynamic reordering preview for clips in stacks
-    if (dropTarget && dropTarget.type === 'reorder' && dragState.node && !dragState.nodeData.isTopLevel) {
-        const parentContainer = document.querySelector(`#stack-wrapper-${dropTarget.parentId} .stack-children`);
-        if (parentContainer) {
-            const clips = Array.from(parentContainer.querySelectorAll('.node'));
-            const currentIndex = clips.indexOf(dragState.node);
-            const targetIndex = dropTarget.index;
-
-            // Only reorder if different position
-            if (currentIndex !== -1 && currentIndex !== targetIndex) {
-                if (targetIndex >= clips.length) {
-                    parentContainer.appendChild(dragState.node);
-                } else {
-                    const referenceNode = clips[targetIndex];
-                    if (referenceNode && referenceNode !== dragState.node) {
-                        parentContainer.insertBefore(dragState.node, referenceNode);
-                    }
-                }
-            }
-        }
+    // Track current drop index for when we release
+    if (dropTarget && dropTarget.type === 'reorder') {
+        dragState.currentDropIndex = dropTarget.index;
+    } else {
+        dragState.currentDropIndex = -1;
     }
 }
 
 function onDragEnd(e) {
     if (!dragState.isDragging) return;
 
-    // Remove dragging class
-    if (dragState.node) {
-        dragState.node.classList.remove('dragging');
+    // Calculate if we actually moved (minimum threshold to count as a drag)
+    const deltaX = Math.abs(e.pageX - dragState.startX);
+    const deltaY = Math.abs(e.pageY - dragState.startY);
+    const didMove = deltaX > 5 || deltaY > 5;
+
+    // Find drop target only if we actually moved
+    const dropTarget = didMove ? findDropTarget(e.clientX, e.clientY) : null;
+
+    // Determine if we should do DOM reorder
+    const shouldReorder = !dragState.nodeData.isTopLevel && dropTarget && dropTarget.type === 'reorder';
+
+    if (shouldReorder) {
+        const parentContainer = document.querySelector(`#stack-wrapper-${dropTarget.parentId} .stack-children`);
+        if (parentContainer && dragState.node) {
+            // STEP 1: Capture current visual positions of ALL clips (including dragged)
+            const allClips = Array.from(parentContainer.querySelectorAll('.node'));
+            const visualPositions = new Map();
+            allClips.forEach(clip => {
+                const rect = clip.getBoundingClientRect();
+                visualPositions.set(clip, rect.top);
+            });
+
+            // STEP 2: Do the DOM reorder
+            const clips = Array.from(parentContainer.querySelectorAll('.node:not(.dragging)'));
+            const targetIndex = dropTarget.index;
+
+            log(`[Drop] Reordering to index ${targetIndex}`);
+
+            // Remove dragged clip from current position
+            if (dragState.node.parentElement === parentContainer) {
+                parentContainer.removeChild(dragState.node);
+            }
+
+            // Insert at new position
+            const remainingClips = Array.from(parentContainer.querySelectorAll('.node'));
+            if (targetIndex >= remainingClips.length) {
+                parentContainer.appendChild(dragState.node);
+            } else {
+                const referenceNode = remainingClips[targetIndex];
+                parentContainer.insertBefore(dragState.node, referenceNode || null);
+            }
+
+            // STEP 3: Clear all transforms and force layout to get new natural positions
+            allClips.forEach(clip => {
+                clip.style.transition = 'none';
+                clip.style.transform = '';
+            });
+            // Also clear dragging class to get true natural positions
+            dragState.node.classList.remove('dragging');
+            dragState.node.style.zIndex = '';
+            dragState.node.style.visibility = '';
+
+            // Force layout recalculation
+            parentContainer.offsetHeight;
+
+            // STEP 4: Calculate inverse transforms to maintain old visual positions
+            allClips.forEach(clip => {
+                const oldVisual = visualPositions.get(clip);
+                const newRect = clip.getBoundingClientRect();
+                const delta = oldVisual - newRect.top;
+
+                if (Math.abs(delta) > 1) {
+                    clip.style.transform = `translateY(${delta}px)`;
+                }
+            });
+
+            // LOCK: Prevent syncUI from overriding transforms during animation
+            isAnimatingDrop = true;
+
+            // STEP 5: Animate to zero (final positions)
+            requestAnimationFrame(() => {
+                allClips.forEach(clip => {
+                    clip.style.transition = 'transform 0.15s ease-out';
+                    clip.style.transform = '';
+                });
+
+                // Clean up after animation and UNLOCK
+                setTimeout(() => {
+                    allClips.forEach(clip => {
+                        clip.style.transition = '';
+                    });
+                    isAnimatingDrop = false;  // UNLOCK
+                }, 160);
+            });
+
+            // Notify backend of new order
+            handleDrop(dropTarget);
+        }
+    } else {
+        // No reorder - just clear everything
+        if (dragState.node) {
+            dragState.node.classList.remove('dragging');
+            dragState.node.style.zIndex = '';
+            dragState.node.style.visibility = '';
+        }
+        clearSlideTransforms();
+
+        if (dropTarget) {
+            handleDrop(dropTarget);
+        }
     }
 
-    // Handle drop
-    const dropTarget = findDropTarget(e.pageX, e.pageY);
-    if (dropTarget) {
-        handleDrop(dropTarget);
-    }
-
-    // Clear drop indicators
+    // Reset for next drag
+    previousDropIndex = -1;
     clearDropIndicators();
 
     // Remove global handlers
@@ -130,13 +249,43 @@ function onDragEnd(e) {
     dragState.isDragging = false;
     dragState.node = null;
     dragState.nodeData = null;
+    dragState.originalIndex = -1;
+    dragState.currentDropIndex = -1;
 }
 
+
 function findDropTarget(x, y) {
+    // Temporarily hide the dragged element to find what's underneath
+    if (dragState.node) {
+        dragState.node.style.pointerEvents = 'none';
+    }
+
     const target = document.elementFromPoint(x, y);
+
+    if (dragState.node) {
+        dragState.node.style.pointerEvents = '';
+    }
+
     if (!target) return null;
 
-    // Check if dropping on a stack wrapper
+    // IMPORTANT: Check stack-children FIRST (more specific) before stack-wrapper (more general)
+    // Both exist in the same DOM tree, so we must check the inner one first
+
+    // Check if dropping between clips in a stack (reorder within same stack)
+    const childrenContainer = target.closest('.stack-children');
+    if (childrenContainer && !dragState.nodeData.isTopLevel) {
+        // Get clips excluding the one being dragged
+        const clipNodes = Array.from(childrenContainer.querySelectorAll('.node:not(.dragging)'));
+        const dropIndex = findInsertIndex(clipNodes, y);
+        return {
+            type: 'reorder',
+            parentId: childrenContainer.closest('.stack-wrapper').id.replace('stack-wrapper-', ''),
+            index: dropIndex,
+            container: childrenContainer
+        };
+    }
+
+    // Check if dropping on a stack wrapper (move to different stack)
     const stackWrapper = target.closest('.stack-wrapper');
     if (stackWrapper && !dragState.nodeData.isTopLevel) {
         // Can drop clips into stacks
@@ -144,18 +293,6 @@ function findDropTarget(x, y) {
             type: 'stack',
             element: stackWrapper,
             stackId: stackWrapper.id.replace('stack-wrapper-', '')
-        };
-    }
-
-    // Check if dropping between clips in a stack
-    const childrenContainer = target.closest('.stack-children');
-    if (childrenContainer && !dragState.nodeData.isTopLevel) {
-        const clipNodes = Array.from(childrenContainer.querySelectorAll('.node.clip'));
-        const dropIndex = findInsertIndex(clipNodes, y);
-        return {
-            type: 'reorder',
-            parentId: childrenContainer.closest('.stack-wrapper').id.replace('stack-wrapper-', ''),
-            index: dropIndex
         };
     }
 
@@ -172,21 +309,90 @@ function findInsertIndex(elements, y) {
     return elements.length;
 }
 
-function updateDropIndicators(dropTarget) {
-    // Clear existing indicators
-    clearDropIndicators();
+// Track previous drop target to avoid clearing transforms on every mousemove
+let previousDropIndex = -1;
 
-    if (!dropTarget) return;
+function updateDropIndicators(dropTarget) {
+    // Clear stack drop indicators
+    document.querySelectorAll('.drag-over').forEach(el => {
+        el.classList.remove('drag-over');
+    });
+
+    if (!dropTarget) {
+        if (previousDropIndex !== -1) {
+            clearSlideTransforms();
+            previousDropIndex = -1;
+        }
+        return;
+    }
 
     if (dropTarget.type === 'stack') {
         dropTarget.element.classList.add('drag-over');
+        if (previousDropIndex !== -1) {
+            clearSlideTransforms();
+            previousDropIndex = -1;
+        }
+    } else if (dropTarget.type === 'reorder' && dropTarget.container) {
+        // Only update if drop index changed
+        if (dropTarget.index === previousDropIndex) {
+            return;
+        }
+
+        const origIdx = dragState.originalIndex;
+        const targetIdx = dropTarget.index;
+
+        // Skip slide animation if we're at the original position
+        if (targetIdx === origIdx) {
+            if (previousDropIndex !== -1 && previousDropIndex !== origIdx) {
+                clearSlideTransforms();
+            }
+            previousDropIndex = targetIdx;
+            return;
+        }
+
+        previousDropIndex = targetIdx;
+
+        // Get sibling clips (excluding the one being dragged)
+        const clips = Array.from(dropTarget.container.querySelectorAll('.node:not(.dragging)'));
+
+        // Calculate clip height dynamically
+        // Spacing = CSS gap (16px) + marginBottom applied by syncUI (12px) = 28px
+        const draggedRect = dragState.node.getBoundingClientRect();
+        const clipHeight = draggedRect.height + 28;  // height + total spacing
+
+        // Slide siblings to make room
+        clips.forEach((clip, index) => {
+            clip.style.transition = 'transform 0.15s ease-out';
+
+            if (targetIdx > origIdx) {
+                // Dragging DOWN: items between old and new position slide UP
+                if (index >= origIdx && index < targetIdx) {
+                    clip.style.transform = `translateY(-${clipHeight}px)`;
+                } else {
+                    clip.style.transform = '';
+                }
+            } else {
+                // Dragging UP: items between new and old position slide DOWN
+                if (index >= targetIdx && index < origIdx) {
+                    clip.style.transform = `translateY(${clipHeight}px)`;
+                } else {
+                    clip.style.transform = '';
+                }
+            }
+        });
     }
-    // TODO: Add insert marker for reorder
 }
 
 function clearDropIndicators() {
     document.querySelectorAll('.drag-over').forEach(el => {
         el.classList.remove('drag-over');
+    });
+}
+
+function clearSlideTransforms() {
+    document.querySelectorAll('.stack-children .node:not(.dragging)').forEach(el => {
+        el.style.transition = 'transform 0.15s ease-out';
+        el.style.transform = '';
     });
 }
 
@@ -203,13 +409,15 @@ async function handleDrop(dropTarget) {
 
     // Stack children: handle moves/reorders
     if (dropTarget.type === 'stack') {
-        // Move to different stack
+        // Move to different stack (append to end)
         if (parent !== dropTarget.stackId) {
-            await callNative('moveNode', id, dropTarget.stackId, 0);
+            const stackChildren = document.querySelector(`#stack-wrapper-${dropTarget.stackId} .stack-children`);
+            const numChildren = stackChildren ? stackChildren.querySelectorAll('.node').length : 0;
+            await callNative('reorderNode', id, dropTarget.stackId, numChildren);
         }
     } else if (dropTarget.type === 'reorder') {
-        // Reorder within same stack
-        const newY = dropTarget.index * 120; // 120px spacing per clip
-        await callNative('moveNode', id, dropTarget.parentId, newY);
+        // Reorder within same stack - pass index directly
+        log(`[handleDrop] Reordering ${id} to index ${dropTarget.index} in parent ${dropTarget.parentId}`);
+        await callNative('reorderNode', id, dropTarget.parentId, dropTarget.index);
     }
 }

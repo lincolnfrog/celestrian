@@ -63,6 +63,131 @@ class AudioEngineTests : public juce::UnitTest {
       // but we can check if it shows up in metadata if it were exposed.
     }
 
+    beginTest("Node Management: reorderNode Index-Based Reordering");
+    {
+      AudioEngine engine;
+
+      // Create a stack to hold clips
+      engine.createNode("stack", 0, 0);
+      auto state = engine.getGraphState();
+      juce::String stackId = state.getDynamicObject()
+                                 ->getProperty("nodes")
+                                 .getArray()
+                                 ->getReference(0)
+                                 .getDynamicObject()
+                                 ->getProperty("id");
+
+      // Create 3 clips inside the stack: A, B, C
+      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", 0, 0, stackId);
+
+      state = engine.getGraphState();
+      auto *stackChildren = state.getDynamicObject()
+                                ->getProperty("nodes")
+                                .getArray()
+                                ->getReference(0)
+                                .getDynamicObject()
+                                ->getProperty("nodes")
+                                .getArray();
+
+      expect(stackChildren->size() == 3, "Should have 3 clips");
+
+      juce::String idA =
+          stackChildren->getReference(0).getDynamicObject()->getProperty("id");
+      juce::String idB =
+          stackChildren->getReference(1).getDynamicObject()->getProperty("id");
+      juce::String idC =
+          stackChildren->getReference(2).getDynamicObject()->getProperty("id");
+
+      // Name them for easier verification
+      engine.renameNode(idA, "ClipA");
+      engine.renameNode(idB, "ClipB");
+      engine.renameNode(idC, "ClipC");
+
+      // Verify initial order: A, B, C
+      state = engine.getGraphState();
+      stackChildren = state.getDynamicObject()
+                          ->getProperty("nodes")
+                          .getArray()
+                          ->getReference(0)
+                          .getDynamicObject()
+                          ->getProperty("nodes")
+                          .getArray();
+
+      expectEquals(stackChildren->getReference(0)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipA"));
+      expectEquals(stackChildren->getReference(1)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipB"));
+      expectEquals(stackChildren->getReference(2)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipC"));
+
+      // Move A to index 2 (end): Order becomes B, C, A
+      engine.reorderNode(idA, stackId, 2);
+
+      state = engine.getGraphState();
+      stackChildren = state.getDynamicObject()
+                          ->getProperty("nodes")
+                          .getArray()
+                          ->getReference(0)
+                          .getDynamicObject()
+                          ->getProperty("nodes")
+                          .getArray();
+
+      expectEquals(stackChildren->getReference(0)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipB"),
+                   "After reorder: index 0 should be ClipB");
+      expectEquals(stackChildren->getReference(1)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipC"),
+                   "After reorder: index 1 should be ClipC");
+      expectEquals(stackChildren->getReference(2)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipA"),
+                   "After reorder: index 2 should be ClipA");
+
+      // Move A back to index 0: Order becomes A, B, C
+      engine.reorderNode(idA, stackId, 0);
+
+      state = engine.getGraphState();
+      stackChildren = state.getDynamicObject()
+                          ->getProperty("nodes")
+                          .getArray()
+                          ->getReference(0)
+                          .getDynamicObject()
+                          ->getProperty("nodes")
+                          .getArray();
+
+      expectEquals(stackChildren->getReference(0)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipA"),
+                   "After reorder back: index 0 should be ClipA");
+      expectEquals(stackChildren->getReference(1)
+                       .getDynamicObject()
+                       ->getProperty("name")
+                       .toString(),
+                   juce::String("ClipB"),
+                   "After reorder back: index 1 should be ClipB");
+    }
+
     beginTest("Playback Controls: TogglePlay/Solo");
     {
       AudioEngine engine;

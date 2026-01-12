@@ -226,6 +226,7 @@
 .node.dragging {
     opacity: 0.5;
     pointer-events: none;
+    z-index: 1000;
 }
 
 .stack-wrapper.drag-over {
