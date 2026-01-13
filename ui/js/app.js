@@ -740,7 +740,8 @@ function syncUI(state) {
 
                     // Determine if this ghost is "active" (playhead is within it)
                     let timelinePosPx;
-                    const recordingNode = nodes.find(n => n.isRecording);
+                    // Search for recording node WITHIN THIS STACK, not top-level nodes
+                    const recordingNode = (stack.nodes || []).find(n => n.isRecording);
 
                     if (recordingNode) {
                         timelinePosPx = (recordingNode.duration / effectiveQ) * baseWidth;

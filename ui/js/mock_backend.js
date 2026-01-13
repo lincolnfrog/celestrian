@@ -386,6 +386,8 @@ export function loadScenario(name) {
         // Example 1: 1Q + 4Q (LCM = 4Q)
         // Expected: Clip 1 (1Q) should have 3 ghosts, Clip 2 (4Q) should have 0 ghosts
         case 'example-1q-4q':
+            state.isPlaying = true;
+            state.masterPos = 22050;  // ~0.5Q into the timeline
             state.nodes = [{
                 id: 'stack-1',
                 name: 'LCM Test Stack',
@@ -407,7 +409,11 @@ export function loadScenario(name) {
                         h: 100,
                         duration: 44100,      // 1Q
                         effectiveQuantum: 44100,
-                        isRecording: false
+                        isRecording: false,
+                        isPlaying: true,
+                        playhead: 0.5,  // 50% through the clip
+                        loopStart: 0,
+                        loopEnd: 44100
                     },
                     {
                         id: 'clip-4q',
@@ -419,7 +425,11 @@ export function loadScenario(name) {
                         h: 100,
                         duration: 176400,     // 4Q
                         effectiveQuantum: 44100,
-                        isRecording: false
+                        isRecording: false,
+                        isPlaying: true,
+                        playhead: 0.125,  // 12.5% through the clip (= 0.5Q / 4Q)
+                        loopStart: 0,
+                        loopEnd: 176400
                     }
                 ]
             }];
