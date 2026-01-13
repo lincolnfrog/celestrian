@@ -4,8 +4,13 @@ export function drawWaveform(canvas, peaks, fixedStep = null) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
 
-    const width = Math.floor(canvas.clientWidth || canvas.offsetWidth || canvas.parentElement?.clientWidth || 200);
-    const height = Math.floor(canvas.clientHeight || canvas.offsetHeight || canvas.parentElement?.clientHeight || 60);
+    // Get dimensions, preferring current canvas size if already set (prevents flicker during drag)
+    let width = Math.floor(canvas.clientWidth || canvas.offsetWidth || canvas.parentElement?.clientWidth || 200);
+    let height = Math.floor(canvas.clientHeight || canvas.offsetHeight || canvas.parentElement?.clientHeight || 60);
+
+    // Prevent shrinking to 0 during layout transitions (e.g., during drag transforms)
+    if (width < 10) width = canvas.width || 200;
+    if (height < 10) height = canvas.height || 60;
 
     if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;

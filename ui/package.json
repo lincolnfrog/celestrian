@@ -1,0 +1,16 @@
+{
+  "name": "celestrian-ui-tests",
+  "version": "1.0.0",
+  "description": "Celestrian UI integration tests",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules js/tests/*.mjs",
+    "test:playwright": "npx playwright test",
+    "test:all": "npm run test && npm run test:playwright"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.40.0",
+    "serve": "^14.2.5"
+  },
+  "license": "MIT"
+}

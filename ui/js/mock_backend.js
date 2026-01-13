@@ -275,6 +275,8 @@ export function loadScenario(name) {
                         w: 400,
                         h: 100,
                         duration: 2.0,
+                        loopStart: 0,  // Match native C++ backend defaults
+                        loopEnd: 0,    // Match native C++ backend defaults (triggers bug!)
                         isRecording: false,
                         isPlaying: false,
                         isMuted: false,
@@ -291,6 +293,8 @@ export function loadScenario(name) {
                         w: 600,
                         h: 100,
                         duration: 3.0,
+                        loopStart: 0,
+                        loopEnd: 0,
                         isRecording: false,
                         isPlaying: false,
                         isMuted: false,
@@ -307,6 +311,8 @@ export function loadScenario(name) {
                         w: 200,
                         h: 100,
                         duration: 1.0,
+                        loopStart: 0,
+                        loopEnd: 0,
                         isRecording: false,
                         isPlaying: false,
                         isMuted: false,

@@ -5,6 +5,12 @@
     cursor: grabbing !important;
 }
 
+/* Prevent overflow clipping during drag - ensures all child elements 
+   (loop handles, markers, etc.) remain visible regardless of node structure */
+.dragging .node-content {
+    overflow: visible;
+}
+
 .drag-ghost {
     opacity: 0.7;
     transform: rotate(2deg);

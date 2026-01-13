@@ -318,14 +318,16 @@ function syncUI(state) {
 
         // UI = Data: Position comes directly from C++ data
         // Apply VISUAL_OFFSET for View (but NOT for stack children - they use relative positioning)
+        // Skip POSITION updates during drag to not interfere with manual drag positioning
         if (!isStackChild && !nodeIsBeingDragged) {
             div.style.left = `${(node.x || 0) + VISUAL_OFFSET}px`;
             div.style.top = `${node.y || 0}px`;
         }
 
         // Node container width: Match rhythmic duration but NEVER narrower than the header
+        // ALWAYS set dimensions - even during drag - so content doesn't collapse and clip loop handles
         const nodeWidth = Math.max(260, shouldCollapse ? 0 : (displayWidth || 0));
-        if (!isStackChild && !nodeIsBeingDragged) {
+        if (!isStackChild) {
             div.style.width = isFinite(nodeWidth) ? `${nodeWidth}px` : '260px';
         }
 
@@ -333,14 +335,16 @@ function syncUI(state) {
         const contentH = Math.max(20, (node.h || 100) - headerH);
 
         // Final node height depends on collapsed state
+        // ALWAYS set height - even during drag - so content doesn't collapse
         const finalNodeH = shouldCollapse ? headerH : (node.h || 100);
-        if (!isStackChild && !nodeIsBeingDragged) {
+        if (!isStackChild) {
             div.style.height = isFinite(finalNodeH) ? `${finalNodeH}px` : '38px';
         }
 
         // Content width/height
+        // Skip for dragged nodes to prevent resize-induced clipping of loop handles
         const content = div.querySelector('.node-content');
-        if (content) {
+        if (content && !nodeIsBeingDragged) {
             const cWidth = isFinite(displayWidth) ? displayWidth : 200;
             content.style.width = `${cWidth}px`;
             content.style.height = `${contentH}px`;
@@ -361,17 +365,18 @@ function syncUI(state) {
 
         // Loop Handles & Dim Layers
         const dur = node.duration || 1;
-        let loopStart = node.loopStart;
-        let loopEnd = node.loopEnd;
+        let loopStart = node.loopStart || 0;
+        let loopEnd = node.loopEnd || dur;
 
         // Fallback: If loop points are not set or invalid, use full duration
         if (loopEnd <= loopStart) {
             loopStart = 0;
-            loopEnd = node.duration;
+            loopEnd = dur;  // Use dur (guaranteed >= 1), not node.duration (could be 0)
         }
 
-        const startPct = (loopStart / dur) * 100;
-        const endPct = (loopEnd / dur) * 100;
+        // Guard against NaN/Infinity from division
+        const startPct = isFinite(loopStart / dur) ? (loopStart / dur) * 100 : 0;
+        const endPct = isFinite(loopEnd / dur) ? (loopEnd / dur) * 100 : 100;
 
         const hStart = div.querySelector('.loop-handle-start');
         const hEnd = div.querySelector('.loop-handle-end');
