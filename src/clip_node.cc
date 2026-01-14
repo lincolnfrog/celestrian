@@ -494,7 +494,8 @@ void ClipNode::commitRecording(int64_t final_duration) {
       loop_start_samples.store(0);
       loop_end_samples.store(duration);
     } else {
-      // No quantum or fallback
+      // No quantum or fallback (first clip case)
+      loop_start_samples.store(0);
       loop_end_samples.store(duration);
     }
 

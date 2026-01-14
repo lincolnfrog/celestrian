@@ -178,4 +178,20 @@ AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
   return nullptr;
 }
 
+bool StackNode::isAnyChildRecording() const {
+  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+
+  for (const auto &child : children) {
+    // Check if this child is recording
+    if (child->is_node_recording.load()) return true;
+
+    // If child is a stack, recursively check its children
+    if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
+      if (stack->isAnyChildRecording()) return true;
+    }
+  }
+
+  return false;
+}
+
 }  // namespace celestrian

@@ -349,31 +349,23 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
           // 1. It's a simple extension (not polyrhythmic)
           // 2. Transport overshot the new LCM (for safety, though polyrhythm
           // check covers most cases)
+          // OR when LCM grows due to recording a longer clip, snap to align
+          // the transport with the beginning of the new LCM timeline.
+
           if (just_finished_recording &&
               timeline_length > lcm_before_recording_ &&
-              !is_polyrhythmic_expansion && old_pos >= timeline_length) {
-            int64_t lcm_index =
-                (old_pos + timeline_length / 2) / timeline_length;
-            int64_t snapped_pos =
-                (lcm_index * timeline_length) % timeline_length;
-            juce::Logger::writeToLog(
-                "LCM SNAP: pos=" + juce::String(old_pos) + " → boundary " +
-                juce::String(lcm_index * timeline_length) + " → " +
-                juce::String(snapped_pos) +
-                " (LCM grew: " + juce::String(lcm_before_recording_) + " → " +
-                juce::String(timeline_length) + ")");
-            old_pos = snapped_pos;
-            new_pos = old_pos + num_samples;
+              !is_polyrhythmic_expansion) {
+            // LCM grew (e.g. 1Q -> 4Q when recording a 4Q clip)
+            // Snap to 0 so all clips start fresh from their beginning
+            // Key insight: the new longer clip defines a new timeline,
+            // and all clips should restart from their respective 0 positions
+            // Snap to 0 + this block's samples
+            new_pos = num_samples;
           }
           // Polyrhythmic expansion: snap to the recording's final position
           // This ensures the cursor continues smoothly from where it was during
           // recording
           else if (just_finished_recording && is_polyrhythmic_expansion) {
-            juce::Logger::writeToLog(
-                "POLYRHYTHM SNAP: pos=" + juce::String(old_pos) +
-                " → recording_dur " + juce::String(last_recording_duration_) +
-                " (LCM grew: " + juce::String(lcm_before_recording_) + " → " +
-                juce::String(timeline_length) + ")");
             new_pos = last_recording_duration_ + num_samples;
           }
           // FIRST CLIP FIX: When the first clip finishes recording, snap to 0
@@ -405,6 +397,12 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                   "FIRST CLIP SNAP: pos=" + juce::String(old_pos) +
                   " → 0 (first clip finished, start from beginning)");
               new_pos = num_samples;  // Start from 0 + this block's samples
+              // Skip modulo wrap - we want to start fresh at 0
+              global_transport_pos.store(new_pos);
+              // Clear recording state vars for consistency
+              lcm_before_recording_ = 0;
+              last_recording_duration_ = 0;
+              return;  // Exit early to avoid modulo wrap overwriting our reset
             }
           }
 
@@ -508,13 +506,9 @@ int64_t AudioEngine::calculateTimelineLength() const {
 bool AudioEngine::isAnyNodeRecording() const {
   if (!focused_node) return false;
 
+  // Use StackNode's recursive method to check all descendants
   if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
-    for (int i = 0; i < stack->getNumChildren(); ++i) {
-      auto *child = stack->getChild(i);
-      if (child->is_node_recording.load()) {
-        return true;
-      }
-    }
+    return stack->isAnyChildRecording();
   }
   return false;
 }

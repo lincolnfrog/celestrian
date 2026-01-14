@@ -616,6 +616,175 @@ class AudioEngineTests : public juce::UnitTest {
       expect(pos > 0,
              "Transport should be advancing. Got pos=" + juce::String(pos));
     }
+
+    // BUG REPRO: Clip 2 loops to 1Q instead of 0Q
+    // Exact user scenario:
+    // 1. Record clip 1 (~1Q)
+    // 2. Click record mid-loop for clip 2
+    // 3. Recording snaps to start at next 0Q boundary
+    // 4. Record for ~4Q, stop between 3Q-4Q, snaps to 4Q
+    // 5. Expected: playhead at 0% after commit
+    // 6. Actual bug: playhead at 25% (1Q position)
+    beginTest("BUG: Clip 2 Loops to 1Q Instead of 0Q (Full AudioEngine)");
+    {
+      AudioEngine engine;
+
+      const int BLOCK_SIZE = 512;
+      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
+      float *ins[] = {buffer.data()};
+      float *outs[] = {buffer.data(), buffer.data()};
+
+      // Helper to process N samples through the engine
+      auto process = [&](int total_samples) {
+        int remaining = total_samples;
+        while (remaining > 0) {
+          int n = std::min(remaining, BLOCK_SIZE);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          remaining -= n;
+        }
+      };
+
+      // Use smaller Q for faster test (1000 samples = ~22ms at 44.1kHz)
+      const int Q = 1000;
+
+      // Get initial master pos
+      auto getMasterPos = [&]() -> int64_t {
+        return (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+            "masterPos");
+      };
+
+      auto getClipPlayhead = [&](const juce::String &clipId) -> double {
+        auto state = engine.getGraphState();
+        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        for (auto &n : *nodes) {
+          auto *obj = n.getDynamicObject();
+          if (obj->getProperty("id").toString() == clipId) {
+            return (double)obj->getProperty("playhead");
+          }
+          // Check nested
+          if (obj->hasProperty("nodes")) {
+            auto *children = obj->getProperty("nodes").getArray();
+            for (auto &c : *children) {
+              auto *cobj = c.getDynamicObject();
+              if (cobj->getProperty("id").toString() == clipId) {
+                return (double)cobj->getProperty("playhead");
+              }
+            }
+          }
+        }
+        return -1.0;
+      };
+
+      // Create a stack to hold clips (matches real app structure)
+      engine.createNode("stack", 0, 0);
+      auto state = engine.getGraphState();
+      juce::String stackId = state.getDynamicObject()
+                                 ->getProperty("nodes")
+                                 .getArray()
+                                 ->getReference(0)
+                                 .getDynamicObject()
+                                 ->getProperty("id");
+
+      // === CLIP 1: Record 1Q ===
+      engine.createNode("clip", 0, 0, stackId);
+      state = engine.getGraphState();
+      auto *stackNodes = state.getDynamicObject()
+                             ->getProperty("nodes")
+                             .getArray()
+                             ->getReference(0)
+                             .getDynamicObject()
+                             ->getProperty("nodes")
+                             .getArray();
+      juce::String id1 =
+          stackNodes->getReference(0).getDynamicObject()->getProperty("id");
+
+      engine.startRecordingInNode(id1);
+      process(Q);  // Record exactly 1Q
+      engine.stopRecordingInNode(id1);
+      process(Q);  // Process to commit
+
+      // Verify clip 1 duration
+      state = engine.getGraphState();
+      stackNodes = state.getDynamicObject()
+                       ->getProperty("nodes")
+                       .getArray()
+                       ->getReference(0)
+                       .getDynamicObject()
+                       ->getProperty("nodes")
+                       .getArray();
+      int64_t clip1Duration =
+          (int64_t)stackNodes->getReference(0).getDynamicObject()->getProperty(
+              "duration");
+
+      // === CLIP 2: Start recording MID-LOOP ===
+      // Current master_pos should be around 2Q (processed 1Q + 1Q)
+      // We want to start recording mid-loop to trigger the 0Q snap
+
+      // Create clip 2
+      engine.createNode("clip", 0, 0, stackId);
+      state = engine.getGraphState();
+      stackNodes = state.getDynamicObject()
+                       ->getProperty("nodes")
+                       .getArray()
+                       ->getReference(0)
+                       .getDynamicObject()
+                       ->getProperty("nodes")
+                       .getArray();
+      juce::String id2 =
+          stackNodes->getReference(1).getDynamicObject()->getProperty("id");
+
+      // Process to mid-loop position (0.5Q from current Q boundary)
+      int samplesTo05Q = Q / 2;
+      process(samplesTo05Q);
+
+      int64_t posAtRecordClick = getMasterPos();
+
+      // Start recording - should snap to next 0Q boundary
+      engine.startRecordingInNode(id2);
+
+      // Process to reach the 0Q boundary
+      int samplesToNextQ = Q - (posAtRecordClick % Q);
+      process(samplesToNextQ);
+
+      // Record for 4Q total
+      process(4 * Q);
+
+      // Stop between 3Q-4Q relative to recording start (we already recorded
+      // 4Q)
+      engine.stopRecordingInNode(id2);
+
+      // Process to commit - should snap to 4Q boundary
+      process(Q);
+
+      // === VERIFY: Playhead should be near 0% ===
+      int64_t masterPosAfterCommit = getMasterPos();
+      double clip2Playhead = getClipPlayhead(id2);
+
+      state = engine.getGraphState();
+      stackNodes = state.getDynamicObject()
+                       ->getProperty("nodes")
+                       .getArray()
+                       ->getReference(0)
+                       .getDynamicObject()
+                       ->getProperty("nodes")
+                       .getArray();
+      int64_t clip2Duration =
+          (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
+              "duration");
+      int64_t clip2LaunchPoint =
+          (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
+              "launchPoint");
+
+      // Assert that launch_point is 0 (clip starting at 0Q boundary)
+      expectEquals(clip2LaunchPoint, (int64_t)0,
+                   "launch_point should be 0 for clip starting at 0Q boundary");
+
+      // Assert playhead is close to 0%
+      // The bug is in transport position, not launch_point
+      expectWithinAbsoluteError(clip2Playhead, 0.0, 0.15,
+                                "Playhead should be near 0% after commit. Bug: "
+                                "transport not snapping when LCM expands.");
+    }
   }
 };
 

@@ -396,6 +396,30 @@ When Clip 3 commits at 4Q:
 - Timeline continues to 8Q, THEN all clips loop to 0Q together
 ```
 
+### LCM Expansion Snap (Transport Reset)
+
+When a **longer** clip is recorded that expands the LCM (e.g., recording a 4Q clip when only 1Q clips exist), the global transport snaps to **0** on commit. This ensures all clips start fresh from their respective beginning positions.
+
+**Why this is needed:**
+- Before the longer clip commits, the transport is cycling through a shorter LCM (e.g., 1Q)
+- When the 4Q clip commits, LCM expands from 1Q to 4Q
+- If transport doesn't snap, the new clip's playhead would start at ~25% (wherever transport happened to be in the old 1Q cycle)
+- By snapping to 0, all clips immediately align at their 0% positions
+
+**Implementation:**
+- `AudioEngine::isAnyNodeRecording()` recursively detects recording state via `StackNode::isAnyChildRecording()`
+- When recording ends and LCM grows (non-polyrhythmic), transport snaps to 0
+- Polyrhythmic expansions (e.g., 3Q added to 4Q → 12Q LCM) do NOT snap to avoid sudden jumps
+
+```cpp
+// In audio_engine.cc
+if (just_finished_recording && 
+    timeline_length > lcm_before_recording_ &&
+    !is_polyrhythmic_expansion) {
+  new_pos = num_samples;  // Snap to 0
+}
+```
+
 ### Example: Large LCM (1Q + 8Q + 3Q)
 
 When clip durations have no common factors, the LCM can be very large.

@@ -85,6 +85,12 @@ class StackNode : public AudioNode {
   AudioNode *findNodeByUuid(const juce::String &uuid);
 
   /**
+   * Recursively checks if any child node (including nested stacks) is
+   * recording.
+   */
+  bool isAnyChildRecording() const;
+
+  /**
    * Returns the number of children in this stack.
    */
   int getNumChildren() const { return (int)children.size(); }
