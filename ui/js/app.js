@@ -348,6 +348,14 @@ function syncUI(state) {
             const cWidth = isFinite(displayWidth) ? displayWidth : 200;
             content.style.width = `${cWidth}px`;
             content.style.height = `${contentH}px`;
+
+            // For stack children, apply node.x as content offset (anchor position)
+            // This shifts the waveform area horizontally within the clip container
+            if (isStackChild && node.x > 0) {
+                content.style.transform = `translateX(${node.x}px)`;
+            } else if (!isStackChild) {
+                content.style.transform = 'none';
+            }
         }
 
         maxY = Math.max(maxY, node.y + node.h);
@@ -659,7 +667,9 @@ function syncUI(state) {
                 if (clipElement) {
                     const clipRect = clipElement.getBoundingClientRect();
                     const nodeLayerRect = nodeLayer.getBoundingClientRect();
-                    ghostY = clipRect.top - nodeLayerRect.top + 38; // +38 for header
+                    // Normalize by viewport scale to avoid double-scaling
+                    const currentScale = (viewport && viewport.scale) || 1.0;
+                    ghostY = (clipRect.top - nodeLayerRect.top) / currentScale + 38; // +38 for header
                 } else {
                     // Fallback: calculate Y from data model
                     ghostY = stack.y;
@@ -671,7 +681,8 @@ function syncUI(state) {
                     ghostY += cumulativeY + 38;
                 }
 
-                // Clips inside stacks start at x=0 (relative to stack)
+                // Clips inside stacks use node.x as their anchor offset
+                // This is the visual x-position set by C++ based on recording start phase
                 const clipStartX = node.x || 0;
 
                 // Visual Wrapping: Check if we need a ghost on the LEFT (start wrapping)

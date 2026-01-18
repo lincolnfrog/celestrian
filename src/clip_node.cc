@@ -627,6 +627,12 @@ void ClipNode::commitRecording(int64_t final_duration) {
       // Quantize ideal anchor to Q
       int64_t offset_units = ideal_anchor / Q;
       x_pos.store(offset_units * 200.0);
+      juce::Logger::writeToLog("ClipNode COMMIT x_pos: Q=" + juce::String(Q) +
+                               ", context_loop=" + juce::String(context_loop) +
+                               ", trigger_pos=" + juce::String(trigger_pos) +
+                               ", ideal_anchor=" + juce::String(ideal_anchor) +
+                               ", offset_units=" + juce::String(offset_units) +
+                               ", x_pos=" + juce::String(x_pos.load()));
     } else {
       x_pos.store(0.0);
     }

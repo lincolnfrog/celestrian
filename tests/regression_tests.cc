@@ -1112,6 +1112,121 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // See audio_engine_tests.cc "BUG: Clip 2 Loops to 1Q Instead of 0Q"
       // for the full AudioEngine test of this scenario.
     }
+
+    // BUG: Clip 3 recorded at 2Q should anchor at 2Q, not 0Q
+    // Scenario: Clip 1 = 1Q, Clip 2 = 4Q, Clip 3 starts at 2Q for 1Q
+    // Expected: Clip 3 x_pos = 400 (slot 2), ghosts should wrap at 0Q→2Q
+    beginTest("Clip 3 Recording At 2Q Should Anchor At 2Q");
+    {
+      const double SR = 1000.0;  // 1000 samples = 1Q
+      celestrian::StackNode parent("Parent");
+
+      float dummyBuf[10000] = {0.0f};
+      float* const inputs[] = {dummyBuf};
+
+      // === Clip 1: 1Q (establishes quantum) ===
+      auto clip1 = std::make_unique<celestrian::ClipNode>("Clip1", SR);
+      auto* clip1Ptr = clip1.get();
+      parent.addChild(std::move(clip1));
+
+      celestrian::ProcessContext ctx;
+      ctx.num_samples = 1000;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      clip1Ptr->startRecording();
+      clip1Ptr->process(inputs, nullptr, 1, 0, ctx);
+      clip1Ptr->stopRecording();
+
+      int64_t Q = parent.getEffectiveQuantum();
+      expectEquals(Q, (int64_t)1000, "Clip 1 should establish Q = 1000");
+
+      // === Clip 2: 4Q (establishes 4Q context loop) ===
+      auto clip2 = std::make_unique<celestrian::ClipNode>("Clip2", SR);
+      auto* clip2Ptr = clip2.get();
+      parent.addChild(std::move(clip2));
+
+      ctx.num_samples = 4000;
+      ctx.master_pos = 0;
+      clip2Ptr->startRecording();
+      clip2Ptr->process(inputs, nullptr, 1, 0, ctx);
+      clip2Ptr->stopRecording();
+
+      // Process to commit clip 2
+      ctx.num_samples = 1000;
+      while (clip2Ptr->isAwaitingStop()) {
+        ctx.master_pos += 1000;
+        clip2Ptr->process(inputs, nullptr, 1, 0, ctx);
+      }
+
+      // Clip 2 duration should be snapped to next Q after recording
+      // Recording 4Q worth snaps to 5Q with anticipatory snap
+      expect(clip2Ptr->duration_samples.load() >= 4000,
+             "Clip 2 should be at least 4Q duration");
+
+      // === Clip 3: Start recording at 2Q, record for 1Q ===
+      // This is the bug case: should anchor at x=400 (2Q slot), not x=0
+      auto clip3 = std::make_unique<celestrian::ClipNode>("Clip3", SR);
+      auto* clip3Ptr = clip3.get();
+      parent.addChild(std::move(clip3));
+
+      // Start recording at master_pos = 2000 (exactly 2Q)
+      ctx.master_pos = 2000;
+      ctx.num_samples = 100;
+      clip3Ptr->startRecording();
+      clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
+
+      // Check x_pos immediately after recording starts
+      double xPos = clip3Ptr->x_pos.load();
+      juce::Logger::writeToLog(
+          "ANCHOR BUG TEST: Recording started at 2Q, x_pos=" +
+          juce::String(xPos) + ", recording_start_phase=" +
+          juce::String(clip3Ptr->recording_start_phase.load()));
+
+      // x_pos should be 400 (slot 2 * 200px base_width)
+      // NOT 0 (which would be slot 0)
+      expectEquals(xPos, 400.0,
+                   "Clip 3 x_pos should be 400 (anchored at 2Q slot)");
+
+      // recording_start_phase should be 2Q (2000 samples)
+      expectEquals(clip3Ptr->recording_start_phase.load(), (int64_t)2000,
+                   "recording_start_phase should be 2000 (2Q)");
+
+      // Continue recording for 1Q worth
+      ctx.master_pos = 2100;
+      ctx.num_samples = 1000;
+      clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
+      clip3Ptr->stopRecording();
+
+      // Process to commit clip 3
+      ctx.num_samples = 100;
+      while (clip3Ptr->isAwaitingStop()) {
+        ctx.master_pos += 100;
+        clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
+      }
+
+      int64_t duration3 = clip3Ptr->duration_samples.load();
+      int64_t launch3 = clip3Ptr->launch_point_samples.load();
+
+      juce::Logger::writeToLog(
+          "ANCHOR BUG TEST COMMIT: duration=" + juce::String(duration3) +
+          ", launch=" + juce::String(launch3) +
+          ", x_pos=" + juce::String(clip3Ptr->x_pos.load()));
+
+      // Verify x_pos is still 400 after commit
+      expectEquals(clip3Ptr->x_pos.load(), 400.0,
+                   "Clip 3 x_pos should remain 400 after commit");
+
+      // Verify duration - Clip starts at 2Q, records ~1Q, snaps to next Q (4Q)
+      // So duration = 4Q - 2Q = 2Q (2000 samples)
+      expectEquals(duration3, (int64_t)2000,
+                   "Clip 3 duration should be 2Q (2000) due to Q-snapping");
+
+      // NOTE: Ghost wrapping verification:
+      // With clip at x=400 (2Q) and duration 1Q in a 4Q context,
+      // ghosts should fill 0Q→2Q (left wrap) to complete the LCM cycle.
+      // This is verified in the UI layer tests (Playwright).
+    }
   }
 };
 

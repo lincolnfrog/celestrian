@@ -493,6 +493,78 @@ export function loadScenario(name) {
 
         default:
             // ========================================
+            // Clip 3 Anchor Bug Test Scenario
+            // ========================================
+            // Scenario: Clip 1 = 1Q, Clip 2 = 4Q, Clip 3 = 1Q at 2Q
+            // Expected: Clip 3 x=400 (2Q slot), ghosts wrap at 0Q→2Q
+            if (name === 'clip-3-anchor-at-2q') {
+                state.isPlaying = true;
+                state.masterPos = 88200;  // 2Q in samples
+                state.nodes = [{
+                    id: 'stack-1',
+                    name: 'Anchor Bug Test Stack',
+                    type: 'stack',
+                    x: 100,
+                    y: 100,
+                    w: 900,
+                    h: 450,
+                    isExpanded: true,
+                    effectiveQuantum: 44100,  // 1Q = 44100 samples
+                    nodes: [
+                        {
+                            id: 'clip-1',
+                            name: 'Clip 1Q',
+                            type: 'clip',
+                            x: 0,
+                            y: 0,
+                            w: 200,
+                            h: 100,
+                            duration: 44100,      // 1Q
+                            effectiveQuantum: 44100,
+                            isRecording: false,
+                            isPlaying: true,
+                            loopStart: 0,
+                            loopEnd: 44100,
+                            anchorPhase: 0
+                        },
+                        {
+                            id: 'clip-2',
+                            name: 'Clip 4Q',
+                            type: 'clip',
+                            x: 0,
+                            y: 120,
+                            w: 800,
+                            h: 100,
+                            duration: 176400,     // 4Q
+                            effectiveQuantum: 44100,
+                            isRecording: false,
+                            isPlaying: true,
+                            loopStart: 0,
+                            loopEnd: 176400,
+                            anchorPhase: 0
+                        },
+                        {
+                            id: 'clip-3',
+                            name: 'Clip 1Q@2Q',
+                            type: 'clip',
+                            x: 400,               // KEY: anchored at 2Q slot (2 * 200px)
+                            y: 240,
+                            w: 200,
+                            h: 100,
+                            duration: 44100,      // 1Q
+                            effectiveQuantum: 44100,
+                            isRecording: false,
+                            isPlaying: true,
+                            loopStart: 0,
+                            loopEnd: 44100,
+                            anchorPhase: 88200    // Started at 2Q
+                        }
+                    ]
+                }];
+                state.nextId = 4;
+                break;
+            }
+            // ========================================
             // Recording Scenario (for ghost testing)
             // ========================================
             // Simulates: Clip 1 = 1Q committed, Clip 2 = actively recording at ~2.5Q
