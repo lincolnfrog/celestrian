@@ -404,8 +404,10 @@ function syncUI(state) {
         if (launchMarker && dur > 0) {
             const launchPct = ((node.launchPoint || 0) / dur) * 100;
             launchMarker.style.left = `${launchPct}%`;
-            // Only show if clip has non-zero anchor (was recorded mid-quantum)
-            launchMarker.style.display = node.anchorPhase > 0 ? 'block' : 'none';
+            // Only show if clip has non-zero anchor AND is not a stack child with x offset
+            // (Stack children with translateX offset make the marker position confusing)
+            const hasXOffset = isStackChild && (node.x || 0) > 0;
+            launchMarker.style.display = (node.anchorPhase > 0 && !hasXOffset) ? 'block' : 'none';
         }
 
         // Update input selection
@@ -684,52 +686,44 @@ function syncUI(state) {
                 // Clips inside stacks use node.x as their anchor offset
                 // This is the visual x-position set by C++ based on recording start phase
                 const clipStartX = node.x || 0;
-
-                // Visual Wrapping: Check if we need a ghost on the LEFT (start wrapping)
                 const clipEndX = clipStartX + clipWidth;
-                if (clipEndX > stackTimelineWidth + 0.1) {
-                    // Render the wrapped portion at the START of the timeline
-                    const overflowWidth = clipEndX - stackTimelineWidth;
-                    const wrapGhostVisualX = stackXOffset + VISUAL_OFFSET;
 
-                    const ghost = document.createElement('div');
-                    ghost.className = 'ghost-clip';
-                    ghost.style.position = 'absolute';
-                    ghost.style.left = `${wrapGhostVisualX}px`;
-                    ghost.style.top = `${ghostY}px`;
-                    ghost.style.width = `${overflowWidth}px`;
-                    ghost.style.height = `${node.h - 38}px`;
+                // UNIFIED GHOST RENDERING: Fill entire timeline with ghosts
+                // except where the main clip is positioned
+                // This handles both left-fill (before anchor) and right-fill (after anchor)
+                let ghostCount = 0;
+                let ghostX = 0;
 
-                    ghost.classList.add('node-content');
-                    ghost.style.borderRadius = '0 0 8px 8px';
-                    ghost.style.border = '1px dashed rgba(56, 189, 248, 0.2)';
-                    ghost.style.borderTop = 'none';
-                    ghost.style.background = 'rgba(30, 41, 59, 0.3)';
+                while (ghostX < stackTimelineWidth - 5 && ghostCount < 100) {
+                    // Skip if this position overlaps with the MAIN clip
+                    // (allow small tolerance for floating point)
+                    const overlapsMainClip = (ghostX + clipWidth > clipStartX + 1) &&
+                        (ghostX < clipEndX - 1);
 
-                    const canvas = document.createElement('canvas');
-                    ghost.appendChild(canvas);
-                    if (livePeaks.has(node.id)) {
-                        drawWaveform(canvas, livePeaks.get(node.id));
+                    if (overlapsMainClip) {
+                        // Jump past the main clip
+                        ghostX = clipEndX;
+                        continue;
                     }
 
-                    const ghostPlayhead = document.createElement('div');
-                    ghostPlayhead.className = 'playhead';
-                    ghost.appendChild(ghostPlayhead);
+                    // Calculate ghost width (may be clipped at timeline end)
+                    let thisGhostWidth = clipWidth;
+                    if (ghostX + clipWidth > stackTimelineWidth) {
+                        thisGhostWidth = stackTimelineWidth - ghostX;
+                    }
 
-                    nodeLayer.appendChild(ghost);
-                }
+                    // Skip tiny ghosts
+                    if (thisGhostWidth < 5) {
+                        ghostX += clipWidth;
+                        continue;
+                    }
 
-                // Render Standard Ghosts to the RIGHT
-                let currentGhostX = clipStartX + clipWidth;
-                let rightGhostCount = 0;
-
-                while (currentGhostX < (stackTimelineWidth - 5) && rightGhostCount < 100) {
                     const ghost = document.createElement('div');
                     ghost.className = 'ghost-clip';
                     ghost.style.position = 'absolute';
-                    ghost.style.left = `${currentGhostX + stackXOffset + VISUAL_OFFSET}px`;
+                    ghost.style.left = `${ghostX + stackXOffset + VISUAL_OFFSET}px`;
                     ghost.style.top = `${ghostY}px`;
-                    ghost.style.width = `${clipWidth}px`;
+                    ghost.style.width = `${thisGhostWidth}px`;
                     ghost.style.height = `${node.h - 38}px`;
 
                     ghost.classList.add('node-content');
@@ -751,7 +745,6 @@ function syncUI(state) {
 
                     // Determine if this ghost is "active" (playhead is within it)
                     let timelinePosPx;
-                    // Search for recording node WITHIN THIS STACK, not top-level nodes
                     const recordingNode = (stack.nodes || []).find(n => n.isRecording);
 
                     if (recordingNode) {
@@ -761,7 +754,7 @@ function syncUI(state) {
                         timelinePosPx = (timelinePos / effectiveQ) * baseWidth;
                     }
 
-                    const isActiveGhost = (timelinePosPx >= currentGhostX && timelinePosPx < currentGhostX + clipWidth);
+                    const isActiveGhost = (timelinePosPx >= ghostX && timelinePosPx < ghostX + thisGhostWidth);
 
                     if (isActiveGhost) {
                         ghost.classList.add('active-ghost');
@@ -773,8 +766,8 @@ function syncUI(state) {
 
                     ghost.appendChild(ghostPlayhead);
                     nodeLayer.appendChild(ghost);
-                    currentGhostX += clipWidth;
-                    rightGhostCount++;
+                    ghostX += clipWidth;
+                    ghostCount++;
                 }
             });
         });

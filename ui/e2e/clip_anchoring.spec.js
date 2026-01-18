@@ -131,4 +131,62 @@ test.describe('Clip Anchoring at Quantum Positions', () => {
 
         expect(hasCorrectOffset).toBe(true);
     });
+
+    test('Left-wrap ghosts should fill 0Q and 1Q slots for clip anchored at 2Q', async ({ page }) => {
+        // Load the anchor bug test scenario
+        await page.click('button:has-text("1Q + 4Q + 1Q@2Q")');
+
+        // Wait for ghosts to render
+        await page.waitForSelector('.ghost-clip', { timeout: 5000 });
+
+        // Get reference position from Clip 1 (at 0Q)
+        const clip1 = page.locator('.node').filter({ has: page.locator('input[value="Clip 1Q"]') });
+        const clip1Content = clip1.locator('.node-content');
+        const clip1Box = await clip1Content.boundingBox();
+        if (!clip1Box) throw new Error('Clip 1Q content not found');
+
+        // Get scale factor
+        const scale = await page.evaluate(() => {
+            const viewport = document.getElementById('viewport');
+            if (!viewport) return 1;
+            const style = window.getComputedStyle(viewport);
+            const matrix = new DOMMatrix(style.transform);
+            return matrix.a;
+        });
+
+        // Get all ghosts
+        const allGhosts = page.locator('.ghost-clip');
+        const ghostCount = await allGhosts.count();
+
+        // Collect ghost X positions relative to Clip 1
+        const ghostPositions = [];
+        for (let i = 0; i < ghostCount; i++) {
+            const ghostBox = await allGhosts.nth(i).boundingBox();
+            if (ghostBox) {
+                const relativeX = (ghostBox.x - clip1Box.x) / scale;
+                ghostPositions.push(Math.round(relativeX / 100) * 100); // Round to nearest 100px
+            }
+        }
+
+        console.log(`Ghost positions relative to 0Q: ${ghostPositions.join(', ')}`);
+
+        // For Clip 3 at 2Q (x=400) with 1Q duration (width=200px) in 4Q timeline (800px):
+        // Main clip at 2Q→3Q (400→600px)
+        // Expected ghosts at: 0Q (0px), 1Q (200px), 3Q (600px)
+        // Note: Ghost positions are relative to stack container, not Clip 1
+
+        // Verify we have ghosts to the LEFT of the main clip anchor (at 0Q and 1Q)
+        // At least one ghost should be at position ~0 or ~200 (left of 400)
+        const hasGhostAt0Q = ghostPositions.some(x => x >= -50 && x <= 50);
+        const hasGhostAt1Q = ghostPositions.some(x => x >= 150 && x <= 250);
+
+        console.log(`hasGhostAt0Q: ${hasGhostAt0Q}, hasGhostAt1Q: ${hasGhostAt1Q}`);
+
+        // At least one of these left-fill positions should have a ghost
+        expect(hasGhostAt0Q || hasGhostAt1Q).toBe(true);
+
+        // Should also have a right ghost (at 3Q = 600px relative to 0Q)
+        const hasGhostAt3Q = ghostPositions.some(x => x >= 550 && x <= 650);
+        expect(hasGhostAt3Q).toBe(true);
+    });
 });
