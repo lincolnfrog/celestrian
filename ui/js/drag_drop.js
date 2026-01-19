@@ -268,54 +268,137 @@ function findDropTarget(x, y) {
 
     if (!target) return null;
 
-    // IMPORTANT: Check stack-children FIRST (more specific) before stack-wrapper (more general)
-    // Both exist in the same DOM tree, so we must check the inner one first
+    // Check if hovering over a specific clip (for zone detection)
+    const clipNode = target.closest('.node:not(.dragging)');
+    if (clipNode && !dragState.nodeData.isTopLevel) {
+        const zone = getDropZone(clipNode, y);
 
-    // Check if dropping between clips in a stack (reorder within same stack)
+        if (zone === 'center') {
+            // Center zone = combine into stack
+            return {
+                type: 'combine',
+                targetId: clipNode.id,
+                element: clipNode
+            };
+        }
+        // Top/bottom zones fall through to reorder logic below
+    }
+
+    // Check if dropping on a stack (for drop INTO stack)
+    const stackWrapper = target.closest('.stack-wrapper');
     const childrenContainer = target.closest('.stack-children');
+
+    // If hovering over stack-header-waveform or empty space, allow drop INTO stack
+    if (stackWrapper && !childrenContainer && !dragState.nodeData.isTopLevel) {
+        // Check if this is the same parent - if so, ignore
+        const stackId = stackWrapper.id.replace('stack-wrapper-', '');
+        if (dragState.nodeData.parent !== stackId) {
+            return {
+                type: 'stack',
+                element: stackWrapper,
+                stackId: stackId
+            };
+        }
+    }
+
+    // Check for reorder within stack (top/bottom zones only)
     if (childrenContainer && !dragState.nodeData.isTopLevel) {
         // Get clips excluding the one being dragged
         const clipNodes = Array.from(childrenContainer.querySelectorAll('.node:not(.dragging)'));
-        const dropIndex = findInsertIndex(clipNodes, y);
+        const dropResult = findInsertIndexWithZone(clipNodes, y);
+
+        if (dropResult.zone === 'center') {
+            // In center zone of a clip - return combine target
+            return {
+                type: 'combine',
+                targetId: dropResult.clipId,
+                element: dropResult.clipElement
+            };
+        }
+
         return {
             type: 'reorder',
             parentId: childrenContainer.closest('.stack-wrapper').id.replace('stack-wrapper-', ''),
-            index: dropIndex,
+            index: dropResult.index,
             container: childrenContainer
-        };
-    }
-
-    // Check if dropping on a stack wrapper (move to different stack)
-    const stackWrapper = target.closest('.stack-wrapper');
-    if (stackWrapper && !dragState.nodeData.isTopLevel) {
-        // Can drop clips into stacks
-        return {
-            type: 'stack',
-            element: stackWrapper,
-            stackId: stackWrapper.id.replace('stack-wrapper-', '')
         };
     }
 
     return null;
 }
 
-function findInsertIndex(elements, y) {
+/**
+ * Get the drop zone (top/center/bottom third) for a clip
+ */
+function getDropZone(clipElement, mouseY) {
+    const rect = clipElement.getBoundingClientRect();
+    const relativeY = mouseY - rect.top;
+    const height = rect.height;
+
+    if (relativeY < height * 0.33) return 'top';
+    if (relativeY > height * 0.67) return 'bottom';
+    return 'center';
+}
+
+/**
+ * Find insert index, but also return zone info for center detection
+ */
+function findInsertIndexWithZone(elements, y) {
     for (let i = 0; i < elements.length; i++) {
         const rect = elements[i].getBoundingClientRect();
-        if (y < rect.top + rect.height / 2) {
-            return i;
+        const relativeY = y - rect.top;
+        const height = rect.height;
+
+        // Top third - insert before this element
+        if (relativeY < height * 0.33) {
+            return { index: i, zone: 'top', clipId: null, clipElement: null };
+        }
+
+        // Center third - combine with this element
+        if (relativeY <= height * 0.67) {
+            return {
+                index: i,
+                zone: 'center',
+                clipId: elements[i].id,
+                clipElement: elements[i]
+            };
+        }
+
+        // Bottom third of last element - insert after
+        if (i === elements.length - 1) {
+            return { index: elements.length, zone: 'bottom', clipId: null, clipElement: null };
+        }
+
+        // Bottom third - check if we're in the gap before next element
+        // If cursor is past 67% of this element but not yet in next element's top third,
+        // treat as insert after this element
+        if (i < elements.length - 1) {
+            const nextRect = elements[i + 1].getBoundingClientRect();
+            if (y < nextRect.top + nextRect.height * 0.33) {
+                return { index: i + 1, zone: 'bottom', clipId: null, clipElement: null };
+            }
         }
     }
-    return elements.length;
+
+    return { index: elements.length, zone: 'bottom', clipId: null, clipElement: null };
+}
+
+function findInsertIndex(elements, y) {
+    // Simple version for backwards compatibility
+    const result = findInsertIndexWithZone(elements, y);
+    return result.index;
 }
 
 // Track previous drop target to avoid clearing transforms on every mousemove
 let previousDropIndex = -1;
 
 function updateDropIndicators(dropTarget) {
-    // Clear stack drop indicators
+    // Clear all drop indicators
     document.querySelectorAll('.drag-over').forEach(el => {
         el.classList.remove('drag-over');
+    });
+    document.querySelectorAll('.drop-zone-center').forEach(el => {
+        el.classList.remove('drop-zone-center');
     });
 
     if (!dropTarget) {
@@ -326,7 +409,14 @@ function updateDropIndicators(dropTarget) {
         return;
     }
 
-    if (dropTarget.type === 'stack') {
+    if (dropTarget.type === 'combine') {
+        // Highlight the target clip for combining
+        dropTarget.element.classList.add('drop-zone-center');
+        if (previousDropIndex !== -1) {
+            clearSlideTransforms();
+            previousDropIndex = -1;
+        }
+    } else if (dropTarget.type === 'stack') {
         dropTarget.element.classList.add('drag-over');
         if (previousDropIndex !== -1) {
             clearSlideTransforms();
@@ -387,6 +477,9 @@ function clearDropIndicators() {
     document.querySelectorAll('.drag-over').forEach(el => {
         el.classList.remove('drag-over');
     });
+    document.querySelectorAll('.drop-zone-center').forEach(el => {
+        el.classList.remove('drop-zone-center');
+    });
 }
 
 function clearSlideTransforms() {
@@ -419,5 +512,9 @@ async function handleDrop(dropTarget) {
         // Reorder within same stack - pass index directly
         log(`[handleDrop] Reordering ${id} to index ${dropTarget.index} in parent ${dropTarget.parentId}`);
         await callNative('reorderNode', id, dropTarget.parentId, dropTarget.index);
+    } else if (dropTarget.type === 'combine') {
+        // Combine dragged clip with target clip into a new stack
+        log(`[handleDrop] Combining ${id} with ${dropTarget.targetId}`);
+        await callNative('combineNodes', id, dropTarget.targetId);
     }
 }

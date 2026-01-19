@@ -32,6 +32,19 @@
     transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* Nested stack styling - purple border to distinguish from top-level */
+.stack-wrapper.nested-stack {
+    position: relative;
+    border-color: rgba(168, 85, 247, 0.4);
+    /* Purple border */
+    background: rgba(30, 41, 59, 0.5);
+    /* Slightly darker */
+}
+
+.stack-wrapper.nested-stack:hover {
+    border-color: rgba(168, 85, 247, 0.6);
+}
+
 /* Stack children container */
 .stack-children {
     display: flex;
@@ -232,4 +245,163 @@
 .stack-wrapper.drag-over {
     border-color: var(--accent-color);
     background: rgba(56, 189, 248, 0.1);
+}
+
+/* === Drop Indicator Line === */
+.drop-indicator-line {
+    position: absolute;
+    left: 32px;
+    right: 8px;
+    height: 3px;
+    background: linear-gradient(90deg,
+            rgba(56, 189, 248, 0.9) 0%,
+            rgba(56, 189, 248, 0.6) 100%);
+    border-radius: 2px;
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.6);
+    pointer-events: none;
+    z-index: 1000;
+    opacity: 0;
+    transition: opacity 0.1s ease-out;
+}
+
+.drop-indicator-line.visible {
+    opacity: 1;
+}
+
+/* Zone highlighting for center drop (combine/enter stack) */
+.node.drop-zone-center,
+.stack-wrapper.drop-zone-center {
+    outline: 2px dashed rgba(56, 189, 248, 0.8);
+    outline-offset: -2px;
+    background: rgba(56, 189, 248, 0.15) !important;
+}
+
+/* Nested stack center zone - purple variant */
+.nested-stack.drop-zone-center {
+    outline-color: rgba(168, 85, 247, 0.8);
+    background: rgba(168, 85, 247, 0.15) !important;
+}
+
+/* === Stack Header Waveform (Always Visible) === */
+.stack-header-waveform {
+    position: relative;
+    width: auto;
+    /* Width set dynamically by JS based on quantum */
+    min-width: 200px;
+    height: 50px;
+    margin: 8px;
+    margin-left: 32px;
+    /* Align with stack-children padding */
+    margin-top: 36px;
+    /* Space for expand handle */
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.stack-header-waveform .stack-waveform-canvas {
+    /* Width set dynamically by JS based on quantum */
+    height: 100%;
+    display: block;
+}
+
+.stack-header-waveform .stack-playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(to bottom,
+            rgba(56, 189, 248, 0.9) 0%,
+            rgba(56, 189, 248, 0.6) 100%);
+    box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
+    pointer-events: none;
+    z-index: 10;
+    transition: left 0.05s linear;
+}
+
+/* Hide stack header waveform when collapsed (waveform shows in collapsed view already) */
+.stack-collapsed .stack-header-waveform {
+    display: none;
+}
+
+/* Nested stack header waveform - slightly different color */
+.nested-stack .stack-header-waveform {
+    background: rgba(168, 85, 247, 0.15);
+}
+
+.nested-stack .stack-playhead {
+    background: linear-gradient(to bottom,
+            rgba(168, 85, 247, 0.9) 0%,
+            rgba(168, 85, 247, 0.6) 100%);
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.6);
+}
+
+/* === Stack Header Loop Handles (Same as clips - hierarchical design) === */
+.stack-header-waveform .loop-handle-start,
+.stack-header-waveform .loop-handle-end {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    background: var(--accent-color);
+    cursor: col-resize;
+    z-index: 15;
+    opacity: 0.4;
+    transition: opacity 0.2s;
+}
+
+.stack-header-waveform .loop-handle-start:hover,
+.stack-header-waveform .loop-handle-end:hover {
+    opacity: 1;
+}
+
+.stack-header-waveform .loop-handle-start {
+    border-right: 1px solid #ffffff44;
+}
+
+.stack-header-waveform .loop-handle-end {
+    transform: translateX(-100%);
+    border-left: 1px solid #ffffff44;
+}
+
+/* Dim layers for regions outside loop */
+.stack-header-waveform .dim-left,
+.stack-header-waveform .dim-right {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.6);
+    pointer-events: none;
+    z-index: 4;
+}
+
+.stack-header-waveform .dim-left {
+    left: 0;
+}
+
+.stack-header-waveform .dim-right {
+    /* left is set dynamically via JS */
+}
+
+/* Stack header launch marker */
+.stack-header-waveform .launch-marker {
+    position: absolute;
+    top: 0;
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 10px solid #f97316;
+    transform: translateX(-50%);
+    pointer-events: auto;
+    cursor: ew-resize;
+    z-index: 25;
+    display: none;
+    filter: drop-shadow(0 0 4px rgba(249, 115, 22, 0.6));
+}
+
+/* Nested stack has purple-tinted loop handles */
+.nested-stack .stack-header-waveform .loop-handle-start,
+.nested-stack .stack-header-waveform .loop-handle-end {
+    background: rgba(168, 85, 247, 0.7);
 }

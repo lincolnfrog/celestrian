@@ -207,6 +207,159 @@ function syncUI(state) {
         stackWrapper.style.top = `${stack.y}px`;
         stackWrapper.classList.toggle('stack-collapsed', !stack.isExpanded);
 
+        // Render stack header waveform (always visible when expanded)
+        if (stack.isExpanded) {
+            const headerWaveform = stackWrapper.querySelector('.stack-header-waveform');
+            const canvas = stackWrapper.querySelector('.stack-waveform-canvas');
+            const playhead = stackWrapper.querySelector('.stack-playhead');
+
+            if (headerWaveform && canvas) {
+                // Calculate LCM of all children to get full stack timeline width
+                // Helper functions for LCM calculation
+                const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+                const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a / gcd(a, b)) * b);
+
+                // Calculate stack LCM from children (same logic as ghost rendering)
+                let stackLCM = effectiveQ;
+                (stack.nodes || []).forEach(child => {
+                    if (child.isRecording) return;
+                    if (child.type === 'clip' && child.duration > 0) {
+                        stackLCM = lcm(Math.round(stackLCM), Math.round(child.duration));
+                    } else if (child.type === 'stack' && child.effectiveQuantum > 0) {
+                        stackLCM = lcm(Math.round(stackLCM), Math.round(child.effectiveQuantum));
+                    }
+                });
+
+                // Use calculated LCM for width, not just effectiveQuantum
+                const stackDuration = Math.max(stackLCM, stack.effectiveQuantum || effectiveQ);
+                const quantumWidth = effectiveQ > 1
+                    ? (stackDuration / effectiveQ) * baseWidth
+                    : baseWidth;
+
+                // Set header container width to match LCM (covers all child clip loops)
+                headerWaveform.style.width = `${Math.max(200, quantumWidth)}px`;
+
+                canvas.width = Math.max(200, quantumWidth);
+                canvas.height = headerWaveform.offsetHeight || 50;
+
+                // Get stack's composite waveform (aggregated from children)
+                // If backend doesn't provide waveform, generate from children's livePeaks
+                let waveformData = stack.waveform || [];
+
+                if (waveformData.length === 0 && stack.nodes) {
+                    // Generate composite from children's waveforms
+                    // Account for each clip's position (anchor offset) within the stack timeline
+
+                    // Calculate target peak count based on canvas width (2 peaks per pixel)
+                    const targetPeaks = Math.ceil(canvas.width * 2);
+                    waveformData = new Array(targetPeaks).fill(0);
+
+                    // Each clip contributes peaks at its position within the timeline
+                    (stack.nodes || []).forEach(child => {
+                        if (child.type !== 'clip' || !livePeaks.has(child.id)) return;
+
+                        const childPeaks = livePeaks.get(child.id);
+                        if (!childPeaks || childPeaks.length === 0) return;
+
+                        // Calculate this clip's position as a fraction of the LCM timeline
+                        const clipOffsetSamples = child.x || 0;  // x = anchor offset in samples
+                        const clipDuration = child.duration || effectiveQ;
+
+                        // Convert to pixel positions
+                        const clipStartPx = (clipOffsetSamples / stackDuration) * canvas.width;
+                        const clipWidthPx = (clipDuration / stackDuration) * canvas.width;
+
+                        // Map this clip's peaks to the correct position in the composite
+                        const clipPeakCount = childPeaks.length;
+                        for (let i = 0; i < clipPeakCount; i++) {
+                            // Calculate target index in composite waveform
+                            const peakPctInClip = i / clipPeakCount;
+                            const pxInComposite = clipStartPx + (peakPctInClip * clipWidthPx);
+                            const targetIdx = Math.floor((pxInComposite / canvas.width) * targetPeaks);
+
+                            if (targetIdx >= 0 && targetIdx < targetPeaks) {
+                                // Take max of overlapping peaks
+                                waveformData[targetIdx] = Math.max(waveformData[targetIdx], childPeaks[i] || 0);
+                            }
+                        }
+
+                        // Also handle looping: if clip loops within LCM, repeat peaks
+                        if (clipDuration < stackDuration && clipDuration > 0) {
+                            const numLoops = Math.ceil(stackDuration / clipDuration);
+                            for (let loopIdx = 1; loopIdx < numLoops && loopIdx < 10; loopIdx++) {
+                                const loopStartSamples = clipOffsetSamples + (loopIdx * clipDuration);
+                                if (loopStartSamples >= stackDuration) break;
+
+                                const loopStartPx = (loopStartSamples / stackDuration) * canvas.width;
+                                for (let i = 0; i < clipPeakCount; i++) {
+                                    const peakPctInClip = i / clipPeakCount;
+                                    const pxInComposite = loopStartPx + (peakPctInClip * clipWidthPx);
+                                    const targetIdx = Math.floor((pxInComposite / canvas.width) * targetPeaks);
+
+                                    if (targetIdx >= 0 && targetIdx < targetPeaks) {
+                                        waveformData[targetIdx] = Math.max(waveformData[targetIdx], childPeaks[i] || 0);
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
+                // Always draw (empty waveform shows placeholder line)
+                drawWaveform(canvas, waveformData, null, true /* isComposite */);
+
+                // Update playhead position based on masterPos relative to stack LCM duration
+                // IMPORTANT: Use stackDuration (the LCM) so playhead matches the header width
+                if (playhead && state.isPlaying) {
+                    const masterPos = state.masterPos || 0;
+                    const percentage = stackDuration > 0 ? (masterPos % stackDuration) / stackDuration : 0;
+                    playhead.style.left = `${percentage * 100}%`;
+                    playhead.style.display = 'block';
+                } else if (playhead) {
+                    playhead.style.display = 'none';
+                }
+
+                // Position stack loop handles, dim layers, and launch marker
+                // (Same logic as clips - hierarchical design)
+                const stackDur = stack.effectiveQuantum || 1;
+                let stackLoopStart = stack.loopStart || 0;
+                let stackLoopEnd = stack.loopEnd || stackDur;
+
+                // Fallback: If loop points are not set or invalid, use full duration
+                if (stackLoopEnd <= stackLoopStart) {
+                    stackLoopStart = 0;
+                    stackLoopEnd = stackDur;
+                }
+
+                // Calculate percentages
+                const stackStartPct = isFinite(stackLoopStart / stackDur) ? (stackLoopStart / stackDur) * 100 : 0;
+                const stackEndPct = isFinite(stackLoopEnd / stackDur) ? (stackLoopEnd / stackDur) * 100 : 100;
+
+                // Position loop handles
+                const hStart = headerWaveform.querySelector('.loop-handle-start');
+                const hEnd = headerWaveform.querySelector('.loop-handle-end');
+                const dimLeft = headerWaveform.querySelector('.dim-left');
+                const dimRight = headerWaveform.querySelector('.dim-right');
+                const launchMarker = headerWaveform.querySelector('.launch-marker');
+
+                if (hStart && hEnd && dimLeft && dimRight) {
+                    hStart.style.left = `${stackStartPct}%`;
+                    hEnd.style.left = `${stackEndPct}%`;
+                    dimLeft.style.width = `${stackStartPct}%`;
+                    dimRight.style.left = `${stackEndPct}%`;
+                    dimRight.style.width = `${100 - stackEndPct}%`;
+                }
+
+                // Position launch marker
+                if (launchMarker && stackDur > 0) {
+                    const launchPct = ((stack.launchPoint || 0) / stackDur) * 100;
+                    launchMarker.style.left = `${launchPct}%`;
+                    // Only show if stack has non-zero anchor
+                    launchMarker.style.display = (stack.anchorPhase > 0) ? 'block' : 'none';
+                }
+            }
+        }
+
         // Render stack's children
         const childContainer = stackWrapper.querySelector('.stack-children');
         const stackChildren = stack.nodes || [];
@@ -216,29 +369,64 @@ function syncUI(state) {
             // Track which children exist
             const childIds = new Set(stackChildren.map(c => c.id));
 
-            // Remove children that no longer exist
-            childContainer.querySelectorAll('.node').forEach(childDiv => {
-                if (!childIds.has(childDiv.id)) {
+            // Remove children that no longer exist (both clips and nested stacks)
+            childContainer.querySelectorAll('.node, .stack-wrapper').forEach(childDiv => {
+                const childId = childDiv.id.replace('stack-wrapper-', '');
+                if (!childIds.has(childDiv.id) && !childIds.has(childId)) {
                     childDiv.remove();
                 }
             });
 
-            // Add new children (they'll be updated in the main loop below)
+            // Add new children - handle both clips and nested stacks
             stackChildren.forEach((child) => {
-                let childDiv = document.getElementById(child.id);
-                if (!childDiv) {
-                    childDiv = createNodeElement(child);
-                    childContainer.appendChild(childDiv);
-                }
-                // Skip style updates during drag/drop to preserve slide transforms
-                // - isAnyDragActive(): prevents clearing sibling slide transforms during drag
-                // - isDropAnimating(): prevents clearing FLIP transforms during drop animation
-                if (!isAnyDragActive() && !isDropAnimating()) {
-                    // Apply stack-specific positioning (let natural sizing handle dimensions)
-                    childDiv.style.position = 'relative';
-                    childDiv.style.left = '0';
-                    childDiv.style.top = '0';
-                    childDiv.style.marginBottom = '12px';
+                if (child.type === 'stack') {
+                    // Nested stack: create or update stack wrapper
+                    let nestedWrapper = document.getElementById(`stack-wrapper-${child.id}`);
+                    if (!nestedWrapper) {
+                        nestedWrapper = createStackWrapper(child);
+                        nestedWrapper.classList.add('nested-stack');
+                        childContainer.appendChild(nestedWrapper);
+                    }
+                    // Guard against null nestedWrapper
+                    if (!nestedWrapper) {
+                        return;
+                    }
+                    // Update nested stack state
+                    nestedWrapper.classList.toggle('stack-collapsed', !child.isExpanded);
+                    if (!isAnyDragActive() && !isDropAnimating()) {
+                        nestedWrapper.style.position = 'relative';
+                        nestedWrapper.style.left = '0';
+                        nestedWrapper.style.top = '0';
+                        nestedWrapper.style.marginBottom = '12px';
+                    }
+                    // Recursively render nested stack's children
+                    const nestedChildContainer = nestedWrapper.querySelector('.stack-children');
+                    const nestedChildren = child.nodes || [];
+                    if (child.isExpanded && nestedChildren.length > 0) {
+                        nestedChildren.forEach((nestedChild) => {
+                            let nestedDiv = document.getElementById(nestedChild.id);
+                            if (!nestedDiv && nestedChild.type === 'clip') {
+                                nestedDiv = createNodeElement(nestedChild);
+                                nestedChildContainer.appendChild(nestedDiv);
+                            }
+                        });
+                    } else if (!child.isExpanded) {
+                        nestedChildContainer.innerHTML = '';
+                    }
+                } else {
+                    // Regular clip
+                    let childDiv = document.getElementById(child.id);
+                    if (!childDiv) {
+                        childDiv = createNodeElement(child);
+                        childContainer.appendChild(childDiv);
+                    }
+                    // Skip style updates during drag/drop to preserve slide transforms
+                    if (!isAnyDragActive() && !isDropAnimating()) {
+                        childDiv.style.position = 'relative';
+                        childDiv.style.left = '0';
+                        childDiv.style.top = '0';
+                        childDiv.style.marginBottom = '12px';
+                    }
                 }
             });
         } else if (!stack.isExpanded) {
@@ -249,11 +437,25 @@ function syncUI(state) {
         }
     });
 
-    // Collect all clips for update (both top-level and those inside stacks)
+    // Recursive helper to collect all clips from a node list (including nested stacks)
+    function collectAllClips(nodeList, parentStack = null) {
+        const result = [];
+        (nodeList || []).forEach(n => {
+            if (n.type === 'clip') {
+                result.push({ ...n, parentStack });
+            } else if (n.type === 'stack' && n.nodes) {
+                // Recursively collect from nested stacks
+                result.push(...collectAllClips(n.nodes, n));
+            }
+        });
+        return result;
+    }
+
+    // Collect all clips for update (both top-level and those inside stacks at any depth)
     const allClips = [...clips];
     stacks.forEach(stack => {
         if (stack.nodes) {
-            allClips.push(...stack.nodes.filter(n => n.type === 'clip'));
+            allClips.push(...collectAllClips(stack.nodes, stack));
         }
     });
 
@@ -851,10 +1053,22 @@ function syncUI(state) {
     });
 
     // Clean up orphaned stack wrappers (stacks that no longer exist)
-    const stackIds = new Set(stacks.map(s => s.id));
+    // Collect ALL stack IDs including nested stacks
+    function collectAllStackIds(nodeList, ids = new Set()) {
+        (nodeList || []).forEach(n => {
+            if (n.type === 'stack') {
+                ids.add(n.id);
+                if (n.nodes) {
+                    collectAllStackIds(n.nodes, ids);
+                }
+            }
+        });
+        return ids;
+    }
+    const allStackIds = collectAllStackIds(nodes);
     nodeLayer.querySelectorAll('.stack-wrapper').forEach(wrapper => {
         const stackId = wrapper.id.replace('stack-wrapper-', '');
-        if (!stackIds.has(stackId)) {
+        if (!allStackIds.has(stackId)) {
             wrapper.remove();
         }
     });
@@ -1070,6 +1284,16 @@ function createStackWrapper(stack) {
     wrapper.innerHTML = `
         <div class="grab-handle" title="Drag to reorder"></div>
         <div class="stack-expand-handle" data-stack-id="${stack.id}"></div>
+        <div class="stack-header-waveform">
+            <canvas class="stack-waveform-canvas"></canvas>
+            <div class="stack-playhead"></div>
+            <!-- Loop region UI (same as clips - hierarchical design) -->
+            <div class="loop-handle-start"></div>
+            <div class="loop-handle-end"></div>
+            <div class="dim-left"></div>
+            <div class="dim-right"></div>
+            <div class="launch-marker"></div>
+        </div>
         <div class="stack-children"></div>
         <div class="stack-add-container">
             <div class="stack-add-button" data-stack-id="${stack.id}">+</div>

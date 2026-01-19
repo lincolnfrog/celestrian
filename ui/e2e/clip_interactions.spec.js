@@ -98,4 +98,33 @@ test.describe('Clip Interactions', () => {
         await expect(firstClip.locator('.node-btn-mute')).toBeVisible();
         await expect(firstClip.locator('.node-btn-solo')).toBeVisible();
     });
+
+    test('center-zone drag shows combine highlight', async ({ page }) => {
+        // Get clips
+        const clips = page.locator('.stack-children .node');
+        const firstClip = clips.nth(0);
+        const secondClip = clips.nth(1);
+        const grabHandle = firstClip.locator('.grab-handle');
+
+        await expect(grabHandle).toBeVisible();
+
+        const handleBox = await grabHandle.boundingBox();
+        const secondClipBox = await secondClip.boundingBox();
+        if (!handleBox || !secondClipBox) throw new Error('Elements not found');
+
+        // Drag first clip to center of second clip (center zone = combine)
+        const centerY = secondClipBox.y + secondClipBox.height / 2;
+
+        await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(handleBox.x + handleBox.width / 2, centerY);
+        await page.waitForTimeout(100);
+
+        // Check that second clip has combine highlight class
+        const hasHighlight = await secondClip.evaluate(el => el.classList.contains('drop-zone-center'));
+        expect(hasHighlight).toBe(true);
+
+        // Release without completing the drop
+        await page.mouse.up();
+    });
 });

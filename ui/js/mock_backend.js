@@ -39,6 +39,8 @@ export async function callNative(method, ...args) {
             return getInputList();
         case 'setNodeInput':
             return setNodeInput(...args);
+        case 'combineNodes':
+            return combineNodes(...args);
         default:
             console.warn(`[MockBackend] Unknown method: ${method}`);
             return null;
@@ -216,11 +218,95 @@ function setNodeInput(id, channelIndex) {
     }
 }
 
+/**
+ * Combine two nodes into a new stack.
+ * Creates a new stack at the target's position, containing both nodes.
+ */
+function combineNodes(draggedId, targetId) {
+    const draggedNode = findNode(draggedId);
+    const targetNode = findNode(targetId);
+
+    if (!draggedNode || !targetNode) {
+        console.warn('[MockBackend] combineNodes: Node not found');
+        return null;
+    }
+
+    // Find parent of target to insert new stack there
+    const targetParent = findParent(targetId);
+    const targetList = targetParent ? targetParent.nodes : state.nodes;
+    const targetIndex = targetList.findIndex(n => n.id === targetId);
+
+    // Remove both nodes from their parents
+    removeNodeFromParent(draggedId);
+    removeNodeFromParent(targetId);
+
+    // Create new stack
+    const newStack = {
+        id: `stack-${state.nextId++}`,
+        name: 'Combined Stack',
+        type: 'stack',
+        x: targetNode.x || 0,
+        y: targetNode.y || 0,
+        w: Math.max(targetNode.w || 400, draggedNode.w || 400),
+        h: 300,
+        isExpanded: true,
+        effectiveQuantum: targetNode.effectiveQuantum || 44100,
+        nodes: [targetNode, draggedNode]  // Target first, then dragged
+    };
+
+    // Insert at target's original position
+    if (targetIndex >= 0) {
+        targetList.splice(targetIndex, 0, newStack);
+    } else {
+        targetList.push(newStack);
+    }
+
+    console.log('[MockBackend] Combined nodes into stack:', newStack.id);
+    return newStack.id;
+}
+
+// Generate mock waveform data for a stack (aggregates children)
+function generateStackWaveform(node, numPeaks = 100) {
+    if (node.type !== 'stack') return [];
+
+    const children = node.nodes || [];
+    if (children.length === 0) return [];
+
+    // Simple aggregation: sum of sine-like patterns based on child count
+    const peaks = [];
+    for (let i = 0; i < numPeaks; i++) {
+        let sum = 0;
+        children.forEach((child, idx) => {
+            // Each child contributes a sine wave at different frequency
+            const freq = 2 + idx;
+            sum += Math.sin((i / numPeaks) * Math.PI * freq) * 0.3;
+        });
+        peaks.push(Math.min(1, Math.max(0, 0.5 + sum / children.length)));
+    }
+    return peaks;
+}
+
+// Recursively add waveform data to stacks
+function addWaveformToNodes(nodes) {
+    return nodes.map(node => {
+        if (node.type === 'stack') {
+            const updatedNode = {
+                ...node,
+                waveform: generateStackWaveform(node),
+                nodes: node.nodes ? addWaveformToNodes(node.nodes) : []
+            };
+            return updatedNode;
+        }
+        return node;
+    });
+}
+
 // Export state getter for polling
 export function getState() {
     return {
         isPlaying: state.isPlaying,
-        nodes: state.nodes
+        masterPos: state.masterPos || 0,
+        nodes: addWaveformToNodes(state.nodes)
     };
 }
 
@@ -491,126 +577,200 @@ export function loadScenario(name) {
             state.nextId = 4;
             break;
 
-        default:
+        case 'clip-3-anchor-at-2q':
             // ========================================
             // Clip 3 Anchor Bug Test Scenario
             // ========================================
             // Scenario: Clip 1 = 1Q, Clip 2 = 4Q, Clip 3 = 1Q at 2Q
             // Expected: Clip 3 x=400 (2Q slot), ghosts wrap at 0Q→2Q
-            if (name === 'clip-3-anchor-at-2q') {
-                state.isPlaying = true;
-                state.masterPos = 88200;  // 2Q in samples
-                state.nodes = [{
-                    id: 'stack-1',
-                    name: 'Anchor Bug Test Stack',
-                    type: 'stack',
-                    x: 100,
-                    y: 100,
-                    w: 900,
-                    h: 450,
-                    isExpanded: true,
-                    effectiveQuantum: 44100,  // 1Q = 44100 samples
-                    nodes: [
-                        {
-                            id: 'clip-1',
-                            name: 'Clip 1Q',
-                            type: 'clip',
-                            x: 0,
-                            y: 0,
-                            w: 200,
-                            h: 100,
-                            duration: 44100,      // 1Q
-                            effectiveQuantum: 44100,
-                            isRecording: false,
-                            isPlaying: true,
-                            loopStart: 0,
-                            loopEnd: 44100,
-                            anchorPhase: 0
-                        },
-                        {
-                            id: 'clip-2',
-                            name: 'Clip 4Q',
-                            type: 'clip',
-                            x: 0,
-                            y: 120,
-                            w: 800,
-                            h: 100,
-                            duration: 176400,     // 4Q
-                            effectiveQuantum: 44100,
-                            isRecording: false,
-                            isPlaying: true,
-                            loopStart: 0,
-                            loopEnd: 176400,
-                            anchorPhase: 0
-                        },
-                        {
-                            id: 'clip-3',
-                            name: 'Clip 1Q@2Q',
-                            type: 'clip',
-                            x: 400,               // KEY: anchored at 2Q slot (2 * 200px)
-                            y: 240,
-                            w: 200,
-                            h: 100,
-                            duration: 44100,      // 1Q
-                            effectiveQuantum: 44100,
-                            isRecording: false,
-                            isPlaying: true,
-                            loopStart: 0,
-                            loopEnd: 44100,
-                            anchorPhase: 88200    // Started at 2Q
-                        }
-                    ]
-                }];
-                state.nextId = 4;
-                break;
-            }
+            state.isPlaying = true;
+            state.masterPos = 88200;  // 2Q in samples
+            state.nodes = [{
+                id: 'stack-1',
+                name: 'Anchor Bug Test Stack',
+                type: 'stack',
+                x: 100,
+                y: 100,
+                w: 900,
+                h: 450,
+                isExpanded: true,
+                effectiveQuantum: 44100,  // 1Q = 44100 samples
+                nodes: [
+                    {
+                        id: 'clip-1',
+                        name: 'Clip 1Q',
+                        type: 'clip',
+                        x: 0,
+                        y: 0,
+                        w: 200,
+                        h: 100,
+                        duration: 44100,      // 1Q
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true,
+                        loopStart: 0,
+                        loopEnd: 44100,
+                        anchorPhase: 0
+                    },
+                    {
+                        id: 'clip-2',
+                        name: 'Clip 4Q',
+                        type: 'clip',
+                        x: 0,
+                        y: 120,
+                        w: 800,
+                        h: 100,
+                        duration: 176400,     // 4Q
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true,
+                        loopStart: 0,
+                        loopEnd: 176400,
+                        anchorPhase: 0
+                    },
+                    {
+                        id: 'clip-3',
+                        name: 'Clip 1Q@2Q',
+                        type: 'clip',
+                        x: 400,               // KEY: anchored at 2Q slot (2 * 200px)
+                        y: 240,
+                        w: 200,
+                        h: 100,
+                        duration: 44100,      // 1Q
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true,
+                        loopStart: 0,
+                        loopEnd: 44100,
+                        anchorPhase: 88200    // Started at 2Q
+                    }
+                ]
+            }];
+            state.nextId = 4;
+            break;
+
+        case 'nested-stacks':
             // ========================================
+            // Nested Stacks Scenario
+            // ========================================
+            state.isPlaying = true;
+            state.masterPos = 22050;
+            state.nodes = [{
+                id: 'parent-stack',
+                name: 'Parent Stack',
+                type: 'stack',
+                x: 100,
+                y: 100,
+                w: 900,
+                h: 500,
+                isExpanded: true,
+                effectiveQuantum: 44100,
+                nodes: [
+                    {
+                        id: 'clip-1',
+                        name: 'Top Level Clip',
+                        type: 'clip',
+                        x: 0,
+                        y: 0,
+                        w: 200,
+                        h: 100,
+                        duration: 44100,
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true
+                    },
+                    {
+                        id: 'child-stack',
+                        name: 'Nested Stack',
+                        type: 'stack',
+                        x: 0,
+                        y: 120,
+                        w: 600,
+                        h: 250,
+                        isExpanded: true,
+                        effectiveQuantum: 44100,
+                        nodes: [
+                            {
+                                id: 'nested-clip-1',
+                                name: 'Nested Clip A',
+                                type: 'clip',
+                                x: 0,
+                                y: 0,
+                                y: 0,
+                                w: 400,
+                                h: 100,
+                                duration: 88200,
+                                effectiveQuantum: 44100,
+                                isRecording: false,
+                                isPlaying: true
+                            },
+                            {
+                                id: 'nested-clip-2',
+                                name: 'Nested Clip B',
+                                type: 'clip',
+                                x: 0,
+                                y: 120,
+                                w: 200,
+                                h: 100,
+                                duration: 44100,
+                                effectiveQuantum: 44100,
+                                isRecording: false,
+                                isPlaying: true
+                            }
+                        ]
+                    }
+                ]
+            }];
+            state.nextId = 10;
+            break;
+
+        case 'recording-1q-plus-growing':
             // Recording Scenario (for ghost testing)
             // ========================================
             // Simulates: Clip 1 = 1Q committed, Clip 2 = actively recording at ~2.5Q
-            if (name === 'recording-1q-plus-growing') {
-                state.isPlaying = true;
-                state.masterPos = 110250;  // 2.5Q in samples
-                state.nodes = [{
-                    id: 'stack-1',
-                    name: 'Recording Test Stack',
-                    type: 'stack',
-                    x: 100,
-                    y: 100,
-                    w: 600,
-                    h: 350,
-                    isExpanded: true,
-                    effectiveQuantum: 44100,
-                    nodes: [
-                        {
-                            id: 'clip-1',
-                            name: 'New Clip',
-                            type: 'clip',
-                            x: 0, y: 0, w: 200, h: 100,
-                            duration: 44100,  // 1Q
-                            effectiveQuantum: 44100,
-                            isRecording: false,
-                            isPlaying: true,
-                            playhead: 0.5,
-                            loopStart: 0, loopEnd: 44100
-                        },
-                        {
-                            id: 'clip-2',
-                            name: 'New Clip',
-                            type: 'clip',
-                            x: 0, y: 120, w: 500, h: 100,
-                            duration: 110250,  // 2.5Q - recording
-                            effectiveQuantum: 44100,
-                            isRecording: true,
-                            isPlaying: false,
-                            currentPeak: 0.002,
-                            loopStart: 0, loopEnd: 110250
-                        }
-                    ]
-                }];
-                state.nextId = 3;
-                break;
-            }
+            state.isPlaying = true;
+            state.masterPos = 110250;  // 2.5Q in samples
+            state.nodes = [{
+                id: 'stack-1',
+                name: 'Recording Test Stack',
+                type: 'stack',
+                x: 100,
+                y: 100,
+                w: 600,
+                h: 350,
+                isExpanded: true,
+                effectiveQuantum: 44100,
+                nodes: [
+                    {
+                        id: 'clip-1',
+                        name: 'New Clip',
+                        type: 'clip',
+                        x: 0, y: 0, w: 200, h: 100,
+                        duration: 44100,  // 1Q
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true,
+                        playhead: 0.5,
+                        loopStart: 0, loopEnd: 44100
+                    },
+                    {
+                        id: 'clip-2',
+                        name: 'New Clip',
+                        type: 'clip',
+                        x: 0, y: 120, w: 500, h: 100,
+                        duration: 110250,  // 2.5Q - recording
+                        effectiveQuantum: 44100,
+                        isRecording: true,
+                        isPlaying: false,
+                        currentPeak: 0.002,
+                        loopStart: 0, loopEnd: 110250
+                    }
+                ]
+            }];
+            state.nextId = 3;
+            break;
+
+        default:
             console.warn('[MockBackend] Unknown scenario:', name);
     }
 }

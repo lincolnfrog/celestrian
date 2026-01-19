@@ -1,6 +1,6 @@
 import { log } from './bridge.js';
 
-export function drawWaveform(canvas, peaks, fixedStep = null) {
+export function drawWaveform(canvas, peaks, fixedStep = null, isComposite = false) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
 
@@ -20,22 +20,26 @@ export function drawWaveform(canvas, peaks, fixedStep = null) {
     const midY = canvas.height / 2;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Initial background
-    ctx.fillStyle = 'rgba(30, 41, 59, 1)';
+    // Background color differs for composite (purple-tinted) vs regular (slate)
+    if (isComposite) {
+        ctx.fillStyle = 'rgba(88, 28, 135, 0.6)'; // Purple-800 with transparency
+    } else {
+        ctx.fillStyle = 'rgba(30, 41, 59, 1)'; // Slate
+    }
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     if (!peaks || peaks.length === 0) {
-        ctx.fillStyle = 'rgba(56, 189, 248, 0.05)';
+        ctx.fillStyle = isComposite ? 'rgba(168, 85, 247, 0.2)' : 'rgba(56, 189, 248, 0.05)';
         ctx.fillRect(0, midY, canvas.width, 1);
         return;
     }
 
     // Horizontal center line
-    ctx.fillStyle = 'rgba(56, 189, 248, 0.1)';
+    ctx.fillStyle = isComposite ? 'rgba(168, 85, 247, 0.3)' : 'rgba(56, 189, 248, 0.1)';
     ctx.fillRect(0, midY, canvas.width, 1);
 
-    // Actual Bars
-    ctx.fillStyle = 'rgb(0, 255, 255)'; // Luminous Cyan
+    // Actual Bars - composite uses purple, regular uses cyan
+    ctx.fillStyle = isComposite ? 'rgb(192, 132, 252)' : 'rgb(0, 255, 255)'; // Purple-400 vs Luminous Cyan
     const count = peaks.length;
     // Use fixed step if provided, otherwise calculate dynamically
     const step = fixedStep !== null ? fixedStep : (canvas.width / Math.max(1, count));
