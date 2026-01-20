@@ -107,6 +107,27 @@ void StackNode::process(const float *const *input_channels,
 
   std::lock_guard<std::recursive_mutex> lock(children_mutex);
 
+  // === LOOP-ON-COLLAPSE MODEL ===
+  // Only apply loop windowing when stack is COLLAPSED
+  int64_t effective_master_pos = context.master_pos;
+
+  if (!is_expanded.load()) {
+    int64_t stack_loop_start = loop_start_samples.load();
+    int64_t stack_loop_end = loop_end_samples.load();
+
+    // Only apply if valid loop region is set
+    if (stack_loop_end > stack_loop_start) {
+      int64_t loop_duration = stack_loop_end - stack_loop_start;
+      effective_master_pos =
+          stack_loop_start + (context.master_pos % loop_duration);
+    }
+  }
+  // When expanded: pass through master_pos unchanged
+
+  // Create modified context for children
+  ProcessContext child_context = context;
+  child_context.master_pos = effective_master_pos;
+
   // Process each child and sum their results
   for (const auto &child : children) {
     // Clear mix buffer for this specific child
@@ -115,7 +136,7 @@ void StackNode::process(const float *const *input_channels,
     // Pass the same input to children (effectively parallel input)
     // Output from child goes into our mix_buffer
     child->process(input_channels, mix_buffer.getArrayOfWritePointers(),
-                   num_input_channels, num_output_channels, context);
+                   num_input_channels, num_output_channels, child_context);
 
     // Sum child output into our actual output channels
     for (int ch = 0; ch < num_output_channels; ++ch) {

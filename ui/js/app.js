@@ -207,6 +207,7 @@ function syncUI(state) {
         stackWrapper.style.left = `${stack.x + VISUAL_OFFSET}px`;
         stackWrapper.style.top = `${stack.y}px`;
         stackWrapper.classList.toggle('stack-collapsed', !stack.isExpanded);
+        stackWrapper._latestStack = stack; // Store latest state for loop handle drag
 
         // Render stack header waveform (always visible when expanded)
         if (stack.isExpanded) {
@@ -1390,6 +1391,81 @@ function createStackWrapper(stack) {
             createNode(action, -1, -1, stack.id);
         };
     });
+
+    // Stack Loop Handle Dragging (same pattern as clips - hierarchical design)
+    const setupStackLoopHandle = (handle, isStart) => {
+        if (!handle) return;
+
+        // Custom cursor to indicate draggable
+        handle.style.cursor = 'col-resize';
+
+        handle.onmousedown = (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+
+            const headerWaveform = wrapper.querySelector('.stack-header-waveform');
+            const rect = headerWaveform.getBoundingClientRect();
+
+            // Store the stack ID for reference during drag
+            const stackId = stack.id;
+            let isDragging = true;
+
+            const onMouseMove = (moveE) => {
+                if (!isDragging) return;
+
+                // Get latest stack state from stored reference
+                const latestStack = wrapper._latestStack;
+                if (!latestStack) return;
+
+                const duration = latestStack.effectiveQuantum || 1;
+                if (duration <= 0 || rect.width <= 0) return;
+
+                // Calculate position as percentage
+                let x = moveE.clientX - rect.left;
+                let pct = Math.max(0, Math.min(1, x / rect.width));
+
+                // Convert to samples
+                let samples = pct * duration;
+
+                // Snap to quantum if available
+                const quantum = latestStack.effectiveQuantum || duration;
+                if (quantum > 0) {
+                    samples = Math.round(samples / quantum) * quantum;
+                }
+
+                // Constraint: Prevent crossing/zero-length
+                const minGap = quantum > 0 ? quantum : 1;
+                if (isStart) {
+                    const maxAllowed = (latestStack.loopEnd || duration) - minGap;
+                    if (samples > maxAllowed) samples = maxAllowed;
+                    if (samples < 0) samples = 0;
+                } else {
+                    const minAllowed = (latestStack.loopStart || 0) + minGap;
+                    if (samples < minAllowed) samples = minAllowed;
+                    if (samples > duration) samples = duration;
+                }
+
+                // Calculate new loop points
+                let newStart = isStart ? samples : (latestStack.loopStart || 0);
+                let newEnd = isStart ? (latestStack.loopEnd || duration) : samples;
+
+                // Update loop points via native call
+                callNative('setLoopPoints', stackId, Math.round(newStart), Math.round(newEnd));
+            };
+
+            const onMouseUp = () => {
+                isDragging = false;
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
+            };
+
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        };
+    };
+
+    setupStackLoopHandle(wrapper.querySelector('.loop-handle-start'), true);
+    setupStackLoopHandle(wrapper.querySelector('.loop-handle-end'), false);
 
     return wrapper;
 }

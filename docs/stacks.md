@@ -329,13 +329,187 @@ function renderNode(node, parentStack) {
 
 ## Recommended Next Steps
 
-1. **Loop Handle Dragging**: Wire up `mousedown` events on stack loop handles to allow users to adjust the loop region (calls `setLoopPoints`)
+1. ~~**Loop Handle Dragging**: Wire up `mousedown` events on stack loop handles to allow users to adjust the loop region (calls `setLoopPoints`)~~ ✓ Implemented
 
 2. **Collapsed Composite Waveform**: Show the composite waveform when a stack is collapsed (currently only shows when expanded)
 
-3. **Waveform Cache Invalidation**: Optimize by caching the composite waveform and only regenerating when children change
+3. ~~**Waveform Cache Invalidation**: Optimize by caching the composite waveform and only regenerating when children change~~ ✓ Implemented
 
 4. **Keyboard Navigation**: Implement arrow keys to navigate into/out of stacks
 
 5. **Multi-select Combine**: Allow selecting multiple clips and combining into a stack via right-click menu
+
+---
+
+## Stack Loop Processing (Implementation Details)
+
+> [!IMPORTANT]
+> This section documents the **Loop-on-Collapse** model for stack-level loop regions.
+
+### Design Goals
+
+1. **Non-destructive**: Child clips retain their own loop selections unchanged
+2. **Hierarchical**: Each stack level applies its own loop independently
+3. **Recording-friendly**: Recording works normally inside expanded stacks
+4. **Intuitive**: Expand to work inside, collapse to hear the loop
+
+---
+
+### The "Loop-on-Collapse" Model
+
+**Core Rule: Stack loop region is only active when the stack is COLLAPSED**
+
+| Stack State | Loop Behavior | Recording |
+|-------------|---------------|-----------|
+| **Collapsed** | Loop region **ACTIVE** - constrains playback | N/A (can't record inside collapsed stack) |
+| **Expanded** | Loop region **BYPASSED** - shown but not applied | Recording works normally |
+
+**Mental model:** "Opening a container" disables its outer constraint. Expand to work inside, collapse to hear the looped output.
+
+```
+┌─ Stack (COLLAPSED) ─────────────────────────────────────────────────┐
+│ ████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓████████████████████████  ← Loop region ACTIVE │
+│     [loopStart]     [loopEnd]                                       │
+│     Playhead constrained to looped region                           │
+│     Composite waveform: OPAQUE (normal)                             │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─ Stack (EXPANDED) ──────────────────────────────────────────────────┐
+│ ▒▒▒▒░░░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ← Loop region BYPASSED │
+│     (handles visible but faded like a ghost)                        │
+│     Composite waveform: FADED (ghost-like, ~50% opacity)            │
+│                                                                     │
+│ ┌─ Clip 1 ────────────────────────────────────────────────────────┐ │
+│ │  Full playback, normal recording - no loop constraint          │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│ ┌─ Clip 2 ────────────────────────────────────────────────────────┐ │
+│ │  Can record freely inside expanded stack                       │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Nested Stack Behavior
+
+Each stack level applies its loop independently based on its own collapse state:
+
+```
+┌─ Outer Stack (COLLAPSED) ────────────────────────────────────────────┐
+│ ████▓▓▓▓▓▓▓▓████████████  ← Outer loop ACTIVE (constrained 2Q-4Q)   │
+│     [2Q]    [4Q]                                                     │
+│     Global playhead loops within bars 2-4 of LCM                     │
+└──────────────────────────────────────────────────────────────────────┘
+
+┌─ Outer Stack (EXPANDED) ─────────────────────────────────────────────┐
+│ ▒▒▒▒░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒  ← Outer loop BYPASSED (faded)             │
+│                                                                      │
+│   ┌─ Inner Stack (COLLAPSED) ──────────────────────────────────┐    │
+│   │ ██▓▓▓▓██████████████  ← Inner loop ACTIVE (constrained)    │    │
+│   │   [1Q][2Q]             Applies to THIS stack's children     │    │
+│   └────────────────────────────────────────────────────────────┘    │
+│                                                                      │
+│   ┌─ Inner Stack (EXPANDED) ───────────────────────────────────┐    │
+│   │ ▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ← Inner loop BYPASSED (faded)        │    │
+│   │                                                             │    │
+│   │   ┌─ Clip A ─────────────────────────────────────────────┐ │    │
+│   │   │  Plays full duration - both outer AND inner bypassed │ │    │
+│   │   └──────────────────────────────────────────────────────┘ │    │
+│   └─────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**Key insight:** Expanding ANY level disables that level's loop. Nested loop behavior is hierarchical and independent.
+
+---
+
+### Visual Feedback
+
+| State | Composite Waveform | Loop Handles | Dim Regions |
+|-------|-------------------|--------------|-------------|
+| Collapsed | **Opaque** (normal) | Solid, draggable | Visible |
+| Expanded | **Faded** (~50% opacity, ghost-like) | Visible but faded | Faded |
+
+The ghost-like fade when expanded signals "this loop is not currently active."
+
+---
+
+### C++ Implementation
+
+```cpp
+void StackNode::process(/* ... */, const ProcessContext &context) {
+    int64_t effective_master_pos = context.master_pos;
+    
+    // === LOOP-ON-COLLAPSE MODEL ===
+    // Only apply loop windowing when COLLAPSED
+    if (!is_expanded.load()) {
+        int64_t stack_loop_start = loop_start_samples.load();
+        int64_t stack_loop_end = loop_end_samples.load();
+        
+        // Only apply if valid loop region is set
+        if (stack_loop_end > stack_loop_start) {
+            int64_t loop_duration = stack_loop_end - stack_loop_start;
+            effective_master_pos = stack_loop_start + 
+                                   (context.master_pos % loop_duration);
+        }
+    }
+    // When expanded: pass through master_pos unchanged
+    
+    ProcessContext child_context = context;
+    child_context.master_pos = effective_master_pos;
+    
+    for (const auto &child : children) {
+        child->process(/* ... */, child_context);
+        // Sum into output...
+    }
+}
+```
+
+---
+
+### Anchor Phase Handling
+
+Child anchor phases are **independent** of stack loop processing:
+
+| Property | Behavior |
+|----------|----------|
+| `child.anchor_phase_samples` | Preserved unchanged |
+| `child.loop_start/end` | Child's own loop - applied after receiving position |
+| `child.x` position | Visual offset in UI - not affected by stack loop |
+
+---
+
+### Keyboard Shortcut
+
+> [!TIP]
+> **TODO**: Implement quick-toggle keyboard shortcut (e.g., `Space+Click` or `E`) to collapse/expand stack for rapid loop preview.
+
+This allows quickly hearing the looped output without losing context of where you are in the expanded view.
+
+---
+
+### Non-Contiguous Loop Selection (Future)
+
+> [!WARNING]
+> Non-contiguous loop selection (e.g., bars 1-2 AND 5-6) introduces playhead "jumps."
+
+**Proposed approach:** Since Loop-on-Collapse model means recording only happens when expanded (loop bypassed), non-contiguous selection is only relevant for collapsed playback:
+- Collapsed: Playhead jumps between non-contiguous regions (no recording possible)
+- Expanded: Full timeline, normal recording
+
+---
+
+### Testing Requirements
+
+1. **C++ unit tests:**
+   - Collapsed stack with loop region constrains children's master_pos
+   - Expanded stack passes master_pos unchanged
+   - Nested stacks: each level's collapse state independent
+   - Default behavior (no loop set) = full LCM duration
+
+2. **E2E tests:**
+   - Composite waveform opacity changes on expand/collapse
+   - Loop handles fade when expanded
+   - Recording inside expanded stack works normally
+   - Collapse stack → playhead constrained to loop region
 

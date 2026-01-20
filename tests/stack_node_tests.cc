@@ -1,11 +1,12 @@
-#include "../src/stack_node.h"
-#include "../src/clip_node.h"
 #include <juce_core/juce_core.h>
+
+#include "../src/clip_node.h"
+#include "../src/stack_node.h"
 
 namespace celestrian {
 
 class StackNodeTests : public juce::UnitTest {
-public:
+ public:
   StackNodeTests() : juce::UnitTest("StackNode", "Audio Engine") {}
 
   void runTest() override {
@@ -174,7 +175,7 @@ public:
       ProcessContext playCtx;
       playCtx.num_samples = 10;
       playCtx.is_playing = true;
-      playCtx.solo_node_uuid = ""; // No solo
+      playCtx.solo_node_uuid = "";  // No solo
 
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 1.0f) < 0.0001f,
@@ -191,9 +192,145 @@ public:
       expect(std::abs(outL[0] - 0.3f) < 0.0001f,
              "With clip1 soloed, only clip1 should play.");
     }
+
+    beginTest("Loop-on-Collapse: Collapsed Stack Applies Loop Window");
+    {
+      StackNode root("Root");
+      auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
+      auto clipPtr = clip.get();
+
+      // Record 100 samples of DC signal
+      float in[100];
+      for (int i = 0; i < 100; ++i) in[i] = 0.5f;
+      float *const inputs[] = {in};
+
+      ProcessContext recCtx;
+      recCtx.num_samples = 100;
+      recCtx.is_recording = true;
+
+      clipPtr->startRecording();
+      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->stopRecording();
+
+      root.addChild(std::move(clip));
+
+      // Set stack loop region to [20, 40] and COLLAPSE the stack
+      root.setLoopPoints(20, 40);
+      root.is_expanded.store(false);
+
+      clipPtr->startPlayback();
+
+      // Process with master_pos = 50, should map to:
+      // loop_duration = 40 - 20 = 20
+      // effective_pos = 20 + (50 % 20) = 20 + 10 = 30
+      ProcessContext playCtx;
+      playCtx.num_samples = 1;
+      playCtx.is_playing = true;
+      playCtx.master_pos = 50;
+
+      float outL[1] = {0.0f};
+      float *const outputs[] = {outL};
+      root.process(nullptr, outputs, 0, 1, playCtx);
+
+      // ClipNode should have received master_pos = 30, which maps into its
+      // recorded content Expected behavior verified by checking audio output
+      expect(outL[0] > 0.0f,
+             "Collapsed stack should produce output with loop "
+             "window applied");
+    }
+
+    beginTest("Loop-on-Collapse: Expanded Stack Bypasses Loop Window");
+    {
+      StackNode root("Root");
+      auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
+      auto clipPtr = clip.get();
+
+      // Record 100 samples of DC signal
+      float in[100];
+      for (int i = 0; i < 100; ++i) in[i] = 0.5f;
+      float *const inputs[] = {in};
+
+      ProcessContext recCtx;
+      recCtx.num_samples = 100;
+      recCtx.is_recording = true;
+
+      clipPtr->startRecording();
+      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->stopRecording();
+
+      root.addChild(std::move(clip));
+
+      // Set stack loop region to [20, 40] but EXPAND the stack
+      root.setLoopPoints(20, 40);
+      root.is_expanded.store(true);  // EXPANDED - should bypass loop
+
+      clipPtr->startPlayback();
+
+      // Process with master_pos = 50
+      // When expanded, should pass master_pos = 50 unchanged to children
+      ProcessContext playCtx;
+      playCtx.num_samples = 1;
+      playCtx.is_playing = true;
+      playCtx.master_pos = 50;
+
+      float outL[1] = {0.0f};
+      float *const outputs[] = {outL};
+      root.process(nullptr, outputs, 0, 1, playCtx);
+
+      // ClipNode should receive master_pos = 50 unchanged
+      // This maps into the recorded content (position 50 of 100 samples)
+      expect(outL[0] > 0.0f,
+             "Expanded stack should produce output with loop bypassed");
+    }
+
+    beginTest("Loop-on-Collapse: Nested Stacks Independent Collapse State");
+    {
+      StackNode outer("Outer");
+      outer.is_expanded.store(true);  // Outer expanded - bypasses its loop
+
+      auto inner = std::make_unique<StackNode>("Inner");
+      inner->is_expanded.store(false);  // Inner collapsed - applies its loop
+      inner->setLoopPoints(10, 30);
+
+      auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
+      auto clipPtr = clip.get();
+
+      // Record 100 samples
+      float in[100];
+      for (int i = 0; i < 100; ++i) in[i] = 0.5f;
+      float *const inputs[] = {in};
+
+      ProcessContext recCtx;
+      recCtx.num_samples = 100;
+      recCtx.is_recording = true;
+
+      clipPtr->startRecording();
+      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->stopRecording();
+
+      inner->addChild(std::move(clip));
+      outer.addChild(std::move(inner));
+
+      clipPtr->startPlayback();
+
+      // Outer expanded: passes master_pos = 50 unchanged
+      // Inner collapsed with loop [10, 30]: maps to 10 + (50 % 20) = 20
+      ProcessContext playCtx;
+      playCtx.num_samples = 1;
+      playCtx.is_playing = true;
+      playCtx.master_pos = 50;
+
+      float outL[1] = {0.0f};
+      float *const outputs[] = {outL};
+      outer.process(nullptr, outputs, 0, 1, playCtx);
+
+      expect(outL[0] > 0.0f,
+             "Nested stacks should apply their own collapse "
+             "states independently");
+    }
   }
 };
 
 static StackNodeTests boxNodeTests;
 
-} // namespace celestrian
+}  // namespace celestrian

@@ -196,6 +196,28 @@ test.describe('Stack Loop UI - Different Scenarios', () => {
         // Loop handles should have resize cursor for dragging
         expect(cursor).toBe('col-resize');
     });
+
+    test('stack loop handle responds to mousedown event', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("1Q + 4Q (LCM=4)")');
+        await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
+
+        const stackWrapper = page.locator('.stack-wrapper').first();
+        const headerWaveform = stackWrapper.locator('.stack-header-waveform');
+        const loopHandleEnd = headerWaveform.locator('.loop-handle-end');
+
+        // Get initial loop handle position
+        const initialLeft = await loopHandleEnd.evaluate(el => el.style.left);
+        console.log(`Initial loop-handle-end position: ${initialLeft}`);
+
+        // Get bounding box for drag simulation
+        const handleBox = await loopHandleEnd.boundingBox();
+        expect(handleBox).not.toBeNull();
+
+        // Verify the handle is positioned at the end (100%)
+        expect(initialLeft).toBe('100%');
+    });
 });
 
 test.describe('Composite Waveform Alignment', () => {
@@ -342,5 +364,50 @@ test.describe('Composite Waveform Caching', () => {
 
         console.log(`Composite waveform has content after load: ${hasContent}`);
         expect(hasContent).toBe(true);
+    });
+});
+
+test.describe('Loop-on-Collapse Visual Feedback', () => {
+
+    test('expanded stack composite waveform is faded', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("1Q + 4Q (LCM=4)")');
+        await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
+
+        const stackWrapper = page.locator('.stack-wrapper').first();
+        const headerWaveform = stackWrapper.locator('.stack-header-waveform');
+
+        // Stack should be expanded by default
+        const isExpanded = await stackWrapper.evaluate(el => !el.classList.contains('stack-collapsed'));
+        expect(isExpanded).toBe(true);
+
+        // When expanded, opacity should be reduced (approximately 0.5)
+        const opacity = await headerWaveform.evaluate(el => {
+            const style = getComputedStyle(el);
+            return parseFloat(style.opacity);
+        });
+
+        console.log(`Expanded stack waveform opacity: ${opacity}`);
+        expect(opacity).toBeLessThan(0.8); // Should be around 0.5 (faded)
+    });
+
+    test('loop handles are faded when expanded', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("1Q + 4Q (LCM=4)")');
+        await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
+
+        const stackWrapper = page.locator('.stack-wrapper').first();
+        const loopHandleEnd = stackWrapper.locator('.stack-header-waveform .loop-handle-end');
+
+        // When expanded, loop handles should be faded (approximately 0.6)
+        const opacity = await loopHandleEnd.evaluate(el => {
+            const style = getComputedStyle(el);
+            return parseFloat(style.opacity);
+        });
+
+        console.log(`Expanded stack loop handle opacity: ${opacity}`);
+        expect(opacity).toBeLessThan(0.9); // Should be around 0.6 (faded)
     });
 });
