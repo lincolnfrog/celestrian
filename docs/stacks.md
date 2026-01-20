@@ -290,29 +290,52 @@ function renderNode(node, parentStack) {
 
 ## Implementation Phases
 
-### Phase 1: Core Data Model
-- [ ] Update `StackNode` to accept child stacks
-- [ ] Recursive LCM calculation
-- [ ] Recursive solo/mute logic
+### Phase 1: Core Data Model ✓
+- [x] Update `StackNode` to accept child stacks
+- [x] Recursive LCM calculation
+- [x] Recursive solo/mute logic
+- [x] Loop logic shared via `AudioNode` base class (loopStart, loopEnd, anchorPhase, launchPoint)
 
-### Phase 2: UI Rendering
-- [ ] Collapsed sub-stack appearance (colored border)
-- [ ] Inline expansion with indent
-- [ ] Drill-in mode (double-click)
+### Phase 2: UI Rendering (Partial ✓)
+- [x] Collapsed sub-stack appearance (colored border)
+- [x] Inline expansion with indent
+- [x] Composite waveform header (always visible when expanded)
+- [x] Hierarchical loop UI (loop handles, dim layers, launch marker)
+- [x] Playhead synchronized with child clips
+- [ ] Drill-in mode (double-click) - *Future*
 
-### Phase 3: Drag-Drop Refactor
-- [ ] Switch to "drop indicator line" UX (no live reorder)
-- [ ] Implement zone-based targeting (top/center/bottom thirds)
-- [ ] Center zone on stack = drop INTO stack
-- [ ] Center zone on clip = create stack containing both
-- [ ] Drag clip out of sub-stack to parent
-- [ ] Drag sub-stack to promote to top-level
+### Phase 3: Drag-Drop Refactor ✓
+- [x] Switch to "drop indicator line" UX (no live reorder)
+- [x] Implement zone-based targeting (top/center/bottom thirds)
+- [x] Center zone on stack = drop INTO stack
+- [x] Center zone on clip = create stack containing both
+- [x] Drag clip out of sub-stack to parent
+- [x] Drag sub-stack to promote to top-level
 
-### Phase 4: Composite Waveform
-- [ ] Generate mixed waveform from children
-- [ ] Cache invalidation
-- [ ] Render in collapsed view
+### Phase 4: Composite Waveform ✓
+- [x] Generate mixed waveform from children (with position alignment)
+- [x] Waveform accounts for clip anchor offsets
+- [x] Looping clips repeat waveform at correct positions
+- [x] Canvas width matches LCM timeline
+- [ ] Cache invalidation - *Pending: optimize performance*
+- [ ] Render in collapsed view - *Future*
 
-### Phase 5: Creation Flows
-- [ ] "+button → New Stack" in parent
-- [ ] Multi-select → "Combine into Stack"
+### Phase 5: Creation Flows ✓
+- [x] "+button → New Stack" in parent
+- [x] "+button → New Clip" in parent
+- [ ] Multi-select → "Combine into Stack" - *Future*
+
+---
+
+## Recommended Next Steps
+
+1. **Loop Handle Dragging**: Wire up `mousedown` events on stack loop handles to allow users to adjust the loop region (calls `setLoopPoints`)
+
+2. **Collapsed Composite Waveform**: Show the composite waveform when a stack is collapsed (currently only shows when expanded)
+
+3. **Waveform Cache Invalidation**: Optimize by caching the composite waveform and only regenerating when children change
+
+4. **Keyboard Navigation**: Implement arrow keys to navigate into/out of stacks
+
+5. **Multi-select Combine**: Allow selecting multiple clips and combining into a stack via right-click menu
+

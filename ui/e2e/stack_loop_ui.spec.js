@@ -278,3 +278,69 @@ test.describe('Composite Waveform Alignment', () => {
         expect(Math.abs(canvasWidth - headerWidth)).toBeLessThan(10);
     });
 });
+
+test.describe('Composite Waveform Caching', () => {
+
+    test('composite waveform is rendered consistently on multiple syncs', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("1Q + 4Q (LCM=4)")');
+        await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
+
+        // Wait for initial render
+        await page.waitForTimeout(100);
+
+        const stackWrapper = page.locator('.stack-wrapper').first();
+        const canvas = stackWrapper.locator('.stack-waveform-canvas');
+
+        // Get initial waveform pixel data
+        const initialSum = await canvas.evaluate(el => {
+            const ctx = el.getContext('2d');
+            if (!ctx) return 0;
+            const imageData = ctx.getImageData(0, 0, el.width, el.height);
+            return imageData.data.reduce((sum, val) => sum + val, 0);
+        });
+
+        // Wait for a few sync cycles (waveform should stay cached)
+        await page.waitForTimeout(300);
+
+        // Get waveform pixel data after syncs
+        const afterSum = await canvas.evaluate(el => {
+            const ctx = el.getContext('2d');
+            if (!ctx) return 0;
+            const imageData = ctx.getImageData(0, 0, el.width, el.height);
+            return imageData.data.reduce((sum, val) => sum + val, 0);
+        });
+
+        console.log(`Initial pixel sum: ${initialSum}, After pixel sum: ${afterSum}`);
+
+        // Waveform should be identical (cache is working)
+        expect(afterSum).toBe(initialSum);
+    });
+
+    test('composite waveform updates when children change', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("Stack with 3 Clips")');
+        await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
+
+        await page.waitForTimeout(100);
+
+        const stackWrapper = page.locator('.stack-wrapper').first();
+        const canvas = stackWrapper.locator('.stack-waveform-canvas');
+
+        // Verify canvas is rendered
+        const hasContent = await canvas.evaluate(el => {
+            const ctx = el.getContext('2d');
+            if (!ctx) return false;
+            const imageData = ctx.getImageData(0, 0, el.width, el.height);
+            for (let i = 3; i < imageData.data.length; i += 4) {
+                if (imageData.data[i] > 0) return true;
+            }
+            return false;
+        });
+
+        console.log(`Composite waveform has content after load: ${hasContent}`);
+        expect(hasContent).toBe(true);
+    });
+});

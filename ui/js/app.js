@@ -23,6 +23,7 @@ const creationUI = document.getElementById('creation-ui');
 const playBtn = document.getElementById('play-btn');
 
 const livePeaks = new Map();
+const compositeWaveformCache = new Map();  // stackId -> { key, peaks }
 let viewport;
 let availableInputs = [];
 
@@ -247,62 +248,86 @@ function syncUI(state) {
                 let waveformData = stack.waveform || [];
 
                 if (waveformData.length === 0 && stack.nodes) {
-                    // Generate composite from children's waveforms
-                    // Account for each clip's position (anchor offset) within the stack timeline
-
-                    // Calculate target peak count based on canvas width (2 peaks per pixel)
+                    // Generate cache key from child state (invalidates when children change)
                     const targetPeaks = Math.ceil(canvas.width * 2);
-                    waveformData = new Array(targetPeaks).fill(0);
-
-                    // Each clip contributes peaks at its position within the timeline
+                    const cacheKeyParts = [];
                     (stack.nodes || []).forEach(child => {
-                        if (child.type !== 'clip' || !livePeaks.has(child.id)) return;
-
-                        const childPeaks = livePeaks.get(child.id);
-                        if (!childPeaks || childPeaks.length === 0) return;
-
-                        // Calculate this clip's position as a fraction of the LCM timeline
-                        const clipOffsetSamples = child.x || 0;  // x = anchor offset in samples
-                        const clipDuration = child.duration || effectiveQ;
-
-                        // Convert to pixel positions
-                        const clipStartPx = (clipOffsetSamples / stackDuration) * canvas.width;
-                        const clipWidthPx = (clipDuration / stackDuration) * canvas.width;
-
-                        // Map this clip's peaks to the correct position in the composite
-                        const clipPeakCount = childPeaks.length;
-                        for (let i = 0; i < clipPeakCount; i++) {
-                            // Calculate target index in composite waveform
-                            const peakPctInClip = i / clipPeakCount;
-                            const pxInComposite = clipStartPx + (peakPctInClip * clipWidthPx);
-                            const targetIdx = Math.floor((pxInComposite / canvas.width) * targetPeaks);
-
-                            if (targetIdx >= 0 && targetIdx < targetPeaks) {
-                                // Take max of overlapping peaks
-                                waveformData[targetIdx] = Math.max(waveformData[targetIdx], childPeaks[i] || 0);
-                            }
+                        if (child.type === 'clip') {
+                            // Include all properties that affect composite appearance
+                            cacheKeyParts.push([
+                                child.id,
+                                child.duration || 0,
+                                child.x || 0,
+                                child.loopStart || 0,
+                                child.loopEnd || 0,
+                                child.launchPoint || 0
+                            ].join(':'));
                         }
+                    });
+                    const cacheKey = `${targetPeaks}:${stack.loopStart || 0}:${stack.loopEnd || 0}:${cacheKeyParts.join(',')}`;
 
-                        // Also handle looping: if clip loops within LCM, repeat peaks
-                        if (clipDuration < stackDuration && clipDuration > 0) {
-                            const numLoops = Math.ceil(stackDuration / clipDuration);
-                            for (let loopIdx = 1; loopIdx < numLoops && loopIdx < 10; loopIdx++) {
-                                const loopStartSamples = clipOffsetSamples + (loopIdx * clipDuration);
-                                if (loopStartSamples >= stackDuration) break;
+                    // Check cache
+                    const cached = compositeWaveformCache.get(stack.id);
+                    if (cached && cached.key === cacheKey) {
+                        // Cache hit - use cached peaks
+                        waveformData = cached.peaks;
+                    } else {
+                        // Cache miss - regenerate composite waveform
+                        waveformData = new Array(targetPeaks).fill(0);
 
-                                const loopStartPx = (loopStartSamples / stackDuration) * canvas.width;
-                                for (let i = 0; i < clipPeakCount; i++) {
-                                    const peakPctInClip = i / clipPeakCount;
-                                    const pxInComposite = loopStartPx + (peakPctInClip * clipWidthPx);
-                                    const targetIdx = Math.floor((pxInComposite / canvas.width) * targetPeaks);
+                        // Each clip contributes peaks at its position within the timeline
+                        (stack.nodes || []).forEach(child => {
+                            if (child.type !== 'clip' || !livePeaks.has(child.id)) return;
 
-                                    if (targetIdx >= 0 && targetIdx < targetPeaks) {
-                                        waveformData[targetIdx] = Math.max(waveformData[targetIdx], childPeaks[i] || 0);
+                            const childPeaks = livePeaks.get(child.id);
+                            if (!childPeaks || childPeaks.length === 0) return;
+
+                            // Calculate this clip's position as a fraction of the LCM timeline
+                            const clipOffsetSamples = child.x || 0;  // x = anchor offset in samples
+                            const clipDuration = child.duration || effectiveQ;
+
+                            // Convert to pixel positions
+                            const clipStartPx = (clipOffsetSamples / stackDuration) * canvas.width;
+                            const clipWidthPx = (clipDuration / stackDuration) * canvas.width;
+
+                            // Map this clip's peaks to the correct position in the composite
+                            const clipPeakCount = childPeaks.length;
+                            for (let i = 0; i < clipPeakCount; i++) {
+                                // Calculate target index in composite waveform
+                                const peakPctInClip = i / clipPeakCount;
+                                const pxInComposite = clipStartPx + (peakPctInClip * clipWidthPx);
+                                const targetIdx = Math.floor((pxInComposite / canvas.width) * targetPeaks);
+
+                                if (targetIdx >= 0 && targetIdx < targetPeaks) {
+                                    // Take max of overlapping peaks
+                                    waveformData[targetIdx] = Math.max(waveformData[targetIdx], childPeaks[i] || 0);
+                                }
+                            }
+
+                            // Also handle looping: if clip loops within LCM, repeat peaks
+                            if (clipDuration < stackDuration && clipDuration > 0) {
+                                const numLoops = Math.ceil(stackDuration / clipDuration);
+                                for (let loopIdx = 1; loopIdx < numLoops && loopIdx < 10; loopIdx++) {
+                                    const loopStartSamples = clipOffsetSamples + (loopIdx * clipDuration);
+                                    if (loopStartSamples >= stackDuration) break;
+
+                                    const loopStartPx = (loopStartSamples / stackDuration) * canvas.width;
+                                    for (let i = 0; i < clipPeakCount; i++) {
+                                        const peakPctInClip = i / clipPeakCount;
+                                        const pxInComposite = loopStartPx + (peakPctInClip * clipWidthPx);
+                                        const targetIdx = Math.floor((pxInComposite / canvas.width) * targetPeaks);
+
+                                        if (targetIdx >= 0 && targetIdx < targetPeaks) {
+                                            waveformData[targetIdx] = Math.max(waveformData[targetIdx], childPeaks[i] || 0);
+                                        }
                                     }
                                 }
                             }
-                        }
-                    });
+                        });
+
+                        // Store in cache
+                        compositeWaveformCache.set(stack.id, { key: cacheKey, peaks: waveformData });
+                    }
                 }
 
                 // Always draw (empty waveform shows placeholder line)
