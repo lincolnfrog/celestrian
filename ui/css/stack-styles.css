@@ -316,12 +316,15 @@
     box-shadow: 0 0 8px rgba(56, 189, 248, 0.6);
     pointer-events: none;
     z-index: 10;
-    transition: left 0.05s linear;
+    /* NO transition - playhead should snap instantly, especially when looping */
 }
 
-/* Hide stack header waveform when collapsed (waveform shows in collapsed view already) */
+/* Stack header waveform when collapsed - SHOW it (Loop-on-Collapse model) */
+/* When collapsed, the stack acts like a single clip with the composite waveform visible */
 .stack-collapsed .stack-header-waveform {
-    display: none;
+    display: block;
+    margin-top: 8px;
+    /* Adjust for collapsed layout */
 }
 
 /* Nested stack header waveform - slightly different color */

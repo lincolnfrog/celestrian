@@ -233,10 +233,50 @@ if (child.isSoloed) → only that child plays (within its context)
 ```
 
 ### Composite Waveform
-When collapsed, sub-stack shows summed waveform of all children:
-- Mix all child waveforms at their relative positions
-- Respect loop regions
-- Cache and invalidate on child change
+
+When a stack is collapsed, it displays a **composite waveform** showing the summed audio of all children. This waveform is the primary visual representation of the stack's content.
+
+**Implementation Details:**
+
+1. **Waveform Generation**: Mix all child waveforms at their relative positions
+2. **Cache Key**: `${targetPeaks}:${loopStart}:${loopEnd}:${childDurations.join(',')}`
+3. **Invalidation**: Cache is invalidated when children change (add, remove, duration change)
+4. **Visual Presentation**:
+   - **Collapsed state**: Composite waveform at full opacity
+   - **Expanded state**: Composite waveform at ~50% opacity (faded, ghost-like)
+
+**CSS Implementation** (stack-styles.css):
+```css
+/* When collapsed, waveform is fully visible */
+.stack-collapsed .stack-header-waveform {
+    display: block;
+    opacity: 1;
+}
+
+/* When expanded, waveform is faded to indicate loop is bypassed */
+.stack-wrapper:not(.stack-collapsed) .stack-header-waveform {
+    opacity: 0.5;
+}
+```
+
+---
+
+### Ghost Clips and Collapsed Stacks
+
+**Ghost clips are NOT rendered when a stack is collapsed.** Since the collapsed view shows the stack as a single composite unit (like a clip), ghost repetitions are irrelevant.
+
+**Implementation** (app.js ghost rendering):
+```javascript
+// Skip ghost rendering if stack is collapsed
+if (!stack.isExpanded) {
+    return; // No ghosts for collapsed stacks
+}
+```
+
+**Rationale:**
+- Collapsed stacks act like single clips
+- Ghost repetitions apply to individual clips, not composites
+- Reduces visual clutter and rendering overhead
 
 ---
 

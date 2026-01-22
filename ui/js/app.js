@@ -209,8 +209,10 @@ function syncUI(state) {
         stackWrapper.classList.toggle('stack-collapsed', !stack.isExpanded);
         stackWrapper._latestStack = stack; // Store latest state for loop handle drag
 
-        // Render stack header waveform (always visible when expanded)
-        if (stack.isExpanded) {
+        // Render stack header waveform (ALWAYS visible in both expanded and collapsed states)
+        // When collapsed: shows full opacity composite waveform (Loop-on-Collapse model)
+        // When expanded: shows faded (~50% opacity) composite waveform
+        {
             const headerWaveform = stackWrapper.querySelector('.stack-header-waveform');
             const canvas = stackWrapper.querySelector('.stack-waveform-canvas');
             const playhead = stackWrapper.querySelector('.stack-playhead');
@@ -867,6 +869,12 @@ function syncUI(state) {
 
             // Track max timeline width for viewport bounds
             maxX = Math.max(maxX, stack.x + stackTimelineWidth);
+
+            // Skip ghost rendering if stack is collapsed - children aren't visible
+            if (!stack.isExpanded) {
+                log(`[Ghost] Skipping ${stack.id} - stack is collapsed`);
+                return;
+            }
 
             // Render ghosts for each clip in this stack
             (stack.nodes || []).forEach(node => {

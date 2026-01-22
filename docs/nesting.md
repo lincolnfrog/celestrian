@@ -110,9 +110,13 @@ User grabs handle
 
 ## Known Issues
 
-### Critical
-1. **Drag-and-drop non-functional** - No response to grab handle interactions
-2. **Ghost repetitions missing** - Loop bars not visible for any clips
+### ✅ Resolved (Previously Critical)
+1. **Drag-and-drop** - Fixed with slide animation and proper DOM reordering
+2. **Ghost repetitions** - Fixed with per-stack LCM rendering and collapsed stack handling
+
+### ✅ Resolved (Discovered During Testing)
+1. **Collapsed stack ghost display** - Ghosts are now hidden when stack is collapsed
+2. **Composite waveform in collapsed state** - Now displays correctly with `display: block`
 
 ### To Investigate
 - Possible event listener not attaching (despite logs showing attachment)

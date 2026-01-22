@@ -39,6 +39,8 @@ export async function callNative(method, ...args) {
             return getInputList();
         case 'setNodeInput':
             return setNodeInput(...args);
+        case 'setLoopPoints':
+            return setLoopPoints(...args);
         case 'combineNodes':
             return combineNodes(...args);
         default:
@@ -215,6 +217,15 @@ function setNodeInput(id, channelIndex) {
     if (node) {
         node.inputChannel = channelIndex;
         console.log('[MockBackend] Set input:', id, '→ channel', channelIndex);
+    }
+}
+
+function setLoopPoints(id, loopStart, loopEnd) {
+    const node = findNode(id);
+    if (node) {
+        node.loopStart = loopStart;
+        node.loopEnd = loopEnd;
+        console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
     }
 }
 
