@@ -1,10 +1,30 @@
 // Detect environment: Use mock backend if window.celestrian exists, otherwise JUCE bridge
 let callNative, log, getState;
 
-if (typeof window !== 'undefined' && window.celestrian) {
-    // Test harness environment - use mock backend
-    ({ callNative, log, getState } = window.celestrian);
-    console.log('[App] Using MOCK backend');
+const useMock = typeof window !== 'undefined' && (
+    (window.celestrian) ||
+    (new URLSearchParams(window.location.search).get('mock') === 'true')
+);
+
+if (useMock) {
+    if (window.celestrian) {
+        // Test harness environment - use provided backend
+        ({ callNative, log, getState } = window.celestrian);
+        console.log('[App] Using Harness backend');
+    } else {
+        // Browser/Playwright Manual Mock Mode
+        const mockBackend = await import('./mock_backend.js');
+        callNative = mockBackend.callNative;
+        log = mockBackend.log;
+        getState = mockBackend.getState;
+
+        // Expose mock helpers for Playwright
+        window.loadScenario = mockBackend.loadScenario;
+        window.setMasterPos = mockBackend.setMasterPos;
+        window.setIsPlaying = mockBackend.setIsPlaying;
+
+        console.log('[App] Using Loaded Mock backend');
+    }
 } else {
     // Production environment - use JUCE bridge
     const bridge = await import('./bridge.js');

@@ -297,15 +297,26 @@ function generateStackWaveform(node, numPeaks = 100) {
     return peaks;
 }
 
-// Recursively add waveform data to stacks
-function addWaveformToNodes(nodes) {
+// Recursively add waveform and transport data to nodes
+function enrichNodes(nodes) {
     return nodes.map(node => {
         if (node.type === 'stack') {
             const updatedNode = {
                 ...node,
                 waveform: generateStackWaveform(node),
-                nodes: node.nodes ? addWaveformToNodes(node.nodes) : []
+                nodes: node.nodes ? enrichNodes(node.nodes) : []
             };
+
+            // Simulate internalTransport for collapsed stacks (Backend simulation)
+            // If collapsed and loop points are valid, simulate independent playhead
+            if (!node.isExpanded && node.loopEnd > node.loopStart) {
+                const loopLen = node.loopEnd - node.loopStart;
+                // Simple simulation: just wrap masterPos within loop length
+                // This mimics the backend's behavior of independent modulo counter
+                // Note: Real backend counters are more complex (reset on collapse), but this suffices for UI loop verification
+                updatedNode.internalTransport = (state.masterPos || 0) % loopLen;
+            }
+
             return updatedNode;
         }
         return node;
@@ -317,7 +328,7 @@ export function getState() {
     return {
         isPlaying: state.isPlaying,
         masterPos: state.masterPos || 0,
-        nodes: addWaveformToNodes(state.nodes)
+        nodes: enrichNodes(state.nodes)
     };
 }
 
