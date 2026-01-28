@@ -92,6 +92,7 @@ target_sources(CelestrianTests PRIVATE
     tests/clip_node_tests.cc
     tests/stack_node_tests.cc
     tests/quantum_propagation_tests.cc
+    tests/stack_loop_tests.cc
     tests/regression_tests.cc
     tests/audio_engine_tests.cc
     src/clip_node.cc

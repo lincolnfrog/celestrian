@@ -119,10 +119,21 @@ juce::var AudioEngine::getWaveform(const juce::String &uuid,
 void AudioEngine::toggleStackExpand(const juce::String &uuid) {
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
     bool currentState = node->is_expanded.load();
-    node->is_expanded.store(!currentState);
+    bool newState = !currentState;
+    node->is_expanded.store(newState);
+
+    // Reset internal transport when collapsing (start loop from beginning)
+    if (!newState) {
+      if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
+        stack->resetInternalTransport(0);
+        juce::Logger::writeToLog(
+            "AudioEngine: Stack collapsed, reset internal transport to 0");
+      }
+    }
+
     juce::Logger::writeToLog(
         "AudioEngine: Toggled expand for " + uuid + " (New State: " +
-        juce::String(!currentState ? "expanded" : "collapsed") + ")");
+        juce::String(newState ? "expanded" : "collapsed") + ")");
   }
 }
 
@@ -248,8 +259,22 @@ void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
 
 void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
                                 int64_t end) {
+  juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
+                           " start=" + juce::String(start) +
+                           " end=" + juce::String(end));
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
     node->setLoopPoints(start, end);
+
+    // Reset internal transport for stacks when loop region changes
+    if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
+      stack->resetInternalTransport(0);
+      juce::Logger::writeToLog(
+          "  -> Stack loop points updated, reset internal transport to 0");
+    }
+
+    juce::Logger::writeToLog("  -> Found node, loop points set successfully");
+  } else {
+    juce::Logger::writeToLog("  -> ERROR: Node not found!");
   }
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(

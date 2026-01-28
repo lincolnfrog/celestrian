@@ -321,6 +321,16 @@ export function getState() {
     };
 }
 
+// Allow tests to set master position on underlying state
+export function setMasterPos(pos) {
+    state.masterPos = pos;
+}
+
+// Allow tests to set isPlaying on underlying state
+export function setIsPlaying(playing) {
+    state.isPlaying = playing;
+}
+
 // Test scenario loaders
 export function loadScenario(name) {
     console.log('[MockBackend] Loading scenario:', name);
@@ -495,6 +505,8 @@ export function loadScenario(name) {
                 h: 350,
                 isExpanded: true,
                 effectiveQuantum: 44100,  // 1Q = 44100 samples
+                loopStart: 0,             // Stack-level loop points (for collapsed mode)
+                loopEnd: 176400,          // Full LCM duration (4Q)
                 nodes: [
                     {
                         id: 'clip-1q',
@@ -733,6 +745,64 @@ export function loadScenario(name) {
                 ]
             }];
             state.nextId = 10;
+            break;
+
+        // ========================================
+        // Loop Region Bug Test Scenario
+        // ========================================
+        // Reproduces bug: 1Q + 3Q clips, collapse, modify loop to 0-2Q
+        // Bug: Loop alternates between 1Q and 2Q instead of consistent 2Q
+        case '1q-3q-loop-bug':
+            state.isPlaying = true;
+            state.masterPos = 0;
+            state.nodes = [{
+                id: 'stack-1',
+                name: 'Loop Bug Test Stack',
+                type: 'stack',
+                x: 100,
+                y: 100,
+                w: 700,
+                h: 350,
+                isExpanded: true,  // User will collapse in test
+                effectiveQuantum: 44100,  // 1Q = 44100 samples
+                loopStart: 0,
+                loopEnd: 132300,  // Full LCM = 3Q (44100 * 3)
+                nodes: [
+                    {
+                        id: 'clip-1q',
+                        name: 'Clip 1Q',
+                        type: 'clip',
+                        x: 0,
+                        y: 0,
+                        w: 200,
+                        h: 100,
+                        duration: 44100,      // 1Q
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true,
+                        playhead: 0,
+                        loopStart: 0,
+                        loopEnd: 44100
+                    },
+                    {
+                        id: 'clip-3q',
+                        name: 'Clip 3Q',
+                        type: 'clip',
+                        x: 0,
+                        y: 120,
+                        w: 600,
+                        h: 100,
+                        duration: 132300,     // 3Q
+                        effectiveQuantum: 44100,
+                        isRecording: false,
+                        isPlaying: true,
+                        playhead: 0,
+                        loopStart: 0,
+                        loopEnd: 132300
+                    }
+                ]
+            }];
+            state.nextId = 3;
             break;
 
         case 'recording-1q-plus-growing':

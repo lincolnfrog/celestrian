@@ -100,6 +100,21 @@ class StackNode : public AudioNode {
    */
   AudioNode *getChild(int index) { return children[index].get(); }
 
+  /**
+   * Resets the internal transport counter. Call when:
+   * - Stack is collapsed
+   * - Loop region changes
+   * - Playback stops/resets
+   */
+  void resetInternalTransport(int64_t initial_pos = 0) {
+    internal_transport_.store(initial_pos);
+  }
+
+  /**
+   * Gets the current internal transport position.
+   */
+  int64_t getInternalTransport() const { return internal_transport_.load(); }
+
  private:
   std::vector<std::unique_ptr<AudioNode>> children;
 
@@ -108,6 +123,10 @@ class StackNode : public AudioNode {
   // Scratch buffer for summing children without affecting parent output
   // directly until ready
   juce::AudioBuffer<float> mix_buffer;
+
+  // Stack's own transport counter for collapsed playback
+  // Wraps at (loop_end - loop_start), independent of global transport
+  std::atomic<int64_t> internal_transport_{0};
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StackNode)
 };

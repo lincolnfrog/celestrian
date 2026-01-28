@@ -81,6 +81,7 @@
             (BUG)</button>
         <button onclick="loadScenario('clip-3-anchor-at-2q')" style="border-color: #f97316;">1Q + 4Q + 1Q@2Q (Anchor
             Bug)</button>
+        <button onclick="loadScenario('1q-3q-loop-bug')" style="border-color: #f97316;">1Q + 3Q (Loop Bug)</button>
 
         <h4 style="margin-top: 12px; margin-bottom: 8px; font-size: 11px; color: #a855f7;">🟣 Nested Stacks</h4>
         <button onclick="loadScenario('nested-stacks')" style="border-color: #a855f7;">Nested Stacks</button>
@@ -113,7 +114,7 @@
 
     <!-- Load app with mock backend -->
     <script type="module">
-        import { callNative, log, getState, loadScenario as loadBackendScenario } from './js/mock_backend.js';
+        import { callNative, log, getState, loadScenario as loadBackendScenario, setMasterPos, setIsPlaying } from './js/mock_backend.js';
         import { drawWaveform } from './js/canvas_renderer.js';
         import { Viewport } from './js/viewport.js';
         import { groupNodesByVisualX, calculateButtonPosition } from './js/stack_logic.js';
@@ -137,7 +138,9 @@
                 return callNative(method, ...args);
             },
             log,
-            getState
+            getState,
+            setMasterPos,
+            setIsPlaying
         };
 
         // Now load the main app (same file works for both test and production!)

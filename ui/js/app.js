@@ -207,7 +207,6 @@ function syncUI(state) {
         stackWrapper.style.left = `${stack.x + VISUAL_OFFSET}px`;
         stackWrapper.style.top = `${stack.y}px`;
         stackWrapper.classList.toggle('stack-collapsed', !stack.isExpanded);
-        stackWrapper._latestStack = stack; // Store latest state for loop handle drag
 
         // Render stack header waveform (ALWAYS visible in both expanded and collapsed states)
         // When collapsed: shows full opacity composite waveform (Loop-on-Collapse model)
@@ -245,6 +244,16 @@ function syncUI(state) {
 
                 canvas.width = Math.max(200, quantumWidth);
                 canvas.height = headerWaveform.offsetHeight || 50;
+
+                // IMPORTANT: Store computed LCM values on wrapper for loop handle access
+                // The loop handle drag code needs these for proper quantum snapping
+                stackWrapper._latestStack = {
+                    ...stack,
+                    lcmDuration: stackDuration,          // The LCM of all children
+                    computedQuantum: effectiveQ,         // The global quantum for snapping
+                    loopStart: stack.loopStart || 0,
+                    loopEnd: stack.loopEnd || stackDuration
+                };
 
                 // Get stack's composite waveform (aggregated from children)
                 // If backend doesn't provide waveform, generate from children's livePeaks
@@ -336,20 +345,50 @@ function syncUI(state) {
                 // Always draw (empty waveform shows placeholder line)
                 drawWaveform(canvas, waveformData, null, true /* isComposite */);
 
-                // Update playhead position based on masterPos relative to stack LCM duration
-                // IMPORTANT: Use stackDuration (the LCM) so playhead matches the header width
+                // Update playhead position based on masterPos relative to stack loop region
+                // When collapsed, the stack loops within loopStart to loopEnd
                 if (playhead && state.isPlaying) {
-                    const masterPos = state.masterPos || 0;
-                    const percentage = stackDuration > 0 ? (masterPos % stackDuration) / stackDuration : 0;
-                    playhead.style.left = `${percentage * 100}%`;
+                    let masterPos = state.masterPos || 0;
+                    const loopStart = stack.loopStart || 0;
+                    const loopEnd = stack.loopEnd || stackDuration;
+                    const loopLength = loopEnd - loopStart;
+
+                    // DEBUG: Use internal transport if available (fixes loop sync for collapsed stacks)
+                    if (!stack.isExpanded && typeof stack.internalTransport === 'number') {
+                        // When collapsed, the stack runs on its own internal clock
+                        // We construct a synthetic masterPos that aligns with the loop start
+                        masterPos = loopStart + stack.internalTransport;
+                    }
+
+                    // Calculate position within the loop region
+                    let playheadPct;
+                    if (loopLength > 0 && stackDuration > 0) {
+                        // Wrap masterPos within loop region
+                        // For collapsed stacks (using internalTransport), this computes: loopStart + (internal % loopLength)
+                        const posInLoop = loopStart + ((masterPos - loopStart) % loopLength);
+                        // Convert to percentage of full timeline
+                        playheadPct = posInLoop / stackDuration;
+                    } else {
+                        // Fallback: just use full duration
+                        playheadPct = stackDuration > 0 ? (masterPos % stackDuration) / stackDuration : 0;
+                    }
+
+                    // DEBUG: Log playhead calculation (throttled)
+                    if (Date.now() % 1000 < 50) {
+                        log(`[SyncUI] Playhead: masterPos=${masterPos}, loopStart=${loopStart}, loopEnd=${loopEnd}, loopLength=${loopLength}, stackDuration=${stackDuration}, pct=${playheadPct}`);
+                    }
+
+                    playhead.style.left = `${playheadPct * 100}%`;
                     playhead.style.display = 'block';
                 } else if (playhead) {
                     playhead.style.display = 'none';
                 }
 
                 // Position stack loop handles, dim layers, and launch marker
-                // (Same logic as clips - hierarchical design)
-                const stackDur = stack.effectiveQuantum || 1;
+                // IMPORTANT: Use stackDuration (LCM) for positioning, NOT effectiveQuantum
+                // effectiveQuantum = smallest child quantum (for snapping)
+                // stackDuration = LCM of all children (actual timeline length)
+                const stackDur = stackDuration; // Use LCM, not effectiveQuantum!
                 let stackLoopStart = stack.loopStart || 0;
                 let stackLoopEnd = stack.loopEnd || stackDur;
 
@@ -371,6 +410,7 @@ function syncUI(state) {
                 const launchMarker = headerWaveform.querySelector('.launch-marker');
 
                 if (hStart && hEnd && dimLeft && dimRight) {
+                    log(`[SyncUI] Stack ${stack.id}: loopEnd=${stack.loopEnd}, stackDur=${stackDur}, loopStart=${stackLoopStart}, computedEnd=${stackLoopEnd}, Pct=${stackEndPct}%`);
                     hStart.style.left = `${stackStartPct}%`;
                     hEnd.style.left = `${stackEndPct}%`;
                     dimLeft.style.width = `${stackStartPct}%`;
@@ -1322,10 +1362,14 @@ function createStackWrapper(stack) {
             <canvas class="stack-waveform-canvas"></canvas>
             <div class="stack-playhead"></div>
             <!-- Loop region UI (same as clips - hierarchical design) -->
-            <div class="loop-handle-start"></div>
-            <div class="loop-handle-end"></div>
+            <div class="loop-handle-start" title="Drag to adjust loop start (only when collapsed)"></div>
+            <div class="loop-handle-end" title="Drag to adjust loop end (only when collapsed)"></div>
             <div class="dim-left"></div>
             <div class="dim-right"></div>
+            <!-- Visual feedback elements for quantum snapping (matching clip UX) -->
+            <div class="loop-ghost"></div>
+            <div class="snap-marker"></div>
+            <div class="snap-arrow"></div>
             <div class="launch-marker"></div>
         </div>
         <div class="stack-children"></div>
@@ -1400,19 +1444,38 @@ function createStackWrapper(stack) {
         };
     });
 
-    // Stack Loop Handle Dragging (same pattern as clips - hierarchical design)
+    // Stack Loop Handle Dragging (UNIFIED with clip UX - quantum snapping + visual feedback)
     const setupStackLoopHandle = (handle, isStart) => {
         if (!handle) return;
 
-        // Custom cursor to indicate draggable
-        handle.style.cursor = 'col-resize';
+        // Custom Cursors: [ and ] (matching clip UX)
+        const cursorSvg = (isStart, text) => {
+            const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><text x="${isStart ? 4 : 12}" y="18" fill="white" font-family="monospace" font-size="20" font-weight="bold">${text}</text></svg>`;
+            return `url('data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}') 12 12, col-resize`;
+        };
+        handle.style.cursor = cursorSvg(isStart, isStart ? '[' : ']');
 
         handle.onmousedown = (e) => {
+            console.log('[StackLoopHandle] mousedown fired on', isStart ? 'START' : 'END', 'handle');
             e.stopPropagation();
             e.preventDefault();
 
+            // Early return if stack is expanded (loop is bypassed, handles disabled via CSS)
+            if (!wrapper.classList.contains('stack-collapsed')) {
+                console.log('[LoopHandle] Ignoring mousedown on expanded stack - loop bypassed');
+                return;
+            }
+
             const headerWaveform = wrapper.querySelector('.stack-header-waveform');
             const rect = headerWaveform.getBoundingClientRect();
+            const ghost = headerWaveform.querySelector('.loop-ghost');
+            const marker = headerWaveform.querySelector('.snap-marker');
+            const arrow = headerWaveform.querySelector('.snap-arrow');
+
+            // Show feedback elements
+            if (ghost) ghost.style.display = 'block';
+            if (marker) marker.style.display = 'block';
+            if (arrow) arrow.style.display = 'block';
 
             // Store the stack ID for reference during drag
             const stackId = stack.id;
@@ -1425,37 +1488,69 @@ function createStackWrapper(stack) {
                 const latestStack = wrapper._latestStack;
                 if (!latestStack) return;
 
-                const duration = latestStack.effectiveQuantum || 1;
+                // Use stack's LCM duration for proper timeline coverage
+                // computedQuantum is the global quantum for snap grid, lcmDuration is full timeline length
+                const duration = latestStack.lcmDuration || 1;
+                const quantum = latestStack.computedQuantum || latestStack.effectiveQuantum || 1;
                 if (duration <= 0 || rect.width <= 0) return;
 
-                // Calculate position as percentage
+                console.log(`[StackLoopHandle] duration=${duration}, quantum=${quantum}, rect.width=${rect.width}`);
+
+                // 1. Raw Position (Ghost)
                 let x = moveE.clientX - rect.left;
-                let pct = Math.max(0, Math.min(1, x / rect.width));
+                let pctRaw = Math.max(0, Math.min(1, x / rect.width));
+                if (ghost) ghost.style.left = `${pctRaw * 100}%`;
 
-                // Convert to samples
-                let samples = pct * duration;
-
-                // Snap to quantum if available
-                const quantum = latestStack.effectiveQuantum || duration;
+                // 2. Snapped Position (Marker)
+                let samples = pctRaw * duration;
+                let snappedSamples = samples;
                 if (quantum > 0) {
-                    samples = Math.round(samples / quantum) * quantum;
+                    snappedSamples = Math.round(samples / quantum) * quantum;
                 }
 
                 // Constraint: Prevent crossing/zero-length
                 const minGap = quantum > 0 ? quantum : 1;
                 if (isStart) {
                     const maxAllowed = (latestStack.loopEnd || duration) - minGap;
-                    if (samples > maxAllowed) samples = maxAllowed;
-                    if (samples < 0) samples = 0;
+                    if (snappedSamples > maxAllowed) snappedSamples = maxAllowed;
+                    if (snappedSamples < 0) snappedSamples = 0;
                 } else {
                     const minAllowed = (latestStack.loopStart || 0) + minGap;
-                    if (samples < minAllowed) samples = minAllowed;
-                    if (samples > duration) samples = duration;
+                    if (snappedSamples < minAllowed) snappedSamples = minAllowed;
+                    if (snappedSamples > duration) snappedSamples = duration;
+                }
+
+                let pctSnap = snappedSamples / duration;
+                if (marker) marker.style.left = `${pctSnap * 100}%`;
+
+                // 3. Arrow direction and visibility
+                const diff = (pctSnap - pctRaw) * rect.width;
+                if (Math.abs(diff) > 4) {
+                    if (arrow) {
+                        arrow.style.display = 'block';
+                        arrow.style.left = `${(pctRaw + (pctSnap - pctRaw) / 2) * 100}%`;
+                        arrow.style.transform = `translateY(-50%) rotate(${diff > 0 ? 45 : 225}deg)`;
+                    }
+                    if (ghost) ghost.style.opacity = '1';
+                } else {
+                    if (arrow) arrow.style.display = 'none';
+                    if (ghost) ghost.style.opacity = '0'; // Hide ghost when perfectly snapped
+                }
+
+                // 4. Grid Ghosts (Clear and redraw for the current duration)
+                headerWaveform.querySelectorAll('.snap-point-grid').forEach(p => p.remove());
+                if (quantum > 0 && (duration / quantum) < 50) { // Don't over-render
+                    for (let s = 0; s <= duration; s += quantum) {
+                        const gp = document.createElement('div');
+                        gp.className = 'snap-point-grid';
+                        gp.style.left = `${(s / duration) * 100}%`;
+                        headerWaveform.appendChild(gp);
+                    }
                 }
 
                 // Calculate new loop points
-                let newStart = isStart ? samples : (latestStack.loopStart || 0);
-                let newEnd = isStart ? (latestStack.loopEnd || duration) : samples;
+                let newStart = isStart ? snappedSamples : (latestStack.loopStart || 0);
+                let newEnd = isStart ? (latestStack.loopEnd || duration) : snappedSamples;
 
                 // Update loop points via native call
                 callNative('setLoopPoints', stackId, Math.round(newStart), Math.round(newEnd));
@@ -1465,6 +1560,10 @@ function createStackWrapper(stack) {
                 isDragging = false;
                 window.removeEventListener('mousemove', onMouseMove);
                 window.removeEventListener('mouseup', onMouseUp);
+                if (ghost) ghost.style.display = 'none';
+                if (marker) marker.style.display = 'none';
+                if (arrow) arrow.style.display = 'none';
+                headerWaveform.querySelectorAll('.snap-point-grid').forEach(p => p.remove());
             };
 
             window.addEventListener('mousemove', onMouseMove);

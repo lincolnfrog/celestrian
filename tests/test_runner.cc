@@ -9,6 +9,7 @@ int main(int argc, char *argv[]) {
   juce::UnitTestRunner runner;
   runner.setAssertOnFailure(false);
   runner.runAllTests();
+  // runner.runTestsInCategory("Audio Engine");
 
   int numFailures = 0;
   for (int i = 0; i < runner.getNumResults(); ++i) {

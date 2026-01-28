@@ -13,6 +13,8 @@ juce::var StackNode::getMetadata() const {
   auto *obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)children.size());
   obj->setProperty("isExpanded", (bool)is_expanded.load());
+  // Expose internal transport for UI synchronization when collapsed
+  obj->setProperty("internalTransport", (double)internal_transport_.load());
   juce::Array<juce::var> childData;
   for (const auto &child : children) {
     childData.add(child->getMetadata());
@@ -107,26 +109,57 @@ void StackNode::process(const float *const *input_channels,
 
   std::lock_guard<std::recursive_mutex> lock(children_mutex);
 
-  // === LOOP-ON-COLLAPSE MODEL ===
-  // Only apply loop windowing when stack is COLLAPSED
-  int64_t effective_master_pos = context.master_pos;
+  // === LOOP-ON-COLLAPSE MODEL (Internal Transport) ===
+  // When collapsed, stack uses its OWN transport counter that wraps at
+  // loop_duration. This solves the issue where global transport wrapping at LCM
+  // caused alternating loop cycles (e.g., 2Q then 1Q when LCM=3Q, loop=2Q).
+  int64_t child_master_pos;
 
   if (!is_expanded.load()) {
     int64_t stack_loop_start = loop_start_samples.load();
     int64_t stack_loop_end = loop_end_samples.load();
 
-    // Only apply if valid loop region is set
     if (stack_loop_end > stack_loop_start) {
       int64_t loop_duration = stack_loop_end - stack_loop_start;
-      effective_master_pos =
-          stack_loop_start + (context.master_pos % loop_duration);
+
+      // Use internal transport (increments independently, wraps at
+      // loop_duration)
+      int64_t current_internal = internal_transport_.load();
+      child_master_pos = stack_loop_start + (current_internal % loop_duration);
+
+      // Advance internal transport if playing
+      if (context.is_playing) {
+        internal_transport_.fetch_add(context.num_samples);
+
+        // Prevent overflow (optional - modulo handles it, but keeps numbers
+        // small)
+        if (internal_transport_.load() >= loop_duration * 1000) {
+          internal_transport_.store(internal_transport_.load() % loop_duration);
+        }
+      }
+
+      // DEBUG: Log internal transport state (throttled)
+      static int log_counter = 0;
+      if (++log_counter % 1000 == 0) {
+        juce::Logger::writeToLog(
+            "StackNode [" + node_name + "] COLLAPSED: internal_transport=" +
+            juce::String(current_internal) +
+            ", loop=" + juce::String(stack_loop_start) + "->" +
+            juce::String(stack_loop_end) +
+            ", child_pos=" + juce::String(child_master_pos));
+      }
+    } else {
+      // No valid loop region - pass through global transport
+      child_master_pos = context.master_pos;
     }
+  } else {
+    // === EXPANDED: Pass through global transport unchanged ===
+    child_master_pos = context.master_pos;
   }
-  // When expanded: pass through master_pos unchanged
 
   // Create modified context for children
   ProcessContext child_context = context;
-  child_context.master_pos = effective_master_pos;
+  child_context.master_pos = child_master_pos;
 
   // Process each child and sum their results
   for (const auto &child : children) {

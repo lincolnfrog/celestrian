@@ -345,10 +345,12 @@
     opacity: 1;
 }
 
-/* Fade loop handles when expanded (loop bypassed) */
+/* Disable loop handles when expanded (loop bypassed - children play individually) */
 .stack-wrapper:not(.stack-collapsed) .stack-header-waveform .loop-handle-start,
 .stack-wrapper:not(.stack-collapsed) .stack-header-waveform .loop-handle-end {
-    opacity: 0.6;
+    opacity: 0.3;
+    pointer-events: none;
+    cursor: default;
 }
 
 /* Fade dim regions when expanded */
