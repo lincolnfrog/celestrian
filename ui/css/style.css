@@ -130,8 +130,8 @@ h1 {
 
 /* One-shot clips: play once, don't loop */
 .node.one-shot {
-    border-style: dashed;
-    border-color: #f97316;
+    /* border-style: dashed; */
+    /* border-color: #f97316; */
     /* Orange to stand out */
 }
 
