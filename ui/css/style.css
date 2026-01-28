@@ -622,3 +622,14 @@ h1 {
     display: none;
     filter: drop-shadow(0 0 4px rgba(249, 115, 22, 0.6));
 }
+
+.stack-header-waveform {
+    pointer-events: auto !important;
+    z-index: 100;
+    position: relative;
+}
+
+.stack-wrapper {
+    position: absolute;
+    z-index: 10;
+}

@@ -95,6 +95,7 @@ target_sources(CelestrianTests PRIVATE
     tests/stack_loop_tests.cc
     tests/regression_tests.cc
     tests/audio_engine_tests.cc
+    tests/repro_first_clip_bug.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc

@@ -41,6 +41,10 @@ export async function callNative(method, ...args) {
             return setNodeInput(...args);
         case 'setLoopPoints':
             return setLoopPoints(...args);
+        case 'startRecordingInNode':
+            return startRecordingInNode(...args);
+        case 'stopRecordingInNode':
+            return stopRecordingInNode(...args);
         case 'combineNodes':
             return combineNodes(...args);
         default:
@@ -225,8 +229,71 @@ function setLoopPoints(id, loopStart, loopEnd) {
     if (node) {
         node.loopStart = loopStart;
         node.loopEnd = loopEnd;
+        // Reset internal transport for stacks when loop points change (Simulates C++ StackNode::setLoopPoints)
+        if (node.type === 'stack') {
+            // In stateless mock, we can't easily "reset" the modulo base without tracking offset.
+            // But for the simple repro case (setMasterPos), simple modulo works.
+            // However, to be more "correct" for stateful replays, we might want to track an offset.
+            // For now, let's keep simple modulo but log it.
+            console.log('[MockBackend] Stack loop points set -> Internal Transport effectively reset next cycle');
+        }
         console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
     }
+}
+
+function startRecordingInNode(id) {
+    const node = findNode(id);
+    if (!node) return;
+
+    console.log('[MockBackend] startRecordingInNode', id);
+
+    // FIRST CLIP SNAP LOGIC (Simulation)
+    // If this is the "first clip" (no effective quantum established globally yet),
+    // we reset the global transport to 0.
+    // In Mock, we can check if any other clip has duration > 0.
+    const hasExistingAudio = state.nodes.some(n =>
+        (n.type === 'clip' && n.duration > 0) ||
+        (n.type === 'stack' && n.nodes && n.nodes.some(c => c.duration > 0))
+    );
+
+    if (!hasExistingAudio) {
+        state.masterPos = 0;
+        console.log('[MockBackend] First Clip Detected -> Reset Global Transport to 0');
+    }
+
+    node.isRecording = true;
+    node.recordingStartPos = state.masterPos || 0;
+}
+
+function stopRecordingInNode(id) {
+    const node = findNode(id);
+    if (!node || !node.isRecording) return;
+
+    console.log('[MockBackend] stopRecordingInNode', id);
+    node.isRecording = false;
+
+    const currentPos = state.masterPos || 0;
+    const rawDuration = currentPos - (node.recordingStartPos || 0);
+
+    // Snap duration to Quantum if available (Simulate logic)
+    // For simplicity in mock: assume 44100 snap if > small amount
+    const Q = 44100;
+    let duration = rawDuration;
+
+    // Simple mock snap: round to nearest Q if close (polyrhythmic check skipped for mock)
+    const snapDiff = Math.abs(rawDuration - Math.round(rawDuration / Q) * Q);
+    if (snapDiff < 1000) {
+        duration = Math.round(rawDuration / Q) * Q;
+    }
+
+    node.duration = duration;
+    node.isPlaying = true;
+
+    // DEFAULT LOOP REGION: Full clip
+    node.loopStart = 0;
+    node.loopEnd = duration;
+
+    console.log(`[MockBackend] Recorded ${id}: Dur=${duration} (Raw=${rawDuration})`);
 }
 
 /**

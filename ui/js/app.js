@@ -1482,7 +1482,7 @@ function createStackWrapper(stack) {
 
             // Early return if stack is expanded (loop is bypassed, handles disabled via CSS)
             if (!wrapper.classList.contains('stack-collapsed')) {
-                console.log('[LoopHandle] Ignoring mousedown on expanded stack - loop bypassed');
+                // console.log('[LoopHandle] Ignoring mousedown on expanded stack - loop bypassed');
                 return;
             }
 
