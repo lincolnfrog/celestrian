@@ -268,19 +268,26 @@
     opacity: 1;
 }
 
-/* Zone highlighting for center drop (combine/enter stack) */
+/* Zone highlighting for center drop (combine/enter stack) — DISABLED
+   The center-zone combine feature is not yet ready; the dotted outline
+   was confusing during normal reorder drags. Re-enable when combine-into-stack
+   is fully implemented. */
+/*
 .node.drop-zone-center,
 .stack-wrapper.drop-zone-center {
     outline: 2px dashed rgba(56, 189, 248, 0.8);
     outline-offset: -2px;
     background: rgba(56, 189, 248, 0.15) !important;
 }
+*/
 
 /* Nested stack center zone - purple variant */
+/*
 .nested-stack.drop-zone-center {
     outline-color: rgba(168, 85, 247, 0.8);
     background: rgba(168, 85, 247, 0.15) !important;
 }
+*/
 
 /* === Stack Header Waveform (Always Visible) === */
 .stack-header-waveform {

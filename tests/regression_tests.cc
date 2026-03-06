@@ -16,7 +16,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expect(!engine.isPlaying(), "Transport should be stopped initially.");
 
       // Create a clip node
-      engine.createNode("clip", 100, 100);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       auto nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       expect(nodes->size() > 0);

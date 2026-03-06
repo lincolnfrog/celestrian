@@ -20,8 +20,8 @@ These items address dead code, abstraction violations, and debug artifacts that 
   - `app.js`: throttled `[SyncUI]` debug log (L397-399, L433)
 
 ### API Abstraction Violations (from `docs/ui.md`)
-- [ ] **Refactor `moveNode` → `reorderNode`** — Current API passes pixel Y coordinates across the C++/JS boundary. Backend should accept an integer index. Affects `mock_backend.js`, and `main_component.cc` binding.
-- [ ] **Clean up `createNode` params** — Remove `x, y` parameters for child nodes (clips in stacks). Only top-level stacks should use `setNodePosition` for freeform placement.
+- [x] **Refactor `moveNode` → `reorderNode`** — Already done in prior work. `reorderNode(nodeId, parentId, index)` is the active API.
+- [x] **Clean up `createNode` params** — Removed x/y parameters. Child nodes just append to parent; top-level stacks use `setNodePosition`.
 
 ### Code Quality
 - [ ] **`app.js` is 1666 lines** — Consider splitting into modules: `syncUI` rendering, clip state management, stack rendering, waveform caching, ghost rendering. Currently a monolith that's hard to navigate and test.

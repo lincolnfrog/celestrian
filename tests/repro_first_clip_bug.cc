@@ -30,7 +30,7 @@ class FirstClipBugTests : public juce::UnitTest {
       };
 
       // 1. Create a single clip node
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       juce::String clipId = state.getDynamicObject()
                                 ->getProperty("nodes")
@@ -108,7 +108,7 @@ class FirstClipBugTests : public juce::UnitTest {
         }
       };
 
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       juce::String clipId = state.getDynamicObject()
                                 ->getProperty("nodes")

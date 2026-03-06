@@ -55,9 +55,10 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   /**
    * Creates a new node of the specified type.
    * If parent_uuid is provided, adds to that stack; otherwise uses
-   * focused_node.
+   * focused_node. The node is appended to the end of the parent's children.
+   * Visual positioning is handled by the frontend.
    */
-  void createNode(const juce::String &type, double x = -1.0, double y = -1.0,
+  void createNode(const juce::String &type,
                   const juce::String &parent_uuid = "");
 
   /**

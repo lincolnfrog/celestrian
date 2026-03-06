@@ -48,8 +48,8 @@ let viewport;
 let availableInputs = [];
 
 // Global API Hooks
-window.createNode = (type, x, y) => {
-    callNative('createNode', type, x || -1, y || -1);
+window.createNode = (type, parent) => {
+    callNative('createNode', type, parent || '');
 };
 
 window.togglePlayback = () => callNative('togglePlayback');
@@ -1122,7 +1122,7 @@ function syncUI(state) {
         // Refresh mousedown to capture latest stackX/maxY closure
         btn.onmousedown = (e) => {
             e.stopPropagation();
-            createNode('clip', stackX, maxY + 20);
+            createNode('clip');
         };
     });
 
@@ -1460,7 +1460,7 @@ function createStackWrapper(stack) {
             }
 
             // Create new node within this stack by passing parent ID
-            createNode(action, -1, -1, stack.id);
+            createNode(action, stack.id);
         };
     });
 
@@ -1614,8 +1614,8 @@ export async function toggleRecord(id) {
     log(`Toggling record for ${id} (currently ${isActive ? 'ACTIVE' : 'IDLE'})`);
     await callNative(isActive ? 'stopRecordingInNode' : 'startRecordingInNode', id);
 }
-export async function createNode(type, x, y, parent) {
-    await callNative('createNode', type, x || -1, y || -1, parent || '');
+export async function createNode(type, parent) {
+    await callNative('createNode', type, parent || '');
 }
 
 export async function toggleStackExpand(id) {

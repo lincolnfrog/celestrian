@@ -78,15 +78,10 @@ MainComponent::MainComponent()
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    if (args.size() > 3) {
-                      // type, x, y, parent_uuid
+                    if (args.size() > 1) {
+                      // type, parent_uuid
                       audio_engine.createNode(args[0].toString(),
-                                              (double)args[1], (double)args[2],
-                                              args[3].toString());
-                    } else if (args.size() > 2) {
-                      // type, x, y
-                      audio_engine.createNode(args[0].toString(),
-                                              (double)args[1], (double)args[2]);
+                                              args[1].toString());
                     } else if (args.size() > 0) {
                       // type only
                       audio_engine.createNode(args[0].toString());

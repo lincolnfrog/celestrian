@@ -98,14 +98,14 @@ function removeNodeFromParent(nodeId) {
     }
 }
 
-// createNode(type, x, y, parentId)
-function createNode(type, x = -1, y = -1, parentId = null) {
+// createNode(type, parentId)
+function createNode(type, parentId = null) {
     const node = {
         id: generateId(),
         name: type === 'clip' ? 'New Clip' : 'New Stack',
         type: type,
-        x: x >= 0 ? x : 0,
-        y: y >= 0 ? y : (state.nodes.length * 120),
+        x: 0,
+        y: 0,
         w: 200,
         h: 100,
         duration: 0,

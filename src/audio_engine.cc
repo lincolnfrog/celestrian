@@ -11,6 +11,15 @@ AudioEngine::AudioEngine() {
   // Start with an empty root stack
   root_node = std::make_unique<celestrian::StackNode>("SessionRoot");
   focused_node = root_node.get();
+
+  // Create a default stack with one clip ready for recording
+  createNode("stack");
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
+    if (stack->getNumChildren() > 0) {
+      juce::String stack_uuid = stack->getChild(0)->getUuid();
+      createNode("clip", stack_uuid);
+    }
+  }
 }
 
 AudioEngine::~AudioEngine() { device_manager.removeAudioCallback(this); }
@@ -137,7 +146,7 @@ void AudioEngine::toggleStackExpand(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::createNode(const juce::String &type, double x, double y,
+void AudioEngine::createNode(const juce::String &type,
                              const juce::String &parent_uuid) {
   // Find target parent stack
   celestrian::StackNode *target_stack = nullptr;
@@ -162,19 +171,12 @@ void AudioEngine::createNode(const juce::String &type, double x, double y,
   } else if (type == "stack") {
     new_node = std::make_unique<celestrian::StackNode>("New Stack");
   } else {
-    // Fallback for any legacy "box" calls
     new_node = std::make_unique<celestrian::StackNode>("New Stack");
   }
 
   new_node->setParent(target_stack);
-  if (x >= 0 && y >= 0) {
-    new_node->x_pos = x;
-    new_node->y_pos = y;
-  } else {
-    new_node->x_pos = 0.0;  // Default to Time 0
-    new_node->y_pos =
-        target_stack->getNumChildren() * 120.0;  // 120px per clip row
-  }
+  // Visual positioning is handled by the frontend.
+  // Backend only manages ordered list membership.
   target_stack->addChild(std::move(new_node));
 }
 

@@ -18,7 +18,7 @@ class AudioEngineTests : public juce::UnitTest {
      {
        AudioEngine engine;
        // Root is already a stack
-       engine.createNode("stack", 10, 10);
+       engine.createNode("stack");
        auto state = engine.getGraphState();
        auto nodesVar = state.getDynamicObject()->getProperty("nodes");
        expect(nodesVar.isArray());
@@ -35,7 +35,7 @@ class AudioEngineTests : public juce::UnitTest {
     beginTest("Node Management: Create/Rename/Input");
     {
       AudioEngine engine;
-      engine.createNode("clip", 50, 50);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       auto *obj = state.getDynamicObject();
       expect(obj != nullptr, "Graph state should be an object");
@@ -68,7 +68,7 @@ class AudioEngineTests : public juce::UnitTest {
       AudioEngine engine;
 
       // Create a stack to hold clips
-      engine.createNode("stack", 0, 0);
+      engine.createNode("stack");
       auto state = engine.getGraphState();
       juce::String stackId = state.getDynamicObject()
                                  ->getProperty("nodes")
@@ -78,9 +78,9 @@ class AudioEngineTests : public juce::UnitTest {
                                  ->getProperty("id");
 
       // Create 3 clips inside the stack: A, B, C
-      engine.createNode("clip", 0, 0, stackId);
-      engine.createNode("clip", 0, 0, stackId);
-      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", stackId);
+      engine.createNode("clip", stackId);
+      engine.createNode("clip", stackId);
 
       state = engine.getGraphState();
       auto *stackChildren = state.getDynamicObject()
@@ -191,7 +191,7 @@ class AudioEngineTests : public juce::UnitTest {
     beginTest("Playback Controls: TogglePlay/Solo");
     {
       AudioEngine engine;
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       auto nodesVar = state.getDynamicObject()->getProperty("nodes");
       expect(nodesVar.isArray());
@@ -349,7 +349,7 @@ class AudioEngineTests : public juce::UnitTest {
       const int Q = 44100;
 
       // 1. Create and Record Clip 1 (1 sec)
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       juce::String id1 = state.getDynamicObject()
                              ->getProperty("nodes")
@@ -365,7 +365,7 @@ class AudioEngineTests : public juce::UnitTest {
       process(100);  // Commit
 
       // 2. Create and Record Clip 2 (4 sec)
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       state = engine.getGraphState();
       auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id2;
@@ -381,7 +381,7 @@ class AudioEngineTests : public juce::UnitTest {
       process(100);  // Commit
 
       // 3. Create and Record Clip 3 (3 sec)
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       state = engine.getGraphState();
       nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id3;
@@ -453,7 +453,7 @@ class AudioEngineTests : public juce::UnitTest {
       const int Q = 44100;
 
       // 1. Record Clip 1 (1Q) - Exact split processing
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       auto state = engine.getGraphState();
       juce::String id1 = state.getDynamicObject()
                              ->getProperty("nodes")
@@ -468,7 +468,7 @@ class AudioEngineTests : public juce::UnitTest {
       process(50);  // Total 44100 exact
 
       // 2. Record Clip 2 (4Q) - Exact split
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       state = engine.getGraphState();
       auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id2 =
@@ -484,7 +484,7 @@ class AudioEngineTests : public juce::UnitTest {
       // Current masterPos should be approx Q.
 
       // 3. Record Clip 3 (3Q) - Exact split
-      engine.createNode("clip", 0, 0);
+      engine.createNode("clip");
       state = engine.getGraphState();
       nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id3 =
@@ -544,7 +544,7 @@ class AudioEngineTests : public juce::UnitTest {
 
       // Create a nested stack structure:
       // Root -> Stack -> [Clip1 (1Q), Clip2 (2Q)]
-      engine.createNode("stack", 0, 0);
+      engine.createNode("stack");
       auto state = engine.getGraphState();
       juce::String stackId = state.getDynamicObject()
                                  ->getProperty("nodes")
@@ -554,7 +554,7 @@ class AudioEngineTests : public juce::UnitTest {
                                  ->getProperty("id");
 
       // Create Clip 1 inside the stack
-      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", stackId);
       state = engine.getGraphState();
       auto *stackNodes = state.getDynamicObject()
                              ->getProperty("nodes")
@@ -573,7 +573,7 @@ class AudioEngineTests : public juce::UnitTest {
       process(Q);  // Commit
 
       // Create Clip 2 inside the stack
-      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", stackId);
       state = engine.getGraphState();
       stackNodes = state.getDynamicObject()
                        ->getProperty("nodes")
@@ -676,7 +676,7 @@ class AudioEngineTests : public juce::UnitTest {
       };
 
       // Create a stack to hold clips (matches real app structure)
-      engine.createNode("stack", 0, 0);
+      engine.createNode("stack");
       auto state = engine.getGraphState();
       juce::String stackId = state.getDynamicObject()
                                  ->getProperty("nodes")
@@ -686,7 +686,7 @@ class AudioEngineTests : public juce::UnitTest {
                                  ->getProperty("id");
 
       // === CLIP 1: Record 1Q ===
-      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", stackId);
       state = engine.getGraphState();
       auto *stackNodes = state.getDynamicObject()
                              ->getProperty("nodes")
@@ -721,7 +721,7 @@ class AudioEngineTests : public juce::UnitTest {
       // We want to start recording mid-loop to trigger the 0Q snap
 
       // Create clip 2
-      engine.createNode("clip", 0, 0, stackId);
+      engine.createNode("clip", stackId);
       state = engine.getGraphState();
       stackNodes = state.getDynamicObject()
                        ->getProperty("nodes")

@@ -41,13 +41,13 @@ This document defines the abstraction boundary between the Celestrian frontend (
 | `toggleSolo` | uuid | Pure audio state |
 | `toggleMute` | uuid | Pure audio state |
 
-### ⚠️ TODO: Abstraction Violations
+### ✅ Previously Abstraction Violations (Resolved)
 
-| Operation | Current Params | Problem | Fix |
-|-----------|----------------|---------|-----|
-| `createNode` | type, x, y, parentId | X/Y are pixel positions | Remove x,y; append to parent |
-| `moveNode` | nodeId, parentId, newY | Y is a pixel position | Change to `reorderNode(nodeId, parentId, newIndex)` |
-| `setNodePosition` | nodeId, x, y | X/Y for top-level stacks | **OK** - needed for persistence | NOTE: Stacks in particular should have {x, y} for their grid position.
+| Operation | Status | Resolution |
+|-----------|--------|------------|
+| `createNode` | ✅ Fixed | Removed x,y params; child nodes append to parent. Top-level stacks use `setNodePosition` separately. |
+| `moveNode` | ✅ Fixed | Replaced with `reorderNode(nodeId, parentId, newIndex)` — frontend calculates index from drop position. |
+| `setNodePosition` | ✅ OK | Acceptable for top-level stacks (persistence-worthy visual state). |
 
 ---
 
