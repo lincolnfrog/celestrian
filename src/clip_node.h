@@ -115,7 +115,6 @@ class ClipNode : public AudioNode {
   std::atomic<float> current_max_peak{0.0f};
 
   int preferred_input_channel = 0;
-  mutable bool debug_playback_logged_ = false;  // DEBUG: One-time playback log
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipNode)
 };

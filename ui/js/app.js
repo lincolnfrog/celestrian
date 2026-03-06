@@ -393,11 +393,6 @@ function syncUI(state) {
                         playheadPct = stackDuration > 0 ? (masterPos % stackDuration) / stackDuration : 0;
                     }
 
-                    // DEBUG: Log playhead calculation (throttled)
-                    if (Date.now() % 1000 < 50) {
-                        log(`[SyncUI] Playhead: masterPos=${masterPos}, loopStart=${loopStart}, loopEnd=${loopEnd}, loopLength=${loopLength}, stackDuration=${stackDuration}, pct=${playheadPct}`);
-                    }
-
                     playhead.style.left = `${playheadPct * 100}%`;
                     playhead.style.display = 'block';
                 } else if (playhead) {
@@ -943,8 +938,7 @@ function syncUI(state) {
                 const clipWidth = (node.duration / effectiveQ) * baseWidth;
                 const isOneShot = node.duration < effectiveQ;
 
-                // CRITICAL DEBUG: Log the clip details
-                log(`[Ghost] Clip ${node.id}: duration=${node.duration}, effectiveQ=${effectiveQ}, clipWidth=${clipWidth}, timelineWidth=${stackTimelineWidth}, willDrawGhosts=${clipWidth < stackTimelineWidth - 5}`);
+
 
                 // One-shots don't get ghosts
                 if (isOneShot) {
@@ -952,7 +946,7 @@ function syncUI(state) {
                     return;
                 }
 
-                log(`[Ghost] Rendering ghosts for ${node.id} in stack ${stack.id}`);
+
 
                 // Stack children use relative positioning; ghosts need absolute positioning
                 // Stack wrapper padding (12px) + stack children padding (32px) + borders (2px) = 46px

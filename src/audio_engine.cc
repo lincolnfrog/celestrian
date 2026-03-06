@@ -301,13 +301,6 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     }
     pc.solo_node_uuid = soloed_node_uuid;
 
-    static int log_count = 0;
-    if (++log_count % 100 == 0) {
-      juce::Logger::writeToLog(
-          "AudioEngine: Processing " + juce::String(num_samples) +
-          " samples, Inputs: " + juce::String(num_input_channels));
-    }
-
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished
     // recording.

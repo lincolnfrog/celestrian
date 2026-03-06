@@ -138,16 +138,6 @@ void StackNode::process(const float *const *input_channels,
         }
       }
 
-      // DEBUG: Log internal transport state (throttled)
-      static int log_counter = 0;
-      if (++log_counter % 1000 == 0) {
-        juce::Logger::writeToLog(
-            "StackNode [" + node_name + "] COLLAPSED: internal_transport=" +
-            juce::String(current_internal) +
-            ", loop=" + juce::String(stack_loop_start) + "->" +
-            juce::String(stack_loop_end) +
-            ", child_pos=" + juce::String(child_master_pos));
-      }
     } else {
       // No valid loop region - pass through global transport
       child_master_pos = context.master_pos;

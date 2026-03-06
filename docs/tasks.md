@@ -13,11 +13,11 @@ These items address dead code, abstraction violations, and debug artifacts that 
 ### Dead Code Removal
 - [x] **Remove `BoxNode` class** — `box_node.h` / `box_node.cc` are a vestigial duplicate of `StackNode`. The rename from `BoxNode` → `StackNode` was done but the old files were never deleted. `NodeType::Unknown` enum value also refers to a removed `Box` type in `audio_node.h`.
 - [x] **Remove `NodeType::Box` reference** — `box_node.h` still uses `NodeType::Box` but `audio_node.h` enum doesn't have it (it has `Clip, Stack, Unknown`). Dead code should be deleted and CMakeLists updated.
-- [ ] **Clean up debug logging** — Multiple `DEBUG` markers in production code:
-  - `clip_node.cc` L163, L339-343: `PLAYBACK DEBUG` and `eff_pos` debug strings
-  - `clip_node.h` L118: `debug_playback_logged_` field
-  - `stack_node.cc` L141: `DEBUG: Log internal transport state`
-  - `app.js`: throttled `[SyncUI]` debug log (L397-399, L433)
+- [x] **Clean up debug logging** — Multiple `DEBUG` markers in production code:
+- [x] `clip_node.cc`: Multiple DEBUG/verbose logs (7 calls removed, `debug_playback_logged_` member removed from header)
+- [x] `stack_node.cc`: Throttled collapsed-transport debug log (audio thread noise)
+- [x] `audio_engine.cc`: Throttled "Processing N samples" log every 100 blocks
+- [x] `app.js`: Throttled `[SyncUI]` playhead debug log + per-frame ghost debug logs
 
 ### API Abstraction Violations (from `docs/ui.md`)
 - [x] **Refactor `moveNode` → `reorderNode`** — Already done in prior work. `reorderNode(nodeId, parentId, index)` is the active API.

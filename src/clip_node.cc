@@ -22,14 +22,6 @@ juce::var ClipNode::getMetadata() const {
   obj->setProperty("isAwaitingStop", (bool)is_awaiting_stop.load());
   obj->setProperty("isPlaying", (bool)is_playing.load());
 
-  // Debug: Log awaiting stop state when true
-  if (is_awaiting_stop.load()) {
-    juce::Logger::writeToLog(
-        "  [State] isAwaitingStop=TRUE, awaiting_stop_at=" +
-        juce::String(awaiting_stop_at.load()) +
-        ", current write_position=" + juce::String(write_position.load()));
-  }
-
   int64_t Q = getEffectiveQuantum();
   if (Q > 0 && is_node_recording.load()) {
     obj->setProperty("recordingStartPhase",
@@ -159,12 +151,6 @@ void ClipNode::process(const float *const *input_channels,
             offset_in_loop = context_loop;  // Next cycle
           }
           next_q_master = loop_base + offset_in_loop;
-          juce::Logger::writeToLog(
-              "  DEBUG: eff_pos=" + juce::String(effective_pos) +
-              ", vis_q_idx=" + juce::String(visual_q_index) +
-              ", next_vis_q=" + juce::String(next_visual_q) +
-              ", pb_offset=" + juce::String(playback_offset) +
-              ", next_q=" + juce::String(next_q_master));
         }
 
         // Calculate what the effective_pos will be at that Q boundary
@@ -178,12 +164,6 @@ void ClipNode::process(const float *const *input_channels,
         anchor_phase_samples.store(future_effective_pos % Q);
         // Store full effective_pos for unified launch_point calculation
         recording_start_phase.store(future_effective_pos);
-        juce::Logger::writeToLog(
-            "  RECORDING_START: next_q=" + juce::String(next_q_master) +
-            ", pb_offset2=" + juce::String(playback_offset2) +
-            ", context=" + juce::String(context_loop) +
-            ", future_eff_pos=" + juce::String(future_effective_pos) +
-            ", start_phase_stored=" + juce::String(future_effective_pos));
 
         // slot = which Q slot visually
         // Key insight: slot is VISUAL position, not audio phase position
@@ -199,13 +179,6 @@ void ClipNode::process(const float *const *input_channels,
           slot = (next_q_master % context_loop) / Q;
         }
         x_pos.store(base_x + slot * base_width);
-
-        juce::Logger::writeToLog(
-            "  → Waiting for Q: master_pos=" + juce::String(compensated_pos) +
-            ", next_q=" + juce::String(next_q_master) +
-            ", context=" + juce::String(context_loop) +
-            ", eff_pos=" + juce::String(future_effective_pos) + ", slot=" +
-            juce::String(slot) + ", x_pos=" + juce::String(x_pos.load()));
 
         // If already at boundary, start immediately
         if (compensated_pos >= next_q_master ||
@@ -335,17 +308,6 @@ void ClipNode::process(const float *const *input_channels,
       // launch_point is calculated at commit so that effective_pos starts at 0
       int64_t launch = launch_point_samples.load();
       int64_t offset = launch;  // Use launch directly - ensures loop continuity
-
-      // DEBUG: Log first playback frame for this clip only
-      if (!debug_playback_logged_) {
-        debug_playback_logged_ = true;
-        juce::Logger::writeToLog(
-            "PLAYBACK DEBUG [" + getName() +
-            "]: master=" + juce::String(context.master_pos) +
-            ", launch=" + juce::String(launch) + ", dur=" + juce::String(dur) +
-            ", effective_pos=" +
-            juce::String((context.master_pos + offset) % dur));
-      }
 
       for (int i = 0; i < context.num_samples; ++i) {
         // Calculate effective position with launch offset
@@ -627,12 +589,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
       // Quantize ideal anchor to Q
       int64_t offset_units = ideal_anchor / Q;
       x_pos.store(offset_units * 200.0);
-      juce::Logger::writeToLog("ClipNode COMMIT x_pos: Q=" + juce::String(Q) +
-                               ", context_loop=" + juce::String(context_loop) +
-                               ", trigger_pos=" + juce::String(trigger_pos) +
-                               ", ideal_anchor=" + juce::String(ideal_anchor) +
-                               ", offset_units=" + juce::String(offset_units) +
-                               ", x_pos=" + juce::String(x_pos.load()));
+
     } else {
       x_pos.store(0.0);
     }
