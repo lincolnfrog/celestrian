@@ -22,6 +22,7 @@ if (useMock) {
         window.loadScenario = mockBackend.loadScenario;
         window.setMasterPos = mockBackend.setMasterPos;
         window.setIsPlaying = mockBackend.setIsPlaying;
+        window.callNative = mockBackend.callNative;
 
         console.log('[App] Using Loaded Mock backend');
     }

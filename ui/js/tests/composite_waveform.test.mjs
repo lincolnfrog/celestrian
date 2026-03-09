@@ -1,106 +1,224 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildCacheKey, generateCompositeWaveform } from '../composite_waveform.js';
 
-// Mock canvas context for testing
-function createMockCanvas(width = 200, height = 60) {
-    const fillRects = [];
-    return {
-        width,
-        height,
-        clientWidth: width,
-        clientHeight: height,
-        offsetWidth: width,
-        offsetHeight: height,
-        getContext: () => ({
-            fillStyle: '',
-            clearRect: () => { },
-            fillRect: (x, y, w, h) => {
-                fillRects.push({ x, y, w, h, fillStyle: mockCanvas.getContext().fillStyle });
-            }
-        }),
-        _fillRects: fillRects
-    };
-}
+// --- buildCacheKey tests ---
 
-// Import the function (we'll test it directly)
-// Note: In a real test environment, we'd mock the imports properly
-// For now, we test the core logic
-
-test('Composite Waveform Generation', async (t) => {
-    await t.test('should generate composite from children peaks using max', () => {
-        // Core algorithm test - same logic as in app.js
-        const childPeaksArrays = [
-            [0.1, 0.5, 0.3, 0.2],
-            [0.4, 0.2, 0.6, 0.1],
-            [0.2, 0.3, 0.1, 0.8]
-        ];
-
-        // Find max length and mix peaks (taking max at each position)
-        const maxLen = Math.max(...childPeaksArrays.map(p => p.length));
-        const waveformData = new Array(maxLen).fill(0);
-        for (let i = 0; i < maxLen; i++) {
-            for (const peaks of childPeaksArrays) {
-                if (peaks[i] !== undefined && peaks[i] > waveformData[i]) {
-                    waveformData[i] = peaks[i];
-                }
-            }
-        }
-
-        // Should take max at each position
-        assert.deepEqual(waveformData, [0.4, 0.5, 0.6, 0.8]);
+test('buildCacheKey', async (t) => {
+    await t.test('produces deterministic key for same input', () => {
+        const stack = {
+            loopStart: 0,
+            loopEnd: 176400,
+            nodes: [
+                { id: 'clip-1', type: 'clip', duration: 44100, x: 0, loopStart: 0, loopEnd: 44100, launchPoint: 0 },
+                { id: 'clip-2', type: 'clip', duration: 176400, x: 0, loopStart: 0, loopEnd: 176400, launchPoint: 0 }
+            ]
+        };
+        const key1 = buildCacheKey(stack, 400);
+        const key2 = buildCacheKey(stack, 400);
+        assert.equal(key1, key2, 'Same input should produce same key');
     });
 
-    await t.test('should handle empty children array', () => {
-        const childPeaksArrays = [];
-
-        if (childPeaksArrays.length === 0) {
-            // No composite generated
-            assert.equal(childPeaksArrays.length, 0);
-        }
+    await t.test('different targetPeaks → different key', () => {
+        const stack = {
+            loopStart: 0, loopEnd: 176400,
+            nodes: [{ id: 'clip-1', type: 'clip', duration: 44100 }]
+        };
+        const key1 = buildCacheKey(stack, 400);
+        const key2 = buildCacheKey(stack, 800);
+        assert.notEqual(key1, key2);
     });
 
-    await t.test('should handle varying length peak arrays', () => {
-        const childPeaksArrays = [
-            [0.1, 0.5],
-            [0.4, 0.2, 0.6, 0.1, 0.9]
-        ];
+    await t.test('different loopStart → different key', () => {
+        const stack1 = { loopStart: 0, loopEnd: 176400, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        const stack2 = { loopStart: 44100, loopEnd: 176400, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    });
 
-        const maxLen = Math.max(...childPeaksArrays.map(p => p.length));
-        const waveformData = new Array(maxLen).fill(0);
-        for (let i = 0; i < maxLen; i++) {
-            for (const peaks of childPeaksArrays) {
-                if (peaks[i] !== undefined && peaks[i] > waveformData[i]) {
-                    waveformData[i] = peaks[i];
-                }
-            }
-        }
+    await t.test('different loopEnd → different key', () => {
+        const stack1 = { loopStart: 0, loopEnd: 176400, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        const stack2 = { loopStart: 0, loopEnd: 88200, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    });
 
-        // Shorter array contributes only to first 2 positions
-        assert.equal(waveformData.length, 5);
-        assert.equal(waveformData[0], 0.4); // max(0.1, 0.4)
-        assert.equal(waveformData[1], 0.5); // max(0.5, 0.2)
-        assert.equal(waveformData[2], 0.6); // only from second array
-        assert.equal(waveformData[4], 0.9); // only from second array
+    await t.test('different child durations → different key', () => {
+        const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: 88200 }] };
+        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    });
+
+    await t.test('different child IDs → different key', () => {
+        const stack1 = { nodes: [{ id: 'clip-a', type: 'clip', duration: 44100 }] };
+        const stack2 = { nodes: [{ id: 'clip-b', type: 'clip', duration: 44100 }] };
+        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    });
+
+    await t.test('extra child → different key', () => {
+        const stack1 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }] };
+        const stack2 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }, { id: 'c2', type: 'clip', duration: 88200 }] };
+        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    });
+
+    await t.test('skips non-clip children', () => {
+        const stack1 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }] };
+        const stack2 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }, { id: 's1', type: 'stack', duration: 88200 }] };
+        assert.equal(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400), 'Non-clip children should be ignored');
+    });
+
+    await t.test('handles empty nodes array', () => {
+        const stack = { nodes: [] };
+        const key = buildCacheKey(stack, 400);
+        assert.ok(typeof key === 'string');
+    });
+
+    await t.test('handles missing nodes', () => {
+        const stack = {};
+        const key = buildCacheKey(stack, 400);
+        assert.ok(typeof key === 'string');
     });
 });
 
-test('Composite Styling', async (t) => {
-    await t.test('composite flag should affect colors', () => {
-        // Test that isComposite=true uses different colors
-        // These are the expected colors from canvas_renderer.js
-        const normalBg = 'rgba(30, 41, 59, 1)';
-        const compositeBg = 'rgba(88, 28, 135, 0.6)';
-        const normalBar = 'rgb(0, 255, 255)';
-        const compositeBar = 'rgb(192, 132, 252)';
+// --- generateCompositeWaveform tests ---
 
-        // Verify they are different
-        assert.notEqual(normalBg, compositeBg, 'Background colors should differ');
-        assert.notEqual(normalBar, compositeBar, 'Bar colors should differ');
+test('generateCompositeWaveform', async (t) => {
+    const makeStack = (nodes) => ({
+        id: 'stack-1',
+        loopStart: 0,
+        loopEnd: 176400,
+        nodes
     });
 
-    await t.test('composite waveform should render with non-empty peaks', () => {
-        // If peaks exist, bars should be drawn
-        const peaks = [0.1, 0.5, 0.3];
-        assert.ok(peaks.length > 0, 'Peaks should not be empty for rendering');
+    await t.test('returns backend waveform when available', () => {
+        const stack = { ...makeStack([]), waveform: [0.1, 0.2, 0.3] };
+        const cache = new Map();
+        const result = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks: new Map(), cache
+        });
+        assert.deepEqual(result, [0.1, 0.2, 0.3]);
+    });
+
+    await t.test('returns empty array for stack with no children', () => {
+        const stack = { id: 'stack-1' };
+        const cache = new Map();
+        const result = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks: new Map(), cache
+        });
+        assert.deepEqual(result, []);
+    });
+
+    await t.test('generates peaks from child livePeaks', () => {
+        const stack = makeStack([
+            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+        ]);
+        const livePeaks = new Map([['clip-1', [0.5, 0.8, 0.3]]]);
+        const cache = new Map();
+        const result = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+        assert.ok(result.length > 0, 'Should produce peaks');
+        assert.ok(result.some(v => v > 0), 'Should have non-zero values');
+    });
+
+    await t.test('caches result and returns cached on second call', () => {
+        const stack = makeStack([
+            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+        ]);
+        const livePeaks = new Map([['clip-1', [0.5, 0.8, 0.3]]]);
+        const cache = new Map();
+
+        const result1 = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+
+        // Cache should have an entry
+        assert.ok(cache.has('stack-1'), 'Cache should contain entry');
+        const cachedEntry = cache.get('stack-1');
+        assert.ok(cachedEntry.key, 'Cache entry should have key');
+        assert.ok(cachedEntry.peaks, 'Cache entry should have peaks');
+
+        // Second call should return cached result (same reference)
+        const result2 = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+        assert.equal(result1, result2, 'Should return exact same array reference (cache hit)');
+    });
+
+    await t.test('invalidates cache when child duration changes', () => {
+        const stack = makeStack([
+            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+        ]);
+        const livePeaks = new Map([['clip-1', [0.5, 0.8, 0.3]]]);
+        const cache = new Map();
+
+        const result1 = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+
+        // Change child duration
+        stack.nodes[0].duration = 88200;
+
+        const result2 = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+
+        assert.notEqual(result1, result2, 'Should be different array (cache miss)');
+    });
+
+    await t.test('invalidates cache when loop points change', () => {
+        const stack = makeStack([
+            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+        ]);
+        const livePeaks = new Map([['clip-1', [0.5, 0.8]]]);
+        const cache = new Map();
+
+        const result1 = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+
+        // Change loop points
+        stack.loopEnd = 88200;
+
+        const result2 = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+
+        assert.notEqual(result1, result2, 'Loop point change should invalidate cache');
+    });
+
+    await t.test('invalidates cache when child is added', () => {
+        const stack = makeStack([
+            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+        ]);
+        const livePeaks = new Map([
+            ['clip-1', [0.5, 0.8]],
+            ['clip-2', [0.3, 0.6]]
+        ]);
+        const cache = new Map();
+
+        generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+        const key1 = cache.get('stack-1').key;
+
+        // Add a child
+        stack.nodes.push({ id: 'clip-2', type: 'clip', duration: 88200, x: 0 });
+
+        generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 200, livePeaks, cache
+        });
+        const key2 = cache.get('stack-1').key;
+
+        assert.notEqual(key1, key2, 'Adding child should invalidate cache');
     });
 });

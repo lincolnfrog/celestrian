@@ -437,17 +437,18 @@ test.describe('Loop-on-Collapse Visual Feedback', () => {
 
 test.describe('Collapsed Stack Behavior', () => {
 
-    // TODO: This test has timing issues with syncUI. Core fix is in place:
-    // - Ghost rendering skips collapsed stacks in app.js line ~870
-    test.skip('collapsed stack does not show ghost clips', async ({ page }) => {
+    // Ghost rendering skips collapsed stacks in ghost_renderer.js
+    test('collapsed stack does not show ghost clips', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
         await page.click('button:has-text("1Q + 4Q (LCM=4)")');
         await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
 
-        // Collapse the stack via mock backend API
+        // Collapse the stack via direct handler invocation (test controls panel overlays the expand handle)
+        const stackWrapper = page.locator('.stack-wrapper').first();
         await page.evaluate(() => {
-            window.callNative('toggleStackExpand', 'stack-1');
+            const handle = document.querySelector('.stack-expand-handle');
+            if (handle && handle.onclick) handle.onclick(new Event('click'));
         });
         await page.waitForTimeout(300);
 
@@ -467,9 +468,8 @@ test.describe('Collapsed Stack Behavior', () => {
 
 test.describe('Collapsed Stack Loop Handle Snapping', () => {
 
-    // TODO: These tests require mock backend syncUI to properly respond to toggleStackExpand
-    // Core implementation is verified working - these tests will pass once mock backend is fixed
-    test.skip('collapsed stack loop handles are interactive', async ({ page }) => {
+    // Loop handles should be interactive when collapsed (pointer-events: auto)
+    test('collapsed stack loop handles are interactive', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
         await page.click('button:has-text("1Q + 4Q (LCM=4)")');
@@ -477,9 +477,12 @@ test.describe('Collapsed Stack Loop Handle Snapping', () => {
 
         const stackWrapper = page.locator('.stack-wrapper').first();
 
-        // Collapse the stack by clicking the expand handle
-        await stackWrapper.locator('.stack-expand-handle').click({ force: true });
-        await page.waitForTimeout(200);
+        // Collapse the stack via direct handler invocation (test controls panel overlays the expand handle)
+        await page.evaluate(() => {
+            const handle = document.querySelector('.stack-expand-handle');
+            if (handle && handle.onclick) handle.onclick(new Event('click'));
+        });
+        await page.waitForTimeout(300);
 
         // Verify stack is collapsed
         const isCollapsed = await stackWrapper.evaluate(el => el.classList.contains('stack-collapsed'));
@@ -494,6 +497,8 @@ test.describe('Collapsed Stack Loop Handle Snapping', () => {
         expect(pointerEvents).not.toBe('none');
     });
 
+    // TODO: Loop handle drag visual feedback (ghost/marker) not yet working for collapsed stacks.
+    // The mousedown handler fires but ghost/marker display logic needs collapsed-state support.
     test.skip('collapsed stack shows visual feedback elements during drag', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
@@ -502,9 +507,12 @@ test.describe('Collapsed Stack Loop Handle Snapping', () => {
 
         const stackWrapper = page.locator('.stack-wrapper').first();
 
-        // Collapse the stack
-        await stackWrapper.locator('.stack-expand-handle').click({ force: true });
-        await page.waitForTimeout(200);
+        // Collapse the stack via direct handler invocation
+        await page.evaluate(() => {
+            const handle = document.querySelector('.stack-expand-handle');
+            if (handle && handle.onclick) handle.onclick(new Event('click'));
+        });
+        await page.waitForTimeout(300);
 
         // Verify collapsed
         const isCollapsed = await stackWrapper.evaluate(el => el.classList.contains('stack-collapsed'));
@@ -545,6 +553,7 @@ test.describe('Collapsed Stack Loop Handle Snapping', () => {
         expect(markerVisible).toBe(true);
     });
 
+    // TODO: Quantum grid lines during drag not yet implemented for collapsed stack loop handles.
     test.skip('collapsed stack shows quantum grid lines during drag', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
@@ -553,9 +562,12 @@ test.describe('Collapsed Stack Loop Handle Snapping', () => {
 
         const stackWrapper = page.locator('.stack-wrapper').first();
 
-        // Collapse the stack
-        await stackWrapper.locator('.stack-expand-handle').click({ force: true });
-        await page.waitForTimeout(200);
+        // Collapse the stack via direct handler invocation
+        await page.evaluate(() => {
+            const handle = document.querySelector('.stack-expand-handle');
+            if (handle && handle.onclick) handle.onclick(new Event('click'));
+        });
+        await page.waitForTimeout(300);
 
         const headerWaveform = stackWrapper.locator('.stack-header-waveform');
         const loopHandleEnd = headerWaveform.locator('.loop-handle-end');
