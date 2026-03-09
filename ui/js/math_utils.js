@@ -4,6 +4,16 @@
  */
 
 /**
+ * Greatest common divisor.
+ */
+export const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
+
+/**
+ * Least common multiple. Returns the larger value if either is zero.
+ */
+export const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a / gcd(a, b)) * b);
+
+/**
  * Calculates the visual X-offset for a clip based on its phase and context.
  * 
  * @param {Object} params

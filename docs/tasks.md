@@ -24,8 +24,8 @@ These items address dead code, abstraction violations, and debug artifacts that 
 - [x] **Clean up `createNode` params** — Removed x/y parameters. Child nodes just append to parent; top-level stacks use `setNodePosition`.
 
 ### Code Quality
-- [ ] **`app.js` is 1666 lines** — Consider splitting into modules: `syncUI` rendering, clip state management, stack rendering, waveform caching, ghost rendering. Currently a monolith that's hard to navigate and test.
-- [ ] **Duplicate LCM/GCD logic** — `gcd`/`lcm` are defined inline in `app.js` `syncUI()` and also exist in `math_utils.js` and `stack_logic.js`. Consolidate to a single import.
+- [ ] **`app.js` is 1660 lines** — Consider further splitting into modules: `syncUI` rendering, clip state management, stack rendering, waveform caching, ghost rendering. Duplicate LCM logic has been consolidated.
+- [x] **Duplicate LCM/GCD logic** — `gcd`/`lcm` consolidated into `math_utils.js`. Removed 2 inline copies from `app.js`.
 
 ---
 
@@ -44,9 +44,15 @@ These items address dead code, abstraction violations, and debug artifacts that 
 - [ ] **Loop handles fade when expanded**
 - [ ] **Recording inside expanded stack works normally**
 - [ ] **Collapse stack → playhead constrained to loop region**
+- [ ] **Un-skip 4 collapsed-stack Playwright tests** (`stack_loop_ui.spec.js`):
+  - `collapsed stack does not show ghost clips`
+  - `collapsed stack loop handles are interactive`
+  - `collapsed stack shows visual feedback elements during drag`
+  - `collapsed stack shows quantum grid lines during drag`
 
 ### JS Unit Tests
 - [ ] **Audit test health** — Recent conversation history mentions `ghost_lcm_boundary.test.mjs` and `ghost_rendering.test.js` failures. Ensure all 12 unit tests and 11 E2E tests pass clean.
+- [ ] **Fix `stack_loop_repro.spec.js` failure** — Pre-existing: mock backend `setMasterPos` doesn't simulate collapsed-stack internal transport, so playhead shows 83.3% (global) instead of ~16.6% (wrapped).
 - [ ] **Add composite waveform cache invalidation tests** — Cache key logic in `app.js` is complex; no dedicated test coverage exists.
 
 ---

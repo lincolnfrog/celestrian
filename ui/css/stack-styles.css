@@ -292,6 +292,8 @@
 /* === Stack Header Waveform (Always Visible) === */
 .stack-header-waveform {
     position: relative;
+    z-index: 1;
+    /* Must be below .stack-expand-handle (z-index: 100) */
     width: auto;
     /* Width set dynamically by JS based on quantum */
     min-width: 200px;
