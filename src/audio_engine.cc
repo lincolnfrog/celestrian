@@ -4,14 +4,17 @@
 
 #include "clip_node.h"
 #include "stack_node.h"
+#include "timing.h"
 
 AudioEngine::AudioEngine() {
-  init(1, 2);
-
   // Start with an empty root stack
   root_node = std::make_unique<celestrian::StackNode>("SessionRoot");
   focused_node = root_node.get();
+}
 
+void AudioEngine::initialiseAudioDevice() { init(1, 2); }
+
+void AudioEngine::createDefaultSession() {
   // Create a default stack with one clip ready for recording
   createNode("stack");
   if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
@@ -225,6 +228,67 @@ void AudioEngine::reorderNode(const juce::String &node_uuid,
       }
     }
   }
+}
+
+juce::String AudioEngine::combineNodes(const juce::String &dragged_uuid,
+                                       const juce::String &target_uuid) {
+  using celestrian::StackNode;
+
+  auto *dragged = findNodeByUuid(root_node.get(), dragged_uuid);
+  auto *target = findNodeByUuid(root_node.get(), target_uuid);
+  if (!dragged || !target || dragged == target) {
+    juce::Logger::writeToLog("combineNodes: Node not found or identical (" +
+                             dragged_uuid + ", " + target_uuid + ")");
+    return {};
+  }
+
+  auto *dragged_parent = dynamic_cast<StackNode *>(dragged->getParent());
+  auto *target_parent = dynamic_cast<StackNode *>(target->getParent());
+  if (!dragged_parent || !target_parent) {
+    juce::Logger::writeToLog("combineNodes: Node has no parent stack");
+    return {};
+  }
+
+  // Detach the dragged node from its parent.
+  std::unique_ptr<celestrian::AudioNode> dragged_owned;
+  for (int i = 0; i < dragged_parent->getNumChildren(); ++i) {
+    if (dragged_parent->getChild(i) == dragged) {
+      dragged_owned = dragged_parent->removeChild(i);
+      break;
+    }
+  }
+  if (!dragged_owned) return {};
+
+  // Find the target's index AFTER the dragged removal (it may have shifted
+  // if both nodes share a parent), then detach the target too.
+  int target_index = -1;
+  for (int i = 0; i < target_parent->getNumChildren(); ++i) {
+    if (target_parent->getChild(i) == target) {
+      target_index = i;
+      break;
+    }
+  }
+  if (target_index < 0) {
+    // Should not happen; restore the dragged node rather than losing it.
+    dragged_parent->addChild(std::move(dragged_owned));
+    return {};
+  }
+  auto target_owned = target_parent->removeChild(target_index);
+
+  // Build the combined stack at the target's position, target first
+  // (mirrors the mock backend semantics used by drag & drop).
+  auto new_stack = std::make_unique<StackNode>("Combined Stack");
+  new_stack->x_pos.store(target_owned->x_pos.load());
+  new_stack->y_pos.store(target_owned->y_pos.load());
+  new_stack->addChild(std::move(target_owned));
+  new_stack->addChild(std::move(dragged_owned));
+
+  juce::String new_uuid = new_stack->getUuid();
+  target_parent->insertChildAt(std::move(new_stack), target_index);
+
+  juce::Logger::writeToLog("combineNodes: Combined " + dragged_uuid + " + " +
+                           target_uuid + " into stack " + new_uuid);
+  return new_uuid;
 }
 
 void AudioEngine::setNodePosition(const juce::String &node_uuid, double x,
@@ -474,22 +538,6 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
 
 // --- LCM Timeline Helpers ---
 
-namespace {
-int64_t gcd(int64_t a, int64_t b) {
-  while (b != 0) {
-    int64_t t = b;
-    b = a % b;
-    a = t;
-  }
-  return a;
-}
-
-int64_t lcm(int64_t a, int64_t b) {
-  if (a == 0 || b == 0) return std::max(a, b);
-  return (a / gcd(a, b)) * b;
-}
-}  // namespace
-
 int64_t AudioEngine::calculateTimelineLength() const {
   if (!focused_node) {
     return 44100;  // Default 1 second at 44.1kHz
@@ -512,7 +560,7 @@ int64_t AudioEngine::calculateTimelineLength() const {
       // It's a clip - use its duration for LCM
       int64_t dur = node->getIntrinsicDuration();
       if (dur > 0) {
-        current_lcm = lcm(current_lcm, dur);
+        current_lcm = celestrian::timing::lcm(current_lcm, dur);
       }
     }
     return current_lcm;

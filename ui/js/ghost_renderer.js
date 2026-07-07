@@ -7,36 +7,12 @@
  * ghosts fill every position except where the main clip sits.
  */
 
-import { lcm } from './math_utils.js';
 import { drawWaveform } from './canvas_renderer.js';
+import { calculateStackLCM, computeGhostTiles, timelineExtentPx } from './timeline_model.js';
 
-/**
- * Calculate LCM for a stack's children (recursive for nested stacks).
- *
- * @param {Array} stackNodes - The stack's child node list
- * @param {number} effectiveQ - The global quantum
- * @returns {number} The LCM duration for this stack
- */
-export function calculateStackLCM(stackNodes, effectiveQ) {
-    let stackLCM = effectiveQ;
-    let maxDuration = 0;
-
-    (stackNodes || []).forEach(child => {
-        if (child.isRecording) return; // Skip recording clips
-
-        if (child.type === 'clip' && child.duration > 0) {
-            stackLCM = lcm(Math.round(stackLCM), Math.round(child.duration));
-            maxDuration = Math.max(maxDuration, child.duration);
-        } else if (child.type === 'stack' && child.nodes) {
-            // Nested stack: its internal LCM becomes its composite duration
-            const childLCM = calculateStackLCM(child.nodes, effectiveQ);
-            stackLCM = lcm(Math.round(stackLCM), Math.round(childLCM));
-            maxDuration = Math.max(maxDuration, childLCM);
-        }
-    });
-
-    return Math.max(stackLCM, maxDuration);
-}
+// Re-exported for existing importers; the implementation lives in
+// timeline_model.js (single source of truth for timing math).
+export { calculateStackLCM };
 
 /**
  * Render ghost repetitions for all stacks and top-level clips.
@@ -72,23 +48,14 @@ export function renderGhosts({
     // Process each stack independently
     stacks.forEach(stack => {
         const stackLCM = calculateStackLCM(stack.nodes, effectiveQ);
-        const stableQ = Math.round(effectiveQ);
-        const stackTimelineQuantums = Math.max(1, Math.ceil(stackLCM / stableQ));
-        let stackTimelineWidth = stackTimelineQuantums * baseWidth;
 
-        // During recording, extend timeline in LCM-sized chunks when recording crosses boundary
-        // Per docs/recording.md: "ghosts only expand when recording crosses the committed LCM boundary"
+        // During recording, the timeline extends in LCM-sized chunks when the
+        // recording crosses the committed LCM boundary (docs/recording.md).
         const recordingChild = (stack.nodes || []).find(n => n.isRecording && n.duration > 0);
-        if (recordingChild) {
-            const recordingWidthPx = (recordingChild.duration / effectiveQ) * baseWidth;
-            // Calculate how many LCM chunks the recording has crossed
-            const lcmWidthPx = (stackLCM / effectiveQ) * baseWidth;
-            const lcmChunksCrossed = Math.floor(recordingWidthPx / lcmWidthPx);
-            // Timeline extends by that many LCM chunks beyond the committed LCM
-            const requiredWidth = (lcmChunksCrossed + 1) * lcmWidthPx;
-            stackTimelineWidth = Math.max(stackTimelineWidth, requiredWidth);
-            log(`[Ghost] Recording: ${recordingWidthPx.toFixed(0)}px crossed ${lcmChunksCrossed} LCM boundaries, timeline=${stackTimelineWidth}px`);
-        }
+        const stackTimelineWidth = timelineExtentPx({
+            stackLCM, effectiveQ, baseWidth,
+            recordingDuration: recordingChild ? recordingChild.duration : 0
+        });
 
         log(`[Ghost] Stack ${stack.id}: LCM=${stackLCM}, timelineWidth=${stackTimelineWidth}`);
 
@@ -142,38 +109,17 @@ export function renderGhosts({
             // Clips inside stacks use node.x as their anchor offset
             // This is the visual x-position set by C++ based on recording start phase
             const clipStartX = node.x || 0;
-            const clipEndX = clipStartX + clipWidth;
 
-            // UNIFIED GHOST RENDERING: Fill entire timeline with ghosts
-            // except where the main clip is positioned
-            // This handles both left-fill (before anchor) and right-fill (after anchor)
-            let ghostCount = 0;
-            let ghostX = 0;
+            // UNIFIED GHOST RENDERING: fill the timeline with ghost tiles,
+            // skipping the region occupied by the main clip. Tile math lives
+            // in timeline_model.js.
+            const tiles = computeGhostTiles({
+                clipStartPx: clipStartX,
+                clipWidthPx: clipWidth,
+                timelineWidthPx: stackTimelineWidth
+            });
 
-            while (ghostX < stackTimelineWidth - 5 && ghostCount < 100) {
-                // Skip if this position overlaps with the MAIN clip
-                // (allow small tolerance for floating point)
-                const overlapsMainClip = (ghostX + clipWidth > clipStartX + 1) &&
-                    (ghostX < clipEndX - 1);
-
-                if (overlapsMainClip) {
-                    // Jump past the main clip
-                    ghostX = clipEndX;
-                    continue;
-                }
-
-                // Calculate ghost width (may be clipped at timeline end)
-                let thisGhostWidth = clipWidth;
-                if (ghostX + clipWidth > stackTimelineWidth) {
-                    thisGhostWidth = stackTimelineWidth - ghostX;
-                }
-
-                // Skip tiny ghosts
-                if (thisGhostWidth < 5) {
-                    ghostX += clipWidth;
-                    continue;
-                }
-
+            tiles.forEach(({ x: ghostX, width: thisGhostWidth }) => {
                 const ghost = document.createElement('div');
                 ghost.className = 'ghost-clip';
                 ghost.style.position = 'absolute';
@@ -222,9 +168,7 @@ export function renderGhosts({
 
                 ghost.appendChild(ghostPlayhead);
                 nodeLayer.appendChild(ghost);
-                ghostX += clipWidth;
-                ghostCount++;
-            }
+            });
         });
     });
 

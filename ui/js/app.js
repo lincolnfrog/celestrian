@@ -40,10 +40,9 @@ if (useMock) {
 
 import { drawWaveform } from './canvas_renderer.js';
 import { Viewport } from './viewport.js';
-import { groupNodesByVisualX, calculateButtonPosition } from './stack_logic.js';
-import { gcd, lcm } from './math_utils.js';
+import { calculateStackLCM, computeEffectiveQuantum, stackPlayheadPercent } from './timeline_model.js';
 import { isDropAnimating, isAnyDragActive } from './drag_drop.js';
-import { renderGhosts, calculateStackLCM } from './ghost_renderer.js';
+import { renderGhosts } from './ghost_renderer.js';
 import { generateCompositeWaveform } from './composite_waveform.js';
 import { createNodeElement } from './node_element.js';
 import { createStackWrapper } from './stack_element.js';
@@ -193,25 +192,9 @@ function syncUI(state) {
     const newNodeIds = nodes.map(n => n.id);
     const uiNodeIds = Array.from(nodeLayer.children).map(c => c.id);
 
-    // Calculate the effective quantum for width scaling (minimum of all reported quantums)
-    // Must include clips inside stacks, not just top-level nodes
-    let effectiveQ = Infinity;
-
-    // Helper to collect all effectiveQuantum values recursively
-    function collectQuantums(nodeList) {
-        (nodeList || []).forEach(n => {
-            if (n.effectiveQuantum > 0 && n.effectiveQuantum < effectiveQ) {
-                effectiveQ = n.effectiveQuantum;
-            }
-            // Also check children (for stacks)
-            if (n.type === 'stack' && n.nodes) {
-                collectQuantums(n.nodes);
-            }
-        });
-    }
-    collectQuantums(nodes);
-
-    if (effectiveQ === Infinity) effectiveQ = 1;
+    // Effective quantum for width scaling (minimum of all reported quantums,
+    // including clips inside stacks) — timeline_model.js
+    const effectiveQ = computeEffectiveQuantum(nodes);
     const baseWidth = 200; // 1 quantum = 200px
 
     let maxY = 0;
@@ -248,18 +231,10 @@ function syncUI(state) {
             const playhead = stackWrapper.querySelector('.stack-playhead');
 
             if (headerWaveform && canvas) {
-                // Calculate LCM of all children to get full stack timeline width
-
-                // Calculate stack LCM from children (same logic as ghost rendering)
-                let stackLCM = effectiveQ;
-                (stack.nodes || []).forEach(child => {
-                    if (child.isRecording) return;
-                    if (child.type === 'clip' && child.duration > 0) {
-                        stackLCM = lcm(Math.round(stackLCM), Math.round(child.duration));
-                    } else if (child.type === 'stack' && child.effectiveQuantum > 0) {
-                        stackLCM = lcm(Math.round(stackLCM), Math.round(child.effectiveQuantum));
-                    }
-                });
+                // LCM of all children = full stack timeline width.
+                // Same calculation the ghost renderer uses (timeline_model.js),
+                // so header width and ghost extent can never disagree.
+                const stackLCM = calculateStackLCM(stack.nodes, effectiveQ);
 
                 // Use calculated LCM for width, not just effectiveQuantum
                 const stackDuration = Math.max(stackLCM, stack.effectiveQuantum || effectiveQ);
@@ -295,31 +270,16 @@ function syncUI(state) {
 
                 // Update playhead position based on masterPos relative to stack loop region
                 // When collapsed, the stack loops within loopStart to loopEnd
+                // (its own internal transport) — math in timeline_model.js.
                 if (playhead && state.isPlaying) {
-                    let masterPos = state.masterPos || 0;
-                    const loopStart = stack.loopStart || 0;
-                    const loopEnd = stack.loopEnd || stackDuration;
-                    const loopLength = loopEnd - loopStart;
-
-                    // DEBUG: Use internal transport if available (fixes loop sync for collapsed stacks)
-                    if (!stack.isExpanded && typeof stack.internalTransport === 'number') {
-                        // When collapsed, the stack runs on its own internal clock
-                        // We construct a synthetic masterPos that aligns with the loop start
-                        masterPos = loopStart + stack.internalTransport;
-                    }
-
-                    // Calculate position within the loop region
-                    let playheadPct;
-                    if (loopLength > 0 && stackDuration > 0) {
-                        // Wrap masterPos within loop region
-                        // For collapsed stacks (using internalTransport), this computes: loopStart + (internal % loopLength)
-                        const posInLoop = loopStart + ((masterPos - loopStart) % loopLength);
-                        // Convert to percentage of full timeline
-                        playheadPct = posInLoop / stackDuration;
-                    } else {
-                        // Fallback: just use full duration
-                        playheadPct = stackDuration > 0 ? (masterPos % stackDuration) / stackDuration : 0;
-                    }
+                    const playheadPct = stackPlayheadPercent({
+                        masterPos: state.masterPos || 0,
+                        internalTransport: stack.internalTransport,
+                        isExpanded: stack.isExpanded,
+                        loopStart: stack.loopStart || 0,
+                        loopEnd: stack.loopEnd || stackDuration,
+                        stackDuration
+                    });
 
                     playhead.style.left = `${playheadPct * 100}%`;
                     playhead.style.display = 'block';
@@ -487,49 +447,6 @@ function syncUI(state) {
         viewport, VISUAL_OFFSET, log
     });
     if (ghostMaxX > maxX) maxX = ghostMaxX;
-
-    // 0. Stability Sort: Ensure anchor selection is identical across polls
-    const sortedNodes = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-
-    /* OLD STACK BUTTON LOGIC - DISABLED (replaced by stack wrappers)
-    // Render Stack (+) buttons: Group nodes by their visual X position
-    const activeStackButtons = new Set();
-    const groups = groupNodesByVisualX(nodes);
-
-    groups.forEach(group => {
-        const { id: stackBtnId, x: stackX, y: maxY } = calculateButtonPosition(group);
-        activeStackButtons.add(stackBtnId);
-
-        let btn = document.getElementById(stackBtnId);
-        if (!btn) {
-            btn = document.createElement('div');
-            btn.id = stackBtnId;
-            btn.className = 'stack-btn';
-            btn.innerText = '+';
-            nodeLayer.appendChild(btn);
-        }
-
-        // Update position only if meaningfully changed to avoid jitter/flicker
-        // Align with left edge of stack (includes VISUAL_OFFSET)
-        const nextLeft = `${stackX + VISUAL_OFFSET}px`;
-        const nextTop = `${maxY + 10}px`;
-        if (btn.style.left !== nextLeft) btn.style.left = nextLeft;
-        if (btn.style.top !== nextTop) btn.style.top = nextTop;
-
-        // Refresh mousedown to capture latest stackX/maxY closure
-        btn.onmousedown = (e) => {
-            e.stopPropagation();
-            createNode('clip');
-        };
-    });
-
-    // Cleanup old stack buttons
-    nodeLayer.querySelectorAll('.stack-btn').forEach(btn => {
-        if (!activeStackButtons.has(btn.id)) {
-            btn.remove();
-        }
-    });
-    */
 
     // Removal check - clean up nodes that no longer exist
     // Skip stack wrappers (they have 'stack-wrapper-' prefix and are managed separately)

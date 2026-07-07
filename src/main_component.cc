@@ -109,6 +109,17 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "combineNodes",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 1)
+                      completion(audio_engine.combineNodes(args[0].toString(),
+                                                           args[1].toString()));
+                    else
+                      completion(juce::String());
+                  })
+              .withNativeFunction(
                   "setNodePosition",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
@@ -204,6 +215,9 @@ MainComponent::MainComponent()
                     }
                     completion(true);
                   })) {
+  audio_engine.initialiseAudioDevice();
+  audio_engine.createDefaultSession();
+
   addAndMakeVisible(web_browser);
 
   web_browser.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());

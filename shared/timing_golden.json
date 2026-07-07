@@ -1,0 +1,42 @@
+{
+  "description": "Golden timing vectors shared by the C++ engine and the JS timeline model. Derived from the worked examples in docs/recording.md. Consumed by tests/timing_golden_tests.cc and ui/js/tests/timeline_model_golden.test.mjs. All values are samples at Q = 44100 (1Q = 1s @ 44.1kHz) unless noted.",
+
+  "lcm_cases": [
+    { "name": "1Q + 4Q -> 4Q", "durations": [44100, 176400], "quantum": 44100, "expected": 176400 },
+    { "name": "1Q + 4Q + 3Q -> 12Q (polyrhythmic)", "durations": [44100, 176400, 132300], "quantum": 44100, "expected": 529200 },
+    { "name": "1Q + 8Q + 3Q -> 24Q (recording.md large LCM)", "durations": [44100, 352800, 132300], "quantum": 44100, "expected": 1058400 },
+    { "name": "1Q + 4Q + 2Q -> 4Q (2Q divides, no expansion)", "durations": [44100, 176400, 88200], "quantum": 44100, "expected": 176400 },
+    { "name": "3Q + 5Q -> 15Q (coprime)", "durations": [132300, 220500], "quantum": 44100, "expected": 661500 },
+    { "name": "empty graph falls back to quantum", "durations": [], "quantum": 44100, "expected": 44100 }
+  ],
+
+  "launch_point_cases": [
+    { "name": "recording.md Example 2: 8Q clip recorded at 2Q -> launch 6Q", "startPhase": 88200, "duration": 352800, "expected": 264600 },
+    { "name": "recorded at 0 -> launch 0", "startPhase": 0, "duration": 176400, "expected": 0 },
+    { "name": "start phase is exact multiple of duration -> launch 0", "startPhase": 176400, "duration": 88200, "expected": 0 },
+    { "name": "3Q start phase, 2Q clip -> launch 1Q", "startPhase": 132300, "duration": 88200, "expected": 44100 }
+  ],
+
+  "playhead_cases": [
+    { "name": "Example 2: at timeline 2Q, clip3 (launch 6Q, dur 8Q) is at 0% (aligned with recording)", "masterPos": 88200, "launchPoint": 264600, "duration": 352800, "expected": 0.0 },
+    { "name": "Example 2: at timeline 0, clip3 is at 75%", "masterPos": 0, "launchPoint": 264600, "duration": 352800, "expected": 0.75 },
+    { "name": "4Q clip at 1Q with no launch offset -> 25%", "masterPos": 44100, "launchPoint": 0, "duration": 176400, "expected": 0.25 }
+  ],
+
+  "stop_boundary_cases": [
+    { "name": "stop mid-2nd quantum -> extends to 2Q", "recordedLength": 50000, "quantum": 44100, "expected": 88200 },
+    { "name": "stop exactly at 4Q -> next boundary is 5Q", "recordedLength": 176400, "quantum": 44100, "expected": 220500 },
+    { "name": "short recording -> smallest subdivision ahead (Q/4)", "recordedLength": 10000, "quantum": 44100, "expected": 11025 },
+    { "name": "very short recording -> Q/8", "recordedLength": 3000, "quantum": 44100, "expected": 5512 },
+    { "name": "exactly Q/2 -> not 'short', extends to 1Q", "recordedLength": 22050, "quantum": 44100, "expected": 44100 }
+  ],
+
+  "snap_cases": [
+    { "name": "1Q + 900 samples -> Late Snap down to 1Q", "recordedLength": 45000, "quantum": 44100, "expectedDuration": 44100, "expectedLoopEnd": 44100, "expectedSnapped": true },
+    { "name": "just under 2Q -> Late Snap up to 2Q", "recordedLength": 88000, "quantum": 44100, "expectedDuration": 88200, "expectedLoopEnd": 88200, "expectedSnapped": true },
+    { "name": "1.5Q -> outside tolerance, raw duration, loop region 1Q", "recordedLength": 66150, "quantum": 44100, "expectedDuration": 66150, "expectedLoopEnd": 44100, "expectedSnapped": false },
+    { "name": "near Q/4 subdivision -> snaps to Q/4", "recordedLength": 10800, "quantum": 44100, "expectedDuration": 11025, "expectedLoopEnd": 11025, "expectedSnapped": true },
+    { "name": "0.68Q -> outside tolerance, loop region defaults to Q/2", "recordedLength": 30000, "quantum": 44100, "expectedDuration": 30000, "expectedLoopEnd": 22050, "expectedSnapped": false },
+    { "name": "4Q + 3600 samples -> Late Snap down to 4Q", "recordedLength": 180000, "quantum": 44100, "expectedDuration": 176400, "expectedLoopEnd": 176400, "expectedSnapped": true }
+  ]
+}

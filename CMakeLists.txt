@@ -42,6 +42,7 @@ target_sources(Celestrian PRIVATE
     src/main_component.cc
     src/audio_engine.h
     src/audio_engine.cc
+    src/timing.h
     src/clip_node.cc
     src/stack_node.cc
 )
@@ -89,6 +90,7 @@ juce_add_console_app(CelestrianTests
 
 target_sources(CelestrianTests PRIVATE
     tests/test_runner.cc
+    tests/timing_golden_tests.cc
     tests/clip_node_tests.cc
     tests/stack_node_tests.cc
     tests/quantum_propagation_tests.cc

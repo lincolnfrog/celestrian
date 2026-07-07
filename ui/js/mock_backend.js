@@ -1,9 +1,19 @@
 /**
  * Mock Backend for Celestrian UI Testing
- * 
- * Simulates the JUCE native bridge without requiring C++ backend.
+ *
+ * Simulates the JUCE native bridge without requiring the C++ backend.
  * Maintains audio node state in memory and provides realistic responses.
+ *
+ * Contract: this backend must implement exactly the methods declared in
+ * `ui/js/protocol.js` (the canonical bridge protocol, also implemented by
+ * src/main_component.cc). Enforced by ui/js/tests/protocol_contract.test.mjs.
+ *
+ * Timing math (quantum snap, launch points, LCM) comes from
+ * `ui/js/timeline_model.js` — the mock holds state and protocol, not math —
+ * so its behavior cannot drift from the UI or the C++ engine.
  */
+
+import { snapCommittedDuration, launchPointFor } from './timeline_model.js';
 
 // In-memory state
 let state = {
@@ -12,45 +22,43 @@ let state = {
     nextId: 1
 };
 
+/**
+ * Handler table for every protocol method. Keys must match
+ * protocol.js BRIDGE_METHOD_NAMES exactly (see protocol_contract.test.mjs).
+ */
+export const handlers = {
+    ping: () => 'pong',
+    togglePlayback: () => togglePlayback(),
+    startRecordingInNode: (id) => startRecordingInNode(id),
+    stopRecordingInNode: (id) => stopRecordingInNode(id),
+    getGraphState: () => getState(),
+    getWaveform: (id, numPeaks) => getWaveform(id, numPeaks),
+    toggleStackExpand: (id) => toggleStackExpand(id),
+    createNode: (type, parentId) => createNode(type, parentId),
+    renameNode: (id, name) => renameNode(id, name),
+    reorderNode: (id, parentId, index) => reorderNode(id, parentId, index),
+    setNodePosition: (id, x, y) => setNodePosition(id, x, y),
+    combineNodes: (draggedId, targetId) => combineNodes(draggedId, targetId),
+    getInputList: () => getInputList(),
+    setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
+    setLoopPoints: (id, start, end) => setLoopPoints(id, start, end),
+    togglePlay: (id) => togglePlay(id),
+    toggleSolo: (id) => toggleSolo(id),
+    toggleMute: (id) => toggleMute(id),
+    nativeLog: (msg) => { console.log('[JS]', msg); return true; },
+    dumpStateToFile: (json) => { console.log('[MockBackend] dumpStateToFile (no-op in mock)'); return true; }
+};
+
 // Polyfill for callNative - simulates the native C++ bridge
 export async function callNative(method, ...args) {
     console.log(`[MockBackend] callNative: ${method}`, args);
 
-    switch (method) {
-        case 'createNode':
-            return createNode(...args);
-        case 'deleteNode':
-            return deleteNode(...args);
-        case 'renameNode':
-            return renameNode(...args);
-        case 'reorderNode':
-            return reorderNode(...args);
-        case 'setNodePosition':
-            return setNodePosition(...args);
-        case 'togglePlay':
-            return togglePlay(...args);
-        case 'toggleSolo':
-            return toggleSolo(...args);
-        case 'toggleMute':
-            return toggleMute(...args);
-        case 'toggleStackExpand':
-            return toggleStackExpand(...args);
-        case 'getInputList':
-            return getInputList();
-        case 'setNodeInput':
-            return setNodeInput(...args);
-        case 'setLoopPoints':
-            return setLoopPoints(...args);
-        case 'startRecordingInNode':
-            return startRecordingInNode(...args);
-        case 'stopRecordingInNode':
-            return stopRecordingInNode(...args);
-        case 'combineNodes':
-            return combineNodes(...args);
-        default:
-            console.warn(`[MockBackend] Unknown method: ${method}`);
-            return null;
+    const handler = handlers[method];
+    if (!handler) {
+        console.warn(`[MockBackend] Unknown method: ${method}`);
+        return null;
     }
+    return handler(...args);
 }
 
 // Polyfill for log - just console.log in browser
@@ -137,9 +145,52 @@ function createNode(type, parentId = null) {
     return node.id;
 }
 
-function deleteNode(id) {
-    removeNodeFromParent(id);
-    console.log('[MockBackend] Deleted node:', id);
+// Mirrors AudioEngine::togglePlayback (transport resets to 0 on stop).
+function togglePlayback() {
+    state.isPlaying = !state.isPlaying;
+    transport.running = state.isPlaying;
+    if (!state.isPlaying) {
+        state.masterPos = 0;
+    }
+    console.log('[MockBackend] togglePlayback →', state.isPlaying);
+    return true;
+}
+
+// Deterministic waveform peaks for a node (no Math.random — stable for tests).
+function getWaveform(id, numPeaks = 100) {
+    const node = findNode(id);
+    if (!node) return [];
+    if (node.type === 'stack') return generateStackWaveform(node, numPeaks);
+    if (!node.duration || node.duration <= 0) return [];
+
+    const peaks = [];
+    for (let i = 0; i < numPeaks; i++) {
+        peaks.push(0.5 + 0.4 * Math.sin((i / numPeaks) * Math.PI * 4));
+    }
+    return peaks;
+}
+
+/**
+ * The effective quantum for the mock graph, mirroring the C++ derivation
+ * (minimum positive committed clip duration), with the scenario-declared
+ * `effectiveQuantum` as fallback.
+ */
+function effectiveQuantumForState() {
+    let minDuration = 0;
+    let declaredQ = 0;
+
+    const visit = (nodes) => (nodes || []).forEach(n => {
+        if (n.type === 'clip' && !n.isRecording && n.duration > 0) {
+            if (minDuration === 0 || n.duration < minDuration) minDuration = n.duration;
+        }
+        if (n.effectiveQuantum > 0 && (declaredQ === 0 || n.effectiveQuantum < declaredQ)) {
+            declaredQ = n.effectiveQuantum;
+        }
+        if (n.nodes) visit(n.nodes);
+    });
+    visit(state.nodes);
+
+    return minDuration > 0 ? minDuration : declaredQ;
 }
 
 function renameNode(id, newName) {
@@ -213,7 +264,8 @@ function toggleStackExpand(id) {
 }
 
 function getInputList() {
-    return ['Built-in Microphone', 'External Audio'];
+    // Shape matches AudioEngine::getInputList: { inputs: [...] }
+    return { inputs: ['Built-in Microphone', 'External Audio'] };
 }
 
 function setNodeInput(id, channelIndex) {
@@ -270,30 +322,36 @@ function stopRecordingInNode(id) {
     if (!node || !node.isRecording) return;
 
     console.log('[MockBackend] stopRecordingInNode', id);
+
+    // Compute Q BEFORE committing this node, so the stopping clip cannot
+    // define its own quantum (mirrors C++ commit order).
+    const Q = effectiveQuantumForState();
+
     node.isRecording = false;
 
     const currentPos = state.masterPos || 0;
     const rawDuration = currentPos - (node.recordingStartPos || 0);
 
-    // Snap duration to Quantum if available (Simulate logic)
-    // For simplicity in mock: assume 44100 snap if > small amount
-    const Q = 44100;
+    // Hysteresis snap — same math as the C++ engine (timeline_model.js).
+    // First clip (no Q established) commits at its raw duration.
     let duration = rawDuration;
-
-    // Simple mock snap: round to nearest Q if close (polyrhythmic check skipped for mock)
-    const snapDiff = Math.abs(rawDuration - Math.round(rawDuration / Q) * Q);
-    if (snapDiff < 1000) {
-        duration = Math.round(rawDuration / Q) * Q;
+    let loopEnd = rawDuration;
+    if (Q > 0) {
+        const snap = snapCommittedDuration(rawDuration, Q);
+        duration = snap.duration;
+        loopEnd = snap.loopEnd;
     }
 
     node.duration = duration;
     node.isPlaying = true;
-
-    // DEFAULT LOOP REGION: Full clip
     node.loopStart = 0;
-    node.loopEnd = duration;
+    node.loopEnd = loopEnd;
 
-    console.log(`[MockBackend] Recorded ${id}: Dur=${duration} (Raw=${rawDuration})`);
+    // Launch point keeps playback aligned with what the performer heard
+    // (recording.md "Audio Memory Principle").
+    node.launchPoint = launchPointFor(node.recordingStartPos || 0, duration);
+
+    console.log(`[MockBackend] Recorded ${id}: Dur=${duration} (Raw=${rawDuration}, Q=${Q})`);
 }
 
 /**

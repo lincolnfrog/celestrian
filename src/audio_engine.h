@@ -62,6 +62,21 @@ class AudioEngine : public juce::AudioIODeviceCallback {
                   const juce::String &parent_uuid = "");
 
   /**
+   * Populates a fresh engine with the default session graph: one stack
+   * containing one empty clip ready for recording. Called by the app shell
+   * on startup; tests construct a bare engine and build their own graph.
+   */
+  void createDefaultSession();
+
+  /**
+   * Opens the hardware audio device and registers this engine as its
+   * callback. Called by the app shell on startup. Tests must NOT call this:
+   * they drive audioDeviceIOCallbackWithContext manually, and a live device
+   * callback running concurrently would corrupt their sample counts.
+   */
+  void initialiseAudioDevice();
+
+  /**
    * Renames a specific node.
    */
   void renameNode(const juce::String &uuid, const juce::String &new_name);
@@ -78,6 +93,14 @@ class AudioEngine : public juce::AudioIODeviceCallback {
    * Updates a node's position (for freeform positioning of top-level stacks).
    */
   void setNodePosition(const juce::String &node_uuid, double x, double y);
+
+  /**
+   * Combines two sibling-level nodes into a new stack placed at the target's
+   * position (target first, then dragged). Returns the new stack's UUID, or
+   * an empty string on failure. Mirrors the mock backend's combineNodes.
+   */
+  juce::String combineNodes(const juce::String &dragged_uuid,
+                            const juce::String &target_uuid);
 
   void toggleSolo(const juce::String &uuid);
   void togglePlay(const juce::String &uuid);

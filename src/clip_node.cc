@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "stack_node.h"
+#include "timing.h"
 
 namespace celestrian {
 
@@ -324,13 +325,9 @@ void ClipNode::process(const float *const *input_channels,
         }
       }
 
-      // Update playhead position for UI
-      // Show position within THIS clip as 0..1
-      int64_t effective_pos = (context.master_pos + offset) % dur;
-      if (dur > 0)
-        playhead_pos.store((double)effective_pos / (double)dur);
-      else
-        playhead_pos.store(0.0);
+      // Update playhead position for UI (0..1 within this clip)
+      playhead_pos.store(
+          timing::playheadPercent(context.master_pos, offset, dur));
     } else {
       playhead_pos.store(0.0);
     }
@@ -357,17 +354,10 @@ void ClipNode::stopRecording() {
     int64_t Q = getEffectiveQuantum();
 
     if (Q > 0) {
-      // ALWAYS wait for the next clean quantum boundary
-      // No tolerance check - recording always extends to next Q
-      int64_t nextB = ((L / Q) + 1) * Q;
-
-      // Also check subdivisions for short recordings (< Q/2)
-      if (L < Q / 2) {
-        for (int d : {2, 4, 8}) {
-          int64_t sub = Q / d;
-          if (sub > L && sub < nextB) nextB = sub;
-        }
-      }
+      // ALWAYS wait for the next clean quantum boundary (or subdivision for
+      // short recordings). Math lives in timing.h — shared with the JS
+      // timeline model via the golden vectors.
+      int64_t nextB = timing::nextStopBoundary(L, Q);
 
       awaiting_stop_at.store(nextB);
       is_awaiting_stop.store(true);
@@ -396,58 +386,21 @@ void ClipNode::commitRecording(int64_t final_duration) {
     int64_t duration = L;
 
     if (Q > 0 && final_duration <= 0) {
-      // Hysteresis Snapping Logic
-      const double HYSTERESIS_THRESHOLD = 0.15;  // 15% tolerance
+      // Hysteresis snapping — shared math in timing.h.
+      auto snap = timing::snapCommittedDuration(L, Q);
+      duration = snap.duration;
+      loop_start_samples.store(0);
+      loop_end_samples.store(snap.loop_end);
 
-      // Find the CLOSEST clean multiple of Q to L (either floor or ceiling)
-      // No hard-coded limit - works for any quantum multiple
-      int64_t floor_multiple = (L / Q) * Q;
-      int64_t ceil_multiple = floor_multiple + Q;
-
-      // Also consider subdivisions for short recordings
-      std::vector<int64_t> candidates = {floor_multiple, ceil_multiple};
-      for (int d : {2, 4, 8}) {
-        int64_t sub = Q / d;
-        if (sub > 0) candidates.push_back(sub);
-      }
-
-      int64_t best_B = -1;
-      int64_t min_diff = std::numeric_limits<int64_t>::max();
-
-      for (int64_t B : candidates) {
-        if (B <= 0) continue;
-        int64_t diff = std::abs(L - B);
-        if (diff < min_diff) {
-          min_diff = diff;
-          best_B = B;
-        }
-      }
-
-      if (best_B != -1 &&
-          min_diff < (int64_t)(HYSTERESIS_THRESHOLD * (double)Q)) {
-        duration = best_B;
+      if (snap.snapped) {
         juce::Logger::writeToLog(
-            "ClipNode: Late Snap to B=" + juce::String(best_B) +
+            "ClipNode: Late Snap to B=" + juce::String(snap.duration) +
             " (L=" + juce::String(L) + ")");
-        loop_start_samples.store(0);
-        loop_end_samples.store(duration);
       } else {
-        // Outside tolerance: Keep raw duration but snap loop region to
-        // previous clean multiple.
-        int64_t loop_end = L;
-        if (Q > 0) {
-          loop_end = (L / Q) * Q;
-          if (loop_end == 0)
-            loop_end = Q / 2;  // Default subdivision if too short
-        }
-
-        loop_start_samples.store(0);
-        loop_end_samples.store(loop_end);
-
         juce::Logger::writeToLog(
             "ClipNode: Instant Stop at L=" + juce::String(L) +
-            " (Outside tolerance). " + "Loop Region set to " +
-            juce::String(loop_end));
+            " (Outside tolerance). Loop Region set to " +
+            juce::String(snap.loop_end));
       }
     } else if (final_duration > 0) {
       duration = final_duration;
@@ -604,8 +557,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // Formula: when context_phase = recording_start_phase, clip plays at
     // position 0
     int64_t start_phase = recording_start_phase.load();
-    int64_t launch_point =
-        (duration > 0) ? (duration - (start_phase % duration)) % duration : 0;
+    int64_t launch_point = timing::launchPointFor(start_phase, duration);
     launch_point_samples.store(launch_point);
 
     juce::Logger::writeToLog(
