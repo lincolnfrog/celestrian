@@ -23,6 +23,10 @@ if (useMock) {
         window.setMasterPos = mockBackend.setMasterPos;
         window.setIsPlaying = mockBackend.setIsPlaying;
         window.callNative = mockBackend.callNative;
+        // Transport simulation
+        window.startTransport = mockBackend.startTransport;
+        window.pauseTransport = mockBackend.pauseTransport;
+        window.advanceBy = mockBackend.advanceBy;
 
         console.log('[App] Using Loaded Mock backend');
     }

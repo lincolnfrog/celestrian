@@ -392,6 +392,9 @@ function enrichNodes(nodes) {
 
 // Export state getter for polling
 export function getState() {
+    // Auto-advance transport if running (simulates real-time playback/recording)
+    advanceTransport();
+
     return {
         isPlaying: state.isPlaying,
         masterPos: state.masterPos || 0,
@@ -409,10 +412,67 @@ export function setIsPlaying(playing) {
     state.isPlaying = playing;
 }
 
+// --- Transport Simulation ---
+// Simulates the C++ audio engine advancing masterPos and recording clip duration.
+// Auto-advance mode hooks into getState() polls (~50ms intervals).
+// Deterministic mode uses advanceBy() for exact sample-count stepping.
+
+let transport = {
+    running: false,           // Is transport auto-advancing?
+    samplesPerTick: 2205,     // Samples per poll tick (~50ms at 44100Hz)
+    speed: 1.0                // Speed multiplier (1.0 = real-time)
+};
+
+// Grow recording clips by a given sample count
+function growRecordingClips(nodes, samples) {
+    (nodes || []).forEach(node => {
+        if (node.isRecording) {
+            node.duration = (node.duration || 0) + samples;
+            // Simulate live peak data (oscillating value)
+            node.currentPeak = 0.3 + Math.random() * 0.4;
+        }
+        if (node.nodes) growRecordingClips(node.nodes, samples);
+    });
+}
+
+// Called on every getState() poll when transport is running
+function advanceTransport() {
+    if (!transport.running) return;
+
+    const advance = Math.round(transport.samplesPerTick * transport.speed);
+    state.masterPos = (state.masterPos || 0) + advance;
+    growRecordingClips(state.nodes, advance);
+}
+
+// Start auto-advancing transport (hooks into getState polls)
+export function startTransport(speed = 1.0) {
+    transport.running = true;
+    transport.speed = speed;
+    state.isPlaying = true;
+    console.log(`[MockBackend] Transport started (speed=${speed})`);
+}
+
+// Pause auto-advancing transport
+export function pauseTransport() {
+    transport.running = false;
+    console.log('[MockBackend] Transport paused');
+}
+
+// Deterministic advance by exact sample count (for reliable test assertions)
+export function advanceBy(samples) {
+    state.masterPos = (state.masterPos || 0) + samples;
+    growRecordingClips(state.nodes, samples);
+    console.log(`[MockBackend] Advanced by ${samples} samples → masterPos=${state.masterPos}`);
+}
+
 // Test scenario loaders
 export function loadScenario(name) {
     console.log('[MockBackend] Loading scenario:', name);
     state.nextId = 1;
+
+    // Reset transport simulation on scenario load
+    transport.running = false;
+    transport.speed = 1.0;
 
     switch (name) {
         case 'empty':

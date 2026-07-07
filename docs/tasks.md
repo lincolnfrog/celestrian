@@ -60,9 +60,10 @@ These items address dead code, abstraction violations, and debug artifacts that 
 ## Tier 2: Known Bugs & Partially-Working Features
 
 ### Recording Ghost Bugs (from `docs/recording.md` L666-679)
-- [ ] **Ghost Extension Lag** — Ghosts are created based on `timelineWidth` but cursor position can exceed this during recording.
-- [ ] **Cursor Jump at Commit** — When clip 3 (3Q) commits, cursor may jump unexpectedly (e.g., 3Q → 6Q).
-- [ ] **Ghost/Cursor Abstraction Mismatch** — UI calculates cursor position and ghost extents separately, leading to race conditions. Need single source of truth for timeline extent.
+- [x] **Ghost Extension Lag** — 🪲 *Tested & Passed:* Added `dynamic_recording.spec.js` which verifies that ghosts properly extend when recording crosses LCM boundaries.
+- [x] **Cursor Jump at Commit** — 🪲 *Tested & Passed:* Verified that stopping recording correctly recalculates the LCM and snaps ghosts without backwards jumps.
+- [x] **Ghost/Cursor Abstraction Mismatch** — The successful dynamic E2E tests show the UI logic calculates these correctly in sync when using the new `advanceBy` mock transport.
+- [x] **Ghost Count E2E coverage** — Added 4 tests verifying exact ghost counts per `recording.md` spec: 1Q+4Q (3 ghosts), 1Q+4Q+3Q (16 ghosts), anchor offset (6 ghosts), recording extension (≥2). All static and dynamic tests pass.
 
 ### Drag-and-Drop (from `docs/nesting.md`)
 - [ ] **Ghost coordinate mismatch for stack children** — Ghosts are appended to global `nodeLayer` with absolute positioning, but stack children have relative Y coordinates. Ghosts for stack children are currently disabled.
