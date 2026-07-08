@@ -316,40 +316,49 @@ ambiguous after stretching; anchoring "at beat 5/4 Q" is not. Whether
 positions are stored in samples or Q-fractions is cheap to decide before
 P0-3 and expensive after. Tracked in tasks.md.
 
-### Not yet reviewed
+### Second review round (2026-07-07, later)
 
-**Q3. The grid lies about anchors — visually integer-Q, audibly
-sample-precise.** `x = floor(origin/Q) · 200px` but audio honors origin
-exactly. Today auto-quantize hides the gap because origins *are* Q
-multiples. The moment "disable auto-quantize" ships (recording.md Future
-Features), every fiddly overdub violates I2 by up to a full slot. Decide:
-is x a pure projection of origin (I6 — sub-slot offsets drawn honestly),
-or is the grid authoritative (then audio should snap too)?
+**Q3. Grid honesty when snapping is disabled.**
+**DEFERRED — the premise doesn't exist yet.** Owner wasn't familiar with
+"auto-quantize" — clarification: it's this codebase's own term for the
+always-snap-to-the-next-Q-boundary recording behavior (recording.md:
+"Recording/stopping ALWAYS snaps to the next clean quantum boundary";
+Future Features lists "Disable Auto-Quantize"). The question — should x
+draw sample-precise origins honestly, or should the grid stay
+authoritative — only becomes real if that disable-toggle is ever built.
+Parked with that feature.
 
-**Q5. What *is* a one-shot?** The formula in design.md/recording.md is
-broken (Defect 1), which means the concept was never actually pinned.
-E-D's proposal: a one-shot is a clip whose **period is the context
-cycle** rather than its own length — one first-class knob
-(`period source: own length | context`), user-flippable both ways, no
-emergent inequality. Does that match the musical intent, or is a
-one-shot something that plays *once ever* (not once per cycle)? Those
-are different features.
+**Q5. What *is* a one-shot?**
+**RESOLVED — the period-source definition.** Owner: "Your proposal
+matches my intuition. It basically means that clip doesn't loop
+continuously; it plays once when the larger LCM playhead crosses its
+anchored location." Canonical definition: **a one-shot is a clip whose
+period is the context cycle rather than its own length** — it sounds
+once per cycle at its origin, then rests. The garbled inequality in
+design.md/recording.md is superseded (both docs updated). Implementation
+as a first-class `period source: own length | context` knob is future
+work.
 
-**Q6. Parallel has an algebra; serial doesn't yet.**
-Stacks = parallel composition: sum audio, LCM periods — clean. The
-roadmap's boxes-and-lines (Segment 9: loop, branch-with-chance,
-transitions) is *serial* composition, and nothing in the docs says what
-serial does to time. If a 4Q box chains into a 6Q box, is the result a
-10Q phrase? Does the branch decision happen at cycle boundaries? Naming
-the serial operator now (kernel.md proposes: a time-map that re-bases
-epochs) prevents Segment 9 from growing a second, incompatible timing
-system.
+**Q6. Serial composition semantics.**
+**RESOLVED (provisionally).** Owner: chaining a 4Q box into a 6Q box
+yields a 10Q total sequence, which loops — "we haven't really finalized
+how boxes work." So the serial operator is **concatenation of periods**
+(4Q ⧺ 6Q = 10Q cycle), pending full box design in Segment 9. In kernel
+terms: a serial group is a composite whose time-map routes each child a
+sub-range of the cycle — same primitive as everything else.
 
-**Q10. What does the play button mean with two islands?** (E-F.) Play
-everything, each on its own clock? Play the "focused" island? Islands
-were invented for independence, but transport, solo scope, and the
-infinite-radio mode (design.md §4) all implicitly assume one universe.
-The first user with two islands finds out what you decided by accident.
+**Q10. Transport with multiple islands.**
+**RESOLVED (direction) — one active island at a time, for now.** Owner:
+global play loops the *active* island. The long-term vision: build a
+song in island A, let it play, establish a new Q for island B
+(*"potentially while the existing island is still playing? this kind of
+contradicts my first sentence"* — acknowledged as undefined), then
+transition (e.g. crossfade) between songs. Ruling for now: **focus on
+nailing a single island; the kernel must merely not make multiple
+islands impossible.** The kernel satisfies this: an island is a subtree
+with its own `(Q, epoch)`; concurrent islands are subtrees with
+different epochs on the same monotonic clock — nothing global assumes
+one Q. Cross-island transitions remain far-future (tasks.md).
 
 ---
 

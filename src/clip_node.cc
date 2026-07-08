@@ -162,8 +162,9 @@ void ClipNode::process(const float *const *input_channels,
 
         // anchor_phase_samples = position within Q (for audio alignment)
         anchor_phase_samples.store(future_effective_pos % Q);
-        // Store full effective_pos for unified launch_point calculation
-        recording_start_phase.store(future_effective_pos);
+        // THE canonical timing fact: this clip's content belongs at
+        // cycle moment future_effective_pos (docs/kernel.md).
+        origin_samples.store(future_effective_pos);
 
         // slot = which Q slot visually
         // Key insight: slot is VISUAL position, not audio phase position
@@ -206,7 +207,7 @@ void ClipNode::process(const float *const *input_channels,
       } else {
         // No Q established yet (first clip) - start immediately at anchor=0
         anchor_phase_samples.store(0);
-        recording_start_phase.store(0);  // First clip starts at phase 0
+        origin_samples.store(0);  // First clip defines the cycle origin
         x_pos.store(base_x);
         is_pending_start.store(false);
         is_recording.store(true);
@@ -388,21 +389,20 @@ void ClipNode::process(const float *const *input_channels,
         }
       }
 
-      // Audio Memory Principle: playback starts from launch_point to maintain
-      // alignment with the audio context during recording.
-      // launch_point is calculated at commit so that effective_pos starts at 0
-      int64_t launch = launch_point_samples.load();
-      int64_t offset = launch;  // Use launch directly - ensures loop continuity
-
-      const int64_t rotation = rotation_offset_.load();
-      const int64_t span = rotation_span_.load();
+      // Audio Memory Principle — the kernel playback equation
+      // (docs/kernel.md §2): play content[(t − origin) mod dur], i.e.
+      // content sounds at the cycle moment it was performed. Expressed
+      // through the launch-point form ((t + launch) mod dur with
+      // launch = (−origin) mod dur) so the shared timing.h math — pinned
+      // by the golden vectors — stays the single implementation.
+      const int64_t offset =
+          timing::launchPointFor(origin_samples.load(), dur);
 
       for (int i = 0; i < context.num_samples; ++i) {
-        // Calculate effective position with launch offset
         int64_t current_master_pos = context.master_pos + i;
         int64_t effective_pos = (current_master_pos + offset) % dur;
         int current_read_position =
-            readIndexFor(start + effective_pos, rotation, span);
+            (int)((start + effective_pos) % buffer.getNumSamples());
 
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] != nullptr && !isSilenced) {
@@ -425,8 +425,6 @@ void ClipNode::startRecording() {
   buffer.clear();
   write_position.store(0);
   read_position.store(0);
-  rotation_offset_.store(0);
-  rotation_span_.store(0);
   current_max_peak.store(0.0f);
 
   is_pending_start.store(true);
@@ -536,32 +534,14 @@ void ClipNode::commitRecording(int64_t final_duration) {
     int64_t audio_anchor =
         (context_loop > 0) ? (trigger_pos % context_loop) : 0;
 
-    // 4. Resolve Visual/Audio Mismatch via Virtual Rotation
-    // Perceptual Alignment invariant: the app renders the cursor at
-    // (Master % Dur), so at start time the cursor sits at index
-    // `audio_anchor` — and the start of the recorded audio must be heard
-    // there. Conceptually that is a right-rotation of the buffer by
-    // `audio_anchor` (New[i] = Old[i - rotation]). We never move samples:
-    // commit runs on the audio thread, and a physical rotation is a
-    // multi-second heap copy. Instead the rotation is stored and applied
-    // as index arithmetic in every read (playback + waveform).
+    // 4. No rotation — content lives in the origin frame (docs/kernel.md).
+    // Playback offsets every read by the stored origin, so the buffer is
+    // never re-based, physically or virtually. (The old rotation ALSO
+    // shifted playback on top of the launch point — a double shift that
+    // contradicted recording.md Example 2: an 8Q clip recorded at 2Q
+    // must play position 0 when master ≡ 2Q, which is exactly what the
+    // origin equation produces.)
     int64_t final_anchor = audio_anchor;
-
-    if (audio_anchor != 0) {
-      int64_t rotation = audio_anchor;
-
-      if (rotation > 0 && rotation < duration) {
-        rotation_offset_.store(rotation);
-        rotation_span_.store(duration);
-
-        RtLog::instance().post(
-            "ClipNode: Virtual rotation by %lld samples (span %lld)",
-            (long long)rotation, (long long)duration);
-
-        // Reset phases because reads now behave as if the audio moved
-        final_anchor = 0;
-      }
-    }
 
     // Visual Position adheres to Context Grid (USER REQUEST)
     if (Q > 0) {
@@ -577,19 +557,17 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // Anchor represents the phase offset of the content relative to Global 0
     anchor_phase_samples.store(final_anchor);
 
-    // UNIFIED TIMING: Calculate launch_point from recording START phase
-    // This ensures all clips recorded at the same position have the same
-    // offset, keeping playheads synchronized regardless of when they commit.
-    // Formula: when context_phase = recording_start_phase, clip plays at
-    // position 0
-    int64_t start_phase = recording_start_phase.load();
-    int64_t launch_point = timing::launchPointFor(start_phase, duration);
+    // UNIFIED TIMING: launch_point is a projection of origin
+    // ((−origin) mod duration) — stored only for UI/metadata
+    // compatibility; playback derives it from origin directly.
+    int64_t origin = origin_samples.load();
+    int64_t launch_point = timing::launchPointFor(origin, duration);
     launch_point_samples.store(launch_point);
 
     RtLog::instance().post(
-        "ClipNode: Commit. Duration=%lld, StartTime=%lld, StartPhase=%lld, "
+        "ClipNode: Commit. Duration=%lld, StartTime=%lld, Origin=%lld, "
         "LaunchPoint=%lld, FinalAnchor=%lld",
-        (long long)duration, (long long)trigger_pos, (long long)start_phase,
+        (long long)duration, (long long)trigger_pos, (long long)origin,
         (long long)launch_point, (long long)final_anchor);
 
     is_playing.store(true);
@@ -614,16 +592,16 @@ juce::var ClipNode::getWaveform(int num_peaks) const {
 
   int window_size = std::max(1, total_samples / num_peaks);
   const float *data = buffer.getReadPointer(0);
-  const int64_t rotation = rotation_offset_.load();
-  const int64_t span = rotation_span_.load();
 
+  // Raw reads: the buffer IS the origin frame; the UI positions it via
+  // the clip's origin (x), so no index remapping is needed anywhere.
   for (int i = 0; i < num_peaks; ++i) {
     int start = i * window_size;
     int end = std::max(start + 1, std::min(start + window_size, total_samples));
     float peak = 0.0f;
     if (start < total_samples) {
       for (int s = start; s < end; ++s) {
-        peak = std::max(peak, std::abs(data[readIndexFor(s, rotation, span)]));
+        peak = std::max(peak, std::abs(data[s]));
       }
     }
     peaks.add(peak);

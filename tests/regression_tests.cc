@@ -1071,8 +1071,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       juce::Logger::writeToLog(
           "BUG REPRO: After crossing 1Q, is_recording=" +
           juce::String(clip2Ptr->isRecording() ? 1 : 0) +
-          ", recording_start_phase=" +
-          juce::String(clip2Ptr->recording_start_phase.load()));
+          ", origin_samples=" +
+          juce::String(clip2Ptr->origin_samples.load()));
 
       // Record for 4Q total (from 1Q to 5Q = 4000 samples with snap)
       // User stops between 3Q-4Q, snaps to 4Q
@@ -1095,7 +1095,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Debug values
       int64_t duration = clip2Ptr->duration_samples.load();
       int64_t launch = clip2Ptr->launch_point_samples.load();
-      int64_t startPhase = clip2Ptr->recording_start_phase.load();
+      int64_t startPhase = clip2Ptr->origin_samples.load();
       int64_t commitPos = clip2Ptr->getCommitMasterPos();
 
       juce::Logger::writeToLog(
@@ -1180,17 +1180,17 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       double xPos = clip3Ptr->x_pos.load();
       juce::Logger::writeToLog(
           "ANCHOR BUG TEST: Recording started at 2Q, x_pos=" +
-          juce::String(xPos) + ", recording_start_phase=" +
-          juce::String(clip3Ptr->recording_start_phase.load()));
+          juce::String(xPos) + ", origin_samples=" +
+          juce::String(clip3Ptr->origin_samples.load()));
 
       // x_pos should be 400 (slot 2 * 200px base_width)
       // NOT 0 (which would be slot 0)
       expectEquals(xPos, 400.0,
                    "Clip 3 x_pos should be 400 (anchored at 2Q slot)");
 
-      // recording_start_phase should be 2Q (2000 samples)
-      expectEquals(clip3Ptr->recording_start_phase.load(), (int64_t)2000,
-                   "recording_start_phase should be 2000 (2Q)");
+      // origin_samples should be 2Q (2000 samples)
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)2000,
+                   "origin_samples should be 2000 (2Q)");
 
       // Continue recording for 1Q worth
       ctx.master_pos = 2100;

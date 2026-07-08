@@ -67,7 +67,7 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 * **Phase-Locked Loop (PLL) Recording**:
     - **Instant Capture**: New recordings begin immediately on user request to capture the creative spark.
     - **Anchor Phase**: Each clip remembers where in the quantum grid it was recorded (its "anchor phase"). This determines its visual X-offset position.
-    - **Cyclic Alignment**: The system anchors the recording to the master quantum phase. Upon completion, the buffer is cyclically shifted (rotated) so that its internal phase matches the global transport.
+    - **Cyclic Alignment**: The system anchors the recording to the master quantum phase via the clip's **origin** — the cycle moment its first sample belongs to. Playback reads `content[(t − origin) mod duration]`; no buffer rotation exists (see docs/kernel.md).
     - **Hysteresis-Based Snapping**:
         - **Anticipatory Stop (Early)**: If the user stops within the tolerance *before* a clean boundary, recording continues until that boundary is reached to avoid cutting off audio.
         - **Late Snap (Late)**: If the user stops within the tolerance *after* a clean boundary, recording ends immediately and the clip is truncated to that boundary.
@@ -120,27 +120,22 @@ Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
 * **Stack Creation**: Each stack gets a dedicated `(+)` button at the bottom, allowing users to extend that specific rhythmic/instrumental idea.
 * **Primary Quantum**: The first clip recorded in an empty structure defines the **Quantum Length** (in samples).
 * **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
-    - **Seamless Rotation**: Recordings utilize "Cyclic Shift" logic: they start immediately but are post-processed via buffer rotation to align with the master loop's start point.
+    - **Origin Anchoring**: Recordings capture their origin (the cycle moment recording began) and playback aligns by it — no post-processing or buffer rotation (docs/kernel.md).
 
 ### 6. Virtual Timeline & Clip Types
 The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in a traditional DAW:
 
-> [!WARNING]
-> The looping/one-shot formulas below are garbled as written
-> (`anchor % duration` is always `< duration`, so the one-shot condition
-> is unsatisfiable). The prose intent, per Example 3 in recording.md, is
-> roughly "one-shot ⇔ the clip doesn't fill its context." A precise
-> definition is pending owner review — see design_language.md Q5, which
-> proposes: one-shot ⇔ the clip's *period* is the context cycle rather
-> than its own length.
-
-* **Looping Clips** (`duration >= anchor_position % duration`):
-    - Standard behavior: clip repeats continuously
+* **Looping Clips** (period = own duration):
+    - Standard behavior: clip repeats continuously at its own length
     - Visual: Ghost/faded repetitions extend to the edge of the longest sibling clip
     - These ghosts show where the loop "would be" if you unrolled the timeline
 
-* **One-Shot Clips** (`duration < anchor_position % duration`):
-    - Triggered once per cycle when master reaches the anchor position
+* **One-Shot Clips** (period = context cycle):
+    - A one-shot's **period is the context cycle rather than its own
+      length**: it plays once when the LCM playhead crosses its anchored
+      location, then rests until the next cycle. *(Owner-ratified
+      definition, 2026-07-07 — replaces an earlier garbled formula; see
+      design_language.md Q5.)*
     - No ghost repetitions—just the single instance with dashed border
     - **Progressive Disclosure**: During recording, a clip behaves as a one-shot (dashed) until it exceeds the context loop length, at which point it "snaps" into being a loop.
 

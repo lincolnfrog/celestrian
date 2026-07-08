@@ -177,12 +177,18 @@ The kernel is adoptable without a rewrite; most steps are deletions.
 
 1. **Store Q + epoch at the island root** (= P0-3, unchanged scope, but
    store `epoch` alongside — one extra int64).
-2. **Introduce `origin`** on ClipNode, set at recording start (the
-   arrival-time capture already computes it as the window start minus C).
-   Keep `launch/anchor/x` as *derived getters* over it — adapters, so
-   bindings, UI, and tests keep working. Delete the stored versions +
-   rotation once golden vectors confirm parity. *(The timing.h golden
-   vector infrastructure from P0-1 is exactly the safety net for this.)*
+2. ✅ **Done (2026-07-07): `origin` introduced** — `recording_start_phase`
+   renamed to `origin_samples` (it already held the right value at arm
+   time); playback derives launch per block via
+   `timing::launchPointFor(origin, dur)`; `launch_point_samples` kept as
+   a derived stored field for UI/metadata compat; **rotation deleted
+   entirely** (it double-shifted playback on top of the launch point,
+   contradicting recording.md Example 2 — the origin equation produces
+   the documented behavior directly); waveforms read the raw buffer;
+   `origin` exposed in metadata (C++ and mock). Remaining consolidation:
+   `trigger_master_position` (feeds the x/slot math until P1-7) and
+   `commit_master_pos` (transport bookkeeping until step 3).
+   *(Guarded by the "Origin Alignment" unit test + full suite.)*
 3. **Monotonic master**: keep the wrapped `masterPos` in `getGraphState`
    as a derived view (`(t − epoch) mod LCM`) so the UI is untouched;
    delete the wrap/reset/snap branches from the callback one at a time,

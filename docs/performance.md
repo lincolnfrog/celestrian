@@ -24,7 +24,7 @@ from `process`, `calculateTimelineLength`, `isAnyNodeRecording`) must obey:
 | No locks (mutex, recursive_mutex) | Priority inversion with the message thread → dropouts | Child lists are immutable snapshots published by atomic swap (`StackNode::renderChildren`); the old `children_mutex` is deleted |
 | No heap allocation/free | malloc can take a lock or syscall | `ProcessContext` is POD; `mix_buffer` preallocated (8192 frames); LCM helper is a free function, not `std::function`; deferred frees go through `AudioEngine::retire()` |
 | No file I/O / logging | `juce::Logger` writes files | `src/rt_log.h` fixed-slot ring; drained on the message thread in `getGraphState()` |
-| No buffer copies proportional to clip length | A 30 s clip copy is milliseconds of stall | Commit rotation is virtual: `rotation_offset_`/`rotation_span_` remapped in read-index math, samples never move |
+| No buffer copies proportional to clip length | A 30 s clip copy is milliseconds of stall | No rotation exists at all — content is stored in the origin frame and playback offsets reads by the clip's origin (kernel.md); samples never move |
 | No unbounded waits | — | The one remaining lock-ish thing is the RtLog `SpinLock`, held for a ≤160-byte memcpy, with try-lock (drops the message on contention) |
 | No device queries per block | Driver calls can block | Latencies cached in `audioDeviceAboutToStart` |
 | Iterate child snapshots with **one** load | Paired `getNumChildren()`/`getChild(i)` calls can straddle a republish | Use `getChildrenSnapshot()` in anything audio-thread-reachable |

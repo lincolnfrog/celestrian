@@ -119,8 +119,11 @@ Outer Stack:
 ```
 
 ### Clip Types
-1. **Looping Clips**: `duration >= Q` → clip loops continuously
-2. **One-Shot Clips**: `duration < anchor_position % duration` → triggered once per cycle
+1. **Looping Clips**: period = own duration → clip loops continuously
+2. **One-Shot Clips**: period = **context cycle** → plays once when the
+   LCM playhead crosses its anchored location, then rests until the next
+   cycle. *(Owner-ratified definition 2026-07-07, replacing a garbled
+   formula — design_language.md Q5.)*
 
 ---
 
@@ -258,8 +261,16 @@ Clip 3:          [████████████████████�
 - When master=0, Clip 3 plays from 6Q position
 - When master=2Q, Clip 3 is at position 0 (**aligned with recording!**)
 
-**Note on Rotation (virtual since 2026-07-07):**
-In cases where the `visual_start` (determined by context) differs from the `audio_phase` (determined by global transport), reads are **virtually rotated** to align the waveform with the playhead. For example, if recording starts at Global 14Q (Phase 2 of 4Q) but context implies Visual 0Q, we capture at Phase 2 but display at Phase 0. The rotation is pure index arithmetic applied in playback and waveform reads (`rotation_offset`/`rotation_span` in `ClipNode`) — samples are never physically moved; the old physical buffer rotation was removed as an audio-thread hazard (performance.md §1).
+**Note on Rotation (removed entirely, 2026-07-07):**
+There is no buffer rotation — physical or virtual. Content is stored in
+the **origin frame**: `content[0]` belongs to the clip's origin, and
+playback offsets every read by the origin (`content[(t − origin) mod
+duration]`, docs/kernel.md). Historical note: the original physical
+rotation was first made virtual (audio-thread safety, performance.md
+§1), then removed altogether when it was found to double-shift playback
+on top of the launch point, contradicting Example 2 above (an 8Q clip
+recorded at 2Q must play position 0 at master ≡ 2Q — which the origin
+equation produces directly).
 
 ---
 

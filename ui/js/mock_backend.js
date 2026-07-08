@@ -374,9 +374,11 @@ function stopRecordingInNode(id) {
     node.loopStart = 0;
     node.loopEnd = loopEnd;
 
-    // Launch point keeps playback aligned with what the performer heard
-    // (recording.md "Audio Memory Principle").
-    node.launchPoint = launchPointFor(node.recordingStartPos || 0, duration);
+    // Origin is THE canonical timing fact (docs/kernel.md): the cycle
+    // moment content[0] belongs to. Launch point is its projection,
+    // kept for UI compatibility (Audio Memory Principle, recording.md).
+    node.origin = node.recordingStartPos || 0;
+    node.launchPoint = launchPointFor(node.origin, duration);
 
     console.log(`[MockBackend] Recorded ${id}: Dur=${duration} (Raw=${rawDuration}, Q=${Q})`);
 }

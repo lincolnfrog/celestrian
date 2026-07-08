@@ -173,10 +173,10 @@ These are documented questions without answers yet. Resolving them may spawn new
 | 6 | **Loop-window activation redesign** — owner ruled collapse must be sound-neutral (I6b), contradicting the implemented Loop-on-Collapse model; loop windows need an explicit active/bypassed state, with recording-inside-active-window semantics specified | `design_language.md` Q4, `stacks.md` caution banner |
 | 7 | **Record on a composite (TODO — discuss)** — what does ⏺ on a stack mean? Proposal on the table: "new take-clip inside, aligned to the stack's cycle" (→ take lanes/comping) | `design_language.md` Q7 |
 | 8 | **Origin/anchor units under Warp (TODO — discuss when warp is real)** — samples vs Q-fractions; cheap to decide before P0-3, expensive after | `design_language.md` Q9, `kernel.md` §6 |
-| 9 | Grid honesty when auto-quantize is disabled (I2 vs authoritative grid) — not yet reviewed | `design_language.md` Q3 |
-| 10 | Precise one-shot definition (current formula is garbled; period-source proposal on the table) — not yet reviewed | `design_language.md` Q5 |
-| 11 | Serial composition semantics for box connections (Segment 9) — not yet reviewed | `design_language.md` Q6 |
-| 12 | Transport/solo semantics with multiple islands — not yet reviewed | `design_language.md` Q10 |
+| 9 | Grid honesty when auto-quantize is disabled — **deferred** until a snap-disable feature is actually considered | `design_language.md` Q3 |
+| 10 | ~~Precise one-shot definition~~ — **resolved**: period = context cycle (plays once per LCM cycle at its anchor); implementing it as a first-class period-source knob is future work | `design_language.md` Q5 |
+| 11 | ~~Serial composition semantics~~ — **resolved (provisionally)**: concatenation (4Q ⧺ 6Q = 10Q looping sequence), full box design pending Segment 9 | `design_language.md` Q6 |
+| 12 | ~~Multiple-island transport~~ — **resolved (direction)**: one active island at a time; cross-island transitions far-future; kernel must not preclude concurrent islands (and doesn't) | `design_language.md` Q10 |
 
 ### Resolved 2026-07-07 (owner rulings — see design_language.md §5)
 - **Q survives its creator**: no Q re-seating feature; muting/deleting the first clip must not change Q → P0-3 stores Q (+ epoch) at the island root. Current derived-min behavior is a confirmed bug.

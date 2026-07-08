@@ -108,6 +108,7 @@ class AudioNode {
     obj->setProperty("isMuted", (bool)is_muted.load());
     obj->setProperty("anchorPhase", (double)anchor_phase_samples.load());
     obj->setProperty("launchPoint", (double)launch_point_samples.load());
+    obj->setProperty("origin", (double)origin_samples.load());
     return juce::var(obj);
   }
 
@@ -172,11 +173,14 @@ class AudioNode {
 
   // Phase-aligned recording: where in the quantum grid this clip was recorded
   std::atomic<int64_t> anchor_phase_samples{0};
-  // Launch point: where playback starts to maintain alignment (default: 0)
+  // Launch point: DERIVED from origin at commit ((−origin) mod duration),
+  // kept as a stored field only for UI/metadata compatibility.
   std::atomic<int64_t> launch_point_samples{0};
-  // Recording start phase: full effective_pos at recording start (for unified
-  // timing)
-  std::atomic<int64_t> recording_start_phase{0};
+  // THE canonical timing fact (docs/kernel.md): the cycle moment this
+  // node's content[0] belongs to, in performance-time samples. Set once
+  // when recording starts. Launch point, anchor, and visual x are all
+  // projections of this value.
+  std::atomic<int64_t> origin_samples{0};
 
   // Atomic because the audio thread walks parent chains (quantum lookup,
   // solo ancestry) while the message thread reparents nodes during
