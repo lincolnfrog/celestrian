@@ -1,5 +1,7 @@
 #include <juce_core/juce_core.h>
 
+#include <vector>
+
 #include "../src/stack_node.h"
 #include "../src/clip_node.h"
 
@@ -194,6 +196,90 @@ class ClipNodeTests : public juce::UnitTest {
 
       // For now, just verify duration is correct
       expectEquals(nodePtr->loop_end_samples.load(), (int64_t)100);
+    }
+
+    beginTest("Virtual Rotation: Playback Reads Rotated Indices");
+    {
+      const double SR = 100.0;
+      StackNode parent("Parent");
+
+      // Sibling A: 100 samples -> defines Q = 100 (min duration)
+      // Sibling B: 200 samples -> defines the context loop
+      auto makeCommittedClip = [SR](const char *name, int len) {
+        auto clip = std::make_unique<ClipNode>(name, SR);
+        std::vector<float> in((size_t)len, 0.0f);
+        float *const ins[] = {in.data()};
+        ProcessContext ctx;
+        ctx.num_samples = len;
+        ctx.is_recording = true;
+        clip->startRecording();
+        clip->process(ins, nullptr, 1, 0, ctx);
+        clip->stopRecording();  // No parent yet -> no Q -> immediate commit
+        return clip;
+      };
+      parent.addChild(makeCommittedClip("QClip", 100));
+      parent.addChild(makeCommittedClip("ContextClip", 200));
+      expectEquals(parent.getEffectiveQuantum(), (int64_t)100);
+
+      // Record clip C starting at master_pos=100. The context loop is 200,
+      // so audio_anchor = 100 % 200 = 100 and the commit stores a virtual
+      // rotation of 100 within span 200 (previously a physical buffer
+      // rotation on the audio thread).
+      auto clipC = std::make_unique<ClipNode>("Rotated", SR);
+      auto *c = clipC.get();
+      parent.addChild(std::move(clipC));
+
+      auto v = [](int k) { return (float)(k + 1) * 0.001f; };
+
+      float rec1[150];
+      for (int i = 0; i < 150; ++i) rec1[i] = v(i);
+      float *const recIns1[] = {rec1};
+      ProcessContext recCtx;
+      recCtx.num_samples = 150;
+      recCtx.master_pos = 100;
+      recCtx.is_recording = true;
+
+      c->startRecording();
+      c->process(recIns1, nullptr, 1, 0, recCtx);
+      c->stopRecording();  // L=150 -> awaits the 200 stop boundary
+
+      float rec2[50];
+      for (int i = 0; i < 50; ++i) rec2[i] = v(150 + i);
+      float *const recIns2[] = {rec2};
+      recCtx.num_samples = 50;
+      recCtx.master_pos = 250;
+      c->process(recIns2, nullptr, 1, 0, recCtx);
+
+      expectEquals(c->duration_samples.load(), (int64_t)200);
+      expectEquals(c->launch_point_samples.load(), (int64_t)100);
+
+      // Playback at master 0..9 must produce buffer[0..9]: the launch
+      // offset (+100) and the virtual rotation (-100) cancel, exactly as
+      // the old physical rotation behaved.
+      float outL[10] = {0.0f};
+      float *const outs[] = {outL};
+      ProcessContext playCtx;
+      playCtx.num_samples = 10;
+      playCtx.is_playing = true;
+      playCtx.master_pos = 0;
+      c->process(nullptr, outs, 0, 1, playCtx);
+      for (int i = 0; i < 10; ++i) {
+        expectWithinAbsoluteError(outL[i], v(i), 0.0001f);
+      }
+
+      // Across the rotation seam: master 150..159 reads buffer[150..159]
+      for (int i = 0; i < 10; ++i) outL[i] = 0.0f;
+      playCtx.master_pos = 150;
+      c->process(nullptr, outs, 0, 1, playCtx);
+      for (int i = 0; i < 10; ++i) {
+        expectWithinAbsoluteError(outL[i], v(150 + i), 0.0001f);
+      }
+
+      // Waveform reads must apply the same mapping: first peak = buffer[100]
+      auto wf = c->getWaveform(200);
+      expect(wf.isArray());
+      expectWithinAbsoluteError((float)wf.getArray()->getReference(0), v(100),
+                                0.0001f);
     }
 
     beginTest("Loop Points API");

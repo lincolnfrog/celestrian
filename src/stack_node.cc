@@ -2,21 +2,60 @@
 
 namespace celestrian {
 
+namespace {
+// Preallocation for the summing scratch buffer: enough for any common
+// device block size so process() never allocates on the audio thread.
+constexpr int kMaxExpectedChannels = 2;
+constexpr int kMaxExpectedBlockSize = 8192;
+}  // namespace
+
 StackNode::StackNode(juce::String node_name) : AudioNode(std::move(node_name)) {
-  // Basic stereo buffer for summing, resized as needed in process()
-  mix_buffer.setSize(2, 512);
+  mix_buffer.setSize(kMaxExpectedChannels, kMaxExpectedBlockSize);
+  render_children_.store(new std::vector<AudioNode *>());
+}
+
+StackNode::~StackNode() {
+  // By destruction time nothing else references this stack; the snapshot
+  // can be freed directly.
+  delete render_children_.load();
+}
+
+void StackNode::setReclaimer(GraphReclaimer *reclaimer) {
+  reclaimer_ = reclaimer;
+  for (auto &child : children) {
+    if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
+      stack->setReclaimer(reclaimer);
+    }
+  }
+}
+
+void StackNode::retireOrDelete(std::function<void()> deleter) {
+  if (reclaimer_) {
+    reclaimer_->retire(std::move(deleter));
+  } else {
+    deleter();
+  }
+}
+
+void StackNode::republishChildren() {
+  auto *fresh = new std::vector<AudioNode *>();
+  fresh->reserve(children.size());
+  for (auto &child : children) fresh->push_back(child.get());
+
+  const auto *old = render_children_.exchange(fresh, std::memory_order_acq_rel);
+  if (old) retireOrDelete([old] { delete old; });
 }
 
 juce::var StackNode::getMetadata() const {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  const auto *kids = renderChildren();
   auto base = AudioNode::getMetadata();
   auto *obj = base.getDynamicObject();
-  obj->setProperty("childCount", (int)children.size());
+  obj->setProperty("childCount", (int)kids->size());
   obj->setProperty("isExpanded", (bool)is_expanded.load());
   // Expose internal transport for UI synchronization when collapsed
   obj->setProperty("internalTransport", (double)internal_transport_.load());
   juce::Array<juce::var> childData;
-  for (const auto &child : children) {
+  for (auto *child : *kids) {
     childData.add(child->getMetadata());
   }
   obj->setProperty("nodes", childData);
@@ -24,11 +63,11 @@ juce::var StackNode::getMetadata() const {
 }
 
 int64_t StackNode::getIntrinsicDuration() const {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
-  if (children.empty()) return 0;
+  const auto *kids = renderChildren();
+  if (kids->empty()) return 0;
 
   int64_t minDuration = 0;
-  for (const auto &child : children) {
+  for (auto *child : *kids) {
     int64_t d = child->getIntrinsicDuration();
     if (d > 0) {
       if (minDuration == 0 || d < minDuration) minDuration = d;
@@ -43,54 +82,68 @@ int64_t StackNode::getEffectiveQuantum() const {
   if (d > 0) return d;
 
   // 2. Try parent
-  if (parent) return parent->getEffectiveQuantum();
+  if (auto *p = parent.load()) return p->getEffectiveQuantum();
 
   return 0;
 }
 
 void StackNode::addChild(std::unique_ptr<AudioNode> child) {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
   child->setParent(this);
+  if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
+    if (reclaimer_) stack->setReclaimer(reclaimer_);
+  }
   children.push_back(std::move(child));
+  republishChildren();
 }
 
 void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
   child->setParent(this);
+  if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
+    if (reclaimer_) stack->setReclaimer(reclaimer_);
+  }
   if (index < 0) index = 0;
   if (index >= (int)children.size()) {
     children.push_back(std::move(child));
   } else {
     children.insert(children.begin() + index, std::move(child));
   }
+  republishChildren();
 }
 
 void StackNode::removeChild(const juce::String &uuid) {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
   auto it = std::find_if(children.begin(), children.end(),
                          [&uuid](const std::unique_ptr<AudioNode> &node) {
                            return node->getUuid() == uuid;
                          });
   if (it != children.end()) {
     (*it)->setParent(nullptr);
+    AudioNode *removed = it->release();
     children.erase(it);
+    republishChildren();
+    // The audio thread may still be processing this node for one more
+    // callback; defer destruction.
+    retireOrDelete([removed] { delete removed; });
   }
 }
 
 void StackNode::clearChildren() {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  if (children.empty()) return;
+  auto *removed = new std::vector<std::unique_ptr<AudioNode>>();
   for (auto &child : children) {
     child->setParent(nullptr);
+    removed->push_back(std::move(child));
   }
   children.clear();
+  republishChildren();
+  retireOrDelete([removed] { delete removed; });
 }
 
 std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
   if (index >= 0 && index < (int)children.size()) {
     auto child = std::move(children[index]);
     children.erase(children.begin() + index);
     child->setParent(nullptr);
+    republishChildren();
     return child;
   }
   return nullptr;
@@ -100,14 +153,13 @@ void StackNode::process(const float *const *input_channels,
                         float *const *output_channels, int num_input_channels,
                         int num_output_channels,
                         const ProcessContext &context) {
-  // Ensure our mix buffer is large enough for this block
+  // Guard for atypical block sizes/channel counts. At normal sizes the
+  // buffer was preallocated in the constructor and this never triggers.
   if (mix_buffer.getNumSamples() < context.num_samples ||
       mix_buffer.getNumChannels() < num_output_channels) {
     mix_buffer.setSize(num_output_channels, context.num_samples, false, true,
                        true);
   }
-
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
 
   // === LOOP-ON-COLLAPSE MODEL (Internal Transport) ===
   // When collapsed, stack uses its OWN transport counter that wraps at
@@ -151,8 +203,10 @@ void StackNode::process(const float *const *input_channels,
   ProcessContext child_context = context;
   child_context.master_pos = child_master_pos;
 
-  // Process each child and sum their results
-  for (const auto &child : children) {
+  // Process each child and sum their results — iterating the immutable
+  // published snapshot, no locks on the audio thread.
+  const auto *kids = renderChildren();
+  for (AudioNode *child : *kids) {
     // Clear mix buffer for this specific child
     mix_buffer.clear();
 
@@ -173,19 +227,19 @@ void StackNode::process(const float *const *input_channels,
 }
 
 juce::var StackNode::getWaveform(int num_peaks) const {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
+  const auto *kids = renderChildren();
 
-  if (children.empty()) return juce::Array<juce::var>();
+  if (kids->empty()) return juce::Array<juce::var>();
 
   // If we only have one child, return its waveform directly to save compute
-  if (children.size() == 1) return children[0]->getWaveform(num_peaks);
+  if (kids->size() == 1) return (*kids)[0]->getWaveform(num_peaks);
 
   // Aggregate: Sum peaks from all children (simplified for now)
   // Future: Better recursive mixdown normalization
   juce::Array<juce::var> aggregatePeaks;
   for (int i = 0; i < num_peaks; ++i) aggregatePeaks.add(0.0f);
 
-  for (const auto &child : children) {
+  for (auto *child : *kids) {
     juce::var childWaveform = child->getWaveform(num_peaks);
     if (childWaveform.isArray()) {
       auto *childArr = childWaveform.getArray();
@@ -200,21 +254,20 @@ juce::var StackNode::getWaveform(int num_peaks) const {
   // children exist
   for (int i = 0; i < num_peaks; ++i) {
     aggregatePeaks.set(
-        i, (float)aggregatePeaks[i] / (float)std::max(1, (int)children.size()));
+        i, (float)aggregatePeaks[i] / (float)std::max(1, (int)kids->size()));
   }
 
   return aggregatePeaks;
 }
 
 AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
-
   if (getUuid() == uuid) return this;
 
-  for (auto &child : children) {
-    if (child->getUuid() == uuid) return child.get();
+  const auto *kids = renderChildren();
+  for (auto *child : *kids) {
+    if (child->getUuid() == uuid) return child;
 
-    if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
+    if (auto *stack = dynamic_cast<StackNode *>(child)) {
       if (auto *found = stack->findNodeByUuid(uuid)) return found;
     }
   }
@@ -223,14 +276,13 @@ AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
 }
 
 bool StackNode::isAnyChildRecording() const {
-  std::lock_guard<std::recursive_mutex> lock(children_mutex);
-
-  for (const auto &child : children) {
+  const auto *kids = renderChildren();
+  for (auto *child : *kids) {
     // Check if this child is recording
     if (child->is_node_recording.load()) return true;
 
     // If child is a stack, recursively check its children
-    if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
+    if (auto *stack = dynamic_cast<const StackNode *>(child)) {
       if (stack->isAnyChildRecording()) return true;
     }
   }

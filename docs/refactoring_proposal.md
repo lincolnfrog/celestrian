@@ -70,6 +70,34 @@ Drift is already observable:
 
 ### 2. Make the audio thread real-time safe
 
+> **Status: ✅ Implemented (2026-07-07).** The audio callback no longer locks,
+> allocates, logs, or copies buffers:
+>
+> - **Virtual rotation** — `commitRecording()` stores a `rotation_offset`/span
+>   applied in the read-index math (playback + `getWaveform`); the multi-second
+>   `makeCopyOf` + physical rotation is gone. Covered by a new
+>   "Virtual Rotation" unit test.
+> - **Lock-free traversal** — `StackNode` publishes an immutable child-pointer
+>   snapshot (atomic swap on every mutation); `process()` and all
+>   audio-thread iteration read one snapshot per loop. The `recursive_mutex`
+>   is deleted. *Deviation from the proposal:* mutations stay synchronous on
+>   the message thread (copy-on-write publish + epoch-based deferred free in
+>   the engine's `retire()` graveyard) instead of a command FIFO — same
+>   safety, but `createNode → getGraphState` stays synchronous for the
+>   bindings and tests.
+> - **No logging on the audio thread** — `src/rt_log.h` fixed-slot ring,
+>   drained by the message thread in `getGraphState()`.
+> - **No per-block allocation** — `ProcessContext` is POD (solo is a resolved
+>   `AudioNode*`, not a `juce::String`), `mix_buffer` preallocated, the LCM
+>   helper is a free function (no `std::function`), device latencies cached in
+>   `audioDeviceAboutToStart`.
+> - `AudioNode::parent` is atomic (audio thread walks parent chains during
+>   reorders).
+>
+> Still open (folded into later items): `getWaveform()` reads the clip buffer
+> while recording writes it (P3 note), `dynamic_cast`s per block (P1-8), and
+> the derived-quantum walk (P0-3).
+
 **Problem.** `audioDeviceIOCallbackWithContext` → `StackNode::process` → `ClipNode::process`
 currently does, on the audio thread:
 

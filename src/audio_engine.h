@@ -2,13 +2,17 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "audio_node.h"
 #include "clip_node.h"
+#include "stack_node.h"
 
-class AudioEngine : public juce::AudioIODeviceCallback {
+class AudioEngine : public juce::AudioIODeviceCallback,
+                    public celestrian::GraphReclaimer {
  public:
   AudioEngine();
   ~AudioEngine() override;
@@ -131,7 +135,19 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   void audioDeviceAboutToStart(juce::AudioIODevice *device) override;
   void audioDeviceStopped() override;
 
+  /**
+   * GraphReclaimer: defers destruction of graph objects (child snapshots,
+   * removed nodes) until the audio thread can no longer be reading them.
+   * Message thread only.
+   */
+  void retire(std::function<void()> deleter) override;
+
  private:
+  /**
+   * Runs every pending deleter. Only call when no audio callback can be in
+   * flight (device stopped, or after removeAudioCallback in the dtor).
+   */
+  void flushGraveyard();
   void init(int inputs, int outputs);
   celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
                                         const juce::String &uuid);
@@ -162,7 +178,28 @@ class AudioEngine : public juce::AudioIODeviceCallback {
   // Track the duration of the most recent recording for transport continuity
   int64_t last_recording_duration_ = 0;
 
+  // Message-thread copy for the UI (getGraphState) …
   juce::String soloed_node_uuid;
+  // … and the resolved pointer the audio thread actually uses. Cleared /
+  // re-resolved on toggleSolo; nodes are never freed while a callback might
+  // read them (see retire()).
+  std::atomic<celestrian::AudioNode *> soloed_node_ptr_{nullptr};
+
+  // Device latencies, cached in audioDeviceAboutToStart so the callback
+  // never queries the device object per block.
+  std::atomic<int> cached_input_latency_{0};
+  std::atomic<int> cached_output_latency_{0};
+
+  // Deferred destruction: retired items are freed once the callback counter
+  // has advanced two callbacks past their retirement, guaranteeing no
+  // in-flight callback still references them.
+  struct RetiredItem {
+    uint64_t epoch;
+    std::function<void()> free;
+  };
+  std::atomic<uint64_t> callback_count_{0};
+  std::mutex graveyard_mutex_;
+  std::vector<RetiredItem> graveyard_;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

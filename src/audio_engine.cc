@@ -3,13 +3,16 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "clip_node.h"
+#include "rt_log.h"
 #include "stack_node.h"
 #include "timing.h"
 
 AudioEngine::AudioEngine() {
   // Start with an empty root stack
-  root_node = std::make_unique<celestrian::StackNode>("SessionRoot");
-  focused_node = root_node.get();
+  auto root = std::make_unique<celestrian::StackNode>("SessionRoot");
+  root->setReclaimer(this);
+  focused_node = root.get();
+  root_node = std::move(root);
 }
 
 void AudioEngine::initialiseAudioDevice() { init(1, 2); }
@@ -25,7 +28,43 @@ void AudioEngine::createDefaultSession() {
   }
 }
 
-AudioEngine::~AudioEngine() { device_manager.removeAudioCallback(this); }
+AudioEngine::~AudioEngine() {
+  device_manager.removeAudioCallback(this);
+  // No callback can be in flight anymore.
+  flushGraveyard();
+  celestrian::RtLog::instance().drain();
+}
+
+void AudioEngine::retire(std::function<void()> deleter) {
+  const uint64_t now = callback_count_.load();
+  std::vector<std::function<void()>> ready;
+  {
+    std::lock_guard<std::mutex> lock(graveyard_mutex_);
+    graveyard_.push_back({now, std::move(deleter)});
+
+    // Reap: an item retired at epoch E is unreachable once the callback
+    // counter has advanced by 2 — every callback that could have loaded the
+    // old snapshot has completed by then.
+    auto still_pending = [now](const RetiredItem &item) {
+      return item.epoch + 2 > now;
+    };
+    auto it =
+        std::partition(graveyard_.begin(), graveyard_.end(), still_pending);
+    for (auto i = it; i != graveyard_.end(); ++i)
+      ready.push_back(std::move(i->free));
+    graveyard_.erase(it, graveyard_.end());
+  }
+  for (auto &free_fn : ready) free_fn();
+}
+
+void AudioEngine::flushGraveyard() {
+  std::vector<RetiredItem> pending;
+  {
+    std::lock_guard<std::mutex> lock(graveyard_mutex_);
+    pending.swap(graveyard_);
+  }
+  for (auto &item : pending) item.free();
+}
 
 void AudioEngine::init(int inputs, int outputs) {
   // Try for 8 inputs, but default to whatever the hardware provides
@@ -99,6 +138,10 @@ void AudioEngine::togglePlayback() {
 }
 
 juce::var AudioEngine::getGraphState() const {
+  // Forward any log lines queued by the audio thread (UI polls this
+  // every ~50 ms, so this doubles as the RtLog drain point).
+  celestrian::RtLog::instance().drain();
+
   if (focused_node) {
     auto metadata = focused_node->getMetadata();
     auto *obj = metadata.getDynamicObject();
@@ -347,6 +390,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     const float *const *input_channel_data, int num_input_channels,
     float *const *output_channel_data, int num_output_channels, int num_samples,
     const juce::AudioIODeviceCallbackContext &context) {
+  // Epoch for deferred reclamation (see retire()).
+  callback_count_.fetch_add(1);
+
   for (int i = 0; i < num_output_channels; ++i) {
     if (output_channel_data[i] != nullptr)
       juce::FloatVectorOperations::clear(output_channel_data[i], num_samples);
@@ -359,11 +405,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.is_playing = is_playing_global;
     pc.is_recording = true;  // Enable recording capture from inputs
     pc.master_pos = global_transport_pos;
-    if (auto *device = device_manager.getCurrentAudioDevice()) {
-      pc.input_latency = device->getInputLatencyInSamples();
-      pc.output_latency = device->getOutputLatencyInSamples();
-    }
-    pc.solo_node_uuid = soloed_node_uuid;
+    pc.input_latency = cached_input_latency_.load();
+    pc.output_latency = cached_output_latency_.load();
+    pc.solo_node = soloed_node_ptr_.load();
 
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished
@@ -384,8 +428,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         // clip This is the newest clip's duration (it was just committed)
         if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
           int64_t max_dur = 0;
-          for (int i = 0; i < stack->getNumChildren(); ++i) {
-            int64_t dur = stack->getChild(i)->getIntrinsicDuration();
+          for (auto *child : stack->getChildrenSnapshot()) {
+            int64_t dur = child->getIntrinsicDuration();
             if (dur > max_dur) max_dur = dur;
           }
           // The just-finished recording's duration is the difference from old
@@ -418,8 +462,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
           if (lcm_before_recording_ > 0) {
             if (auto *stack =
                     dynamic_cast<celestrian::StackNode *>(focused_node)) {
-              for (int i = 0; i < stack->getNumChildren(); ++i) {
-                int64_t dur = stack->getChild(i)->getIntrinsicDuration();
+              for (auto *child : stack->getChildrenSnapshot()) {
+                int64_t dur = child->getIntrinsicDuration();
                 if (dur > 0 && dur % lcm_before_recording_ != 0) {
                   is_polyrhythmic_expansion = true;
                   break;
@@ -466,8 +510,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                     dynamic_cast<celestrian::StackNode *>(focused_node)) {
               // Count clips with duration > 0 (finished recording)
               int clip_count = 0;
-              for (int i = 0; i < stack->getNumChildren(); ++i) {
-                if (stack->getChild(i)->getIntrinsicDuration() > 0) {
+              for (auto *child : stack->getChildrenSnapshot()) {
+                if (child->getIntrinsicDuration() > 0) {
                   clip_count++;
                 }
               }
@@ -477,9 +521,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
             }
 
             if (is_first_clip) {
-              juce::Logger::writeToLog(
-                  "FIRST CLIP SNAP: pos=" + juce::String(old_pos) +
-                  " → 0 (first clip finished, start from beginning)");
+              celestrian::RtLog::instance().post(
+                  "FIRST CLIP SNAP: pos=%lld -> 0 (first clip finished, "
+                  "start from beginning)",
+                  (long long)old_pos);
               new_pos = num_samples;  // Start from 0 + this block's samples
               // Skip modulo wrap - we want to start fresh at 0
               global_transport_pos.store(new_pos);
@@ -499,14 +544,26 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
   }
 }
 
-void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {}
-void AudioEngine::audioDeviceStopped() {}
+void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {
+  if (device) {
+    cached_input_latency_.store(device->getInputLatencyInSamples());
+    cached_output_latency_.store(device->getOutputLatencyInSamples());
+  }
+}
+
+void AudioEngine::audioDeviceStopped() {
+  // The callback is no longer running; everything pending is safe to free.
+  flushGraveyard();
+}
 
 void AudioEngine::toggleSolo(const juce::String &uuid) {
   if (soloed_node_uuid == uuid) {
     soloed_node_uuid = "";  // Unsolo
+    soloed_node_ptr_.store(nullptr);
   } else {
-    soloed_node_uuid = uuid;  // New solo
+    auto *node = findNodeByUuid(root_node.get(), uuid);
+    soloed_node_uuid = node ? uuid : juce::String();
+    soloed_node_ptr_.store(node);
   }
   juce::Logger::writeToLog("AudioEngine: Solo toggled for " + uuid +
                            " (Active Solo: " + soloed_node_uuid + ")");
@@ -538,6 +595,27 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
 
 // --- LCM Timeline Helpers ---
 
+namespace {
+// Recursive helper to compute LCM across all clips, even nested in stacks.
+// Plain free function (not a std::function) because this runs per block on
+// the audio thread and must not allocate. Iterates the published child
+// snapshot — one atomic load per stack, no locks.
+int64_t computeLcmRecursive(celestrian::AudioNode *node, int64_t current_lcm) {
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
+    for (auto *child : stack->getChildrenSnapshot()) {
+      current_lcm = computeLcmRecursive(child, current_lcm);
+    }
+  } else {
+    // It's a clip - use its duration for LCM
+    int64_t dur = node->getIntrinsicDuration();
+    if (dur > 0) {
+      current_lcm = celestrian::timing::lcm(current_lcm, dur);
+    }
+  }
+  return current_lcm;
+}
+}  // namespace
+
 int64_t AudioEngine::calculateTimelineLength() const {
   if (!focused_node) {
     return 44100;  // Default 1 second at 44.1kHz
@@ -546,29 +624,7 @@ int64_t AudioEngine::calculateTimelineLength() const {
   int64_t quantum = focused_node->getEffectiveQuantum();
   if (quantum <= 0) quantum = 44100;
 
-  // Recursive helper to compute LCM across all clips, even nested in stacks
-  std::function<int64_t(celestrian::AudioNode *, int64_t)> computeLCM =
-      [&computeLCM](celestrian::AudioNode *node,
-                    int64_t current_lcm) -> int64_t {
-    if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
-      // Recursively process children of this stack
-      for (int i = 0; i < stack->getNumChildren(); ++i) {
-        auto *child = stack->getChild(i);
-        current_lcm = computeLCM(child, current_lcm);
-      }
-    } else {
-      // It's a clip - use its duration for LCM
-      int64_t dur = node->getIntrinsicDuration();
-      if (dur > 0) {
-        current_lcm = celestrian::timing::lcm(current_lcm, dur);
-      }
-    }
-    return current_lcm;
-  };
-
-  int64_t result = computeLCM(focused_node, quantum);
-
-  return result;
+  return computeLcmRecursive(focused_node, quantum);
 }
 
 bool AudioEngine::isAnyNodeRecording() const {

@@ -7,8 +7,12 @@
 
 namespace celestrian {
 
+class AudioNode;
+
 /**
  * Context for audio processing, passed down the recursive graph.
+ * POD-only: this struct is copied per stack per block on the audio thread,
+ * so it must never carry heap-owning members (e.g. juce::String).
  */
 struct ProcessContext {
   double sample_rate = 44100.0;
@@ -23,8 +27,10 @@ struct ProcessContext {
   int input_latency = 0;
   int output_latency = 0;
 
-  // Solo state
-  juce::String solo_node_uuid;
+  // Solo state: resolved once by the engine on the message thread.
+  // Null when nothing is soloed. Nodes compare pointers (never strings)
+  // and walk their ancestor chain to honor soloed containers.
+  const AudioNode *solo_node = nullptr;
 };
 
 /**
@@ -114,8 +120,8 @@ class AudioNode {
   virtual float getCurrentPeak() const = 0;
 
   // Hierarchy
-  void setParent(AudioNode *p) { parent = p; }
-  AudioNode *getParent() const { return parent; }
+  void setParent(AudioNode *p) { parent.store(p); }
+  AudioNode *getParent() const { return parent.load(); }
 
   void setLoopPoints(int64_t start, int64_t end) {
     loop_start_samples.store(start);
@@ -128,7 +134,7 @@ class AudioNode {
   // Quantum Logic
   virtual int64_t getIntrinsicDuration() const = 0;
   virtual int64_t getEffectiveQuantum() const {
-    if (parent) return parent->getEffectiveQuantum();
+    if (auto *p = parent.load()) return p->getEffectiveQuantum();
     return 0;
   }
 
@@ -156,7 +162,10 @@ class AudioNode {
   // timing)
   std::atomic<int64_t> recording_start_phase{0};
 
-  AudioNode *parent = nullptr;
+  // Atomic because the audio thread walks parent chains (quantum lookup,
+  // solo ancestry) while the message thread reparents nodes during
+  // reorder/combine operations.
+  std::atomic<AudioNode *> parent{nullptr};
 
  protected:
   juce::String node_name;

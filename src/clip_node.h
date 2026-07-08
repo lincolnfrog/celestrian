@@ -94,10 +94,29 @@ class ClipNode : public AudioNode {
   const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
 
  private:
+  /**
+   * Maps a logical sample index to a physical buffer index, applying the
+   * virtual rotation set at commit. Rotation is pure index arithmetic —
+   * no samples are ever moved (moving them was a multi-second heap copy
+   * inside the audio callback).
+   */
+  int readIndexFor(int64_t logical_index, int64_t rotation,
+                   int64_t span) const {
+    if (rotation > 0 && span > 0 && logical_index < span) {
+      logical_index = (logical_index - rotation + span) % span;
+    }
+    return (int)(logical_index % buffer.getNumSamples());
+  }
+
   juce::AudioBuffer<float> buffer;
 
   std::atomic<int> write_position{0};
   std::atomic<int> read_position{0};
+
+  // Virtual rotation (set at commit): playback/waveform reads remap
+  // indices within [0, rotation_span_) by -rotation_offset_.
+  std::atomic<int64_t> rotation_offset_{0};
+  std::atomic<int64_t> rotation_span_{0};
 
   std::atomic<bool> is_recording{false};
   std::atomic<bool> is_pending_start{false};

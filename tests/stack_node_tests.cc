@@ -175,7 +175,7 @@ class StackNodeTests : public juce::UnitTest {
       ProcessContext playCtx;
       playCtx.num_samples = 10;
       playCtx.is_playing = true;
-      playCtx.solo_node_uuid = "";  // No solo
+      playCtx.solo_node = nullptr;  // No solo
 
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 1.0f) < 0.0001f,
@@ -186,7 +186,7 @@ class StackNodeTests : public juce::UnitTest {
         outL[i] = 0.0f;
         outR[i] = 0.0f;
       }
-      playCtx.solo_node_uuid = clip1Ptr->getUuid();
+      playCtx.solo_node = clip1Ptr;
 
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 0.3f) < 0.0001f,
