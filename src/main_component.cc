@@ -192,6 +192,21 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "startLatencyCalibration",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    audio_engine.startLatencyCalibration();
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "getLatencyCalibration",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    completion(audio_engine.getLatencyCalibration());
+                  })
+              .withNativeFunction(
                   "nativeLog",
                   [](const juce::Array<juce::var> &args,
                      juce::WebBrowserComponent::NativeFunctionCompletion

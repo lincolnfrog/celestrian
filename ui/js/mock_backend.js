@@ -41,6 +41,8 @@ export const handlers = {
     combineNodes: (draggedId, targetId) => combineNodes(draggedId, targetId),
     getInputList: () => getInputList(),
     setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
+    startLatencyCalibration: () => startLatencyCalibration(),
+    getLatencyCalibration: () => getLatencyCalibration(),
     setLoopPoints: (id, start, end) => setLoopPoints(id, start, end),
     togglePlay: (id) => togglePlay(id),
     toggleSolo: (id) => toggleSolo(id),
@@ -274,6 +276,31 @@ function setNodeInput(id, channelIndex) {
         node.inputChannel = channelIndex;
         console.log('[MockBackend] Set input:', id, '→ channel', channelIndex);
     }
+}
+
+// Latency calibration (docs/performance.md §7). The mock simulates a 2 s
+// capture window and reports a plausible fixed round trip.
+let calibration = { phase: 'idle', startedAt: 0, roundTripSamples: -1 };
+const MOCK_ROUND_TRIP_SAMPLES = 1024;
+
+function startLatencyCalibration() {
+    calibration = { phase: 'capturing', startedAt: Date.now(), roundTripSamples: -1 };
+    console.log('[MockBackend] Latency calibration started');
+    return true;
+}
+
+function getLatencyCalibration() {
+    if (calibration.phase === 'capturing' && Date.now() - calibration.startedAt >= 2000) {
+        calibration.phase = 'done';
+        calibration.roundTripSamples = MOCK_ROUND_TRIP_SAMPLES;
+    }
+    const calibrated = calibration.roundTripSamples >= 0;
+    return {
+        phase: calibration.phase,
+        roundTripSamples: calibration.roundTripSamples,
+        roundTripMs: calibrated ? (calibration.roundTripSamples / 44100) * 1000 : -1,
+        calibrated,
+    };
 }
 
 function setLoopPoints(id, loopStart, loopEnd) {

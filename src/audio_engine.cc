@@ -149,6 +149,7 @@ juce::var AudioEngine::getGraphState() const {
     obj->setProperty("masterPos", (double)global_transport_pos.load());
     obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
+    obj->setProperty("perf", makePerfState());
     return metadata;
   }
 
@@ -157,6 +158,7 @@ juce::var AudioEngine::getGraphState() const {
   state->setProperty("masterPos", (double)global_transport_pos.load());
   state->setProperty("soloedId", soloed_node_uuid);
   state->setProperty("nodes", juce::Array<juce::var>());
+  state->setProperty("perf", makePerfState());
   return juce::var(state.get());
 }
 
@@ -390,12 +392,66 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     const float *const *input_channel_data, int num_input_channels,
     float *const *output_channel_data, int num_output_channels, int num_samples,
     const juce::AudioIODeviceCallbackContext &context) {
+  juce::ScopedNoDenormals no_denormals;
+
   // Epoch for deferred reclamation (see retire()).
   callback_count_.fetch_add(1);
+
+  // --- Instrumentation: entry gap (xrun detection) ---
+  const int64_t entry_ticks = juce::Time::getHighResolutionTicks();
+  if (last_entry_ticks_ != 0) {
+    const double tps = (double)juce::Time::getHighResolutionTicksPerSecond();
+    const double gap_s = (double)(entry_ticks - last_entry_ticks_) / tps;
+    const double period_s =
+        (double)num_samples / cached_sample_rate_.load();
+    // Gaps well beyond one block period mean the device starved (ignore
+    // long idle gaps — those are stop/start, not overruns).
+    if (gap_s > 2.0 * period_s && gap_s < 0.5) xrun_count_.fetch_add(1);
+  }
+  last_entry_ticks_ = entry_ticks;
 
   for (int i = 0; i < num_output_channels; ++i) {
     if (output_channel_data[i] != nullptr)
       juce::FloatVectorOperations::clear(output_channel_data[i], num_samples);
+  }
+
+  // --- Latency calibration pass (docs/performance.md §7) ---
+  // While capturing: mirror the input into the calibration buffer and emit
+  // the click into the outputs. Same block index for both sides, so the
+  // capture timeline and the emission timeline are identical by
+  // construction. Everything here is preallocated and bounded.
+  if (calibration_phase_.load() == (int)CalibrationPhase::Capturing) {
+    const int cap_len = calibration_capture_.getNumSamples();
+    int wp = calibration_write_pos_.load();
+    const int n = std::min(num_samples, cap_len - wp);
+
+    if (n > 0) {
+      if (num_input_channels > 0 && input_channel_data[0] != nullptr) {
+        calibration_capture_.copyFrom(0, wp, input_channel_data[0], n);
+      }
+
+      // Click: 128 samples, decaying from full scale, starting at
+      // calibration_click_pos_ on the shared timeline.
+      constexpr int kClickLen = 128;
+      for (int i = 0; i < n; ++i) {
+        const int t = wp + i;
+        const int k = t - calibration_click_pos_;
+        if (k >= 0 && k < kClickLen) {
+          const float v = 0.9f * (1.0f - (float)k / (float)kClickLen);
+          for (int ch = 0; ch < num_output_channels; ++ch) {
+            if (output_channel_data[ch] != nullptr)
+              output_channel_data[ch][i] += v;
+          }
+        }
+      }
+
+      wp += n;
+      calibration_write_pos_.store(wp);
+    }
+
+    if (wp >= cap_len) {
+      calibration_phase_.store((int)CalibrationPhase::Done);
+    }
   }
 
   if (root_node) {
@@ -405,8 +461,17 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.is_playing = is_playing_global;
     pc.is_recording = true;  // Enable recording capture from inputs
     pc.master_pos = global_transport_pos;
-    pc.input_latency = cached_input_latency_.load();
-    pc.output_latency = cached_output_latency_.load();
+    // Recording alignment: a measured round-trip (empirical calibration)
+    // supersedes the driver-reported latencies, which are often wrong or
+    // zero on consumer hardware.
+    const int64_t measured = measured_latency_samples_.load();
+    if (measured >= 0) {
+      pc.input_latency = (int)measured;
+      pc.output_latency = 0;
+    } else {
+      pc.input_latency = cached_input_latency_.load();
+      pc.output_latency = cached_output_latency_.load();
+    }
     pc.solo_node = soloed_node_ptr_.load();
 
     // Update Global Quantum Propagation:
@@ -531,6 +596,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
               // Clear recording state vars for consistency
               lcm_before_recording_ = 0;
               last_recording_duration_ = 0;
+              updatePerfMeters(entry_ticks, num_samples);
               return;  // Exit early to avoid modulo wrap overwriting our reset
             }
           }
@@ -542,12 +608,136 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       global_transport_pos.store(new_pos);
     }
   }
+
+  updatePerfMeters(entry_ticks, num_samples);
+}
+
+void AudioEngine::updatePerfMeters(int64_t entry_ticks, int num_samples) {
+  const double tps = (double)juce::Time::getHighResolutionTicksPerSecond();
+  const double duration_s =
+      (double)(juce::Time::getHighResolutionTicks() - entry_ticks) / tps;
+  const double period_s = (double)num_samples / cached_sample_rate_.load();
+
+  const int64_t us = (int64_t)(duration_s * 1.0e6);
+  if (us > max_block_us_.load()) max_block_us_.store(us);
+
+  if (period_s > 0.0) {
+    const double load = duration_s / period_s;
+    // Single writer (audio thread): plain read-modify-write is fine.
+    avg_dsp_load_.store(0.9 * avg_dsp_load_.load() + 0.1 * load);
+  }
+}
+
+juce::var AudioEngine::makePerfState() const {
+  juce::DynamicObject::Ptr perf = new juce::DynamicObject();
+  perf->setProperty("maxBlockUs", (double)max_block_us_.load());
+  perf->setProperty("avgLoadPct", avg_dsp_load_.load() * 100.0);
+  perf->setProperty("xruns", (double)xrun_count_.load());
+
+  const int64_t measured = measured_latency_samples_.load();
+  const int64_t effective =
+      measured >= 0
+          ? measured
+          : cached_input_latency_.load() + cached_output_latency_.load();
+  perf->setProperty("latencyCompensationSamples", (double)effective);
+  perf->setProperty("calibrated", measured >= 0);
+  return juce::var(perf.get());
+}
+
+// --- Latency Calibration (docs/performance.md §7) ---
+
+void AudioEngine::startLatencyCalibration() {
+  // Preallocate the capture buffer on the message thread BEFORE flipping
+  // the phase — the audio thread only ever writes into existing storage.
+  const double sr = cached_sample_rate_.load();
+  const int capture_len = (int)(sr * 2.0);  // 2 s window
+  calibration_capture_.setSize(1, capture_len, false, true, false);
+  calibration_capture_.clear();
+  calibration_click_pos_ = (int)(sr * 0.25);  // 250 ms of noise-floor lead-in
+  calibration_write_pos_.store(0);
+  measured_latency_samples_.store(-1);  // fall back to reported until done
+
+  juce::Logger::writeToLog(
+      "AudioEngine: Latency calibration started (capture " +
+      juce::String(capture_len) + " samples, click at " +
+      juce::String(calibration_click_pos_) + ")");
+
+  calibration_phase_.store((int)CalibrationPhase::Capturing);
+}
+
+juce::var AudioEngine::getLatencyCalibration() {
+  const double sr = cached_sample_rate_.load();
+
+  // Run onset detection once, on the message thread, when capture is done.
+  if (calibration_phase_.load() == (int)CalibrationPhase::Done &&
+      measured_latency_samples_.load() < 0) {
+    const float *data = calibration_capture_.getReadPointer(0);
+    const int len = calibration_capture_.getNumSamples();
+    const int click = calibration_click_pos_;
+
+    // Noise floor from the lead-in, peak from the post-click region.
+    float floor_level = 0.0f;
+    for (int i = 0; i < click; ++i)
+      floor_level = std::max(floor_level, std::abs(data[i]));
+    float peak = 0.0f;
+    for (int i = click; i < len; ++i)
+      peak = std::max(peak, std::abs(data[i]));
+
+    // Need a clear response well above the room/line noise.
+    if (peak < std::max(0.02f, floor_level * 4.0f)) {
+      calibration_phase_.store((int)CalibrationPhase::Failed);
+      juce::Logger::writeToLog(
+          "AudioEngine: Latency calibration FAILED — no loopback signal "
+          "detected (peak=" +
+          juce::String(peak) + ", floor=" + juce::String(floor_level) + ")");
+    } else {
+      const float threshold = std::max(floor_level * 4.0f, peak * 0.3f);
+      for (int i = click; i < len; ++i) {
+        if (std::abs(data[i]) >= threshold) {
+          measured_latency_samples_.store(i - click);
+          break;
+        }
+      }
+      juce::Logger::writeToLog(
+          "AudioEngine: Latency calibration DONE — round trip = " +
+          juce::String(measured_latency_samples_.load()) + " samples (" +
+          juce::String(measured_latency_samples_.load() / sr * 1000.0, 2) +
+          " ms)");
+    }
+  }
+
+  juce::DynamicObject::Ptr result = new juce::DynamicObject();
+  const int phase = calibration_phase_.load();
+  const char *phase_name =
+      phase == (int)CalibrationPhase::Capturing  ? "capturing"
+      : phase == (int)CalibrationPhase::Done     ? "done"
+      : phase == (int)CalibrationPhase::Failed   ? "failed"
+                                                 : "idle";
+  const int64_t measured = measured_latency_samples_.load();
+  result->setProperty("phase", phase_name);
+  result->setProperty("roundTripSamples", (double)measured);
+  result->setProperty("roundTripMs",
+                      measured >= 0 ? measured / sr * 1000.0 : -1.0);
+  result->setProperty("calibrated", measured >= 0);
+  return juce::var(result.get());
 }
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {
   if (device) {
     cached_input_latency_.store(device->getInputLatencyInSamples());
     cached_output_latency_.store(device->getOutputLatencyInSamples());
+    cached_sample_rate_.store(device->getCurrentSampleRate());
+    cached_block_size_.store(device->getCurrentBufferSizeSamples());
+
+    // Latency self-report (docs/performance.md §6.3): if the reported
+    // latencies are zero, recording compensation is a no-op and empirical
+    // calibration is the only trustworthy source.
+    juce::Logger::writeToLog(
+        "AudioEngine: Device started: '" + device->getName() +
+        "' sr=" + juce::String(device->getCurrentSampleRate()) +
+        " block=" + juce::String(device->getCurrentBufferSizeSamples()) +
+        " inLatency=" + juce::String(device->getInputLatencyInSamples()) +
+        " outLatency=" + juce::String(device->getOutputLatencyInSamples()));
   }
 }
 

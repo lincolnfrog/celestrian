@@ -135,6 +135,25 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void audioDeviceAboutToStart(juce::AudioIODevice *device) override;
   void audioDeviceStopped() override;
 
+  // --- Latency Calibration (see docs/performance.md §7) ---
+  /**
+   * Arms an empirical round-trip latency measurement: the next callbacks
+   * emit a click into the outputs while capturing the input. With a
+   * loopback path in place (cable, or speaker→mic), the click's arrival
+   * offset in the capture IS the true end-to-end latency — superseding
+   * whatever the device driver claims. Message thread only.
+   */
+  void startLatencyCalibration();
+
+  /**
+   * Returns { phase, roundTripSamples, roundTripMs, calibrated }. When the
+   * capture has completed, this call runs the onset detection (message
+   * thread) and stores the measured value; from then on recording
+   * compensation uses the empirical number instead of the device-reported
+   * latencies.
+   */
+  juce::var getLatencyCalibration();
+
   /**
    * GraphReclaimer: defers destruction of graph objects (child snapshots,
    * removed nodes) until the audio thread can no longer be reading them.
@@ -189,6 +208,30 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // never queries the device object per block.
   std::atomic<int> cached_input_latency_{0};
   std::atomic<int> cached_output_latency_{0};
+  std::atomic<double> cached_sample_rate_{44100.0};
+  std::atomic<int> cached_block_size_{512};
+
+  // --- Callback instrumentation (docs/performance.md §6) ---
+  /** Builds the "perf" object attached to every getGraphState result. */
+  juce::var makePerfState() const;
+  /** Updates duration/load/xrun counters; called at every callback exit. */
+  void updatePerfMeters(int64_t entry_ticks, int num_samples);
+
+  std::atomic<int64_t> max_block_us_{0};   // worst callback duration seen
+  std::atomic<double> avg_dsp_load_{0.0};  // decaying avg of duration/period
+  std::atomic<int64_t> xrun_count_{0};     // suspicious inter-callback gaps
+  int64_t last_entry_ticks_ = 0;           // audio thread only
+
+  // --- Latency calibration state ---
+  enum class CalibrationPhase : int { Idle = 0, Capturing, Done, Failed };
+
+  std::atomic<int> calibration_phase_{(int)CalibrationPhase::Idle};
+  juce::AudioBuffer<float> calibration_capture_;  // sized on message thread
+  std::atomic<int> calibration_write_pos_{0};
+  int calibration_click_pos_ = 0;  // written before phase flips, then const
+  // Empirical round-trip latency in samples; -1 = uncalibrated. When >= 0
+  // it supersedes cached_*_latency_ in the recording compensation.
+  std::atomic<int64_t> measured_latency_samples_{-1};
 
   // Deferred destruction: retired items are freed once the callback counter
   // has advanced two callbacks past their retirement, guaranteeing no

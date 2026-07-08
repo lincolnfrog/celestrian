@@ -149,6 +149,43 @@ export function initApp() {
         });
     }
 
+    // Latency calibration (docs/performance.md §7): plays a click, listens
+    // for it on the input, and the measured round trip becomes the recording
+    // alignment compensation.
+    const calibrateBtn = document.getElementById('calibrate-btn');
+    const calibrationStatus = document.getElementById('calibration-status');
+    if (calibrateBtn) {
+        calibrateBtn.addEventListener('click', async () => {
+            try {
+                calibrateBtn.disabled = true;
+                calibrationStatus.textContent = 'Calibrating… (keep quiet, click incoming)';
+                await callNative('startLatencyCalibration');
+
+                // Poll until the 2s capture window completes
+                let result = null;
+                for (let i = 0; i < 40; i++) {
+                    await new Promise(r => setTimeout(r, 250));
+                    result = await callNative('getLatencyCalibration');
+                    if (result && result.phase !== 'capturing') break;
+                }
+
+                if (result && result.calibrated) {
+                    calibrationStatus.textContent =
+                        `Latency: ${result.roundTripSamples} samples (${result.roundTripMs.toFixed(1)} ms) — now used for recording alignment`;
+                    log(`Latency calibrated: ${result.roundTripSamples} samples`);
+                } else {
+                    calibrationStatus.textContent =
+                        'Calibration failed — no loopback signal. Route output to input (cable or speaker→mic) and retry.';
+                    log('Latency calibration failed');
+                }
+            } catch (err) {
+                calibrationStatus.textContent = 'Calibration error: ' + err.message;
+            } finally {
+                calibrateBtn.disabled = false;
+            }
+        });
+    }
+
     startPolling();
     window.addEventListener('bridge-ready', () => {
         fetchInputs();

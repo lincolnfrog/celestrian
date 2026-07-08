@@ -45,6 +45,10 @@
     <div id="debug-panel"
         style="position: fixed; bottom: 10px; right: 10px; display: flex; flex-direction: column; gap: 5px; z-index: 1000; align-items: flex-end;">
         <div id="debug-log">Log initialized...</div>
+        <div id="calibration-status" style="font-size: 10px; opacity: 0.8;"></div>
+        <button id="calibrate-btn" class="btn-transport" style="font-size: 10px; padding: 4px 8px;"
+            title="Measure real round-trip latency: plays a click and listens for it on the input. Use a loopback cable or let the mic hear the speakers. See docs/performance.md">🎯
+            Calibrate Latency</button>
         <button id="dump-state-btn" class="btn-transport" style="font-size: 10px; padding: 4px 8px;">📦 Dump
             State</button>
     </div>

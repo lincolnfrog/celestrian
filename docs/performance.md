@@ -248,39 +248,110 @@ not duplicated here.
 
 What we can't measure we will regress. Cheap, permanent instrumentation:
 
-1. **Callback duration meter:** in the callback, sample
-   `juce::Time::getHighResolutionTicks()` at entry/exit; store max and a
-   decaying average in atomics; expose via `getGraphState` (`dspLoadPct`,
-   `maxBlockUs`). JUCE also offers `AudioDeviceManager::getCpuUsage()`.
-   Surface it in a debug corner of the UI.
-2. **Overrun (xrun) detector:** if `entry_time - last_entry_time` exceeds
-   ~1.5 × block duration, increment an atomic counter — visible evidence of
-   dropouts, before users describe them as "vibes".
-3. **Latency self-report:** log block size + reported input/output latency
-   every `audioDeviceAboutToStart` (message-thread log, allowed).
-4. **Loopback calibration test** (§3) as a documented manual procedure; if
-   we ever ship on varied hardware, automate it as an in-app "calibrate"
-   button that measures true round-trip and stores a correction offset.
+1. **Callback duration meter** — ✅ *implemented (2026-07-07)*. The callback
+   samples `getHighResolutionTicks()` at entry/exit
+   (`AudioEngine::updatePerfMeters`); max duration and a decaying load
+   average live in atomics and ship in every `getGraphState()` result as
+   `perf.maxBlockUs` / `perf.avgLoadPct`.
+2. **Overrun (xrun) detector** — ✅ *implemented*. Entry-to-entry gaps
+   beyond 2 × block period (and < 0.5 s, to exclude stop/start idle) bump
+   `perf.xruns`.
+3. **Latency self-report** — ✅ *implemented*. `audioDeviceAboutToStart`
+   logs device name, sample rate, block size, and reported input/output
+   latencies, and caches sample rate/block size for the meters. If that log
+   line shows zero latencies, driver-based compensation is a no-op —
+   calibrate (§7).
+4. **Loopback calibration** — ✅ *implemented as an in-app feature*, see §7.
 5. **Perf regression harness:** a test target that builds a deep/wide graph
    (e.g. 4 stacks × 16 clips × 30 s) and times 1000 callback invocations —
    fails if the p99 block cost exceeds a budget (say 20 % of block duration).
    This is the same manual-callback pattern the unit tests already use, so
-   it's deterministic and CI-safe.
+   it's deterministic and CI-safe. *(Not built yet.)*
 6. **Static guardrails:** CI grep over `src/` for `Logger::writeToLog`,
    `makeCopyOf`, `setSize`, `std::function` construction, and `44100`
    literals inside the known audio-thread files; the list of allowed
    exceptions lives next to the check. Crude but catches the common
-   regressions at review speed.
+   regressions at review speed. *(Not built yet.)*
+
+`juce::ScopedNoDenormals` now guards the callback (§4.4 done).
 
 ---
 
-## 7. Suggested order of attack
+## 7. Empirical latency calibration (implemented 2026-07-07)
 
-1. Instrumentation first (§6.1–6.3) — an hour, and it converts the record
-   latency suspicion into a number.
-2. Loopback measurement (§3) — decides whether the fix is the pre-record
-   ring, device config, or both.
-3. Pre-record ring buffer (§3) — the actual record-latency fix.
+**The idea** (credit: user request): don't trust what the driver reports —
+*measure* the machine. Record the playback of something we ourselves
+emitted; the offset between "when we played it" and "when it came back in
+the input" is the true round-trip latency of this exact device chain. That
+empirical number then drives all session recording alignment.
+
+**Implementation** (impulse variant of the record-the-playback idea — same
+measurement, sharper onset than re-recording a clip):
+
+1. `AudioEngine::startLatencyCalibration()` (bridge:
+   `startLatencyCalibration`) preallocates a 2 s capture buffer on the
+   message thread and arms the callback.
+2. While capturing, the callback mirrors input channel 0 into the capture
+   buffer and, 250 ms in (after establishing a noise floor), emits a
+   128-sample decaying click into the outputs. Emission and capture share
+   the same block timeline, so no clock bookkeeping is needed. Everything
+   is preallocated and bounded — the calibration pass is itself RT-safe.
+3. `getLatencyCalibration()` (message thread) runs onset detection when the
+   window completes: noise floor from the lead-in, then the first
+   post-click sample exceeding `max(4 × floor, 0.3 × peak)`. Its offset
+   from the emission point **is** the round trip. Returns
+   `{ phase, roundTripSamples, roundTripMs, calibrated }`; fails cleanly
+   (`phase: "failed"`) when no loopback signal is detected.
+4. **The measured value supersedes the driver.** In the callback:
+
+   ```cpp
+   measured >= 0 ? pc.input_latency = measured   // empirical round trip
+                 : (reported input + output latencies as before)
+   ```
+
+   `ClipNode`'s `compensated_pos = master_pos − (input + output)` math is
+   unchanged — it just gets a number that is now *true by construction*.
+
+**How to run it:** the 🎯 *Calibrate Latency* button in the debug panel
+(`ui/index.html`, wired in `app.js`). Route output to input first — a
+patch cable is ideal; speakers→mic works too (add ~1 ms per 34 cm of air
+between speaker and mic). Keep the room quiet for the 2 s window.
+
+**State surfaces:** `getGraphState().perf` reports
+`latencyCompensationSamples` (the effective value in use) and `calibrated`
+(whether it's empirical or driver-reported).
+
+**Tests:** `tests/latency_calibration_tests.cc` feeds engine output back to
+engine input through a synthetic delay line of exactly 700 samples and
+asserts the measurement returns 700 and becomes the effective compensation;
+plus clean-failure (silent input) and perf-meter coverage.
+
+**Known limitations / follow-ups:**
+
+- The measured value is **not persisted** — it lives for the engine's
+  lifetime. Follow-up: store per-device (device name + sample rate + buffer
+  size key) and reload on `audioDeviceAboutToStart`; invalidate when the
+  device config changes.
+- Acoustic calibration includes speaker→mic flight time, which inflates the
+  number slightly relative to an electrical loopback. For our purposes
+  (aligning what the mic heard to what the speakers played) that inflation
+  is actually *correct* — it's the real path the user's audio takes.
+- Calibration measures channel 0 only; per-channel offsets on exotic
+  interfaces are out of scope.
+- Calibration corrects the *timestamps*. The first `latency` samples of
+  audio are still physically lost until the pre-record ring (§3) exists —
+  these two features complete each other: the ring recovers the audio, the
+  calibration tells it exactly how much to recover.
+
+---
+
+## 8. Suggested order of attack
+
+1. ~~Instrumentation~~ ✅ done (§6.1–6.3).
+2. ~~Loopback measurement~~ ✅ done — run the 🎯 button on real hardware to
+   get your machine's number.
+3. Pre-record ring buffer (§3) — the actual record-latency fix; sized by
+   the calibrated number from §7.
 4. Device config: explicit buffer size + sane channel request (§4.1–4.2).
 5. Sample-rate capture, P0-5 (§4.3) — prerequisite for trusting any of the
    above on non-44.1 k hardware.

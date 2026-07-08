@@ -47,6 +47,12 @@ export const BRIDGE_METHODS = [
     { name: 'getInputList', params: [], returns: '{ inputs: string[] }' },
     { name: 'setNodeInput', params: ['uuid', 'channelIndex'] },
 
+    // Latency calibration (docs/performance.md §7): emits a click while
+    // capturing input; the measured round-trip supersedes device-reported
+    // latencies in recording alignment.
+    { name: 'startLatencyCalibration', params: [], returns: 'true' },
+    { name: 'getLatencyCalibration', params: [], returns: '{ phase, roundTripSamples, roundTripMs, calibrated }' },
+
     // Debug
     { name: 'nativeLog', params: ['message'] },
 ];
