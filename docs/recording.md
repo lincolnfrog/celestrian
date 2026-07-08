@@ -3,6 +3,16 @@
 ## Core Philosophy: Audio Memory Principle
 > Recorded audio must always play back aligned with the audio the performer heard during recording. The performer's timing is relative to what they heard—this relationship is sacred.
 
+> [!IMPORTANT]
+> **Principle hierarchy (owner ruling 2026-07-07):** Audio Memory is the
+> *only* timing principle. Everything else in this document — LCM
+> timelines, quantum snapping, anchors, launch points, ghosts — is
+> downstream machinery in service of it, or of making it visually
+> legible. The one sanctioned exception: explicit edits (dragging clips,
+> changing launch points or loop windows) are the user deliberately
+> decoupling a performance from its recorded context.
+> See `design_language.md` (invariants I1–I8) for the full statement.
+
 ---
 
 ## Visual Feedback During Recording
@@ -28,6 +38,15 @@ The **first recorded clip** establishes the quantum:
 - `Q = first_clip.duration` (in samples)
 - All subsequent clips are measured/aligned relative to Q
 - Quantum represents "one bar" or "one loop" of the rhythmic grid
+
+> [!IMPORTANT]
+> **Q survives its creator (owner ruling 2026-07-07).** The first take
+> sets the groove; muting or even deleting it must NOT change Q — "the
+> DNA of the original scratch track remains." Q is island state, not a
+> derivation from surviving clips. (The current implementation derives Q
+> from the minimum child duration, so deleting/shortening clips silently
+> changes it — that is a confirmed bug, fixed by refactoring_proposal.md
+> P0-3 storing Q explicitly.)
 
 ---
 
@@ -239,8 +258,12 @@ Clip 3:          [████████████████████�
 - When master=0, Clip 3 plays from 6Q position
 - When master=2Q, Clip 3 is at position 0 (**aligned with recording!**)
 
-**Note on Buffer Rotation:**
-In cases where the `visual_start` (determined by context) differs from the `audio_phase` (determined by global transport), the audio buffer must be **rotated** to align the waveform with the playhead. For example, if recording starts at Global 14Q (Phase 2 of 4Q) but context implies Visual 0Q, we capture at Phase 2 but display at Phase 0. To align, we rotate buffer so "Start Audio" moves to "Phase 2".
+**Note on Rotation (virtual since 2026-07-07):**
+In cases where the `visual_start` (determined by context) differs from the `audio_phase` (determined by global transport), reads are **virtually rotated** to align the waveform with the playhead. For example, if recording starts at Global 14Q (Phase 2 of 4Q) but context implies Visual 0Q, we capture at Phase 2 but display at Phase 0. The rotation is pure index arithmetic applied in playback and waveform reads (`rotation_offset`/`rotation_span` in `ClipNode`) — samples are never physically moved; the old physical buffer rotation was removed as an audio-thread hazard (performance.md §1).
+
+---
+
+### Example 3: One-Shot (doesn't fill context)
 Short clip recorded mid-timeline, doesn't fill context:
 ```
 Timeline:  |----Q----|----Q----|----Q----|----Q----|

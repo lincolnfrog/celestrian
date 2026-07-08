@@ -383,6 +383,18 @@ function renderNode(node, parentStack) {
 
 ## Stack Loop Processing (Implementation Details)
 
+> [!CAUTION]
+> **Owner ruling 2026-07-07 contradicts this model.** Per
+> design_language.md I6b (View Purity): *"Collapsing just displays the
+> full LCM of the stack; the sound shouldn't change."* The
+> Loop-on-Collapse model below — implemented in `stack_node.cc` and
+> covered by `stack_loop_tests.cc` — makes collapse audibly activate the
+> loop window, which violates that ruling. This section is retained as
+> accurate documentation of **current behavior** until the redesign
+> (likely: an explicit active/bypassed state on the loop window,
+> independent of expansion; recording semantics inside an active window
+> TBD). Tracked in tasks.md §Open Design Questions.
+
 > [!IMPORTANT]
 > This section documents the **Loop-on-Collapse** model for stack-level loop regions.
 

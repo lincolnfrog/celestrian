@@ -161,6 +161,7 @@ These items address dead code, abstraction violations, and debug artifacts that 
 ## Open Design Questions (Unresolved)
 
 These are documented questions without answers yet. Resolving them may spawn new tasks.
+(2026-07-07: see also `design_language.md` §5 for the reviewed question set and owner rulings.)
 
 | # | Question | Source |
 |---|----------|--------|
@@ -168,4 +169,16 @@ These are documented questions without answers yet. Resolving them may spawn new
 | 2 | How to handle quantum mismatches between connected islands? | `implementation.md` L267-268 |
 | 3 | "Breaking out" a stack from an island — UX and implementation? | `implementation.md` L270-272 |
 | 4 | Connecting stacks after Q is established — polyrhythmic interaction? | `recording.md` L69 |
-| 5 | Warning UX for very large LCMs (coprime durations)? | `recording.md` L549 |
+| 5 | Warning UX for very large LCMs (coprime durations)? — still open; note the *model* question behind it was resolved: LCM is display-only machinery (Q2 ruling) | `recording.md`, `design_language.md` Q2 |
+| 6 | **Loop-window activation redesign** — owner ruled collapse must be sound-neutral (I6b), contradicting the implemented Loop-on-Collapse model; loop windows need an explicit active/bypassed state, with recording-inside-active-window semantics specified | `design_language.md` Q4, `stacks.md` caution banner |
+| 7 | **Record on a composite (TODO — discuss)** — what does ⏺ on a stack mean? Proposal on the table: "new take-clip inside, aligned to the stack's cycle" (→ take lanes/comping) | `design_language.md` Q7 |
+| 8 | **Origin/anchor units under Warp (TODO — discuss when warp is real)** — samples vs Q-fractions; cheap to decide before P0-3, expensive after | `design_language.md` Q9, `kernel.md` §6 |
+| 9 | Grid honesty when auto-quantize is disabled (I2 vs authoritative grid) — not yet reviewed | `design_language.md` Q3 |
+| 10 | Precise one-shot definition (current formula is garbled; period-source proposal on the table) — not yet reviewed | `design_language.md` Q5 |
+| 11 | Serial composition semantics for box connections (Segment 9) — not yet reviewed | `design_language.md` Q6 |
+| 12 | Transport/solo semantics with multiple islands — not yet reviewed | `design_language.md` Q10 |
+
+### Resolved 2026-07-07 (owner rulings — see design_language.md §5)
+- **Q survives its creator**: no Q re-seating feature; muting/deleting the first clip must not change Q → P0-3 stores Q (+ epoch) at the island root. Current derived-min behavior is a confirmed bug.
+- **LCM is display machinery**: Audio Memory (I1) is the sole timing principle; explicit edits are the sanctioned decoupling.
+- **Collapse is display-only** (I6b) → spawned question 6 above.

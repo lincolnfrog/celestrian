@@ -42,6 +42,7 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 
 > [!IMPORTANT]
 > **Audio Memory Principle**: Recorded audio must always play back aligned with the audio the performer heard during recording. The performer's timing is relative to what they heard—this relationship is sacred and must be preserved by default. Only explicit user action (editing launch point or loop regions) should break this invariant.
+> *(Owner ruling 2026-07-07: this is THE prime invariant — all other timing machinery, including the LCM timeline, is downstream of it. The full invariant set lives in `design_language.md`.)*
 
 > [!IMPORTANT]
 > **UI = Data Principle**: The visual representation must be a **direct, faithful representation** of the underlying data model. The UI should not "play games" with the data—no transformations, no derived calculations that diverge from the base model. What the user sees is exactly what the data represents. If there's a discrepancy between what makes sense visually and what the data model says, **fix the data model**, not the UI.
@@ -88,7 +89,7 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Unitized Editing**: Loop ranges and cuts applied to a Box affect the timing of all internal clips simultaneously as a single logical block.
     - **Hierarchical Automation**: Automation envelopes applied to a Box act as a global "VCA" or offset for all internal child automation/parameters.
 
-### 6. Interaction & UI Design
+### 3. Interaction & UI Design
 * **The Plus (+) Button**:
     - **Contextual Spawning**: Clips and Boxes should spawn near the originating interaction point.
     - **Stack-Specific (+)**: Every vertical stack has its own `(+)` button anchored to its base. This button adds a new clip to that specific stack.
@@ -103,7 +104,7 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Visual Growth**: During recording, if the performance exceeds the initial quantum length (e.g., 3x quantum), the clip's horizontal representation in the UI grows proportionally to reflect its actual content.
     - **Stepped Stepping Zoom**: If a growing clip starts to exceed the bounds of the current viewport, the system automatically "zooms out" in discrete steps (rather than a jarring continuous zoom) to ensure the entire active recording remains visible.
 
-### 5. Navigation & Viewport (ZUI)
+### 4. Navigation & Viewport (ZUI)
 * **Contextual Zoom**: The screen represents the "Current Active Box."
 * **Dive/Exit Mechanics**: 
     - **Double-Click**: Zooms "inside" a child box, making it the new context.
@@ -113,7 +114,7 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Zoom**: Mouse wheel or **[Q, E]** keys.
 * **Slick Transitions**: Modern CSS/JS animations to maintain spatial orientation during zooms.
 
-### 6. The "Stack" Architecture
+### 5. The "Stack" Architecture
 Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
 * **Visual Grouping**: The UI automatically groups nodes that are vertically aligned (similar X coordinates) into visual stacks.
 * **Stack Creation**: Each stack gets a dedicated `(+)` button at the bottom, allowing users to extend that specific rhythmic/instrumental idea.
@@ -121,8 +122,17 @@ Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
 * **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
     - **Seamless Rotation**: Recordings utilize "Cyclic Shift" logic: they start immediately but are post-processed via buffer rotation to align with the master loop's start point.
 
-### 7. Virtual Timeline & Clip Types
+### 6. Virtual Timeline & Clip Types
 The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in a traditional DAW:
+
+> [!WARNING]
+> The looping/one-shot formulas below are garbled as written
+> (`anchor % duration` is always `< duration`, so the one-shot condition
+> is unsatisfiable). The prose intent, per Example 3 in recording.md, is
+> roughly "one-shot ⇔ the clip doesn't fill its context." A precise
+> definition is pending owner review — see design_language.md Q5, which
+> proposes: one-shot ⇔ the clip's *period* is the context cycle rather
+> than its own length.
 
 * **Looping Clips** (`duration >= anchor_position % duration`):
     - Standard behavior: clip repeats continuously
@@ -150,11 +160,12 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
     
 
 ### 7. Playback & Focus Logic
+<!-- (numbering fixed 2026-07-07; sections now sequential) -->
 * **The Global Super-Structure**: Play/stop behaves as a single unit by default. 
 * **Focus Playhead**: Selected nodes show a **Playhead Cursor** looping at `master_time % node_duration`.
 * **Contextual Solo**: Users can solo the current box context while editing to hear it in isolation.
 
-### 3. Loop Region Selection
+### 8. Loop Region Selection
 * **Decoupled Playback**: Every `ClipNode` maintains a distinct **Loop Start** and **Loop End** (in samples).
 * **Automatic Provisioning**: Upon capture, these are set based on the Hysteresis Snap logic (see Section 1).
 * **Manual Manipulation**: The UI provides handles to resize or slide the loop region within the larger recorded buffer.
@@ -162,7 +173,7 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
 * **Intelligent Edge Analysis**: Automatic waveform analysis to find optimal zero-crossing or low-transient points at selection boundaries to prevent pops/clicks.
 * **Crossfade Synthesis**: Automatic smoothing and phase alignment between non-contiguous loop ranges.
 
-### 4. Corpus & Automation
+### 9. Corpus & Automation
 * **Global Settings**: A centralized store for user-tunable engine parameters.
     - **Hysteresis Tolerance**: Percentage (default 15%) determining if a recording stop should snap to the nearest quantum boundary.
 * **Loop/Box Library**: A metadata-rich catalog storing BPM, length, and music key for every asset.
