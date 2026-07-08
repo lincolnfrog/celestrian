@@ -219,7 +219,9 @@ void AudioEngine::createNode(const juce::String &type,
 
   std::unique_ptr<celestrian::AudioNode> new_node;
   if (type == "clip") {
-    new_node = std::make_unique<celestrian::ClipNode>("New Clip", 44100.0);
+    // Clip buffers and metadata carry the actual device rate (P0-5).
+    new_node = std::make_unique<celestrian::ClipNode>(
+        "New Clip", cached_sample_rate_.load());
   } else if (type == "stack") {
     new_node = std::make_unique<celestrian::StackNode>("New Stack");
   } else {
@@ -477,7 +479,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
   if (root_node) {
     celestrian::ProcessContext pc;
-    pc.sample_rate = 44100.0;
+    pc.sample_rate = cached_sample_rate_.load();
     pc.num_samples = num_samples;
     pc.is_playing = is_playing_global;
     pc.is_recording = true;  // Enable recording capture from inputs
@@ -918,12 +920,15 @@ int64_t computeLcmRecursive(celestrian::AudioNode *node, int64_t current_lcm) {
 }  // namespace
 
 int64_t AudioEngine::calculateTimelineLength() const {
+  // Fallback timeline: 1 second at the actual device rate (P0-5).
+  const int64_t one_second = (int64_t)cached_sample_rate_.load();
+
   if (!focused_node) {
-    return 44100;  // Default 1 second at 44.1kHz
+    return one_second;
   }
 
   int64_t quantum = focused_node->getEffectiveQuantum();
-  if (quantum <= 0) quantum = 44100;
+  if (quantum <= 0) quantum = one_second;
 
   return computeLcmRecursive(focused_node, quantum);
 }

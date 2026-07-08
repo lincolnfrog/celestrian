@@ -24,12 +24,14 @@ namespace {
  */
 class FakeDevice : public juce::AudioIODevice {
  public:
-  explicit FakeDevice(const juce::String &name)
-      : juce::AudioIODevice(name, "Test") {}
+  explicit FakeDevice(const juce::String &name, double sample_rate = 44100.0)
+      : juce::AudioIODevice(name, "Test"), sample_rate_(sample_rate) {}
 
   juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
   juce::StringArray getInputChannelNames() override { return {"In"}; }
-  juce::Array<double> getAvailableSampleRates() override { return {44100.0}; }
+  juce::Array<double> getAvailableSampleRates() override {
+    return {sample_rate_};
+  }
   juce::Array<int> getAvailableBufferSizes() override { return {512}; }
   int getDefaultBufferSize() override { return 512; }
   juce::String open(const juce::BigInteger &, const juce::BigInteger &,
@@ -43,7 +45,7 @@ class FakeDevice : public juce::AudioIODevice {
   bool isPlaying() override { return false; }
   juce::String getLastError() override { return {}; }
   int getCurrentBufferSizeSamples() override { return 512; }
-  double getCurrentSampleRate() override { return 44100.0; }
+  double getCurrentSampleRate() override { return sample_rate_; }
   int getCurrentBitDepth() override { return 24; }
   juce::BigInteger getActiveOutputChannels() const override {
     juce::BigInteger b;
@@ -57,6 +59,9 @@ class FakeDevice : public juce::AudioIODevice {
   }
   int getOutputLatencyInSamples() override { return 300; }
   int getInputLatencyInSamples() override { return 200; }
+
+ private:
+  double sample_rate_;
 };
 
 }  // namespace
@@ -204,6 +209,62 @@ class LatencyCalibrationTests : public juce::UnitTest {
         expect(!(bool)cal.getDynamicObject()->getProperty("calibrated"),
                "calibration from another device config is not applied");
       }
+
+      calFile.deleteFile();
+    }
+
+    beginTest("Device sample rate threads through engine state (P0-5)");
+    {
+      auto calFile =
+          juce::File::getSpecialLocation(juce::File::tempDirectory)
+              .getChildFile("celestrian_test_calibration_48k.json");
+      calFile.deleteFile();
+
+      AudioEngine engine;
+      engine.setCalibrationFile(calFile);
+      FakeDevice dev48("48k Interface", 48000.0);
+      engine.audioDeviceAboutToStart(&dev48);
+
+      // perf reports the true rate for UI samples->ms conversions
+      auto perf =
+          engine.getGraphState().getDynamicObject()->getProperty("perf");
+      expectEquals((double)perf.getDynamicObject()->getProperty("sampleRate"),
+                   48000.0, "perf.sampleRate is the device rate");
+
+      // Clips created after device start carry the device rate
+      engine.createNode("stack");
+      juce::String stackId = engine.getGraphState()
+                                 .getDynamicObject()
+                                 ->getProperty("nodes")
+                                 .getArray()
+                                 ->getReference(0)
+                                 .getDynamicObject()
+                                 ->getProperty("id");
+      engine.createNode("clip", stackId);
+      auto clip = engine.getGraphState()
+                      .getDynamicObject()
+                      ->getProperty("nodes")
+                      .getArray()
+                      ->getReference(0)
+                      .getDynamicObject()
+                      ->getProperty("nodes")
+                      .getArray()
+                      ->getReference(0);
+      expectEquals(
+          (double)clip.getDynamicObject()->getProperty("sampleRate"),
+          48000.0, "clip metadata reports the device rate");
+
+      // Calibration ms conversion uses the device rate: measure a 960-sample
+      // loopback (= exactly 20.0 ms at 48 kHz; would read 21.8 at 44.1).
+      engine.startLatencyCalibration();
+      runLoopback(engine, 960, 512, 400);
+      auto cal = engine.getLatencyCalibration();
+      expectEquals((int64_t)(double)cal.getDynamicObject()->getProperty(
+                       "roundTripSamples"),
+                   (int64_t)960);
+      expectWithinAbsoluteError(
+          (double)cal.getDynamicObject()->getProperty("roundTripMs"), 20.0,
+          0.001, "ms conversion uses the 48 kHz device rate");
 
       calFile.deleteFile();
     }

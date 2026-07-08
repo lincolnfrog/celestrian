@@ -15,6 +15,8 @@ class AudioNode;
  * so it must never carry heap-owning members (e.g. juce::String).
  */
 struct ProcessContext {
+  // Default is a test-only fallback; the engine always overwrites this
+  // with the actual device rate (cached in audioDeviceAboutToStart).
   double sample_rate = 44100.0;
   int num_samples = 0;
   bool is_playing = false;

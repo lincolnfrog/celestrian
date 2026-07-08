@@ -176,6 +176,17 @@ recording bug fix has added another branch.
 
 ### 5. Stop hardcoding the sample rate
 
+> **Status: ✅ Implemented (2026-07-07).** The device rate is captured in
+> `audioDeviceAboutToStart` (was already cached for the perf meters) and now
+> feeds `ProcessContext.sample_rate`, clip creation (buffer sizing +
+> metadata `sampleRate`), the `calculateTimelineLength` fallback, and all
+> samples→ms displays (`perf.sampleRate` → UI). Field-motivated: the
+> reference interface turned out to run at 48 kHz, caught by two ms
+> displays disagreeing about the same calibration. Remaining 44100s are
+> deliberate device-less test defaults (commented as such); the mock
+> simulates a 44.1 kHz device by design. Mid-session rate *changes* are not
+> resampled — clips keep the rate they were recorded at.
+
 `pc.sample_rate = 44100.0` in the callback, `ClipNode` buffer sized `sample_rate * 60` from a
 constructor default, `calculateTimelineLength()` fallback `44100`, and the mock's `Q = 44100`.
 On a 48 kHz or 96 kHz interface every duration/Q calculation is wrong. Capture the device rate in

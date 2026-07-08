@@ -208,18 +208,18 @@ Issues, in priority order:
    aggregate-device config on some interfaces (aggregates add latency and
    clock-drift resampling). Request what the session needs (1–2), grow on
    demand.
-3. **Sample rate is assumed 44100 everywhere** (`pc.sample_rate`, clip
-   buffer sizing, clip metadata's `sampleRate`, `calculateTimelineLength`
-   fallback, mock's Q). On a 48 k interface all seconds-based reasoning and
-   the latency numbers above are ~9 % off. This is refactoring_proposal.md
-   §P0-5: capture the device rate in `audioDeviceAboutToStart`, thread it
-   through `ProcessContext`, treat a `44100` literal as a lint failure.
-   **Field-confirmed 2026-07-07:** the reference setup runs at 48 kHz — a
-   6679-sample calibration displayed as 139.1 ms (C++, true rate) and
-   151.4 ms (UI, hardcoded 44100) simultaneously. Sample-domain math
-   (compensation, capture, durations) is unaffected; the engine now
-   exposes `perf.sampleRate` and the UI uses it for displays, but the
-   engine-internal 44100 assumptions remain until P0-5 lands.
+3. ~~Sample rate is assumed 44100 everywhere~~ — ✅ *P0-5 implemented
+   (2026-07-07)*. The device rate captured in `audioDeviceAboutToStart`
+   now feeds `ProcessContext.sample_rate`, clip creation (buffer sizing +
+   honest metadata), the timeline fallback, and every samples→ms display
+   via `perf.sampleRate`. Field-motivated: the reference setup runs at
+   48 kHz, caught when the same 6679-sample calibration displayed as
+   139.1 ms (C++, true rate) and 151.4 ms (UI, hardcoded 44100)
+   simultaneously. Sample-domain math was never affected. Residuals:
+   remaining 44100 literals are commented device-less test defaults; the
+   mock simulates a 44.1 kHz device; mid-session rate changes are not
+   resampled (clips keep their recorded rate). The "44100 literal as lint
+   failure" guardrail is part of §6.6 (not built).
 4. Add `juce::ScopedNoDenormals` at the top of the callback — denormal
    floats in feedback/decay tails can multiply CPU cost 10–100×.
 
@@ -381,9 +381,7 @@ plus clean-failure (silent input) and perf-meter coverage.
 4. Device config: explicit buffer size + sane channel request (§4.1–4.2).
    With calibration + arrival-time capture in place this no longer affects
    recording *alignment* — only monitoring feel and visual responsiveness.
-5. Sample-rate capture, P0-5 (§4.3) — the ring is sized for 48 kHz, but all
-   seconds-math still assumes 44.1 k; also re-calibrate whenever the device
-   config changes (the measured value is device-specific).
+5. ~~Sample-rate capture, P0-5~~ ✅ done (§4.3).
 6. ~~Persist the calibrated latency per device config~~ ✅ done (§7).
 7. Segmented playback loop (§5.1) when/if the callback meter shows pressure,
    or before shipping larger sessions.

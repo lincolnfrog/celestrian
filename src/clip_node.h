@@ -12,6 +12,8 @@ namespace celestrian {
  */
 class ClipNode : public AudioNode {
  public:
+  // The default rate is a convenience for unit tests; the engine passes
+  // the actual device rate when creating clips (P0-5).
   ClipNode(juce::String name, double source_sample_rate = 44100.0);
   ~ClipNode() override = default;
 
