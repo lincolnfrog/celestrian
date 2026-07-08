@@ -483,7 +483,18 @@ export function getState() {
     return {
         isPlaying: state.isPlaying,
         masterPos: state.masterPos || 0,
-        nodes: enrichNodes(state.nodes)
+        nodes: enrichNodes(state.nodes),
+        // Mirrors AudioEngine::makePerfState so calibration-aware UI
+        // (e.g. the calibrate button label) behaves in mock mode.
+        perf: {
+            maxBlockUs: 0,
+            avgLoadPct: 0,
+            xruns: 0,
+            latencyCompensationSamples:
+                calibration.roundTripSamples >= 0 ? calibration.roundTripSamples : 0,
+            calibrated: calibration.roundTripSamples >= 0,
+            sampleRate: 44100,
+        },
     };
 }
 

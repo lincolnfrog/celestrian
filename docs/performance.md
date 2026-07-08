@@ -111,66 +111,81 @@ feedback. Cheap wins, in order:
 
 ---
 
-## 3. The record latency issue
+## 3. The record latency issue — ✅ fixed (2026-07-07): arrival-time capture
 
-### What actually happens on record
+> **Correction.** The first draft of this section framed the fix as
+> "back-fill the first C samples from a ring" — that had the *sign of the
+> error backwards* for the play-along case. The analysis below is the
+> corrected model that the implementation follows; the measured 139 ms
+> round trip on real hardware made the error direction unambiguous.
 
-1. `startRecordingInNode` (message thread) sets `is_pending_start`.
-2. The next callback's `ClipNode::process` computes `compensated_pos` and
-   either starts capture **at the top of that block** or arms
-   `awaiting_start_at` for a Q boundary.
-3. Capture writes input from that moment forward. The compensation is
-   applied to the clip's **timestamps** (trigger position → anchor/launch
-   point), not to its **contents**.
+### The model
 
-### The defect
+The user plays in time with what they **hear** (delayed by output latency);
+their audio reaches the input delayed by input latency. So a note played on
+the heard beat at musical time `B` **arrives at the input at `B + C`**,
+where `C` is the full round trip (empirically measured by calibration, §7).
 
-Latency compensation back-dates *when we say the recording started*, but the
-samples from that back-dated window were never stored. Two consequences:
+The old capture copied the live input block starting when the recording
+state flipped (≈ the boundary `B`). Clip position 0 therefore held the
+audio that *arrived* at `B` — which the musician played `C` earlier. The
+note meant for the beat landed at clip position `C`, and every recording
+played back **late by the round trip** (139 ms on the measured setup —
+exactly the reported symptom).
 
-- **Attack clipping:** the first `input_latency + output_latency` samples of
-  the phrase (typically 10–30 ms — audible on any transient) are missing
-  from the clip.
-- **Button-press truncation:** if the user's phrase begins before their
-  finger confirms it (universal for musicians — you hit record *as* you
-  play, not before), the pre-click audio is gone too, plus the average
-  ½-block scheduling delay from §2.2.
+### The fix: capture by arrival time, fed from a pre-record ring
 
-The Q-boundary path partially hides this — when capture waits for the next
-boundary the buffer *is* aligned at that boundary — but the first-clip path
-and any boundary crossed mid-block (`awaiting_start_at` fires mid-callback
-but capture starts at the block top) exhibit it.
+Implemented as two pieces:
 
-### The fix: an always-on pre-record ring
+1. **Pre-record ring** (`AudioEngine::prerecord_ring_`): every input block
+   is copied unconditionally into a preallocated ring (8 ch × 2 s), indexed
+   by a **monotonic input clock** (`input_clock_` — total samples since
+   engine start; unlike `master_pos` it never wraps or resets). Two bounded
+   memcpys per channel per block; RT-safe. The ring and clock travel to
+   nodes via `ProcessContext`.
+2. **Arrival-time capture window** (`ClipNode`): when recording starts, the
+   clip computes the input-clock position of its first sample:
 
-Standard looper technique:
+   ```
+   window_start = input_clock + (trigger − compensated_now)
+   ```
 
-1. `AudioEngine` owns a preallocated input ring (e.g. 2 s × input channels,
-   ~350 KB at 44.1 kHz mono), written unconditionally at the top of every
-   callback — audio thread, sequential writes, no allocation, RT-safe.
-2. When capture actually starts at master position `P` with intended start
-   `P - C` (compensation `C`, plus mid-block boundary offset), copy the last
-   `C` samples out of the ring into the front of the clip buffer.
-3. That copy is proportional to `C` (a few thousand samples, not a clip
-   length) — acceptable in-callback, or done as the first act of capture.
+   i.e. clip position `p` holds the input that arrived at performance-time
+   `trigger + p` — which is master-time `trigger + C + p`. Capture then
+   streams from the ring as those samples arrive. The window start may be
+   in the future (boundary ahead → wait), mid-block, or slightly in the
+   past ("already at boundary" starts reach back into the ring — this is
+   where the ring's history is essential).
 
-This turns the compensation math we already have into *recovered audio*
-instead of a bookkeeping shift. It also fixes mid-block Q-boundary starts
-exactly: back-fill from the ring for the `boundary → block-top` gap.
+Consequences worth knowing:
 
-### Confirm before building (an afternoon, in order)
+- The first clip is unchanged by construction (`trigger = compensated_now`
+  → the window starts at "now"); it *defines* the grid, so there is nothing
+  to align to.
+- A recording's commit lands `C` later in wall time than before (the last
+  window sample must physically arrive). Musically nothing moves — the
+  committed content covers exactly `[trigger, trigger + duration)` in
+  performance time.
+- Peak meters read the captured (windowed) region, so the record meter lags
+  by `C`. Live-input metering could be added separately if that feels off.
+- Unit tests that drive `ClipNode::process` directly (no ring in the
+  context) fall back to the old live-block capture, unchanged.
 
-1. **Log the reported latencies** at device start (`audioDeviceAboutToStart`
-   already has the device): block size, input latency, output latency. If
-   these are zeros on your interface, compensation is currently a no-op and
-   the whole delay is uncompensated — instant confirmation.
-2. **Loopback test:** cable output→input (or speaker→mic), play a click from
-   a clip, record it into a new clip, diff the transient position against
-   the grid in samples. That number = true end-to-end error; compare with
-   what the compensation math predicts.
-3. **Human test:** record a sharp transient (rim click) against the
-   metronome of an existing 1Q clip; inspect where the transient landed in
-   the committed buffer.
+**Test:** `tests/pre_record_tests.cc` calibrates a synthetic 137-sample
+loopback, records a grid clip, then records a second clip where an impulse
+*arrives* exactly `boundary + 137` — the arrival time of a note played on
+the heard beat. The impulse must land at clip position 0 (pre-fix behavior
+put it ~137 late), and nowhere else.
+
+### Confirmation checklist (now mostly automated)
+
+1. ~~Log the reported latencies~~ ✅ logged at every device start.
+2. ~~Loopback measurement~~ ✅ the 🎯 calibration feature (§7); measured
+   139.1 ms on the reference setup.
+3. **Human test (do this after pulling):** record a sharp transient against
+   an existing clip's beat and confirm it plays back on the beat. This is
+   the end-to-end validation of calibration + arrival-time capture on real
+   hardware.
 
 ---
 
@@ -194,11 +209,17 @@ Issues, in priority order:
    clock-drift resampling). Request what the session needs (1–2), grow on
    demand.
 3. **Sample rate is assumed 44100 everywhere** (`pc.sample_rate`, clip
-   buffer sizing, `calculateTimelineLength` fallback, mock's Q). On a 48 k
-   interface all seconds-based reasoning and the latency numbers above are
-   ~9 % off. This is refactoring_proposal.md §P0-5: capture the device rate
-   in `audioDeviceAboutToStart`, thread it through `ProcessContext`, treat a
-   `44100` literal as a lint failure.
+   buffer sizing, clip metadata's `sampleRate`, `calculateTimelineLength`
+   fallback, mock's Q). On a 48 k interface all seconds-based reasoning and
+   the latency numbers above are ~9 % off. This is refactoring_proposal.md
+   §P0-5: capture the device rate in `audioDeviceAboutToStart`, thread it
+   through `ProcessContext`, treat a `44100` literal as a lint failure.
+   **Field-confirmed 2026-07-07:** the reference setup runs at 48 kHz — a
+   6679-sample calibration displayed as 139.1 ms (C++, true rate) and
+   151.4 ms (UI, hardcoded 44100) simultaneously. Sample-domain math
+   (compensation, capture, durations) is unaffected; the engine now
+   exposes `perf.sampleRate` and the UI uses it for displays, but the
+   engine-internal 44100 assumptions remain until P0-5 lands.
 4. Add `juce::ScopedNoDenormals` at the top of the callback — denormal
    floats in feedback/decay tails can multiply CPU cost 10–100×.
 
@@ -328,32 +349,41 @@ plus clean-failure (silent input) and perf-meter coverage.
 
 **Known limitations / follow-ups:**
 
-- The measured value is **not persisted** — it lives for the engine's
-  lifetime. Follow-up: store per-device (device name + sample rate + buffer
-  size key) and reload on `audioDeviceAboutToStart`; invalidate when the
-  device config changes.
+- ~~The measured value is not persisted~~ — ✅ implemented (2026-07-07,
+  after a field session was found running uncalibrated): the value is
+  stored in `<user app data>/Celestrian/calibration.json` keyed by
+  `deviceName|sampleRate|bufferSize`, saved when calibration completes,
+  and restored in `audioDeviceAboutToStart`. A key mismatch (different
+  device/rate/block) **resets** to the driver-reported fallback rather
+  than applying a stale measurement. Check the startup log line
+  ("Calibration restored…" vs "No stored calibration…"), or
+  `perf.calibrated` in a state dump.
 - Acoustic calibration includes speaker→mic flight time, which inflates the
   number slightly relative to an electrical loopback. For our purposes
   (aligning what the mic heard to what the speakers played) that inflation
   is actually *correct* — it's the real path the user's audio takes.
 - Calibration measures channel 0 only; per-channel offsets on exotic
   interfaces are out of scope.
-- Calibration corrects the *timestamps*. The first `latency` samples of
-  audio are still physically lost until the pre-record ring (§3) exists —
-  these two features complete each other: the ring recovers the audio, the
-  calibration tells it exactly how much to recover.
+- ~~Calibration corrects the *timestamps* only~~ — resolved: the
+  arrival-time capture window (§3, implemented) consumes the calibrated
+  value, so the measured round trip now moves the *audio*, not just the
+  bookkeeping. The two features complete each other: calibration supplies
+  the number, the ring-fed capture window applies it.
 
 ---
 
 ## 8. Suggested order of attack
 
 1. ~~Instrumentation~~ ✅ done (§6.1–6.3).
-2. ~~Loopback measurement~~ ✅ done — run the 🎯 button on real hardware to
-   get your machine's number.
-3. Pre-record ring buffer (§3) — the actual record-latency fix; sized by
-   the calibrated number from §7.
+2. ~~Loopback measurement~~ ✅ done — 139.1 ms measured on the reference
+   setup via the 🎯 button.
+3. ~~Pre-record ring + arrival-time capture~~ ✅ done (§3).
 4. Device config: explicit buffer size + sane channel request (§4.1–4.2).
-5. Sample-rate capture, P0-5 (§4.3) — prerequisite for trusting any of the
-   above on non-44.1 k hardware.
-6. Segmented playback loop (§5.1) when/if the callback meter shows pressure,
+   With calibration + arrival-time capture in place this no longer affects
+   recording *alignment* — only monitoring feel and visual responsiveness.
+5. Sample-rate capture, P0-5 (§4.3) — the ring is sized for 48 kHz, but all
+   seconds-math still assumes 44.1 k; also re-calibrate whenever the device
+   config changes (the measured value is device-specific).
+6. ~~Persist the calibrated latency per device config~~ ✅ done (§7).
+7. Segmented playback loop (§5.1) when/if the callback meter shows pressure,
    or before shipping larger sessions.

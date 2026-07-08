@@ -31,6 +31,20 @@ struct ProcessContext {
   // Null when nothing is soloed. Nodes compare pointers (never strings)
   // and walk their ancestor chain to honor soloed containers.
   const AudioNode *solo_node = nullptr;
+
+  // --- Pre-record ring (docs/performance.md §3) ---
+  // The engine continuously copies device input into a ring indexed by a
+  // monotonic input clock (total input samples since engine start — unlike
+  // master_pos it never wraps or resets). Recording clips read their
+  // capture window from this ring instead of the live block, so a clip
+  // position can map to any recent arrival time — including times earlier
+  // in the current block or slightly in the past.
+  // Null when no backend ring exists (unit tests driving nodes directly);
+  // clips then fall back to live block capture.
+  const float *const *prerecord_ring = nullptr;
+  int prerecord_ring_len = 0;       // samples per channel
+  int prerecord_ring_channels = 0;  // valid channels in the ring
+  int64_t input_clock = 0;          // arrival index of this block's sample 0
 };
 
 /**

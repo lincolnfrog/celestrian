@@ -9,6 +9,13 @@
 import { drawWaveform } from './canvas_renderer.js';
 import { isDragging, initDragDrop } from './drag_drop.js';
 
+// Clips whose livePeaks entry is the coarse live-recording sketch (built
+// from per-poll currentPeak buckets, padded in +400 chunks). The sketch is
+// the wrong scale for a committed clip — and never reflects virtual
+// rotation — so it must be replaced by a real getWaveform fetch when the
+// recording ends.
+const liveSketchIds = new Set();
+
 /**
  * Update all clips' DOM state for the current sync cycle.
  *
@@ -264,6 +271,8 @@ export function updateAllClips(ctx) {
                 }
             }
 
+            liveSketchIds.add(node.id);
+
             const p = node.currentPeak > 0.005 ? node.currentPeak : 0.01;
             if (index >= 0 && index < peaks.length) {
                 peaks[index] = Math.max(peaks[index] || 0.01, p);
@@ -289,6 +298,14 @@ export function updateAllClips(ctx) {
             }
         }
         else if (node.duration > 0) {
+            // Recording just committed: replace the live sketch with the
+            // true waveform. fetchWaveform overwrites the livePeaks entry
+            // when it resolves, so the sketch keeps drawing until the real
+            // peaks arrive (no blank flash).
+            if (liveSketchIds.has(node.id)) {
+                liveSketchIds.delete(node.id);
+                fetchWaveform(node.id);
+            }
             if (!livePeaks.has(node.id) || livePeaks.get(node.id).length < 20) {
                 fetchWaveform(node.id);
             }

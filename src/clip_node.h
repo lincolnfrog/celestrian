@@ -118,6 +118,16 @@ class ClipNode : public AudioNode {
   std::atomic<int64_t> rotation_offset_{0};
   std::atomic<int64_t> rotation_span_{0};
 
+  // Pre-record capture window (docs/performance.md §3). When the engine
+  // provides a pre-record ring, capture no longer copies "whatever input
+  // arrived after recording started" — it copies the input that *arrived*
+  // at the times the clip semantically covers: clip position p holds the
+  // input sample that arrived at input-clock (window start + p), where the
+  // window start maps the trigger through the latency compensation.
+  // Audio-thread only.
+  int64_t capture_next_clock_ = 0;
+  bool capture_uses_ring_ = false;
+
   std::atomic<bool> is_recording{false};
   std::atomic<bool> is_pending_start{false};
   std::atomic<bool> is_awaiting_stop{false};

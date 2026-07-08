@@ -189,6 +189,13 @@ void ClipNode::process(const float *const *input_channels,
           trigger_master_position.store(next_q_master);  // Capture start time
           write_position.store(0);
           live_duration_samples.store(0);
+          // Capture window: clip position 0 holds the input that ARRIVED at
+          // performance-time next_q_master, i.e. (next_q - compensated)
+          // samples after this block's first arrival. A negative delta
+          // (boundary just passed) reaches back into the ring.
+          capture_uses_ring_ = (context.prerecord_ring != nullptr);
+          capture_next_clock_ =
+              context.input_clock + (next_q_master - compensated_pos);
           RtLog::instance().post("ClipNode: Recording Started (at Q boundary)");
         } else {
           // Wait for the Q boundary
@@ -208,6 +215,10 @@ void ClipNode::process(const float *const *input_channels,
             compensated_pos);  // Capture start time (immediate)
         write_position.store(0);
         live_duration_samples.store(0);
+        // First clip: the trigger IS "performance now", whose audio is
+        // arriving right now — capture from this block's first arrival.
+        capture_uses_ring_ = (context.prerecord_ring != nullptr);
+        capture_next_clock_ = context.input_clock;
         RtLog::instance().post(
             "ClipNode: Recording Started at master_pos=%lld (anchor=0, first "
             "clip)",
@@ -229,6 +240,17 @@ void ClipNode::process(const float *const *input_channels,
         trigger_master_position.store(target);  // Capture start time (delayed)
         write_position.store(0);
         live_duration_samples.store(0);
+        // Capture window: input for performance-time `target` arrives
+        // (target - compensated_now) samples after this block's first
+        // arrival (i.e. latency-compensation samples later than the
+        // boundary itself).
+        {
+          int64_t comp_now = context.master_pos -
+                             (context.input_latency + context.output_latency);
+          if (comp_now < 0) comp_now = 0;
+          capture_uses_ring_ = (context.prerecord_ring != nullptr);
+          capture_next_clock_ = context.input_clock + (target - comp_now);
+        }
         RtLog::instance().post(
             "ClipNode: Recording Started (crossed Q boundary at %lld)",
             (long long)target);
@@ -238,8 +260,71 @@ void ClipNode::process(const float *const *input_channels,
 
   // Handle Recording
   if (is_recording.load()) {
-    if (context.is_recording && input_channels != nullptr &&
-        num_input_channels > 0) {
+    if (context.is_recording && capture_uses_ring_ &&
+        context.prerecord_ring != nullptr &&
+        context.prerecord_ring_channels > 0) {
+      // Arrival-time capture (docs/performance.md §3): copy from the
+      // engine's pre-record ring the samples whose arrival times the clip
+      // covers. The window start (capture_next_clock_) already encodes the
+      // latency compensation, so a note played on the HEARD beat lands on
+      // the beat in the clip — the live-block path below cannot do that,
+      // because the note's audio arrives ~latency after the boundary.
+      const int64_t available_end =
+          context.input_clock + context.num_samples;
+      int64_t src = capture_next_clock_;
+      const int ring_len = context.prerecord_ring_len;
+      const int64_t oldest = std::max<int64_t>(0, available_end - ring_len);
+      if (src < oldest) {
+        RtLog::instance().post(
+            "ClipNode: pre-record ring underrun, %lld samples lost",
+            (long long)(oldest - src));
+        src = oldest;
+      }
+
+      if (src < available_end) {
+        const int wp = write_position.load();
+        const int space = buffer.getNumSamples() - wp;
+        const int n =
+            (int)std::min<int64_t>(available_end - src, (int64_t)space);
+        if (n > 0) {
+          const int ch = std::min(preferred_input_channel,
+                                  context.prerecord_ring_channels - 1);
+          const float *ring = context.prerecord_ring[ch];
+          const int idx = (int)(src % ring_len);
+          const int first = std::min(n, ring_len - idx);
+          buffer.copyFrom(0, wp, ring + idx, first);
+          if (n > first) buffer.copyFrom(0, wp + first, ring, n - first);
+          capture_next_clock_ = src + n;
+
+          // Peak tracking over the captured region
+          float blockPeak = 0.0f;
+          const float *written = buffer.getReadPointer(0) + wp;
+          for (int i = 0; i < n; ++i) {
+            blockPeak = std::max(blockPeak, std::abs(written[i]));
+          }
+          last_block_peak.store(blockPeak);
+          if (blockPeak > current_max_peak.load()) {
+            current_max_peak.store(blockPeak);
+          }
+
+          const int64_t start_p = wp;
+          write_position.fetch_add(n);
+          const int64_t end_p = write_position.load();
+          live_duration_samples.store(end_p);  // Live update for UI
+
+          if (is_awaiting_stop.load()) {
+            int64_t target = awaiting_stop_at.load();
+            if (start_p < target && end_p >= target) {
+              commit_master_pos.store(context.master_pos);
+              commitRecording(target);
+              is_awaiting_stop.store(false);
+              return;
+            }
+          }
+        }
+      }
+    } else if (context.is_recording && input_channels != nullptr &&
+               num_input_channels > 0) {
       const float *in = input_channels[std::min(preferred_input_channel,
                                                 num_input_channels - 1)];
       int samples_to_write = std::min(

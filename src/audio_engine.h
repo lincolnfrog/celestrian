@@ -148,11 +148,17 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /**
    * Returns { phase, roundTripSamples, roundTripMs, calibrated }. When the
    * capture has completed, this call runs the onset detection (message
-   * thread) and stores the measured value; from then on recording
-   * compensation uses the empirical number instead of the device-reported
-   * latencies.
+   * thread), stores the measured value, and persists it for the current
+   * device config; from then on recording compensation uses the empirical
+   * number instead of the device-reported latencies.
    */
   juce::var getLatencyCalibration();
+
+  /**
+   * Overrides where calibration persistence is stored (tests). Defaults to
+   * <user app data>/Celestrian/calibration.json.
+   */
+  void setCalibrationFile(const juce::File &file);
 
   /**
    * GraphReclaimer: defers destruction of graph objects (child snapshots,
@@ -222,6 +228,18 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int64_t> xrun_count_{0};     // suspicious inter-callback gaps
   int64_t last_entry_ticks_ = 0;           // audio thread only
 
+  // --- Pre-record ring (docs/performance.md §3) ---
+  // Continuously captures device input so recording clips can map clip
+  // positions to input *arrival times* (trigger + latency compensation)
+  // instead of "whatever arrived after capture started". Preallocated in
+  // the constructor; written at the top of every callback; indexed by
+  // input_clock_ (monotonic, never wraps/resets — unlike the transport).
+  static constexpr int kPreRecordRingChannels = 8;
+  static constexpr int kPreRecordRingLen = 96000;  // 2 s @ 48 kHz per channel
+
+  juce::AudioBuffer<float> prerecord_ring_;
+  int64_t input_clock_ = 0;  // audio thread only
+
   // --- Latency calibration state ---
   enum class CalibrationPhase : int { Idle = 0, Capturing, Done, Failed };
 
@@ -232,6 +250,17 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // Empirical round-trip latency in samples; -1 = uncalibrated. When >= 0
   // it supersedes cached_*_latency_ in the recording compensation.
   std::atomic<int64_t> measured_latency_samples_{-1};
+
+  // --- Calibration persistence (docs/performance.md §7) ---
+  // The measured value is only valid for the device configuration it was
+  // measured on, so it is stored keyed by name|sampleRate|bufferSize and
+  // restored (or reset) whenever a device starts.
+  juce::File calibrationFile() const;
+  void persistCalibration(int64_t samples);
+  void restoreCalibrationForCurrentDevice();
+
+  juce::String current_device_key_;  // empty when no device has started
+  juce::File calibration_file_override_;
 
   // Deferred destruction: retired items are freed once the callback counter
   // has advanced two callbacks past their retirement, guaranteeing no

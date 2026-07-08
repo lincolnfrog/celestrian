@@ -14,6 +14,53 @@
 
 #include "../src/audio_engine.h"
 
+namespace {
+
+/**
+ * Minimal AudioIODevice for driving audioDeviceAboutToStart in tests:
+ * reports a fixed config (44.1 kHz, 512 block, 200/300 sample latencies)
+ * under a configurable name so device-keyed calibration persistence can be
+ * exercised without hardware.
+ */
+class FakeDevice : public juce::AudioIODevice {
+ public:
+  explicit FakeDevice(const juce::String &name)
+      : juce::AudioIODevice(name, "Test") {}
+
+  juce::StringArray getOutputChannelNames() override { return {"L", "R"}; }
+  juce::StringArray getInputChannelNames() override { return {"In"}; }
+  juce::Array<double> getAvailableSampleRates() override { return {44100.0}; }
+  juce::Array<int> getAvailableBufferSizes() override { return {512}; }
+  int getDefaultBufferSize() override { return 512; }
+  juce::String open(const juce::BigInteger &, const juce::BigInteger &,
+                    double, int) override {
+    return {};
+  }
+  void close() override {}
+  bool isOpen() override { return true; }
+  void start(juce::AudioIODeviceCallback *) override {}
+  void stop() override {}
+  bool isPlaying() override { return false; }
+  juce::String getLastError() override { return {}; }
+  int getCurrentBufferSizeSamples() override { return 512; }
+  double getCurrentSampleRate() override { return 44100.0; }
+  int getCurrentBitDepth() override { return 24; }
+  juce::BigInteger getActiveOutputChannels() const override {
+    juce::BigInteger b;
+    b.setRange(0, 2, true);
+    return b;
+  }
+  juce::BigInteger getActiveInputChannels() const override {
+    juce::BigInteger b;
+    b.setBit(0);
+    return b;
+  }
+  int getOutputLatencyInSamples() override { return 300; }
+  int getInputLatencyInSamples() override { return 200; }
+};
+
+}  // namespace
+
 class LatencyCalibrationTests : public juce::UnitTest {
  public:
   LatencyCalibrationTests()
@@ -94,6 +141,71 @@ class LatencyCalibrationTests : public juce::UnitTest {
       expect(!(bool)obj->getProperty("calibrated"));
       expectEquals((int64_t)(double)obj->getProperty("roundTripSamples"),
                    (int64_t)-1);
+    }
+
+    beginTest("Calibration persists across engine instances per device");
+    {
+      auto calFile =
+          juce::File::getSpecialLocation(juce::File::tempDirectory)
+              .getChildFile("celestrian_test_calibration.json");
+      calFile.deleteFile();
+
+      FakeDevice deviceA("Test Interface");
+
+      // Session 1: uncalibrated fallback, then calibrate -> persists.
+      {
+        AudioEngine engine;
+        engine.setCalibrationFile(calFile);
+        engine.audioDeviceAboutToStart(&deviceA);
+
+        auto perf = engine.getGraphState().getDynamicObject()->getProperty(
+            "perf");
+        expect(!(bool)perf.getDynamicObject()->getProperty("calibrated"));
+        expectEquals((int64_t)(double)perf.getDynamicObject()->getProperty(
+                         "latencyCompensationSamples"),
+                     (int64_t)500,
+                     "uncalibrated: reported in+out latency (200+300)");
+
+        engine.startLatencyCalibration();
+        runLoopback(engine, 700, 512, 300);
+        engine.getLatencyCalibration();  // detection + persist
+      }
+      expect(calFile.existsAsFile(), "calibration file written");
+
+      // Session 2, same device config: value restored and effective.
+      {
+        AudioEngine engine;
+        engine.setCalibrationFile(calFile);
+        engine.audioDeviceAboutToStart(&deviceA);
+
+        auto cal = engine.getLatencyCalibration();
+        expect((bool)cal.getDynamicObject()->getProperty("calibrated"),
+               "restored calibration is active");
+        expectEquals((int64_t)(double)cal.getDynamicObject()->getProperty(
+                         "roundTripSamples"),
+                     (int64_t)700);
+
+        auto perf = engine.getGraphState().getDynamicObject()->getProperty(
+            "perf");
+        expectEquals((int64_t)(double)perf.getDynamicObject()->getProperty(
+                         "latencyCompensationSamples"),
+                     (int64_t)700,
+                     "restored value drives recording compensation");
+      }
+
+      // Session 3, different device: stored value must NOT carry over.
+      {
+        AudioEngine engine;
+        engine.setCalibrationFile(calFile);
+        FakeDevice deviceB("Other Interface");
+        engine.audioDeviceAboutToStart(&deviceB);
+
+        auto cal = engine.getLatencyCalibration();
+        expect(!(bool)cal.getDynamicObject()->getProperty("calibrated"),
+               "calibration from another device config is not applied");
+      }
+
+      calFile.deleteFile();
     }
 
     beginTest("Instrumentation: perf meters update after callbacks");

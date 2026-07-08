@@ -225,6 +225,20 @@ function syncUI(state) {
     playBtn.classList.toggle('playing', isPlaying);
     playBtn.innerText = isPlaying ? "STOP" : "PLAY";
 
+    // Calibration state on the button, so a restored (or missing)
+    // calibration is visible without reading logs. Left alone while a
+    // calibration run is in flight (button disabled).
+    const calBtn = document.getElementById('calibrate-btn');
+    if (calBtn && !calBtn.disabled && state.perf) {
+        if (state.perf.calibrated) {
+            const sr = state.perf.sampleRate || 44100;
+            const ms = (state.perf.latencyCompensationSamples / sr) * 1000;
+            calBtn.textContent = `🎯 Recalibrate (${ms.toFixed(1)} ms)`;
+        } else {
+            calBtn.textContent = '🎯 Calibrate Latency';
+        }
+    }
+
     const nodes = state.nodes || [];
     const newNodeIds = nodes.map(n => n.id);
     const uiNodeIds = Array.from(nodeLayer.children).map(c => c.id);

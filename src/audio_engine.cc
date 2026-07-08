@@ -13,6 +13,10 @@ AudioEngine::AudioEngine() {
   root->setReclaimer(this);
   focused_node = root.get();
   root_node = std::move(root);
+
+  // Pre-record ring: preallocated here so the audio thread never resizes it.
+  prerecord_ring_.setSize(kPreRecordRingChannels, kPreRecordRingLen);
+  prerecord_ring_.clear();
 }
 
 void AudioEngine::initialiseAudioDevice() { init(1, 2); }
@@ -454,6 +458,23 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     }
   }
 
+  // --- Pre-record ring write (docs/performance.md §3) ---
+  // Every input block lands in the ring unconditionally, keyed by the
+  // monotonic input clock, so a recording that starts later can still
+  // reach audio that has already arrived. Two bounded memcpys per channel.
+  const int ring_channels =
+      std::min(num_input_channels, (int)kPreRecordRingChannels);
+  for (int ch = 0; ch < ring_channels; ++ch) {
+    if (input_channel_data[ch] == nullptr) continue;
+    const int idx = (int)(input_clock_ % kPreRecordRingLen);
+    const int first = std::min(num_samples, kPreRecordRingLen - idx);
+    prerecord_ring_.copyFrom(ch, idx, input_channel_data[ch], first);
+    if (num_samples > first) {
+      prerecord_ring_.copyFrom(ch, 0, input_channel_data[ch] + first,
+                               num_samples - first);
+    }
+  }
+
   if (root_node) {
     celestrian::ProcessContext pc;
     pc.sample_rate = 44100.0;
@@ -461,6 +482,12 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.is_playing = is_playing_global;
     pc.is_recording = true;  // Enable recording capture from inputs
     pc.master_pos = global_transport_pos;
+    if (ring_channels > 0) {
+      pc.prerecord_ring = prerecord_ring_.getArrayOfReadPointers();
+      pc.prerecord_ring_len = kPreRecordRingLen;
+      pc.prerecord_ring_channels = ring_channels;
+    }
+    pc.input_clock = input_clock_;
     // Recording alignment: a measured round-trip (empirical calibration)
     // supersedes the driver-reported latencies, which are often wrong or
     // zero on consumer hardware.
@@ -479,6 +506,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // recording.
     root_node->process(input_channel_data, output_channel_data,
                        num_input_channels, num_output_channels, pc);
+
+    input_clock_ += num_samples;
 
     if (is_playing_global.load()) {
       int64_t old_pos = global_transport_pos.load();
@@ -641,6 +670,9 @@ juce::var AudioEngine::makePerfState() const {
           : cached_input_latency_.load() + cached_output_latency_.load();
   perf->setProperty("latencyCompensationSamples", (double)effective);
   perf->setProperty("calibrated", measured >= 0);
+  // The device's actual rate — the UI must use this (not 44100) for any
+  // samples→ms display. The field found a 48 kHz device this way.
+  perf->setProperty("sampleRate", cached_sample_rate_.load());
   return juce::var(perf.get());
 }
 
@@ -703,6 +735,7 @@ juce::var AudioEngine::getLatencyCalibration() {
           juce::String(measured_latency_samples_.load()) + " samples (" +
           juce::String(measured_latency_samples_.load() / sr * 1000.0, 2) +
           " ms)");
+      persistCalibration(measured_latency_samples_.load());
     }
   }
 
@@ -738,6 +771,84 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {
         " block=" + juce::String(device->getCurrentBufferSizeSamples()) +
         " inLatency=" + juce::String(device->getInputLatencyInSamples()) +
         " outLatency=" + juce::String(device->getOutputLatencyInSamples()));
+
+    // A calibration is only valid for the exact device configuration it
+    // was measured on.
+    current_device_key_ = device->getName() + "|" +
+                          juce::String(device->getCurrentSampleRate()) + "|" +
+                          juce::String(device->getCurrentBufferSizeSamples());
+    restoreCalibrationForCurrentDevice();
+  }
+}
+
+// --- Calibration persistence (docs/performance.md §7) ---
+
+juce::File AudioEngine::calibrationFile() const {
+  if (calibration_file_override_ != juce::File()) {
+    return calibration_file_override_;
+  }
+  return juce::File::getSpecialLocation(
+             juce::File::userApplicationDataDirectory)
+      .getChildFile("Celestrian")
+      .getChildFile("calibration.json");
+}
+
+void AudioEngine::setCalibrationFile(const juce::File &file) {
+  calibration_file_override_ = file;
+}
+
+void AudioEngine::persistCalibration(int64_t samples) {
+  // No device key means no device ever started (unit tests) — a value
+  // measured there is not attributable to hardware, so don't store it.
+  if (current_device_key_.isEmpty() || samples < 0) return;
+
+  auto file = calibrationFile();
+  juce::var root;
+  if (file.existsAsFile()) {
+    root = juce::JSON::parse(file.loadFileAsString());
+  }
+  if (root.getDynamicObject() == nullptr) {
+    root = juce::var(new juce::DynamicObject());
+  }
+  root.getDynamicObject()->setProperty(current_device_key_, (double)samples);
+
+  file.getParentDirectory().createDirectory();
+  file.replaceWithText(juce::JSON::toString(root, true));
+
+  juce::Logger::writeToLog("AudioEngine: Calibration persisted for '" +
+                           current_device_key_ + "' (" +
+                           juce::String(samples) + " samples) -> " +
+                           file.getFullPathName());
+}
+
+void AudioEngine::restoreCalibrationForCurrentDevice() {
+  int64_t restored = -1;
+
+  auto file = calibrationFile();
+  if (current_device_key_.isNotEmpty() && file.existsAsFile()) {
+    auto root = juce::JSON::parse(file.loadFileAsString());
+    if (auto *obj = root.getDynamicObject()) {
+      if (obj->hasProperty(current_device_key_)) {
+        restored = (int64_t)(double)obj->getProperty(current_device_key_);
+      }
+    }
+  }
+
+  // Found -> use the empirical value from a previous session. Not found ->
+  // reset: a value measured on a different device config must not carry
+  // over (that would be silently wrong compensation).
+  measured_latency_samples_.store(restored);
+
+  if (restored >= 0) {
+    juce::Logger::writeToLog(
+        "AudioEngine: Calibration restored for '" + current_device_key_ +
+        "': " + juce::String(restored) + " samples (" +
+        juce::String(restored / cached_sample_rate_.load() * 1000.0, 2) +
+        " ms)");
+  } else {
+    juce::Logger::writeToLog(
+        "AudioEngine: No stored calibration for '" + current_device_key_ +
+        "' — using device-reported latencies until calibrated.");
   }
 }
 
