@@ -83,6 +83,14 @@ several already are.
 - **I8 — One Clock.** There is exactly one time authority per island.
   Any second counter (UI-side playhead math, internal transports,
   wrapped copies) must be derivable from it. *(Aspirational — see Q8.)*
+- **I9 — The Degradation Contract** *(owner-ratified 2026-07-09)*. When
+  an edit deliberately decouples a performance from its context (the
+  sanctioned I1 exception), the design owes **predictable,
+  non-destructive, reversible degradation** — never coherence, which no
+  design can deliver, and never baked-in changes. Undoing the edit must
+  restore full coherence. This is why rotation became virtual, why
+  origins are stored rather than applied, and why through-map takes
+  live in inner time (time_maps.md §3).
 
 ---
 

@@ -170,7 +170,7 @@ These are documented questions without answers yet. Resolving them may spawn new
 | 3 | "Breaking out" a stack from an island — UX and implementation? | `implementation.md` L270-272 |
 | 4 | Connecting stacks after Q is established — polyrhythmic interaction? | `recording.md` L69 |
 | 5 | Warning UX for very large LCMs (coprime durations)? — still open; note the *model* question behind it was resolved: LCM is display-only machinery (Q2 ruling) | `recording.md`, `design_language.md` Q2 |
-| 6 | **Loop-window activation redesign** — owner ruled collapse must be sound-neutral (I6b), contradicting the implemented Loop-on-Collapse model; loop windows need an explicit active/bypassed state, with recording-inside-active-window semantics specified | `design_language.md` Q4, `stacks.md` caution banner |
+| 6 | **Loop-window activation redesign** — ✅ design RATIFIED 2026-07-09 (`time_maps.md`): island-aligned piecewise maps, none/active/bypassed state, collapse purely visual, record-through-map into inner time (dense buffers, silence in unvisited regions, one-period cap), Q-cell sequencer + phase-locked punch cuts (seam theorem: cuts groove-transparent iff removed length ≡ 0 mod Q). Ready to implement | `time_maps.md` |
 | 7 | **Record on a composite (TODO — discuss)** — what does ⏺ on a stack mean? Proposal on the table: "new take-clip inside, aligned to the stack's cycle" (→ take lanes/comping) | `design_language.md` Q7 |
 | 8 | **Origin/anchor units under Warp (TODO — discuss when warp is real)** — samples vs Q-fractions; cheap to decide before P0-3, expensive after | `design_language.md` Q9, `kernel.md` §6 |
 | 9 | Grid honesty when auto-quantize is disabled — **deferred** until a snap-disable feature is actually considered | `design_language.md` Q3 |

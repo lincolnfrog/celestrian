@@ -390,10 +390,12 @@ function renderNode(node, parentStack) {
 > Loop-on-Collapse model below — implemented in `stack_node.cc` and
 > covered by `stack_loop_tests.cc` — makes collapse audibly activate the
 > loop window, which violates that ruling. This section is retained as
-> accurate documentation of **current behavior** until the redesign
-> (likely: an explicit active/bypassed state on the loop window,
-> independent of expansion; recording semantics inside an active window
-> TBD). Tracked in tasks.md §Open Design Questions.
+> accurate documentation of **current behavior** until the redesign.
+> The redesign direction is settled (2026-07-09): see **`time_maps.md`**
+> — island-aligned piecewise time-maps with an explicit active/bypassed
+> state, collapse purely visual, defined recording-through-map
+> semantics, and non-contiguous selections as multi-segment maps.
+> Tracked in tasks.md §Open Design Questions (q6).
 
 > [!IMPORTANT]
 > This section documents the **Loop-on-Collapse** model for stack-level loop regions.
