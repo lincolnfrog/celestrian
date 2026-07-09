@@ -1,43 +1,6 @@
-// Detect environment: Use mock backend if window.celestrian exists, otherwise JUCE bridge
-let callNative, log, getState;
-
-const useMock = typeof window !== 'undefined' && (
-    (window.celestrian) ||
-    (new URLSearchParams(window.location.search).get('mock') === 'true')
-);
-
-if (useMock) {
-    if (window.celestrian) {
-        // Test harness environment - use provided backend
-        ({ callNative, log, getState } = window.celestrian);
-        console.log('[App] Using Harness backend');
-    } else {
-        // Browser/Playwright Manual Mock Mode
-        const mockBackend = await import('./mock_backend.js');
-        callNative = mockBackend.callNative;
-        log = mockBackend.log;
-        getState = mockBackend.getState;
-
-        // Expose mock helpers for Playwright
-        window.loadScenario = mockBackend.loadScenario;
-        window.setMasterPos = mockBackend.setMasterPos;
-        window.setIsPlaying = mockBackend.setIsPlaying;
-        window.callNative = mockBackend.callNative;
-        // Transport simulation
-        window.startTransport = mockBackend.startTransport;
-        window.pauseTransport = mockBackend.pauseTransport;
-        window.advanceBy = mockBackend.advanceBy;
-
-        console.log('[App] Using Loaded Mock backend');
-    }
-} else {
-    // Production environment - use JUCE bridge
-    const bridge = await import('./bridge.js');
-    ({ callNative, log } = bridge);
-    getState = null; // Not used in production (polling uses callNative('getGraphState'))
-    console.log('[App] Using JUCE bridge');
-}
-
+// Backend selection lives in backend.js (P2-9 facade) — the only module
+// that knows about mock vs harness vs JUCE bridge.
+import { callNative, log, getState } from './backend.js';
 import { drawWaveform } from './canvas_renderer.js';
 import { Viewport } from './viewport.js';
 import { calculateStackLCM, computeEffectiveQuantum, stackPlayheadPercent } from './timeline_model.js';

@@ -1,4 +1,4 @@
-import { callNative, log } from './bridge.js';
+import { callNative, log } from './backend.js';
 
 // Drag-and-drop state
 let dragState = {

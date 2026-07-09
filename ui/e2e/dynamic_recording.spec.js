@@ -8,7 +8,7 @@
  * These tests exercise the dynamic behavior documented in recording.md
  * (Ghost Timeline Design section).
  *
- * All tests use /?mock=true route where window.advanceBy is available.
+ * All tests use /?mock=true route where window.__celestrianTest.advanceBy is available.
  */
 
 import { test, expect } from '@playwright/test';
@@ -16,8 +16,8 @@ import { test, expect } from '@playwright/test';
 // Helper: wait for mock backend to be fully loaded on /?mock=true
 async function initMockPage(page) {
     await page.goto('/?mock=true');
-    // Wait for mock backend to expose window.loadScenario
-    await page.waitForFunction(() => typeof window.loadScenario === 'function', {
+    // Wait for mock backend to expose window.__celestrianTest.loadScenario
+    await page.waitForFunction(() => typeof window.__celestrianTest?.loadScenario === 'function', {
         timeout: 5000
     });
 }
@@ -28,7 +28,7 @@ test.describe('Dynamic Recording - Ghost Extension', () => {
         page.on('console', msg => console.log(`[Browser] ${msg.text()}`));
         await initMockPage(page);
         // Load the recording scenario: 1Q committed + clip recording at 2.5Q
-        await page.evaluate(() => window.loadScenario('recording-1q-plus-growing'));
+        await page.evaluate(() => window.__celestrianTest.loadScenario('recording-1q-plus-growing'));
         await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
         await page.waitForTimeout(300);
     });
@@ -44,7 +44,7 @@ test.describe('Dynamic Recording - Ghost Extension', () => {
         // Recording was at 110250 (2.5Q), grows to 198450 (4.5Q)
         // recordingWidthPx goes from 500px to 900px
         // LCM boundaries crossed: floor(900/200) = 4 → timeline = 5 * 200 = 1000px
-        await page.evaluate(() => window.advanceBy(88200));
+        await page.evaluate(() => window.__celestrianTest.advanceBy(88200));
         // Wait for multiple poll cycles to pick up the state change
         await page.waitForTimeout(400);
 
@@ -57,17 +57,17 @@ test.describe('Dynamic Recording - Ghost Extension', () => {
 
     test('advanceBy is deterministic - same input produces same output', async ({ page }) => {
         // First run: advance by exactly 1Q
-        await page.evaluate(() => window.advanceBy(44100));
+        await page.evaluate(() => window.__celestrianTest.advanceBy(44100));
         await page.waitForTimeout(300);
         const ghosts1 = await page.locator('.ghost-clip').count();
 
         // Reset: reload same scenario
-        await page.evaluate(() => window.loadScenario('recording-1q-plus-growing'));
+        await page.evaluate(() => window.__celestrianTest.loadScenario('recording-1q-plus-growing'));
         await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
         await page.waitForTimeout(300);
 
         // Second run: same advance
-        await page.evaluate(() => window.advanceBy(44100));
+        await page.evaluate(() => window.__celestrianTest.advanceBy(44100));
         await page.waitForTimeout(300);
         const ghosts2 = await page.locator('.ghost-clip').count();
 
@@ -89,13 +89,13 @@ test.describe('Dynamic Recording - Ghost Extension', () => {
         const initialGhosts = await page.locator('.ghost-clip').count();
 
         // Start transport at 4x speed (faster for test)
-        await page.evaluate(() => window.startTransport(4.0));
+        await page.evaluate(() => window.__celestrianTest.startTransport(4.0));
 
         // Wait ~500ms → ~10 poll cycles at 4x speed = ~88200 samples advanced
         await page.waitForTimeout(500);
 
         // Pause transport
-        await page.evaluate(() => window.pauseTransport());
+        await page.evaluate(() => window.__celestrianTest.pauseTransport());
         await page.waitForTimeout(200);
 
         const afterGhosts = await page.locator('.ghost-clip').count();
@@ -119,7 +119,7 @@ test.describe('Dynamic Recording - Commit Transition', () => {
         await initMockPage(page);
 
         // Load 1Q+4Q scenario (3 ghosts initially)
-        await page.evaluate(() => window.loadScenario('example-1q-4q'));
+        await page.evaluate(() => window.__celestrianTest.loadScenario('example-1q-4q'));
         await page.waitForSelector('.stack-wrapper', { timeout: 5000 });
         await page.waitForTimeout(300);
 
@@ -129,7 +129,7 @@ test.describe('Dynamic Recording - Commit Transition', () => {
 
         // Create a new clip inside the stack and start recording
         await page.evaluate(async () => {
-            await window.callNative('createNode', 'clip', 'stack-1');
+            await window.__celestrianTest.callNative('createNode', 'clip', 'stack-1');
         });
         await page.waitForTimeout(300);
 
@@ -144,19 +144,19 @@ test.describe('Dynamic Recording - Commit Transition', () => {
         expect(newClipId).not.toBeNull();
 
         // Start recording on the new clip
-        await page.evaluate(id => window.callNative('startRecordingInNode', id), newClipId);
+        await page.evaluate(id => window.__celestrianTest.callNative('startRecordingInNode', id), newClipId);
         await page.waitForTimeout(200);
 
         // Advance by 3Q (recording clip grows to 3Q)
         await page.evaluate(() => {
-            window.setIsPlaying(true);
-            window.advanceBy(132300); // 3Q in samples
+            window.__celestrianTest.setIsPlaying(true);
+            window.__celestrianTest.advanceBy(132300); // 3Q in samples
         });
         await page.waitForTimeout(300);
 
         // Stop recording → clip commits at 3Q
         // New clips: 1Q, 4Q, 3Q → LCM(1,4,3) = 12 → much more ghosts
-        await page.evaluate(id => window.callNative('stopRecordingInNode', id), newClipId);
+        await page.evaluate(id => window.__celestrianTest.callNative('stopRecordingInNode', id), newClipId);
         await page.waitForTimeout(500);
 
         const afterGhosts = await page.locator('.ghost-clip').count();

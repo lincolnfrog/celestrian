@@ -41,6 +41,13 @@ celestrian_debug.log
 # debug information files
 *.dwo
 
+# Test logs
+ui/playwright-report/
+ui/test-results/
+
+# Claude
+.claude/
+
 # Build directory
 build/
 .DS_Store

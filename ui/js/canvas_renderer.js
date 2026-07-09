@@ -1,4 +1,4 @@
-import { log } from './bridge.js';
+import { log } from './backend.js';
 
 export function drawWaveform(canvas, peaks, fixedStep = null, isComposite = false) {
     if (!canvas) return;

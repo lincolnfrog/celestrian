@@ -403,7 +403,10 @@ function combineNodes(draggedId, targetId) {
     // Find parent of target to insert new stack there
     const targetParent = findParent(targetId);
     const targetList = targetParent ? targetParent.nodes : state.nodes;
-    const targetIndex = targetList.findIndex(n => n.id === targetId);
+    let targetIndex = targetList.findIndex(n => n.id === targetId);
+    // Account for the dragged node vacating an earlier slot in the same list
+    const draggedIndex = targetList.findIndex(n => n.id === draggedId);
+    if (draggedIndex >= 0 && draggedIndex < targetIndex) targetIndex--;
 
     // Remove both nodes from their parents
     removeNodeFromParent(draggedId);
@@ -423,11 +426,14 @@ function combineNodes(draggedId, targetId) {
         nodes: [targetNode, draggedNode]  // Target first, then dragged
     };
 
-    // Insert at target's original position
+    // Insert at target's original position. Re-resolve the list first:
+    // removeNodeFromParent REPLACES the parent's nodes array, so the
+    // pre-removal targetList reference is orphaned by now.
+    const insertList = targetParent ? targetParent.nodes : state.nodes;
     if (targetIndex >= 0) {
-        targetList.splice(targetIndex, 0, newStack);
+        insertList.splice(Math.min(targetIndex, insertList.length), 0, newStack);
     } else {
-        targetList.push(newStack);
+        insertList.push(newStack);
     }
 
     console.log('[MockBackend] Combined nodes into stack:', newStack.id);

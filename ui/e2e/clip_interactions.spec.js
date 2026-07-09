@@ -44,34 +44,62 @@ test.describe('Clip Interactions', () => {
         await expect(soloBtn).toBeVisible();
     });
 
+    // Drops now reach the real mock handlers through the backend facade
+    // (P2-9), so these tests assert actual persistence, not just "no crash".
+    // Drop-zone semantics (drag_drop.js getDropZone): top/bottom thirds of a
+    // clip reorder around it; the center third combines into a nested stack.
+
     test('drag reorders clips within stack', async ({ page }) => {
-        // Get initial clip count
-        const clipsBefore = await page.locator('.stack-children .node').count();
-        expect(clipsBefore).toBe(3);
+        const clipIds = () => page.locator('.stack-children .node')
+            .evaluateAll(els => els.map(e => e.id));
+        expect(await clipIds()).toEqual(['clip-1', 'clip-2', 'clip-3']);
 
-        // Drag first clip down using grab handle
-        const firstClip = page.locator('.stack-children .node').first();
-        const grabHandle = firstClip.locator('.grab-handle');
-
-        // Wait for grab handle to be visible
+        const grabHandle = page.locator('#clip-1 .grab-handle');
         await expect(grabHandle).toBeVisible();
-
         const handleBox = await grabHandle.boundingBox();
-        if (!handleBox) throw new Error('Grab handle not found');
+        const clip2Box = await page.locator('#clip-2').boundingBox();
 
-        // Drag down past second clip (move 150px down)
+        // Drop in the BOTTOM third of clip-2 → insert after it
         await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
         await page.mouse.down();
-        await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + 150);
+        await page.mouse.move(clip2Box.x + clip2Box.width / 2,
+            clip2Box.y + clip2Box.height * 0.85, { steps: 5 });
         await page.waitForTimeout(200);
         await page.mouse.up();
 
-        // Wait for animation
-        await page.waitForTimeout(300);
+        // Backend state is the source of truth: order persisted as 2,1,3
+        await expect.poll(() => page.evaluate(() =>
+            window.celestrian.getState().nodes
+                .find(n => n.id === 'stack-1').nodes.map(n => n.id)
+        ), { timeout: 3000 }).toEqual(['clip-2', 'clip-1', 'clip-3']);
 
-        // Just verify drag completed without errors - still have 3 clips
-        const clipsAfter = await page.locator('.stack-children .node').count();
-        expect(clipsAfter).toBe(3);
+        // And the DOM shows all 3 clips in the new order
+        await expect.poll(clipIds, { timeout: 3000 })
+            .toEqual(['clip-2', 'clip-1', 'clip-3']);
+    });
+
+    test('drag onto a clip center combines into a nested stack', async ({ page }) => {
+        const grabHandle = page.locator('#clip-1 .grab-handle');
+        await expect(grabHandle).toBeVisible();
+        const handleBox = await grabHandle.boundingBox();
+        const clip2Box = await page.locator('#clip-2').boundingBox();
+
+        // Drop in the CENTER third of clip-2 → combine into a nested stack
+        await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(clip2Box.x + clip2Box.width / 2,
+            clip2Box.y + clip2Box.height * 0.5, { steps: 5 });
+        await page.waitForTimeout(200);
+        await page.mouse.up();
+
+        // Backend state: stack-1 now holds [nested stack, clip-3], and the
+        // nested stack holds [clip-2, clip-1] (target first, then dragged)
+        await expect.poll(() => page.evaluate(() => {
+            const stack = window.celestrian.getState().nodes
+                .find(n => n.id === 'stack-1');
+            return stack.nodes.map(n =>
+                n.type === 'stack' ? `stack[${(n.nodes || []).map(c => c.id).join(',')}]` : n.id);
+        }), { timeout: 3000 }).toEqual(['stack[clip-2,clip-1]', 'clip-3']);
     });
 
     test('clip name input is editable', async ({ page }) => {

@@ -41,6 +41,20 @@
    (a temp path). Engines that never see a device have no device key and
    deliberately skip persisting — so unit tests can't pollute the real
    `~/Library/Application Support/Celestrian/calibration.json`.
+7. **`?mock=true` specs must wait for `window.__celestrianTest`** before
+   using it (`waitForFunction` with `?.` — a plain property access throws
+   and aborts the wait). `backend.js` attaches the namespace during async
+   module init; racing it was a ~1-in-3 full-suite flake that never
+   reproduced solo.
+8. **Poll opacity/style assertions.** `stack-styles.css` animates fades
+   over 0.2 s; a single computed-style read lands mid-transition under
+   parallel-worker load. Use `expect.poll` (or `toHaveCSS`), not a
+   `waitForTimeout` + one-shot read.
+9. **`index_test.html` must not statically import anything that reaches
+   `backend.js`.** Static imports hoist above the `window.celestrian`
+   assignment, so the facade would evaluate first and lock in the
+   JUCE-bridge path for the whole page. `app.js` is dynamically imported
+   there for exactly this reason.
 
 ## Adding a bridge method
 
@@ -65,8 +79,9 @@ python3 -m http.server 8000   # file:// won't work (CORS)
 # open http://localhost:8000/index_test.html
 ```
 
-Mock selection lives in `ui/js/app.js` + `index_test.html` (there is no
-`app_test.js`). The mock (`ui/js/mock_backend.js`) holds **state +
+Backend selection lives in `ui/js/backend.js` (the P2-9 facade — the
+only module that knows mock vs harness vs JUCE bridge; in `?mock=true`
+mode it exposes Playwright helpers as `window.__celestrianTest`). The mock (`ui/js/mock_backend.js`) holds **state +
 protocol only** — all timing math is imported from `timeline_model.js`
 so it cannot drift from the UI or, via golden vectors, from the C++
 engine. Scenario definitions live in `loadScenario()`; the sidebar in

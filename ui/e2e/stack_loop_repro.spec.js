@@ -5,7 +5,12 @@ test.describe('Stack Loop Region Bug', () => {
         page.on('console', msg => console.log(`[Browser] ${msg.text()}`));
         page.on('pageerror', err => console.log(`[Browser Error] ${err.message}`));
         await page.goto('/?mock=true');
-        await page.evaluate(() => window.loadScenario('1q-3q-loop-bug'));
+        // Wait for the mock backend to expose window.__celestrianTest
+        // (backend.js attaches it during async module init — racing it flakes)
+        await page.waitForFunction(() => typeof window.__celestrianTest?.loadScenario === 'function', {
+            timeout: 5000
+        });
+        await page.evaluate(() => window.__celestrianTest.loadScenario('1q-3q-loop-bug'));
         // Wait for render
         await page.waitForSelector('.stack-wrapper');
     });
@@ -25,7 +30,7 @@ test.describe('Stack Loop Region Bug', () => {
 
         // 3. Set Loop Region to 2Q (0 -> 88200) via backend API
         await page.evaluate(() => {
-            window.callNative('setLoopPoints', 'stack-1', 0, 88200);
+            window.__celestrianTest.callNative('setLoopPoints', 'stack-1', 0, 88200);
         });
         await page.waitForTimeout(200);
 
@@ -41,8 +46,8 @@ test.describe('Stack Loop Region Bug', () => {
         //   playheadPct = 110250 / 132300 = 83.3%
 
         await page.evaluate(() => {
-            window.setMasterPos(110250);  // 2.5Q
-            window.setIsPlaying(true);
+            window.__celestrianTest.setMasterPos(110250);  // 2.5Q
+            window.__celestrianTest.setIsPlaying(true);
         });
 
         // Allow UI to update (multiple sync cycles for enrichNodes)

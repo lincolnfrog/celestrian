@@ -274,6 +274,17 @@ virtual `forEachChild(fn)` / `getChildren()` so `findNodeByUuid`, `isAnyChildRec
 
 ### 9. A single backend facade
 
+> **Status: ✅ Implemented (2026-07-09).** `ui/js/backend.js` is the only module that knows
+> mock vs harness vs bridge; `app.js`/`drag_drop.js`/`canvas_renderer.js` import from it, and
+> mock-mode Playwright helpers live under `window.__celestrianTest`. Closing the hole exposed
+> two latent bugs, both fixed: the e2e "drag reorders" test was passing only because drops
+> no-op'd against the absent bridge (it actually performed a combine — rewritten to assert real
+> reorder + a new combine test), and mock `combineNodes` spliced the new stack into an orphaned
+> array (`removeNodeFromParent` replaces `parent.nodes`), losing it. ⚠️ `index_test.html` must
+> not statically import any module that transitively imports `backend.js` — static imports hoist
+> above the `window.celestrian` assignment and the facade would lock in the JUCE-bridge path;
+> `app.js` is dynamically imported there for exactly this reason.
+
 `app.js` selects mock vs bridge at load time — but `drag_drop.js` and `canvas_renderer.js`
 statically `import { callNative } from './bridge.js'`. Consequences:
 

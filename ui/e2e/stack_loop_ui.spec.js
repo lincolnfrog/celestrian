@@ -367,9 +367,11 @@ test.describe('Composite Waveform Caching', () => {
     });
 });
 
-test.describe('Loop-on-Collapse Visual Feedback', () => {
+// Loop window activation is DATA, not view state (docs/time_maps.md, I6b):
+// the fade keys off the bypass flag; expand/collapse changes nothing here.
+test.describe('Loop Window Activation Visual Feedback', () => {
 
-    test('expanded stack composite waveform is faded', async ({ page }) => {
+    test('waveform fade keys off bypass flag, not expansion', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
         await page.click('button:has-text("1Q + 4Q (LCM=4)")');
@@ -377,22 +379,29 @@ test.describe('Loop-on-Collapse Visual Feedback', () => {
 
         const stackWrapper = page.locator('.stack-wrapper').first();
         const headerWaveform = stackWrapper.locator('.stack-header-waveform');
+        const getOpacity = () => headerWaveform.evaluate(el =>
+            parseFloat(getComputedStyle(el).opacity));
 
-        // Stack should be expanded by default
+        // Stack is expanded by default with an active window: full opacity
         const isExpanded = await stackWrapper.evaluate(el => !el.classList.contains('stack-collapsed'));
         expect(isExpanded).toBe(true);
+        const activeOpacity = await getOpacity();
+        console.log(`Active window waveform opacity: ${activeOpacity}`);
+        expect(activeOpacity).toBe(1);
 
-        // When expanded, opacity should be reduced (approximately 0.5)
-        const opacity = await headerWaveform.evaluate(el => {
-            const style = getComputedStyle(el);
-            return parseFloat(style.opacity);
+        // Bypass the window via the toggle (direct handler invocation —
+        // the test-controls panel can overlay header chrome)
+        await page.evaluate(() => {
+            const toggle = document.querySelector('.loop-window-toggle');
+            if (toggle && toggle.onclick) toggle.onclick(new Event('click'));
         });
+        await expect(stackWrapper).toHaveClass(/loop-bypassed/, { timeout: 3000 });
 
-        console.log(`Expanded stack waveform opacity: ${opacity}`);
-        expect(opacity).toBeLessThan(0.8); // Should be around 0.5 (faded)
+        // Poll: opacity animates over 0.2s (transition in stack-styles.css)
+        await expect.poll(getOpacity, { timeout: 3000 }).toBe(0.5);
     });
 
-    test('loop handles are faded when expanded', async ({ page }) => {
+    test('loop handles fade when bypassed', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
         await page.click('button:has-text("1Q + 4Q (LCM=4)")');
@@ -400,18 +409,25 @@ test.describe('Loop-on-Collapse Visual Feedback', () => {
 
         const stackWrapper = page.locator('.stack-wrapper').first();
         const loopHandleEnd = stackWrapper.locator('.stack-header-waveform .loop-handle-end');
+        const getOpacity = () => loopHandleEnd.evaluate(el =>
+            parseFloat(getComputedStyle(el).opacity));
 
-        // When expanded, loop handles should be faded (approximately 0.6)
-        const opacity = await loopHandleEnd.evaluate(el => {
-            const style = getComputedStyle(el);
-            return parseFloat(style.opacity);
+        // Active window: base handle opacity (0.4 per stack-styles.css)
+        const activeOpacity = await getOpacity();
+        console.log(`Active window loop handle opacity: ${activeOpacity}`);
+        expect(activeOpacity).toBeCloseTo(0.4, 1);
+
+        await page.evaluate(() => {
+            const toggle = document.querySelector('.loop-window-toggle');
+            if (toggle && toggle.onclick) toggle.onclick(new Event('click'));
         });
+        await expect(stackWrapper).toHaveClass(/loop-bypassed/, { timeout: 3000 });
 
-        console.log(`Expanded stack loop handle opacity: ${opacity}`);
-        expect(opacity).toBeLessThan(0.5); // Should be around 0.3 (more faded now that it's disabled)
+        // Poll: opacity animates over 0.2s (transition in stack-styles.css)
+        await expect.poll(getOpacity, { timeout: 3000 }).toBe(0.3);
     });
 
-    test('expanded stack loop handles are non-interactive', async ({ page }) => {
+    test('loop handles stay interactive in any view state', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
         await page.click('button:has-text("1Q + 4Q (LCM=4)")');
@@ -419,19 +435,27 @@ test.describe('Loop-on-Collapse Visual Feedback', () => {
 
         const stackWrapper = page.locator('.stack-wrapper').first();
         const loopHandleEnd = stackWrapper.locator('.stack-header-waveform .loop-handle-end');
+        const getPointerEvents = () => loopHandleEnd.evaluate(el =>
+            getComputedStyle(el).pointerEvents);
 
-        // Stack should be expanded by default
+        // Expanded (default): handles editable — the window is data
         const isExpanded = await stackWrapper.evaluate(el => !el.classList.contains('stack-collapsed'));
         expect(isExpanded).toBe(true);
+        const expandedPE = await getPointerEvents();
+        console.log(`Expanded stack loop handle pointer-events: ${expandedPE}`);
+        expect(expandedPE).toBe('auto');
 
-        // When expanded, loop handles should have pointer-events: none
-        const pointerEvents = await loopHandleEnd.evaluate(el => {
-            const style = getComputedStyle(el);
-            return style.pointerEvents;
+        // Collapse (direct handler invocation — the test-controls panel
+        // overlays the expand handle) and re-check: still editable
+        await page.evaluate(() => {
+            const handle = document.querySelector('.stack-expand-handle');
+            if (handle && handle.onclick) handle.onclick(new Event('click'));
         });
+        await expect(stackWrapper).toHaveClass(/stack-collapsed/, { timeout: 3000 });
 
-        console.log(`Expanded stack loop handle pointer-events: ${pointerEvents}`);
-        expect(pointerEvents).toBe('none');
+        const collapsedPE = await getPointerEvents();
+        console.log(`Collapsed stack loop handle pointer-events: ${collapsedPE}`);
+        expect(collapsedPE).toBe('auto');
     });
 });
 

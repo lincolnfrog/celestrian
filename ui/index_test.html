@@ -114,11 +114,11 @@
 
     <!-- Load app with mock backend -->
     <script type="module">
+        // Only mock_backend may be imported statically here: anything that
+        // (transitively) imports backend.js would evaluate the facade BEFORE
+        // window.celestrian is set below and select the JUCE-bridge path.
+        // app.js is dynamically imported at the bottom for the same reason.
         import { callNative, log, getState, loadScenario as loadBackendScenario, setMasterPos, setIsPlaying } from './js/mock_backend.js';
-        import { drawWaveform } from './js/canvas_renderer.js';
-        import { Viewport } from './js/viewport.js';
-        import { groupNodesByVisualX, calculateButtonPosition } from './js/stack_logic.js';
-        import { initDragDrop } from './js/drag_drop.js';
 
         // Make loadScenario available globally for buttons
         window.loadScenario = function (name) {
