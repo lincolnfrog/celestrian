@@ -211,12 +211,21 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    + linear growth while recording (so the cursor extends past the
    committed LCM per recording.md). The once-per-island first-clip
    reset is retained — it IS the epoch capture, occurring before any
-   content exists. The old "LCM Expansion Snap" survives as a **view
+   content exists. The old "LCM Expansion Snap" survives as an **island
    epoch re-base**: at commit, if the cycle grew as a simple extension,
-   `view_epoch_` moves to the newest committed origin so the visual
-   cycle top is the new phrase's top — clock and audio untouched;
+   the island epoch (root stack) moves to the newest committed origin so
+   the cycle top is the new phrase's top — clock and audio untouched;
    polyrhythmic expansions keep the old epoch (cursor sails on, per
-   recording.md). Also landed with step 1: island Q + epoch
+   recording.md).
+   **One-frame rule (field-hardened):** every cycle-relative projection
+   — the UI view AND the clip arm/commit math (anchors, slots, effective
+   positions) — must be computed relative to `getIslandEpoch()`. Mixing
+   absolute-frame math with the epoch-rebased view re-split audio from
+   visuals (field: "clip 3 anchored at 3Q instead of 0Q"). Bonus of the
+   epoch frame: every committed sibling's phase is simply
+   `rel mod duration` (committed origins are ≡ epoch mod their
+   durations), which deleted the arm-path sibling launch-point scans and
+   playback offsets — a piece of P1-6 landed early. Also landed with step 1: island Q + epoch
    stored at the root (`StackNode::setQuantum`), established at first
    commit or when committed content enters an empty island; composite
    duration corrected from min-of-children to LCM-of-children.

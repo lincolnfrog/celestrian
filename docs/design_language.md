@@ -347,6 +347,16 @@ how boxes work." So the serial operator is **concatenation of periods**
 terms: a serial group is a composite whose time-map routes each child a
 sub-range of the cycle — same primitive as everything else.
 
+**Q11. Where does a mid-cycle record click anchor?**
+**RESOLVED (2026-07-09).** Owner: "if you hit record mid-Q, the
+recording should start at the next Q (or Q0 if you are in the middle of
+the final Q of the LCM sequence)." Canon: **the arm target is always the
+next Q boundary in the epoch frame** — the cycle top is not special; it
+is simply the next boundary when you click within the cycle's final Q.
+(Matches recording.md Example 4 and the implemented PLL; the anticipatory
+tolerance — clicking within 25% of Q *before* a boundary means that
+boundary — still applies on top.)
+
 **Q10. Transport with multiple islands.**
 **RESOLVED (direction) — one active island at a time, for now.** Owner:
 global play loops the *active* island. The long-term vision: build a

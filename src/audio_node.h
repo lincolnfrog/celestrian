@@ -155,6 +155,17 @@ class AudioNode {
     return 0;
   }
 
+  /**
+   * The island's cycle epoch: the master-clock moment of the visual cycle
+   * top. ALL cycle-relative projections (anchors, slots, effective
+   * positions) must be computed relative to this — mixing epoch-relative
+   * views with absolute-frame math re-splits audio from visuals.
+   */
+  virtual int64_t getIslandEpoch() const {
+    if (auto *p = parent.load()) return p->getIslandEpoch();
+    return 0;
+  }
+
   // Spatial arrangement in the parent stack/plane
   std::atomic<double> x_pos{0.0}, y_pos{0.0};
   std::atomic<double> width{200.0}, height{100.0};

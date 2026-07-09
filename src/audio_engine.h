@@ -200,14 +200,17 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int64_t> global_transport_pos{0};
 
   // Cycle view for the UI (derived, not authoritative): normally
-  // (t − view_epoch) mod LCM; while recording, frozen base + linear
+  // (t − island epoch) mod LCM; while recording, frozen base + linear
   // growth so the cursor extends past the committed LCM (recording.md
-  // cursor table). view_epoch_ re-bases to the newest committed origin
-  // when the cycle grows as a simple extension — the visual successor of
-  // the old transport snap, without mutating the clock or the audio.
+  // cursor table). The island epoch (stored on the root stack) re-bases
+  // to the newest committed origin when the cycle grows as a simple
+  // extension — the visual successor of the old transport snap, without
+  // mutating the clock or the audio. Clip arm/commit math reads the same
+  // epoch (AudioNode::getIslandEpoch), keeping ONE cycle frame everywhere.
+  int64_t islandEpoch() const;
+
   bool was_any_node_recording_ = false;   // audio thread only (view upkeep)
   int64_t view_lcm_before_ = 0;           // audio thread only
-  std::atomic<int64_t> view_epoch_{0};
   std::atomic<int64_t> view_base_{0};
   std::atomic<int64_t> view_anchor_t_{0};
   std::atomic<bool> view_recording_{false};

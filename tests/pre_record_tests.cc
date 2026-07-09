@@ -234,6 +234,75 @@ class PreRecordTests : public juce::UnitTest {
                  juce::String(masterView) + ")");
     }
 
+    beginTest("Anchor stays in the epoch frame after cycle re-base");
+    {
+      // Field bug (2026-07-07): 1Q groove, 4Q take whose commit re-based
+      // the cycle epoch to its origin (7000; 7000 mod 4000 = 3000 — the
+      // shifted case). Clicking record late in the VIEW cycle must then
+      // anchor clip 3 at view 0Q — the arm math previously mixed the
+      // absolute frame with the epoch-rebased view and anchored at 3Q.
+      AudioEngine engine;
+      engine.createNode("stack");
+      juce::String stackId = firstNodeId(engine);
+      engine.createNode("clip", stackId);
+      juce::String clipA = childId(engine, 0);
+
+      engine.startRecordingInNode(clipA);
+      processSilence(engine, 500);
+      processSilence(engine, 500);
+      engine.stopRecordingInNode(clipA);  // Q = 1000, epoch = 0
+      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+
+      // Idle to master 6500, then record clip B: trigger = 7000.
+      for (int i = 0; i < 11; ++i) processSilence(engine, 500);
+      engine.createNode("clip", stackId);
+      juce::String clipB = childId(engine, 1);
+      engine.startRecordingInNode(clipB);
+      for (int i = 0; i < 8; ++i) processSilence(engine, 500);
+      engine.stopRecordingInNode(clipB);
+      for (int i = 0; i < 4 && nodeIsRecording(engine, 1); ++i) {
+        processSilence(engine, 500);
+      }
+      expectEquals(nodeDuration(engine, 1), (int64_t)4000,
+                   "clip B is 4Q; its commit re-bases the epoch to 7000");
+
+      // Idle to master 14500 = view 3.5Q, then click record: the PLL
+      // targets the top of the NEXT cycle (view 0Q, absolute 15000).
+      for (int i = 0; i < 7; ++i) processSilence(engine, 500);
+      engine.createNode("clip", stackId);
+      juce::String clipC = childId(engine, 2);
+      engine.startRecordingInNode(clipC);
+      processSilence(engine, 500);  // arms + starts (boundary within 512)
+
+      // Keep the var alive while reading (getDynamicObject() points into
+      // the refcounted var — a dangling pointer here read freed memory).
+      auto cVar = childVar(engine, 2);
+      auto *c = cVar.getDynamicObject();
+      expectEquals((double)c->getProperty("x"), 0.0,
+                   "clip C anchors at view 0Q, not 3Q (epoch frame)");
+      expectEquals((int64_t)(double)c->getProperty("origin"), (int64_t)15000,
+                   "origin is the absolute boundary moment");
+
+      // Record 1.5Q, stop -> snaps to 2Q; committed x stays at 0Q and
+      // playback wraps at the clip's own top.
+      for (int i = 0; i < 3; ++i) processSilence(engine, 500);
+      engine.stopRecordingInNode(clipC);
+      for (int i = 0; i < 4 && nodeIsRecording(engine, 2); ++i) {
+        processSilence(engine, 500);
+      }
+      expectEquals(nodeDuration(engine, 2), (int64_t)2000);
+      expectEquals(
+          (double)childVar(engine, 2).getDynamicObject()->getProperty("x"),
+          0.0, "committed x remains at view 0Q");
+      processSilence(engine, 500);
+      const double playheadC =
+          (double)childVar(engine, 2).getDynamicObject()->getProperty(
+              "playhead");
+      expect(playheadC < 0.3,
+             "clip C plays from its top (playhead=" +
+                 juce::String(playheadC) + ")");
+    }
+
     beginTest("Uncalibrated engines still capture from the block start");
     {
       // With zero latency the window collapses to the boundary itself:

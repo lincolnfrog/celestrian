@@ -306,6 +306,10 @@ Clip 2:    [██████████████████████�
 - launch_point = 0 (no offset needed)
 
 > **Note**: Recording/stopping ALWAYS snaps to the next clean quantum boundary. This keeps loops in sync with the rhythmic grid.
+> **Owner-ratified general rule (2026-07-09, design_language.md Q11):**
+> the arm target is the next Q boundary *in the epoch frame* — never the
+> cycle top specifically. Clicking within the final Q of the LCM cycle
+> anchors at Q0 simply because that IS the next boundary.
 
 ---
 

@@ -153,6 +153,18 @@ class StackNode : public AudioNode {
   int64_t getEpoch() const { return epoch_samples_.load(); }
 
   /**
+   * Re-bases the island's cycle epoch (simple-extension commits move the
+   * cycle top to the new phrase's origin — audio untouched).
+   */
+  void setEpoch(int64_t epoch) { epoch_samples_.store(epoch); }
+
+  int64_t getIslandEpoch() const override {
+    if (quantum_samples_.load() > 0) return epoch_samples_.load();
+    if (auto *p = parent.load()) return p->getIslandEpoch();
+    return 0;
+  }
+
+  /**
    * Resets the internal transport counter. Call when:
    * - Stack is collapsed
    * - Loop region changes

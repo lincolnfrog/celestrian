@@ -81,6 +81,13 @@ void AudioEngine::retire(std::function<void()> deleter) {
   for (auto &free_fn : ready) free_fn();
 }
 
+int64_t AudioEngine::islandEpoch() const {
+  if (auto *island = dynamic_cast<celestrian::StackNode *>(root_node.get())) {
+    return island->getEpoch();
+  }
+  return 0;
+}
+
 void AudioEngine::flushGraveyard() {
   std::vector<RetiredItem> pending;
   {
@@ -176,7 +183,7 @@ juce::var AudioEngine::getGraphState() const {
     master_view = (double)(view_base_.load() + (t - view_anchor_t_.load()));
   } else {
     const int64_t cycle = calculateTimelineLength();
-    const int64_t rel = t - view_epoch_.load();
+    const int64_t rel = t - islandEpoch();
     master_view = (double)(cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel);
   }
 
@@ -559,25 +566,32 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       const bool is_recording = isAnyNodeRecording();
       if (is_recording && !was_any_node_recording_) {
         const int64_t cycle = calculateTimelineLength();
-        const int64_t rel = old_pos - view_epoch_.load();
+        const int64_t rel = old_pos - islandEpoch();
         view_base_.store(cycle > 0 ? rel % cycle : rel);
         view_anchor_t_.store(old_pos);
         view_lcm_before_ = cycle;
       } else if (!is_recording && was_any_node_recording_) {
         // Commit: when the cycle grew as a simple extension (every
         // duration divides into multiples of the old cycle), re-base
-        // the VIEW epoch to the newest committed origin, so the visual
+        // the ISLAND epoch to the newest committed origin, so the
         // cycle top becomes the new phrase's top (recording.md "LCM
-        // Expansion Snap", reborn as a pure view re-base — the clock
-        // and the audio are untouched). Polyrhythmic expansions keep
-        // the old epoch: the cursor sails on (recording.md example).
+        // Expansion Snap", reborn as a pure epoch re-base — the clock
+        // and the audio are untouched). The same epoch drives clip
+        // arm/commit math, so visuals and audio share ONE frame.
+        // Polyrhythmic expansions keep the old epoch: the cursor sails
+        // on (recording.md example).
         const int64_t new_cycle = calculateTimelineLength();
         if (view_lcm_before_ > 0 && new_cycle > view_lcm_before_) {
           bool polyrhythmic = false;
-          int64_t newest_origin = view_epoch_.load();
+          int64_t newest_origin = islandEpoch();
           scanCommitted(focused_node, view_lcm_before_, polyrhythmic,
                         newest_origin);
-          if (!polyrhythmic) view_epoch_.store(newest_origin);
+          if (!polyrhythmic) {
+            if (auto *island =
+                    dynamic_cast<celestrian::StackNode *>(root_node.get())) {
+              island->setEpoch(newest_origin);
+            }
+          }
         }
       }
       was_any_node_recording_ = is_recording;

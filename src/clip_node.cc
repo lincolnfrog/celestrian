@@ -92,94 +92,66 @@ void ClipNode::process(const float *const *input_channels,
       double base_width = 200.0;
       double base_x = 0.0;  // Fixed base - slot determines position from 0
 
-      // Calculate EFFECTIVE position = what the user SAW (playhead position)
-      // This is LOOP-RELATIVE, not global time. The user's intent is:
-      // "I pressed record when the playhead was HERE in the loop"
-      int64_t context_launch_point = 0;
-      if (auto *parent_node = parent.load()) {
-        auto *box = dynamic_cast<StackNode *>(parent_node);
-        if (box != nullptr) {
-          for (auto *sibling : box->getChildrenSnapshot()) {
-            if (sibling != this && !sibling->is_node_recording.load()) {
-              int64_t sib_dur = sibling->duration_samples.load();
-              if (sib_dur == context_loop) {
-                context_launch_point = sibling->launch_point_samples.load();
-                break;
-              }
-            }
-          }
-        }
-      }
+      // ALL cycle-relative math happens in the ISLAND EPOCH frame — the
+      // frame the user SEES (the cycle epoch re-bases to the newest
+      // cycle-defining origin at commit). In this frame every committed
+      // sibling plays phase (rel mod its duration), because committed
+      // origins are ≡ epoch (mod their durations) — so no sibling
+      // launch-point scans or playback offsets are needed here. Mixing
+      // absolute-frame math with the epoch-rebased view was the field
+      // bug "clip 3 anchored at 3Q instead of 0Q".
+      const int64_t epoch = getIslandEpoch();
+      int64_t rel = compensated_pos - epoch;
+      if (rel < 0) rel = 0;
 
-      // Calculate offset (same formula as playback uses)
-      int64_t playback_offset =
-          (context_loop - (context_launch_point % context_loop)) % context_loop;
-
-      // Effective position = LOOP-RELATIVE position where user pressed record
-      int64_t effective_pos =
-          (compensated_pos + playback_offset) % context_loop;
+      // Effective position = where the user perceived the cycle playhead
+      int64_t effective_pos = rel % context_loop;
 
       // ALWAYS SNAP to next Q boundary
-      // Key insight:
-      // - Single-clip: use compensated_pos (extending timeline)
-      // - Multi-clip: use effective_pos (visual position in loop)
       if (Q > 0) {
         bool singleClipContext = (context_loop == Q);
 
-        int64_t next_q_master;
+        int64_t next_q_rel;
         if (singleClipContext) {
-          // Single clip context: extend timeline using absolute position
-          int64_t current_q_index = compensated_pos / Q;
-          next_q_master = (current_q_index + 1) * Q;
-          if (compensated_pos % Q == 0) {
-            next_q_master = compensated_pos;  // Already at boundary
+          // Single clip context: extend the timeline in the epoch frame
+          int64_t current_q_index = rel / Q;
+          next_q_rel = (current_q_index + 1) * Q;
+          if (rel % Q == 0) {
+            next_q_rel = rel;  // Already at boundary
           }
         } else {
-          // Multi-clip context: use visual position (what user sees)
+          // Multi-clip context: snap the perceived position forward
           int64_t visual_q_index = effective_pos / Q;
           int64_t next_visual_q = (visual_q_index + 1) * Q;
           if (effective_pos % Q == 0) {
             next_visual_q = effective_pos;
           }
-          // Convert visual next_q back to master_pos terms
-          int64_t loop_base = (compensated_pos / context_loop) * context_loop;
-          int64_t offset_in_loop =
-              (next_visual_q - playback_offset + context_loop) % context_loop;
-          // Handle the case where next_visual_q wraps to 0 (e.g., 4Q % 4Q = 0)
-          // In this case, we need to go to the next context loop
+          int64_t loop_base = (rel / context_loop) * context_loop;
+          int64_t offset_in_loop = next_visual_q % context_loop;
+          // next_visual_q == context_loop means "the top of the NEXT
+          // cycle", not the top of this one
           if (offset_in_loop == 0 && next_visual_q > 0) {
-            offset_in_loop = context_loop;  // Next cycle
+            offset_in_loop = context_loop;
           }
-          next_q_master = loop_base + offset_in_loop;
+          next_q_rel = loop_base + offset_in_loop;
         }
 
-        // Calculate what the effective_pos will be at that Q boundary
-        int64_t playback_offset2 =
-            (context_loop - (context_launch_point % context_loop)) %
-            context_loop;
-        int64_t future_effective_pos =
-            (next_q_master + playback_offset2) % context_loop;
+        // Absolute performance moment of that boundary (origin frame)
+        const int64_t next_q_master = epoch + next_q_rel;
+        int64_t future_effective_pos = next_q_rel % context_loop;
 
         // anchor_phase_samples = position within Q (for audio alignment)
         anchor_phase_samples.store(future_effective_pos % Q);
         // THE canonical timing fact: this clip's content belongs at
         // performance moment next_q_master — stored ABSOLUTE
-        // (docs/kernel.md). Storing it mod the context loop truncated
-        // which cycle-of-the-context the take began in, which broke
-        // clips longer than their context once the transport went
-        // monotonic (field bug: 4Q clip over a 1Q groove looping at 3Q).
-        // launchPointFor mods by the final duration at commit.
+        // (docs/kernel.md; launchPointFor mods by the final duration, so
+        // no cycle information is ever truncated).
         origin_samples.store(next_q_master);
 
-        // slot = which Q slot visually — ALWAYS cycle-relative
-        // (recording.md X-Offset formula: position wraps within the
-        // context; Example 5: "even at 10Q global time, position wraps
-        // to 2Q"). This must never use the absolute master position:
-        // under the monotonic transport (kernel.md step 3) the absolute
-        // value grows without bound, and an absolute slot pushed the
-        // recording clip's lane thousands of pixels off-screen (field
-        // bug 2026-07-07: "no waveform while recording clip 2").
-        int64_t slot = (next_q_master % context_loop) / Q;
+        // slot = visual Q slot, cycle-relative IN THE EPOCH FRAME
+        // (recording.md X-Offset formula; never absolute — absolute
+        // slots fly off-screen under the monotonic transport).
+        int64_t slot = (next_q_rel % context_loop) / Q;
         x_pos.store(base_x + slot * base_width);
 
         // If already at boundary, start immediately
@@ -540,19 +512,21 @@ void ClipNode::commitRecording(int64_t final_duration) {
       }
     }
 
-    // 2. Calculate Preferred Visual Position (based on Context)
-    // Example: Trigger=14Q. Context=1Q. Ideal X = 14%1 = 0Q.
-    // Example: Trigger=2Q. Context=4Q. Ideal X = 2%4 = 2Q.
+    // 2. Calculate Preferred Visual Position (based on Context) — in the
+    // ISLAND EPOCH frame, like all cycle-relative projections.
+    // Example: Trigger=14Q, epoch=0, Context=1Q → Ideal X = 14%1 = 0Q.
+    // Example: Trigger=2Q, epoch=0, Context=4Q → Ideal X = 2%4 = 2Q.
     int64_t trigger_pos = trigger_master_position.load();
+    int64_t rel_trigger = trigger_pos - getIslandEpoch();
+    if (rel_trigger < 0) rel_trigger = 0;
     int64_t ideal_anchor =
-        (context_loop > 0) ? (trigger_pos % context_loop) : 0;
+        (context_loop > 0) ? (rel_trigger % context_loop) : 0;
 
     // 3. Calculate Audio Phase (based on LCM Context)
     // Per LCM model: anchor is ALWAYS relative to context_loop, not self
-    // duration. With 1Q context, any trigger_pos % 1Q = 0. Clip MUST anchor
-    // at 0Q.
-    int64_t audio_anchor =
-        (context_loop > 0) ? (trigger_pos % context_loop) : 0;
+    // duration. With 1Q context, any rel_trigger % 1Q = 0. Clip MUST
+    // anchor at 0Q.
+    int64_t audio_anchor = ideal_anchor;
 
     // 4. No rotation — content lives in the origin frame (docs/kernel.md).
     // Playback offsets every read by the stored origin, so the buffer is
