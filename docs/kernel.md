@@ -229,9 +229,13 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    stored at the root (`StackNode::setQuantum`), established at first
    commit or when committed content enters an empty island; composite
    duration corrected from min-of-children to LCM-of-children.
-4. **Time-maps**: reframe collapse (`internal_transport_` →
-   `collapse_epoch`) as the first named time-map; warp and serial
-   connections later reuse it.
+4. **Time-maps** — 🔶 in progress: **phase 1 done (2026-07-09,
+   time_maps.md)** — loop windows are the first named time-map
+   (`(t − cycle_epoch) mod len` via `ProcessContext.cycle_epoch`;
+   `internal_transport_` deleted; activation is data, collapse purely
+   visual). Remaining: recording-through-map (phase 2), non-contiguous
+   segments + cell/punch editor (phase 3); warp and serial connections
+   later reuse the same primitive.
 
 Estimated end-state deletions: the six-field clip timing block, the
 rotation machinery, the transport branch-pile, `internal_transport_`,

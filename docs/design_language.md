@@ -1,12 +1,12 @@
 # Celestrian Design Language
 
-> Written 2026-07-07 from a full pass over `docs/`. This is an attempt to
-> extract the *implicit* design language of the existing docs into precise,
-> quotable form: vocabulary, invariants, worked examples in the house
-> style, and a set of deliberately provocative questions. Companion doc:
-> `kernel.md` (the simplification proposal that falls out of this one).
+> Written 2026-07-07 from a full pass over `docs/`; adopted as canon
+> through owner review (§5 records the rulings, Q1–Q11, with dates and
+> quotes). Vocabulary, numbered invariants (I1–I9), worked examples in
+> the house style, and the question record. Companion: `kernel.md`.
 >
-> Status: **proposal** — nothing here is binding until adopted.
+> Status: **spec** — the invariants are binding; violations are bugs
+> (several have been found and fixed by citing them).
 
 ---
 
@@ -29,7 +29,8 @@ one-line definitions.
 | **Ghost** | The visual unrolling of a loop across the cycle: repetitions of content that exist mathematically but not as separate audio. |
 | **One-shot** | A clip that sounds once per context cycle instead of looping at its own length. *(See Q5 — the current formula in design.md/recording.md is garbled.)* |
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM. |
-| **Loop window** | A `[start, end)` restriction on a node's cycle. *(When it applies on composites is under redesign: the implemented loop-on-collapse ties it to collapse state, which violates I6b — see Q4.)* |
+| **Loop window** | A `[start, end)` restriction on a node's cycle — a one-segment time-map. Active iff valid and not bypassed; independent of view state (time_maps.md, implemented 2026-07-09). |
+| **Time-map** | THE mechanism that transforms time: an ordered segment list phased off the cycle epoch, `m(t) = segments[(t − epoch) mod period]`. Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md, kernel.md). |
 | **Hysteresis snap** | Gesture quantization with tolerance: stop-intent within 15% of a boundary means the boundary; outside it means "keep the raw take, snap the loop window." |
 | **Fractality** | The law that any subtree, collapsed, obeys exactly the laws of a clip. If a rule doesn't hold recursively, it isn't a rule yet. |
 
@@ -74,9 +75,9 @@ several already are.
   rule; "UI = f(Data), f pure and shared" resolves it.)*
   **Owner ruling (2026-07-07) — corollary I6b, View Purity: view actions
   never change sound. Expanding or collapsing a stack is display-only.
-  ⚠️ The implemented Loop-on-Collapse model (stacks.md) violates I6b —
-  collapsed stacks currently apply their loop window and an internal
-  transport, audibly changing playback. Flagged for redesign; see Q4.**
+  ✅ Enforced since 2026-07-09: the old Loop-on-Collapse model was
+  replaced by time-map loop windows (time_maps.md phase 1); a unit test
+  asserts expanded/collapsed output is sample-identical.**
 - **I7 — Empirical Time.** Latency constants are measured on the user's
   hardware, never assumed from driver reports. *(Implemented:
   calibration + persistence, performance.md §7.)*
@@ -149,20 +150,21 @@ gets wrong — refactoring_proposal.md P0-3).
 Same stack as E-B, collapsed, window `[2Q, 4Q)`:
 
 ```
-Collapsed:  ▒▒▒▒[░░ active 2Q ░░]▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
+Windowed:   ▒▒▒▒[░░ active 2Q ░░]▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
                  ↑2Q        ↑4Q       (dim = outside window)
 Playhead cycles 2Q → 4Q → 2Q ...
-Children hear: child_t = 2Q + ((t − collapse_epoch) mod 2Q)
+Children hear: child_t = epoch + 2Q + ((t − epoch) mod 2Q)
+               (frame preserved — see time_maps.md §2 warning)
 ```
 
 Exercises: loop windows change *period* (a windowed composite behaves as
 a 2Q clip in its parent's LCM!), and the window-epoch time-map.
-⚠️ **This example describes the implemented behavior, which Q4's ruling
-has since overruled**: activation must not be tied to collapse (I6b —
-collapse is display-only). The window math above stays valid; *when* the
-window applies moves to an explicit active/bypassed state (redesign
-tracked in tasks.md). Note the consequence either way: an active window
-changes the parent cycle from 12Q to LCM(4Q, 2Q) = 4Q.
+✅ **Implemented per Q4's ruling (2026-07-09)**: activation is an
+explicit active/bypassed state (⟳ toggle), independent of collapse;
+phase is `(t − cycle_epoch) mod len` with the window re-basing the epoch
+for its children (time_maps.md phase 1). Note the consequence: an
+active window changes the parent cycle from 12Q to LCM(4Q, 2Q) = 4Q —
+by data, never by view.
 
 ### E-D. One-Shot Growing into a Loop (progressive disclosure)
 
@@ -214,39 +216,28 @@ global play button even mean here?
 
 ## 4. Precision Defects in the Current Docs
 
-Found during this pass; none require design decisions except (1):
+Found during the 2026-07-07 pass; statuses updated 2026-07-09:
 
-1. **The one-shot formula is garbled** — design.md §7 and recording.md
-   §Clip Types both say looping ⇔ `duration >= anchor_position %
-   duration`. Since `x % d < d` always, every clip is "looping" and the
-   one-shot condition is unsatisfiable as written. The prose intent
-   (Example 3) is `duration < context remaining` / "doesn't fill the
-   context." Needs an owner-approved correct statement (E-D proposes the
-   period-based one).
-2. **recording.md Example 2/3 collision** — Example 3's text ("Short clip
-   recorded mid-timeline…") is fused onto the end of Example 2's buffer-
-   rotation note with no heading; the Examples numbering skips 3.
-3. **Rotation language is stale** — design.md §1 ("the buffer is
-   cyclically shifted") and recording.md's rotation note describe the old
-   *physical* rotation; since P0-2 rotation is virtual index math.
-4. **design.md numbering** — Features run 1, 2, 6, 5, 6, 7, 7, 3, 4; two
-   §6s and two §7s.
-5. **Islands are specified in triplicate** — recording.md (inheritance
-   rules 1–3), implementation.md §8 (membership rules), design.md §8
-   (inherit/new-song). They mostly agree but drift in details (e.g.
-   whether connection-after-Q is defined). One canonical islands section
-   should own it.
-6. **nesting.md is a fossilized status journal** — it declares drag-drop
-   "Partially Implemented, Not Working" and "✅ Resolved" in the same
-   file, and duplicates per-stack-LCM content now in stacks.md. Fold the
-   two surviving sections (per-stack LCM, drop-zone design) into
-   stacks.md and delete.
-7. **test_harness.md references `ui/js/app_test.js`**, which no longer
-   exists (also flagged in refactoring_proposal.md P3).
-8. **Doc-type headers** — proposal: every doc opens with one of
-   `Status: spec | journal | proposal`, so readers know whether drift
-   from code is a doc bug (spec) or history (journal). Half the confusion
-   in this review was telling those apart.
+1. ~~The one-shot formula is garbled~~ — ✅ fixed: owner ratified the
+   period-source definition (Q5); design.md §6 and recording.md §Clip
+   Types now carry it.
+2. ~~recording.md Example 2/3 collision~~ — ✅ fixed: Example 3 has its
+   heading back.
+3. ~~Rotation language is stale~~ — ✅ overtaken by events: rotation was
+   deleted entirely (origin model); all rotation prose replaced.
+4. ~~design.md numbering~~ — ✅ fixed: sections sequential.
+5. **Islands are specified in triplicate** — still open: recording.md
+   (inheritance rules, the most complete), implementation.md §8
+   (membership rules), design.md §8 (inherit/new-song). recording.md's
+   §Islands should be the canonical home; the others should shrink to
+   pointers. Low urgency until multi-island work starts (Q10: one active
+   island for now).
+6. ~~nesting.md is a fossilized status journal~~ — ✅ fixed 2026-07-09:
+   surviving content (per-stack LCM) folded into stacks.md; file deleted.
+7. ~~test_harness.md stale references~~ — ✅ fixed 2026-07-09: rewritten
+   with the current harness and the stale-binary gotcha.
+8. ~~Doc-type headers~~ — ✅ adopted 2026-07-09: statuses in each doc and
+   the docs/README.md index.
 
 ---
 

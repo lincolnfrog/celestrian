@@ -54,8 +54,17 @@ juce::var StackNode::getMetadata() const {
   auto *obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)kids->size());
   obj->setProperty("isExpanded", (bool)is_expanded.load());
-  // Expose internal transport for UI synchronization when collapsed
-  obj->setProperty("internalTransport", (double)internal_transport_.load());
+  // Loop window state (time_maps.md): active is independent of
+  // expansion; the stack's `playhead` field (base metadata) carries the
+  // window phase fraction while the window is active.
+  obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
+  obj->setProperty("windowActive", isLoopWindowActive());
+  // Island state, for diagnosability: `origin` on clips is ABSOLUTE;
+  // the view-frame anchor is (origin − epoch) mod duration. Without the
+  // epoch in dumps, "origin = 3Q" looks wrong for a clip recorded at
+  // the cycle top (field confusion, 2026-07-09).
+  obj->setProperty("quantum", (double)quantum_samples_.load());
+  obj->setProperty("epoch", (double)epoch_samples_.load());
   juce::Array<juce::var> childData;
   for (auto *child : *kids) {
     childData.add(child->getMetadata());
@@ -183,47 +192,38 @@ void StackNode::process(const float *const *input_channels,
                        true);
   }
 
-  // === LOOP-ON-COLLAPSE MODEL (Internal Transport) ===
-  // When collapsed, stack uses its OWN transport counter that wraps at
-  // loop_duration. This solves the issue where global transport wrapping at LCM
-  // caused alternating loop cycles (e.g., 2Q then 1Q when LCM=3Q, loop=2Q).
-  int64_t child_master_pos;
-
-  if (!is_expanded.load()) {
-    int64_t stack_loop_start = loop_start_samples.load();
-    int64_t stack_loop_end = loop_end_samples.load();
-
-    if (stack_loop_end > stack_loop_start) {
-      int64_t loop_duration = stack_loop_end - stack_loop_start;
-
-      // Use internal transport (increments independently, wraps at
-      // loop_duration)
-      int64_t current_internal = internal_transport_.load();
-      child_master_pos = stack_loop_start + (current_internal % loop_duration);
-
-      // Advance internal transport if playing
-      if (context.is_playing) {
-        internal_transport_.fetch_add(context.num_samples);
-
-        // Prevent overflow (optional - modulo handles it, but keeps numbers
-        // small)
-        if (internal_transport_.load() >= loop_duration * 1000) {
-          internal_transport_.store(internal_transport_.load() % loop_duration);
-        }
-      }
-
-    } else {
-      // No valid loop region - pass through global transport
-      child_master_pos = context.master_pos;
-    }
-  } else {
-    // === EXPANDED: Pass through global transport unchanged ===
-    child_master_pos = context.master_pos;
-  }
-
-  // Create modified context for children
+  // === LOOP WINDOW AS TIME-MAP (time_maps.md phase 1) ===
+  // The window applies iff it is ACTIVE (valid + not bypassed) —
+  // independent of expansion (I6b: collapse is purely visual). Phase is
+  // a pure function of the received clock: (t − cycle_epoch) mod len.
+  // No private counter, no reset-on-collapse, fully deterministic.
   ProcessContext child_context = context;
-  child_context.master_pos = child_master_pos;
+
+  const int64_t window_start = loop_start_samples.load();
+  const int64_t window_end = loop_end_samples.load();
+  const bool window_active =
+      !loop_window_bypassed_.load() && window_end > window_start;
+
+  if (window_active) {
+    const int64_t len = window_end - window_start;
+    int64_t rel = context.master_pos - context.cycle_epoch;
+    rel = ((rel % len) + len) % len;
+
+    // The window selects VIEW positions [start, end) of the received
+    // cycle, so the mapped time stays IN THE RECEIVED FRAME:
+    // t_child = epoch + start + rel. Children align by their ABSOLUTE
+    // origins — dropping the epoch here shifted every child whose
+    // origin ≢ 0 (mod duration): field bug 2026-07-09, "2Q clip loops
+    // its Q2 when the window selects Q1".
+    child_context.master_pos = context.cycle_epoch + window_start + rel;
+    // For nested maps: the child frame's cycle top is the window top.
+    child_context.cycle_epoch = context.cycle_epoch + window_start;
+
+    // Publish the window phase for the UI (fraction within the window).
+    playhead_pos.store((double)rel / (double)len);
+  } else {
+    playhead_pos.store(0.0);
+  }
 
   // Process each child and sum their results — iterating the immutable
   // published snapshot, no locks on the audio thread.

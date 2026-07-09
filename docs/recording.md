@@ -1,5 +1,8 @@
 # Recording: Design & Math
 
+> Status: **spec** — the worked examples here are executable
+> (shared/timing_golden.json pins them in both C++ and JS).
+
 ## Core Philosophy: Audio Memory Principle
 > Recorded audio must always play back aligned with the audio the performer heard during recording. The performer's timing is relative to what they heard—this relationship is sacred.
 
@@ -131,25 +134,36 @@ Outer Stack:
 
 | Field | Description | Set When |
 |-------|-------------|----------|
-| `trigger_master_pos` | Raw master position when recording started | Recording starts |
-| `anchor_phase_samples` | **LOOP-RELATIVE** position where user pressed record | Recording starts |
-| `launch_point_samples` | Where playback starts within clip | Recording commits |
-| `duration_samples` | Total clip length | Recording commits |
+| **`origin_samples`** | **THE canonical timing fact** (kernel.md): the absolute performance moment the clip's `content[0]` belongs to. Everything below is a projection of it. | Recording arms |
+| `launch_point_samples` | Derived: `(−origin) mod duration` — kept as a stored field for UI/metadata compatibility | Recording commits |
+| `anchor_phase_samples` | Derived: cycle-relative position within Q, for the UI marker | Recording arms |
+| `trigger_master_position` | The armed boundary (absolute); feeds the x/slot math until P1-7 | Recording arms |
+| `duration_samples` | Total clip length (heard-time hysteresis snap) | Recording commits |
 | `loop_start/end` | Playable region within clip | Recording commits |
 
-### Loop-Relative Anchor Model
+### The Epoch Frame (one frame for everything)
 
-The anchor is NOT the global master position. It's **where the playhead was in the context loop** when you pressed record.
+All cycle-relative reasoning — anchors, slots, effective positions, the
+UI's masterPos view — happens in the **island epoch frame**:
+`rel = t − island_epoch`. The epoch re-bases to the newest
+cycle-defining origin on simple-extension commits (the visual successor
+of the old transport snap), and windowed stacks re-base it again for
+their children (time_maps.md). Mixing absolute-frame math with the
+epoch frame has caused field bugs; don't.
 
-**Why loop-relative?**
+**Why loop-relative intent?**
 - You might listen to Clip 1 looping for 5 minutes before recording Clip 2
-- Global time keeps ticking, but your INTENT is relative to the loop
-- If you press record near the END of the loop, you're intending to start at 0Q (the loop is about to restart)
+- The monotonic clock keeps ticking, but your INTENT is relative to the cycle you hear
+- Pressing record near the END of the cycle means the upcoming top (Q11 ruling: the arm target is always the next Q boundary in the epoch frame — the cycle top is just what that boundary is in the final Q)
 
-**Formula:**
+**Formula (current, epoch-relative — sibling launch offsets are gone;
+in the epoch frame every committed sibling's phase is simply
+`rel mod duration`):**
 ```cpp
-effective_pos = (master_pos + playback_offset) % context_loop
-anchor_phase_samples = effective_pos  // LOOP-RELATIVE!
+rel           = compensated_pos - island_epoch
+effective_pos = rel % context_loop          // what the user perceived
+next_q_rel    = snap-forward-to-Q(...)      // Q11: next boundary
+origin        = island_epoch + next_q_rel   // stored ABSOLUTE
 ```
 
 ---
@@ -164,14 +178,19 @@ When a clip starts recording, the **context loop** = longest existing clip's dur
 - If no clips exist → context_loop = Q (quantum, defined by first clip)
 - If Clip 1 = 1Q, Clip 2 = 4Q exist → context_loop = 4Q
 
-### Formula (calculated in C++ at recording start)
+### Formula (calculated in C++ at recording start — epoch frame)
 ```cpp
-context_loop = max(longest_sibling_duration, Q)
-effective_pos = (master_pos + playback_offset) % context_loop
-quantum_offset = effective_pos / Q
-x_pos = base_x + quantum_offset * base_width
-anchor_phase = effective_pos  // Store loop-relative position
+context_loop   = max(longest_sibling_duration, Q)
+rel            = compensated_pos - island_epoch
+next_q_rel     = snap rel forward to the next Q boundary (Q11)
+slot           = (next_q_rel % context_loop) / Q
+x_pos          = base_x + slot * base_width
+anchor_phase   = (next_q_rel % context_loop) % Q
+origin         = island_epoch + next_q_rel   // absolute; launch derives
 ```
+No sibling launch-point offsets: in the epoch frame every committed
+sibling plays phase `rel mod duration`, so "what the user perceived" is
+just `rel % context_loop`.
 
 ### Key Insight
 The **context_loop determines wrapping behavior**:

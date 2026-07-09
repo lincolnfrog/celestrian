@@ -1,5 +1,9 @@
 # UI/Backend Separation of Concerns
 
+> Status: **spec**. The canonical bridge method list lives in
+> `ui/js/protocol.js` (contract-tested against C++ and the mock); this
+> doc owns the *placement rules* for what belongs on which side.
+
 This document defines the abstraction boundary between the Celestrian frontend (JavaScript) and backend (C++).
 
 ## Principles
@@ -37,6 +41,8 @@ This document defines the abstraction boundary between the Celestrian frontend (
 | `getInputList` | none | Hardware info |
 | `setNodeInput` | uuid, channelIndex | Audio config |
 | `setLoopPoints` | uuid, startSamples, endSamples | Correctly uses samples |
+| `toggleLoopWindow` | uuid | Window activation is data, not view state (time_maps.md) |
+| `startLatencyCalibration` / `getLatencyCalibration` | — | Hardware measurement (performance.md §7) |
 | `togglePlay` | uuid | Pure audio state |
 | `toggleSolo` | uuid | Pure audio state |
 | `toggleMute` | uuid | Pure audio state |

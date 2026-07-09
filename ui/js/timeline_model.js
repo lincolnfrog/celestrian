@@ -211,25 +211,24 @@ export function computeGhostTiles({ clipStartPx, clipWidthPx, timelineWidthPx, m
 
 /**
  * Stack header playhead position as a fraction (0..1) of the stack timeline.
- * Collapsed stacks run on their own internal transport (Loop-on-Collapse).
+ * Loop windows are time-maps (docs/time_maps.md): active independent of
+ * expansion; the engine publishes the window phase on the stack's
+ * `playhead` field.
  */
 export function stackPlayheadPercent({
-    masterPos, internalTransport = null, isExpanded = true,
+    masterPos, windowActive = false, playhead = null,
     loopStart = 0, loopEnd = 0, stackDuration
 }) {
-    let pos = masterPos || 0;
+    // Active window: engine-published phase (fraction within the window),
+    // positioned inside the window on the full-stack scale. Collapse is
+    // purely visual (I6b) and plays no role here.
     const loopLength = loopEnd - loopStart;
-
-    // When collapsed, the stack runs on its own internal clock aligned to
-    // the loop start (mirrors StackNode's internal transport).
-    if (!isExpanded && typeof internalTransport === 'number') {
-        pos = loopStart + internalTransport;
+    if (windowActive && loopLength > 0 && stackDuration > 0 &&
+        typeof playhead === 'number') {
+        return (loopStart + playhead * loopLength) / stackDuration;
     }
 
-    if (loopLength > 0 && stackDuration > 0) {
-        const posInLoop = loopStart + ((pos - loopStart) % loopLength);
-        return posInLoop / stackDuration;
-    }
-
+    // No active window: the stack follows the cycle view directly.
+    const pos = masterPos || 0;
     return stackDuration > 0 ? (pos % stackDuration) / stackDuration : 0;
 }

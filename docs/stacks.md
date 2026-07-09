@@ -1,5 +1,9 @@
 # Nested Stacks Design
 
+> Status: **spec + journal** — UX/visual design is current; the "Stack
+> Loop Processing" section near the end is superseded history
+> (see time_maps.md).
+
 ## Overview
 
 Stacks can contain other stacks to unlimited depth. A nested stack ("sub-stack") behaves identically to a top-level stack:
@@ -280,6 +284,35 @@ if (!stack.isExpanded) {
 
 ---
 
+## Per-Stack LCM and Timeline
+
+*(Folded in from the retired nesting.md, 2026-07-09.)*
+
+The LCM that determines a stack's timeline width is calculated
+**per-stack**, not globally:
+
+- **Independent timelines**: multiple top-level stacks can have
+  different LCMs and timeline widths.
+- **Nested composites**: an inner stack contributes its composite
+  duration (its own LCM — `StackNode::getIntrinsicDuration`) as a single
+  duration to the parent's LCM. With an **active loop window**, it
+  contributes the window period instead (time_maps.md).
+- **Isolation**: adding a clip to Stack A doesn't affect Stack B's
+  timeline.
+- **Ghosts render per-stack**: each stack tiles its clips' ghosts to its
+  own LCM width, in its own coordinate space.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Outer Stack (LCM = 12Q)                                      │
+│   [Clip 1 (4Q)]━━━━━━━━━━━━━[ghost]━━━━━━━━━━━━━[ghost]      │
+│   [Inner Stack ═══ 6Q composite ═══]━━━━[ghost]━━━━━         │
+│   (expanded: shows 2Q + 3Q clips internally)                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Technical Architecture
 
 ### Data Model Changes
@@ -384,18 +417,14 @@ function renderNode(node, parentStack) {
 ## Stack Loop Processing (Implementation Details)
 
 > [!CAUTION]
-> **Owner ruling 2026-07-07 contradicts this model.** Per
-> design_language.md I6b (View Purity): *"Collapsing just displays the
-> full LCM of the stack; the sound shouldn't change."* The
-> Loop-on-Collapse model below — implemented in `stack_node.cc` and
-> covered by `stack_loop_tests.cc` — makes collapse audibly activate the
-> loop window, which violates that ruling. This section is retained as
-> accurate documentation of **current behavior** until the redesign.
-> The redesign direction is settled (2026-07-09): see **`time_maps.md`**
-> — island-aligned piecewise time-maps with an explicit active/bypassed
-> state, collapse purely visual, defined recording-through-map
-> semantics, and non-contiguous selections as multi-segment maps.
-> Tracked in tasks.md §Open Design Questions (q6).
+> **SUPERSEDED (2026-07-09).** The Loop-on-Collapse model below has been
+> **replaced** by the time-map model (`time_maps.md`, phase 1
+> implemented): the loop window is active iff valid and not bypassed —
+> independent of expansion (I6b: collapse is purely visual); phase is
+> `(t − cycle_epoch) mod len`, derived from the island clock (no
+> internal transport, no reset-on-collapse); a `toggleLoopWindow` bridge
+> method + UI toggle controls activation. This section is retained as
+> historical design context only.
 
 > [!IMPORTANT]
 > This section documents the **Loop-on-Collapse** model for stack-level loop regions.
@@ -555,15 +584,10 @@ This allows quickly hearing the looped output without losing context of where yo
 
 ### Testing Requirements
 
-1. **C++ unit tests:**
-   - Collapsed stack with loop region constrains children's master_pos
-   - Expanded stack passes master_pos unchanged
-   - Nested stacks: each level's collapse state independent
-   - Default behavior (no loop set) = full LCM duration
-
-2. **E2E tests:**
-   - Composite waveform opacity changes on expand/collapse
-   - Loop handles fade when expanded
-   - Recording inside expanded stack works normally
-   - Collapse stack → playhead constrained to loop region
+> **Superseded with the model (2026-07-09).** Current coverage lives in
+> `stack_loop_tests.cc` (time-map semantics): I6b sound-neutrality
+> (expanded vs collapsed output identical), bypass toggle round-trip,
+> epoch-derived phase, nested window re-basing, invalid-window
+> passthrough, high-transport wrap consistency. E2E expectations key off
+> the **bypass state** (`.loop-bypassed` class), not expansion.
 

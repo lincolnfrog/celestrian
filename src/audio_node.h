@@ -34,6 +34,13 @@ struct ProcessContext {
   // and walk their ancestor chain to honor soloed containers.
   const AudioNode *solo_node = nullptr;
 
+  // The received frame's cycle top (time_maps.md): the engine sets this
+  // to the island epoch; a stack with an ACTIVE loop window re-bases it
+  // for its children to the window start. Window phase is always
+  // (master_pos − cycle_epoch) mod window_len — a pure function of the
+  // received clock, never of view state or a private counter.
+  int64_t cycle_epoch = 0;
+
   // --- Pre-record ring (docs/performance.md §3) ---
   // The engine continuously copies device input into a ring indexed by a
   // monotonic input clock (total input samples since engine start — unlike

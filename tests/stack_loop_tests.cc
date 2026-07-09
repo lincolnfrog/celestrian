@@ -6,13 +6,18 @@
 namespace celestrian {
 
 /**
- * Tests for stack-level loop region with internal transport.
- * Verifies that collapsed stacks use their own transport counter
- * that wraps at loop_duration, independent of global transport LCM.
+ * Tests for stack loop windows as time-maps (docs/time_maps.md phase 1).
+ *
+ * Ratified semantics:
+ *  - A window is ACTIVE iff valid (end > start) and not bypassed —
+ *    independent of expansion (I6b: collapse is purely visual).
+ *  - Window phase is a pure function of the received clock:
+ *    child_time = start + ((t − cycle_epoch) mod len). No private
+ *    counter, no reset-on-collapse, fully deterministic (I8).
  */
 class StackLoopTests : public juce::UnitTest {
  public:
-  StackLoopTests() : juce::UnitTest("Stack Loop Region", "StackLoopDebug") {}
+  StackLoopTests() : juce::UnitTest("Stack Loop Window", "StackLoopDebug") {}
 
   void runTest() override {
     float dummy[10000] = {0.0f};
@@ -20,233 +25,204 @@ class StackLoopTests : public juce::UnitTest {
     float output[10000] = {0.0f};
     float* const outputs[] = {output};
 
-    beginTest("Internal Transport Increments When Collapsed");
-    {
-      StackNode stack("TestStack");
-
-      // Set loop region: 0 to 88200 (2Q at 44.1kHz)
-      stack.setLoopPoints(0, 88200);
-      stack.is_expanded.store(false);  // Collapse the stack
-
+    // Helper: a clip whose buffer holds a ramp so output identifies the
+    // position the clip was asked to play.
+    auto makeRampClip = [&](int len) {
+      auto clip = std::make_unique<ClipNode>("Ramp", 44100.0);
+      std::vector<float> ramp((size_t)len);
+      for (int i = 0; i < len; ++i) ramp[(size_t)i] = (float)(i + 1) * 0.0001f;
+      float* const rampIn[] = {ramp.data()};
       ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 512;
-      ctx.master_pos =
-          0;  // Global transport (should be ignored when collapsed)
-
-      // Initial internal transport should be 0
-      expectEquals(stack.getInternalTransport(), (int64_t)0);
-
-      // Process one block
-      stack.process(inputs, outputs, 1, 1, ctx);
-
-      // Internal transport should have incremented by num_samples
-      expectEquals(stack.getInternalTransport(), (int64_t)512);
-
-      // Process another block
-      stack.process(inputs, outputs, 1, 1, ctx);
-
-      // Should be 1024 now
-      expectEquals(stack.getInternalTransport(), (int64_t)1024);
-    }
-
-    beginTest("Internal Transport Does NOT Increment When Expanded");
-    {
-      StackNode stack("TestStack");
-
-      stack.setLoopPoints(0, 88200);
-      stack.is_expanded.store(true);  // Expanded
-
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 512;
-      ctx.master_pos = 1000;
-
-      stack.resetInternalTransport(0);
-      expectEquals(stack.getInternalTransport(), (int64_t)0);
-
-      // Process block - internal transport should NOT change when expanded
-      stack.process(inputs, outputs, 1, 1, ctx);
-
-      // Internal transport unchanged (expanded uses global transport)
-      expectEquals(stack.getInternalTransport(), (int64_t)0);
-    }
-
-    beginTest("Internal Transport Resets on Collapse");
-    {
-      StackNode stack("TestStack");
-
-      stack.setLoopPoints(0, 88200);
-      stack.is_expanded.store(false);
-
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 10000;
-      ctx.master_pos = 0;
-
-      // Process to advance internal transport
-      stack.process(inputs, outputs, 1, 1, ctx);
-      expect(stack.getInternalTransport() > 0);
-
-      // Reset should bring it back to 0
-      stack.resetInternalTransport(0);
-      expectEquals(stack.getInternalTransport(), (int64_t)0);
-    }
-
-    beginTest("Internal Transport Wraps at Loop Duration");
-    {
-      StackNode stack("TestStack");
-
-      // Small loop for easy testing: 1000 samples
-      stack.setLoopPoints(0, 1000);
-      stack.is_expanded.store(false);
-      stack.resetInternalTransport(0);
-
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 300;
-      ctx.master_pos = 0;
-
-      // Process 4 blocks of 300 samples = 1200 total
-      // Should wrap at 1000, so effective position = 200 after wrap
-      for (int i = 0; i < 4; i++) {
-        stack.process(inputs, outputs, 1, 1, ctx);
-      }
-
-      // Internal transport = 1200, child_pos = 0 + (1200 % 1000) = 200
-      // The modulo happens in process(), transport itself may be >
-      // loop_duration
-      int64_t transport = stack.getInternalTransport();
-      expectEquals(transport, (int64_t)1200);
-
-      // The important thing is that child_pos wraps correctly
-      // (verified via audio output behavior, not directly testable here)
-    }
-
-    beginTest("Child Receives Looped Position When Stack Collapsed");
-    {
-      StackNode stack("TestStack");
-      auto clip = std::make_unique<ClipNode>("TestClip", 44100.0);
-      auto clipPtr = clip.get();
-
-      // Pre-record some audio so clip has duration
-      clipPtr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 3000;  // 3Q-ish duration
+      ctx.num_samples = len;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
-      clipPtr->process(inputs, outputs, 1, 1, ctx);
-      clipPtr->stopRecording();
+      clip->startRecording();
+      clip->process(rampIn, nullptr, 1, 0, ctx);
+      clip->stopRecording();
+      return clip;
+    };
+    auto rampValue = [](int pos) { return (float)(pos + 1) * 0.0001f; };
 
-      stack.addChild(std::move(clip));
+    beginTest("I6b: expansion does not change the sound");
+    {
+      // Identical processing with the stack expanded vs collapsed must
+      // produce identical output — the invariant the old Loop-on-Collapse
+      // model violated.
+      for (bool expanded : {true, false}) {
+        StackNode stack("TestStack");
+        stack.addChild(makeRampClip(3000));
+        static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
+        stack.setLoopPoints(0, 1000);
+        stack.is_expanded.store(expanded);
 
-      // Set stack loop to only first 1000 samples (1/3 of clip)
-      stack.setLoopPoints(0, 1000);
-      stack.is_expanded.store(false);
-      stack.resetInternalTransport(0);
+        ProcessContext ctx;
+        ctx.is_playing = true;
+        ctx.num_samples = 1;
+        ctx.master_pos = 1500;  // window active: maps to 1500 % 1000 = 500
 
-      // Process the stack - clip should only "see" positions 0-999
-      ctx.is_playing = true;
-      ctx.num_samples = 500;
+        float out[1] = {0.0f};
+        float* const outs[] = {out};
+        stack.process(nullptr, outs, 0, 1, ctx);
 
-      // After 2000 samples (2 loops worth), internal should be 2000
-      // child_pos should be 0 + (2000 % 1000) = 0
-      for (int i = 0; i < 4; i++) {
-        stack.process(inputs, outputs, 1, 1, ctx);
+        expectWithinAbsoluteError(
+            out[0], rampValue(500), 0.0001f,
+            juce::String("windowed output identical when ") +
+                (expanded ? "expanded" : "collapsed"));
       }
-
-      expectEquals(stack.getInternalTransport(), (int64_t)2000);
     }
 
-    beginTest("No Loop Applied When loop_end <= loop_start");
+    beginTest("Bypass toggle silences the window (data, not view)");
     {
       StackNode stack("TestStack");
-
-      // Invalid loop region (end <= start)
-      stack.setLoopPoints(1000, 500);  // end < start
-      stack.is_expanded.store(false);
+      stack.addChild(makeRampClip(3000));
+      static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
+      stack.setLoopPoints(0, 1000);
 
       ProcessContext ctx;
       ctx.is_playing = true;
-      ctx.num_samples = 512;
-      ctx.master_pos = 5000;  // Should be passed through as-is
+      ctx.num_samples = 1;
+      ctx.master_pos = 1500;
 
-      stack.resetInternalTransport(0);
+      float out[1] = {0.0f};
+      float* const outs[] = {out};
 
-      // Without valid loop, it should fall back to global transport
-      stack.process(inputs, outputs, 1, 1, ctx);
+      // Active (default): mapped to 500
+      stack.process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(500), 0.0001f,
+                                "active window maps the clock");
 
-      // Internal transport shouldn't increment for invalid loop
-      // (child receives global master_pos instead)
-      expectEquals(stack.getInternalTransport(), (int64_t)0);
+      // Bypassed: passes 1500 straight through
+      stack.setLoopWindowBypassed(true);
+      out[0] = 0.0f;
+      stack.process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
+                                "bypassed window passes the clock through");
+
+      // Re-activated: mapping returns identically (nothing was baked)
+      stack.setLoopWindowBypassed(false);
+      out[0] = 0.0f;
+      stack.process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(500), 0.0001f,
+                                "re-activation restores the mapping");
     }
 
-    beginTest("Reproduction: 1Q+3Q Stack with 2Q Loop (High Transport)");
+    beginTest("Window phase derives from the cycle epoch");
     {
+      StackNode stack("TestStack");
+      stack.addChild(makeRampClip(3000));
+      static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
+      stack.setLoopPoints(200, 1200);  // len 1000, start 200
+
+      ProcessContext ctx;
+      ctx.is_playing = true;
+      ctx.num_samples = 1;
+      ctx.master_pos = 7500;
+      ctx.cycle_epoch = 7000;  // epoch-rebased frame (e.g. after a commit)
+
+      float out[1] = {0.0f};
+      float* const outs2[] = {out};
+      stack.process(nullptr, outs2, 0, 1, ctx);
+
+      // rel = (7500 − 7000) mod 1000 = 500. The window selects VIEW
+      // positions, staying in the received frame:
+      // t_child = 7000 + 200 + 500 = 7700 → ramp clip (origin 0,
+      // dur 3000) plays 7700 mod 3000 = 1700.
+      expectWithinAbsoluteError(out[0], rampValue(1700), 0.0001f,
+                                "t_child = epoch + start + rel (view "
+                                "positions, frame preserved)");
+
+      // Deterministic: same t, same epoch, same output — regardless of
+      // any interleaved view changes.
+      stack.is_expanded.store(!stack.is_expanded.load());
+      out[0] = 0.0f;
+      stack.process(nullptr, outs2, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(1700), 0.0001f,
+                                "phase independent of view state changes");
+    }
+
+    beginTest("Windowed stack re-bases cycle_epoch for children");
+    {
+      // Nested windows: the inner stack's phase locks to the OUTER
+      // window's frame — its cycle top is the outer window's start.
+      StackNode outer("Outer");
+      auto inner = std::make_unique<StackNode>("Inner");
+      auto* innerPtr = inner.get();
+      innerPtr->addChild(makeRampClip(3000));
+      static_cast<ClipNode*>(innerPtr->getChild(0))->startPlayback();
+      innerPtr->setLoopPoints(0, 300);  // inner window: [0, 300)
+      outer.addChild(std::move(inner));
+      outer.setLoopPoints(1000, 2000);  // outer window: [1000, 2000)
+
+      ProcessContext ctx;
+      ctx.is_playing = true;
+      ctx.num_samples = 1;
+      ctx.master_pos = 2500;
+      ctx.cycle_epoch = 0;
+
+      float out[1] = {0.0f};
+      float* const outs[] = {out};
+      outer.process(nullptr, outs, 0, 1, ctx);
+
+      // Outer: rel = 2500 mod 1000 = 500 → child time 0+1000+500 = 1500,
+      // child epoch 1000. Inner: rel = (1500 − 1000) mod 300 = 200 →
+      // clip time 1000 + 0 + 200 = 1200 (the inner window selects the
+      // first 300 of the inner cycle, whose top is the outer window top).
+      expectWithinAbsoluteError(out[0], rampValue(1200), 0.0001f,
+                                "nested window phases from parent window top");
+    }
+
+    beginTest("No window applied when loop_end <= loop_start");
+    {
+      StackNode stack("TestStack");
+      stack.addChild(makeRampClip(3000));
+      static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
+      stack.setLoopPoints(1000, 500);  // invalid
+      expect(!stack.isLoopWindowActive());
+
+      ProcessContext ctx;
+      ctx.is_playing = true;
+      ctx.num_samples = 1;
+      ctx.master_pos = 2500;
+
+      float out[1] = {0.0f};
+      float* const outs[] = {out};
+      stack.process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(2500), 0.0001f,
+                                "invalid window passes the clock through");
+    }
+
+    beginTest("High transport stays wrap-consistent (repro, monotonic)");
+    {
+      // Successor of the old high-internal-transport repro: with phase
+      // derived from a monotonic clock, wraps must land at the window
+      // length forever, with no drift and no overflow special cases.
       StackNode stack("ReproStack");
+      stack.addChild(makeRampClip(9000));
+      static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
 
-      int64_t loop_3q = 132300;
-      int64_t loop_2q = 88200;
-
-      stack.setLoopPoints(0, loop_3q);
-      stack.is_expanded.store(false);
-
-      // Initialize internal transport to be very high, near the overflow
-      // threshold for 3Q Threshold is loop_duration * 1000 = 132,300,000 Set to
-      // 132,295,000 (just 5000 samples before wrap)
-      int64_t initial_transport = 132295000;
-      stack.resetInternalTransport(initial_transport);
+      const int64_t loop_2q = 88200;
+      stack.setLoopPoints(0, loop_2q);
 
       ProcessContext ctx;
       ctx.is_playing = true;
       ctx.num_samples = 100;
-      ctx.master_pos = 0;
+      ctx.master_pos = 132295000;  // very high monotonic position
 
-      // Step 2: Change Loop to 2Q (88200)
-      // New threshold = 88,200,000.
-      // Current (132M) > 88M. Trigger overflow logic?
-      stack.setLoopPoints(0, loop_2q);
+      float out[100] = {0.0f};
+      float* const outs[] = {out};
 
-      // Track wrap points
       int wraps = 0;
-      int64_t last_pos = stack.getInternalTransport();
-      std::vector<int64_t> wrap_points;
-
-      std::cout << "DEBUG: Initial High Transport = " << last_pos << std::endl;
-
+      double last_phase = -1.0;
       for (int i = 0; i < 4000; ++i) {
-        stack.process(inputs, outputs, 1, 1, ctx);
-        int64_t current = stack.getInternalTransport();
-
-        if (i < 5) {
-          std::cout << "Debug iter " << i << " transport=" << current
-                    << " (effective=" << (current % loop_2q) << ")"
-                    << std::endl;
+        stack.process(nullptr, outs, 0, 1, ctx);
+        const double phase = stack.playhead_pos.load();
+        if (last_phase >= 0.0 && phase < last_phase) {
+          ++wraps;
+          expect(last_phase > 0.99,
+                 "wrap only at the window end (phase=" +
+                     juce::String(last_phase) + ")");
         }
-
-        int64_t effective_pos = current % loop_2q;
-        int64_t effective_last = last_pos % loop_2q;
-
-        if (effective_pos < effective_last) {
-          wraps++;
-          wrap_points.push_back(effective_last);
-          std::cout << "WRAP DETECTED at internal=" << last_pos
-                    << " (mod=" << effective_last << ")" << std::endl;
-        }
-        last_pos = current;
-      }
-
-      std::cout << "Total Wraps: " << wraps << std::endl;
-
-      // Verify consistency: all wraps should be near 88200
-      for (size_t i = 0; i < wrap_points.size(); ++i) {
-        bool consistent = (wrap_points[i] > (loop_2q - 200));
-        if (!consistent) {
-          std::cout << "FAILURE: Inconsistent wrap point " << wrap_points[i]
-                    << " (Expected near " << loop_2q << ")" << std::endl;
-          expect(false, "Found inconsistent loop wrap point: " +
-                            juce::String(wrap_points[i]));
-        }
+        last_phase = phase;
+        ctx.master_pos += ctx.num_samples;
       }
       expectGreaterThan(wraps, 3);
     }

@@ -1,11 +1,18 @@
 # Celestrian Architecture & Implementation Status
 
+> Status: **journal** — periodic snapshots. For current architecture see
+> kernel.md (timing model), performance.md (audio-thread contract,
+> latency), and time_maps.md (loop windows). §7 (waveform rendering)
+> remains the current UI spec.
+
 ## 1. Physical Audio Engine (`src/audio_engine.cc`)
 Responsible for hardware I/O and driving the root of the audio graph.
 - [x] Hardware I/O callback
 - [x] Mono recording buffer
-- [ ] Multi-threaded root mixer
-- [ ] Latency compensation logic
+- [x] Real-time-safe audio thread (lock-free traversal, no allocation/logging — performance.md §1)
+- [ ] Multi-threaded root mixer (not currently a bottleneck; see perf meters)
+- [x] Latency compensation — empirical calibration + per-device persistence + arrival-time capture (performance.md §3/§7)
+- [x] Monotonic transport with derived cycle view; per-clip stored origins (kernel.md steps 1–3)
 
 ## 2. Hierarchical Audio Graph (New)
 The recursive engine that processes "Boxes" and "Clips".
@@ -26,10 +33,10 @@ The recursive engine that processes "Boxes" and "Clips".
 - **Features**: Multi-range slicing, Loop points, Seed BPM.
 - **Status**: [/] Basic recording and playback implemented. Multi-range and deep editing pending.
 
-### `BoxNode` (Container)
+### `StackNode` (Container — formerly `BoxNode`)
 - **Purpose**: A sub-mixer that sums children.
-- **Features**: Recursive `process()` calls, Aggregate Waveform generation, Warp Ratio calculation.
-- **Status**: [/] Basic summing and container logic implemented.
+- **Features**: Recursive `process()` calls over lock-free child snapshots, Aggregate Waveform generation, loop-window time-maps (time_maps.md), stored island quantum + epoch.
+- **Status**: [x] Summing, nesting, composite duration (LCM), loop windows implemented. Warp Ratio pending (Segment 8).
 
 ## 3. DSP & Timing (`src/dsp/`)
 The "Brain" of the alignment and warping logic.

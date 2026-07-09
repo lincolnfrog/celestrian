@@ -1,5 +1,9 @@
 # Celestrian Refactoring Proposal
 
+> Status: **journal** — the 2026-07-07 refactor plan, kept with inline
+> status notes. All P0 items landed (several dissolved rather than
+> built — see kernel.md); P1/P2/P3 items carry their own statuses.
+>
 > Generated 2026-07-07 from a full review of `docs/`, `src/`, `ui/js/`, `ui/e2e/`, and `tests/`.
 > Focus: robustness, maintainability, extensibility of the core system. Ordered by leverage —
 > the items at the top are the ones most likely responsible for the "persistent bugs."
@@ -218,6 +222,13 @@ lint failure.
 ## P1 — Layering: where the architecture leaks
 
 ### 6. `ClipNode::process()` is a god function with upward coupling
+
+> **Status: 🔶 partially done (2026-07-09).** The phase math moved to
+> pure `timing.h` functions with golden-vector tests, the pixel
+> `x_pos` math shrank to one slot line (P1-7 still owed), and the
+> sibling launch-point scans were deleted outright — the epoch frame
+> made them unnecessary (kernel.md "one-frame rule"). Remaining upward
+> coupling: the context-loop scan (longest sibling) at arm and commit.
 
 ~300 lines mixing four responsibilities: PLL start scheduling, **visual x-position calculation in
 pixels** (`base_width = 200.0` in C++!), recording capture, and playback. To do it, a *leaf* node

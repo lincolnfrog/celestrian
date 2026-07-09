@@ -192,6 +192,15 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "toggleLoopWindow",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 0)
+                      audio_engine.toggleLoopWindow(args[0].toString());
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "startLatencyCalibration",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

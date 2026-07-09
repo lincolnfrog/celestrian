@@ -224,15 +224,8 @@ void AudioEngine::toggleStackExpand(const juce::String &uuid) {
     bool newState = !currentState;
     node->is_expanded.store(newState);
 
-    // Reset internal transport when collapsing (start loop from beginning)
-    if (!newState) {
-      if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
-        stack->resetInternalTransport(0);
-        juce::Logger::writeToLog(
-            "AudioEngine: Stack collapsed, reset internal transport to 0");
-      }
-    }
-
+    // Purely visual (I6b): expansion changes nothing audible. Loop
+    // window activation lives in its own state (toggleLoopWindow).
     juce::Logger::writeToLog(
         "AudioEngine: Toggled expand for " + uuid + " (New State: " +
         juce::String(newState ? "expanded" : "collapsed") + ")");
@@ -423,16 +416,22 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
     node->setLoopPoints(start, end);
 
-    // Reset internal transport for stacks when loop region changes
-    if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
-      stack->resetInternalTransport(0);
-      juce::Logger::writeToLog(
-          "  -> Stack loop points updated, reset internal transport to 0");
-    }
-
+    // Window phase is derived from the island clock (time_maps.md);
+    // nothing to reset when the region changes.
     juce::Logger::writeToLog("  -> Found node, loop points set successfully");
   } else {
     juce::Logger::writeToLog("  -> ERROR: Node not found!");
+  }
+}
+
+void AudioEngine::toggleLoopWindow(const juce::String &uuid) {
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(
+          findNodeByUuid(root_node.get(), uuid))) {
+    const bool bypassed = !stack->isLoopWindowBypassed();
+    stack->setLoopWindowBypassed(bypassed);
+    juce::Logger::writeToLog(
+        "AudioEngine: Loop window for " + uuid +
+        (bypassed ? " BYPASSED" : " ACTIVE"));
   }
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(
@@ -543,6 +542,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       pc.output_latency = cached_output_latency_.load();
     }
     pc.solo_node = soloed_node_ptr_.load();
+    // Cycle-top of the island frame — loop-window time-maps phase off
+    // this (time_maps.md); windowed stacks re-base it for their children.
+    pc.cycle_epoch = islandEpoch();
 
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished

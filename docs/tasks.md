@@ -32,12 +32,8 @@ These items address dead code, abstraction violations, and debug artifacts that 
 ## Tier 1: Missing Tests (Solidify What Exists)
 
 ### C++ Unit Tests
-- [ ] **Stack loop-on-collapse tests** — `docs/stacks.md` L544-548 specifies 4 required C++ unit tests that should exist in `stack_loop_tests.cc`:
-  - Collapsed stack with loop region constrains children's `master_pos`
-  - Expanded stack passes `master_pos` unchanged
-  - Nested stacks: each level's collapse state independent
-  - Default behavior (no loop set) = full LCM duration
-- [ ] **Verify existing test coverage** — Run `tests/` suite and catalog pass/fail. Some test files look ad-hoc (e.g., `repro_first_clip_bug.cc`) and may be outdated.
+- [x] **Stack loop window tests** — superseded and ✅ done (2026-07-09): `stack_loop_tests.cc` rewritten to the time-map semantics (time_maps.md), including an I6b sound-neutrality test (expanded vs collapsed output identical), bypass round-trip, epoch-derived phase, and nested window re-basing. The old loop-on-collapse expectations were owner-overruled.
+- [ ] **Verify existing test coverage** — Run `tests/` suite and catalog pass/fail. Some test files look ad-hoc (e.g., `repro_first_clip_bug.cc`) and may be outdated. (Note: run the **Debug** binary — see test_harness.md for the stale-binary gotcha.)
 
 ### E2E Tests (from `docs/stacks.md` L550-554)
 - [ ] **Composite waveform opacity changes on expand/collapse**
@@ -99,8 +95,8 @@ These items address dead code, abstraction violations, and debug artifacts that 
 ## Tier 4: Advanced Audio Engine
 
 ### Multi-threading (`docs/implementation.md` L7-8)
-- [ ] **Multi-threaded root mixer** — Separate threads for playback, recording, and processing.
-- [ ] **Latency compensation logic** — User-calibrated latency baseline. `ProcessContext` has `input_latency` / `output_latency` fields but they're unused.
+- [ ] **Multi-threaded root mixer** — Separate threads for playback, recording, and processing. (Note: the audio thread is already lock-free/RT-safe per performance.md §1; this item is about *parallelizing* the mix, which is not currently a bottleneck — see perf meters.)
+- [x] **Latency compensation logic** — ✅ Done and beyond the original ask (2026-07-07): empirical round-trip calibration (🎯 button), per-device persistence, and arrival-time capture so the measured latency moves the *audio*, not just timestamps. See performance.md §3/§7.
 
 ### Segment 7: Multi-Range Implementation (`docs/implementation.md` L57)
 - [ ] **Multi-slice selection** — Define multiple `loopStart/End` pairs per clip.

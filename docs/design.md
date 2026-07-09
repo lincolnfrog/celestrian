@@ -1,5 +1,11 @@
 # Celestrian DAW Design Document
 
+> Status: **vision** — the product's UX flows and roadmap. Where this doc
+> and the canon specs disagree, the specs win: design_language.md
+> (vocabulary + invariants), kernel.md (timing model), recording.md
+> (recording math), time_maps.md (loop windows), performance.md
+> (audio-thread contract + latency). Index: docs/README.md.
+
 ## Project Overview
 Celestrian is an open-source Digital Audio Workstation (DAW) built with JUCE and a WebView-based UI.
 
@@ -31,8 +37,8 @@ The UI will be hosted in a native WebView component provided by JUCE (WebBrowser
 
 ## Performance
 It is critical that audio can be recorded in parallel with existing audio clips being played back and at the lowest possible latency. That said, the actual requirement is alignment between what the user hears and what the user records.
-* Possible "latency compensation" feature - direct user to establish a latency baseline somehow - i.e. ask them to record a short "click track" clip while listening to playback of a click track clip. After that, all recorded clips would automatically be shifted by that baseline latency. Maybe this can be done more automatically somehow?
-* Most professional audio hardware will have a CPU with multiple cores, so Celestrian should be built to be multi-threaded. Playback and recording processes should certainly be run on separate threads, and likely any audio processing should be run on separate threads as well.
+* ✅ **Latency compensation — implemented (2026-07-07)** essentially as envisioned here: the 🎯 calibration feature plays a click and listens for it (the "record the playback" idea), the measured round-trip persists per device, and the pre-record ring's arrival-time capture applies it so recordings land where the performer *heard* them. Field-verified to ~1-sample repeatability. See performance.md §3/§7.
+* The audio thread is real-time-safe (lock-free, allocation-free — performance.md §1 is project law). A multi-threaded root mixer remains a future option if the perf meters ever show pressure; they currently read <1% DSP load.
 
 ## Core Design Philosophy
 Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single-song, "session"-view experience. It is designed for the following key UX flows:

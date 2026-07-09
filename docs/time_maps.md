@@ -32,10 +32,18 @@ timeline:
 
 ```
 map = { state: none | active | bypassed,
-        segments: [ [a1, b1), [a2, b2), ... ] }   // inner-time sample ranges
+        segments: [ [a1, b1), [a2, b2), ... ] }   // VIEW-position ranges
 period = Σ (bi − ai)
-m(t)  = walk_segments( (t − island_epoch) mod period )
+m(t)  = cycle_epoch + walk_segments( (t − cycle_epoch) mod period )
 ```
+
+> ⚠️ **The mapped time stays in the received frame** (the `cycle_epoch +`
+> term). Segments select *view positions* of the cycle; children align by
+> their ABSOLUTE origins, so a map that emits epoch-stripped small values
+> shifts every child whose origin ≢ 0 (mod its duration). Field bug
+> 2026-07-09: a 2Q clip (origin = the re-based epoch, an odd Q multiple)
+> looped its Q2 under a Q1 window. Pinned by "Stack window selects view
+> positions" in `pre_record_tests.cc`.
 
 - **Island-aligned phase**: `m` is a pure function of the island clock
   and the epoch — no stored counter, no dependence on when the user
@@ -181,7 +189,15 @@ compatible (slicing = applying the birth map at write time).
 3. **Record through the active map** ✅ — with a visual cue that a map
    is shaping time.
 
-Status: direction and semantics ratified; implementation may proceed
-(sequence: map state field + bypass toggle + island-aligned phase and
-`internal_transport_` deletion first; recording-through-map second;
-cell/punch editor third).
+Status: direction and semantics ratified.
+**Phase 1 ✅ implemented (2026-07-09):** window state
+(active/bypassed via `toggleLoopWindow`, bridged through
+protocol/mock/C++), phase derived from `ProcessContext.cycle_epoch`
+(windowed stacks re-base it to their window start for children — the
+kernel's first time-map), `internal_transport_` deleted, collapse now
+purely visual, engine publishes window phase on the stack's `playhead`
+metadata field, UI fade/toggle keyed to bypass state instead of
+expansion. Guarded by the rewritten `stack_loop_tests.cc`, including an
+explicit I6b sound-neutrality test (expanded vs collapsed output must be
+identical) and a nested-window epoch re-basing test.
+**Phase 2 (record-through-map) and phase 3 (cell/punch editor): pending.**

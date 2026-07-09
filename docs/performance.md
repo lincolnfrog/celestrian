@@ -1,5 +1,7 @@
 # Celestrian Performance & Latency
 
+> Status: **spec** — §1 (the audio-thread contract) is project law.
+>
 > Written 2026-07-07, immediately after the real-time-safety refactor
 > (refactoring_proposal.md §P0-2). This doc has three jobs:
 >
@@ -51,8 +53,11 @@ Known residual violations (tracked in refactoring_proposal.md):
   belongs with the state-snapshot work (P3 note).
 - ~22 `dynamic_cast`s per block (P1-8: replace with virtual dispatch /
   `forEachChild`).
-- `getEffectiveQuantum()` walks and re-derives min-duration per call, per
-  node, per block (P0-3 makes quantum stored state).
+- ~~`getEffectiveQuantum()` re-derives min-duration~~ — ✅ resolved
+  (P0-3, 2026-07-09): quantum is stored island state; the lookup is a
+  parent walk to one atomic read. `getIntrinsicDuration()` on stacks
+  (composite LCM) still walks children per call — cache if the perf
+  meters ever care.
 
 ---
 

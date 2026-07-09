@@ -111,6 +111,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void toggleMute(const juce::String &uuid);
 
   /**
+   * Toggles a stack's loop window between active and bypassed
+   * (time_maps.md). Activation is data, not view state: expansion no
+   * longer affects whether the window applies.
+   */
+  void toggleLoopWindow(const juce::String &uuid);
+
+  /**
    * Returns a list of available hardware audio inputs.
    */
   juce::var getInputList() const;

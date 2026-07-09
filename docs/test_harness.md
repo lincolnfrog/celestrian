@@ -1,81 +1,83 @@
-# Mock Backend Test Harness
+# Test Harness
 
-## Purpose
-Independent UI testing framework for Celestrian that runs in a regular browser without requiring the JUCE C++ backend.
+> Status: **spec** — how to build and run every test layer, plus the
+> gotchas that have actually bitten this project. (Rewritten 2026-07-09;
+> the old version referenced a long-deleted `app_test.js`.)
 
-## Files
-- **`ui/js/mock_backend.js`** - Simulates native C++ bridge with in-memory state
-- **`ui/js/app_test.js`** - Modified app.js that uses mock backend
-- **`ui/index_test.html`** - Test harness page with scenario selector
+## The layers
 
-## Usage
+| Layer | What it covers | Run with |
+|---|---|---|
+| C++ unit/engine tests | Nodes, timing math, engine workflows, calibration, pre-record capture | `cmake --build build --parallel 8 --target CelestrianTests && ./build/CelestrianTests_artefacts/Debug/CelestrianTests` |
+| JS unit tests | Timeline model, protocol contract, stack logic, ghost math, composite waveform cache | `cd ui && npm test` |
+| Playwright e2e | UI behavior against the mock backend | `cd ui && npm run test:playwright` |
+| Golden vectors | Pin C++ `src/timing.h` and JS `timeline_model.js` to the SAME numbers | `shared/timing_golden.json`, consumed by both suites above |
+| Protocol contract | The bridge method list in `protocol.js` ⇔ `main_component.cc` ⇔ `mock_backend.js` | part of `npm test` (`protocol_contract.test.mjs`) |
 
-### 1. Start Local Server
+## Gotchas (each of these cost real debugging time)
+
+1. **Run the `Debug/` binary.** The test executable lives at
+   `build/CelestrianTests_artefacts/Debug/CelestrianTests`. A stale
+   binary at `build/CelestrianTests_artefacts/CelestrianTests` (no
+   `Debug/`) once reported "ALL TESTS PASSED" for **months** while real
+   failures accumulated. If that path reappears, delete it.
+2. **Never attach the audio device in tests.** `AudioEngine`'s
+   constructor is device-free by design; `initialiseAudioDevice()` is
+   called only by the app shell. A live CoreAudio callback running
+   concurrently with manually driven test callbacks produces
+   machine-dependent, sample-count-corrupting flakes.
+3. **Test at large master positions.** Legacy tests recorded immediately
+   after commits, near t=0, where absolute and cycle-relative values
+   coincide — which hid two field bugs. Field-shaped tests play ~300k
+   samples of silence first (`pre_record_tests.cc` has the pattern).
+4. **Don't hold `getDynamicObject()` past its `juce::var`.** The var is
+   the refcount owner; taking the pointer off a temporary dangles and
+   reads freed memory (often as 0). Keep the var in a local.
+5. **Synthetic loopback needs `delay > block size`.** A test harness can
+   only feed back output from *previous* callbacks, so calibration
+   round-trips shorter than one block are unmeasurable in tests (real
+   hardware has no such limit).
+6. **Calibration persistence in tests must use `setCalibrationFile`**
+   (a temp path). Engines that never see a device have no device key and
+   deliberately skip persisting — so unit tests can't pollute the real
+   `~/Library/Application Support/Celestrian/calibration.json`.
+
+## Adding a bridge method
+
+Three places, or the contract test fails: `ui/js/protocol.js` (the
+canonical list), `src/main_component.cc` (`withNativeFunction`), and
+`ui/js/mock_backend.js` (`handlers` table + implementation).
+
+## Adding timing math
+
+Put the pure function in BOTH `src/timing.h` and
+`ui/js/timeline_model.js`, then pin them with a case in
+`shared/timing_golden.json` — the golden tests on each side keep the two
+implementations from drifting.
+
+## Browser harness (mock backend)
+
+For UI iteration without a C++ rebuild:
+
 ```bash
 cd ui
-python3 -m http.server 8000
+python3 -m http.server 8000   # file:// won't work (CORS)
+# open http://localhost:8000/index_test.html
 ```
 
-### 2. Open Test Harness
-Navigate to: `http://localhost:8000/index_test.html`
+Mock selection lives in `ui/js/app.js` + `index_test.html` (there is no
+`app_test.js`). The mock (`ui/js/mock_backend.js`) holds **state +
+protocol only** — all timing math is imported from `timeline_model.js`
+so it cannot drift from the UI or, via golden vectors, from the C++
+engine. Scenario definitions live in `loadScenario()`; the sidebar in
+`index_test.html` switches them. Limitations: no real audio, simulated
+waveforms, state resets on reload.
 
-### 3. Test Scenarios
-Use the sidebar to load different scenarios:
-- **Empty Canvas** - Start fresh
-- **Single Clip** - One top-level clip with ghost repetitions  
-- **Stack with 3 Clips** - Test stack rendering and vertical layout
-- **Multiple Stacks** - Test freeform positioning
+## Field debugging
 
-### 4. Test Features
-- **Drag-and-drop**: Grab the handle (dots on left) and drag
-- **Collapse/expand**: Click the handle on stack top-right
-- **Create nodes**: Click "+ New Stack" button
-- **Stack menu**: Click "+" on stack to add clips
-
-## Benefits
-✅ Instant UI iteration without C++ rebuild
-✅ Test specific scenarios easily
-✅ Debug drag-and-drop visually in browser devtools
-✅ Automated testing possible
-
-## Adding New Scenarios
-
-Edit `ui/js/mock_backend.js` and add a new case to `loadScenario()`:
-
-```javascript
-case 'my-scenario':
-    state.nodes = [
-        {
-            id: 'clip-1',
-            name: 'Test Clip',
-            type: 'clip',
-            x: 100,
-            y: 100,
-            w: 400,
-            h: 100,
-            duration: 2.0,
-            effectiveQuantum: 2.0,
-            isRecording: false,
-            // ... other properties
-        }
-    ];
-    break;
-```
-
-Then add a button in `index_test.html`:
-```html
-<button onclick="loadScenario('my-scenario')">My Scenario</button>
-```
-
-## Limitations
-- No actual audio playback/recording
-- Waveform data is simulated
-- State resets on page reload
-- File:// protocol won't work due to CORS - must use HTTP server
-
-## Debugging
-Open browser devtools (F12) to see:
-- `[MockBackend]` logs for backend calls
-- `[App]` logs for UI lifecycle
-- `[DragInit]` logs for drag-and-drop setup
-- `[Ghost]` logs for ghost rendering logic
+The app's **📦 Dump State** button writes `celestrian_state.json` (app
+cwd), containing per-node timing fields (`origin`, `launchPoint`,
+`anchorPhase`, `duration`, `x`, `windowActive`, `loopBypassed`) and the
+`perf` block (DSP load, xruns, latency compensation, `calibrated`,
+`sampleRate`). Asking for a dump is the fastest way to diagnose
+alignment issues — it has settled every field bug so far in one glance.

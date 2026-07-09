@@ -272,6 +272,8 @@ function syncUI(state) {
         stackWrapper.style.left = `${stack.x + VISUAL_OFFSET}px`;
         stackWrapper.style.top = `${stack.y}px`;
         stackWrapper.classList.toggle('stack-collapsed', !stack.isExpanded);
+        // Loop window activation is data (time_maps.md), not view state
+        stackWrapper.classList.toggle('loop-bypassed', !!stack.loopBypassed);
 
         // Render stack header waveform (ALWAYS visible in both expanded and collapsed states)
         // When collapsed: shows full opacity composite waveform (Loop-on-Collapse model)
@@ -319,14 +321,14 @@ function syncUI(state) {
                 // Always draw (empty waveform shows placeholder line)
                 drawWaveform(canvas, waveformData, null, true /* isComposite */);
 
-                // Update playhead position based on masterPos relative to stack loop region
-                // When collapsed, the stack loops within loopStart to loopEnd
-                // (its own internal transport) — math in timeline_model.js.
+                // Update playhead position. Active loop windows are
+                // time-maps (docs/time_maps.md): the engine publishes the
+                // window phase on stack.playhead — math in timeline_model.js.
                 if (playhead && state.isPlaying) {
                     const playheadPct = stackPlayheadPercent({
                         masterPos: state.masterPos || 0,
-                        internalTransport: stack.internalTransport,
-                        isExpanded: stack.isExpanded,
+                        windowActive: !!stack.windowActive,
+                        playhead: stack.playhead,
                         loopStart: stack.loopStart || 0,
                         loopEnd: stack.loopEnd || stackDuration,
                         stackDuration

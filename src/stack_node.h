@@ -164,20 +164,22 @@ class StackNode : public AudioNode {
     return 0;
   }
 
+  // --- Loop window state (time_maps.md phase 1) ---
   /**
-   * Resets the internal transport counter. Call when:
-   * - Stack is collapsed
-   * - Loop region changes
-   * - Playback stops/resets
+   * Whether the loop window is bypassed. A window is ACTIVE iff it is
+   * valid (end > start) and not bypassed — independent of expansion
+   * (I6b: collapse is purely visual). Window phase derives from the
+   * received clock ((t − cycle_epoch) mod len), so there is no private
+   * counter and no dependence on when the user collapsed anything.
    */
-  void resetInternalTransport(int64_t initial_pos = 0) {
-    internal_transport_.store(initial_pos);
+  bool isLoopWindowBypassed() const { return loop_window_bypassed_.load(); }
+  void setLoopWindowBypassed(bool bypassed) {
+    loop_window_bypassed_.store(bypassed);
   }
-
-  /**
-   * Gets the current internal transport position.
-   */
-  int64_t getInternalTransport() const { return internal_transport_.load(); }
+  bool isLoopWindowActive() const {
+    return !loop_window_bypassed_.load() &&
+           loop_end_samples.load() > loop_start_samples.load();
+  }
 
  private:
   const std::vector<AudioNode *> *renderChildren() const {
@@ -208,9 +210,10 @@ class StackNode : public AudioNode {
   // heap at normal block sizes.
   juce::AudioBuffer<float> mix_buffer;
 
-  // Stack's own transport counter for collapsed playback
-  // Wraps at (loop_end - loop_start), independent of global transport
-  std::atomic<int64_t> internal_transport_{0};
+  // Loop window bypass flag (time_maps.md). The old internal_transport_
+  // counter is gone: window phase is pure arithmetic on the received
+  // clock — the kernel's first time-map.
+  std::atomic<bool> loop_window_bypassed_{false};
 
   // Island state (P0-3): explicit, stored once — never derived from
   // child durations (deriving caused the retroactive-Q bug class).

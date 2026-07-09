@@ -44,6 +44,7 @@ export const handlers = {
     startLatencyCalibration: () => startLatencyCalibration(),
     getLatencyCalibration: () => getLatencyCalibration(),
     setLoopPoints: (id, start, end) => setLoopPoints(id, start, end),
+    toggleLoopWindow: (id) => toggleLoopWindow(id),
     togglePlay: (id) => togglePlay(id),
     toggleSolo: (id) => toggleSolo(id),
     toggleMute: (id) => toggleMute(id),
@@ -308,15 +309,18 @@ function setLoopPoints(id, loopStart, loopEnd) {
     if (node) {
         node.loopStart = loopStart;
         node.loopEnd = loopEnd;
-        // Reset internal transport for stacks when loop points change (Simulates C++ StackNode::setLoopPoints)
-        if (node.type === 'stack') {
-            // In stateless mock, we can't easily "reset" the modulo base without tracking offset.
-            // But for the simple repro case (setMasterPos), simple modulo works.
-            // However, to be more "correct" for stateful replays, we might want to track an offset.
-            // For now, let's keep simple modulo but log it.
-            console.log('[MockBackend] Stack loop points set -> Internal Transport effectively reset next cycle');
-        }
+        // Window phase is derived from the clock (time_maps.md) —
+        // nothing to reset when the region changes.
         console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
+    }
+}
+
+function toggleLoopWindow(id) {
+    const node = findNode(id);
+    if (node && node.type === 'stack') {
+        node.loopBypassed = !node.loopBypassed;
+        console.log('[MockBackend] Loop window', id, '→',
+            node.loopBypassed ? 'BYPASSED' : 'ACTIVE');
     }
 }
 
@@ -461,14 +465,16 @@ function enrichNodes(nodes) {
                 nodes: node.nodes ? enrichNodes(node.nodes) : []
             };
 
-            // Simulate internalTransport for collapsed stacks (Backend simulation)
-            // If collapsed and loop points are valid, simulate independent playhead
-            if (!node.isExpanded && node.loopEnd > node.loopStart) {
+            // Loop window state (time_maps.md): active iff valid and not
+            // bypassed — independent of expansion. Window phase mirrors
+            // the engine: (masterPos − epoch) mod len (mock epoch = 0).
+            const bypassed = !!node.loopBypassed;
+            const windowActive = !bypassed && node.loopEnd > node.loopStart;
+            updatedNode.loopBypassed = bypassed;
+            updatedNode.windowActive = windowActive;
+            if (windowActive) {
                 const loopLen = node.loopEnd - node.loopStart;
-                // Simple simulation: just wrap masterPos within loop length
-                // This mimics the backend's behavior of independent modulo counter
-                // Note: Real backend counters are more complex (reset on collapse), but this suffices for UI loop verification
-                updatedNode.internalTransport = (state.masterPos || 0) % loopLen;
+                updatedNode.playhead = ((state.masterPos || 0) % loopLen) / loopLen;
             }
 
             return updatedNode;

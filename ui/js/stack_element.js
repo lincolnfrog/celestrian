@@ -27,12 +27,14 @@ export function createStackWrapper(stack, api) {
     wrapper.innerHTML = `
         <div class="grab-handle" title="Drag to reorder"></div>
         <div class="stack-expand-handle" data-stack-id="${stack.id}"></div>
+        <div class="loop-window-toggle" data-stack-id="${stack.id}"
+             title="Toggle loop window active/bypassed (docs/time_maps.md)">⟳</div>
         <div class="stack-header-waveform">
             <canvas class="stack-waveform-canvas"></canvas>
             <div class="stack-playhead"></div>
             <!-- Loop region UI (same as clips - hierarchical design) -->
-            <div class="loop-handle-start" title="Drag to adjust loop start (only when collapsed)"></div>
-            <div class="loop-handle-end" title="Drag to adjust loop end (only when collapsed)"></div>
+            <div class="loop-handle-start" title="Drag to adjust loop start"></div>
+            <div class="loop-handle-end" title="Drag to adjust loop end"></div>
             <div class="dim-left"></div>
             <div class="dim-right"></div>
             <!-- Visual feedback elements for quantum snapping (matching clip UX) -->
@@ -57,6 +59,15 @@ export function createStackWrapper(stack, api) {
     expandHandle.onclick = (e) => {
         e.stopPropagation();
         toggleStackExpand(stack.id);
+    };
+
+    // Loop window active/bypassed toggle (time_maps.md): activation is
+    // DATA — expansion no longer changes whether the window applies.
+    const loopToggle = wrapper.querySelector('.loop-window-toggle');
+    loopToggle.onclick = async (e) => {
+        e.stopPropagation();
+        await callNative('toggleLoopWindow', stack.id);
+        log(`Toggled loop window for ${stack.id}`);
     };
 
     // Stack add button click
@@ -129,11 +140,8 @@ export function createStackWrapper(stack, api) {
             e.stopPropagation();
             e.preventDefault();
 
-            // Early return if stack is expanded (loop is bypassed, handles disabled via CSS)
-            if (!wrapper.classList.contains('stack-collapsed')) {
-                return;
-            }
-
+            // Loop handles are editable in ANY view state (time_maps.md:
+            // the window is data; expansion is purely visual).
             const headerWaveform = wrapper.querySelector('.stack-header-waveform');
             const rect = headerWaveform.getBoundingClientRect();
             const ghost = headerWaveform.querySelector('.loop-ghost');

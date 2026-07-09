@@ -303,6 +303,58 @@ class PreRecordTests : public juce::UnitTest {
                  juce::String(playheadC) + ")");
     }
 
+    beginTest("Stack window selects view positions (2Q clip loops Q1)");
+    {
+      // Field bug (2026-07-09): clip 1 = 1Q, clip 2 = 2Q (origin at an
+      // ODD Q multiple — the re-based epoch), stack window set to Q1.
+      // Clip 2 must loop ITS Q1 like everything else; the buggy mapping
+      // dropped the epoch from the child time, shifting clip 2 by 1Q so
+      // it looped its Q2.
+      AudioEngine engine;
+      engine.createNode("stack");
+      juce::String stackId = firstNodeId(engine);
+      engine.createNode("clip", stackId);
+      juce::String clipA = childId(engine, 0);
+
+      engine.startRecordingInNode(clipA);
+      processSilence(engine, 500);
+      processSilence(engine, 500);
+      engine.stopRecordingInNode(clipA);  // Q = 1000, epoch 0
+      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+
+      // Clip B: trigger at 7000 (7000 mod 2000 = 1000 — the shifted
+      // case); records 2Q; commit re-bases the epoch to 7000.
+      for (int i = 0; i < 11; ++i) processSilence(engine, 500);
+      engine.createNode("clip", stackId);
+      juce::String clipB = childId(engine, 1);
+      engine.startRecordingInNode(clipB);
+      for (int i = 0; i < 4; ++i) processSilence(engine, 500);  // L=1500
+      engine.stopRecordingInNode(clipB);  // awaits 2000
+      for (int i = 0; i < 4 && nodeIsRecording(engine, 1); ++i) {
+        processSilence(engine, 500);
+      }
+      expectEquals(nodeDuration(engine, 1), (int64_t)2000);
+
+      // Window: just Q1 of the (re-based) cycle.
+      engine.setLoopPoints(stackId, 0, 1000);
+
+      // Everything must now loop its OWN Q1: clip B's playhead stays in
+      // the first half of its 2Q content, and advances (not stuck).
+      double minPh = 1.0, maxPh = 0.0;
+      for (int i = 0; i < 8; ++i) {
+        processSilence(engine, 500);
+        const double ph =
+            (double)childVar(engine, 1).getDynamicObject()->getProperty(
+                "playhead");
+        minPh = std::min(minPh, ph);
+        maxPh = std::max(maxPh, ph);
+        expect(ph < 0.5,
+               "clip B loops its Q1 under the Q1 window (playhead=" +
+                   juce::String(ph) + ")");
+      }
+      expect(maxPh > minPh, "playhead advances within the window");
+    }
+
     beginTest("Uncalibrated engines still capture from the block start");
     {
       // With zero latency the window collapses to the boundary itself:

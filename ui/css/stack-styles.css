@@ -341,31 +341,56 @@
     background: rgba(168, 85, 247, 0.15);
 }
 
-/* === LOOP-ON-COLLAPSE VISUAL FEEDBACK === */
-/* When stack is EXPANDED, the loop is bypassed - show faded to indicate inactive */
-.stack-wrapper:not(.stack-collapsed) .stack-header-waveform {
+/* === LOOP WINDOW VISUAL FEEDBACK (docs/time_maps.md) === */
+/* Activation is DATA (.loop-bypassed), not view state: the fade keys off
+   the bypass flag; expand/collapse changes nothing audible or here. */
+.stack-wrapper.loop-bypassed .stack-header-waveform {
     opacity: 0.5;
     transition: opacity 0.2s ease;
 }
 
-/* When stack is COLLAPSED, the loop is active - show full opacity */
-.stack-collapsed .stack-header-waveform,
-.stack-wrapper.stack-collapsed .stack-header-waveform {
+.stack-wrapper:not(.loop-bypassed) .stack-header-waveform {
     opacity: 1;
+    transition: opacity 0.2s ease;
 }
 
-/* Disable loop handles when expanded (loop bypassed - children play individually) */
-.stack-wrapper:not(.stack-collapsed) .stack-header-waveform .loop-handle-start,
-.stack-wrapper:not(.stack-collapsed) .stack-header-waveform .loop-handle-end {
+/* Fade (but keep interactive) loop handles and dim regions when bypassed */
+.stack-wrapper.loop-bypassed .stack-header-waveform .loop-handle-start,
+.stack-wrapper.loop-bypassed .stack-header-waveform .loop-handle-end {
     opacity: 0.3;
-    pointer-events: none;
-    cursor: default;
 }
 
-/* Fade dim regions when expanded */
-.stack-wrapper:not(.stack-collapsed) .stack-header-waveform .dim-left,
-.stack-wrapper:not(.stack-collapsed) .stack-header-waveform .dim-right {
+.stack-wrapper.loop-bypassed .stack-header-waveform .dim-left,
+.stack-wrapper.loop-bypassed .stack-header-waveform .dim-right {
     opacity: 0.4;
+}
+
+/* The window active/bypassed toggle — sits LEFT of the 28px expand
+   handle (top:8, right:8..36) so the two never overlap */
+.loop-window-toggle {
+    position: absolute;
+    top: 8px;
+    right: 44px;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+    font-size: 12px;
+    border-radius: 5px;
+    border: 1px solid rgba(80, 200, 120, 0.5);
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.9);
+    background: rgba(80, 200, 120, 0.35);
+    z-index: 10;
+}
+
+.stack-wrapper.loop-bypassed .loop-window-toggle {
+    border-color: rgba(120, 120, 120, 0.4);
+}
+
+.stack-wrapper.loop-bypassed .loop-window-toggle {
+    color: rgba(255, 255, 255, 0.45);
+    background: rgba(120, 120, 120, 0.25);
 }
 
 .nested-stack .stack-playhead {

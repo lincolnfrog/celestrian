@@ -1,5 +1,8 @@
 # Design Alternatives: Considered but Rejected
 
+> Status: **journal** — options considered and rejected, with reasons,
+> so future selves don't re-litigate them without new information.
+
 This document captures design options that were considered but not implemented, for future reference.
 
 ---

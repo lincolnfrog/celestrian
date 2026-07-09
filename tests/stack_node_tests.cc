@@ -193,7 +193,7 @@ class StackNodeTests : public juce::UnitTest {
              "With clip1 soloed, only clip1 should play.");
     }
 
-    beginTest("Loop-on-Collapse: Collapsed Stack Applies Loop Window");
+    beginTest("Loop Window: Active Window Applies (collapsed view)");
     {
       StackNode root("Root");
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
@@ -239,7 +239,7 @@ class StackNodeTests : public juce::UnitTest {
              "window applied");
     }
 
-    beginTest("Loop-on-Collapse: Expanded Stack Bypasses Loop Window");
+    beginTest("Loop Window: Active Window Applies (expanded view — I6b)");
     {
       StackNode root("Root");
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
@@ -260,14 +260,15 @@ class StackNodeTests : public juce::UnitTest {
 
       root.addChild(std::move(clip));
 
-      // Set stack loop region to [20, 40] but EXPAND the stack
+      // Set stack loop region to [20, 40] and EXPAND the stack.
+      // time_maps.md/I6b: expansion is purely visual — the window stays
+      // ACTIVE. (The old Loop-on-Collapse model bypassed it here.)
       root.setLoopPoints(20, 40);
-      root.is_expanded.store(true);  // EXPANDED - should bypass loop
+      root.is_expanded.store(true);
 
       clipPtr->startPlayback();
 
-      // Process with master_pos = 50
-      // When expanded, should pass master_pos = 50 unchanged to children
+      // master_pos = 50 maps to 20 + (50 % 20) = 30, same as collapsed
       ProcessContext playCtx;
       playCtx.num_samples = 1;
       playCtx.is_playing = true;
@@ -277,16 +278,14 @@ class StackNodeTests : public juce::UnitTest {
       float *const outputs[] = {outL};
       root.process(nullptr, outputs, 0, 1, playCtx);
 
-      // ClipNode should receive master_pos = 50 unchanged
-      // This maps into the recorded content (position 50 of 100 samples)
       expect(outL[0] > 0.0f,
-             "Expanded stack should produce output with loop bypassed");
+             "Active window applies identically when expanded (I6b)");
     }
 
-    beginTest("Loop-on-Collapse: Nested Stacks Independent Collapse State");
+    beginTest("Loop Window: Nested — inner window applies, outer unset");
     {
       StackNode outer("Outer");
-      outer.is_expanded.store(true);  // Outer expanded - bypasses its loop
+      outer.is_expanded.store(true);  // view state only; outer has no window
 
       auto inner = std::make_unique<StackNode>("Inner");
       inner->is_expanded.store(false);  // Inner collapsed - applies its loop
