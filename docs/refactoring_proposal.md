@@ -133,6 +133,14 @@ These are the classic causes of intermittent glitches and heisenbugs.
 
 ### 3. Store the Quantum explicitly
 
+> **Status: ✅ Implemented (2026-07-07)** as kernel.md migration step 1.
+> `StackNode` stores `quantum_samples_` + `epoch_samples_` at the island
+> root, set once at first commit; `getEffectiveQuantum` walks up to the
+> nearest set value. Q survives its creator (owner ruling,
+> design_language.md Q1). `getIntrinsicDuration()` split resolved:
+> stacks now return composite duration (LCM of children) as the docs
+> specify; the quantum is never derived from durations.
+
 **Problem.** `StackNode::getEffectiveQuantum()` returns `getIntrinsicDuration()` = **min of all
 child durations**. The docs say "the first recorded clip establishes Q, fixed forever." These are
 not the same thing:
@@ -154,6 +162,18 @@ not the same thing:
   now one function serves both, incorrectly for both.
 
 ### 4. Extract the transport into a testable state machine
+
+> **Status: ✅ Dissolved rather than built (2026-07-07)** — see kernel.md
+> §3. With per-clip stored origins (kernel step 2) and a monotonic
+> master clock (step 3), the ~120-line branch pile this item wanted to
+> tame was *deleted*: no LCM wrap, no LCM-growth snap, no polyrhythm
+> suppression, no first-clip snap, no `lcm_before_recording_` /
+> `last_recording_duration_` reconstruction. The UI's wrapped masterPos
+> is a derived view in `getGraphState`. The per-clip recording
+> lifecycle (Idle → Armed → Capturing → PendingStop → Committed) still
+> exists implicitly in `ClipNode` flags and would still benefit from an
+> explicit little state machine — but it is now per-clip, over an
+> immutable clock, and no longer the highest-churn code in the engine.
 
 **Problem.** The LCM-wrap / snap-on-commit logic lives inline in
 `audioDeviceIOCallbackWithContext` (~120 lines) coordinated through member flags

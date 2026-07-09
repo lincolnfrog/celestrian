@@ -201,28 +201,30 @@ slot = next_q_boundary / Q
 x_pos = base_x + slot * base_width
 ```
 
-### Critical Constraint: No Maximum Timeline Length
-> [!CAUTION]
-> **There is no arbitrary maximum number of slots or timeline length.** The timeline expands as needed to accommodate clips recorded at any position.
+### Slots Are Cycle-Relative (superseded "No Modulo" rule)
 
-The maximum slot at any moment is determined by the **current timeline extent**:
+> **Superseded (2026-07-07).** An earlier version of this section
+> prescribed the raw absolute slot (`next_q / Q`, no modulo) to make a
+> single-clip context "extend the timeline." Two things killed it:
+> (1) it contradicted this document's own Example 4 (mid-loop record in
+> a 1Q context → boundary ≡ 0 mod context → anchor 0, x 0) and
+> invariant I2 (audio anchored at cycle 0 must draw at x 0 — the old
+> commit-time x converged to 0 anyway, so the absolute arm-time slot was
+> a transient visual/audio mismatch); and (2) under the monotonic
+> transport (kernel.md step 3) the absolute master grows without bound,
+> so the raw slot pushed recording clips thousands of pixels off-screen
+> (field bug: "no waveform while recording clip 2").
+
+The visual slot is always computed in the cycle frame:
+
 ```cpp
-max_slot = (longest_anchor + longest_duration) / Q
+slot = (next_q_boundary % context_loop) / Q
+x_pos = base_x + slot * base_width
 ```
 
-For example:
-- Clip 1: 1Q at slot 0 → max_slot = (0 + 1Q) / Q = 1
-- Clip 2: 4Q at slot 0 → max_slot = (0 + 4Q) / Q = 4
-- Clip 3: 8Q at slot 2 → max_slot = (2Q + 8Q) / Q = 10
-
-### Why No Modulo?
-Earlier implementations used modulo to "wrap" slots within the current context:
-```cpp
-// BAD: This breaks Example 2 behavior!
-slot = (next_q / Q) % (context_loop / Q)
-```
-
-This fails when context_loop = Q (only one clip), because `slot % 1 = 0` always. The fix is to use the raw slot value, which naturally extends the timeline.
+Timeline *extent* (how far ghosts/lanes stretch) still grows with clip
+durations and the LCM — extent is a property of committed content, not
+of how long the transport has been running.
 
 ---
 
@@ -430,29 +432,24 @@ When Clip 3 commits at 4Q:
 - Timeline continues to 8Q, THEN all clips loop to 0Q together
 ```
 
-### LCM Expansion Snap (Transport Reset)
+### Transport Model: Monotonic Clock, Derived Cycle View
 
-When a **longer** clip is recorded that expands the LCM (e.g., recording a 4Q clip when only 1Q clips exist), the global transport snaps to **0** on commit. This ensures all clips start fresh from their respective beginning positions.
-
-**Why this is needed:**
-- Before the longer clip commits, the transport is cycling through a shorter LCM (e.g., 1Q)
-- When the 4Q clip commits, LCM expands from 1Q to 4Q
-- If transport doesn't snap, the new clip's playhead would start at ~25% (wherever transport happened to be in the old 1Q cycle)
-- By snapping to 0, all clips immediately align at their 0% positions
-
-**Implementation:**
-- `AudioEngine::isAnyNodeRecording()` recursively detects recording state via `StackNode::isAnyChildRecording()`
-- When recording ends and LCM grows (non-polyrhythmic), transport snaps to 0
-- Polyrhythmic expansions (e.g., 3Q added to 4Q → 12Q LCM) do NOT snap to avoid sudden jumps
-
-```cpp
-// In audio_engine.cc
-if (just_finished_recording && 
-    timeline_length > lcm_before_recording_ &&
-    !is_polyrhythmic_expansion) {
-  new_pos = num_samples;  // Snap to 0
-}
-```
+> **Superseded (2026-07-07, kernel.md step 3).** The engine transport is
+> now **monotonic**: it only moves forward while playing, is reset once
+> per island (the first-clip epoch capture) and by an explicit user
+> stop, and is never wrapped, snapped, or mutated by commits.
+>
+> The old model mutated the clock on commit — snap-to-0 when the LCM
+> grew, a suppression branch for polyrhythmic expansions, a special
+> first-clip snap, plus the idle LCM wrap. All of that existed to repair
+> phase bookkeeping that stored-origin playback makes unnecessary:
+> clips align by `content[(t − origin) mod duration]`, which is
+> continuous through any commit *by construction*. Nothing to snap.
+>
+> The UI-facing `masterPos` is a **derived view** computed in
+> `getGraphState`: `t mod LCM` normally; while recording, a base frozen
+> at record start plus linear growth, so the cursor extends past the
+> committed LCM exactly as the cursor table below specifies.
 
 ### Example: Large LCM (1Q + 8Q + 3Q)
 
@@ -653,9 +650,9 @@ Where:
 #### Cursor Behavior
 | Mode | Cursor Behavior |
 |------|-----------------|
-| **Playback** | `masterPos % LCM` wraps at LCM boundary |
-| **Recording** | `masterPos` grows linearly until commit |
-| **Commit** | If polyrhythmic expansion: no snap. Otherwise: snap to LCM boundary |
+| **Playback** | derived view = `t % LCM`, wraps at LCM boundary |
+| **Recording** | derived view grows linearly (frozen base + elapsed) until commit |
+| **Commit** | view switches back to `t % LCM` of the *new* cycle — no clock mutation; clip alignment comes from stored origins |
 
 #### Visual Alignment Invariant
 > **All clip cursors must appear at the same horizontal position at all times.**

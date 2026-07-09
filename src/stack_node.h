@@ -138,6 +138,20 @@ class StackNode : public AudioNode {
    */
   void setReclaimer(GraphReclaimer *reclaimer);
 
+  // --- Island quantum (P0-3 / kernel.md migration step 1) ---
+  /**
+   * Sets the island's quantum and cycle epoch. Called exactly once, when
+   * the first committed clip enters this scope. Q survives its creator
+   * (owner ruling, design_language.md Q1): muting or deleting the
+   * establishing clip does not change it.
+   */
+  void setQuantum(int64_t quantum, int64_t epoch) {
+    quantum_samples_.store(quantum);
+    epoch_samples_.store(epoch);
+  }
+  int64_t getQuantum() const { return quantum_samples_.load(); }
+  int64_t getEpoch() const { return epoch_samples_.load(); }
+
   /**
    * Resets the internal transport counter. Call when:
    * - Stack is collapsed
@@ -185,6 +199,19 @@ class StackNode : public AudioNode {
   // Stack's own transport counter for collapsed playback
   // Wraps at (loop_end - loop_start), independent of global transport
   std::atomic<int64_t> internal_transport_{0};
+
+  // Island state (P0-3): explicit, stored once — never derived from
+  // child durations (deriving caused the retroactive-Q bug class).
+  // 0 = no quantum established in this scope yet.
+  std::atomic<int64_t> quantum_samples_{0};
+  std::atomic<int64_t> epoch_samples_{0};
+
+  /**
+   * If this child's island has no quantum yet and the child carries
+   * committed content, its duration establishes Q (covers pre-recorded
+   * clips being added to a fresh island).
+   */
+  void maybeEstablishQuantumFrom(const AudioNode &child);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StackNode)
 };

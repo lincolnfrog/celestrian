@@ -774,16 +774,22 @@ class AudioEngineTests : public juce::UnitTest {
       int64_t clip2LaunchPoint =
           (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
               "launchPoint");
+      int64_t clip2Origin =
+          (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
+              "origin");
 
-      // Assert that launch_point is 0 (clip starting at 0Q boundary)
-      expectEquals(clip2LaunchPoint, (int64_t)0,
-                   "launch_point should be 0 for clip starting at 0Q boundary");
+      // Launch is the projection of the ABSOLUTE origin: content[0]
+      // plays at t ≡ origin (mod duration). The old launch==0
+      // expectation relied on the engine transport snap, removed with
+      // the monotonic transport (kernel.md step 3); the behavioral
+      // guarantee is the playhead check below.
+      expectEquals((clip2LaunchPoint + clip2Origin) % clip2Duration,
+                   (int64_t)0, "launch ≡ (−origin) mod duration");
 
-      // Assert playhead is close to 0%
-      // The bug is in transport position, not launch_point
+      // Assert playhead is close to 0% — the true user-facing invariant:
+      // right after commit the clip plays from its own top.
       expectWithinAbsoluteError(clip2Playhead, 0.0, 0.15,
-                                "Playhead should be near 0% after commit. Bug: "
-                                "transport not snapping when LCM expands.");
+                                "Playhead should be near 0% after commit");
     }
   }
 };

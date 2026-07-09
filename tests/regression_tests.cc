@@ -84,9 +84,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       clip2Ptr->process(clip2Inputs, nullptr, 1, 0, ctx);
       clip2Ptr->stopRecording();
 
-      // Continue processing to cross Q boundary and commit
-      // stopRecording sets is_awaiting_stop, we need to process past the
-      // boundary
+      // Continue processing to cross Q boundary and commit.
+      // Keep the wall clock consistent with the samples processed: the
+      // 4000-sample block began at master 1000, so it ended at 5000.
+      ctx.master_pos = 4000;  // += 1000 below → next block starts at 5000
       while (clip2Ptr->isAwaitingStop()) {
         ctx.master_pos += 1000;  // Advance by 1Q
         float more[1000];
@@ -122,13 +123,25 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // when LCM grows) is NOT exercised here - that's a separate test in
       // audio_engine_tests.cc ("BUG: Clip 2 Loops to 1Q Instead of 0Q").
       //
-      // At node level without transport snap, commit_pos will be non-zero,
-      // so playhead won't be 0%. This is expected behavior - the snap happens
-      // at AudioEngine level.
+      // Under the monotonic transport there is no engine snap; the
+      // launch point (projection of the absolute origin) provides the
+      // alignment directly.
+      expectEquals((launch + clip2Ptr->origin_samples.load()) % duration,
+                   (int64_t)0, "launch ≡ (−origin) mod duration");
 
-      // Verify launch_point is 0 (clip started at Q boundary)
-      expectEquals(launch, (int64_t)0,
-                   "launch_point should be 0 for clip starting at Q boundary");
+      // The user-facing invariant ("loops to 0Q"): recording began at
+      // t=1000 and ran 5000 samples, so the content wraps at t=6000 —
+      // playback there must be at the clip's very top.
+      ctx.master_pos = 6000;
+      ctx.num_samples = 100;
+      ctx.is_playing = true;
+      ctx.is_recording = false;
+      float out[100] = {0.0f};
+      float* const outs[] = {out};
+      clip2Ptr->process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(
+          clip2Ptr->playhead_pos.load(), 0.0, 0.05,
+          "playback continuous through commit: top of loop at t=6000");
     }
 
     // New Test: Clip 1 (First clip) should always result in launch_point=0
@@ -447,11 +460,16 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expectEquals(awaitingStart, (int64_t)2000,
                    "Recording should await start at 2Q boundary");
 
-      // x_pos should reflect quantum offset of 2 (slot 2)
-      // But we need to also check it's not shooting off
+      // x is CYCLE-RELATIVE (recording.md Example 4: mid-loop record in a
+      // 1Q context snaps to the boundary ≡ 0 mod context → anchor 0,
+      // x 0). The audio origin here is (2000 % 1000) = 0, and I2
+      // (simultaneity ⇔ same x) requires the visual to match. The old
+      // absolute slot (next_q / Q = 2 → 400px) was a transient
+      // visual/audio mismatch that commit converged to 0 anyway — and it
+      // exploded off-screen under the monotonic transport.
       int64_t xPos = clip2Ptr->x_pos.load();
-      expect(xPos > 100, "x_pos should be offset > base (not at slot 0)");
-      expect(xPos <= 600, "x_pos should not exceed slot 2 position");
+      expectEquals(xPos, (int64_t)0,
+                   "x is cycle-relative: boundary ≡ 0 mod 1Q context");
     }
 
     // Regression Test: Multi-clip context mid-loop recording
@@ -1103,14 +1121,16 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           juce::String(launch) + ", startPhase=" + juce::String(startPhase) +
           ", commitPos=" + juce::String(commitPos));
 
-      // TEST 1: launch_point should be 0 (start from beginning)
-      expectEquals(launch, (int64_t)0,
-                   "launch_point MUST be 0 for clip starting at 0Q boundary");
-
-      // NOTE: The "playhead at 0% after commit" test requires AudioEngine,
-      // because transport snap to 0 happens at engine level, not node level.
-      // See audio_engine_tests.cc "BUG: Clip 2 Loops to 1Q Instead of 0Q"
-      // for the full AudioEngine test of this scenario.
+      // TEST 1: launch is the projection of the ABSOLUTE origin
+      // ((−origin) mod duration). The clip started at boundary T=1000
+      // with duration 4000 → launch 3000, so content[0] plays at
+      // t ≡ 1000 — seamless with the recording. (The old expectation of
+      // launch==0 relied on the engine-level transport snap, which the
+      // monotonic transport removed; a mod-context origin here is what
+      // caused the field bug "4Q clip loops at 3Q".)
+      expectEquals(startPhase, (int64_t)1000, "origin = absolute trigger");
+      expectEquals((launch + startPhase) % duration, (int64_t)0,
+                   "launch ≡ (−origin) mod duration");
     }
 
     // BUG: Clip 3 recorded at 2Q should anchor at 2Q, not 0Q

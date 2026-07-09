@@ -118,6 +118,122 @@ class PreRecordTests : public juce::UnitTest {
                                 "no misplaced copy of the note elsewhere");
     }
 
+    beginTest("Recording after sustained playback (monotonic transport)");
+    {
+      // Field regression (2026-07-07): under the monotonic transport the
+      // master position grows without bound while the groove loops. The
+      // arm-time slot math used the ABSOLUTE position in one branch,
+      // placing the recording clip's lane thousands of pixels
+      // off-screen ("no waveform while recording clip 2"). Every other
+      // test records immediately after a commit at tiny master values —
+      // this one records after ~300k samples of playback, the shape the
+      // field actually exercises.
+      AudioEngine engine;
+      engine.createNode("stack");
+      juce::String stackId = firstNodeId(engine);
+      engine.createNode("clip", stackId);
+      juce::String clipA = childId(engine, 0);
+
+      engine.startRecordingInNode(clipA);
+      processSilence(engine, 500);
+      processSilence(engine, 500);
+      engine.stopRecordingInNode(clipA);  // Q = 1000
+      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+
+      // Let the groove run: master sails far past the committed LCM.
+      for (int i = 0; i < 601; ++i) processSilence(engine, 500);
+
+      engine.createNode("clip", stackId);
+      juce::String clipB = childId(engine, 1);
+      engine.startRecordingInNode(clipB);
+
+      // Capture must begin within a couple of cycles...
+      bool capturing = false;
+      for (int i = 0; i < 10 && !capturing; ++i) {
+        processSilence(engine, 500);
+        capturing = nodeIsRecording(engine, 1) && nodeDuration(engine, 1) > 0;
+      }
+      expect(capturing, "clip B captures after long playback");
+
+      // ...and the recording clip must sit at a CYCLE-RELATIVE x —
+      // context is 1Q here, so slot 0 — never an absolute-master slot.
+      double x = (double)childVar(engine, 1).getDynamicObject()->getProperty(
+          "x");
+      expectEquals(x, 0.0,
+                   "recording clip stays on screen (cycle-relative slot)");
+
+      // Commit still snaps cleanly to the grid.
+      engine.stopRecordingInNode(clipB);
+      for (int i = 0; i < 8 && nodeIsRecording(engine, 1); ++i) {
+        processSilence(engine, 500);
+      }
+      expect(!nodeIsRecording(engine, 1), "clip B commits");
+      const int64_t durB = nodeDuration(engine, 1);
+      expect(durB > 0 && durB % 1000 == 0,
+             "committed duration snaps to a Q multiple");
+      expectEquals(
+          (double)childVar(engine, 1).getDynamicObject()->getProperty("x"),
+          0.0, "committed x is cycle-relative");
+    }
+
+    beginTest("Long clip over short groove loops at 0Q (field regression)");
+    {
+      // Field bug (2026-07-07): 1Q groove, then a 4Q take recorded after
+      // sustained playback, stopped mid-4th-Q (anticipatory snap to 4Q).
+      // With the origin stored mod the CONTEXT (1Q), the which-cycle
+      // information was lost and the committed clip looped at 3Q. The
+      // origin must be absolute; the view epoch re-bases at commit so
+      // the visual cycle top is the new phrase's top.
+      AudioEngine engine;
+      engine.createNode("stack");
+      juce::String stackId = firstNodeId(engine);
+      engine.createNode("clip", stackId);
+      juce::String clipA = childId(engine, 0);
+
+      engine.startRecordingInNode(clipA);
+      processSilence(engine, 500);
+      processSilence(engine, 500);
+      engine.stopRecordingInNode(clipA);  // Q = 1000
+      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+
+      // Sustained playback: master far beyond the 1Q cycle, at a
+      // position that is NOT a multiple of the eventual 4Q duration
+      // (trigger lands at 302Q; 302 ≡ 2 mod 4 — the truncation case).
+      for (int i = 0; i < 601; ++i) processSilence(engine, 500);
+
+      engine.createNode("clip", stackId);
+      juce::String clipB = childId(engine, 1);
+      engine.startRecordingInNode(clipB);
+
+      // Record ~3.5Q, then stop mid-4th-Q -> anticipatory snap to 4Q.
+      for (int i = 0; i < 8; ++i) processSilence(engine, 500);
+      engine.stopRecordingInNode(clipB);
+      for (int i = 0; i < 8 && nodeIsRecording(engine, 1); ++i) {
+        processSilence(engine, 500);
+      }
+      expect(!nodeIsRecording(engine, 1), "clip B commits");
+      expectEquals(nodeDuration(engine, 1), (int64_t)4000,
+                   "anticipatory snap to 4Q");
+
+      // One block after commit: clip B must be playing near ITS TOP
+      // (0Q), not 2Q/3Q into itself, and the view cycle must have
+      // re-based so masterPos is near 0 too.
+      processSilence(engine, 500);
+      const double playheadB =
+          (double)childVar(engine, 1).getDynamicObject()->getProperty(
+              "playhead");
+      expect(playheadB < 0.3,
+             "clip B loops from its own top after commit, not mid-clip "
+             "(playhead=" +
+                 juce::String(playheadB) + ")");
+      const double masterView = (double)engine.getGraphState()
+                                    .getDynamicObject()
+                                    ->getProperty("masterPos");
+      expect(masterView < 1500.0,
+             "view re-based to the new phrase's top (masterPos=" +
+                 juce::String(masterView) + ")");
+    }
+
     beginTest("Uncalibrated engines still capture from the block start");
     {
       // With zero latency the window collapses to the boundary itself:

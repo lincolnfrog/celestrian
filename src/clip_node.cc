@@ -163,22 +163,23 @@ void ClipNode::process(const float *const *input_channels,
         // anchor_phase_samples = position within Q (for audio alignment)
         anchor_phase_samples.store(future_effective_pos % Q);
         // THE canonical timing fact: this clip's content belongs at
-        // cycle moment future_effective_pos (docs/kernel.md).
-        origin_samples.store(future_effective_pos);
+        // performance moment next_q_master — stored ABSOLUTE
+        // (docs/kernel.md). Storing it mod the context loop truncated
+        // which cycle-of-the-context the take began in, which broke
+        // clips longer than their context once the transport went
+        // monotonic (field bug: 4Q clip over a 1Q groove looping at 3Q).
+        // launchPointFor mods by the final duration at commit.
+        origin_samples.store(next_q_master);
 
-        // slot = which Q slot visually
-        // Key insight: slot is VISUAL position, not audio phase position
-        // - future_effective_pos includes playback_offset for audio alignment
-        // - slot should be based on next_q_master (visual playhead position)
-        int64_t slot;
-
-        if (singleClipContext && next_q_master > context_loop) {
-          // Single clip extending beyond Q - use absolute next_q
-          slot = next_q_master / Q;
-        } else {
-          // Multi-clip OR within context - use visual position (wrapped)
-          slot = (next_q_master % context_loop) / Q;
-        }
+        // slot = which Q slot visually — ALWAYS cycle-relative
+        // (recording.md X-Offset formula: position wraps within the
+        // context; Example 5: "even at 10Q global time, position wraps
+        // to 2Q"). This must never use the absolute master position:
+        // under the monotonic transport (kernel.md step 3) the absolute
+        // value grows without bound, and an absolute slot pushed the
+        // recording clip's lane thousands of pixels off-screen (field
+        // bug 2026-07-07: "no waveform while recording clip 2").
+        int64_t slot = (next_q_master % context_loop) / Q;
         x_pos.store(base_x + slot * base_width);
 
         // If already at boundary, start immediately
@@ -207,7 +208,9 @@ void ClipNode::process(const float *const *input_channels,
       } else {
         // No Q established yet (first clip) - start immediately at anchor=0
         anchor_phase_samples.store(0);
-        origin_samples.store(0);  // First clip defines the cycle origin
+        // First clip defines the cycle origin (compensated ≈ 0 after the
+        // island's transport reset).
+        origin_samples.store(compensated_pos);
         x_pos.store(base_x);
         is_pending_start.store(false);
         is_recording.store(true);
@@ -502,6 +505,23 @@ void ClipNode::commitRecording(int64_t final_duration) {
 
     duration_samples.store(duration);  // CRITICAL: Store final duration so UI
                                        // knows clip is valid!
+
+    // First committed clip in the island establishes Q — stored once at
+    // the island root, never derived again (P0-3; Q survives its
+    // creator per owner ruling). Epoch = this clip's trigger moment.
+    if (Q == 0) {
+      AudioNode *top = this;
+      while (auto *p = top->getParent()) top = p;
+      if (auto *island = dynamic_cast<StackNode *>(top)) {
+        if (island->getQuantum() == 0) {
+          island->setQuantum(duration, trigger_master_position.load());
+          RtLog::instance().post(
+              "ClipNode: Island quantum established: Q=%lld epoch=%lld",
+              (long long)duration,
+              (long long)trigger_master_position.load());
+        }
+      }
+    }
 
     // 1. Determine Context Loop (siblings) to find preferred Visual Position
     // note: Q is already defined at top of function

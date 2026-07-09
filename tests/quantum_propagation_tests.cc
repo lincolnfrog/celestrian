@@ -41,6 +41,90 @@ class QuantumPropagationTests : public juce::UnitTest {
       expectEquals((int)root.getEffectiveQuantum(), 100);
     }
 
+    beginTest("Stored Quantum: survives shorter clips and its creator");
+    {
+      // P0-3 (kernel.md step 1) + owner rulings (design_language.md Q1):
+      // Q is stored island state — a shorter committed clip must not
+      // retroactively change it, and deleting the establishing clip must
+      // not orphan it ("the DNA of the original scratch track remains").
+      StackNode root("Root");
+      auto clip1 = std::make_unique<ClipNode>("QClip", 44100.0);
+      auto *c1 = clip1.get();
+      root.addChild(std::move(clip1));
+
+      ProcessContext ctx;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+
+      c1->startRecording();
+      ctx.num_samples = 1000;
+      c1->process(inputs, nullptr, 1, 0, ctx);
+      c1->stopRecording();  // first clip -> immediate commit, Q = 1000
+      expectEquals(root.getQuantum(), (int64_t)1000);
+      expectEquals(root.getEpoch(), (int64_t)0);
+
+      // A short overdub snapping to the Q/2 subdivision (480 -> 500)
+      // must NOT halve Q (the old min-derivation did exactly that).
+      auto clip2 = std::make_unique<ClipNode>("Short", 44100.0);
+      auto *c2 = clip2.get();
+      root.addChild(std::move(clip2));
+
+      c2->startRecording();
+      ctx.num_samples = 480;
+      c2->process(inputs, nullptr, 1, 0, ctx);
+      c2->stopRecording();  // L=480 < Q/2 -> awaits the 500 subdivision
+      ctx.master_pos = 480;
+      ctx.num_samples = 100;
+      c2->process(inputs, nullptr, 1, 0, ctx);  // crosses 500 -> commit
+
+      expectEquals(c2->getIntrinsicDuration(), (int64_t)500);
+      expectEquals(root.getEffectiveQuantum(), (int64_t)1000,
+                   "Q must not change when a shorter clip commits");
+
+      // Q survives its creator: delete the establishing clip.
+      root.removeChild(c1->getUuid());
+      expectEquals(root.getEffectiveQuantum(), (int64_t)1000,
+                   "Q survives deletion of the clip that established it");
+    }
+
+    beginTest("Composite duration is the LCM of children, not the min");
+    {
+      StackNode root("Root");
+      auto q = std::make_unique<ClipNode>("QClip", 44100.0);
+      auto *qPtr = q.get();
+      root.addChild(std::move(q));
+
+      ProcessContext ctx;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;
+      qPtr->startRecording();
+      ctx.num_samples = 1000;
+      qPtr->process(inputs, nullptr, 1, 0, ctx);
+      qPtr->stopRecording();  // Q = 1000
+
+      // Nested stack with 1000- and 1500-sample clips: composite = 3000.
+      auto makeCommitted = [&](int len) {
+        auto clip = std::make_unique<ClipNode>("C", 44100.0);
+        clip->startRecording();
+        ProcessContext c;
+        c.is_recording = true;
+        c.num_samples = len;
+        clip->process(inputs, nullptr, 1, 0, c);
+        clip->stopRecording();
+        return clip;
+      };
+      auto sub = std::make_unique<StackNode>("Sub");
+      auto *subPtr = sub.get();
+      root.addChild(std::move(sub));  // attach BEFORE filling: shares island
+      subPtr->addChild(makeCommitted(1000));
+      subPtr->addChild(makeCommitted(1500));
+
+      expectEquals(subPtr->getIntrinsicDuration(), (int64_t)3000,
+                   "composite duration = LCM(1000, 1500)");
+      expectEquals(subPtr->getEffectiveQuantum(), (int64_t)1000,
+                   "nested stack inherits the island quantum");
+    }
+
     beginTest("Hysteresis Snapping (Late Snap)");
     {
       StackNode root("Root");

@@ -7,6 +7,26 @@
 #include "stack_node.h"
 #include "timing.h"
 
+namespace {
+// Audio-thread-safe recursive scan of committed clips: detects whether any
+// duration is not a multiple of the previous cycle (polyrhythmic
+// expansion) and finds the newest origin (largest — origins are monotonic
+// in recording order under the monotonic transport). No allocation.
+void scanCommitted(celestrian::AudioNode *node, int64_t lcm_before,
+                   bool &polyrhythmic, int64_t &newest_origin) {
+  if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
+    for (auto *child : stack->getChildrenSnapshot()) {
+      scanCommitted(child, lcm_before, polyrhythmic, newest_origin);
+    }
+    return;
+  }
+  const int64_t dur = node->getIntrinsicDuration();
+  if (dur <= 0) return;
+  if (dur % lcm_before != 0) polyrhythmic = true;
+  newest_origin = std::max(newest_origin, node->origin_samples.load());
+}
+}  // namespace
+
 AudioEngine::AudioEngine() {
   // Start with an empty root stack
   auto root = std::make_unique<celestrian::StackNode>("SessionRoot");
@@ -146,11 +166,25 @@ juce::var AudioEngine::getGraphState() const {
   // every ~50 ms, so this doubles as the RtLog drain point).
   celestrian::RtLog::instance().drain();
 
+  // Cycle view of the monotonic clock (kernel.md step 3): the engine
+  // never wraps its transport; the UI-facing masterPos is derived here.
+  // Idle/playback: t mod LCM. Recording: frozen base + linear growth so
+  // the cursor extends past the committed LCM.
+  const int64_t t = global_transport_pos.load();
+  double master_view;
+  if (view_recording_.load()) {
+    master_view = (double)(view_base_.load() + (t - view_anchor_t_.load()));
+  } else {
+    const int64_t cycle = calculateTimelineLength();
+    const int64_t rel = t - view_epoch_.load();
+    master_view = (double)(cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel);
+  }
+
   if (focused_node) {
     auto metadata = focused_node->getMetadata();
     auto *obj = metadata.getDynamicObject();
     obj->setProperty("isPlaying", (bool)is_playing_global.load());
-    obj->setProperty("masterPos", (double)global_transport_pos.load());
+    obj->setProperty("masterPos", master_view);
     obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
     obj->setProperty("perf", makePerfState());
@@ -159,7 +193,7 @@ juce::var AudioEngine::getGraphState() const {
 
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
   state->setProperty("isPlaying", (bool)is_playing_global.load());
-  state->setProperty("masterPos", (double)global_transport_pos.load());
+  state->setProperty("masterPos", master_view);
   state->setProperty("soloedId", soloed_node_uuid);
   state->setProperty("nodes", juce::Array<juce::var>());
   state->setProperty("perf", makePerfState());
@@ -512,131 +546,44 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     input_clock_ += num_samples;
 
     if (is_playing_global.load()) {
-      int64_t old_pos = global_transport_pos.load();
-      int64_t new_pos = old_pos + num_samples;
+      // Monotonic transport (kernel.md step 3): the clock only moves
+      // forward. Clips align by their stored origins, so commits have
+      // nothing to wrap, snap, or reset — the old LCM-wrap /
+      // LCM-growth-snap / polyrhythm / first-clip-snap branch pile is
+      // gone. The cycle position shown to the UI is a DERIVED view
+      // (see getGraphState), which during recording grows linearly from
+      // a base frozen at record start so the cursor can extend past the
+      // committed LCM (recording.md cursor table).
+      const int64_t old_pos = global_transport_pos.load();
 
-      bool is_recording = isAnyNodeRecording();
-
-      // Before updating state, capture the current recording duration
-      // (needed for transport continuity when recording ends)
-      if (was_any_node_recording_ && !is_recording) {
-        // Recording just finished - capture the duration of the just-finished
-        // clip This is the newest clip's duration (it was just committed)
-        if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
-          int64_t max_dur = 0;
-          for (auto *child : stack->getChildrenSnapshot()) {
-            int64_t dur = child->getIntrinsicDuration();
-            if (dur > max_dur) max_dur = dur;
-          }
-          // The just-finished recording's duration is the difference from old
-          // LCM Actually, simpler: it's the position in the old LCM cycle
-          last_recording_duration_ =
-              old_pos %
-              (lcm_before_recording_ > 0 ? lcm_before_recording_ : max_dur);
+      const bool is_recording = isAnyNodeRecording();
+      if (is_recording && !was_any_node_recording_) {
+        const int64_t cycle = calculateTimelineLength();
+        const int64_t rel = old_pos - view_epoch_.load();
+        view_base_.store(cycle > 0 ? rel % cycle : rel);
+        view_anchor_t_.store(old_pos);
+        view_lcm_before_ = cycle;
+      } else if (!is_recording && was_any_node_recording_) {
+        // Commit: when the cycle grew as a simple extension (every
+        // duration divides into multiples of the old cycle), re-base
+        // the VIEW epoch to the newest committed origin, so the visual
+        // cycle top becomes the new phrase's top (recording.md "LCM
+        // Expansion Snap", reborn as a pure view re-base — the clock
+        // and the audio are untouched). Polyrhythmic expansions keep
+        // the old epoch: the cursor sails on (recording.md example).
+        const int64_t new_cycle = calculateTimelineLength();
+        if (view_lcm_before_ > 0 && new_cycle > view_lcm_before_) {
+          bool polyrhythmic = false;
+          int64_t newest_origin = view_epoch_.load();
+          scanCommitted(focused_node, view_lcm_before_, polyrhythmic,
+                        newest_origin);
+          if (!polyrhythmic) view_epoch_.store(newest_origin);
         }
       }
-
-      bool just_started_recording = is_recording && !was_any_node_recording_;
-      bool just_finished_recording = was_any_node_recording_ && !is_recording;
       was_any_node_recording_ = is_recording;
+      view_recording_.store(is_recording);
 
-      // Store LCM when recording starts (before the new clip is added)
-      if (just_started_recording) {
-        lcm_before_recording_ = calculateTimelineLength();
-      }
-
-      // Only wrap at LCM boundary when NOT recording
-      if (!is_recording) {
-        int64_t timeline_length = calculateTimelineLength();
-        if (timeline_length > 0) {
-          // Check for polyrhythmic expansion (e.g. 3Q clip added to 4Q context
-          // -> 12Q) If any clip's duration is NOT a multiple of the OLD LCM, we
-          // have a polyrhythmic expansion where the cycle length increased
-          // drastically. In this case, we MUST NOT snap, because the transport
-          // is likely mid-cycle in the new, longer timeline.
-          bool is_polyrhythmic_expansion = false;
-          if (lcm_before_recording_ > 0) {
-            if (auto *stack =
-                    dynamic_cast<celestrian::StackNode *>(focused_node)) {
-              for (auto *child : stack->getChildrenSnapshot()) {
-                int64_t dur = child->getIntrinsicDuration();
-                if (dur > 0 && dur % lcm_before_recording_ != 0) {
-                  is_polyrhythmic_expansion = true;
-                  break;
-                }
-              }
-            }
-          }
-
-          // When recording JUST ENDED and LCM GREW, snap to align transport
-          // BUT only if:
-          // 1. It's a simple extension (not polyrhythmic)
-          // 2. Transport overshot the new LCM (for safety, though polyrhythm
-          // check covers most cases)
-          // OR when LCM grows due to recording a longer clip, snap to align
-          // the transport with the beginning of the new LCM timeline.
-
-          if (just_finished_recording &&
-              timeline_length > lcm_before_recording_ &&
-              !is_polyrhythmic_expansion) {
-            // LCM grew (e.g. 1Q -> 4Q when recording a 4Q clip)
-            // Snap to 0 so all clips start fresh from their beginning
-            // Key insight: the new longer clip defines a new timeline,
-            // and all clips should restart from their respective 0 positions
-            // Snap to 0 + this block's samples
-            new_pos = num_samples;
-          }
-          // Polyrhythmic expansion: snap to the recording's final position
-          // This ensures the cursor continues smoothly from where it was during
-          // recording
-          else if (just_finished_recording && is_polyrhythmic_expansion) {
-            new_pos = last_recording_duration_ + num_samples;
-          }
-          // FIRST CLIP FIX: When the first clip finishes recording, snap to 0
-          // so playback starts from the beginning of the clip.
-          // This happens when lcm_before_recording was just the default quantum
-          // (no real clips existed yet).
-          else if (just_finished_recording && lcm_before_recording_ > 0 &&
-                   lcm_before_recording_ < timeline_length && old_pos > 0 &&
-                   old_pos < timeline_length) {
-            // Check if this is a "first clip" scenario: the old timeline was
-            // just the default quantum, not from real clips
-            bool is_first_clip = true;
-            if (auto *stack =
-                    dynamic_cast<celestrian::StackNode *>(focused_node)) {
-              // Count clips with duration > 0 (finished recording)
-              int clip_count = 0;
-              for (auto *child : stack->getChildrenSnapshot()) {
-                if (child->getIntrinsicDuration() > 0) {
-                  clip_count++;
-                }
-              }
-              // More than 1 finished clip means we're NOT in first-clip
-              // scenario
-              is_first_clip = (clip_count <= 1);
-            }
-
-            if (is_first_clip) {
-              celestrian::RtLog::instance().post(
-                  "FIRST CLIP SNAP: pos=%lld -> 0 (first clip finished, "
-                  "start from beginning)",
-                  (long long)old_pos);
-              new_pos = num_samples;  // Start from 0 + this block's samples
-              // Skip modulo wrap - we want to start fresh at 0
-              global_transport_pos.store(new_pos);
-              // Clear recording state vars for consistency
-              lcm_before_recording_ = 0;
-              last_recording_duration_ = 0;
-              updatePerfMeters(entry_ticks, num_samples);
-              return;  // Exit early to avoid modulo wrap overwriting our reset
-            }
-          }
-
-          // Normal wrap at LCM boundary
-          new_pos = new_pos % timeline_length;
-        }
-      }
-      global_transport_pos.store(new_pos);
+      global_transport_pos.store(old_pos + num_samples);
     }
   }
 

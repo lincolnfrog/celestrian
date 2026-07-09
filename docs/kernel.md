@@ -175,8 +175,14 @@ Sanity checks against the canonical examples (recording.md):
 
 The kernel is adoptable without a rewrite; most steps are deletions.
 
-1. **Store Q + epoch at the island root** (= P0-3, unchanged scope, but
-   store `epoch` alongside — one extra int64).
+1. ✅ **Done (2026-07-07): Q + epoch stored at the island root** (= P0-3).
+   `StackNode::quantum_samples_`/`epoch_samples_`, set once at first
+   commit (or when committed content enters an empty island), never
+   derived again. Q survives its creator (owner ruling): a shorter
+   Q/2-snapped overdub no longer halves Q, and deleting the
+   establishing clip leaves Q intact — both now pinned by unit tests.
+   `getIntrinsicDuration()` on stacks is now composite duration
+   (LCM of children, per recording.md) instead of the min.
 2. ✅ **Done (2026-07-07): `origin` introduced** — `recording_start_phase`
    renamed to `origin_samples` (it already held the right value at arm
    time); playback derives launch per block via
@@ -189,10 +195,31 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    `trigger_master_position` (feeds the x/slot math until P1-7) and
    `commit_master_pos` (transport bookkeeping until step 3).
    *(Guarded by the "Origin Alignment" unit test + full suite.)*
-3. **Monotonic master**: keep the wrapped `masterPos` in `getGraphState`
-   as a derived view (`(t − epoch) mod LCM`) so the UI is untouched;
-   delete the wrap/reset/snap branches from the callback one at a time,
-   each behind its existing regression test.
+   **Correction (same day):** the origin must be stored **absolute**, not
+   mod the context loop. The mod truncated which-cycle-of-the-context a
+   take began in, which is invisible while a transport snap rebases the
+   clock — and broke clips longer than their context once the transport
+   went monotonic (field: 4Q take over a 1Q groove looped at 3Q).
+   `launchPointFor` mods by the final duration, so the absolute value is
+   always safe to store.
+3. ✅ **Done (2026-07-07): monotonic master.** The transport only moves
+   forward; the LCM wrap, LCM-growth snap, polyrhythm suppression
+   branch, first-clip-snap early return, and the
+   `lcm_before_recording_`/`last_recording_duration_` bookkeeping are
+   all deleted (~90 lines from the callback). `masterPos` in
+   `getGraphState` is a derived view: `t mod LCM` normally, frozen-base
+   + linear growth while recording (so the cursor extends past the
+   committed LCM per recording.md). The once-per-island first-clip
+   reset is retained — it IS the epoch capture, occurring before any
+   content exists. The old "LCM Expansion Snap" survives as a **view
+   epoch re-base**: at commit, if the cycle grew as a simple extension,
+   `view_epoch_` moves to the newest committed origin so the visual
+   cycle top is the new phrase's top — clock and audio untouched;
+   polyrhythmic expansions keep the old epoch (cursor sails on, per
+   recording.md). Also landed with step 1: island Q + epoch
+   stored at the root (`StackNode::setQuantum`), established at first
+   commit or when committed content enters an empty island; composite
+   duration corrected from min-of-children to LCM-of-children.
 4. **Time-maps**: reframe collapse (`internal_transport_` →
    `collapse_epoch`) as the first named time-map; warp and serial
    connections later reuse it.

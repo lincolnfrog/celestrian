@@ -192,16 +192,25 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // Navigation focus (no stack needed for single-level editing)
   celestrian::AudioNode *focused_node = nullptr;
 
-  // Global Transport
+  // Global Transport (kernel.md step 3): MONOTONIC. The clock only moves
+  // forward while playing; it is reset exactly once per island (first
+  // clip = epoch capture) and by an explicit user stop. Commits never
+  // wrap, snap, or reset it — clips align by their stored origins.
   std::atomic<bool> is_playing_global{false};
   std::atomic<int64_t> global_transport_pos{0};
 
-  // Track when recording just ended for LCM snap
-  bool was_any_node_recording_ = false;
-  // Track LCM before recording started - used to detect if LCM grew
-  int64_t lcm_before_recording_ = 0;
-  // Track the duration of the most recent recording for transport continuity
-  int64_t last_recording_duration_ = 0;
+  // Cycle view for the UI (derived, not authoritative): normally
+  // (t − view_epoch) mod LCM; while recording, frozen base + linear
+  // growth so the cursor extends past the committed LCM (recording.md
+  // cursor table). view_epoch_ re-bases to the newest committed origin
+  // when the cycle grows as a simple extension — the visual successor of
+  // the old transport snap, without mutating the clock or the audio.
+  bool was_any_node_recording_ = false;   // audio thread only (view upkeep)
+  int64_t view_lcm_before_ = 0;           // audio thread only
+  std::atomic<int64_t> view_epoch_{0};
+  std::atomic<int64_t> view_base_{0};
+  std::atomic<int64_t> view_anchor_t_{0};
+  std::atomic<bool> view_recording_{false};
 
   // Message-thread copy for the UI (getGraphState) …
   juce::String soloed_node_uuid;

@@ -1,5 +1,7 @@
 #include "stack_node.h"
 
+#include "timing.h"
+
 namespace celestrian {
 
 namespace {
@@ -63,28 +65,46 @@ juce::var StackNode::getMetadata() const {
 }
 
 int64_t StackNode::getIntrinsicDuration() const {
+  // Composite duration = LCM of children (docs/recording.md "Nested
+  // Stacks and Composite Duration"). Previously this returned the MIN
+  // child duration, which doubled as a derived quantum — both wrong;
+  // the quantum is now stored island state (P0-3).
   const auto *kids = renderChildren();
   if (kids->empty()) return 0;
 
-  int64_t minDuration = 0;
+  int64_t composite = 0;
   for (auto *child : *kids) {
     int64_t d = child->getIntrinsicDuration();
     if (d > 0) {
-      if (minDuration == 0 || d < minDuration) minDuration = d;
+      composite = (composite == 0) ? d : timing::lcm(composite, d);
     }
   }
-  return minDuration;
+  return composite;
 }
 
 int64_t StackNode::getEffectiveQuantum() const {
-  // 1. Try children
-  int64_t d = getIntrinsicDuration();
-  if (d > 0) return d;
+  // Stored island quantum — never derived from child durations, so it
+  // cannot retroactively change when a shorter clip commits (the
+  // "vibrating waveform" bug class) and it survives its creator.
+  int64_t q = quantum_samples_.load();
+  if (q > 0) return q;
 
-  // 2. Try parent
   if (auto *p = parent.load()) return p->getEffectiveQuantum();
 
   return 0;
+}
+
+void StackNode::maybeEstablishQuantumFrom(const AudioNode &child) {
+  // Find the island root (topmost stack in this hierarchy).
+  const AudioNode *top = this;
+  while (auto *p = top->getParent()) top = p;
+  auto *island = dynamic_cast<StackNode *>(const_cast<AudioNode *>(top));
+  if (island == nullptr || island->getQuantum() > 0) return;
+
+  const int64_t d = child.getIntrinsicDuration();
+  if (d > 0) {
+    island->setQuantum(d, child.origin_samples.load());
+  }
 }
 
 void StackNode::addChild(std::unique_ptr<AudioNode> child) {
@@ -92,6 +112,7 @@ void StackNode::addChild(std::unique_ptr<AudioNode> child) {
   if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
     if (reclaimer_) stack->setReclaimer(reclaimer_);
   }
+  maybeEstablishQuantumFrom(*child);
   children.push_back(std::move(child));
   republishChildren();
 }
@@ -101,6 +122,7 @@ void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
   if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
     if (reclaimer_) stack->setReclaimer(reclaimer_);
   }
+  maybeEstablishQuantumFrom(*child);
   if (index < 0) index = 0;
   if (index >= (int)children.size()) {
     children.push_back(std::move(child));
