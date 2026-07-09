@@ -19,7 +19,8 @@
 | Doc | Status | What it is |
 |---|---|---|
 | [design.md](design.md) | vision | Product vision, UX flows, feature roadmap. Broadest and oldest; details defer to the canon docs above. |
-| [stacks.md](stacks.md) | spec + journal | Stack/nesting UX and visual design. The "Stack Loop Processing" section is superseded history (see time_maps.md). |
+| [ui_overhaul.md](ui_overhaul.md) | spec + proposal | The ratified UI redesign (2026-07-09): "Tape Room" direction, session view, instrument-in-hand sizing; carries P2-10 (deriveViewModel) and the phased build plan. |
+| [stacks.md](stacks.md) | spec + journal | Stack/nesting UX and visual design. The "Stack Loop Processing" section is superseded history (see time_maps.md); the visual-design sections are superseded by ui_overhaul.md. |
 | [ui.md](ui.md) | spec | Frontend/backend separation of concerns; the bridge API placement rules. |
 | [implementation.md](implementation.md) | journal | Architecture status snapshots and the waveform-rendering design (§7, still current for the UI). |
 | [refactoring_proposal.md](refactoring_proposal.md) | journal | The 2026-07-07 refactor plan with status annotations; P0 items all landed. |
