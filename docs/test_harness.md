@@ -55,6 +55,13 @@
    assignment, so the facade would evaluate first and lock in the
    JUCE-bridge path for the whole page. `app.js` is dynamically imported
    there for exactly this reason.
+10. **The mock must mirror engine CONTRACTS, not plausible internals.**
+   The mock once published the raw transport as `masterPos` while the
+   engine publishes a derived view (wrapped idle, growing during
+   recording — ui.md "masterPos contract"). UI code written against the
+   mock's dialect passed every test and broke on hardware ("recording
+   loops the old cycle"). Before keying UI behavior off a state field's
+   semantics, read its producer in `src/*.cc` — then make the mock match.
 
 ## Adding a bridge method
 

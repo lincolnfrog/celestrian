@@ -1,0 +1,409 @@
+/* Celestrian session view — "Tape Room" (docs/ui_overhaul.md §3).
+   Warm hardware world; lanes read as tape strips; red is reserved for
+   record. Sized for instrument-in-hand: big targets, glanceable state.
+   All timeline geometry arrives as PERCENTAGES of the cycle from the
+   patch layer (session_view.js) — the single Q→% scale lives there. */
+
+:root {
+    --ground: #171310;
+    --panel: #201a15;
+    --panel-2: #2c2319;
+    --lane: #241d17;
+    --lane-line: #322920;
+    --tape: #e8a13c;
+    --tape-composite: #c96f3a;
+    --text: #efe6d8;
+    --text-dim: #93826d;
+    --rec: #d94f30;
+    --grid: #322920;
+    --grid-q4: #453727;
+    --rail-w: 208px;
+
+    font-size: 16px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--ground);
+    color: var(--text);
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+}
+
+button {
+    font: inherit;
+    color: inherit;
+    background: var(--panel-2);
+    border: 1px solid #3d3123;
+    border-radius: 8px;
+    cursor: pointer;
+}
+button:hover { border-color: #55452f; }
+button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
+
+.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+#app {
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 100%;
+}
+
+/* ===== Transport ===== */
+#transport {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 10px 18px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--lane-line);
+}
+#transport .brand {
+    font-weight: 700;
+    letter-spacing: 0.18em;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin-right: 6px;
+}
+#play-btn {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 22px;
+    background: var(--panel-2);
+}
+#play-btn.playing { border-color: var(--tape); color: var(--tape); }
+#record-btn {
+    width: 48px; height: 48px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 38% 34%, #e06248, var(--rec) 65%);
+    border: 2px solid #7c2c1d;
+}
+#record-btn:hover { border-color: #a8422c; }
+#record-btn.armed { animation: recpulse 1.6s ease-in-out infinite; }
+#record-btn.recording {
+    animation: recpulse 1.1s ease-in-out infinite;
+    box-shadow: 0 0 14px rgba(217, 79, 48, 0.7);
+    border-color: var(--rec);
+}
+#position-readout {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 1.25rem;
+    font-variant-numeric: tabular-nums;
+    min-width: 15ch;
+}
+#q-info {
+    color: var(--text-dim);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+#transport .spacer { flex: 1; }
+#add-stack-btn { padding: 10px 16px; font-size: 0.9rem; }
+
+/* ===== Session grid ===== */
+#session {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 14px 18px 24px;
+}
+#grid-area { position: relative; }
+
+/* Ruler */
+#ruler-row {
+    display: grid;
+    grid-template-columns: var(--rail-w) 1fr;
+    gap: 12px;
+    height: 30px;
+    margin-bottom: 8px;
+}
+#ruler {
+    position: relative;
+    border-bottom: 1px solid var(--grid-q4);
+}
+#ruler .tick {
+    position: absolute;
+    bottom: 0;
+    width: 1px;
+    height: 8px;
+    background: var(--grid);
+}
+#ruler .tick.major { height: 14px; background: var(--grid-q4); }
+#ruler .tick-label {
+    position: absolute;
+    bottom: 12px;
+    transform: translateX(-50%);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    white-space: nowrap;
+}
+#ruler .tick-label.cycle-end { transform: translateX(-100%); }
+
+/* Lanes */
+#lanes { display: flex; flex-direction: column; gap: 10px; }
+.lane {
+    display: grid;
+    grid-template-columns: var(--rail-w) 1fr;
+    gap: 12px;
+}
+.lane-rail {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 8px 10px;
+    min-height: 64px;
+}
+.rail-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rail-foot { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rail-foot .rail-sub { flex: 1; min-width: 0; }
+.lane[data-depth="1"] .lane-rail { margin-left: 22px; }
+.lane[data-depth="2"] .lane-rail { margin-left: 44px; }
+.lane[data-depth="1"] .lane-rail, .lane[data-depth="2"] .lane-rail { min-height: 56px; }
+
+/* Group header rows pin to the top while their children scroll, so
+   fold/arm/add stay reachable inside a tall kit */
+.lane[data-kind="group"] {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: var(--ground);
+    padding-bottom: 2px;
+}
+
+/* Add-track affordance row: same height and radius as sibling lane
+   bodies so the column reads as one uninterrupted stack of tape */
+.lane.lane-add { grid-template-columns: var(--rail-w) 1fr; }
+.add-track-row-btn {
+    min-height: 56px;
+    border: 2px dashed #3d3123;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    text-align: left;
+    padding-left: 16px;
+}
+.lane-add[data-depth="0"] .add-track-row-btn { min-height: 64px; }
+.add-track-row-btn:hover { border-color: var(--tape); color: var(--tape); }
+
+.fold-btn {
+    width: 24px; height: 24px;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    padding: 0;
+    flex: none;
+}
+.rail-name {
+    flex: 1; min-width: 0;
+    font-weight: 600;
+    font-size: 0.95rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.rail-sub {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.armed-word { color: var(--rec); }
+.rail-status {
+    flex: none;
+    font-size: 0.68rem;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+.rail-btn {
+    width: 28px; height: 28px;
+    border-radius: 7px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0;
+    flex: none;
+    color: var(--text-dim);
+}
+.rail-btn.on { color: var(--ground); background: var(--tape); border-color: var(--tape); }
+.rail-btn.arm-btn { color: var(--rec); font-size: 0.9rem; }
+.rail-btn.arm-btn.on,
+.rail-btn.arm-btn.some { color: #fff; background: var(--rec); border-color: var(--rec); }
+.rail-btn.arm-btn.some { opacity: 0.6; }
+.rail-btn.arm-btn.recording { animation: recpulse 1.1s ease-in-out infinite; }
+.rail-btn:disabled { opacity: 0.35; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+    #record-btn.armed, #record-btn.recording, .rail-btn.arm-btn.recording { animation: none; }
+}
+
+/* Lane body: the tape strip */
+.lane-body {
+    position: relative;
+    background: var(--lane);
+    border-radius: 12px;
+    overflow: hidden;
+    min-height: 64px;
+}
+.lane[data-depth="1"] .lane-body, .lane[data-depth="2"] .lane-body { min-height: 56px; }
+.lane-body .gridline {
+    position: absolute; top: 0; bottom: 0;
+    width: 1px;
+    background: var(--grid);
+}
+.lane-body .gridline.major { background: var(--grid-q4); }
+
+/* Lane-body layers: grid under reps under overlay. Reps are RECONCILED
+   (reused, not recreated), so geometry changes morph via transitions
+   instead of popping (the commit "flash" — field report 2026-07-10). */
+.body-layer { position: absolute; inset: 0; }
+.grid-layer, .overlay-layer { pointer-events: none; }
+
+/* Reps clip their pinned canvases: a geometry morph REVEALS content,
+   it never stretches it (canvas at 100% rubber-banded with the div
+   mid-transition — the composite's "collapse then expand" at commits) */
+.rep { position: absolute; top: 3px; bottom: 3px; overflow: hidden; }
+.reps-layer .rep {
+    transition: left 180ms ease, width 180ms ease, opacity 180ms ease;
+}
+/* The live bar is a REVEAL MASK over its pinned canvas: the width
+   transition glides the edge between polls, so content appears
+   smoothly instead of in per-poll chunks — while the canvas behind it
+   never moves (append-stability law) */
+.reps-layer .rep.recording-bar {
+    transition: width 140ms linear;
+    overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+    .reps-layer .rep { transition: none; }
+}
+.rep canvas { width: 100%; height: 100%; display: block; }
+/* Ghosts slightly stronger than the old 0.16 now that waveforms are
+   display-normalized; the Q gridlines mark boundaries (a per-rep tick
+   notch read as "waveform corruption" in the field) */
+.rep.ghost { opacity: 0.22; }
+.rep.recording-bar {
+    background: linear-gradient(to bottom, #3a2a1d, #2c1f16);
+    /* box-shadow, never border: state must not move the waveform (I2) */
+    box-shadow: inset 0 0 0 1px var(--rec);
+    border-radius: 6px;
+    animation: recpulse 1.6s ease-in-out infinite;
+}
+
+/* STATE-METRICS LAW: a lane body's box never changes with state — no
+   state border/padding may shift its absolutely-positioned children
+   (the 2px armed border once right-shifted every rep by 2px). All
+   state accents are inset shadows. */
+.lane-body.armed-empty {
+    box-shadow: inset 0 0 0 2px rgba(217, 79, 48, 0.45);
+}
+.lane-body.is-recording {
+    box-shadow: inset 0 0 0 2px rgba(217, 79, 48, 0.3);
+}
+.arm-marker {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--rec);
+    animation: recpulse 1.6s ease-in-out infinite;
+}
+.arm-label {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    margin-left: 12px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.75rem;
+    color: var(--rec);
+    white-space: nowrap;
+}
+
+/* Loop window brackets */
+.win-dim {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(23, 19, 16, 0.62);
+}
+.win-bracket {
+    position: absolute; top: 2px; bottom: 2px;
+    width: 8px;
+    border: 2px solid var(--tape);
+    opacity: 0.7;
+}
+.win-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
+.win-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
+.lane-body.win-bypassed .win-bracket { opacity: 0.3; }
+.win-chip {
+    position: absolute;
+    top: 4px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    background: rgba(32, 26, 21, 0.85);
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+
+/* The one playhead (I8) */
+#playhead {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    margin-left: calc(var(--rail-w) + 12px);
+    background: #f7efe2;
+    box-shadow: 0 0 6px rgba(247, 239, 226, 0.5);
+    pointer-events: none;
+    display: none;
+    /* Above the sticky group headers (z-index 5) — the one playhead
+       crosses EVERYTHING (I8); it hid behind the composite in the field */
+    z-index: 6;
+    /* Same timing as the recording bar's reveal edge: the two move in
+       lockstep (wrap/commit jumps snap via inline override) */
+    transition: left 140ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+    #playhead { transition: none; }
+}
+#playhead::before {
+    content: "";
+    position: absolute;
+    top: 0; left: -5px;
+    border: 6px solid transparent;
+    border-top-color: #f7efe2;
+}
+
+/* Empty state */
+#empty-state {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 64px 0;
+    font-size: 1rem;
+    display: none;
+}
+
+/* ===== Status strip ===== */
+#status-strip {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 18px;
+    background: var(--panel);
+    border-top: 1px solid var(--lane-line);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+}
+#log-line {
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#status-strip button { padding: 6px 12px; font-size: 0.75rem; }
+#calibration-status { max-width: 40ch; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@keyframes recpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) {
+    .rep.recording-bar, .arm-marker { animation: none; }
+}

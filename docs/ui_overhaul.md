@@ -44,9 +44,36 @@ empty husks) while a single active island pays nothing for it.
 - **Record is the loudest thing on screen.** Global ● records into a
   new lane of the active island; per-lane arm on the rail. An armed lane
   shows a marker at the next Q boundary: "your take starts here" (Q11).
+- **The recording frame is TAKE-ANCHORED** (2026-07-09, from the field
+  dump): while recording, the frame anchors at the take's start — the
+  new phrase's downbeat is the visual top, previewing the engine's
+  epoch re-base on commit — and grows one whole Q at a time to hold the
+  cursor (`vm.cycleQ` = frame, decoupled from `vm.lcmQ`). Committed
+  lanes rotate their origin-anchored tiles to show their phase against
+  the take. The anchor snaps to a whole Q (Q11), which also cancels the
+  pre-record latency compensation baked into live `duration` (the bar's
+  end honestly trails the playhead by ~C — E-E). Ruler/readout mark a
+  growing frame with `…`, a settled cycle with `↺`.
+- **Arm is fractal (Q7 ruling, 2026-07-09).** Arming a group arms every
+  *armable* child track; record captures them simultaneously, each from
+  its own input, sharing one arm target and one committed duration. The
+  drum use-case: one button records all five kit tracks. **Arm targets
+  emptiness**: a clip with content is not armable (no overdub by
+  design) — group record records the empty clips and just plays the
+  full ones; re-recording content is the takes feature. The rail's arm
+  control on a group shows aggregate state over armable children
+  (all / some / none) and disables when nothing is armable.
 - **Stacks are folds.** A group is a header (composite) lane plus
   indented child lanes; the chevron folds children away and the
   composite never moves. Sound-neutral by construction (I6b).
+- **The main (non-ghost) tile is the first full repetition** (owner
+  ruling 2026-07-10). A looping clip has no privileged historical rep —
+  "which cycle it was recorded in" is not a musical fact, so
+  origin-modular take marking (which drew the bright tile mid-frame) is
+  wrong; only the clip's PHASE (origin mod period) shapes the tile
+  grid. Groups tile from frame 0 (a composite is not a performance).
+  Waveforms are display-normalized to the clip's own peak: waveforms
+  show shape, meters show level.
 - **Loop windows live on the lane.** Bracket overlay `[ ]`: drag to edit
   (Q-snapped, hysteresis), click the bracket body to toggle
   active/bypassed. Outside-window audio dims; brackets stay visible
@@ -116,15 +143,29 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
 
 ## 5. Phases (each lands green and committable)
 
-1. **View-model core.** `deriveViewModel` + node unit tests (geometry,
-   ghosts, windows, arm marker, fold). Port the golden cases from
-   recording.md examples; add an executable **I2 test**: for random
-   states, equal Q ⇒ equal x across all lanes.
-2. **Session-view shell.** Transport bar, ruler, status strip, lanes
-   rendered read-only from the VM in Tape Room tokens. Old canvas UI
-   retired in the same commit (no long-lived dual UI).
-3. **Core interactions.** Record (global + per-lane arm with Q-boundary
-   marker), M/S, rename, fold, loop-window brackets.
+1. **View-model core.** ✅ Done 2026-07-09: `ui/js/view_model.js`
+   (`deriveViewModel` + `unrollReps`, Q units, window-aware periods per
+   E-C, group-arm aggregate over armable children) with 14 unit tests
+   incl. the I2/I8 random-scene property test; verified against a real
+   hardware state dump. Take tile = origin mod **cycle** (mod period
+   collapses "recorded at 2Q" onto the 0Q tile).
+2. **Session-view shell.** ✅ Done 2026-07-09: `session_view.js` (patch
+   layer — the app's only Q→geometry conversion, as % of cycle),
+   `css/session.css` (Tape Room tokens), new `index.html` /
+   `index_test.html`; app.js is glue (poll → derive → patch). Old canvas
+   UI retired in the same commit (7 modules, 3 stylesheets, 13 old e2e
+   specs deleted); 12 new session-view e2e specs including a pixel-level
+   I2 check (0px boundary difference measured). Wired in phase 2: play,
+   fold, M/S, add-stack/clip, calibrate, dump. Record button present but
+   inert until phase 3.
+3. **Core interactions.** 🔶 Record landed 2026-07-09 (pulled forward
+   after a field report that the shell had no record path): per-lane ●
+   (arm = `startRecordingInNode`; the engine owns the Q-boundary wait),
+   group ● arms all armable children, global ● is island-wide group
+   record and creates a fresh track when nothing is armable; content
+   clips show a disabled ● with a takes teaser. Mock now mirrors
+   "first committed take establishes Q". Still open in this phase:
+   rename, loop-window bracket drag, input picker.
 4. **Drag.** Rail-handle reorder with visible drop lines; **combine only
    via explicit modifier/drop chip** — never the silent default of a
    sloppy drop (today's center-drop surprise).
@@ -135,8 +176,86 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
    specs (`ghost_positioning`, `cursor_bugs`, …) become millisecond VM
    unit tests.
 
-## 6. Open items (design when reached)
+## 6. The display laws
 
+> Status: **spec** — each law was paid for by a field bug (2026-07-09/10
+> iteration arc with the owner); violations are bugs. Where a law has an
+> executable test it is named; the rest are enforced by code structure.
+
+1. **The masterPos contract** (ui.md): `masterPos` is the engine's
+   DERIVED display position — wrapped when idle, growing past the LCM
+   while recording. Consumers never re-wrap it; the mock mirrors it.
+2. **Idempotent writes.** No DOM write unless the value changed —
+   WebKit swallows clicks whose mousedown-target text node was replaced
+   before mouseup, and the 50ms patch tick makes unconditional writes
+   hit most human clicks (`setText`/`setHtml`/`setTitle`).
+3. **State-metrics law.** A lane body's box metrics never change with
+   state: accents are inset box-shadows, never borders/padding (a 2px
+   armed border once shifted every rep; e2e pins body rects across
+   states).
+4. **Reconciled layers, never nuked.** Lane bodies patch in three
+   layers (grid/reps/overlay); rep divs are REUSED with CSS-morphed
+   geometry (e2e "NO FLASH" pins DOM-node identity across a commit).
+   Fresh tiles materialize AT their geometry (`transition: none` until
+   first paint); transiently empty peaks keep the last canvas.
+5. **Append-stability.** Live waveforms draw at a FIXED px-per-slot
+   scale (`poolColumns` fixed mode, nearest-only upsampling): a peak's
+   pixels are a function of its slot index only — content appends, never
+   remaps (`waveform_stability.test.mjs`). Live peaks are TIME-INDEXED
+   (`live_peaks.js`): slot = duration at capture, immune to poll cadence.
+6. **Ratcheting live normalization.** The running max only rises, so
+   the boost target only falls; easing toward it (30%/poll) cannot
+   oscillate and CONVERGES to the committed boost (0.95/max) — commits
+   are popless by construction (`live_peaks.test.mjs`).
+7. **Phase-preserving growing frame.** While recording, the frame
+   shifts by WHOLE CYCLES only (never rotates committed lanes), extends
+   one whole Q exactly AT the boundary (the take is never off-screen),
+   and pure pending never extends. Tile grids derive from
+   `offset mod period`, never through the frame (`view_model.test.mjs`).
+8. **Composites are settled material.** Group waveforms mix only
+   committed children whose REAL waveform has been fetched — never
+   recording takes (per-poll regen glitches), never live meter peaks
+   (their alien amplitude scale re-normalizes the composite to nothing).
+9. **The main tile is the first full repetition** (owner ruling): a
+   looping clip has no privileged historical rep; only phase shapes the
+   grid. Groups tile from frame 0 (a composite is not a performance).
+10. **The bar's edge is "now".** The recording bar extends to the
+    playhead (both glide with the same 140ms timing); the written
+    content trails inside by the latency compensation, honestly (E-E).
+
+## 7. Open items (design when reached)
+
+- **Long-cycle display: the px-per-Q floor** (ratified direction
+  2026-07-09, after the growing-frame work). Fit-to-width dies on long
+  LCMs (a 2.7Q take over a 1Q loop → 27Q cycle → every Q becomes
+  spaghetti; tasks.md open question 5). The law: **a Q never renders
+  below a minimum width (~48 px); when the frame exceeds what fits, the
+  view keeps a fixed Q scale and auto-follows the playhead**, with the
+  readout/ruler ↺ carrying cycle position (ghosts already say "it
+  loops" — you need *now* + structure, not all 27Q at once). The
+  groundwork exists: the display frame is already decoupled from the
+  LCM (vm.cycleQ vs vm.lcmQ), so scroll-mode is a patch-layer change.
+  Build in phase 5.
+
+- **Templates** (Q7 companion ruling): a saved node subtree — structure,
+  names, input assignments — loadable into a session ("drum stack" =
+  one click). Needs a bridge method pair (save/load template) and a
+  home in the transport or an "add" menu; intersects Save/Load
+  (roadmap Segment 6). UI slot reserved in the shell; backend work
+  scheduled after phase 3.
+- **Takes** (Q7 companion, owner-deferred until core workflow lands):
+  "new take" on the record button (context menu or long-press), a take
+  list per clip to switch between; never duplicate-track/mute-old. VM
+  keeps the door open: a lane's content is already a single `take` —
+  extending to `takes[] + activeTake` touches no geometry.
+- **Engine-side contract harness** (proposed after the masterPos/epoch
+  drift arc): a C++ test that drives a scripted record→commit through
+  the REAL engine and asserts the published `getGraphState` contract
+  (masterPos view semantics, islandEpoch re-base, live duration growth)
+  against golden expectations. The UI can't be driven headless (native
+  WKWebView + live audio input), so state-contract parity is the
+  testable seam — the mock's dialect gets verified against the engine's
+  instead of against assumptions.
 - One-shot rendering (dashed, E-D style) — lands with time-maps phase 2.
 - Waveform peak rendering quality at distance — iterate on hardware
   (clap-test workflow).

@@ -344,6 +344,18 @@ function startRecordingInNode(id) {
         console.log('[MockBackend] First Clip Detected -> Reset Global Transport to 0');
     }
 
+    // Freeze the view base (mirrors AudioEngine view_base_/view_anchor_t_):
+    // from here the published masterPos grows linearly past the cycle
+    if (!recView.active) {
+        const raw = state.masterPos || 0;
+        const cycle = committedCycle(effectiveQuantumForState());
+        const rel = raw - (state.islandEpoch || 0);
+        recView.base = cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel;
+        recView.anchor = raw;
+        recView.lcmBefore = cycle; // mirrors the engine's view_lcm_before_
+        recView.active = true;
+    }
+
     node.isRecording = true;
     node.recordingStartPos = state.masterPos || 0;
 }
@@ -377,6 +389,46 @@ function stopRecordingInNode(id) {
     node.isPlaying = true;
     node.loopStart = 0;
     node.loopEnd = loopEnd;
+
+    // First committed take ESTABLISHES Q (design_language.md Q1: the DNA
+    // of the scratch track). Declare it on the node so state consumers
+    // (computeEffectiveQuantum) agree with the mock's internal Q.
+    if (Q <= 0 && duration > 0) {
+        node.effectiveQuantum = duration;
+        console.log('[MockBackend] First take establishes Q =', duration);
+    }
+
+    // Commit epoch re-base (mirrors AudioEngine): ONLY when the cycle
+    // GREW (new_cycle > view_lcm_before_) as a SIMPLE extension (every
+    // committed duration divides the new cycle) does the island epoch
+    // move to the newest committed origin. Comparing against the QUANTUM
+    // here re-based on every commit and rotated all lanes at each stop
+    // ("shifting left/right when you finish" — field 2026-07-10).
+    const newCycle = committedCycle(effectiveQuantumForState());
+    if (recView.lcmBefore > 0 && newCycle > recView.lcmBefore && duration > 0) {
+        let polyrhythmic = false;
+        const scan = ns => (ns || []).forEach(n => {
+            if (n.type === 'clip' && !n.isRecording && n.duration > 0 &&
+                Math.round(newCycle) % Math.round(n.duration) !== 0) {
+                polyrhythmic = true;
+            }
+            if (n.nodes) scan(n.nodes);
+        });
+        scan(state.nodes);
+        if (!polyrhythmic) {
+            // recordingStartPos IS the committed origin (assigned to
+            // node.origin just below this block)
+            state.islandEpoch = node.recordingStartPos || 0;
+            console.log('[MockBackend] Simple extension: epoch re-based to', state.islandEpoch);
+        }
+    }
+
+    // Release the frozen view base when the LAST recording stops
+    // (mirrors the engine's was_any_node_recording_ edge)
+    const anyStillRecording = (function visit(ns) {
+        return (ns || []).some(n => n.isRecording || (n.nodes && visit(n.nodes)));
+    })(state.nodes);
+    if (!anyStillRecording) recView.active = false;
 
     // Origin is THE canonical timing fact (docs/kernel.md): the cycle
     // moment content[0] belongs to. Launch point is its projection,
@@ -465,9 +517,14 @@ function generateStackWaveform(node, numPeaks = 100) {
 function enrichNodes(nodes) {
     return nodes.map(node => {
         if (node.type === 'stack') {
+            // NO synthetic `waveform` here: the ENGINE's state metadata
+            // carries no waveform field, so the UI composites stacks from
+            // child peaks (composite_waveform.js). The mock once attached
+            // count-normalized sines, which short-circuited that path AND
+            // dimmed when a silent track was added (mock/engine drift —
+            // test_harness.md gotcha 10, field 2026-07-10).
             const updatedNode = {
                 ...node,
-                waveform: generateStackWaveform(node),
                 nodes: node.nodes ? enrichNodes(node.nodes) : []
             };
 
@@ -490,13 +547,53 @@ function enrichNodes(nodes) {
 }
 
 // Export state getter for polling
+/**
+ * masterPos CONTRACT (mirrors AudioEngine::getGraphState — kernel.md
+ * step 3): the engine's clock is monotonic and never exposed raw. The
+ * published masterPos is a DERIVED VIEW — wrapped to the cycle when
+ * idle/playing, but during recording it grows linearly from a base
+ * frozen at record start, so the cursor extends past the committed LCM.
+ * Consumers must NOT re-wrap it (re-wrapping caused the "looping 1Q
+ * over and over" field bug, 2026-07-09).
+ */
+function viewMasterPos() {
+    const raw = state.masterPos || 0;
+    if (recView.active) return recView.base + (raw - recView.anchor);
+    const Q = effectiveQuantumForState();
+    const cycle = committedCycle(Q);
+    const rel = raw - (state.islandEpoch || 0); // engine: rel = t − islandEpoch()
+    return cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel;
+}
+
+/** LCM of committed clip durations (the engine's calculateTimelineLength). */
+function committedCycle(Q) {
+    let cycle = Q > 0 ? Q : 0;
+    const visit = ns => (ns || []).forEach(n => {
+        if (n.type === 'clip' && !n.isRecording && n.duration > 0) {
+            cycle = cycle > 0 ? lcmInt(cycle, Math.round(n.duration)) : Math.round(n.duration);
+        }
+        if (n.nodes) visit(n.nodes);
+    });
+    visit(state.nodes);
+    return cycle;
+}
+function lcmInt(a, b) {
+    const g = (x, y) => (y ? g(y, x % y) : x);
+    return a / g(a, b) * b;
+}
+
+const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
+
 export function getState() {
     // Auto-advance transport if running (simulates real-time playback/recording)
     advanceTransport();
 
     return {
         isPlaying: state.isPlaying,
-        masterPos: state.masterPos || 0,
+        masterPos: viewMasterPos(),
+        // Island epoch (mirrors getGraphState): the UI's frame origin.
+        // Commit re-bases it to the newest origin on simple extensions.
+        islandEpoch: state.islandEpoch || 0,
         nodes: enrichNodes(state.nodes),
         // Mirrors AudioEngine::makePerfState so calibration-aware UI
         // (e.g. the calibrate button label) behaves in mock mode.
@@ -583,6 +680,8 @@ export function loadScenario(name) {
     // Reset transport simulation on scenario load
     transport.running = false;
     transport.speed = 1.0;
+    recView.active = false;
+    state.islandEpoch = 0;
 
     switch (name) {
         case 'empty':

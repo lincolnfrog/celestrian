@@ -192,6 +192,11 @@ juce::var AudioEngine::getGraphState() const {
     auto *obj = metadata.getDynamicObject();
     obj->setProperty("isPlaying", (bool)is_playing_global.load());
     obj->setProperty("masterPos", master_view);
+    // The island epoch is the UI's frame origin for every cycle-relative
+    // projection (kernel.md one-frame rule). It is NOT the root node's
+    // `origin` metadata — commit re-bases the epoch (see processBlock),
+    // and the UI marking take-vs-ghost tiles needs the re-based value.
+    obj->setProperty("islandEpoch", (double)islandEpoch());
     obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
     obj->setProperty("perf", makePerfState());
@@ -201,6 +206,7 @@ juce::var AudioEngine::getGraphState() const {
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
   state->setProperty("isPlaying", (bool)is_playing_global.load());
   state->setProperty("masterPos", master_view);
+  state->setProperty("islandEpoch", (double)islandEpoch());
   state->setProperty("soloedId", soloed_node_uuid);
   state->setProperty("nodes", juce::Array<juce::var>());
   state->setProperty("perf", makePerfState());

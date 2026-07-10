@@ -4,56 +4,56 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Celestrian DAW</title>
-    <link rel="stylesheet" href="css/style.css">
-    <link rel="stylesheet" href="css/stack-styles.css">
-    <link rel="stylesheet" href="css/drag-drop.css">
+    <title>Celestrian</title>
+    <link rel="stylesheet" href="css/session.css">
 </head>
 
-<body style="background-color: #0f172a;">
+<body>
     <!-- LOADING OVERLAY -->
     <div id="loading-overlay"
-        style="position:fixed;top:0;left:0;width:100%;height:100%;background:#0f172a;display:flex;justify-content:center;align-items:center;color:#38bdf8;z-index:9999;font-family:sans-serif;">
+        style="position:fixed;top:0;left:0;width:100%;height:100%;background:#171310;display:flex;justify-content:center;align-items:center;color:#e8a13c;z-index:9999;font-family:sans-serif;">
         <div style="text-align:center;">
-            <div style="font-size:24px;font-weight:900;margin-bottom:10px;">CELESTRIAN</div>
+            <div style="font-size:24px;font-weight:900;margin-bottom:10px;letter-spacing:0.2em;">CELESTRIAN</div>
             <div id="loading-status">Loading modules...</div>
         </div>
     </div>
 
-    <!-- TOP BAR -->
-    <div class="top-bar"
-        style="position: fixed; top: 0; left: 0; right: 0; height: 50px; background: #0f172a; border-bottom: 1px solid #1e293b; display: flex; align-items: center; justify-content: space-between; padding: 0 20px; z-index: 1000;">
-        <div style="display: flex; align-items: center; gap: 16px;">
-            <div class="logo" style="font-size: 20px; font-weight: 900; letter-spacing: 2px; color: #38bdf8;">
-                CELESTRIAN</div>
-            <button class="btn-plus-circle" onclick="window.createNode('stack', 0, 0)"
-                style="font-size: 12px; padding: 6px 16px;">+ New Stack</button>
+    <div id="app">
+        <!-- TRANSPORT -->
+        <div id="transport">
+            <span class="brand">CELESTRIAN</span>
+            <button id="play-btn" title="Play / stop (space)">▶</button>
+            <button id="record-btn" title="Record"></button>
+            <span id="position-readout">—</span>
+            <span id="q-info"></span>
+            <span class="spacer"></span>
+            <button id="add-stack-btn">+ New Stack</button>
         </div>
-        <div style="display: flex; gap: 12px;">
-            <button id="play-btn" onclick="window.togglePlayback()" class="playback-btn">PLAY</button>
+
+        <!-- SESSION -->
+        <div id="session">
+            <div id="grid-area">
+                <div id="ruler-row">
+                    <div class="rail-spacer"></div>
+                    <div id="ruler"></div>
+                </div>
+                <div id="lanes"></div>
+                <div id="playhead"></div>
+            </div>
+            <div id="empty-state">No takes yet — hit record, or + New Stack to build a kit.</div>
+        </div>
+
+        <!-- STATUS STRIP -->
+        <div id="status-strip">
+            <span id="log-line">ready</span>
+            <span id="calibration-status"></span>
+            <button id="calibrate-btn"
+                title="Measure real round-trip latency: plays a click and listens for it on the input. See docs/performance.md">🎯
+                Calibrate</button>
+            <button id="dump-state-btn">📦 Dump State</button>
         </div>
     </div>
 
-    <!-- MAIN CANVAS -->
-    <div class="stack-container" id="canvas-root" style="margin-top: 50px;">
-        <div id="viewport">
-            <div id="node-layer"></div>
-        </div>
-    </div>
-
-    <!-- DEBUG PANEL -->
-    <div id="debug-panel"
-        style="position: fixed; bottom: 10px; right: 10px; display: flex; flex-direction: column; gap: 5px; z-index: 1000; align-items: flex-end;">
-        <div id="debug-log">Log initialized...</div>
-        <div id="calibration-status" style="font-size: 10px; opacity: 0.8;"></div>
-        <button id="calibrate-btn" class="btn-transport" style="font-size: 10px; padding: 4px 8px;"
-            title="Measure real round-trip latency: plays a click and listens for it on the input. Use a loopback cable or let the mic hear the speakers. See docs/performance.md">🎯
-            Calibrate Latency</button>
-        <button id="dump-state-btn" class="btn-transport" style="font-size: 10px; padding: 4px 8px;">📦 Dump
-            State</button>
-    </div>
-
-    <!-- Modular JS -->
     <script type="module" src="js/app.js"></script>
 </body>
 

@@ -16,6 +16,19 @@ This document defines the abstraction boundary between the Celestrian frontend (
 - Loop points (in samples)
 - Persistence-worthy state
 
+### The masterPos contract
+
+`getGraphState().masterPos` is a **derived display position**, never the
+raw monotonic clock (kernel.md step 3): wrapped to the cycle while
+idle/playing, and **growing linearly past the committed LCM while
+recording** (from a base frozen at record start), so the cursor extends
+into new Qs. Consumers must not re-wrap it — re-deriving with
+`mod cycle` in the UI caused the "recording loops the old cycle" field
+bug (2026-07-09). The mock mirrors this contract exactly
+(`mock_backend.viewMasterPos`). Similarly, a recording clip's
+`duration` is the live written length (`live_duration_samples`), 0
+while pending start.
+
 ### Frontend Responsibilities (JavaScript)
 - Visual layout and rendering
 - Pixel positions and dimensions

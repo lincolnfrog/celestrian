@@ -4,113 +4,93 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Celestrian UI Test Harness</title>
-    <link rel="stylesheet" href="css/style.css">
-    <link rel="stylesheet" href="css/stack-styles.css">
-    <link rel="stylesheet" href="css/drag-drop.css">
+    <title>Celestrian Test Harness</title>
+    <link rel="stylesheet" href="css/session.css">
     <style>
-        /* Test harness controls */
+        /* Test harness sidebar: sits in-flow to the right of the app so it
+           never overlays lanes (a previous overlay cost real e2e debugging) */
+        body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
+        #app { min-width: 0; overflow: hidden; }
         #test-controls {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            background: rgba(15, 23, 42, 0.95);
-            border: 2px solid #38bdf8;
-            border-radius: 8px;
-            padding: 16px;
-            z-index: 10000;
-            max-width: 300px;
+            background: #201a15;
+            border-left: 1px solid #322920;
+            padding: 12px;
+            overflow-y: auto;
+            font-size: 12px;
         }
-
-        #test-controls h3 {
-            margin: 0 0 12px 0;
-            color: #38bdf8;
-            font-size: 14px;
-            font-weight: 700;
+        #test-controls h3 { margin: 0 0 10px; font-size: 13px; color: #e8a13c; }
+        #test-controls .group-label {
+            margin: 12px 0 6px;
+            color: #93826d;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-size: 10px;
         }
-
         #test-controls button {
             display: block;
             width: 100%;
-            margin: 6px 0;
-            padding: 8px 12px;
-            background: #1e293b;
-            border: 1px solid #38bdf8;
-            border-radius: 4px;
-            color: #e2e8f0;
-            cursor: pointer;
+            margin-bottom: 6px;
+            padding: 8px;
             font-size: 12px;
         }
-
-        #test-controls button:hover {
-            background: #38bdf8;
-            color: white;
-        }
-
-        #test-controls button.active {
-            background: #38bdf8;
-            color: white;
-            font-weight: 700;
-        }
-
-        #test-info {
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #334155;
-            font-size: 11px;
-            color: #94a3b8;
-            font-family: monospace;
-        }
+        #test-controls button.active { border-color: #e8a13c; color: #e8a13c; }
+        #mock-status { margin-top: 12px; color: #93826d; font-family: ui-monospace, Menlo, monospace; font-size: 10px; }
     </style>
 </head>
 
-<body style="background-color: #0f172a;">
+<body>
+    <div id="app">
+        <!-- TRANSPORT -->
+        <div id="transport">
+            <span class="brand">CELESTRIAN · TEST</span>
+            <button id="play-btn" title="Play / stop (space)">▶</button>
+            <button id="record-btn" title="Record"></button>
+            <span id="position-readout">—</span>
+            <span id="q-info"></span>
+            <span class="spacer"></span>
+            <button id="add-stack-btn">+ New Stack</button>
+        </div>
+
+        <!-- SESSION -->
+        <div id="session">
+            <div id="grid-area">
+                <div id="ruler-row">
+                    <div class="rail-spacer"></div>
+                    <div id="ruler"></div>
+                </div>
+                <div id="lanes"></div>
+                <div id="playhead"></div>
+            </div>
+            <div id="empty-state">No takes yet — hit record, or + New Stack to build a kit.</div>
+        </div>
+
+        <!-- STATUS STRIP -->
+        <div id="status-strip">
+            <span id="log-line">ready</span>
+            <span id="calibration-status"></span>
+            <button id="calibrate-btn">🎯 Calibrate</button>
+            <button id="dump-state-btn">📦 Dump State</button>
+        </div>
+    </div>
+
+    <!-- TEST SCENARIO SIDEBAR -->
     <div id="test-controls">
         <h3>🧪 Test Scenarios</h3>
         <button onclick="loadScenario('empty')">Empty Canvas</button>
         <button onclick="loadScenario('single-clip')" class="active">Single Clip</button>
         <button onclick="loadScenario('stack-with-clips')">Stack with 3 Clips</button>
         <button onclick="loadScenario('multiple-stacks')">Multiple Stacks</button>
-
-        <h4 style="margin-top: 12px; margin-bottom: 8px; font-size: 11px; color: #94a3b8;">Recording.md Examples</h4>
+        <div class="group-label">Recording.md examples</div>
         <button onclick="loadScenario('example-1q-4q')">1Q + 4Q (LCM=4)</button>
         <button onclick="loadScenario('example-1q-4q-3q')">1Q + 4Q + 3Q (LCM=12)</button>
-
-        <h4 style="margin-top: 12px; margin-bottom: 8px; font-size: 11px; color: #f97316;">🔴 Recording Tests</h4>
-        <button onclick="loadScenario('recording-1q-plus-growing')" style="border-color: #f97316;">1Q + Recording
-            (BUG)</button>
-        <button onclick="loadScenario('clip-3-anchor-at-2q')" style="border-color: #f97316;">1Q + 4Q + 1Q@2Q (Anchor
-            Bug)</button>
-        <button onclick="loadScenario('1q-3q-loop-bug')" style="border-color: #f97316;">1Q + 3Q (Loop Bug)</button>
-
-        <h4 style="margin-top: 12px; margin-bottom: 8px; font-size: 11px; color: #a855f7;">🟣 Nested Stacks</h4>
-        <button onclick="loadScenario('nested-stacks')" style="border-color: #a855f7;">Nested Stacks</button>
-
-        <div id="test-info">
-            <div>Using Mock Backend</div>
-            <div id="node-count">Nodes: 0</div>
-        </div>
+        <div class="group-label">Recording tests</div>
+        <button onclick="loadScenario('recording-1q-plus-growing')">1Q + Recording</button>
+        <button onclick="loadScenario('clip-3-anchor-at-2q')">1Q + 4Q + 1Q@2Q (Anchor)</button>
+        <button onclick="loadScenario('1q-3q-loop-bug')">1Q + 3Q (Loop)</button>
+        <div class="group-label">Nested stacks</div>
+        <button onclick="loadScenario('nested-stacks')">Nested Stacks</button>
+        <div id="mock-status">Using Mock Backend</div>
     </div>
-
-    <!-- Main UI (same as regular app) -->
-    <div id="top-bar"
-        style="position:fixed; top:0; left:0; width:100%; height:60px; background:linear-gradient(to bottom, #1e293b 0%, #0f172a 100%); border-bottom:1px solid #334155; display:flex; align-items:center; justify-content:space-between; padding:0 24px; z-index:1000;">
-        <div style="font-size: 24px; font-weight: 900; color: #38bdf8; letter-spacing: 0.5px;">CELESTRIAN TEST</div>
-        <div style="display: none;">
-            <!-- Transport controls required by syncUI - hidden since we use scenario nav -->
-            <button id="play-btn"></button>
-        </div>
-    </div>
-
-    <div class="stack-container" id="canvas-root"
-        style="position: fixed; top: 60px; left: 0; width: 100%; height: calc(100% - 60px); overflow: hidden;">
-        <div id="viewport" style="position: absolute; transform-origin: 0 0;">
-            <div id="node-layer" style="position: relative;"></div>
-        </div>
-    </div>
-
-    <!-- Hidden elements required by app_test.js -->
-    <div id="creation-ui" style="display: none;"></div>
 
     <!-- Load app with mock backend -->
     <script type="module">
@@ -126,7 +106,7 @@
             document.querySelectorAll('#test-controls button').forEach(btn => {
                 btn.classList.remove('active');
             });
-            event.target.classList.add('active');
+            if (window.event && window.event.target) window.event.target.classList.add('active');
         };
 
         // Inject mock backend into window and patch getGraphState

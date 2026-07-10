@@ -297,13 +297,28 @@ choice needing no further design ruling.
 
 ### Deferred (TODO — discuss later)
 
-**Q7. Recording is the only non-fractal verb.** *(Owner: "I don't
-understand this question — skip for now.")* TODO, restated for next
-time: every verb (play, loop, solo, mute, waveform) works on both clips
-and stacks; *record* only works on clips. Question: what should the
-record button on a *stack* do? Proposed answer to react to: "record a
-new clip inside that stack, aligned to its cycle" — which would
-naturally grow into take lanes/comping. Tracked in tasks.md.
+**Q7. Recording is the only non-fractal verb.**
+**RESOLVED (2026-07-09) — group arm.** The owner ruled via the drum
+use-case: a "drums" stack holds ~5 tracks (one per kit mic, each with
+its own input); *"I want to be able to arm the entire stack with one
+button — I don't want to have to record each track individually."*
+Canon: **arming a stack arms every armable child track; record captures
+all of them simultaneously, each from its own input**, sharing one arm
+target (the next Q boundary, Q11) and one committed duration (one
+performance, N microphones). Refinement (owner, 2026-07-09): **arm
+targets emptiness** — a clip that already has content cannot be
+re-recorded (consistent with no-overdub-by-design), so group record
+"should only record clips that don't already have content and just play
+the other ones." Re-recording content is the *takes* feature, not arm. Record is thereby fractal: on a clip it records that
+clip; on a stack it records the stack's members. Two companions ruled
+at the same time: **templates** — a saved node subtree (structure +
+names + input assignments) loadable into a session, so the drum stack
+is one click, not five manual setups; and **takes** (direction only,
+deferred until the core workflow lands) — re-recording a track must be
+a first-class verb ("new take" on the record button, a take list per
+clip to switch between), explicitly NOT the duplicate-track/mute-old
+workaround. Take storage should slot into the clip model as alternate
+content buffers sharing one origin/period — the kernel needs no change.
 
 **Q9. Origins in samples will break under Warp.** *(Owner: "I don't know
 what 'warp' means yet — skip.")* TODO with the idea parked for later:
