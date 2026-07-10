@@ -239,6 +239,28 @@ test('PENDING must not stretch the frame (record-start stretch/squish)', () => {
     assert.ok(Math.abs(vm.playheadQ - 0.3) < 1e-9); // wrapped, in frame
 });
 
+test('FINISHING settles the frame at the known boundary (no layout snap)', () => {
+    // Field before/after 2026-07-10: stop requested at 1.8Q (target 2Q);
+    // the cursor ran past 2.0Q during the finishing wait and the frame
+    // stretched to 3Q, then snapped back to 2Q at commit. Once stop is
+    // requested the commit boundary is KNOWN: the frame settles NOW.
+    const mk = (lenQ, viewQ, awaiting) => deriveViewModel(state(
+        [clip(1), clip(0, {
+            isRecording: true, duration: lenQ * Q, isAwaitingStop: awaiting,
+        })],
+        { masterPos: viewQ * Q }));
+
+    // Finishing, cursor past the 2Q target: frame HOLDS at 2Q, playhead clamps
+    const vm = mk(1.98, 2.04, true);
+    assert.equal(vm.cycleQ, 2);
+    assert.equal(vm.playheadQ, 2);
+    // Same overshoot while actively recording (no stop): frame extends
+    assert.equal(mk(2.04, 2.04, false).cycleQ, 3);
+    // Early in the finishing window the settle equals the ceil — no
+    // discontinuity at the stop click itself
+    assert.equal(mk(1.6, 1.6, true).cycleQ, 2);
+});
+
 test('frame extends AT the boundary — the take is never off-screen', () => {
     // Delaying extension by the stop hysteresis recorded ~0.15Q blind at
     // every crossing (field regression). Extension is immediate; a stop

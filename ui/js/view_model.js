@@ -19,7 +19,9 @@
  *   - arming a group arms every child (Q7 group-arm ruling)
  */
 
-import { lcm, calculateStackLCM, computeEffectiveQuantum } from './timeline_model.js';
+import {
+    lcm, calculateStackLCM, computeEffectiveQuantum, nextStopBoundary,
+} from './timeline_model.js';
 
 /** A node's intrinsic period in samples (stack = children LCM). */
 function intrinsicPeriod(node, quantum) {
@@ -135,6 +137,9 @@ function laneCommon(node, state) {
         muted: !!node.isMuted,
         soloed: state.soloedId === node.id,
         recording: !!node.isRecording,
+        // Stop requested; the engine records on to the next boundary
+        // (owner ruling 2026-07-10: stops always pad forward)
+        awaitingStop: !!node.isAwaitingStop,
         armed: !!(node.isPendingStart || node.isRecording),
     };
 }
@@ -233,9 +238,19 @@ export function deriveViewModel(state, opts = {}) {
     let shiftQ = 0;
     if (qEstablished && anyRecording && lcmQ > 0) {
         let maxLenQ = 0;
+        let allAwaiting = true;
+        let settleSamples = 0;
         const scan = ns => (ns || []).forEach(n => {
             if (n.isRecording && n.duration > 0) {
                 maxLenQ = Math.max(maxLenQ, n.duration / quantum);
+                if (n.isAwaitingStop) {
+                    // The commit boundary is KNOWN the moment stop is
+                    // requested (same golden math as the engine)
+                    settleSamples = Math.max(settleSamples,
+                        nextStopBoundary(n.duration, quantum));
+                } else {
+                    allAwaiting = false;
+                }
             }
             if (n.nodes) scan(n.nodes);
         });
@@ -244,12 +259,23 @@ export function deriveViewModel(state, opts = {}) {
             const anchorQ = Math.max(0, Math.round(playheadQ - maxLenQ));
             shiftQ = Math.floor(anchorQ / lcmQ) * lcmQ;
             playheadQ = Math.max(0, playheadQ - shiftQ);
-            // Extend exactly AT the boundary: delaying extension by the
-            // stop hysteresis recorded 0.15Q off-screen at every crossing
-            // (field 2026-07-10 — ~half a second blind at long Qs). A
-            // stop that snaps back down instead settles the frame with
-            // one animated morph, which is the better trade.
-            frameQ = Math.max(lcmQ, Math.ceil(playheadQ - 1e-9));
+            if (allAwaiting && settleSamples > 0) {
+                // FINISHING: the frame settles to its FINAL size NOW —
+                // extending to ceil(playhead) while the cursor ran past
+                // the known commit boundary made room for a Q the take
+                // never uses, then snapped back at commit (the layout
+                // stretch/squish, field before/after 2026-07-10). The
+                // playhead clamps at the frame edge for the ≤1 poll
+                // before the engine wraps it.
+                const settleQ = lcm(Math.round(lcmQ * quantum),
+                    Math.round(settleSamples)) / quantum;
+                frameQ = Math.max(lcmQ, settleQ);
+                playheadQ = Math.min(playheadQ, frameQ);
+            } else {
+                // Actively recording: extend exactly AT the boundary —
+                // the take must never run off-screen
+                frameQ = Math.max(lcmQ, Math.ceil(playheadQ - 1e-9));
+            }
         } else {
             // Pure pending (armed, no audio yet): stay in the settled
             // frame — the unwrapped view crossing the arm boundary must

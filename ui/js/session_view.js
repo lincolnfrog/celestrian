@@ -218,7 +218,21 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live, pxPer
     const dk = peaks.length + ':' + Math.round(cssWidth) + ':' +
         Math.round(cssHeight) + ':' + isComposite + ':' + !!live + ':' +
         Math.round((pxPerSlot || 0) * 1000);
-    if (div._peaksRef === peaks && div._dk === dk) return;
+    if (div._peaksRef === peaks && div._dk === dk) return false;
+
+    // CONTENT SWAP → CROSS-FADE: a new peaks array replacing an old one
+    // (live meter peaks → fetched waveform at commit; composite regen)
+    // is a re-rendering of the same audio with features shifted a few
+    // px — hard-swapping it read as squish/stretch (field video
+    // 2026-07-10). The old canvas fades out over the new one.
+    if (!live && div._peaksRef && div._peaksRef !== peaks && canvas.width > 0) {
+        const old = canvas;
+        old.style.transition = 'opacity 240ms linear';
+        requestAnimationFrame(() => { old.style.opacity = '0'; });
+        setTimeout(() => old.remove(), 320);
+        canvas = document.createElement('canvas');
+        div.insertBefore(canvas, old); // new below; old fades on top
+    }
     div._peaksRef = peaks;
     div._dk = dk;
     if (live) {
@@ -237,6 +251,7 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live, pxPer
         canvas.style.width = Math.round(cssWidth) + 'px';
         drawWaveform(canvas, peaks, { cssWidth, cssHeight, isComposite });
     }
+    return true; // redrew
 }
 
 /** Keep `container`'s children to exactly the built descriptors. */
@@ -295,9 +310,20 @@ function patchLaneBody(row, lane, vm, aux) {
         }]
         : lane.reps;
 
-    while (repsL.children.length > tiles.length) repsL.lastElementChild.remove();
+    // Surplus tiles FADE OUT through the settle instead of vanishing:
+    // instant removal while the surviving tile is still mid-morph left a
+    // momentary gap (the group lane's "squish" at commit — the engine
+    // replay proved the state trajectory clean; this was the DOM layer)
+    const live = [...repsL.children].filter(d => !d._exiting);
+    for (let i = live.length - 1; i >= tiles.length; i--) {
+        const d = live[i];
+        d._exiting = true;
+        d.style.opacity = '0';
+        setTimeout(() => d.remove(), 220);
+    }
+    const rows = live.slice(0, tiles.length);
     tiles.forEach((rep, i) => {
-        let div = repsL.children[i];
+        let div = rows[i];
         if (!div) {
             div = document.createElement('div');
             // A fresh tile must appear AT its geometry, never animate
@@ -310,8 +336,6 @@ function patchLaneBody(row, lane, vm, aux) {
         }
         const cls = 'rep' + (rep.ghost ? ' ghost' : '') + (rep.bar ? ' recording-bar' : '');
         if (div.className !== cls) div.className = cls;
-        setStyle(div, 'left', pct(rep.startQ, cycleQ));
-        setStyle(div, 'width', pct(rep.endQ - rep.startQ, cycleQ));
         // The live bar draws at a FIXED px-per-slot scale: a peak's
         // pixels are a function of its slot index only, never of the
         // growing count — fit-to-width remapped every column each poll
@@ -325,8 +349,26 @@ function patchLaneBody(row, lane, vm, aux) {
             pxPerSlot = bodyW * slotQ / cycleQ;
             cssW = Math.max(2, Math.ceil(peaks.length * pxPerSlot));
         }
-        drawRepCanvas(div, peaks, cssW, bodyH, lane.kind === 'group',
-            !!rep.bar, pxPerSlot);
+        const redrew = drawRepCanvas(div, peaks, cssW, bodyH,
+            lane.kind === 'group', !!rep.bar, pxPerSlot);
+
+        // MORPH ONLY PURE MOVES; SNAP RE-LAYOUTS. When the canvas was
+        // redrawn AND the geometry changed in the same patch (a commit
+        // or frame settle), animating the container over new content
+        // reads as false motion — the composite visibly "stretched"
+        // 255→510px at every growing commit (field 2026-07-10). Since
+        // px-per-Q is preserved across the settle, snapping makes the
+        // change read as the ghost half lighting up, not movement.
+        const newLeft = pct(rep.startQ, cycleQ);
+        const newWidth = pct(rep.endQ - rep.startQ, cycleQ);
+        const geomChanged = div.style.left !== newLeft || div.style.width !== newWidth;
+        if (redrew && geomChanged && !rep.bar) {
+            div.style.transition = 'none';
+            requestAnimationFrame(() =>
+                requestAnimationFrame(() => { div.style.transition = ''; }));
+        }
+        setStyle(div, 'left', newLeft);
+        setStyle(div, 'width', newWidth);
     });
 
     // Overlay layer: window brackets + arm marker (small, cheap rebuild)
@@ -427,7 +469,8 @@ function patchRail(row, lane) {
     }
 
     const status = row.querySelector('.rail-status');
-    setText(status, lane.recording ? 'recording…'
+    setText(status, lane.recording
+        ? (lane.awaitingStop ? 'finishing…' : 'recording…')
         : lane.kind === 'group'
             ? (lane.groupArm.state !== 'none'
                 ? 'armed ' + (lane.groupArm.state === 'all' ? 'all' : 'some') : '')

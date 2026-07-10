@@ -31,7 +31,7 @@ one-line definitions.
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM. |
 | **Loop window** | A `[start, end)` restriction on a node's cycle — a one-segment time-map. Active iff valid and not bypassed; independent of view state (time_maps.md, implemented 2026-07-09). |
 | **Time-map** | THE mechanism that transforms time: an ordered segment list phased off the cycle epoch, `m(t) = segments[(t − epoch) mod period]`. Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md, kernel.md). |
-| **Hysteresis snap** | Gesture quantization with tolerance: stop-intent within 15% of a boundary means the boundary; outside it means "keep the raw take, snap the loop window." |
+| **Hysteresis snap** | Gesture quantization with tolerance. ARM: clicking within 25% of Q before a boundary means that boundary (the PLL). STOP — **owner ruling 2026-07-10: always forward** — a stop request records on to the NEXT boundary (`nextStopBoundary`; the engine's actual behavior); the UI shows "finishing…" (`isAwaitingStop`). The snap-BACK idea ("I hit stop a bit late" → keep the whole take, auto-add a loop window ending at the previous boundary) is deliberately deferred: *"too complicated — keep it simple for now; the user can post-hoc fix it by moving the boundary. Explore later if I hit it in practice."* |
 | **Fractality** | The law that any subtree, collapsed, obeys exactly the laws of a clip. If a rule doesn't hold recursively, it isn't a rule yet. |
 
 Convention proposal: **samples are the only engine unit; Q is the only

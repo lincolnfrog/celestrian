@@ -279,7 +279,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) {
     .reps-layer .rep { transition: none; }
 }
-.rep canvas { width: 100%; height: 100%; display: block; }
+/* Canvases stack absolutely so a content swap can CROSS-FADE: the
+   live→fetched waveform replacement at commit hard-swapped two
+   different renderings of the same audio (features shift a few px) —
+   the residual "squish/stretch" in the 2026-07-10 field video */
+.rep canvas { position: absolute; left: 0; top: 0; height: 100%; }
 /* Ghosts slightly stronger than the old 0.16 now that waveforms are
    display-normalized; the Q gridlines mark boundaries (a per-rep tick
    notch read as "waveform corruption" in the field) */

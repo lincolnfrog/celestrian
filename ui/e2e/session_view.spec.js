@@ -241,9 +241,12 @@ test.describe('Session shell (mock mode)', () => {
         }), { timeout: 3000 }).toBe('false,false,false,true,true');
         await expect(page.locator('#record-btn')).toHaveClass(/recording/);
 
-        // Global ● again stops both
-        await page.evaluate(() => window.__celestrianTest.setMasterPos(44100));
+        // Global ● again stops both: the stop request enters
+        // awaiting-stop; the takes commit as the transport crosses the
+        // next boundary (stops always pad forward — owner ruling)
+        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.6 * 44100)));
         await page.click('#record-btn');
+        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100)));
         await expect.poll(() => page.evaluate(async () => {
             const s = (await window.__celestrianTest.callNative('getGraphState'))
                 .nodes.find(n => n.type === 'stack');
@@ -260,8 +263,10 @@ test.describe('Session shell (mock mode)', () => {
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3, { timeout: 3000 });
         const recLane = page.locator('.lane', { has: page.locator('.rail-status:text("recording…")') });
         await expect(recLane.locator('.arm-marker')).toBeVisible();
-        // Once audio flows (transport advances), the bar takes over
-        await page.evaluate(() => window.__celestrianTest.advanceBy(22050));
+        // Once the transport crosses the Q11 boundary and audio flows,
+        // the bar takes over (scenario sits at 2.5Q: 0.5Q to the arm
+        // point, then some audio)
+        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.8 * 44100)));
         await expect(page.locator('.lane .recording-bar')).toHaveCount(1, { timeout: 3000 });
     });
 
@@ -277,7 +282,7 @@ test.describe('Session shell (mock mode)', () => {
 
         await page.locator('.lane-add .add-track-row-btn').click();
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
-        await page.evaluate(() => window.__celestrianTest.advanceBy(2 * 44100));
+        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(1.5 * 44100)));
         await expect(page.locator('.recording-bar')).toBeVisible();
 
         // Mark clip 1's rep div and its canvas before the commit
@@ -288,10 +293,14 @@ test.describe('Session shell (mock mode)', () => {
             window.__keepCanvas = rep.querySelector('canvas');
         });
 
-        // Commit the 2Q take: the frame settles 1Q → 2Q, everything
+        // Stop mid-Q: the take enters AWAITING-STOP (stops always pad
+        // forward — owner ruling) and commits at the 2Q boundary as the
+        // transport crosses it. The frame settles 1Q → 2Q, everything
         // re-lays-out — but clip 1's rep div and canvas must SURVIVE
         // (destroy-and-recreate rendered as a global pop in the field)
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
+        await expect(page.locator('.rail-status').nth(2)).toHaveText('finishing…');
+        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100) + 10));
         await expect(page.locator('#position-readout')).toHaveText(/2Q ↺/, { timeout: 3000 });
 
         const survived = await page.evaluate(() => ({

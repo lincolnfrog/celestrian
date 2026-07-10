@@ -222,6 +222,18 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
 10. **The bar's edge is "now".** The recording bar extends to the
     playhead (both glide with the same 140ms timing); the written
     content trails inside by the latency compensation, honestly (E-E).
+11. **Morph only pure moves; snap re-layouts.** A tile whose canvas was
+    redrawn in the same patch as its geometry change SNAPS (transition
+    suppressed for that frame): animating a container over new content
+    is false motion — the composite visibly stretched at every growing
+    commit until this. Since px-per-Q is preserved across a settle, the
+    snap reads as content lighting up, not moving. Surplus tiles fade
+    out (220ms) rather than vanish mid-morph.
+12. **The mock speaks Q11 and awaiting-stop.** Arms PEND to the next
+    boundary (origins always land on boundaries — a mid-Q mock origin
+    once poisoned the whole grid after re-base); stops enter
+    awaiting-stop and commit at `nextStopBoundary` while the rail shows
+    "finishing…" (owner ruling 2026-07-10: stops always pad forward).
 
 ## 7. Open items (design when reached)
 
@@ -248,14 +260,21 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
   list per clip to switch between; never duplicate-track/mute-old. VM
   keeps the door open: a lane's content is already a single `take` —
   extending to `takes[] + activeTake` touches no geometry.
-- **Engine-side contract harness** (proposed after the masterPos/epoch
-  drift arc): a C++ test that drives a scripted record→commit through
-  the REAL engine and asserts the published `getGraphState` contract
-  (masterPos view semantics, islandEpoch re-base, live duration growth)
-  against golden expectations. The UI can't be driven headless (native
-  WKWebView + live audio input), so state-contract parity is the
-  testable seam — the mock's dialect gets verified against the engine's
-  instead of against assumptions.
+- **Engine-side contract harness** — ✅ Built 2026-07-10:
+  `tests/ui_contract_tests.cc` drives a real record→commit through the
+  engine, asserts the published contract, and dumps every poll to
+  `shared/ui_contract_capture.json`;
+  `ui/js/tests/engine_replay.test.mjs` replays those polls through the
+  actual `deriveViewModel` and asserts display invariants (frame never
+  oscillates, playhead continuous, I2 tiling). First run immediately
+  caught a false assumption: **the engine has NO downward stop snap** —
+  `stopRecording` always awaits the NEXT boundary (`nextStopBoundary`),
+  continuing to record until it lands (`isAwaitingStop` published).
+  ✅ RESOLVED (owner, 2026-07-10): stops always pad FORWARD to the next
+  boundary (the engine's behavior is canon; design_language.md
+  hysteresis entry amended). The snap-back-with-auto-loop-window idea is
+  deferred until it hurts in practice. Mock aligned to awaiting-stop;
+  the rail shows "finishing…" while the take runs to its boundary.
 - One-shot rendering (dashed, E-D style) — lands with time-maps phase 2.
 - Waveform peak rendering quality at distance — iterate on hardware
   (clap-test workflow).

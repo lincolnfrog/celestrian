@@ -13,7 +13,7 @@
  * so its behavior cannot drift from the UI or the C++ engine.
  */
 
-import { snapCommittedDuration, launchPointFor } from './timeline_model.js';
+import { launchPointFor, nextStopBoundary } from './timeline_model.js';
 
 // In-memory state
 let state = {
@@ -357,7 +357,27 @@ function startRecordingInNode(id) {
     }
 
     node.isRecording = true;
-    node.recordingStartPos = state.masterPos || 0;
+
+    // Q11 (engine parity): with Q established, arming PENDS until the
+    // next Q boundary in the epoch frame — recording begins there, so
+    // origins always land ON boundaries. (The mock once started
+    // instantly: a mid-Q origin made the commit re-base shift every
+    // lane's grid by a fraction — the "squash/stretch" repro was
+    // mock-tainted until this.) Exactly-on-boundary starts immediately.
+    const Q = effectiveQuantumForState();
+    const raw = state.masterPos || 0;
+    if (Q > 0) {
+        const rel = ((raw - (state.islandEpoch || 0)) % Q + Q) % Q;
+        const toNext = rel === 0 ? 0 : Q - rel;
+        if (toNext > 0) {
+            node.isPendingStart = true;
+            node.pendingStartAt = raw + toNext;
+            node.duration = 0;
+            console.log('[MockBackend] Pending start at raw', node.pendingStartAt);
+            return;
+        }
+    }
+    node.recordingStartPos = raw;
 }
 
 function stopRecordingInNode(id) {
@@ -366,24 +386,38 @@ function stopRecordingInNode(id) {
 
     console.log('[MockBackend] stopRecordingInNode', id);
 
-    // Compute Q BEFORE committing this node, so the stopping clip cannot
-    // define its own quantum (mirrors C++ commit order).
+    const Q = effectiveQuantumForState();
+    // Length authority: live duration (grown by the transport) and the
+    // masterPos delta must agree; setMasterPos-driven tests only move
+    // the latter, so reconcile here
+    const rawLen = Math.max(node.duration || 0,
+        (state.masterPos || 0) - (node.recordingStartPos || 0));
+    node.duration = rawLen;
+
+    // ENGINE PARITY (ClipNode::stopRecording + owner ruling 2026-07-10:
+    // stops always pad FORWARD): with Q established, a stop request
+    // enters AWAITING-STOP — recording continues to nextStopBoundary and
+    // commits there (growRecordingClips). Only the first clip (no Q)
+    // commits immediately at its raw length.
+    if (Q > 0) {
+        node.isAwaitingStop = true;
+        node.awaitingStopAt = nextStopBoundary(rawLen, Q);
+        console.log('[MockBackend] Awaiting stop at len', node.awaitingStopAt,
+            '(current', rawLen + ')');
+        return;
+    }
+    commitClip(node, rawLen);
+}
+
+/** Commit a recording at exactly `duration` (mirrors commitRecording). */
+function commitClip(node, duration) {
+    // Q BEFORE committing, so the stopping clip cannot define its own
+    // quantum (mirrors C++ commit order)
     const Q = effectiveQuantumForState();
 
     node.isRecording = false;
-
-    const currentPos = state.masterPos || 0;
-    const rawDuration = currentPos - (node.recordingStartPos || 0);
-
-    // Hysteresis snap — same math as the C++ engine (timeline_model.js).
-    // First clip (no Q established) commits at its raw duration.
-    let duration = rawDuration;
-    let loopEnd = rawDuration;
-    if (Q > 0) {
-        const snap = snapCommittedDuration(rawDuration, Q);
-        duration = snap.duration;
-        loopEnd = snap.loopEnd;
-    }
+    node.isAwaitingStop = false;
+    const loopEnd = duration;
 
     node.duration = duration;
     node.isPlaying = true;
@@ -436,7 +470,7 @@ function stopRecordingInNode(id) {
     node.origin = node.recordingStartPos || 0;
     node.launchPoint = launchPointFor(node.origin, duration);
 
-    console.log(`[MockBackend] Recorded ${id}: Dur=${duration} (Raw=${rawDuration}, Q=${Q})`);
+    console.log(`[MockBackend] Committed ${node.id}: Dur=${duration} (Q=${Q})`);
 }
 
 /**
@@ -630,13 +664,28 @@ let transport = {
     speed: 1.0                // Speed multiplier (1.0 = real-time)
 };
 
-// Grow recording clips by a given sample count
+// Grow recording clips by a given sample count. An AWAITING-STOP clip
+// commits the moment its length reaches the boundary (engine parity:
+// ClipNode's awaiting_stop_at crossing check).
 function growRecordingClips(nodes, samples) {
     (nodes || []).forEach(node => {
         if (node.isRecording) {
-            node.duration = (node.duration || 0) + samples;
-            // Simulate live peak data (oscillating value)
-            node.currentPeak = 0.3 + Math.random() * 0.4;
+            if (node.isPendingStart) {
+                // Q11 trigger: recording begins AT the boundary
+                if ((state.masterPos || 0) >= node.pendingStartAt) {
+                    node.isPendingStart = false;
+                    node.recordingStartPos = node.pendingStartAt;
+                    node.duration = (state.masterPos || 0) - node.pendingStartAt;
+                    node.currentPeak = 0.3 + Math.random() * 0.4;
+                }
+            } else {
+                node.duration = (node.duration || 0) + samples;
+                // Simulate live peak data (oscillating value)
+                node.currentPeak = 0.3 + Math.random() * 0.4;
+                if (node.isAwaitingStop && node.duration >= node.awaitingStopAt) {
+                    commitClip(node, node.awaitingStopAt);
+                }
+            }
         }
         if (node.nodes) growRecordingClips(node.nodes, samples);
     });
