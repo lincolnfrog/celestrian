@@ -13,6 +13,7 @@ constexpr int kMaxExpectedBlockSize = 8192;
 
 StackNode::StackNode(juce::String node_name) : AudioNode(std::move(node_name)) {
   mix_buffer.setSize(kMaxExpectedChannels, kMaxExpectedBlockSize);
+  fx_accum_.setSize(1, kMaxExpectedBlockSize);
   render_children_.store(new std::vector<AudioNode *>());
 }
 
@@ -246,6 +247,21 @@ void StackNode::process(const float *const *input_channels,
   // Process each child and sum their results — iterating the immutable
   // published snapshot, no locks on the audio thread.
   const auto *kids = renderChildren();
+
+  // With the effect rack ON, children sum into the mono fx accumulator
+  // first — the rack shapes the GROUP's summed signal (a stack reverb
+  // wets the whole kit), then the result adds to the parent. Children
+  // render identical mono to every channel, so folding channel 0 is
+  // lossless (the rack goes stereo with the Mono→Stereo roadmap item).
+  const bool use_fx = fx_.anyEnabled();
+  if (use_fx) {
+    if (fx_accum_.getNumSamples() < context.num_samples ||
+        fx_accum_.getNumChannels() < 1) {
+      fx_accum_.setSize(1, context.num_samples, false, true, true);
+    }
+    fx_accum_.clear();
+  }
+
   for (AudioNode *child : *kids) {
     // Clear mix buffer for this specific child
     mix_buffer.clear();
@@ -255,11 +271,28 @@ void StackNode::process(const float *const *input_channels,
     child->process(input_channels, mix_buffer.getArrayOfWritePointers(),
                    num_input_channels, num_output_channels, child_context);
 
+    if (use_fx) {
+      fx_accum_.addFrom(0, 0, mix_buffer.getReadPointer(0),
+                        context.num_samples);
+      continue;
+    }
+
     // Sum child output into our actual output channels
     for (int ch = 0; ch < num_output_channels; ++ch) {
       if (output_channels[ch] != nullptr && ch < mix_buffer.getNumChannels()) {
         juce::FloatVectorOperations::add(output_channels[ch],
                                          mix_buffer.getReadPointer(ch),
+                                         context.num_samples);
+      }
+    }
+  }
+
+  if (use_fx) {
+    fx_.process(fx_accum_.getWritePointer(0), context.num_samples);
+    for (int ch = 0; ch < num_output_channels; ++ch) {
+      if (output_channels[ch] != nullptr) {
+        juce::FloatVectorOperations::add(output_channels[ch],
+                                         fx_accum_.getReadPointer(0),
                                          context.num_samples);
       }
     }

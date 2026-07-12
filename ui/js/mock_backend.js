@@ -41,6 +41,8 @@ export const handlers = {
     combineNodes: (draggedId, targetId) => combineNodes(draggedId, targetId),
     getInputList: () => getInputList(),
     setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
+    setEffectEnabled: (id, fx, enabled) => setEffectEnabled(id, fx, enabled),
+    setEffectParam: (id, fx, param, value) => setEffectParam(id, fx, param, value),
     startLatencyCalibration: () => startLatencyCalibration(),
     getLatencyCalibration: () => getLatencyCalibration(),
     setLoopPoints: (id, start, end) => setLoopPoints(id, start, end),
@@ -276,6 +278,38 @@ function setNodeInput(id, channelIndex) {
     if (node) {
         node.inputChannel = channelIndex;
         console.log('[MockBackend] Set input:', id, '→ channel', channelIndex);
+    }
+}
+
+// Built-in effects (engine parity: dsp::EffectRack defaults — the same
+// keys and values AudioNode publishes in metadata).
+function defaultEffects() {
+    return {
+        eq: { enabled: false, low: 0, mid: 0, high: 0 },
+        compressor: { enabled: false, threshold: -18, ratio: 4, attack: 10, release: 100, makeup: 0 },
+        echo: { enabled: false, time: 0.35, feedback: 0.35, mix: 0.35 },
+        reverb: { enabled: false, size: 0.5, damp: 0.5, mix: 0.3 },
+    };
+}
+function ensureEffects(node) {
+    if (!node.effects) node.effects = defaultEffects();
+    return node.effects;
+}
+
+function setEffectEnabled(id, fx, enabled) {
+    const node = findNode(id);
+    if (node && ensureEffects(node)[fx]) {
+        node.effects[fx].enabled = !!enabled;
+        console.log('[MockBackend] Effect', fx, 'on', id, '→', enabled ? 'ENABLED' : 'DISABLED');
+    }
+}
+
+function setEffectParam(id, fx, param, value) {
+    const node = findNode(id);
+    if (node && ensureEffects(node)[fx] &&
+        Object.prototype.hasOwnProperty.call(node.effects[fx], param)) {
+        node.effects[fx][param] = value;
+        console.log('[MockBackend] Effect param', fx + '.' + param, 'on', id, '→', value);
     }
 }
 
@@ -573,6 +607,9 @@ function enrichNodes(nodes) {
         const windowActive = !bypassed && node.loopEnd > node.loopStart;
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
+        // Effect rack state publishes on EVERY node (engine parity:
+        // AudioNode::getMetadata always carries `effects`)
+        updatedNode.effects = node.effects || defaultEffects();
         if (windowActive) {
             const loopLen = node.loopEnd - node.loopStart;
             const rel = (state.masterPos || 0) - (state.islandEpoch || 0);

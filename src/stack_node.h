@@ -207,6 +207,11 @@ class StackNode : public AudioNode {
   // heap at normal block sizes.
   juce::AudioBuffer<float> mix_buffer;
 
+  // Mono accumulator for the effect rack: children sum here, the rack
+  // processes in place, the result adds to the parent. Same
+  // preallocation/growth discipline as mix_buffer. Audio-thread only.
+  juce::AudioBuffer<float> fx_accum_;
+
   // Island state (P0-3): explicit, stored once — never derived from
   // child durations (deriving caused the retroactive-Q bug class).
   // 0 = no quantum established in this scope yet.

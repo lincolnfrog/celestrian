@@ -385,6 +385,81 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: nowrap;
 }
 
+/* ===== Effects panel (fx rail chip + expandable rack row) ===== */
+.rail-btn.fx-btn {
+    width: auto;
+    min-width: 34px;
+    padding: 0 8px;
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+.rail-btn.fx-btn.on { color: var(--tape); border-color: var(--tape); background: var(--panel-2); }
+
+.lane.lane-fx { grid-template-columns: var(--rail-w) 1fr; }
+.fx-rail {
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    padding: 10px 10px 0 0;
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
+    color: var(--text-dim);
+}
+.fx-body {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: var(--panel);
+    border-radius: 12px;
+    padding: 8px;
+}
+.fx-card {
+    flex: 1;
+    min-width: 148px;
+    background: var(--lane);
+    border: 1px solid var(--lane-line);
+    border-radius: 10px;
+    padding: 8px 10px;
+}
+.fx-card.off .fx-param { opacity: 0.35; }
+.fx-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.fx-title {
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+}
+.fx-card:not(.off) .fx-title { color: var(--tape); }
+.fx-power {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    padding: 0;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+.fx-power.on { color: var(--ground); background: var(--tape); border-color: var(--tape); }
+.fx-param {
+    display: grid;
+    grid-template-columns: 4ch 1fr 6ch;
+    align-items: center;
+    gap: 6px;
+    margin: 3px 0;
+}
+.fx-param-name { font-size: 0.62rem; color: var(--text-dim); }
+.fx-param-value { font-size: 0.62rem; color: var(--text); text-align: right; white-space: nowrap; }
+.fx-param input[type="range"] {
+    width: 100%;
+    height: 18px;
+    margin: 0;
+    accent-color: var(--tape);
+    background: transparent;
+}
+
 /* Loop window brackets */
 .win-dim {
     position: absolute; top: 0; bottom: 0;

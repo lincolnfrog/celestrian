@@ -81,6 +81,20 @@ empty husks) while a single active island pays nothing for it.
 - **Debug chrome becomes a status strip** along the bottom edge:
   transport health, calibration state (🎯 flow), dump, expandable log
   drawer. Nothing floats over the workspace.
+- **Effects live on the lane** (landed 2026-07-12): every clip AND
+  stack rail carries an `fx` chip (enabled count at rest); it expands a
+  rack row of the four built-ins in canonical order — EQ, Compressor,
+  Echo, Reverb (src/dsp/effects.h) — each a power switch + sliders.
+  FIXED rack, not a dynamic chain: "adding an effect" is enabling a
+  slot, so the audio thread needs no new lock-free collection machinery
+  (all params atomic; enable is a flag flip prepared on the message
+  thread). Fractal: a clip's rack shapes its own playback, a stack's
+  rack shapes the summed group (stack reverb wets the whole kit).
+  Mono per node (upgrades with Mono→Stereo). Bridge surface is two
+  methods (setEffectEnabled / setEffectParam) + `effects` on every
+  node's metadata — VST3 later replaces the rack's internals, not this
+  shape. A held slider is never overwritten by the 50ms tick (the
+  rename-editor guard, applied to inputs).
 
 ## 3. Visual language (Tape Room tokens)
 

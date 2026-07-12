@@ -304,6 +304,27 @@ test('loopCycleQ: the audible cycle (E-C) — windows shorten it, display stays'
     assert.equal(vm2.loopCycleQ, 4);
 });
 
+test('effects: fx rows from view state, fxCount on lanes', () => {
+    const effects = {
+        eq: { enabled: true, low: 3, mid: 0, high: 0 },
+        compressor: { enabled: false, threshold: -18, ratio: 4, attack: 10, release: 100, makeup: 0 },
+        echo: { enabled: true, time: 0.35, feedback: 0.35, mix: 0.35 },
+        reverb: { enabled: false, size: 0.5, damp: 0.5, mix: 0.3 },
+    };
+    const c = clip(2, { effects });
+    // No fxOpen: no synthetic rows, but the chip count rides the lane
+    const closed = deriveViewModel(state([c, clip(1)]));
+    assert.equal(closed.lanes[0].fxCount, 2);
+    assert.ok(!closed.lanes.some(l => l.kind === 'fx'));
+
+    // fxOpen: the panel row follows its owner lane, effects passthrough
+    const open = deriveViewModel(state([c, clip(1)]), { fxOpen: new Set([c.id]) });
+    assert.equal(open.lanes[1].kind, 'fx');
+    assert.equal(open.lanes[1].ownerId, c.id);
+    assert.equal(open.lanes[1].effects.echo.mix, 0.35);
+    assert.equal(open.lanes[2].kind, 'clip'); // the 1Q lane, un-shifted
+});
+
 test('clip lanes carry inputChannel; unset reads as −1 (device default)', () => {
     const vm = deriveViewModel(state([clip(1, { inputChannel: 2 }), clip(4)]));
     assert.equal(vm.lanes[0].inputChannel, 2);

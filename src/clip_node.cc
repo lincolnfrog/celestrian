@@ -13,6 +13,7 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
   // Initial size of 60 seconds
   buffer.setSize(1, (int)(sample_rate * 60));
   buffer.clear();
+  fx_scratch_.resize(4096, 0.0f);  // typical max device block
 }
 
 juce::var ClipNode::getMetadata() const {
@@ -382,16 +383,29 @@ void ClipNode::process(const float *const *input_channels,
       const int64_t offset =
           timing::launchPointFor(origin_samples.load(), dur);
 
-      for (int i = 0; i < context.num_samples; ++i) {
-        int64_t current_master_pos = context.master_pos + i;
-        int64_t effective_pos = (current_master_pos + offset) % dur;
-        int current_read_position =
-            (int)((start + effective_pos) % buffer.getNumSamples());
-
+      if (!isSilenced) {
+        // Render into the mono fx scratch, run the rack, then sum to
+        // the parent — effects shape THIS clip's signal in isolation.
+        // Resize is a rare growth (same pattern as StackNode's
+        // mix_buffer); constructor pre-reserves a typical block.
+        if ((int)fx_scratch_.size() < context.num_samples) {
+          fx_scratch_.resize((size_t)context.num_samples);
+        }
+        for (int i = 0; i < context.num_samples; ++i) {
+          int64_t current_master_pos = context.master_pos + i;
+          int64_t effective_pos = (current_master_pos + offset) % dur;
+          int current_read_position =
+              (int)((start + effective_pos) % buffer.getNumSamples());
+          fx_scratch_[(size_t)i] =
+              buffer.getReadPointer(0)[current_read_position];
+        }
+        if (fx_.anyEnabled()) {
+          fx_.process(fx_scratch_.data(), context.num_samples);
+        }
         for (int ch = 0; ch < num_output_channels; ++ch) {
-          if (output_channels[ch] != nullptr && !isSilenced) {
-            output_channels[ch][i] +=
-                buffer.getReadPointer(0)[current_read_position];
+          if (output_channels[ch] != nullptr) {
+            juce::FloatVectorOperations::add(
+                output_channels[ch], fx_scratch_.data(), context.num_samples);
           }
         }
       }

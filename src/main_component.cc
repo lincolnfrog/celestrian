@@ -148,6 +148,31 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "setEffectEnabled",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 2) {
+                      audio_engine.setEffectEnabled(args[0].toString(),
+                                                    args[1].toString(),
+                                                    (bool)args[2]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "setEffectParam",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 3) {
+                      audio_engine.setEffectParam(args[0].toString(),
+                                                  args[1].toString(),
+                                                  args[2].toString(),
+                                                  (double)args[3]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "setLoopPoints",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

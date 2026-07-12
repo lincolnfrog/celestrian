@@ -14,6 +14,7 @@ const dbg = m => { if (DEBUG) log(m); };
 
 const livePeaks = new Map();        // clip id → peak array
 const peakDurations = new Map();    // clip id → duration the peaks were fetched at
+const fxOpen = new Set();           // lane ids with the effects panel expanded (view state)
 
 /* ---------- waveform peaks ---------- */
 let fetchInFlight = null;
@@ -233,7 +234,7 @@ async function startPolling() {
                         pendingFetch.add(n.id);
                     }
                 }
-                const vm = deriveViewModel(state);
+                const vm = deriveViewModel(state, { fxOpen });
                 patchSessionView(vm, {
                     livePeaks,
                     pendingFetch,
@@ -286,6 +287,18 @@ export function initApp() {
             await callNative('setNodeInput', id, channelIndex);
             setLogLine(`Input set to channel ${channelIndex + 1}`);
         },
+        // Built-in effects: panel-open is pure view state; enable and
+        // params go straight to the engine's fixed rack
+        onToggleFx: id => {
+            if (fxOpen.has(id)) fxOpen.delete(id);
+            else fxOpen.add(id);
+        },
+        onSetEffectEnabled: async (id, fx, enabled) => {
+            await callNative('setEffectEnabled', id, fx, enabled);
+            setLogLine(`${fx} ${enabled ? 'on' : 'off'}`);
+        },
+        onSetEffectParam: (id, fx, param, value) =>
+            callNative('setEffectParam', id, fx, param, value),
         onArm,
         onRecord,
     });

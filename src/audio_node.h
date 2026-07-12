@@ -5,6 +5,8 @@
 
 #include <atomic>
 
+#include "dsp/effects.h"
+
 namespace celestrian {
 
 class AudioNode;
@@ -113,6 +115,8 @@ class AudioNode {
     // alike; `playhead` carries the window phase while active.
     obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
     obj->setProperty("windowActive", isLoopWindowActive());
+    // Built-in effect rack state (fractal like windows)
+    obj->setProperty("effects", fx_.getMetadata());
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
@@ -177,6 +181,17 @@ class AudioNode {
            loop_end_samples.load() > loop_start_samples.load();
   }
 
+  // --- Built-in effects (docs/ui_overhaul.md effects bar) ---
+  /**
+   * The node's effect rack — FRACTAL like windows: a clip's rack
+   * processes its rendered playback; a stack's rack processes the
+   * summed group (so a stack reverb wets the whole kit). Mutations
+   * (enable/params) happen on the message thread through AudioEngine;
+   * the audio thread only reads atomics. prepare() before enable.
+   */
+  dsp::EffectRack &effects() { return fx_; }
+  const dsp::EffectRack &effects() const { return fx_; }
+
   /**
    * The node's audible period in its parent's frame (E-C,
    * design_language.md): an ACTIVE loop window makes the node behave
@@ -225,6 +240,11 @@ class AudioNode {
   // Loop window bypass flag (time_maps.md). Window phase is pure
   // arithmetic on the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};
+
+  // Built-in effect rack (dsp/effects.h): fixed slots, all-atomic
+  // parameters — safe for the audio thread to read while the message
+  // thread edits.
+  dsp::EffectRack fx_;
   std::atomic<bool> is_node_recording{false};
   std::atomic<bool> is_muted{false};
   std::atomic<bool> is_expanded{

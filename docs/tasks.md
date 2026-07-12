@@ -82,6 +82,12 @@ These items address dead code, abstraction violations, and debug artifacts that 
 - [ ] **Keyboard navigation for stacks** — Arrow keys to navigate into/out of stacks.
 - [ ] **Quick-toggle keyboard shortcut** — `stacks.md` L525: e.g., `Space+Click` or `E` to collapse/expand for rapid loop preview.
 
+### Effects (built-ins landed 2026-07-12 — `docs/ui_overhaul.md` §2)
+- [x] **Four built-in effects** — EQ (3-band), Compressor, Echo, Reverb (Freeverb via juce::Reverb) as a FIXED per-node rack (`src/dsp/effects.h`), fractal across clips/stacks, effects bar UI on every lane. Bridge: setEffectEnabled/setEffectParam + `effects` metadata.
+- [ ] **VST3 hosting** — replaces the fixed rack's internals with a dynamic chain (this is where the lock-free chain machinery gets built); bridge surface designed to survive.
+- [ ] **Stereo rack** — lands with the Mono → Stereo roadmap item (juce::Reverb already has processStereo).
+- [ ] **Effect tails on mute** — a muted clip freezes its echo/reverb state rather than ringing out; revisit if it reads as a bug in practice.
+
 ### Segment 5: Clip Manipulation (`docs/implementation.md` L55)
 - [ ] **Move clips in 2D space** — Freeform clip repositioning.
 - [ ] **Resize durations** — UI handles for clip duration editing.

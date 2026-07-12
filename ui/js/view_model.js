@@ -162,6 +162,29 @@ function laneCommon(node, state) {
         // (owner ruling 2026-07-10: stops always pad forward)
         awaitingStop: !!node.isAwaitingStop,
         armed: !!(node.isPendingStart || node.isRecording),
+        // Built-in effect rack state (published on every node) + the
+        // enabled count for the rail's fx chip
+        effects: node.effects || null,
+        fxCount: node.effects
+            ? ['eq', 'compressor', 'echo', 'reverb']
+                .filter(k => node.effects[k] && node.effects[k].enabled).length
+            : 0,
+    };
+}
+
+/**
+ * The effects PANEL row for a lane whose rack is expanded (view state:
+ * opts.fxOpen). A synthetic row like the 'add' affordance — the panel
+ * itself renders from the owner lane's published effects.
+ */
+function fxRow(node, depth) {
+    return {
+        kind: 'fx',
+        id: 'fx:' + node.id,
+        ownerId: node.id,
+        name: '',
+        depth,
+        effects: node.effects || null,
     };
 }
 
@@ -193,6 +216,9 @@ function laneCommon(node, state) {
  */
 export function deriveViewModel(state, opts = {}) {
     const maxDepth = opts.maxDepth ?? 8;
+    // Lanes whose effects panel is expanded (pure view state, owned by
+    // the app shell — like fold, but client-side only)
+    const fxOpen = opts.fxOpen || null;
     const nodes = state.nodes || [];
     const quantum = computeEffectiveQuantum(nodes);
     // The island epoch is published explicitly (getGraphState
@@ -377,6 +403,7 @@ export function deriveViewModel(state, opts = {}) {
                 groupArm: groupArmState(node),
             });
             lanes.push(lane);
+            if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
             // TODO(phase 3): children of a group with an ACTIVE window
             // live in the window's re-based inner frame (time_maps.md §2
             // — the window re-bases the epoch for its children). Phase 1
@@ -410,6 +437,7 @@ export function deriveViewModel(state, opts = {}) {
                 recordingLengthQ: (node.duration || 0) / quantum,
                 pendingStart: !(node.duration > 0),
             }));
+            if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
             return;
         }
 
@@ -426,6 +454,7 @@ export function deriveViewModel(state, opts = {}) {
             // Recording input (hardware channel index; −1 = device default)
             inputChannel: node.inputChannel ?? -1,
         }));
+        if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
     };
     nodes.forEach(n => pushLane(n, 0));
 

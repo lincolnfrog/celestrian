@@ -50,6 +50,14 @@ export const BRIDGE_METHODS = [
     { name: 'getInputList', params: [], returns: '{ inputs: string[] }' },
     { name: 'setNodeInput', params: ['uuid', 'channelIndex'] },
 
+    // Built-in effects (src/dsp/effects.h): a FIXED per-node rack in
+    // canonical order eq → compressor → echo → reverb. State publishes
+    // on every node's metadata as `effects`; these two methods are the
+    // whole edit surface (VST3 later replaces the rack's internals,
+    // not this bridge shape).
+    { name: 'setEffectEnabled', params: ['uuid', 'fx', 'enabled'] },
+    { name: 'setEffectParam', params: ['uuid', 'fx', 'param', 'value'] },
+
     // Latency calibration (docs/performance.md §7): emits a click while
     // capturing input; the measured round-trip supersedes device-reported
     // latencies in recording alignment.

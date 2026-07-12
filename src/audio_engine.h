@@ -127,6 +127,14 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void setNodeInput(const juce::String &uuid, int channel_index);
 
+  // Built-in effects (dsp/effects.h): enable/param edits from the UI.
+  // Message thread; prepare() runs before the enable flag flips so the
+  // audio thread never sees an unprepared effect.
+  void setEffectEnabled(const juce::String &uuid, const juce::String &fx,
+                        bool enabled);
+  void setEffectParam(const juce::String &uuid, const juce::String &fx,
+                      const juce::String &key, double value);
+
   /**
    * Sets the non-destructive loop points for a specific node.
    */

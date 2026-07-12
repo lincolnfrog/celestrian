@@ -19,6 +19,7 @@ import { windowDragTarget } from './view_model.js';
 import {
     forwardDelta, estimateVelocity, advancePosition, correctPosition,
 } from './playhead_clock.js';
+import { EFFECT_SCHEMA } from './effect_schema.js';
 
 const pct = (q, cycleQ) => (q / cycleQ) * 100 + '%';
 
@@ -106,6 +107,9 @@ function buildLane(lane) {
     row.dataset.id = lane.id;
     row.dataset.kind = lane.kind;
 
+    // Synthetic effects-panel row (built once; values patch in place)
+    if (lane.kind === 'fx') return buildFxRow(row, lane);
+
     // Synthetic add-track row at the bottom of an open group
     if (lane.kind === 'add') {
         row.classList.add('lane-add');
@@ -171,6 +175,15 @@ function buildLane(lane) {
     solo.title = 'Solo';
     solo.addEventListener('click', () => cb.onSolo(lane.id));
     foot.append(arm, mute, solo);
+
+    // Effects rack toggle — every lane (fractal: a stack's rack shapes
+    // the summed group). Chip shows the enabled count at rest.
+    const fx = document.createElement('button');
+    fx.className = 'rail-btn fx-btn mono';
+    fx.textContent = 'fx';
+    fx.title = 'Effects: EQ · Compressor · Echo · Reverb';
+    fx.addEventListener('click', () => cb.onToggleFx(lane.id));
+    foot.appendChild(fx);
 
     // Recording input picker — clips only (Q7: group record captures
     // each child from ITS OWN input; a group has no input of its own)
@@ -245,6 +258,101 @@ async function toggleInputMenu(row) {
             cb.onSetInput(lane.id, i);
         });
         menu.appendChild(item);
+    });
+}
+
+/* ---------- effects panel (docs/ui_overhaul.md effects bar) ----------
+ *
+ * A synthetic row under the lane: four fixed cards (EQ, COMP, ECHO,
+ * VERB — the engine's rack order), each a power switch + sliders.
+ * Built once from EFFECT_SCHEMA; values PATCH in place. A slider being
+ * dragged is never overwritten by the 50ms tick (the rename-editor
+ * lesson applied to inputs: `_hot` between pointerdown and pointerup).
+ */
+function buildFxRow(row, lane) {
+    row.classList.add('lane-fx');
+    row.dataset.depth = String(Math.min(lane.depth, 2));
+
+    const rail = document.createElement('div');
+    rail.className = 'fx-rail mono';
+    rail.textContent = 'EFFECTS';
+
+    const body = document.createElement('div');
+    body.className = 'fx-body';
+    EFFECT_SCHEMA.forEach(fx => {
+        const card = document.createElement('div');
+        card.className = 'fx-card';
+        card.dataset.fx = fx.type;
+
+        const head = document.createElement('div');
+        head.className = 'fx-card-head';
+        const power = document.createElement('button');
+        power.className = 'fx-power';
+        power.textContent = '⏻';
+        power.title = 'Enable / disable';
+        power.addEventListener('click', () => {
+            const cur = row._lane && row._lane.effects &&
+                row._lane.effects[fx.type];
+            cb.onSetEffectEnabled(row._lane.ownerId, fx.type,
+                !(cur && cur.enabled));
+        });
+        const title = document.createElement('span');
+        title.className = 'fx-title';
+        title.textContent = fx.label;
+        head.append(power, title);
+        card.appendChild(head);
+
+        fx.params.forEach(p => {
+            const line = document.createElement('label');
+            line.className = 'fx-param';
+            const name = document.createElement('span');
+            name.className = 'fx-param-name mono';
+            name.textContent = p.label;
+            const input = document.createElement('input');
+            input.type = 'range';
+            input.min = String(p.min);
+            input.max = String(p.max);
+            input.step = String(p.step);
+            input.dataset.key = p.key;
+            input.addEventListener('pointerdown', () => { input._hot = true; });
+            input.addEventListener('pointerup', () => { input._hot = false; });
+            input.addEventListener('input', () => {
+                cb.onSetEffectParam(row._lane.ownerId, fx.type, p.key,
+                    parseFloat(input.value));
+                setText(line.querySelector('.fx-param-value'), p.fmt(parseFloat(input.value)));
+            });
+            const value = document.createElement('span');
+            value.className = 'fx-param-value mono';
+            line.append(name, input, value);
+            card.appendChild(line);
+        });
+        body.appendChild(card);
+    });
+
+    row.append(rail, body);
+    return row;
+}
+
+function patchFxRow(row, lane) {
+    row._lane = lane;
+    const effects = lane.effects;
+    if (!effects) return;
+    EFFECT_SCHEMA.forEach(fx => {
+        const state = effects[fx.type];
+        if (!state) return;
+        const card = row.querySelector(`.fx-card[data-fx="${fx.type}"]`);
+        card.classList.toggle('off', !state.enabled);
+        card.querySelector('.fx-power').classList.toggle('on', !!state.enabled);
+        fx.params.forEach(p => {
+            const input = card.querySelector(`input[data-key="${p.key}"]`);
+            const v = state[p.key];
+            if (typeof v !== 'number') return;
+            // Never fight the user's drag; otherwise idempotent write
+            if (!input._hot && parseFloat(input.value) !== v) {
+                input.value = String(v);
+            }
+            setText(input.parentElement.querySelector('.fx-param-value'), p.fmt(v));
+        });
     });
 }
 
@@ -383,7 +491,7 @@ function reconcileMarkers(container, key, build) {
 }
 
 function patchLaneBody(row, lane, vm, aux) {
-    if (lane.kind === 'add') return;
+    if (lane.kind === 'add' || lane.kind === 'fx') return;
     const body = row.querySelector('.lane-body');
     const cycleQ = vm.cycleQ;
     const { grid, reps: repsL, overlay } = layersOf(body);
@@ -744,6 +852,7 @@ function lanePeaks(lane, aux) {
 /* ---------- rail state ---------- */
 function patchRail(row, lane) {
     if (lane.kind === 'add') return; // affordance row: nothing to patch
+    if (lane.kind === 'fx') return patchFxRow(row, lane);
     row._lane = lane; // current lane snapshot for click handlers
     row.dataset.depth = String(Math.min(lane.depth, 2));
     // Never patch the name over an open rename editor (or its optimistic
@@ -793,6 +902,12 @@ function patchRail(row, lane) {
     if (fold) setText(fold, lane.folded ? '▸' : '▾');
     row.querySelector('.mute-btn').classList.toggle('on', lane.muted);
     row.querySelector('.solo-btn').classList.toggle('on', lane.soloed);
+
+    const fxBtn = row.querySelector('.fx-btn');
+    if (fxBtn) {
+        setText(fxBtn, lane.fxCount > 0 ? 'fx·' + lane.fxCount : 'fx');
+        fxBtn.classList.toggle('on', lane.fxCount > 0);
+    }
 
     const input = row.querySelector('.input-btn');
     if (input) {
@@ -968,7 +1083,8 @@ export function patchSessionView(vm, aux) {
             els.playhead._left = newLeft;
             els.playhead.style.left = newLeft + 'px';
         }
-        const audioRows = [...els.lanes.children].filter(r => !r.classList.contains('lane-add'));
+        const audioRows = [...els.lanes.children].filter(r =>
+            !r.classList.contains('lane-add') && !r.classList.contains('lane-fx'));
         const last = audioRows[audioRows.length - 1];
         if (last) {
             const h = last.offsetTop + last.offsetHeight;

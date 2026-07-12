@@ -98,6 +98,12 @@ class ClipNode : public AudioNode {
  private:
   juce::AudioBuffer<float> buffer;
 
+  // Mono scratch for the effect rack: playback renders here, the rack
+  // processes in place, then the result sums into the parent. Sized in
+  // the constructor; grows only if the device block exceeds it (rare —
+  // the StackNode::mix_buffer precedent). Audio-thread only.
+  std::vector<float> fx_scratch_;
+
   std::atomic<int> write_position{0};
   std::atomic<int> read_position{0};
 

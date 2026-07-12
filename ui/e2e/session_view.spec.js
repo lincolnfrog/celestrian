@@ -556,6 +556,78 @@ test.describe('Input picker (phase 3)', () => {
     });
 });
 
+test.describe('Effects rack (built-ins)', () => {
+
+    const clipFx = page => page.evaluate(() =>
+        window.celestrian.getState().nodes.find(n => n.type === 'stack')
+            .nodes[0].effects);
+
+    test('fx chip expands the rack; enable and params round-trip', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const firstClip = page.locator('.lane[data-kind="clip"]').first();
+        await expect(firstClip.locator('.fx-btn')).toHaveText('fx');
+
+        await firstClip.locator('.fx-btn').click();
+        const fxRow = page.locator('.lane-fx');
+        await expect(fxRow).toHaveCount(1, { timeout: 3000 });
+        await expect(fxRow.locator('.fx-card')).toHaveCount(4); // the fixed rack
+
+        // Power on the echo: backend flag flips, card lights, chip counts
+        await fxRow.locator('.fx-card[data-fx="echo"] .fx-power').click();
+        await expect.poll(async () => (await clipFx(page)).echo.enabled,
+            { timeout: 3000 }).toBe(true);
+        await expect(fxRow.locator('.fx-card[data-fx="echo"]')).not.toHaveClass(/off/);
+        await expect(firstClip.locator('.fx-btn')).toHaveText('fx·1', { timeout: 3000 });
+
+        // Drag-equivalent: set the mix slider → setEffectParam round-trips
+        await fxRow.locator('.fx-card[data-fx="echo"] input[data-key="mix"]')
+            .evaluate(el => {
+                el.value = '0.8';
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+        await expect.poll(async () => (await clipFx(page)).echo.mix,
+            { timeout: 3000 }).toBe(0.8);
+        await expect(fxRow.locator('.fx-card[data-fx="echo"] .fx-param-value')
+            .nth(2)).toHaveText('80%');
+
+        // Chip again: panel folds away, state stays
+        await firstClip.locator('.fx-btn').click();
+        await expect(page.locator('.lane-fx')).toHaveCount(0, { timeout: 3000 });
+        expect((await clipFx(page)).echo.enabled).toBe(true);
+    });
+
+    test('groups have racks too (fractal): reverb on the whole kit', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const group = page.locator('.lane[data-kind="group"]').first();
+        await group.locator('.fx-btn').click();
+        await expect(page.locator('.lane-fx')).toHaveCount(1, { timeout: 3000 });
+
+        await page.locator('.fx-card[data-fx="reverb"] .fx-power').click();
+        await expect.poll(() => page.evaluate(() =>
+            window.celestrian.getState().nodes.find(n => n.type === 'stack')
+                .effects.reverb.enabled), { timeout: 3000 }).toBe(true);
+        await expect(group.locator('.fx-btn')).toHaveText('fx·1', { timeout: 3000 });
+    });
+
+    test('the 50ms tick never fights a slider being dragged', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        await page.locator('.lane[data-kind="clip"]').first()
+            .locator('.fx-btn').click();
+        const slider = page.locator('.fx-card[data-fx="eq"] input[data-key="low"]');
+        await expect(slider).toBeVisible({ timeout: 3000 });
+        // Hold the slider "hot" and give it a local value; several polls
+        // must not clobber it while held
+        await slider.evaluate(el => {
+            el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            el.value = '7';
+        });
+        await page.waitForTimeout(300);
+        await expect(slider).toHaveValue('7');
+        await slider.evaluate(el =>
+            el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true })));
+    });
+});
+
 test.describe('Session shell (mock mode)', () => {
 
     test.beforeEach(async ({ page }) => {

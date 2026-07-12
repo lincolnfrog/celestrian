@@ -45,6 +45,7 @@ target_sources(Celestrian PRIVATE
     src/timing.h
     src/clip_node.cc
     src/stack_node.cc
+    src/dsp/effects.cc
 )
 
 # Link JUCE modules
@@ -101,9 +102,11 @@ target_sources(CelestrianTests PRIVATE
     tests/audio_engine_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
+    tests/effects_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc
+    src/dsp/effects.cc
 )
 
 target_link_libraries(CelestrianTests PRIVATE

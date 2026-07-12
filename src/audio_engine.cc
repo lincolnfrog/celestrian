@@ -416,6 +416,29 @@ void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
   }
 }
 
+void AudioEngine::setEffectEnabled(const juce::String &uuid,
+                                   const juce::String &fx, bool enabled) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    // Prepare BEFORE the flag flips: the audio thread must never see an
+    // enabled effect whose buffers aren't allocated. Idempotent per rate.
+    double sr = cached_sample_rate_.load();
+    if (sr <= 0) sr = 44100.0;
+    node->effects().prepare(sr);
+    if (node->effects().setEnabled(fx, enabled)) {
+      juce::Logger::writeToLog("AudioEngine: effect " + fx + " on " + uuid +
+                               (enabled ? " ENABLED" : " DISABLED"));
+    }
+  }
+}
+
+void AudioEngine::setEffectParam(const juce::String &uuid,
+                                 const juce::String &fx,
+                                 const juce::String &key, double value) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    node->effects().setParam(fx, key, value);
+  }
+}
+
 void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
                                 int64_t end) {
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
