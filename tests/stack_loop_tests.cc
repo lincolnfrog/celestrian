@@ -190,6 +190,86 @@ class StackLoopTests : public juce::UnitTest {
                                 "invalid window passes the clock through");
     }
 
+    beginTest("Clip loop window is fractal (I5): subset loops, bypass restores");
+    {
+      // A clip's loop region is the single-segment case of the stack's
+      // time-map: same active/bypass semantics, same toggle. Commit set
+      // [0, duration); the user windows Q2 of a 3Q take.
+      auto clip = makeRampClip(3000);
+      clip->startPlayback();
+      clip->setLoopPoints(1000, 2000);
+      expect(clip->isLoopWindowActive(), "subset window is active");
+
+      ProcessContext ctx;
+      ctx.is_playing = true;
+      ctx.num_samples = 1;
+      ctx.master_pos = 2500;
+
+      float out[1] = {0.0f};
+      float* const outs[] = {out};
+
+      // Active: period = window length (1000); (2500 mod 1000) = 500
+      // into the window → content position 1500
+      clip->process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
+                                "active clip window loops the subset");
+
+      // Bypassed: the FULL take plays (period back to 3000)
+      clip->setLoopWindowBypassed(true);
+      expect(!clip->isLoopWindowActive());
+      out[0] = 0.0f;
+      clip->process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(2500), 0.0001f,
+                                "bypassed clip window plays the full take");
+
+      // Re-activated: mapping returns identically (nothing was baked)
+      clip->setLoopWindowBypassed(false);
+      out[0] = 0.0f;
+      clip->process(nullptr, outs, 0, 1, ctx);
+      expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
+                                "re-activation restores the clip window");
+    }
+
+    beginTest("E-C: getEffectivePeriod — windows shorten the audible cycle");
+    {
+      // A lone 2Q-ish stack windowed to 1000: the audible period IS the
+      // window (the field bug: the playhead sailed past the window
+      // because the transport wrapped on the intrinsic length).
+      StackNode stack("TestStack");
+      stack.addChild(makeRampClip(2000));
+      expectEquals(stack.getEffectivePeriod(), (int64_t)2000,
+                   "no window: effective = intrinsic (children LCM)");
+
+      stack.setLoopPoints(0, 1000);
+      expectEquals(stack.getEffectivePeriod(), (int64_t)1000,
+                   "active window: effective = window length");
+
+      stack.setLoopWindowBypassed(true);
+      expectEquals(stack.getEffectivePeriod(), (int64_t)2000,
+                   "bypassed window: effective back to intrinsic");
+      stack.setLoopWindowBypassed(false);
+
+      // Nested: an outer stack sees the windowed inner stack as a
+      // 1000-sample clip (E-C is recursive through getEffectivePeriod)
+      StackNode outer("Outer");
+      auto inner = std::make_unique<StackNode>("Inner");
+      inner->addChild(makeRampClip(2000));
+      inner->setLoopPoints(0, 1000);
+      outer.addChild(std::move(inner));
+      outer.addChild(makeRampClip(3000));
+      expectEquals(outer.getEffectivePeriod(), (int64_t)3000,
+                   "outer LCM(window 1000, clip 3000) = 3000");
+
+      // A windowed CLIP contributes its window length too (fractal)
+      StackNode withClipWin("ClipWin");
+      auto wc = makeRampClip(3000);
+      wc->setLoopPoints(1000, 2000);
+      withClipWin.addChild(std::move(wc));
+      withClipWin.addChild(makeRampClip(2000));
+      expectEquals(withClipWin.getEffectivePeriod(), (int64_t)2000,
+                   "LCM(clip window 1000, clip 2000) = 2000");
+    }
+
     beginTest("High transport stays wrap-consistent (repro, monotonic)");
     {
       // Successor of the old high-internal-transport repro: with phase

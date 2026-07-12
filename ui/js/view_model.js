@@ -12,9 +12,9 @@
  * Uses timeline_model.js for all timing math (LCM/quantum); anything
  * cyclic here mirrors design_language.md canon:
  *   - reps tile the cycle at  q ≡ originQ (mod periodQ)   (kernel origins)
- *   - an ACTIVE loop window changes a lane's effective period to the
- *     window length (E-C: "a windowed composite behaves as a 2Q clip in
- *     its parent's LCM"); bypassed windows change nothing
+ *   - loop windows NEVER reframe the display: periods and the cycle are
+ *     intrinsic; an active window is a visual subset (brackets + dims).
+ *     E-C stays an engine-side audio fact (owner ruling 2026-07-11)
  *   - the arm target is the next Q boundary in the epoch frame (Q11)
  *   - arming a group arms every child (Q7 group-arm ruling)
  */
@@ -51,15 +51,20 @@ function windowOf(node, quantum) {
 }
 
 /**
- * A lane's effective period in Q: window length when the window is
- * active (E-C), otherwise the intrinsic period. Recording lanes have no
- * settled period yet and return 0 (they are excluded from the cycle,
- * matching calculateStackLCM which skips recording clips).
+ * A lane's DISPLAY period in Q: always the intrinsic period. E-C ("a
+ * windowed composite behaves as a 2Q clip in its parent's LCM") is an
+ * AUDIO fact owned by the engine — the display frame must NOT follow it
+ * (owner ruling 2026-07-11): windowing a lone 2Q stack to 1Q once
+ * compressed the whole timeline to 1Q and hid the content, and the
+ * frame breathed with every active/bypass toggle. The engine's
+ * published masterPos wraps on clip durations (never on windows), so
+ * the intrinsic frame is also the one the playhead actually sweeps.
+ * The window renders as a visual SUBSET (brackets + dimmed outside).
+ * Recording lanes have no settled period yet and return 0 (excluded
+ * from the cycle, matching calculateStackLCM which skips them).
  */
-function effectivePeriodQ(node, quantum) {
+function displayPeriodQ(node, quantum) {
     if (node.isRecording) return 0;
-    const win = windowOf(node, quantum);
-    if (win && win.active && !win.bypassed) return win.endQ - win.startQ;
     return intrinsicPeriod(node, quantum) / quantum;
 }
 
@@ -100,6 +105,22 @@ export function unrollReps({ periodQ, offsetQ, cycleQ, maxTiles = 256 }) {
         });
     }
     return reps;
+}
+
+/**
+ * Bracket-drag edit math (docs/ui_overhaul.md §2 "loop windows live on
+ * the lane"): pure Q-space snap/clamp for one window edge. The pointer's
+ * raw Q snaps to the NEAREST whole Q (grid honesty: windows are Q-snapped
+ * by the editor, per the time_maps.md cell-mode UX ruling), then clamps
+ * so the window keeps at least 1Q and stays inside the lane's intrinsic
+ * period [0, maxQ]. Returns the full { startQ, endQ } after the edit.
+ */
+export function windowDragTarget({ edge, rawQ, startQ, endQ, maxQ }) {
+    const q = Math.round(rawQ);
+    if (edge === 'start') {
+        return { startQ: Math.min(Math.max(0, q), endQ - 1), endQ };
+    }
+    return { startQ, endQ: Math.max(Math.min(maxQ, q), startQ + 1) };
 }
 
 /**
@@ -181,13 +202,35 @@ export function deriveViewModel(state, opts = {}) {
     // field screenshot 2026-07-09). origin remains the legacy fallback.
     const epochSamples = state.islandEpoch ?? state.origin ?? 0;
 
-    // Island cycle: LCM over top-level effective periods (window-aware).
-    // calculateStackLCM is the engine-mirrored baseline; active windows
-    // shorten their lane's contribution per E-C.
+    // Island cycle: LCM over top-level INTRINSIC periods — windows never
+    // reframe the timeline (law 13; see displayPeriodQ).
     let cycleSamples = quantum;
     nodes.forEach(n => {
-        const pQ = effectivePeriodQ(n, quantum);
+        const pQ = displayPeriodQ(n, quantum);
         if (pQ > 0) cycleSamples = lcm(Math.round(cycleSamples), Math.round(pQ * quantum));
+    });
+
+    // The AUDIBLE cycle (E-C, mirrors calculateEffectiveCycleLength):
+    // active windows shorten it, and the engine wraps masterPos on it —
+    // the playhead loops early inside an intrinsic frame. Surfaced as
+    // loopCycleQ so the readout can say why.
+    const effPeriod = node => {
+        if (node.isRecording) return 0;
+        if (node.windowActive && node.loopEnd > node.loopStart) {
+            return node.loopEnd - node.loopStart;
+        }
+        if (node.type !== 'stack') return node.duration || 0;
+        let composite = 0;
+        (node.nodes || []).forEach(c => {
+            const p = effPeriod(c);
+            if (p > 0) composite = composite > 0 ? lcm(Math.round(composite), Math.round(p)) : p;
+        });
+        return composite;
+    };
+    let loopSamples = quantum;
+    nodes.forEach(n => {
+        const p = effPeriod(n);
+        if (p > 0) loopSamples = lcm(Math.round(loopSamples), Math.round(p));
     });
 
     // First-take frame: before any Q exists there is no cycle — the only
@@ -307,11 +350,15 @@ export function deriveViewModel(state, opts = {}) {
         const offsetQ = ((node.origin || 0) - epochSamples) / quantum - shiftQ;
 
         if (node.type === 'stack') {
-            const periodQ = effectivePeriodQ(node, quantum);
+            const periodQ = displayPeriodQ(node, quantum);
             const lane = Object.assign(laneCommon(node, state), {
                 kind: 'group',
                 depth,
                 periodQ,
+                // The window EDIT range: [0, intrinsic period] (equals
+                // periodQ now that display periods are intrinsic; kept
+                // as the brackets' explicit clamp bound)
+                intrinsicQ: intrinsicPeriod(node, quantum) / quantum,
                 // Before Q exists there is nothing meaningful to tile.
                 // Groups anchor at frame 0: a composite is derived
                 // machinery, not a performance — origin-based take
@@ -321,6 +368,11 @@ export function deriveViewModel(state, opts = {}) {
                     ? unrollReps({ periodQ, offsetQ: 0, cycleQ })
                     : [],
                 window: windowOf(node, quantum),
+                // Heard-time cursor inside an active window (engine
+                // publishes the window phase on `playhead`). Kept OUT of
+                // the window object: it changes every poll and must not
+                // churn the overlay's reconcile key.
+                windowPhase: node.windowActive ? (node.playhead || 0) : 0,
                 folded: node.isExpanded === false,
                 groupArm: groupArmState(node),
             });
@@ -354,20 +406,25 @@ export function deriveViewModel(state, opts = {}) {
                 reps: [],
                 window: null,
                 armable: true,
+                inputChannel: node.inputChannel ?? -1,
                 recordingLengthQ: (node.duration || 0) / quantum,
                 pendingStart: !(node.duration > 0),
             }));
             return;
         }
 
-        const periodQ = effectivePeriodQ(node, quantum);
+        const periodQ = displayPeriodQ(node, quantum);
         lanes.push(Object.assign(laneCommon(node, state), {
             kind: 'clip',
             depth,
             periodQ,
+            intrinsicQ: intrinsicPeriod(node, quantum) / quantum,
             reps: qEstablished ? unrollReps({ periodQ, offsetQ, cycleQ }) : [],
             window: windowOf(node, quantum),
+            windowPhase: node.windowActive ? (node.playhead || 0) : 0,
             armable: isArmable(node),
+            // Recording input (hardware channel index; −1 = device default)
+            inputChannel: node.inputChannel ?? -1,
         }));
     };
     nodes.forEach(n => pushLane(n, 0));
@@ -384,6 +441,7 @@ export function deriveViewModel(state, opts = {}) {
         epochSamples,
         cycleQ,          // the DISPLAY FRAME: what lanes tile and views fit
         lcmQ,            // the committed cycle (≤ cycleQ; equal unless recording extends)
+        loopCycleQ: loopSamples / quantum, // the AUDIBLE cycle (E-C): < lcmQ when windows shorten it
         frameExtended,   // true while a take has grown the frame past the LCM
         playheadQ,
         isPlaying: !!state.isPlaying,

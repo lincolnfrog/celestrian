@@ -348,6 +348,15 @@ void ClipNode::process(const float *const *input_channels,
   if (context.is_playing && is_playing) {
     int64_t start = loop_start_samples.load();
     int64_t end = loop_end_samples.load();
+    // Loop window, fractal (I5): the clip's loop region is the
+    // single-segment case of the stack's time-map. BYPASSED (or
+    // invalid) windows fall back to the full take — commit sets
+    // [0, duration) on every clip, so the un-windowed path is identical
+    // to the historical behavior.
+    if (loop_window_bypassed_.load() || end <= start) {
+      start = 0;
+      end = duration_samples.load();
+    }
     int64_t dur = end - start;
 
     if (dur > 0) {

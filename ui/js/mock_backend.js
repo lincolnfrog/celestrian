@@ -316,8 +316,10 @@ function setLoopPoints(id, loopStart, loopEnd) {
 }
 
 function toggleLoopWindow(id) {
+    // Fractal (I5, engine parity): clips toggle their single-segment
+    // window exactly like stacks toggle their time-map.
     const node = findNode(id);
-    if (node && node.type === 'stack') {
+    if (node) {
         node.loopBypassed = !node.loopBypassed;
         console.log('[MockBackend] Loop window', id, '→',
             node.loopBypassed ? 'BYPASSED' : 'ACTIVE');
@@ -345,14 +347,17 @@ function startRecordingInNode(id) {
     }
 
     // Freeze the view base (mirrors AudioEngine view_base_/view_anchor_t_):
-    // from here the published masterPos grows linearly past the cycle
+    // from here the published masterPos grows linearly past the cycle.
+    // Base = the EFFECTIVE (window-aware) view the user was watching;
+    // lcmBefore = INTRINSIC (commit/re-base compares committed material).
     if (!recView.active) {
         const raw = state.masterPos || 0;
-        const cycle = committedCycle(effectiveQuantumForState());
+        const Q = effectiveQuantumForState();
+        const viewCycle = effectiveCycle(Q);
         const rel = raw - (state.islandEpoch || 0);
-        recView.base = cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel;
+        recView.base = viewCycle > 0 ? ((rel % viewCycle) + viewCycle) % viewCycle : rel;
         recView.anchor = raw;
-        recView.lcmBefore = cycle; // mirrors the engine's view_lcm_before_
+        recView.lcmBefore = committedCycle(Q); // engine's view_lcm_before_
         recView.active = true;
     }
 
@@ -550,33 +555,31 @@ function generateStackWaveform(node, numPeaks = 100) {
 // Recursively add waveform and transport data to nodes
 function enrichNodes(nodes) {
     return nodes.map(node => {
-        if (node.type === 'stack') {
-            // NO synthetic `waveform` here: the ENGINE's state metadata
-            // carries no waveform field, so the UI composites stacks from
-            // child peaks (composite_waveform.js). The mock once attached
-            // count-normalized sines, which short-circuited that path AND
-            // dimmed when a silent track was added (mock/engine drift —
-            // test_harness.md gotcha 10, field 2026-07-10).
-            const updatedNode = {
-                ...node,
-                nodes: node.nodes ? enrichNodes(node.nodes) : []
-            };
+        // NO synthetic `waveform` on stacks: the ENGINE's state metadata
+        // carries no waveform field, so the UI composites stacks from
+        // child peaks (composite_waveform.js). The mock once attached
+        // count-normalized sines, which short-circuited that path AND
+        // dimmed when a silent track was added (mock/engine drift —
+        // test_harness.md gotcha 10, field 2026-07-10).
+        const updatedNode = node.type === 'stack'
+            ? { ...node, nodes: node.nodes ? enrichNodes(node.nodes) : [] }
+            : { ...node };
 
-            // Loop window state (time_maps.md): active iff valid and not
-            // bypassed — independent of expansion. Window phase mirrors
-            // the engine: (masterPos − epoch) mod len (mock epoch = 0).
-            const bypassed = !!node.loopBypassed;
-            const windowActive = !bypassed && node.loopEnd > node.loopStart;
-            updatedNode.loopBypassed = bypassed;
-            updatedNode.windowActive = windowActive;
-            if (windowActive) {
-                const loopLen = node.loopEnd - node.loopStart;
-                updatedNode.playhead = ((state.masterPos || 0) % loopLen) / loopLen;
-            }
-
-            return updatedNode;
+        // Loop window state — FRACTAL, engine parity (AudioNode base):
+        // active iff valid and not bypassed, published for clips and
+        // stacks alike; `playhead` carries the window phase while
+        // active: (masterPos − epoch) mod len.
+        const bypassed = !!node.loopBypassed;
+        const windowActive = !bypassed && node.loopEnd > node.loopStart;
+        updatedNode.loopBypassed = bypassed;
+        updatedNode.windowActive = windowActive;
+        if (windowActive) {
+            const loopLen = node.loopEnd - node.loopStart;
+            const rel = (state.masterPos || 0) - (state.islandEpoch || 0);
+            updatedNode.playhead = (((rel % loopLen) + loopLen) % loopLen) / loopLen;
         }
-        return node;
+
+        return updatedNode;
     });
 }
 
@@ -594,7 +597,9 @@ function viewMasterPos() {
     const raw = state.masterPos || 0;
     if (recView.active) return recView.base + (raw - recView.anchor);
     const Q = effectiveQuantumForState();
-    const cycle = committedCycle(Q);
+    // E-C (engine parity): the view wraps on the EFFECTIVE cycle — the
+    // playhead loops with what is heard, never past an active window.
+    const cycle = effectiveCycle(Q);
     const rel = raw - (state.islandEpoch || 0); // engine: rel = t − islandEpoch()
     return cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel;
 }
@@ -609,6 +614,35 @@ function committedCycle(Q) {
         if (n.nodes) visit(n.nodes);
     });
     visit(state.nodes);
+    return cycle;
+}
+
+/**
+ * The AUDIBLE island cycle (the engine's calculateEffectiveCycleLength,
+ * E-C): an active loop window makes a node contribute its window length
+ * instead of its intrinsic period — recursion stops at the window. The
+ * published masterPos wraps on THIS; commit/re-base logic stays on
+ * committedCycle (windows are view-of-time state, not material).
+ */
+function effectivePeriodOf(node) {
+    if (node.isRecording) return 0;
+    if (!node.loopBypassed && node.loopEnd > node.loopStart) {
+        return Math.round(node.loopEnd - node.loopStart);
+    }
+    if (node.type !== 'stack') return node.duration > 0 ? Math.round(node.duration) : 0;
+    let composite = 0;
+    (node.nodes || []).forEach(c => {
+        const p = effectivePeriodOf(c);
+        if (p > 0) composite = composite > 0 ? lcmInt(composite, p) : p;
+    });
+    return composite;
+}
+function effectiveCycle(Q) {
+    let cycle = Q > 0 ? Q : 0;
+    state.nodes.forEach(n => {
+        const p = effectivePeriodOf(n);
+        if (p > 0) cycle = cycle > 0 ? lcmInt(cycle, p) : p;
+    });
     return cycle;
 }
 function lcmInt(a, b) {

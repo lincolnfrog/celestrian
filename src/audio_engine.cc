@@ -182,7 +182,9 @@ juce::var AudioEngine::getGraphState() const {
   if (view_recording_.load()) {
     master_view = (double)(view_base_.load() + (t - view_anchor_t_.load()));
   } else {
-    const int64_t cycle = calculateTimelineLength();
+    // Wrap on the EFFECTIVE cycle (E-C): active windows shorten what
+    // is audible, and the playhead loops with what is heard.
+    const int64_t cycle = calculateEffectiveCycleLength();
     const int64_t rel = t - islandEpoch();
     master_view = (double)(cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel);
   }
@@ -431,10 +433,11 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
 }
 
 void AudioEngine::toggleLoopWindow(const juce::String &uuid) {
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(
-          findNodeByUuid(root_node.get(), uuid))) {
-    const bool bypassed = !stack->isLoopWindowBypassed();
-    stack->setLoopWindowBypassed(bypassed);
+  // Fractal (I5): window state lives on AudioNode — clips toggle their
+  // single-segment window exactly like stacks toggle their time-map.
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    const bool bypassed = !node->isLoopWindowBypassed();
+    node->setLoopWindowBypassed(bypassed);
     juce::Logger::writeToLog(
         "AudioEngine: Loop window for " + uuid +
         (bypassed ? " BYPASSED" : " ACTIVE"));
@@ -573,11 +576,15 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
       const bool is_recording = isAnyNodeRecording();
       if (is_recording && !was_any_node_recording_) {
-        const int64_t cycle = calculateTimelineLength();
+        // The frozen base continues the view the user was WATCHING —
+        // the effective (window-aware) wrap. The re-base comparison
+        // (view_lcm_before_) stays intrinsic: simple-extension
+        // detection is about committed material, not window state.
+        const int64_t view_cycle = calculateEffectiveCycleLength();
         const int64_t rel = old_pos - islandEpoch();
-        view_base_.store(cycle > 0 ? rel % cycle : rel);
+        view_base_.store(view_cycle > 0 ? rel % view_cycle : rel);
         view_anchor_t_.store(old_pos);
-        view_lcm_before_ = cycle;
+        view_lcm_before_ = calculateTimelineLength();
       } else if (!is_recording && was_any_node_recording_) {
         // Commit: when the cycle grew as a simple extension (every
         // duration divides into multiples of the old cycle), re-base
@@ -900,6 +907,19 @@ int64_t AudioEngine::calculateTimelineLength() const {
   if (quantum <= 0) quantum = one_second;
 
   return computeLcmRecursive(focused_node, quantum);
+}
+
+int64_t AudioEngine::calculateEffectiveCycleLength() const {
+  const int64_t one_second = (int64_t)cached_sample_rate_.load();
+  if (!focused_node) return one_second;
+
+  int64_t quantum = focused_node->getEffectiveQuantum();
+  if (quantum <= 0) quantum = one_second;
+
+  // The root is never windowed itself; its effective period is the LCM
+  // of the children's effective periods (E-C, recursive).
+  const int64_t p = focused_node->getEffectivePeriod();
+  return p > 0 ? celestrian::timing::lcm(quantum, p) : quantum;
 }
 
 bool AudioEngine::isAnyNodeRecording() const {

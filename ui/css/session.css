@@ -206,6 +206,22 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     font-size: 0.95rem;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Inline rename editor: same metrics as .rail-name so the head row
+   never reflows while editing (state-metrics spirit) */
+.rail-name-input {
+    flex: 1; min-width: 0;
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.95rem;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--tape);
+    border-radius: 6px;
+    padding: 0 4px;
+    margin: -1px 0;
+}
+.rail-name-input:focus { outline: none; }
+
 .rail-sub {
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 0.7rem;
@@ -235,6 +251,49 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .rail-btn.arm-btn.some { opacity: 0.6; }
 .rail-btn.arm-btn.recording { animation: recpulse 1.1s ease-in-out infinite; }
 .rail-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* Input picker: chip reads at rest ("in 2"); menu opens below the rail */
+.rail-btn.input-btn {
+    width: auto;
+    min-width: 40px;
+    padding: 0 8px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+.lane-rail { position: relative; }
+.input-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 8px;
+    right: 8px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--panel-2);
+    border: 1px solid #3d3123;
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.input-item {
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 0.78rem;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.input-item:hover { background: var(--lane); border: none; }
+.input-item.current { color: var(--tape); }
+.input-item.current::after { content: " ✓"; }
+.input-menu-note {
+    padding: 8px 10px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
 @media (prefers-reduced-motion: reduce) {
     #record-btn.armed, #record-btn.recording, .rail-btn.arm-btn.recording { animation: none; }
 }
@@ -330,19 +389,52 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .win-dim {
     position: absolute; top: 0; bottom: 0;
     background: rgba(23, 19, 16, 0.62);
+    /* Toggling active/bypassed swaps dims in and out — fade them in so
+       the toggle reads as a lighting change, not a layout event */
+    animation: dimfade 160ms ease;
+}
+@keyframes dimfade { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+    .win-dim { animation: none; }
 }
 .win-bracket {
     position: absolute; top: 2px; bottom: 2px;
     width: 8px;
     border: 2px solid var(--tape);
     opacity: 0.7;
+    /* Brackets are the drag handles (overlay layer is otherwise inert) */
+    pointer-events: auto;
+    cursor: ew-resize;
+    touch-action: none;
+}
+/* Instrument-in-hand hit zone: the visible bracket is 8px, the grab
+   target is ~3x that (pseudo-element extends the element's hit box) */
+.win-bracket::after {
+    content: "";
+    position: absolute;
+    inset: -6px -9px;
 }
 .win-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
 .win-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
+.win-bracket.dragging { opacity: 1; z-index: 2; }
+/* Snap ghost: dashed twin of the handle marking where a release lands —
+   the handle follows the pointer, the ghost previews the Q snap */
+.win-bracket.snap-ghost {
+    opacity: 0.5;
+    border-style: dashed;
+    pointer-events: none;
+    z-index: 1;
+}
 .lane-body.win-bypassed .win-bracket { opacity: 0.3; }
+/* Latent brackets (no window yet): invisible at rest, hinted on lane
+   hover; drag one in to CREATE the window */
+.win-bracket.latent { opacity: 0; }
+.lane-body:hover .win-bracket.latent { opacity: 0.35; }
+.win-bracket.latent.dragging { opacity: 1; }
 .win-chip {
     position: absolute;
     top: 4px;
+    white-space: nowrap;
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 0.65rem;
     color: var(--text-dim);
@@ -350,6 +442,25 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     padding: 1px 6px;
     border-radius: 4px;
 }
+/* Heard-time window cursor: where in its window the lane is sounding
+   now. Tape-amber — the single WHITE playhead stays island time (I8);
+   an active window remaps this lane's time, and the amber line is that
+   map made visible. Same 140ms glide as the playhead. */
+.win-cursor {
+    position: absolute;
+    top: 2px; bottom: 2px;
+    width: 2px;
+    background: var(--tape);
+    box-shadow: 0 0 5px rgba(232, 161, 60, 0.55);
+    pointer-events: none;
+    transition: left 140ms linear;
+}
+@media (prefers-reduced-motion: reduce) {
+    .win-cursor { transition: none; }
+}
+.win-chip.at-end { transform: translateX(-100%); margin-left: -10px; }
+.win-chip.toggle { pointer-events: auto; cursor: pointer; }
+.win-chip.toggle:hover { color: var(--tape); }
 
 /* The one playhead (I8) */
 #playhead {

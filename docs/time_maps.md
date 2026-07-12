@@ -200,4 +200,23 @@ metadata field, UI fade/toggle keyed to bypass state instead of
 expansion. Guarded by the rewritten `stack_loop_tests.cc`, including an
 explicit I6b sound-neutrality test (expanded vs collapsed output must be
 identical) and a nested-window epoch re-basing test.
+**Phase 1 extension (2026-07-11, fractal per I5):** clip windows are
+first-class — window state (bypass flag, `windowActive`/`loopBypassed`
+metadata) hoisted from StackNode to AudioNode, `toggleLoopWindow`
+accepts any node, and ClipNode playback falls back to the full take
+when bypassed (its loop points were always a single-segment map; the
+flag makes it toggleable). One asymmetry stands, deliberately: a
+stack's window phase is island-aligned ((t − epoch) mod len, §1) while
+a clip's remains origin-anchored (the kernel playback equation through
+`launchPointFor`); revisit if it bites when the cell/punch editor
+lands. UI: same brackets/latents/chip/heard-time cursor on both.
+**Phase 1 extension 2 (2026-07-11, E-C in the transport):** the
+engine's published masterPos wraps on the EFFECTIVE island cycle
+(`calculateEffectiveCycleLength` / `AudioNode::getEffectivePeriod`,
+recursive): an active window contributes its window length to the
+island LCM, so the playhead loops with what is heard and never sails
+past a top-level window (field report). Commit/epoch-re-base logic
+keeps the intrinsic length. The window-not-at-0 sole-lane case leaves
+the island playhead sweeping [0, len) outside the brackets (amber
+cursor carries heard time) — revisit in phase 2.
 **Phase 2 (record-through-map) and phase 3 (cell/punch editor): pending.**

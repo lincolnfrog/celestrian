@@ -158,14 +158,49 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
    I2 check (0px boundary difference measured). Wired in phase 2: play,
    fold, M/S, add-stack/clip, calibrate, dump. Record button present but
    inert until phase 3.
-3. **Core interactions.** 🔶 Record landed 2026-07-09 (pulled forward
-   after a field report that the shell had no record path): per-lane ●
-   (arm = `startRecordingInNode`; the engine owns the Q-boundary wait),
-   group ● arms all armable children, global ● is island-wide group
-   record and creates a fresh track when nothing is armable; content
-   clips show a disabled ● with a takes teaser. Mock now mirrors
-   "first committed take establishes Q". Still open in this phase:
-   rename, loop-window bracket drag, input picker.
+3. **Core interactions.** ✅ Done 2026-07-11. Record landed 2026-07-09
+   (pulled forward after a field report that the shell had no record
+   path): per-lane ● (arm = `startRecordingInNode`; the engine owns the
+   Q-boundary wait), group ● arms all armable children, global ● is
+   island-wide group record and creates a fresh track when nothing is
+   armable; content clips show a disabled ● with a takes teaser. Mock
+   now mirrors "first committed take establishes Q". The remainder
+   landed 2026-07-11 (frontend-only; all three ride existing bridge
+   methods):
+   - **Rename**: double-click the rail name → inline editor. Enter/blur
+     commit `renameNode`, Escape cancels; patchRail skips the name
+     write while editing, so the 50ms tick can't clobber typing (the
+     WebKit replaced-node lesson, applied to inputs).
+   - **Loop-window bracket drag**: brackets are drag handles
+     (pointer-captured; Q-snapped via the pure `windowDragTarget`,
+     window ≥ 1Q, clamped to the lane's `intrinsicQ`), committed as
+     `setLoopPoints` on release; the chip click toggles
+     active ↔ bypassed (`toggleLoopWindow`, groups only). Group lanes
+     WITHOUT a window get hover-revealed LATENT full-span brackets —
+     dragging one in CREATES the window; dragging back out to the full
+     span removes it (creation and deletion are the same gesture). The
+     overlay is never rebuilt mid-drag (`body._winDrag`).
+     TWO-LAYER DRAG FEEDBACK (owner, 2026-07-11): the handle follows
+     the pointer CONTINUOUSLY while a dashed snap-ghost bracket (+ live
+     dims and the chip's length badge) previews the Q-snapped landing —
+     you see your motion AND what a release commits.
+     FRACTAL WINDOWS (owner, 2026-07-11 — I5: a clip's loop region is
+     the single-segment case of the stack's time-map): clips window
+     exactly like groups — latent brackets, drag, chip toggle. Engine
+     side (small, tested): window state hoisted from StackNode to
+     AudioNode (`loopBypassed`/`windowActive` publish for every node),
+     `toggleLoopWindow` accepts any node, and ClipNode playback falls
+     back to the FULL take when bypassed (clip playback always looped
+     [loopStart, loopEnd) — the bypass flag makes it toggleable;
+     `stack_loop_tests.cc` "Clip loop window is fractal").
+     WINDOW CURSOR: an amber heard-time playhead inside active brackets
+     (`.win-cursor`, engine-published window phase on `playhead`) — see
+     display law 13's coda.
+   - **Input picker**: per-clip rail chip (`in N`, `in ·` = device
+     default; groups have none — Q7, children record from their own
+     inputs). The menu fetches `getInputList` on open (hot-plugged
+     interfaces appear without reload); picking calls `setNodeInput`;
+     disabled while the lane records. Dismiss = outside press / Escape.
 4. **Drag.** Rail-handle reorder with visible drop lines; **combine only
    via explicit modifier/drop chip** — never the silent default of a
    sloppy drop (today's center-drop surprise).
@@ -222,6 +257,21 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
 10. **The bar's edge is "now".** The recording bar extends to the
     playhead (both glide with the same 140ms timing); the written
     content trails inside by the latency compensation, honestly (E-E).
+    CODA — DEAD-RECKONING WHILE IDLE/PLAYING (field 2026-07-11: "the
+    playhead loops prematurely and starts somewhere non-zero"): the
+    140ms glide + 50ms poll lag the drawn line ~190ms behind true time,
+    so the sweep wrapped visibly before the loop end. When NOT
+    recording, the playhead is driven by a rAF dead-reckoning clock
+    (`playhead_clock.js`, pure + unit-tested): it advances at the
+    transport velocity ESTIMATED from published masterPos deltas (a
+    static mock scene stays static; a seek reads as a teleport, never a
+    speed burst), wraps EXACTLY at the audible cycle (loopCycleQ), and
+    is corrected each poll. Window cursors ride the same clock (heard
+    time advances at one rate everywhere), each wrapping in its own
+    window. While RECORDING the animator is off and the 140ms glide
+    keeps bar-edge/playhead lockstep — there is no wrap during a take.
+    Hidden tabs freeze rAF but the poll correction keeps the position
+    current, so the first visible frame is right (self-healing).
 11. **Morph only pure moves; snap re-layouts.** A tile whose canvas was
     redrawn in the same patch as its geometry change SNAPS (transition
     suppressed for that frame): animating a container over new content
@@ -234,6 +284,44 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
     once poisoned the whole grid after re-base); stops enter
     awaiting-stop and commit at `nextStopBoundary` while the rail shows
     "finishing…" (owner ruling 2026-07-10: stops always pad forward).
+13. **Windows never reframe the timeline** (owner ruling 2026-07-11).
+    The display frame and every lane period derive from INTRINSIC
+    periods (`displayPeriodQ`); an active window renders as brackets +
+    outside-dims repeated per period tile — a visual subset, never a
+    frame change. E-C ("a windowed composite behaves as a 2Q clip in
+    its parent's LCM") stays an ENGINE-side audio fact; following it in
+    the VM compressed a lone 2Q stack windowed to 1Q into a 1Q frame
+    (hiding content) and made the frame breathe on every
+    active/bypass toggle. The engine's masterPos wraps on clip
+    durations — the intrinsic frame is the one the playhead actually
+    sweeps (`view_model.test.mjs` pins toggle-invariance).
+    CODA (field 2026-07-11 "the loop window doesn't work anymore"):
+    once the frame stopped following the window, NOTHING displayed the
+    loop — the island playhead sweeps ISLAND time and sails through the
+    dimmed zone while the lane audibly loops. The map needs its own
+    line: the amber WINDOW CURSOR (`.win-cursor`) draws heard time
+    inside the brackets from the engine-published window phase
+    (`playhead` metadata), gliding with the playhead's 140ms timing and
+    snapping (never sweeping backwards) at the wrap. White = island
+    time, amber = this lane's mapped time.
+    CODA 2 — E-C TRANSPORT WRAP (field 2026-07-11 "I don't expect the
+    playhead to go past my loop region"): the published masterPos now
+    wraps on the AUDIBLE cycle — `calculateEffectiveCycleLength()`,
+    where an active window contributes its window length
+    (`AudioNode::getEffectivePeriod`, recursive through nested stacks).
+    This is E-C finally applied to the island cycle itself: island
+    times t and t+len are audibly identical under a top-level window,
+    so sweeping past len displayed pure noise. Exact, not approximate —
+    window phase is island-clock derived, so the subtree's output is
+    periodic in exactly the window length. Commit/epoch-re-base logic
+    stays on the INTRINSIC length (windows are reversible view-of-time
+    state, not committed material); the recording view base freezes on
+    the effective wrap (the view the user was watching). The readout
+    explains an early wrap: `0.4Q / 3Q ↺ · loop 2Q` (vm.loopCycleQ).
+    Known rough edge, deliberately deferred: a sole windowed lane whose
+    window does NOT start at 0 has the white playhead sweeping
+    [0, len) while the brackets sit elsewhere — the amber cursor is the
+    honest line there; revisit with time-maps phase 2.
 
 ## 7. Open items (design when reached)
 

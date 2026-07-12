@@ -259,6 +259,33 @@ export function initApp() {
         onSolo: id => callNative('toggleSolo', id),
         onAddStack: () => callNative('createNode', 'stack', ''),
         onAddClip: groupId => callNative('createNode', 'clip', groupId),
+        onRename: async (id, name) => {
+            await callNative('renameNode', id, name);
+            setLogLine(`Renamed to "${name}"`);
+        },
+        // Loop windows (time_maps.md): the region is data (setLoopPoints),
+        // activation is a toggle between active and bypassed
+        onSetWindow: async (id, startSamples, endSamples) => {
+            await callNative('setLoopPoints', id, startSamples, endSamples);
+            setLogLine('Loop window set');
+        },
+        onToggleWindow: id => callNative('toggleLoopWindow', id),
+        // Recording input (clips only — Q7: each child records from its
+        // own input). The list is fetched per menu-open: hot-plugged
+        // devices appear without a reload.
+        getInputs: async () => {
+            try {
+                const r = await callNative('getInputList');
+                return (r && r.inputs) || [];
+            } catch (err) {
+                console.error('getInputList failed:', err);
+                return [];
+            }
+        },
+        onSetInput: async (id, channelIndex) => {
+            await callNative('setNodeInput', id, channelIndex);
+            setLogLine(`Input set to channel ${channelIndex + 1}`);
+        },
         onArm,
         onRecord,
     });

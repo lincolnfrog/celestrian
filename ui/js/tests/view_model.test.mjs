@@ -15,7 +15,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deriveViewModel, unrollReps } from '../view_model.js';
+import { deriveViewModel, unrollReps, windowDragTarget } from '../view_model.js';
 
 const Q = 48000; // device-rate quantum (samples); tests avoid 44100 defaults
 
@@ -164,15 +164,39 @@ test('nested group: composite period = children LCM; fold hides children', () =>
     assert.deepEqual(folded.lanes[1].reps, g.reps);
 });
 
-test('E-C: an ACTIVE window makes a 6Q group behave as a 2Q lane', () => {
+test('an ACTIVE window is a visual SUBSET: frame and periods stay intrinsic', () => {
+    // E-C ("windowed composite behaves as a 2Q clip in its parent's
+    // LCM") is the ENGINE's audio fact; the display must not follow it
+    // (owner ruling 2026-07-11): the frame derives from intrinsic
+    // periods so windowing never reframes the timeline.
     const grp = stack([clip(2), clip(3)], {
         loopStart: 2 * Q, loopEnd: 4 * Q, windowActive: true,
     });
     const vm = deriveViewModel(state([clip(4), grp]));
     const g = vm.lanes.find(l => l.kind === 'group');
-    assert.equal(g.periodQ, 2);
-    assert.equal(vm.cycleQ, 4); // LCM(4Q, 2Q) — by data, never by view
-    assert.equal(g.window.active, true);
+    assert.equal(g.periodQ, 6);           // intrinsic (children LCM)
+    assert.equal(vm.cycleQ, 12);          // LCM(4Q, 6Q) — window-blind
+    assert.equal(g.window.active, true);  // the subset still renders
+    assert.deepEqual([g.window.startQ, g.window.endQ], [2, 4]);
+});
+
+test('a window never reframes the timeline (field bug 2026-07-11)', () => {
+    // A lone 2Q stack windowed to 1Q once compressed the whole frame to
+    // 1Q, hiding half the content — and the frame breathed on every
+    // active/bypass toggle. The engine's transport wraps on clip
+    // durations, so 2Q is also what the playhead actually sweeps.
+    const active = stack([clip(2)], {
+        loopStart: 0, loopEnd: 1 * Q, windowActive: true,
+    });
+    const vmA = deriveViewModel(state([active]));
+    assert.equal(vmA.cycleQ, 2);
+    assert.equal(vmA.lanes.find(l => l.kind === 'group').periodQ, 2);
+
+    const bypassed = stack([clip(2)], {
+        loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
+    });
+    const vmB = deriveViewModel(state([bypassed]));
+    assert.equal(vmB.cycleQ, 2); // toggle-invariant
 });
 
 test('a default full-span window is a no-op and is not shown', () => {
@@ -192,6 +216,102 @@ test('a default full-span window is a no-op and is not shown', () => {
     assert.equal(g.window, null);
     assert.equal(g.periodQ, 6);
     assert.equal(vm2.cycleQ, 12);
+});
+
+test('intrinsicQ: the brackets\' clamp bound rides every lane', () => {
+    const grp = stack([clip(2), clip(3)], {
+        loopStart: 2 * Q, loopEnd: 4 * Q, windowActive: true,
+    });
+    const vm = deriveViewModel(state([clip(4), grp]));
+    const g = vm.lanes.find(l => l.kind === 'group');
+    assert.equal(g.intrinsicQ, 6);
+    // Clips carry it too (their intrinsic period is the duration)
+    assert.equal(vm.lanes[0].intrinsicQ, 4);
+});
+
+test('windowDragTarget: Q-snap, clamps, and the 1Q minimum', () => {
+    const win = { startQ: 1, endQ: 4, maxQ: 6 };
+    // Nearest-Q snapping on both edges
+    assert.deepEqual(windowDragTarget({ edge: 'start', rawQ: 2.4, ...win }),
+        { startQ: 2, endQ: 4 });
+    assert.deepEqual(windowDragTarget({ edge: 'end', rawQ: 4.6, ...win }),
+        { startQ: 1, endQ: 5 });
+    // Clamped to the lane: start never below 0, end never past maxQ
+    assert.deepEqual(windowDragTarget({ edge: 'start', rawQ: -3, ...win }),
+        { startQ: 0, endQ: 4 });
+    assert.deepEqual(windowDragTarget({ edge: 'end', rawQ: 99, ...win }),
+        { startQ: 1, endQ: 6 });
+    // Windows keep at least 1Q: edges cannot cross or collapse
+    assert.deepEqual(windowDragTarget({ edge: 'start', rawQ: 5.9, ...win }),
+        { startQ: 3, endQ: 4 });
+    assert.deepEqual(windowDragTarget({ edge: 'end', rawQ: 0, ...win }),
+        { startQ: 1, endQ: 2 });
+});
+
+test('fractal windows: a clip\'s subset window renders like a stack\'s', () => {
+    // I5: a clip's loop region is the single-segment case of the
+    // stack's time-map — same window object, same activation semantics
+    const c = clip(4, {
+        loopStart: 1 * Q, loopEnd: 2 * Q, windowActive: true, playhead: 0.25,
+    });
+    const vm = deriveViewModel(state([c, clip(1)]));
+    const lane = vm.lanes[0];
+    assert.deepEqual(
+        { s: lane.window.startQ, e: lane.window.endQ, a: lane.window.active },
+        { s: 1, e: 2, a: true });
+    assert.equal(lane.periodQ, 4);      // display period stays intrinsic
+    assert.equal(lane.windowPhase, 0.25);
+});
+
+test('windowPhase: engine-published heard-time, zero when inactive', () => {
+    const grp = stack([clip(2)], {
+        loopStart: 0, loopEnd: 1 * Q, windowActive: true, playhead: 0.75,
+    });
+    const vmA = deriveViewModel(state([grp]));
+    assert.equal(vmA.lanes.find(l => l.kind === 'group').windowPhase, 0.75);
+
+    const bypassed = stack([clip(2)], {
+        loopStart: 0, loopEnd: 1 * Q, windowActive: false,
+        loopBypassed: true, playhead: 0.75,
+    });
+    const vmB = deriveViewModel(state([bypassed]));
+    assert.equal(vmB.lanes.find(l => l.kind === 'group').windowPhase, 0);
+});
+
+test('loopCycleQ: the audible cycle (E-C) — windows shorten it, display stays', () => {
+    // Lone 2Q stack windowed to 1Q: the transport wraps at 1Q (the
+    // playhead must never sail past the window — field 2026-07-11),
+    // while the display frame stays 2Q (law 13)
+    const grp = stack([clip(2)], {
+        loopStart: 0, loopEnd: 1 * Q, windowActive: true,
+    });
+    const vm = deriveViewModel(state([grp], { masterPos: 0.5 * Q }));
+    assert.equal(vm.cycleQ, 2);      // display frame: intrinsic
+    assert.equal(vm.loopCycleQ, 1);  // audible cycle: the window
+
+    // Bypassed: audible cycle back to intrinsic
+    const byp = stack([clip(2)], {
+        loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
+    });
+    assert.equal(deriveViewModel(state([byp])).loopCycleQ, 2);
+
+    // Multi-lane: LCM(4Q clip, 2Q window) = 4Q audible, 12Q display
+    const grp2 = stack([clip(2), clip(3)], {
+        loopStart: 0, loopEnd: 2 * Q, windowActive: true,
+    });
+    const vm2 = deriveViewModel(state([clip(4), grp2]));
+    assert.equal(vm2.cycleQ, 12);
+    assert.equal(vm2.loopCycleQ, 4);
+});
+
+test('clip lanes carry inputChannel; unset reads as −1 (device default)', () => {
+    const vm = deriveViewModel(state([clip(1, { inputChannel: 2 }), clip(4)]));
+    assert.equal(vm.lanes[0].inputChannel, 2);
+    assert.equal(vm.lanes[1].inputChannel, -1);
+    // Groups have no input of their own (Q7: children record from theirs)
+    const vm2 = deriveViewModel(state([stack([clip(1)])]));
+    const g = vm2.lanes.find(l => l.kind === 'group');
+    assert.equal(g.inputChannel, undefined);
 });
 
 // masterPos CONTRACT (AudioEngine::getGraphState): the state's masterPos

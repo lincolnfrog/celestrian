@@ -109,6 +109,10 @@ class AudioNode {
       obj->setProperty("duration", (double)duration_samples.load());
     obj->setProperty("loopStart", (double)loop_start_samples.load());
     obj->setProperty("loopEnd", (double)loop_end_samples.load());
+    // Loop window state — fractal (I5): published for clips and stacks
+    // alike; `playhead` carries the window phase while active.
+    obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
+    obj->setProperty("windowActive", isLoopWindowActive());
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
@@ -155,6 +159,41 @@ class AudioNode {
   int64_t getLoopStart() const { return loop_start_samples.load(); }
   int64_t getLoopEnd() const { return loop_end_samples.load(); }
 
+  // --- Loop window state (time_maps.md phase 1, fractal per I5) ---
+  /**
+   * Whether the loop window is bypassed. A window is ACTIVE iff it is
+   * valid (end > start) and not bypassed — independent of expansion
+   * (I6b: collapse is purely visual). Lives on the BASE node: a clip's
+   * loop region is the single-segment case of the stack's time-map
+   * (time_maps.md "one implementation, fractal"), so window state and
+   * its toggle apply uniformly to clips and stacks.
+   */
+  bool isLoopWindowBypassed() const { return loop_window_bypassed_.load(); }
+  void setLoopWindowBypassed(bool bypassed) {
+    loop_window_bypassed_.store(bypassed);
+  }
+  bool isLoopWindowActive() const {
+    return !loop_window_bypassed_.load() &&
+           loop_end_samples.load() > loop_start_samples.load();
+  }
+
+  /**
+   * The node's audible period in its parent's frame (E-C,
+   * design_language.md): an ACTIVE loop window makes the node behave
+   * as a window-length clip in the parent's LCM. This is exact, not an
+   * approximation — window phase is island-clock derived, so island
+   * times t and t+len map to identical child times: the subtree's
+   * output is periodic in exactly the window length. Without a window,
+   * the intrinsic duration. StackNode overrides the windowless case to
+   * LCM its children's effective periods (nested windows shorten it).
+   */
+  virtual int64_t getEffectivePeriod() const {
+    if (isLoopWindowActive()) {
+      return loop_end_samples.load() - loop_start_samples.load();
+    }
+    return getIntrinsicDuration();
+  }
+
   // Quantum Logic
   virtual int64_t getIntrinsicDuration() const = 0;
   virtual int64_t getEffectiveQuantum() const {
@@ -183,6 +222,9 @@ class AudioNode {
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
   std::atomic<int64_t> loop_start_samples{0};
   std::atomic<int64_t> loop_end_samples{0};
+  // Loop window bypass flag (time_maps.md). Window phase is pure
+  // arithmetic on the received clock — no private counter, fractal.
+  std::atomic<bool> loop_window_bypassed_{false};
   std::atomic<bool> is_node_recording{false};
   std::atomic<bool> is_muted{false};
   std::atomic<bool> is_expanded{

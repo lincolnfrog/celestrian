@@ -164,22 +164,19 @@ class StackNode : public AudioNode {
     return 0;
   }
 
-  // --- Loop window state (time_maps.md phase 1) ---
+  // Loop window state lives on AudioNode (fractal, I5): bypass flag,
+  // isLoopWindowActive(), and the metadata publish are shared with
+  // ClipNode. Window phase derives from the received clock
+  // ((t − cycle_epoch) mod len) — no private counter, no dependence on
+  // when the user collapsed anything.
+
   /**
-   * Whether the loop window is bypassed. A window is ACTIVE iff it is
-   * valid (end > start) and not bypassed — independent of expansion
-   * (I6b: collapse is purely visual). Window phase derives from the
-   * received clock ((t − cycle_epoch) mod len), so there is no private
-   * counter and no dependence on when the user collapsed anything.
+   * E-C, recursive: an active window on THIS stack wins (base class);
+   * otherwise the LCM of the children's EFFECTIVE periods — a windowed
+   * child contributes its window length, so nested windows shorten the
+   * audible cycle all the way up. Audio-thread safe (snapshot walk).
    */
-  bool isLoopWindowBypassed() const { return loop_window_bypassed_.load(); }
-  void setLoopWindowBypassed(bool bypassed) {
-    loop_window_bypassed_.store(bypassed);
-  }
-  bool isLoopWindowActive() const {
-    return !loop_window_bypassed_.load() &&
-           loop_end_samples.load() > loop_start_samples.load();
-  }
+  int64_t getEffectivePeriod() const override;
 
  private:
   const std::vector<AudioNode *> *renderChildren() const {
@@ -209,11 +206,6 @@ class StackNode : public AudioNode {
   // directly until ready. Preallocated so process() does not touch the
   // heap at normal block sizes.
   juce::AudioBuffer<float> mix_buffer;
-
-  // Loop window bypass flag (time_maps.md). The old internal_transport_
-  // counter is gone: window phase is pure arithmetic on the received
-  // clock — the kernel's first time-map.
-  std::atomic<bool> loop_window_bypassed_{false};
 
   // Island state (P0-3): explicit, stored once — never derived from
   // child durations (deriving caused the retroactive-Q bug class).

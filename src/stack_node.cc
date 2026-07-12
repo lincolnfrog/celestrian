@@ -54,11 +54,9 @@ juce::var StackNode::getMetadata() const {
   auto *obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)kids->size());
   obj->setProperty("isExpanded", (bool)is_expanded.load());
-  // Loop window state (time_maps.md): active is independent of
-  // expansion; the stack's `playhead` field (base metadata) carries the
-  // window phase fraction while the window is active.
-  obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
-  obj->setProperty("windowActive", isLoopWindowActive());
+  // Loop window state (loopBypassed/windowActive) publishes from the
+  // AudioNode base — fractal with clips (I5). The stack's `playhead`
+  // field carries the window phase fraction while the window is active.
   // Island state, for diagnosability: `origin` on clips is ABSOLUTE;
   // the view-frame anchor is (origin − epoch) mod duration. Without the
   // epoch in dumps, "origin = 3Q" looks wrong for a clip recorded at
@@ -86,6 +84,26 @@ int64_t StackNode::getIntrinsicDuration() const {
     int64_t d = child->getIntrinsicDuration();
     if (d > 0) {
       composite = (composite == 0) ? d : timing::lcm(composite, d);
+    }
+  }
+  return composite;
+}
+
+int64_t StackNode::getEffectivePeriod() const {
+  // E-C: an active window on this stack IS the period (base class).
+  if (isLoopWindowActive()) return getLoopEnd() - getLoopStart();
+  // Otherwise LCM of children's EFFECTIVE periods — windowed children
+  // contribute their window length, so nested windows shorten the
+  // audible cycle. Same shape as getIntrinsicDuration, one recursion
+  // deeper in honesty.
+  const auto *kids = renderChildren();
+  if (kids->empty()) return 0;
+
+  int64_t composite = 0;
+  for (auto *child : *kids) {
+    int64_t p = child->getEffectivePeriod();
+    if (p > 0) {
+      composite = (composite == 0) ? p : timing::lcm(composite, p);
     }
   }
   return composite;
