@@ -29,7 +29,9 @@ export const EFFECT_SCHEMA = [
             { key: 'ratio', label: 'ratio', min: 1, max: 20, step: 0.5, fmt: ratio },
             { key: 'attack', label: 'atk', min: 0.1, max: 100, step: 0.1, fmt: ms },
             { key: 'release', label: 'rel', min: 10, max: 1000, step: 5, fmt: ms },
-            { key: 'makeup', label: 'gain', min: 0, max: 24, step: 0.5, fmt: db },
+            // Output trim: makeup convention is raise-only (compression
+            // removes level; this restores it) but cutting is useful too
+            { key: 'makeup', label: 'gain', min: -12, max: 24, step: 0.5, fmt: db },
         ],
     },
     {

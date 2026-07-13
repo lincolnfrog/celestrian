@@ -95,6 +95,30 @@ empty husks) while a single active island pays nothing for it.
   node's metadata — VST3 later replaces the rack's internals, not this
   shape. A held slider is never overwritten by the 50ms tick (the
   rename-editor guard, applied to inputs).
+  VISUALIZATIONS (owner ask 2026-07-12, "see the threshold relative to
+  the real waveform"): every card carries a live canvas fed by the
+  rack's SCOPE — the audio thread only copies the pre-rack signal into
+  a 2048-sample ring; the 24-bin Goertzel spectrum, peak, and
+  compressor GR are derived on the MESSAGE thread at poll time inside
+  getMetadata (zero analysis on the audio thread; a racy ring read
+  only smears a picture). EQ = spectrum bars under the bands' analytic
+  response curve (fx_viz.js ports the SAME RBJ math as effects.cc, so
+  the drawn curve IS the biquads — unit-pinned). COMP = scrolling peak
+  envelope in dB space with the threshold as a red dashed line and a
+  top-down GR meter + readout. ECHO = tap timeline (dry pulse, then
+  repeats at k·time with mix·fb^(k−1) heights), breathing with the
+  live peak. VERB = exponential tail scaled by mix, length from
+  size/damp.
+  SCOPE GATING (owner, 2026-07-12): capture is gated on the panel
+  being OPEN (`setEffectScope` bridge method, called by the fx chip
+  toggle) — no watcher, no copy, zero audio-thread cost for closed
+  panels. An open panel's rack is "live" even with zero slots enabled
+  (isLive = anyEnabled ∨ scope), so the spectrum and threshold-vs-peaks
+  display work BEFORE committing to an effect. Note the ring exists
+  solely for the spectrum — every other display consumes block peaks
+  (compressed data); a spectrum cannot be derived from peaks.
+  Compressor makeup is an output trim: −12..+24 dB (raise-only is the
+  makeup convention, but cutting is harmless and useful).
 
 ## 3. Visual language (Tape Room tokens)
 

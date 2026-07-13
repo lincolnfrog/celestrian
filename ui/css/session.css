@@ -443,6 +443,21 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 .fx-power.on { color: var(--ground); background: var(--tape); border-color: var(--tape); }
+.fx-viz {
+    display: block;
+    width: 100%;
+    height: 54px;
+    background: var(--ground);
+    border-radius: 6px;
+    margin: 2px 0 6px;
+}
+.fx-gr {
+    margin-left: auto;
+    font-size: 0.62rem;
+    color: var(--rec);
+    min-width: 6ch;
+    text-align: right;
+}
 .fx-param {
     display: grid;
     grid-template-columns: 4ch 1fr 6ch;

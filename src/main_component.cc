@@ -173,6 +173,17 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "setEffectScope",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 1) {
+                      audio_engine.setEffectScope(args[0].toString(),
+                                                  (bool)args[1]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "setLoopPoints",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

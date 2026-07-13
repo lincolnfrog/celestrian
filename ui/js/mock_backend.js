@@ -43,6 +43,7 @@ export const handlers = {
     setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
     setEffectEnabled: (id, fx, enabled) => setEffectEnabled(id, fx, enabled),
     setEffectParam: (id, fx, param, value) => setEffectParam(id, fx, param, value),
+    setEffectScope: (id, active) => setEffectScope(id, active),
     startLatencyCalibration: () => startLatencyCalibration(),
     getLatencyCalibration: () => getLatencyCalibration(),
     setLoopPoints: (id, start, end) => setLoopPoints(id, start, end),
@@ -310,6 +311,16 @@ function setEffectParam(id, fx, param, value) {
         Object.prototype.hasOwnProperty.call(node.effects[fx], param)) {
         node.effects[fx][param] = value;
         console.log('[MockBackend] Effect param', fx + '.' + param, 'on', id, '→', value);
+    }
+}
+
+function setEffectScope(id, active) {
+    // Engine parity (EffectRack::setScopeActive): scope telemetry only
+    // exists while a panel watches.
+    const node = findNode(id);
+    if (node) {
+        node._scopeOn = !!active;
+        console.log('[MockBackend] Effect scope on', id, '→', active ? 'OPEN' : 'CLOSED');
     }
 }
 
@@ -610,6 +621,34 @@ function enrichNodes(nodes) {
         // Effect rack state publishes on EVERY node (engine parity:
         // AudioNode::getMetadata always carries `effects`)
         updatedNode.effects = node.effects || defaultEffects();
+        // Scope telemetry (engine parity: published only while a panel
+        // WATCHES — setEffectScope). Synthesized: a pink-ish spectrum
+        // that breathes with the transport, a peak, and the
+        // compressor's theoretical GR.
+        const fxs = updatedNode.effects;
+        if (node._scopeOn) {
+            const t = (state.masterPos || 0) / 44100;
+            const peak = state.isPlaying
+                ? 0.35 + 0.3 * Math.abs(Math.sin(t * 2.1 + 0.4)) : 0;
+            let gr = 0;
+            if (fxs.compressor.enabled && peak > 0) {
+                const peakDb = 20 * Math.log10(peak);
+                const c = fxs.compressor;
+                if (peakDb > c.threshold) {
+                    gr = (peakDb - c.threshold) * (1 - 1 / c.ratio);
+                }
+            }
+            updatedNode.effects = {
+                ...fxs,
+                scope: {
+                    spectrum: Array.from({ length: 24 }, (_, i) =>
+                        Math.max(0, Math.min(1,
+                            0.72 - i * 0.022 + 0.2 * Math.sin(t * 3 + i * 0.7)))),
+                    peak,
+                    gr,
+                },
+            };
+        }
         if (windowActive) {
             const loopLen = node.loopEnd - node.loopStart;
             const rel = (state.masterPos || 0) - (state.islandEpoch || 0);

@@ -609,6 +609,39 @@ test.describe('Effects rack (built-ins)', () => {
         await expect(group.locator('.fx-btn')).toHaveText('fx·1', { timeout: 3000 });
     });
 
+    test('visualizations: every card draws; comp shows GR while crushing', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const firstClip = page.locator('.lane[data-kind="clip"]').first();
+        await firstClip.locator('.fx-btn').click();
+        const fxRow = page.locator('.lane-fx');
+        await expect(fxRow.locator('canvas.fx-viz')).toHaveCount(4, { timeout: 3000 });
+
+        // Enable the compressor and put the transport somewhere loud
+        // (mock scope peak ≈ 0.65 → well above the −18 dB threshold)
+        await fxRow.locator('.fx-card[data-fx="compressor"] .fx-power').click();
+        await page.evaluate(() => {
+            window.celestrian.setIsPlaying(true);
+            window.celestrian.setMasterPos(24568); // sin phase ≈ 1
+        });
+        // The engine-parity scope publishes a positive gain reduction…
+        await expect.poll(() => page.evaluate(() =>
+            window.celestrian.getState().nodes.find(n => n.type === 'stack')
+                .nodes[0].effects.scope.gr), { timeout: 3000 }).toBeGreaterThan(1);
+        // …and the card's readout shows it
+        await expect(fxRow.locator('.fx-card[data-fx="compressor"] .fx-gr'))
+            .toHaveText(/dB/, { timeout: 3000 });
+
+        // Canvases actually paint (non-zero backing store, drawn pixels)
+        const painted = await fxRow.locator('.fx-card[data-fx="compressor"] .fx-viz')
+            .evaluate(c => {
+                const ctx = c.getContext('2d');
+                const px = ctx.getImageData(0, 0, c.width, c.height).data;
+                for (let i = 3; i < px.length; i += 4) if (px[i] > 0) return true;
+                return false;
+            });
+        expect(painted).toBe(true);
+    });
+
     test('the 50ms tick never fights a slider being dragged', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
         await page.locator('.lane[data-kind="clip"]').first()

@@ -57,6 +57,9 @@ export const BRIDGE_METHODS = [
     // not this bridge shape).
     { name: 'setEffectEnabled', params: ['uuid', 'fx', 'enabled'] },
     { name: 'setEffectParam', params: ['uuid', 'fx', 'param', 'value'] },
+    // Panel open/closed: gates the node's scope capture + telemetry —
+    // when no panel watches, the audio thread doesn't even copy.
+    { name: 'setEffectScope', params: ['uuid', 'active'] },
 
     // Latency calibration (docs/performance.md §7): emits a click while
     // capturing input; the measured round-trip supersedes device-reported

@@ -20,6 +20,10 @@ import {
     forwardDelta, estimateVelocity, advancePosition, correctPosition,
 } from './playhead_clock.js';
 import { EFFECT_SCHEMA } from './effect_schema.js';
+import {
+    drawEqViz, drawCompViz, drawEchoViz, drawReverbViz,
+    echoTaps, reverbTailSeconds,
+} from './fx_viz.js';
 
 const pct = (q, cycleQ) => (q / cycleQ) * 100 + '%';
 
@@ -300,7 +304,19 @@ function buildFxRow(row, lane) {
         title.className = 'fx-title';
         title.textContent = fx.label;
         head.append(power, title);
+        if (fx.type === 'compressor') {
+            // Live gain-reduction readout beside the title
+            const gr = document.createElement('span');
+            gr.className = 'fx-gr mono';
+            head.appendChild(gr);
+        }
         card.appendChild(head);
+
+        // The card's visualization (fx_viz.js): EQ spectrum+curve,
+        // compressor envelope+threshold+GR, echo taps, reverb tail
+        const viz = document.createElement('canvas');
+        viz.className = 'fx-viz';
+        card.appendChild(viz);
 
         fx.params.forEach(p => {
             const line = document.createElement('label');
@@ -353,6 +369,30 @@ function patchFxRow(row, lane) {
             }
             setText(input.parentElement.querySelector('.fx-param-value'), p.fmt(v));
         });
+
+        // Visualization: redrawn per poll (~20 Hz) from the published
+        // scope (spectrum / peak / GR) + the card's own parameters
+        const viz = card.querySelector('.fx-viz');
+        const scope = effects.scope || null;
+        if (fx.type === 'eq') {
+            drawEqViz(viz, scope && scope.spectrum,
+                { low: state.low, mid: state.mid, high: state.high });
+        } else if (fx.type === 'compressor') {
+            // Scrolling envelope: accumulate the pre-rack peak per poll
+            // (the live_peaks pattern, at panel scale)
+            const hist = viz._hist || (viz._hist = []);
+            hist.push(scope ? scope.peak || 0 : 0);
+            if (hist.length > 90) hist.shift();
+            const gr = scope ? scope.gr || 0 : 0;
+            drawCompViz(viz, hist, state.threshold, gr);
+            setText(card.querySelector('.fx-gr'),
+                gr > 0.05 ? '−' + gr.toFixed(1) + ' dB' : '');
+        } else if (fx.type === 'echo') {
+            drawEchoViz(viz, echoTaps(state), scope ? scope.peak : 0);
+        } else if (fx.type === 'reverb') {
+            drawReverbViz(viz, reverbTailSeconds(state), state.mix,
+                scope ? scope.peak : 0);
+        }
     });
 }
 

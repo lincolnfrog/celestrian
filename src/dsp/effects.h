@@ -71,14 +71,20 @@ class FxCompressor {
   std::atomic<float> ratio{4.0f};        // 1..20
   std::atomic<float> attack_ms{10.0f};   // 0.1..100
   std::atomic<float> release_ms{100.0f}; // 10..1000
-  std::atomic<float> makeup_db{0.0f};    // 0..24
+  std::atomic<float> makeup_db{0.0f};    // −12..24 (output trim; makeup
+                                         // convention is raise-only, but
+                                         // cutting is harmless and useful)
 
   void prepare(double sampleRate);
   void process(float* x, int n);
 
+  /** Live gain reduction in dB (≥ 0), for the UI's GR meter. */
+  float currentGainReductionDb() const { return gr_db_.load(); }
+
  private:
   double sr_ = 44100.0;
   float env_ = 0.0f;  // peak envelope, linear
+  std::atomic<float> gr_db_{0.0f};
 };
 
 /** Echo: preallocated delay line; time/feedback/mix. */
@@ -147,8 +153,34 @@ class EffectRack {
 
   bool isPrepared() const { return prepared_sr_ > 0.0; }
 
+  /**
+   * SCOPE: pre-rack signal telemetry for the effect visualizations
+   * (docs/ui_overhaul.md effects bar). The audio thread only COPIES the
+   * rack's input into a small ring (single writer, atomic index); all
+   * analysis (the 24-bin Goertzel spectrum) runs on the MESSAGE thread
+   * at poll time inside getMetadata — zero analysis cost on the audio
+   * thread, and a racy ring read only ever smears a visualization.
+   *
+   * GATED on the UI's panel being open (setEffectScope bridge method):
+   * when nobody is looking, the audio thread doesn't even copy. The
+   * ring exists solely for the SPECTRUM — every other display consumes
+   * block peaks; a spectrum cannot be derived from compressed data.
+   */
+  static constexpr int kScopeSize = 2048;   // power of two
+  static constexpr int kSpectrumBins = 24;  // log-spaced 40 Hz..16 kHz
+
+  void setScopeActive(bool on) { scope_on_.store(on); }
+  bool scopeActive() const { return scope_on_.load(); }
+
+  /** The audio thread runs the rack if it has work OR a watcher. */
+  bool isLive() const { return anyEnabled() || scope_on_.load(); }
+
  private:
   double prepared_sr_ = 0.0;
+  std::atomic<bool> scope_on_{false};  // panel open somewhere
+  std::vector<float> scope_;           // sized in prepare()
+  std::atomic<int> scope_write_{0};
+  std::atomic<float> in_peak_{0.0f};   // pre-rack block peak
 };
 
 }  // namespace celestrian::dsp

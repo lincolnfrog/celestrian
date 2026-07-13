@@ -146,9 +146,66 @@ class EffectsTests : public juce::UnitTest {
       expect(rack.setParam("echo", "mix", 0.5));
       expect(!rack.setEnabled("chorus", false), "unknown effect rejected");
       expect(!rack.setParam("echo", "flutter", 1.0), "unknown param rejected");
+      // Makeup is an output trim: cuts allowed, clamped at −12
+      expect(rack.setParam("compressor", "makeup", -6.0));
+      expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -6.0f,
+                                0.001f, "negative makeup accepted");
+      rack.setParam("compressor", "makeup", -40.0);
+      expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -12.0f,
+                                0.001f, "makeup clamps at −12");
       expectEquals(rack.enabledCount(), 1);
       auto meta = rack.getMetadata();
       expect((bool)meta.getProperty("echo", {}).getProperty("enabled", false));
+    }
+
+    beginTest("Scope telemetry: gated on a watcher; spectrum discriminates");
+    {
+      dsp::EffectRack rack;
+      rack.prepare(sr);
+      rack.setEnabled("compressor", true);
+      rack.setParam("compressor", "threshold", -20.0);
+      rack.setParam("compressor", "attack", 1.0);
+
+      // Feed a loud LOW sine (100 Hz) through the rack
+      std::vector<float> x(4096);
+      for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 100.0 *
+                               (double)i / sr);
+      }
+
+      // NO WATCHER: processing captures nothing, publishes nothing
+      rack.process(x.data(), 2048);
+      expect(!rack.getMetadata().hasProperty("scope"),
+             "no scope without a watcher");
+
+      // Panel opens (setEffectScope): capture + telemetry live. A rack
+      // with ZERO enabled slots is still live for capture (isLive) so
+      // the threshold can be lined up before enabling.
+      rack.setScopeActive(true);
+      expect(rack.isLive());
+      for (size_t i = 0; i < x.size(); ++i) {
+        x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 100.0 *
+                               (double)i / sr);
+      }
+      rack.process(x.data(), 2048);
+      rack.process(x.data() + 2048, 2048);
+
+      auto meta = rack.getMetadata();
+      auto scope = meta.getProperty("scope", {});
+      expect(scope.isObject(), "scope published while watched");
+      auto* spec = scope.getProperty("spectrum", {}).getArray();
+      expect(spec != nullptr && spec->size() == dsp::EffectRack::kSpectrumBins,
+             "24 spectrum bins");
+      // Low bins outweigh high bins for a 100 Hz tone
+      const double lowE = (double)(*spec)[2] + (double)(*spec)[3];
+      const double highE = (double)(*spec)[20] + (double)(*spec)[21];
+      expectGreaterThan(lowE, highE + 0.2, "spectrum sees the low tone");
+      expectGreaterThan((double)scope.getProperty("peak", 0.0), 0.5,
+                        "pre-rack peak published");
+      // 0 dBFS into thr −20/ratio 4 → ~15 dB of reduction
+      const double gr = (double)scope.getProperty("gr", 0.0);
+      expect(gr > 8.0 && gr < 22.0, "gain reduction ~15 dB, got " +
+                                        juce::String(gr));
     }
 
     beginTest("Clip playback runs its rack (echo audible in the output)");

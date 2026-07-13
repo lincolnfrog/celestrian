@@ -399,7 +399,9 @@ void ClipNode::process(const float *const *input_channels,
           fx_scratch_[(size_t)i] =
               buffer.getReadPointer(0)[current_read_position];
         }
-        if (fx_.anyEnabled()) {
+        // isLive: enabled slots OR an open panel watching the scope
+        // (capture-only pass costs one copy; effects all no-op)
+        if (fx_.isLive()) {
           fx_.process(fx_scratch_.data(), context.num_samples);
         }
         for (int ch = 0; ch < num_output_channels; ++ch) {

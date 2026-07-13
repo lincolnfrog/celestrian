@@ -439,6 +439,19 @@ void AudioEngine::setEffectParam(const juce::String &uuid,
   }
 }
 
+void AudioEngine::setEffectScope(const juce::String &uuid, bool active) {
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    if (active) {
+      // The scope can open before any slot is enabled — prepare so the
+      // ring exists when the audio thread starts capturing
+      double sr = cached_sample_rate_.load();
+      if (sr <= 0) sr = 44100.0;
+      node->effects().prepare(sr);
+    }
+    node->effects().setScopeActive(active);
+  }
+}
+
 void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
                                 int64_t end) {
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +

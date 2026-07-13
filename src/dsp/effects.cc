@@ -89,6 +89,7 @@ void FxCompressor::process(float* x, int n) {
       std::exp(-1.0f / (juce::jmax(1.0f, release_ms.load()) * 0.001f * (float)sr_));
   const float makeup = std::pow(10.0f, makeup_db.load() / 20.0f);
 
+  float min_gain = 1.0f;  // deepest reduction this block → GR meter
   for (int i = 0; i < n; ++i) {
     const float a = std::abs(x[i]);
     // Peak envelope: fast attack, slow release
@@ -102,8 +103,10 @@ void FxCompressor::process(float* x, int n) {
         gain = std::pow(10.0f, (outDb - envDb) / 20.0f);
       }
     }
+    if (gain < min_gain) min_gain = gain;
     x[i] *= gain * makeup;
   }
+  gr_db_.store(min_gain < 1.0f ? -20.0f * std::log10(min_gain) : 0.0f);
 }
 
 // ===== Echo =====
@@ -163,9 +166,27 @@ void EffectRack::prepare(double sampleRate) {
   compressor.prepare(sampleRate);
   echo.prepare(sampleRate);
   reverb.prepare(sampleRate);
+  scope_.assign((size_t)kScopeSize, 0.0f);  // message thread only
+  scope_write_.store(0);
 }
 
 void EffectRack::process(float* x, int n) {
+  // Scope capture (pre-rack): copy + peak only — analysis happens on
+  // the message thread at poll time (getMetadata). GATED on a panel
+  // watching: no watcher, no copy.
+  if (scope_on_.load() && !scope_.empty()) {
+    float pk = 0.0f;
+    int w = scope_write_.load();
+    for (int i = 0; i < n; ++i) {
+      scope_[(size_t)w] = x[i];
+      w = (w + 1) & (kScopeSize - 1);
+      const float a = std::abs(x[i]);
+      if (a > pk) pk = a;
+    }
+    scope_write_.store(w);
+    in_peak_.store(pk);
+  }
+
   // Canonical signal order: corrective (EQ) → dynamics → time effects
   if (eq.enabled.load()) eq.process(x, n);
   if (compressor.enabled.load()) compressor.process(x, n);
@@ -198,7 +219,7 @@ bool EffectRack::setParam(const juce::String& fx, const juce::String& key,
     else if (key == "ratio") compressor.ratio.store(juce::jlimit(1.0f, 20.0f, f));
     else if (key == "attack") compressor.attack_ms.store(juce::jlimit(0.1f, 100.0f, f));
     else if (key == "release") compressor.release_ms.store(juce::jlimit(10.0f, 1000.0f, f));
-    else if (key == "makeup") compressor.makeup_db.store(juce::jlimit(0.0f, 24.0f, f));
+    else if (key == "makeup") compressor.makeup_db.store(juce::jlimit(-12.0f, 24.0f, f));
     else return false;
     return true;
   }
@@ -248,6 +269,42 @@ juce::var EffectRack::getMetadata() const {
                                   {"damp", reverb.damp.load()},
                                   {"mix", reverb.mix.load()}},
                                  reverb.enabled.load()));
+
+  // Scope telemetry for the card visualizations — computed HERE, on the
+  // message thread at poll cadence (~20 Hz), never on the audio thread.
+  // Published only while a panel WATCHES (setEffectScope): closed
+  // panels pay nothing, and an open panel gets live data even before
+  // any slot is enabled (line up the threshold first, then commit).
+  if (scope_on_.load() && !scope_.empty() && prepared_sr_ > 0) {
+    juce::Array<juce::var> spec;
+    const double sr = prepared_sr_;
+    const double fLo = 40.0;
+    const double fHi = juce::jmin(16000.0, sr * 0.45);
+    for (int b = 0; b < kSpectrumBins; ++b) {
+      const double f =
+          fLo * std::pow(fHi / fLo, (double)b / (kSpectrumBins - 1));
+      // Goertzel over the ring. Ring order doesn't matter for the
+      // magnitude of quasi-steady content; the seam only smears
+      // transients — fine for a visualization.
+      const double w = 2.0 * juce::MathConstants<double>::pi * f / sr;
+      const double coeff = 2.0 * std::cos(w);
+      double s1 = 0.0, s2 = 0.0;
+      for (int i = 0; i < kScopeSize; ++i) {
+        const double s0 = (double)scope_[(size_t)i] + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+      }
+      const double mag =
+          std::sqrt(s1 * s1 + s2 * s2 - coeff * s1 * s2) / (kScopeSize / 2.0);
+      const double db = 20.0 * std::log10(mag + 1.0e-9);
+      spec.add(juce::jlimit(0.0, 1.0, (db + 60.0) / 60.0));
+    }
+    juce::DynamicObject::Ptr scope = new juce::DynamicObject();
+    scope->setProperty("spectrum", spec);
+    scope->setProperty("peak", in_peak_.load());
+    scope->setProperty("gr", compressor.currentGainReductionDb());
+    fx->setProperty("scope", juce::var(scope.get()));
+  }
   return juce::var(fx.get());
 }
 

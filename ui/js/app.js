@@ -290,8 +290,11 @@ export function initApp() {
         // Built-in effects: panel-open is pure view state; enable and
         // params go straight to the engine's fixed rack
         onToggleFx: id => {
-            if (fxOpen.has(id)) fxOpen.delete(id);
-            else fxOpen.add(id);
+            const open = !fxOpen.has(id);
+            if (open) fxOpen.add(id);
+            else fxOpen.delete(id);
+            // Gate the engine's scope capture: no watcher, no copying
+            callNative('setEffectScope', id, open);
         },
         onSetEffectEnabled: async (id, fx, enabled) => {
             await callNative('setEffectEnabled', id, fx, enabled);

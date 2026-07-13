@@ -253,7 +253,7 @@ void StackNode::process(const float *const *input_channels,
   // wets the whole kit), then the result adds to the parent. Children
   // render identical mono to every channel, so folding channel 0 is
   // lossless (the rack goes stereo with the Mono→Stereo roadmap item).
-  const bool use_fx = fx_.anyEnabled();
+  const bool use_fx = fx_.isLive();
   if (use_fx) {
     if (fx_accum_.getNumSamples() < context.num_samples ||
         fx_accum_.getNumChannels() < 1) {

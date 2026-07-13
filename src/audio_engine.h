@@ -134,6 +134,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                         bool enabled);
   void setEffectParam(const juce::String &uuid, const juce::String &fx,
                       const juce::String &key, double value);
+  /** Panel open/closed: gates ALL scope capture + telemetry for a node. */
+  void setEffectScope(const juce::String &uuid, bool active);
 
   /**
    * Sets the non-destructive loop points for a specific node.
