@@ -22,21 +22,26 @@ each tier de-risks the next.
   `qtime_*` sections of `shared/timing_golden.json`
   (`tests/qtime_tests.cc` + `ui/js/tests/qtime_golden.test.mjs`,
   including round-trip/monotonicity/tie-rule property tests). Law:
-  nearest sample, exact halves toward +∞. Not yet wired into the
-  engine — that's the Tier 1 migration (start by re-deriving the Q/2,
-  Q/4, Q/8 subdivisions in `timing.h` through `toSamples`, which
-  changes goldens by ≤1 sample where Q isn't divisible).
+  nearest sample, exact halves toward +∞. First engine wiring landed
+  the same day: `timing::subdivisionSamples` routes the Q/2, Q/4, Q/8
+  boundaries (stop boundary, snap candidates, loop-end fallback)
+  through the law on both sides; goldens updated (Q/8 of 44100 is now
+  5513) with new odd-Q vectors pinning the law inside the snapping
+  functions.
 
 ## Tier 1: Finish the Kernel (deletions, not designs)
 
 From `unification_audit.md` §1 — each item is the code catching up
 with kernel.md:
 
-- [ ] **Delete both clock mutations** — first-clip transport reset
-  (`startRecordingInNode`) becomes pure epoch capture (`epoch := t`);
-  `togglePlayback` stop-reset becomes an explicit epoch/play-epoch
-  policy. Expect hidden absolute-frame math to surface (that's the
-  point); D6 below is one known instance.
+- [x] **Delete both clock mutations** — ✅ done 2026-07-16. First-clip
+  reset replaced by epoch capture at arm (ClipNode stores the arm
+  moment as island epoch); `togglePlayback` stop-reset replaced by
+  pause/resume. D6 fixed in the same stroke (`recordingStartPhase` now
+  epoch-relative). Mock mirrors pause/resume. Pinned by
+  `tests/monotonic_clock_tests.cc` (first clip at t > 0; stop/play
+  resume); full C++/JS/e2e suites green. kernel.md §2 now holds
+  without exceptions.
 - [ ] **Delete the residual stored timing fields** —
   `launch_point_samples`, `anchor_phase_samples` (derive in metadata if
   the UI still wants them), `trigger_master_position` (P1-7's last
@@ -73,9 +78,8 @@ with kernel.md:
   with no signal; surface it (grow, or warn).
 - [ ] **D5: Epoch re-base scope mismatch** — `scanCommitted` walks
   `focused_node`, re-base hits `root_node`; latent until nested focus.
-- [ ] **D6: `recordingStartPhase` uses absolute frame** — `trigger % Q`
-  survives only because of the first-clip reset; make it
-  epoch-relative.
+- [x] **D6: `recordingStartPhase` uses absolute frame** — ✅ fixed
+  2026-07-16 with the clock-mutation deletion: now epoch-relative.
 
 ## Tier 3: The Unifying Primitives (audit §2)
 
@@ -202,7 +206,7 @@ with kernel.md:
 | 5 | Warning UX for very large LCMs (coprime durations)? | open — Q2 resolved the model question; the UX remains |
 | 6 | **Rational time (D-T1…D-T5)** — ✅ RULED 2026-07-16 (design_language.md Q12): QTime rational, adopt now; subsumes Q9 | unification_audit.md §4 |
 | 7 | Record on a composite — ✅ resolved (Q7): group arm, empty clips only; takes/templates as companions | design_language.md Q7 |
-| 8 | Stop/play epoch policy once the `togglePlayback` clock reset is deleted — resume from cycle top, or from stopped phase? | new — falls out of Tier 1 |
+| 8 | Stop/play policy — **implemented default (2026-07-16): pause/resume** (stop freezes, play continues the phase). The old reset only restarted "from the top" when the epoch happened to be 0. If restart-from-top is wanted, it's a root time-map + congruent epoch handling, not a clock reset — owner preference pending field use | audio_engine.cc togglePlayback |
 | 9 | Grid honesty when auto-quantize is disabled — deferred with that feature | design_language.md Q3 |
 
 ---

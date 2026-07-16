@@ -137,16 +137,11 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
           findNodeByUuid(root_node.get(), uuid))) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
 
-    // INITIAL RECORDING RESET:
-    // If we are starting a recording and there is NO existing quantum
-    // (i.e., this is the First Clip), we reset the global transport to 0.
-    // This ensures the first clip defines "Time Zero" and has no offset.
-    if (root_node->getEffectiveQuantum() == 0) {
-      global_transport_pos.store(0);
-      juce::Logger::writeToLog(
-          "AudioEngine: First Clip detected -> Reset Global Transport to 0.");
-    }
-
+    // The clock is NEVER reset (kernel.md §2) — not even for the first
+    // clip. What the old "Initial Recording Reset" actually provided was
+    // the island epoch; that is now captured as data (epoch := arm
+    // moment) in ClipNode's first-clip arm path, leaving the clock
+    // untouched.
     clip->startRecording();
   } else {
     juce::Logger::writeToLog("AudioEngine: CLIP NOT FOUND for " + uuid);
@@ -162,10 +157,12 @@ void AudioEngine::stopRecordingInNode(const juce::String &uuid) {
 }
 
 void AudioEngine::togglePlayback() {
+  // Pause/resume: stopping freezes the clock where it is; playing
+  // resumes from the same phase. The clock is never reset (kernel.md).
+  // (The old stop-reset only "restarted from the top" when the island
+  // epoch happened to be 0; restart-from-top as a real feature is a
+  // root time-map — tasks.md open question 8.)
   is_playing_global = !is_playing_global.load();
-  if (!is_playing_global.load()) {
-    global_transport_pos = 0;
-  }
 }
 
 juce::var AudioEngine::getGraphState() const {

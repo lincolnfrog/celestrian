@@ -6,6 +6,8 @@
 #include <iterator>
 #include <limits>
 
+#include "qtime.h"
+
 /**
  * Pure timing math for the Celestrian engine.
  *
@@ -27,19 +29,17 @@ constexpr double kHysteresisThreshold = 0.15;
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 constexpr int kSubdivisions[] = {2, 4, 8};
 
-inline int64_t gcd(int64_t a, int64_t b) {
-  while (b != 0) {
-    int64_t t = b;
-    b = a % b;
-    a = t;
-  }
-  return a;
-}
+// gcd/lcm moved to qtime.h (the foundation layer); still exposed in
+// this namespace via the include above.
 
-/** Least common multiple. Returns the larger value if either is zero. */
-inline int64_t lcm(int64_t a, int64_t b) {
-  if (a == 0 || b == 0) return std::max(a, b);
-  return (a / gcd(a, b)) * b;
+/**
+ * A Q subdivision boundary in samples, through THE rounding law
+ * (qtime.h): toSamples(1/d · Q). Replaces the bare integer division
+ * `quantum / d`, which silently floored when Q wasn't divisible —
+ * capture and playback must round identically (Q12 / D-T4).
+ */
+inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
+  return toSamples(qtime(1, denominator), quantum);
 }
 
 /**
@@ -69,9 +69,9 @@ inline double playheadPercent(int64_t master_pos, int64_t launch_point,
  */
 inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
   int64_t next_b = ((recorded_length / quantum) + 1) * quantum;
-  if (recorded_length < quantum / 2) {
+  if (recorded_length < subdivisionSamples(quantum, 2)) {
     for (int d : kSubdivisions) {
-      int64_t sub = quantum / d;
+      int64_t sub = subdivisionSamples(quantum, d);
       if (sub > recorded_length && sub < next_b) next_b = sub;
     }
   }
@@ -103,7 +103,7 @@ inline SnapResult snapCommittedDuration(int64_t recorded_length,
                                                       floor_multiple + Q};
   int num_candidates = 2;
   for (int d : kSubdivisions) {
-    int64_t sub = Q / d;
+    int64_t sub = subdivisionSamples(Q, d);
     if (sub > 0) candidates[num_candidates++] = sub;
   }
 
@@ -124,7 +124,7 @@ inline SnapResult snapCommittedDuration(int64_t recorded_length,
   }
 
   int64_t loop_end = (L / Q) * Q;
-  if (loop_end == 0) loop_end = Q / 2;
+  if (loop_end == 0) loop_end = subdivisionSamples(Q, 2);
   return {L, loop_end, false};
 }
 

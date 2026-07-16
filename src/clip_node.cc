@@ -27,8 +27,12 @@ juce::var ClipNode::getMetadata() const {
 
   int64_t Q = getEffectiveQuantum();
   if (Q > 0 && is_node_recording.load()) {
-    obj->setProperty("recordingStartPhase",
-                     (double)(trigger_master_position.load() % Q));
+    // Epoch frame (kernel one-frame rule): the old absolute-frame
+    // `trigger % Q` only agreed with the view while the first-clip
+    // transport reset kept the epoch ≡ 0 (mod Q); that reset is gone
+    // (unification_audit.md D6).
+    const int64_t rel = trigger_master_position.load() - getIslandEpoch();
+    obj->setProperty("recordingStartPhase", (double)(((rel % Q) + Q) % Q));
   }
 
   return base;
@@ -181,9 +185,18 @@ void ClipNode::process(const float *const *input_channels,
       } else {
         // No Q established yet (first clip) - start immediately at anchor=0
         anchor_phase_samples.store(0);
-        // First clip defines the cycle origin (compensated ≈ 0 after the
-        // island's transport reset).
+        // First clip defines the cycle origin. The clock is never reset
+        // (kernel.md): this arm moment IS the island epoch — capture it
+        // at the root as data, provisionally (commit stores Q + epoch
+        // together and overwrites with the same value).
         origin_samples.store(compensated_pos);
+        {
+          AudioNode *top = this;
+          while (auto *p = top->getParent()) top = p;
+          if (auto *island = dynamic_cast<StackNode *>(top)) {
+            if (island->getQuantum() == 0) island->setEpoch(compensated_pos);
+          }
+        }
         x_pos.store(base_x);
         is_pending_start.store(false);
         is_recording.store(true);
@@ -454,8 +467,9 @@ void ClipNode::stopRecording() {
       return;
     }
 
-    // For immediate stop (First Clip), assume commit pos equals duration
-    // (since global transport resets to 0 at start of first clip)
+    // Immediate stop (first clip): no boundary to await. The recorded
+    // length stands in for the commit position — a node-level
+    // diagnostic; nothing derives timing from it.
     commit_master_pos.store(write_position.load());
     commitRecording();
   }

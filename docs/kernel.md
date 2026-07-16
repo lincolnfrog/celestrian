@@ -209,9 +209,17 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    all deleted (~90 lines from the callback). `masterPos` in
    `getGraphState` is a derived view: `t mod LCM` normally, frozen-base
    + linear growth while recording (so the cursor extends past the
-   committed LCM per recording.md). The once-per-island first-clip
+   committed LCM per recording.md). ~~The once-per-island first-clip
    reset is retained — it IS the epoch capture, occurring before any
-   content exists. The old "LCM Expansion Snap" survives as an **island
+   content exists.~~ **Completed 2026-07-16 (unification_audit.md
+   §1.1): the last two clock mutations are gone.** The first-clip
+   reset was replaced by actual epoch capture — the first arm stores
+   its moment as the island epoch (data), the clock untouched — and
+   the stop-reset in `togglePlayback` by pause/resume (stop freezes
+   the view, play resumes the phase; restart-from-top, if ever wanted,
+   is a root time-map — tasks.md open question 8). §2's "never wraps,
+   never resets, never mutated" now holds without exceptions; pinned
+   by `tests/monotonic_clock_tests.cc`. The old "LCM Expansion Snap" survives as an **island
    epoch re-base**: at commit, if the cycle grew as a simple extension,
    the island epoch (root stack) moves to the newest committed origin so
    the cycle top is the new phrase's top — clock and audio untouched;

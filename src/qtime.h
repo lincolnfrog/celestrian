@@ -1,9 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
-
-#include "timing.h"
 
 /**
  * QTime — exact rational musical time in units of the island quantum Q.
@@ -39,6 +38,23 @@ struct QTime {
   int64_t num = 0;
   int64_t den = 1;
 };
+
+// gcd/lcm live here (the foundation layer); timing.h includes this
+// header and re-exposes them under the same namespace.
+inline int64_t gcd(int64_t a, int64_t b) {
+  while (b != 0) {
+    int64_t t = b;
+    b = a % b;
+    a = t;
+  }
+  return a;
+}
+
+/** Least common multiple. Returns the larger value if either is zero. */
+inline int64_t lcm(int64_t a, int64_t b) {
+  if (a == 0 || b == 0) return std::max(a, b);
+  return (a / gcd(a, b)) * b;
+}
 
 namespace detail {
 /** Floor division for __int128 (C++ '/' truncates toward zero). */

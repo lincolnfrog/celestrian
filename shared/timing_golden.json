@@ -27,8 +27,9 @@
     { "name": "stop mid-2nd quantum -> extends to 2Q", "recordedLength": 50000, "quantum": 44100, "expected": 88200 },
     { "name": "stop exactly at 4Q -> next boundary is 5Q", "recordedLength": 176400, "quantum": 44100, "expected": 220500 },
     { "name": "short recording -> smallest subdivision ahead (Q/4)", "recordedLength": 10000, "quantum": 44100, "expected": 11025 },
-    { "name": "very short recording -> Q/8", "recordedLength": 3000, "quantum": 44100, "expected": 5512 },
-    { "name": "exactly Q/2 -> not 'short', extends to 1Q", "recordedLength": 22050, "quantum": 44100, "expected": 44100 }
+    { "name": "very short recording -> Q/8 (44100/8 = 5512.5 rounds UP per the QTime law)", "recordedLength": 3000, "quantum": 44100, "expected": 5513 },
+    { "name": "exactly Q/2 -> not 'short', extends to 1Q", "recordedLength": 22050, "quantum": 44100, "expected": 44100 },
+    { "name": "odd Q: subdivisions through the rounding law (44101/8 -> 5513)", "recordedLength": 3000, "quantum": 44101, "expected": 5513 }
   ],
 
   "qtime_to_samples_cases": [
@@ -78,6 +79,7 @@
     { "name": "1.5Q -> outside tolerance, raw duration, loop region 1Q", "recordedLength": 66150, "quantum": 44100, "expectedDuration": 66150, "expectedLoopEnd": 44100, "expectedSnapped": false },
     { "name": "near Q/4 subdivision -> snaps to Q/4", "recordedLength": 10800, "quantum": 44100, "expectedDuration": 11025, "expectedLoopEnd": 11025, "expectedSnapped": true },
     { "name": "0.68Q -> outside tolerance, loop region defaults to Q/2", "recordedLength": 30000, "quantum": 44100, "expectedDuration": 30000, "expectedLoopEnd": 22050, "expectedSnapped": false },
-    { "name": "4Q + 3600 samples -> Late Snap down to 4Q", "recordedLength": 180000, "quantum": 44100, "expectedDuration": 176400, "expectedLoopEnd": 176400, "expectedSnapped": true }
+    { "name": "4Q + 3600 samples -> Late Snap down to 4Q", "recordedLength": 180000, "quantum": 44100, "expectedDuration": 176400, "expectedLoopEnd": 176400, "expectedSnapped": true },
+    { "name": "odd Q: near Q/8 snaps to the law's boundary (44101/8 -> 5513)", "recordedLength": 5500, "quantum": 44101, "expectedDuration": 5513, "expectedLoopEnd": 5513, "expectedSnapped": true }
   ]
 }

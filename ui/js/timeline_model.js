@@ -15,8 +15,19 @@
  */
 
 import { gcd, lcm } from './math_utils.js';
+import { qtime, toSamples } from './qtime.js';
 
 export { gcd, lcm };
+
+/**
+ * A Q subdivision boundary in samples, through THE rounding law
+ * (qtime.js): toSamples(1/d · Q). Mirrors timing::subdivisionSamples —
+ * replaces bare `Math.floor(quantum / d)`, which silently floored when
+ * Q wasn't divisible (Q12 / D-T4).
+ */
+export function subdivisionSamples(quantum, denominator) {
+    return toSamples(qtime(1, denominator), quantum);
+}
 
 /** Tolerance (fraction of Q) for snapping a committed duration. */
 export const HYSTERESIS_THRESHOLD = 0.15;
@@ -104,9 +115,9 @@ export function playheadPercent(masterPos, launchPoint, duration) {
  */
 export function nextStopBoundary(recordedLength, quantum) {
     let nextB = (Math.floor(recordedLength / quantum) + 1) * quantum;
-    if (recordedLength < Math.floor(quantum / 2)) {
+    if (recordedLength < subdivisionSamples(quantum, 2)) {
         for (const d of SUBDIVISIONS) {
-            const sub = Math.floor(quantum / d);
+            const sub = subdivisionSamples(quantum, d);
             if (sub > recordedLength && sub < nextB) nextB = sub;
         }
     }
@@ -127,7 +138,7 @@ export function snapCommittedDuration(recordedLength, quantum) {
     const floorMultiple = Math.floor(L / Q) * Q;
     const candidates = [floorMultiple, floorMultiple + Q];
     for (const d of SUBDIVISIONS) {
-        const sub = Math.floor(Q / d);
+        const sub = subdivisionSamples(Q, d);
         if (sub > 0) candidates.push(sub);
     }
 
@@ -147,7 +158,7 @@ export function snapCommittedDuration(recordedLength, quantum) {
     }
 
     let loopEnd = Math.floor(L / Q) * Q;
-    if (loopEnd === 0) loopEnd = Math.floor(Q / 2);
+    if (loopEnd === 0) loopEnd = subdivisionSamples(Q, 2);
     return { duration: L, loopEnd, snapped: false };
 }
 

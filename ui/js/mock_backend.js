@@ -151,13 +151,11 @@ function createNode(type, parentId = null) {
     return node.id;
 }
 
-// Mirrors AudioEngine::togglePlayback (transport resets to 0 on stop).
+// Mirrors AudioEngine::togglePlayback — pause/resume: the clock is
+// never reset (kernel.md); stopping freezes the view where it is.
 function togglePlayback() {
     state.isPlaying = !state.isPlaying;
     transport.running = state.isPlaying;
-    if (!state.isPlaying) {
-        state.masterPos = 0;
-    }
     console.log('[MockBackend] togglePlayback →', state.isPlaying);
     return true;
 }

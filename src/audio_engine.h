@@ -221,9 +221,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   celestrian::AudioNode *focused_node = nullptr;
 
   // Global Transport (kernel.md step 3): MONOTONIC. The clock only moves
-  // forward while playing; it is reset exactly once per island (first
-  // clip = epoch capture) and by an explicit user stop. Commits never
-  // wrap, snap, or reset it — clips align by their stored origins.
+  // forward while playing and is NEVER reset or rebased — not by
+  // commits, not by first clips (the island epoch is captured as data
+  // instead), not by stop (pause/resume). Clips align by their stored
+  // origins; every cyclic view is derived.
   std::atomic<bool> is_playing_global{false};
   std::atomic<int64_t> global_transport_pos{0};
 
