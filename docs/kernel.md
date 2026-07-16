@@ -202,6 +202,14 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    went monotonic (field: 4Q take over a 1Q groove looped at 3Q).
    `launchPointFor` mods by the final duration, so the absolute value is
    always safe to store.
+   **Consolidation completed 2026-07-16 (unification_audit.md §1.2):**
+   `launch_point_samples`, `anchor_phase_samples`, and
+   `trigger_master_position` are deleted; metadata `launchPoint` derives
+   at read time, `anchorPhase`/`recordingStartPhase` are gone (no
+   consumers), the pixel x/slot math left C++ entirely (P1-7 — the UI
+   projects lane x from origin), and the commit-path sibling scan went
+   with it (a piece of P1-6). One stored `origin` per clip — as §2
+   specifies.
 3. ✅ **Done (2026-07-07): monotonic master.** The transport only moves
    forward; the LCM wrap, LCM-growth snap, polyrhythm suppression
    branch, first-clip-snap early return, and the

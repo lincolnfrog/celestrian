@@ -6,6 +6,7 @@
 #include <atomic>
 
 #include "dsp/effects.h"
+#include "timing.h"
 
 namespace celestrian {
 
@@ -121,8 +122,12 @@ class AudioNode {
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
     obj->setProperty("isMuted", (bool)is_muted.load());
-    obj->setProperty("anchorPhase", (double)anchor_phase_samples.load());
-    obj->setProperty("launchPoint", (double)launch_point_samples.load());
+    // launchPoint is a PROJECTION of origin (kernel.md §2 table):
+    // derived at read time, never stored. anchorPhase was deleted
+    // outright (no consumer; the UI derives lane position from origin).
+    obj->setProperty("launchPoint",
+                     (double)timing::launchPointFor(origin_samples.load(),
+                                                    duration_samples.load()));
     obj->setProperty("origin", (double)origin_samples.load());
     return juce::var(obj);
   }
@@ -227,7 +232,9 @@ class AudioNode {
     return 0;
   }
 
-  // Spatial arrangement in the parent stack/plane
+  // Freeform canvas position for TOP-LEVEL stacks only — an opaque
+  // blob the engine persists for the frontend (ui.md). Clips never
+  // write these: lane x is a UI projection of `origin` (I6).
   std::atomic<double> x_pos{0.0}, y_pos{0.0};
   std::atomic<double> width{200.0}, height{100.0};
 
@@ -251,11 +258,6 @@ class AudioNode {
       true};  // UI state: expanded (true) or collapsed (false)
   std::atomic<float> last_block_peak{0.0f};
 
-  // Phase-aligned recording: where in the quantum grid this clip was recorded
-  std::atomic<int64_t> anchor_phase_samples{0};
-  // Launch point: DERIVED from origin at commit ((−origin) mod duration),
-  // kept as a stored field only for UI/metadata compatibility.
-  std::atomic<int64_t> launch_point_samples{0};
   // THE canonical timing fact (docs/kernel.md): the cycle moment this
   // node's content[0] belongs to, in performance-time samples. Set once
   // when recording starts. Launch point, anchor, and visual x are all

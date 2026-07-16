@@ -25,16 +25,8 @@ juce::var ClipNode::getMetadata() const {
   obj->setProperty("isAwaitingStop", (bool)is_awaiting_stop.load());
   obj->setProperty("isPlaying", (bool)is_playing.load());
 
-  int64_t Q = getEffectiveQuantum();
-  if (Q > 0 && is_node_recording.load()) {
-    // Epoch frame (kernel one-frame rule): the old absolute-frame
-    // `trigger % Q` only agreed with the view while the first-clip
-    // transport reset kept the epoch ≡ 0 (mod Q); that reset is gone
-    // (unification_audit.md D6).
-    const int64_t rel = trigger_master_position.load() - getIslandEpoch();
-    obj->setProperty("recordingStartPhase", (double)(((rel % Q) + Q) % Q));
-  }
-
+  // (recordingStartPhase was deleted 2026-07-16: no consumer existed —
+  // the take's landing phase is a projection of `origin`.)
   return base;
 }
 
@@ -70,11 +62,10 @@ void ClipNode::process(const float *const *input_channels,
           context.master_pos - (context.input_latency + context.output_latency);
       if (compensated_pos < 0) compensated_pos = 0;
 
-      trigger_master_position.store(compensated_pos);
-      // Note: anchor_phase will be set AFTER we calculate effective_pos (below)
-
-      // Calculate visual X position based on context loop
-      // context_loop = max(longest_existing_sibling_duration, Q)
+      // The arm target depends on the context loop (the loop the
+      // performer was listening to): longest committed sibling, min Q.
+      // (P1-6 remainder: this sibling scan should become context passed
+      // DOWN via ProcessContext.)
       int64_t Q = getEffectiveQuantum();
       int64_t context_loop = Q > 0 ? Q : 1;
 
@@ -92,10 +83,6 @@ void ClipNode::process(const float *const *input_channels,
           }
         }
       }
-
-      // base_width = 200px (1 quantum), base_x = fixed starting position
-      double base_width = 200.0;
-      double base_x = 0.0;  // Fixed base - slot determines position from 0
 
       // ALL cycle-relative math happens in the ISLAND EPOCH frame — the
       // frame the user SEES (the cycle epoch re-bases to the newest
@@ -143,21 +130,13 @@ void ClipNode::process(const float *const *input_channels,
 
         // Absolute performance moment of that boundary (origin frame)
         const int64_t next_q_master = epoch + next_q_rel;
-        int64_t future_effective_pos = next_q_rel % context_loop;
 
-        // anchor_phase_samples = position within Q (for audio alignment)
-        anchor_phase_samples.store(future_effective_pos % Q);
         // THE canonical timing fact: this clip's content belongs at
         // performance moment next_q_master — stored ABSOLUTE
         // (docs/kernel.md; launchPointFor mods by the final duration, so
-        // no cycle information is ever truncated).
+        // no cycle information is ever truncated). Anchor, launch point,
+        // and lane x are all projections of this one value.
         origin_samples.store(next_q_master);
-
-        // slot = visual Q slot, cycle-relative IN THE EPOCH FRAME
-        // (recording.md X-Offset formula; never absolute — absolute
-        // slots fly off-screen under the monotonic transport).
-        int64_t slot = (next_q_rel % context_loop) / Q;
-        x_pos.store(base_x + slot * base_width);
 
         // If already at boundary, start immediately
         if (compensated_pos >= next_q_master ||
@@ -165,7 +144,6 @@ void ClipNode::process(const float *const *input_channels,
           is_pending_start.store(false);
           is_recording.store(true);
           is_node_recording.store(true);
-          trigger_master_position.store(next_q_master);  // Capture start time
           write_position.store(0);
           live_duration_samples.store(0);
           // Capture window: clip position 0 holds the input that ARRIVED at
@@ -183,8 +161,7 @@ void ClipNode::process(const float *const *input_channels,
                                  (long long)next_q_master);
         }
       } else {
-        // No Q established yet (first clip) - start immediately at anchor=0
-        anchor_phase_samples.store(0);
+        // No Q established yet (first clip) - start immediately.
         // First clip defines the cycle origin. The clock is never reset
         // (kernel.md): this arm moment IS the island epoch — capture it
         // at the root as data, provisionally (commit stores Q + epoch
@@ -197,12 +174,9 @@ void ClipNode::process(const float *const *input_channels,
             if (island->getQuantum() == 0) island->setEpoch(compensated_pos);
           }
         }
-        x_pos.store(base_x);
         is_pending_start.store(false);
         is_recording.store(true);
         is_node_recording.store(true);
-        trigger_master_position.store(
-            compensated_pos);  // Capture start time (immediate)
         write_position.store(0);
         live_duration_samples.store(0);
         // First clip: the trigger IS "performance now", whose audio is
@@ -227,7 +201,6 @@ void ClipNode::process(const float *const *input_channels,
         awaiting_start_at.store(0);
         is_recording.store(true);
         is_node_recording.store(true);
-        trigger_master_position.store(target);  // Capture start time (delayed)
         write_position.store(0);
         live_duration_samples.store(0);
         // Capture window: input for performance-time `target` arrives
@@ -519,89 +492,31 @@ void ClipNode::commitRecording(int64_t final_duration) {
 
     // First committed clip in the island establishes Q — stored once at
     // the island root, never derived again (P0-3; Q survives its
-    // creator per owner ruling). Epoch = this clip's trigger moment.
+    // creator per owner ruling). Epoch = this clip's origin.
+    const int64_t origin = origin_samples.load();
     if (Q == 0) {
       AudioNode *top = this;
       while (auto *p = top->getParent()) top = p;
       if (auto *island = dynamic_cast<StackNode *>(top)) {
         if (island->getQuantum() == 0) {
-          island->setQuantum(duration, trigger_master_position.load());
+          island->setQuantum(duration, origin);
           RtLog::instance().post(
               "ClipNode: Island quantum established: Q=%lld epoch=%lld",
-              (long long)duration,
-              (long long)trigger_master_position.load());
+              (long long)duration, (long long)origin);
         }
       }
     }
 
-    // 1. Determine Context Loop (siblings) to find preferred Visual Position
-    // note: Q is already defined at top of function
-    int64_t context_loop = (Q > 0) ? Q : 1;
-
-    // Find longest sibling to define the context grid
-    if (auto *parent_node = parent.load()) {
-      if (auto *box = dynamic_cast<StackNode *>(parent_node)) {
-        for (auto *sibling : box->getChildrenSnapshot()) {
-          // Use generic AudioNode interface (NO CASTING)
-          if (sibling != this && !sibling->isRecording()) {
-            int64_t sd = sibling->getIntrinsicDuration();
-            if (sd > context_loop) context_loop = sd;
-          }
-        }
-      }
-    }
-
-    // 2. Calculate Preferred Visual Position (based on Context) — in the
-    // ISLAND EPOCH frame, like all cycle-relative projections.
-    // Example: Trigger=14Q, epoch=0, Context=1Q → Ideal X = 14%1 = 0Q.
-    // Example: Trigger=2Q, epoch=0, Context=4Q → Ideal X = 2%4 = 2Q.
-    int64_t trigger_pos = trigger_master_position.load();
-    int64_t rel_trigger = trigger_pos - getIslandEpoch();
-    if (rel_trigger < 0) rel_trigger = 0;
-    int64_t ideal_anchor =
-        (context_loop > 0) ? (rel_trigger % context_loop) : 0;
-
-    // 3. Calculate Audio Phase (based on LCM Context)
-    // Per LCM model: anchor is ALWAYS relative to context_loop, not self
-    // duration. With 1Q context, any rel_trigger % 1Q = 0. Clip MUST
-    // anchor at 0Q.
-    int64_t audio_anchor = ideal_anchor;
-
-    // 4. No rotation — content lives in the origin frame (docs/kernel.md).
-    // Playback offsets every read by the stored origin, so the buffer is
-    // never re-based, physically or virtually. (The old rotation ALSO
-    // shifted playback on top of the launch point — a double shift that
-    // contradicted recording.md Example 2: an 8Q clip recorded at 2Q
-    // must play position 0 when master ≡ 2Q, which is exactly what the
-    // origin equation produces.)
-    int64_t final_anchor = audio_anchor;
-
-    // Visual Position adheres to Context Grid (USER REQUEST)
-    if (Q > 0) {
-      // Quantize ideal anchor to Q
-      int64_t offset_units = ideal_anchor / Q;
-      x_pos.store(offset_units * 200.0);
-
-    } else {
-      x_pos.store(0.0);
-    }
-
-    // 5. Update Anchor/Launch Point to match AUDIO Reality
-    // Anchor represents the phase offset of the content relative to Global 0
-    anchor_phase_samples.store(final_anchor);
-
-    // UNIFIED TIMING: launch_point is a projection of origin
-    // ((−origin) mod duration) — stored only for UI/metadata
-    // compatibility; playback derives it from origin directly.
-    int64_t origin = origin_samples.load();
-    int64_t launch_point = timing::launchPointFor(origin, duration);
-    launch_point_samples.store(launch_point);
-
+    // Nothing else to compute: origin was stored at arm and duration
+    // above — anchor, launch point, and lane x are all projections of
+    // (origin, duration) derived at read time (kernel.md §2 table). The
+    // old commit-time sibling scan, slot/pixel math, and stored
+    // anchor/launch fields are gone (unification_audit.md §1.2; the
+    // sibling-scan deletion is a piece of P1-6).
     RtLog::instance().post(
-        "ClipNode: Commit. Duration=%lld, StartTime=%lld, Origin=%lld, "
-        "LaunchPoint=%lld, FinalAnchor=%lld",
-        (long long)duration, (long long)trigger_pos, (long long)origin,
-        (long long)launch_point, (long long)final_anchor);
+        "ClipNode: Commit. Duration=%lld, Origin=%lld, Launch(derived)=%lld",
+        (long long)duration, (long long)origin,
+        (long long)timing::launchPointFor(origin, duration));
 
     is_playing.store(true);
   }

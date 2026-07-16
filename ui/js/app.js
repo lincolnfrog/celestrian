@@ -240,6 +240,9 @@ async function startPolling() {
                     pendingFetch,
                     nodesById: lastNodesById,
                     vmQuantum: vm.quantum,
+                    // Composite offsets are cycle projections of origin —
+                    // computed in the island-epoch frame (one-frame rule)
+                    epochSamples: vm.epochSamples,
                     sampleRate: state.perf ? state.perf.sampleRate : 0,
                 });
                 patchCalibrateButton(state);

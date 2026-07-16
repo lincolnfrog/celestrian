@@ -254,8 +254,8 @@ class ClipNodeTests : public juce::UnitTest {
 
       expectEquals(c->duration_samples.load(), (int64_t)200);
       expectEquals(c->origin_samples.load(), (int64_t)100);
-      // Launch point is a projection of origin: (−100) mod 200 = 100
-      expectEquals(c->launch_point_samples.load(), (int64_t)100);
+      // (Launch is a derived projection now — the playback checks below
+      // are the real pin: content[0] at master ≡ origin.)
 
       // At master ≡ origin (100), content[0] plays — what was performed
       // at cycle moment 100 replays at cycle moment 100 (I1).

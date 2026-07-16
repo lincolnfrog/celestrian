@@ -42,13 +42,21 @@ with kernel.md:
   `tests/monotonic_clock_tests.cc` (first clip at t > 0; stop/play
   resume); full C++/JS/e2e suites green. kernel.md §2 now holds
   without exceptions.
-- [ ] **Delete the residual stored timing fields** —
-  `launch_point_samples`, `anchor_phase_samples` (derive in metadata if
-  the UI still wants them), `trigger_master_position` (P1-7's last
-  feeder). End state per kernel: clip stores `{origin, period-source,
-  window, buffer}`.
-- [ ] **Pixels out of C++** (P1-7) — delete `x_pos = slot * 200.0` from
-  `clip_node.cc`; UI derives x from `origin` in `timeline_model.js`.
+- [x] **Delete the residual stored timing fields** — ✅ done 2026-07-16:
+  `launch_point_samples`, `anchor_phase_samples`,
+  `trigger_master_position` all deleted; metadata `launchPoint` derives
+  at read time; `anchorPhase` and `recordingStartPhase` deleted (no
+  consumers). Tests re-pinned in origin terms. Bonus fix: the composite
+  waveform read `child.x` (pixels) as SAMPLES — a live frame-mixing bug
+  that collapsed all offsets to ~0; it now projects
+  `(origin − epoch) mod stackDuration` (epoch threaded through
+  `patchSessionView` aux; two new unit tests pin it).
+- [x] **Pixels out of C++** (P1-7) — ✅ done 2026-07-16: the slot×200
+  math is gone from `clip_node.cc` (arm + commit); clips never write
+  `x_pos` (stacks keep freeform x/y as the ui.md-sanctioned opaque
+  blob); dead `calculateVisualOffset` deleted from `math_utils.js`.
+  The commit-path sibling scan died with it (a piece of P1-6 — the
+  arm-path scan remains, see "Context passed down" below).
 - [ ] **Explicit per-clip recording state machine** — one
   `enum class RecState { Idle, Armed, Capturing, PendingStop,
   Committed }` replacing the five booleans; pure
@@ -62,7 +70,8 @@ with kernel.md:
   `forEachChild`; named "island root" lookup.
 - [ ] **Context passed down, not scanned up** (P1-6 remainder) — parent
   computes `{context_loop, Q}` once and passes via `ProcessContext`;
-  delete the sibling scans in `ClipNode` arm/commit.
+  one sibling scan left (ClipNode ARM path — the commit-path scan was
+  deleted 2026-07-16 with the pixel math).
 
 ## Tier 2: Defects (audit §3 — fix inside Tier 1/3 rewrites)
 

@@ -97,37 +97,17 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
         clip2Ptr->process(moreInputs, nullptr, 1, 0, ctx);
       }
 
-      // Debug output
-      int64_t anchor = clip2Ptr->anchor_phase_samples.load();
-      int64_t launch = clip2Ptr->launch_point_samples.load();
-      int64_t duration = clip2Ptr->duration_samples.load();
+      // The stored anchor/launch fields are gone — they are projections
+      // of origin (kernel.md §2 table). The musical fact the old anchor
+      // assertion pinned: the take began ≡ 0 (mod the 1Q context).
+      const int64_t origin = clip2Ptr->origin_samples.load();
+      const int64_t duration = clip2Ptr->duration_samples.load();
 
       juce::Logger::writeToLog(
-          "TEST DEBUG: Clip2 anchor=" + juce::String(anchor) + ", launch=" +
-          juce::String(launch) + ", duration=" + juce::String(duration));
+          "TEST DEBUG: Clip2 origin=" + juce::String(origin) +
+          ", duration=" + juce::String(duration));
 
-      // Per LCM model: anchor calculation is now secondary
-      // The key is that launch_point ensures playhead=0% at commit time
-      expectEquals(anchor, (int64_t)0,
-                   "Anchor should be 0 (3Q % 1Q = 0 per LCM model)");
-
-      // Get the commit master pos and verify playhead=0% at that position
-      int64_t commit_pos = clip2Ptr->getCommitMasterPos();
-
-      // NOTE: This tests ClipNode-level behavior without AudioEngine.
-      // At the node level, playhead is calculated as:
-      //   effective_pos = (commit_pos + launch) % duration
-      //   playhead = effective_pos / duration
-      //
-      // The AudioEngine's "LCM Expansion Snap" (which resets transport to 0
-      // when LCM grows) is NOT exercised here - that's a separate test in
-      // audio_engine_tests.cc ("BUG: Clip 2 Loops to 1Q Instead of 0Q").
-      //
-      // Under the monotonic transport there is no engine snap; the
-      // launch point (projection of the absolute origin) provides the
-      // alignment directly.
-      expectEquals((launch + clip2Ptr->origin_samples.load()) % duration,
-                   (int64_t)0, "launch ≡ (−origin) mod duration");
+      expectEquals(origin % 1000, (int64_t)0, "origin ≡ 0 (mod 1Q context)");
 
       // The user-facing invariant ("loops to 0Q"): recording began at
       // t=1000 and ran 5000 samples, so the content wraps at t=6000 —
@@ -168,9 +148,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Stop recording immediately (First Clip => immediate stop)
       clipPtr->stopRecording();
 
-      int64_t launch = clipPtr->launch_point_samples.load();
-      expectEquals(launch, (int64_t)0,
-                   "First Clip launch point should default to 0");
+      expectEquals(clipPtr->origin_samples.load(), (int64_t)0,
+                   "First clip origin is 0 (launch derives to 0)");
 
       // Verify commit master pos correctness
       // It should be equal to duration (1024)
@@ -210,8 +189,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       clipPtr->stopRecording();
 
-      int64_t launch = clipPtr->launch_point_samples.load();
-      expectEquals(launch, (int64_t)0, "Launch should be 0 even with blocks");
+      expectEquals(celestrian::timing::launchPointFor(
+                       clipPtr->origin_samples.load(),
+                       clipPtr->duration_samples.load()),
+                   (int64_t)0, "Derived launch is 0 even with blocks");
 
       // Wait, let's verify Playhead at Commit Time.
       // commitPos = 1024. duration = 1024.
@@ -286,17 +267,11 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       clip3Ptr->process(inputs, nullptr, 1, 0,
                         ctx);  // Trigger pending start logic
 
-      // x_pos should be within reasonable bounds (0 to 4Q worth of position)
-      // With base_x=100-200 and base_width=200:
-      // - Slot 0: 100
-      // - Slot 1: 300
-      // - Slot 2: 500
-      // - Slot 3: 700
-      // Clip 3 is between 2Q and 3Q, so slot should be at most 3
-      int64_t xPos = clip3Ptr->x_pos.load();
-      expect(xPos >= 0, "x_pos should be non-negative");
-      expect(xPos <= 800,
-             "x_pos should stay within 4Q context (max slot 3 = 700 + buffer)");
+      // Pixels are gone from the engine (I6): the lane position is a UI
+      // projection of origin. The musical fact the old x-bounds check
+      // pinned: arming at 2500 targets the NEXT Q boundary, 3000.
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)3000,
+                   "arm at 2500 targets the 3Q boundary");
     }
 
     // Regression Test: Clip 3 recorded AFTER context has looped multiple times
@@ -357,10 +332,14 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       clip3Ptr->startRecording();
       clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
 
-      int64_t xPos = clip3Ptr->x_pos.load();
-      expect(xPos >= 0, "x_pos should be non-negative");
-      expect(xPos <= 800,
-             "x_pos should stay within 4Q context after multiple loops");
+      // Old bug: absolute slots flew off-screen after loops. Kernel
+      // form: origin is absolute (11000 = the boundary after 10500);
+      // its CYCLE projection (origin mod context 5000 = 1000) is what
+      // the UI draws, in bounds by construction.
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)11000,
+                   "arm at 10500 targets the next Q boundary, 11000");
+      expectEquals(clip3Ptr->origin_samples.load() % 5000, (int64_t)1000,
+                   "cycle projection lands at 1Q of the 5Q context");
     }
 
     // Regression Test: x_pos should NOT compound across multiple process()
@@ -398,24 +377,24 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       clip2Ptr->startRecording();
 
       // Call process 100 times (simulating ~50ms of audio at 512 samples/call)
-      int64_t firstXPos = -1;
+      int64_t firstOrigin = -1;
       for (int i = 0; i < 100; i++) {
         ctx.num_samples = 5;  // Small increments
         clip2Ptr->process(inputs, nullptr, 1, 0, ctx);
         ctx.master_pos += 5;
 
-        if (firstXPos < 0) {
-          firstXPos = clip2Ptr->x_pos.load();
+        if (firstOrigin < 0) {
+          firstOrigin = clip2Ptr->origin_samples.load();
         }
       }
 
-      int64_t finalXPos = clip2Ptr->x_pos.load();
-
-      // x_pos should remain STABLE (not compound with each call)
-      expectEquals(finalXPos, firstXPos,
-                   "x_pos should not compound across process() calls");
-      expect(finalXPos >= 0 && finalXPos <= 400,
-             "x_pos should stay within reasonable bounds (1Q context)");
+      // The canonical timing fact must be set ONCE at arm and never
+      // recomputed per block (the old bug compounded the projected x
+      // across process() calls).
+      expectEquals(clip2Ptr->origin_samples.load(), firstOrigin,
+                   "origin must not change across process() calls");
+      expectEquals(firstOrigin, (int64_t)1000,
+                   "arm at 500 targets the 1Q boundary");
     }
 
     // Regression Test: Example 2 - Clip recorded between 1Q-2Q should anchor at
@@ -460,16 +439,11 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expectEquals(awaitingStart, (int64_t)2000,
                    "Recording should await start at 2Q boundary");
 
-      // x is CYCLE-RELATIVE (recording.md Example 4: mid-loop record in a
-      // 1Q context snaps to the boundary ≡ 0 mod context → anchor 0,
-      // x 0). The audio origin here is (2000 % 1000) = 0, and I2
-      // (simultaneity ⇔ same x) requires the visual to match. The old
-      // absolute slot (next_q / Q = 2 → 400px) was a transient
-      // visual/audio mismatch that commit converged to 0 anyway — and it
-      // exploded off-screen under the monotonic transport.
-      int64_t xPos = clip2Ptr->x_pos.load();
-      expectEquals(xPos, (int64_t)0,
-                   "x is cycle-relative: boundary ≡ 0 mod 1Q context");
+      // The lane position is a UI projection of origin (I2: the cycle
+      // projection origin mod context = 2000 mod 1000 = 0 draws at the
+      // cycle top). The engine's fact: origin = the awaited boundary.
+      expectEquals(clip2Ptr->origin_samples.load(), (int64_t)2000,
+                   "origin is the 2Q arm boundary (cycle projection 0)");
     }
 
     // Regression Test: Multi-clip context mid-loop recording
@@ -528,11 +502,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
         ctx.master_pos += 50;
       }
 
-      // x_pos should be at slot 2 (0 + 2*200 = 400)
-      // NOT at slot 3 (600) which was the bug
-      int64_t xPos = clip3Ptr->x_pos.load();
-      expect(xPos >= 200 && xPos <= 500,
-             "x_pos should be at slot 2 (around 400), not slot 3");
+      // Slot 2, not slot 3 (the old bug): the arm at 1500 targets the
+      // 2Q boundary. The UI derives the slot from origin.
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)2000,
+                   "arm at 1500 targets the 2Q boundary (slot 2, not 3)");
     }
 
     // LCM Ghost Extension Test: All clips at 0% at LCM boundary
@@ -1112,25 +1085,21 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       // Debug values
       int64_t duration = clip2Ptr->duration_samples.load();
-      int64_t launch = clip2Ptr->launch_point_samples.load();
       int64_t startPhase = clip2Ptr->origin_samples.load();
       int64_t commitPos = clip2Ptr->getCommitMasterPos();
 
       juce::Logger::writeToLog(
-          "BUG REPRO COMMIT: duration=" + juce::String(duration) + ", launch=" +
-          juce::String(launch) + ", startPhase=" + juce::String(startPhase) +
+          "BUG REPRO COMMIT: duration=" + juce::String(duration) +
+          ", origin=" + juce::String(startPhase) +
           ", commitPos=" + juce::String(commitPos));
 
-      // TEST 1: launch is the projection of the ABSOLUTE origin
-      // ((−origin) mod duration). The clip started at boundary T=1000
-      // with duration 4000 → launch 3000, so content[0] plays at
-      // t ≡ 1000 — seamless with the recording. (The old expectation of
-      // launch==0 relied on the engine-level transport snap, which the
-      // monotonic transport removed; a mod-context origin here is what
-      // caused the field bug "4Q clip loops at 3Q".)
+      // The origin is stored ABSOLUTE: the clip started at boundary
+      // T=1000, so content[0] plays at t ≡ 1000 — seamless with the
+      // recording. (A mod-context origin here is what caused the field
+      // bug "4Q clip loops at 3Q"; launch is now derived from origin at
+      // read time, so there is no stored value left to disagree.)
       expectEquals(startPhase, (int64_t)1000, "origin = absolute trigger");
-      expectEquals((launch + startPhase) % duration, (int64_t)0,
-                   "launch ≡ (−origin) mod duration");
+      juce::ignoreUnused(duration);
     }
 
     // BUG: Clip 3 recorded at 2Q should anchor at 2Q, not 0Q
@@ -1196,19 +1165,13 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       clip3Ptr->startRecording();
       clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
 
-      // Check x_pos immediately after recording starts
-      double xPos = clip3Ptr->x_pos.load();
+      // The anchor fact lives ONLY in origin now; the 2Q slot the old
+      // x=400 assertion pinned is the UI's projection of it.
       juce::Logger::writeToLog(
-          "ANCHOR BUG TEST: Recording started at 2Q, x_pos=" +
-          juce::String(xPos) + ", origin_samples=" +
+          "ANCHOR BUG TEST: Recording started at 2Q, origin_samples=" +
           juce::String(clip3Ptr->origin_samples.load()));
 
-      // x_pos should be 400 (slot 2 * 200px base_width)
-      // NOT 0 (which would be slot 0)
-      expectEquals(xPos, 400.0,
-                   "Clip 3 x_pos should be 400 (anchored at 2Q slot)");
-
-      // origin_samples should be 2Q (2000 samples)
+      // origin_samples should be 2Q (2000 samples), NOT 0
       expectEquals(clip3Ptr->origin_samples.load(), (int64_t)2000,
                    "origin_samples should be 2000 (2Q)");
 
@@ -1226,16 +1189,14 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       }
 
       int64_t duration3 = clip3Ptr->duration_samples.load();
-      int64_t launch3 = clip3Ptr->launch_point_samples.load();
 
       juce::Logger::writeToLog(
           "ANCHOR BUG TEST COMMIT: duration=" + juce::String(duration3) +
-          ", launch=" + juce::String(launch3) +
-          ", x_pos=" + juce::String(clip3Ptr->x_pos.load()));
+          ", origin=" + juce::String(clip3Ptr->origin_samples.load()));
 
-      // Verify x_pos is still 400 after commit
-      expectEquals(clip3Ptr->x_pos.load(), 400.0,
-                   "Clip 3 x_pos should remain 400 after commit");
+      // Commit must not move the anchor: origin unchanged.
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)2000,
+                   "Clip 3 origin should remain 2000 after commit");
 
       // Verify duration - Clip starts at 2Q, records ~1Q, snaps to next Q (4Q)
       // So duration = 4Q - 2Q = 2Q (2000 samples)

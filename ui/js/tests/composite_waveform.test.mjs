@@ -41,6 +41,12 @@ test('buildCacheKey', async (t) => {
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
+    await t.test('different child origin → different key', () => {
+        const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: 44100, origin: 0 }] };
+        const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: 44100, origin: 88200 }] };
+        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    });
+
     await t.test('different child durations → different key', () => {
         const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
         const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: 88200 }] };
@@ -120,6 +126,40 @@ test('generateCompositeWaveform', async (t) => {
         });
         assert.ok(result.length > 0, 'Should produce peaks');
         assert.ok(result.some(v => v > 0), 'Should have non-zero values');
+    });
+
+    await t.test('offsets a clip by the cycle projection of its origin', () => {
+        // 1Q clip with origin 2Q inside a 4Q stack: its energy must land
+        // in the [2Q,3Q) region (and the 3Q loop tile), with [0,2Q)
+        // silent. This is the origin-based placement that replaced the
+        // frame-mixing `child.x` read (pixels interpreted as samples).
+        const stack = makeStack([
+            { id: 'c', type: 'clip', duration: 44100, origin: 88200 }
+        ]);
+        const livePeaks = new Map([['c', [1, 1, 1, 1]]]);
+        const result = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 0
+        });
+        const n = result.length;
+        const firstHalf = result.slice(0, Math.floor(n / 2));
+        const thirdQuarter = result.slice(Math.floor(n / 2), Math.floor(3 * n / 4));
+        assert.ok(firstHalf.every(v => v === 0), '[0,2Q) must be silent');
+        assert.ok(thirdQuarter.some(v => v > 0), '[2Q,3Q) must carry the clip');
+    });
+
+    await t.test('origin offsets are epoch-relative (one-frame rule)', () => {
+        // Same clip, but the island epoch IS its origin: the projection
+        // is (origin − epoch) mod stackDuration = 0 → energy at the top.
+        const stack = makeStack([
+            { id: 'c', type: 'clip', duration: 44100, origin: 88200 }
+        ]);
+        const livePeaks = new Map([['c', [1, 1, 1, 1]]]);
+        const result = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 88200
+        });
+        assert.ok(result[0] > 0, 'epoch-relative projection starts at 0');
     });
 
     await t.test('caches result and returns cached on second call', () => {

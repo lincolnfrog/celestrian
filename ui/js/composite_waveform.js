@@ -21,10 +21,9 @@ export function buildCacheKey(stack, targetPeaks) {
             cacheKeyParts.push([
                 child.id,
                 child.duration || 0,
-                child.x || 0,
+                child.origin || 0,
                 child.loopStart || 0,
-                child.loopEnd || 0,
-                child.launchPoint || 0
+                child.loopEnd || 0
             ].join(':'));
         }
     });
@@ -46,7 +45,7 @@ export function buildCacheKey(stack, targetPeaks) {
  * @param {Map}    opts.cache          - compositeWaveformCache Map (stackId → { key, peaks })
  * @returns {Array} Peak data array for the composite waveform
  */
-export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds }) {
+export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0 }) {
     // If backend provides waveform data, use it directly
     if (stack.waveform && stack.waveform.length > 0) {
         return stack.waveform;
@@ -92,8 +91,14 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         const childPeaks = livePeaks.get(child.id);
         if (!childPeaks || childPeaks.length === 0) return;
 
-        // Calculate this clip's position as a fraction of the LCM timeline
-        const clipOffsetSamples = child.x || 0;  // x = anchor offset in samples
+        // The clip's position in the timeline is the cycle projection of
+        // its origin (kernel.md; one-frame rule: epoch-relative). The old
+        // `child.x` read mixed frames — the engine published x in PIXELS,
+        // this divided it by samples, and every offset collapsed to ~0.
+        const rel = (child.origin || 0) - epochSamples;
+        const clipOffsetSamples = stackDuration > 0
+            ? ((rel % stackDuration) + stackDuration) % stackDuration
+            : 0;
         const clipDuration = child.duration || effectiveQ;
 
         // Convert to pixel positions

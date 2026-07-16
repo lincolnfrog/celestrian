@@ -890,6 +890,7 @@ function lanePeaks(lane, aux) {
         stack: node, stackDuration, effectiveQ: aux.vmQuantum,
         canvasWidth: 800, livePeaks: aux.livePeaks, cache: compositeCache,
         excludeIds: aux.pendingFetch,
+        epochSamples: aux.epochSamples || 0,
     });
 }
 

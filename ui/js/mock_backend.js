@@ -1140,7 +1140,7 @@ export function loadScenario(name) {
                         isPlaying: true,
                         loopStart: 0,
                         loopEnd: 44100,
-                        anchorPhase: 0
+                        origin: 0
                     },
                     {
                         id: 'clip-2',
@@ -1156,13 +1156,13 @@ export function loadScenario(name) {
                         isPlaying: true,
                         loopStart: 0,
                         loopEnd: 176400,
-                        anchorPhase: 0
+                        origin: 0
                     },
                     {
                         id: 'clip-3',
                         name: 'Clip 1Q@2Q',
                         type: 'clip',
-                        x: 400,               // KEY: anchored at 2Q slot (2 * 200px)
+                        x: 400,
                         y: 240,
                         w: 200,
                         h: 100,
@@ -1172,7 +1172,7 @@ export function loadScenario(name) {
                         isPlaying: true,
                         loopStart: 0,
                         loopEnd: 44100,
-                        anchorPhase: 88200    // Started at 2Q
+                        origin: 88200         // KEY: started at 2Q (slot 2 derives from this)
                     }
                 ]
             }];

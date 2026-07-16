@@ -122,7 +122,6 @@ class ClipNode : public AudioNode {
   std::atomic<bool> is_awaiting_stop{false};
   std::atomic<bool> is_playing{false};
 
-  std::atomic<int64_t> trigger_master_position{0};
   std::atomic<int64_t> awaiting_start_at{
       0};  // When to actually start recording
   std::atomic<int64_t> awaiting_stop_at{0};
