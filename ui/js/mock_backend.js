@@ -638,12 +638,15 @@ function enrichNodes(nodes) {
                     gr = (peakDb - c.threshold) * (1 - 1 / c.ratio);
                 }
             }
+            // Engine parity: a stopped transport is SILENCE — bins near
+            // zero (this is what the durable line's slow fall exists for)
+            const live = state.isPlaying ? 1 : 0;
             updatedNode.effects = {
                 ...fxs,
                 scope: {
                     spectrum: Array.from({ length: 24 }, (_, i) =>
                         Math.max(0, Math.min(1,
-                            0.72 - i * 0.022 + 0.2 * Math.sin(t * 3 + i * 0.7)))),
+                            0.72 - i * 0.022 + 0.2 * Math.sin(t * 3 + i * 0.7))) * live),
                     peak,
                     gr,
                 },

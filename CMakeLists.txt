@@ -92,6 +92,7 @@ juce_add_console_app(CelestrianTests
 target_sources(CelestrianTests PRIVATE
     tests/test_runner.cc
     tests/timing_golden_tests.cc
+    tests/qtime_tests.cc
     tests/latency_calibration_tests.cc
     tests/pre_record_tests.cc
     tests/clip_node_tests.cc

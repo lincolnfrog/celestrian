@@ -110,6 +110,26 @@ export function reverbTailSeconds({ size, damp }) {
     return (0.25 + 2.75 * size) * (1 - 0.45 * damp);
 }
 
+/**
+ * The DURABLE spectrum: a weighted HIGH-WATER-MARK over the live bins
+ * (owner ruling 2026-07-12: a symmetric average let silent stretches
+ * drag the line into illegibility). Asymmetric per bin: RISE fast
+ * toward new maxima (half the gap per poll — a new peak registers in
+ * a couple of polls), FALL slowly (fall 0.01/poll ≈ a 5 s time
+ * constant at the 20 Hz cadence) — so the line holds the song's tonal
+ * shape through gaps and only relaxes when the content really left.
+ * Seeds from the first observation; null polls are identity; a
+ * bin-count change reseeds.
+ */
+export function holdSpectrum(prev, next, { rise = 0.5, fall = 0.01 } = {}) {
+    if (!next || !next.length) return prev || null;
+    if (!prev || prev.length !== next.length) return next.slice();
+    return prev.map((v, i) => {
+        const d = next[i] - v;
+        return v + d * (d > 0 ? rise : fall);
+    });
+}
+
 /* ---------- canvas painters (Tape Room tokens) ---------- */
 
 const TAPE = '#e8a13c';
@@ -130,8 +150,11 @@ function fit(canvas) {
     return { ctx, w, h };
 }
 
-/** EQ: live spectrum bars behind the bands' analytic response curve. */
-export function drawEqViz(canvas, spectrum, gains, sr = 48000) {
+/**
+ * EQ: live spectrum bars + the DURABLE averaged-spectrum line (cream)
+ * behind the bands' analytic response curve (tape).
+ */
+export function drawEqViz(canvas, spectrum, gains, sr = 48000, avgSpectrum = null) {
     const { ctx, w, h } = fit(canvas);
     // 0 dB midline
     ctx.strokeStyle = GRID;
@@ -148,6 +171,22 @@ export function drawEqViz(canvas, spectrum, gains, sr = 48000) {
             const bh = Math.max(1, s * h);
             ctx.fillRect(i * bw + 1, h - bh, bw - 2, bh);
         });
+    }
+    // The durable line: the song's tonal shape as a slow-falling
+    // high-water mark — steady under the flickering bars and through
+    // silence; what you actually EQ against
+    if (avgSpectrum && avgSpectrum.length) {
+        ctx.strokeStyle = 'rgba(239, 230, 216, 0.8)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        const bw = w / avgSpectrum.length;
+        avgSpectrum.forEach((s, i) => {
+            const x = (i + 0.5) * bw;
+            const y = h - s * h;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
     }
     // Response curve: ±15 dB about the midline
     const freqs = logFreqs(64);

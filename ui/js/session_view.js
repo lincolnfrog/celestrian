@@ -22,7 +22,7 @@ import {
 import { EFFECT_SCHEMA } from './effect_schema.js';
 import {
     drawEqViz, drawCompViz, drawEchoViz, drawReverbViz,
-    echoTaps, reverbTailSeconds,
+    echoTaps, reverbTailSeconds, holdSpectrum,
 } from './fx_viz.js';
 
 const pct = (q, cycleQ) => (q / cycleQ) * 100 + '%';
@@ -375,8 +375,12 @@ function patchFxRow(row, lane) {
         const viz = card.querySelector('.fx-viz');
         const scope = effects.scope || null;
         if (fx.type === 'eq') {
+            // Durable line: slow-falling high-water mark of the
+            // spectrum (fx_viz.js), accumulated per poll on the canvas
+            viz._avgSpec = holdSpectrum(viz._avgSpec, scope && scope.spectrum);
             drawEqViz(viz, scope && scope.spectrum,
-                { low: state.low, mid: state.mid, high: state.high });
+                { low: state.low, mid: state.mid, high: state.high },
+                undefined, viz._avgSpec);
         } else if (fx.type === 'compressor') {
             // Scrolling envelope: accumulate the pre-rack peak per poll
             // (the live_peaks pattern, at panel scale)

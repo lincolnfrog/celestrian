@@ -320,7 +320,10 @@ clip to switch between), explicitly NOT the duplicate-track/mute-old
 workaround. Take storage should slot into the clip model as alternate
 content buffers sharing one origin/period — the kernel needs no change.
 
-**Q9. Origins in samples will break under Warp.** *(Owner: "I don't know
+**Q9. Origins in samples will break under Warp.** **SUPERSEDED by Q12
+(2026-07-16)** — the question was ruled in its larger form (rational
+musical time) without waiting for warp. Original deferral kept below
+for history. *(Owner: "I don't know
 what 'warp' means yet — skip.")* TODO with the idea parked for later:
 "Warp" is roadmap Segment 8 (design.md Challenges §1) — playing audio
 faster/slower without pitch change so material recorded at one tempo can
@@ -383,6 +386,67 @@ islands impossible.** The kernel satisfies this: an island is a subtree
 with its own `(Q, epoch)`; concurrent islands are subtrees with
 different epochs on the same monotonic clock — nothing global assumes
 one Q. Cross-island transitions remain far-future (tasks.md).
+
+### Third review round (2026-07-16)
+
+**Q12. What is the unit of musical position in the engine?**
+**RESOLVED — rational musical time, adopted now.** (Subsumes Q9, which
+had deferred the sample-vs-Q-fraction question until warp; the
+unification audit reframed it as the gate for warp, nested tempi,
+time-map phases 2–3, and a device-independent Save/Load format —
+unification_audit.md §4.) Owner ruling: **adopt now** (not deferred,
+not format-only), represented as a **`QTime` exact rational**
+`{int64 num, int64 den}` meaning `(num/den)·Q`, gcd-normalized — not
+fixed PPQ ticks (free lengths don't lie on a grid), not float beats
+(drift breaks exact LCM math). Adopted with the ruling, as
+engineering defaults from the same audit section:
+
+- **D-T3 — the sample/QTime boundary:** physical facts stay samples
+  (monotonic clock `t`, epoch timestamps, pre-record ring, buffer
+  lengths, calibration C); musical facts become QTime (origin as
+  offset from epoch, period, window segments, arm targets, Q
+  subdivisions). The island owns the exchange rate `Q_samples`
+  (established at first commit, as today); warp later = a
+  time-varying rate, nested tempi = per-subtree rates — the time-map
+  rate term, same primitive.
+- **D-T4 — one rounding law:** a single shared
+  `toSamples(QTime, island)` used identically by capture and playback
+  (I1 survives rounding because both sides round the same), pinned by
+  golden vectors. This replaces today's silent integer-division
+  lossiness (`Q/8` in `nextStopBoundary`).
+- **D-T5 — unsnapped content stays sample-exact:** raw take lengths
+  and free-length cuts are physical facts; QTime describes where
+  content *belongs*, buffers describe what it *is*.
+
+Sequencing: land before time_maps phases 2–3 and before Save/Load;
+migrate mechanically alongside the kernel-completion field deletions
+(tasks.md Tier 0/1).
+
+**Q13. Can Q be corrected after the first take?**
+**RESOLVED (2026-07-16) — Q re-trim before lock.** Owner (from field
+use): *"Usually there is some dead air around the music and I need to
+find the right loop region. We need some UX to be able to adjust the
+loop regions of Q before recording new tracks. This should only be
+possible when there is only the initial Q-defining clip in an island.
+Once you start recording new tracks, Q becomes locked."* Canon:
+
+- While the island's only committed content is the Q-defining clip,
+  adjusting that clip's loop region **re-establishes the island's
+  (Q, epoch)**: `Q_samples := window length`, `epoch := origin +
+  window start` (the performance moment of the trimmed loop's top).
+- The moment any other take commits in the island, **Q locks**. The
+  `setQuantum` "called exactly once" invariant becomes "re-settable
+  until locked"; the UI should reflect the locked/unlocked state on
+  the Q-definer's loop handles.
+- This refines Q1 (Q survives its creator): survival applies to the
+  *locked* Q — the DNA that later takes were performed against. Before
+  lock, no other performance depends on Q, so re-trimming breaks
+  nothing (I1 is vacuous over an audience of one).
+- **QTime interaction (Q12): none — by design.** The Q-definer's
+  window bounds are sample-exact physical facts (D-T5); they *define*
+  the exchange rate rather than being expressed in it. Its period is
+  exactly 1Q by definition before and after the trim, so a re-trim
+  changes `Q_samples` and the epoch, never any stored QTime fact.
 
 ---
 

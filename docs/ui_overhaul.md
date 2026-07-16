@@ -119,6 +119,15 @@ empty husks) while a single active island pays nothing for it.
   (compressed data); a spectrum cannot be derived from peaks.
   Compressor makeup is an output trim: −12..+24 dB (raise-only is the
   makeup convention, but cutting is harmless and useful).
+  DURABLE SPECTRUM (owner, 2026-07-12): the EQ card also draws a cream
+  line over the live bars — a weighted HIGH-WATER MARK, not an average
+  (owner correction: a symmetric average let silent stretches drag the
+  line into illegibility). `holdSpectrum` in fx_viz.js: per bin, rise
+  fast (half the gap per poll) and fall slowly (~5 s time constant), so
+  the line holds the song's tonal shape through gaps and only relaxes
+  when the content really left. Client-side over the published bins;
+  null polls are identity; a bin-count change reseeds. Bars = the
+  moment, cream line = the song, tape curve = your EQ.
 
 ## 3. Visual language (Tape Room tokens)
 

@@ -18,6 +18,7 @@
 
 | Doc | Status | What it is |
 |---|---|---|
+| [unification_audit.md](unification_audit.md) | proposal | The 2026-07-16 audit: kernel divergences to delete, four missing unifying primitives (rational time, immutable graph + edits, pure render, fractal output stage), defect list, and the rational-time decision (§4, awaiting ruling). Drives the current tasks.md ordering. |
 | [design.md](design.md) | vision | Product vision, UX flows, feature roadmap. Broadest and oldest; details defer to the canon docs above. |
 | [ui_overhaul.md](ui_overhaul.md) | spec + proposal | The ratified UI redesign (2026-07-09): "Tape Room" direction, session view, instrument-in-hand sizing; carries P2-10 (deriveViewModel) and the phased build plan. |
 | [stacks.md](stacks.md) | spec + journal | Stack/nesting UX and visual design. The "Stack Loop Processing" section is superseded history (see time_maps.md); the visual-design sections are superseded by ui_overhaul.md. |

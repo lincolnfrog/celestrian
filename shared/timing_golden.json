@@ -31,6 +31,47 @@
     { "name": "exactly Q/2 -> not 'short', extends to 1Q", "recordedLength": 22050, "quantum": 44100, "expected": 44100 }
   ],
 
+  "qtime_to_samples_cases": [
+    { "name": "1Q @44100 -> exact", "num": 1, "den": 1, "qSamples": 44100, "expected": 44100 },
+    { "name": "1/2 Q @44100 -> exact", "num": 1, "den": 2, "qSamples": 44100, "expected": 22050 },
+    { "name": "1/8 Q @44100 -> 5512.5, tie rounds toward +inf", "num": 1, "den": 8, "qSamples": 44100, "expected": 5513 },
+    { "name": "1/8 Q @44104 -> exact", "num": 1, "den": 8, "qSamples": 44104, "expected": 5513 },
+    { "name": "1/3 Q @44100 -> exact", "num": 1, "den": 3, "qSamples": 44100, "expected": 14700 },
+    { "name": "1/3 Q @44101 -> 14700.33 rounds down", "num": 1, "den": 3, "qSamples": 44101, "expected": 14700 },
+    { "name": "2/3 Q @44101 -> 29400.67 rounds up", "num": 2, "den": 3, "qSamples": 44101, "expected": 29401 },
+    { "name": "-1/2 Q @44101 -> -22050.5, tie rounds toward +inf", "num": -1, "den": 2, "qSamples": 44101, "expected": -22050 },
+    { "name": "-2/3 Q @44101 -> -29400.67 rounds to -29401", "num": -2, "den": 3, "qSamples": 44101, "expected": -29401 },
+    { "name": "5/4 Q @48000 -> exact", "num": 5, "den": 4, "qSamples": 48000, "expected": 60000 },
+    { "name": "12 Q @44100 (E-B outer cycle)", "num": 12, "den": 1, "qSamples": 44100, "expected": 529200 },
+    { "name": "0 Q -> 0", "num": 0, "den": 1, "qSamples": 44100, "expected": 0 }
+  ],
+
+  "qtime_from_samples_cases": [
+    { "name": "22050 @44100 -> 1/2 Q", "samples": 22050, "qSamples": 44100, "expectedNum": 1, "expectedDen": 2 },
+    { "name": "44100 @44100 -> 1 Q", "samples": 44100, "qSamples": 44100, "expectedNum": 1, "expectedDen": 1 },
+    { "name": "66150 @44100 -> 3/2 Q", "samples": 66150, "qSamples": 44100, "expectedNum": 3, "expectedDen": 2 },
+    { "name": "unsnapped 30000 @44100 -> 100/147 Q (exact, ugly, fine)", "samples": 30000, "qSamples": 44100, "expectedNum": 100, "expectedDen": 147 },
+    { "name": "0 samples -> 0 Q", "samples": 0, "qSamples": 44100, "expectedNum": 0, "expectedDen": 1 },
+    { "name": "negative offset -22050 @44100 -> -1/2 Q", "samples": -22050, "qSamples": 44100, "expectedNum": -1, "expectedDen": 2 }
+  ],
+
+  "qtime_lcm_cases": [
+    { "name": "1 x 1 -> 1", "aNum": 1, "aDen": 1, "bNum": 1, "bDen": 1, "expectedNum": 1, "expectedDen": 1 },
+    { "name": "4Q x 6Q -> 12Q (E-B polyrhythm)", "aNum": 4, "aDen": 1, "bNum": 6, "bDen": 1, "expectedNum": 12, "expectedDen": 1 },
+    { "name": "3/2 x 1 -> 3", "aNum": 3, "aDen": 2, "bNum": 1, "bDen": 1, "expectedNum": 3, "expectedDen": 1 },
+    { "name": "2/3 x 1/2 -> 2", "aNum": 2, "aDen": 3, "bNum": 1, "bDen": 2, "expectedNum": 2, "expectedDen": 1 },
+    { "name": "3/4 x 1/2 -> 3/2", "aNum": 3, "aDen": 4, "bNum": 1, "bDen": 2, "expectedNum": 3, "expectedDen": 2 },
+    { "name": "zero falls back to other side", "aNum": 0, "aDen": 1, "bNum": 5, "bDen": 4, "expectedNum": 5, "expectedDen": 4 }
+  ],
+
+  "qtime_arith_cases": [
+    { "name": "1/2 + 1/3 = 5/6", "op": "add", "aNum": 1, "aDen": 2, "bNum": 1, "bDen": 3, "expectedNum": 5, "expectedDen": 6 },
+    { "name": "1/2 - 1/3 = 1/6", "op": "sub", "aNum": 1, "aDen": 2, "bNum": 1, "bDen": 3, "expectedNum": 1, "expectedDen": 6 },
+    { "name": "3/4 + 1/4 = 1 (normalizes)", "op": "add", "aNum": 3, "aDen": 4, "bNum": 1, "bDen": 4, "expectedNum": 1, "expectedDen": 1 },
+    { "name": "1/3 - 1/3 = 0 (canonical zero)", "op": "sub", "aNum": 1, "aDen": 3, "bNum": 1, "bDen": 3, "expectedNum": 0, "expectedDen": 1 },
+    { "name": "2/4 + 0 normalizes input to 1/2", "op": "add", "aNum": 2, "aDen": 4, "bNum": 0, "bDen": 1, "expectedNum": 1, "expectedDen": 2 }
+  ],
+
   "snap_cases": [
     { "name": "1Q + 900 samples -> Late Snap down to 1Q", "recordedLength": 45000, "quantum": 44100, "expectedDuration": 44100, "expectedLoopEnd": 44100, "expectedSnapped": true },
     { "name": "just under 2Q -> Late Snap up to 2Q", "recordedLength": 88000, "quantum": 44100, "expectedDuration": 88200, "expectedLoopEnd": 88200, "expectedSnapped": true },

@@ -8,7 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    eqResponseDb, logFreqs, echoTaps, reverbTailSeconds,
+    eqResponseDb, logFreqs, echoTaps, reverbTailSeconds, holdSpectrum,
 } from '../fx_viz.js';
 
 test('eqResponseDb: flat gains → flat 0 dB curve', () => {
@@ -41,6 +41,34 @@ test('echoTaps: dry pulse then geometric repeats at k·time', () => {
 
 test('echoTaps: zero mix → dry pulse only', () => {
     assert.equal(echoTaps({ time: 0.5, feedback: 0.5, mix: 0 }).length, 1);
+});
+
+test('holdSpectrum: rises fast, falls slowly — silence cannot drag it down', () => {
+    // First observation seeds the mark outright
+    let mark = holdSpectrum(null, [0.5, 0.2]);
+    assert.deepEqual(mark, [0.5, 0.2]);
+
+    // RISE: a new peak registers in a couple of polls (half the gap each)
+    mark = holdSpectrum(mark, [1.0, 0.2]);
+    assert.ok(Math.abs(mark[0] - 0.75) < 1e-9, `rise closes 50%, got ${mark[0]}`);
+    mark = holdSpectrum(mark, [1.0, 0.2]);
+    assert.ok(mark[0] > 0.87, `two polls near the peak, got ${mark[0]}`);
+
+    // FALL — the motivating case: a SILENT stretch barely moves the
+    // line. One second of silence (20 polls at fall 0.01) keeps >80%
+    let held = [...mark];
+    for (let i = 0; i < 20; i++) held = holdSpectrum(held, [0, 0]);
+    assert.ok(held[0] > mark[0] * 0.8,
+        `1s of silence keeps the shape, got ${held[0]} of ${mark[0]}`);
+    // …while sustained silence does eventually relax it (~5s tau):
+    // 100 polls ≈ 5s → down to ~1/e
+    for (let i = 0; i < 80; i++) held = holdSpectrum(held, [0, 0]);
+    assert.ok(held[0] < mark[0] * 0.45 && held[0] > mark[0] * 0.25,
+        `5s tau decay, got ${held[0]} of ${mark[0]}`);
+
+    // Null polls (scope closed) are identity; bin-count change reseeds
+    assert.equal(holdSpectrum(held, null), held);
+    assert.deepEqual(holdSpectrum(held, [0.1, 0.2, 0.3]), [0.1, 0.2, 0.3]);
 });
 
 test('reverbTailSeconds: grows with size, shrinks with damping', () => {
