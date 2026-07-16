@@ -21,8 +21,8 @@ juce::var ClipNode::getMetadata() const {
   auto *obj = base.getDynamicObject();
   obj->setProperty("sampleRate", sample_rate);
   obj->setProperty("inputChannel", preferred_input_channel);
-  obj->setProperty("isPendingStart", (bool)is_pending_start.load());
-  obj->setProperty("isAwaitingStop", (bool)is_awaiting_stop.load());
+  obj->setProperty("isPendingStart", isPendingStart());
+  obj->setProperty("isAwaitingStop", isAwaitingStop());
   obj->setProperty("isPlaying", (bool)is_playing.load());
 
   // (recordingStartPhase was deleted 2026-07-16: no consumer existed —
@@ -38,191 +38,34 @@ int64_t ClipNode::getEffectiveQuantum() const {
 void ClipNode::process(const float *const *input_channels,
                        float *const *output_channels, int num_input_channels,
                        int num_output_channels, const ProcessContext &context) {
-  // Handle PLL Start Anchor
-  if (is_pending_start.load()) {
-    int64_t Q = getEffectiveQuantum();
-    bool should_start = true;
-
-    if (Q > 0) {
-      int64_t phase = context.master_pos % Q;
-      int64_t dist_to_next = Q - phase;
-      int64_t tolerance = (int64_t)(Q * 0.25);  // 25% Anticipatory Start
-
-      if (dist_to_next < tolerance) {
-        should_start = false;  // Wait for the next boundary
-      }
-    }
-
-    if (should_start) {
-      // Latency Compensation:
-      // The user played in response to what they HEARD (delayed by
-      // output_latency). Their performance reached the software delayed by
-      // input_latency. Total compensation = input + output latency.
-      int64_t compensated_pos =
-          context.master_pos - (context.input_latency + context.output_latency);
-      if (compensated_pos < 0) compensated_pos = 0;
-
-      // The arm target depends on the context loop (the loop the
-      // performer was listening to): longest committed sibling, min Q.
-      // (P1-6 remainder: this sibling scan should become context passed
-      // DOWN via ProcessContext.)
-      int64_t Q = getEffectiveQuantum();
-      int64_t context_loop = Q > 0 ? Q : 1;
-
-      // Find longest sibling clip (the context loop)
-      if (auto *parent_node = parent.load()) {
-        auto *box = dynamic_cast<StackNode *>(parent_node);
-        if (box != nullptr) {
-          for (auto *sibling : box->getChildrenSnapshot()) {
-            if (sibling != this && !sibling->is_node_recording.load()) {
-              int64_t sib_dur = sibling->duration_samples.load();
-              if (sib_dur > context_loop) {
-                context_loop = sib_dur;
-              }
-            }
-          }
-        }
-      }
-
-      // ALL cycle-relative math happens in the ISLAND EPOCH frame — the
-      // frame the user SEES (the cycle epoch re-bases to the newest
-      // cycle-defining origin at commit). In this frame every committed
-      // sibling plays phase (rel mod its duration), because committed
-      // origins are ≡ epoch (mod their durations) — so no sibling
-      // launch-point scans or playback offsets are needed here. Mixing
-      // absolute-frame math with the epoch-rebased view was the field
-      // bug "clip 3 anchored at 3Q instead of 0Q".
-      const int64_t epoch = getIslandEpoch();
-      int64_t rel = compensated_pos - epoch;
-      if (rel < 0) rel = 0;
-
-      // Effective position = where the user perceived the cycle playhead
-      int64_t effective_pos = rel % context_loop;
-
-      // ALWAYS SNAP to next Q boundary
-      if (Q > 0) {
-        bool singleClipContext = (context_loop == Q);
-
-        int64_t next_q_rel;
-        if (singleClipContext) {
-          // Single clip context: extend the timeline in the epoch frame
-          int64_t current_q_index = rel / Q;
-          next_q_rel = (current_q_index + 1) * Q;
-          if (rel % Q == 0) {
-            next_q_rel = rel;  // Already at boundary
-          }
-        } else {
-          // Multi-clip context: snap the perceived position forward
-          int64_t visual_q_index = effective_pos / Q;
-          int64_t next_visual_q = (visual_q_index + 1) * Q;
-          if (effective_pos % Q == 0) {
-            next_visual_q = effective_pos;
-          }
-          int64_t loop_base = (rel / context_loop) * context_loop;
-          int64_t offset_in_loop = next_visual_q % context_loop;
-          // next_visual_q == context_loop means "the top of the NEXT
-          // cycle", not the top of this one
-          if (offset_in_loop == 0 && next_visual_q > 0) {
-            offset_in_loop = context_loop;
-          }
-          next_q_rel = loop_base + offset_in_loop;
-        }
-
-        // Absolute performance moment of that boundary (origin frame)
-        const int64_t next_q_master = epoch + next_q_rel;
-
-        // THE canonical timing fact: this clip's content belongs at
-        // performance moment next_q_master — stored ABSOLUTE
-        // (docs/kernel.md; launchPointFor mods by the final duration, so
-        // no cycle information is ever truncated). Anchor, launch point,
-        // and lane x are all projections of this one value.
-        origin_samples.store(next_q_master);
-
-        // If already at boundary, start immediately
-        if (compensated_pos >= next_q_master ||
-            next_q_master - compensated_pos < 512) {
-          is_pending_start.store(false);
-          is_recording.store(true);
-          is_node_recording.store(true);
-          write_position.store(0);
-          live_duration_samples.store(0);
-          // Capture window: clip position 0 holds the input that ARRIVED at
-          // performance-time next_q_master, i.e. (next_q - compensated)
-          // samples after this block's first arrival. A negative delta
-          // (boundary just passed) reaches back into the ring.
-          capture_uses_ring_ = (context.prerecord_ring != nullptr);
-          capture_next_clock_ =
-              context.input_clock + (next_q_master - compensated_pos);
-          RtLog::instance().post("ClipNode: Recording Started (at Q boundary)");
-        } else {
-          // Wait for the Q boundary
-          awaiting_start_at.store(next_q_master);
-          RtLog::instance().post("ClipNode: Awaiting start at %lld",
-                                 (long long)next_q_master);
-        }
-      } else {
-        // No Q established yet (first clip) - start immediately.
-        // First clip defines the cycle origin. The clock is never reset
-        // (kernel.md): this arm moment IS the island epoch — capture it
-        // at the root as data, provisionally (commit stores Q + epoch
-        // together and overwrites with the same value).
-        origin_samples.store(compensated_pos);
-        {
-          AudioNode *top = this;
-          while (auto *p = top->getParent()) top = p;
-          if (auto *island = dynamic_cast<StackNode *>(top)) {
-            if (island->getQuantum() == 0) island->setEpoch(compensated_pos);
-          }
-        }
-        is_pending_start.store(false);
-        is_recording.store(true);
-        is_node_recording.store(true);
-        write_position.store(0);
-        live_duration_samples.store(0);
-        // First clip: the trigger IS "performance now", whose audio is
-        // arriving right now — capture from this block's first arrival.
-        capture_uses_ring_ = (context.prerecord_ring != nullptr);
-        capture_next_clock_ = context.input_clock;
-        RtLog::instance().post(
-            "ClipNode: Recording Started at master_pos=%lld (anchor=0, first "
-            "clip)",
-            (long long)compensated_pos);
-      }
-    }
-
-    // Check if we're waiting to start at a Q boundary
-    if (is_pending_start.load() && awaiting_start_at.load() > 0) {
-      int64_t target = awaiting_start_at.load();
-      int64_t start_p = context.master_pos;
-      int64_t end_p = context.master_pos + context.num_samples;
-
-      if (start_p < target && end_p >= target) {
-        is_pending_start.store(false);
-        awaiting_start_at.store(0);
-        is_recording.store(true);
-        is_node_recording.store(true);
-        write_position.store(0);
-        live_duration_samples.store(0);
-        // Capture window: input for performance-time `target` arrives
-        // (target - compensated_now) samples after this block's first
-        // arrival (i.e. latency-compensation samples later than the
-        // boundary itself).
-        {
-          int64_t comp_now = context.master_pos -
-                             (context.input_latency + context.output_latency);
-          if (comp_now < 0) comp_now = 0;
-          capture_uses_ring_ = (context.prerecord_ring != nullptr);
-          capture_next_clock_ = context.input_clock + (target - comp_now);
-        }
-        RtLog::instance().post(
-            "ClipNode: Recording Started (crossed Q boundary at %lld)",
-            (long long)target);
-      }
-    }
+  // === Armed: choose/reach the arm target (state machine, kernel.md §3;
+  // re-evaluated every block — deliberate: the latency-compensated clock
+  // must be able to land back on a boundary the raw clock already
+  // passed). May transition to Capturing within this block.
+  if (recState() == RecState::Armed) {
+    armEvaluate(context);
   }
 
-  // Handle Recording
-  if (is_recording.load()) {
+  // === Stop request → PendingStop. The boundary is computed HERE, on
+  // the audio thread, from the audio thread's own write position — the
+  // old message-thread computation raced the recorder and could pick a
+  // boundary already behind the write head (unification_audit.md D2).
+  if (recState() == RecState::Capturing && stop_requested_.load()) {
+    const int64_t Q = getEffectiveQuantum();
+    if (Q > 0) {
+      const int64_t boundary =
+          timing::nextStopBoundary(write_position.load(), Q);
+      awaiting_stop_at.store(boundary);
+      rec_state_.store((int)RecState::PendingStop);
+      RtLog::instance().post("ClipNode: PendingStop at B=%lld (L=%lld)",
+                             (long long)boundary,
+                             (long long)write_position.load());
+    }
+    stop_requested_.store(false);
+  }
+
+  // Handle Recording (Capturing or PendingStop)
+  if (isRecording()) {
     if (context.is_recording && capture_uses_ring_ &&
         context.prerecord_ring != nullptr &&
         context.prerecord_ring_channels > 0) {
@@ -275,12 +118,11 @@ void ClipNode::process(const float *const *input_channels,
           const int64_t end_p = write_position.load();
           live_duration_samples.store(end_p);  // Live update for UI
 
-          if (is_awaiting_stop.load()) {
+          if (recState() == RecState::PendingStop) {
             int64_t target = awaiting_stop_at.load();
             if (start_p < target && end_p >= target) {
               commit_master_pos.store(context.master_pos);
               commitRecording(target);
-              is_awaiting_stop.store(false);
               return;
             }
           }
@@ -316,12 +158,11 @@ void ClipNode::process(const float *const *input_channels,
         int64_t end_p = write_position.load();
         live_duration_samples.store(end_p);  // Live update for UI visibility
 
-        if (is_awaiting_stop.load()) {
+        if (recState() == RecState::PendingStop) {
           int64_t target = awaiting_stop_at.load();
           if (start_p < target && end_p >= target) {
             commit_master_pos.store(context.master_pos);
             commitRecording(target);
-            is_awaiting_stop.store(false);
             return;
           }
         }
@@ -407,53 +248,160 @@ void ClipNode::process(const float *const *input_channels,
   }
 }
 
+void ClipNode::armEvaluate(const ProcessContext &context) {
+  const int64_t Q = getEffectiveQuantum();
+
+  // Latency compensation: the performer plays against what they HEARD
+  // (delayed by output latency); it reaches the software input latency
+  // later. Total compensation = input + output (or the calibrated
+  // round trip, which the engine substitutes for both).
+  int64_t compensated_pos =
+      context.master_pos - (context.input_latency + context.output_latency);
+  if (compensated_pos < 0) compensated_pos = 0;
+
+  if (Q <= 0) {
+    // First clip: starts NOW. This arm moment IS the island epoch —
+    // captured as data at the root (the clock is never reset,
+    // kernel.md); commit stores Q + epoch together with the same value.
+    origin_samples.store(compensated_pos);
+    AudioNode *top = this;
+    while (auto *p = top->getParent()) top = p;
+    if (auto *island = dynamic_cast<StackNode *>(top)) {
+      if (island->getQuantum() == 0) island->setEpoch(compensated_pos);
+    }
+    beginCapture(context, compensated_pos, compensated_pos);
+    RtLog::instance().post(
+        "ClipNode: Recording Started at master_pos=%lld (first clip)",
+        (long long)compensated_pos);
+    return;
+  }
+
+  // ALL cycle-relative math happens in the ISLAND EPOCH frame — mixing
+  // absolute-frame math with the epoch-rebased view was the field bug
+  // "clip 3 anchored at 3Q instead of 0Q" (and, until 2026-07-16, this
+  // function's own anticipatory check used the absolute transport).
+  const int64_t epoch = getIslandEpoch();
+
+  // Anticipatory window (timing.h): a click just before a heard
+  // boundary means THAT boundary — defer the arm decision so the
+  // compensated clock can land on it instead of overshooting.
+  const bool in_window =
+      timing::inAnticipatoryWindow(context.master_pos - epoch, Q);
+
+  if (!in_window) {
+    // Context loop = the loop the performer was listening to: longest
+    // committed sibling, min Q. (P1-6 remainder: this sibling scan
+    // should become context passed DOWN via ProcessContext.)
+    int64_t context_loop = Q;
+    if (auto *box = dynamic_cast<StackNode *>(parent.load())) {
+      for (auto *sibling : box->getChildrenSnapshot()) {
+        if (sibling != this && !sibling->isArmedOrRecording()) {
+          const int64_t sib_dur = sibling->duration_samples.load();
+          if (sib_dur > context_loop) context_loop = sib_dur;
+        }
+      }
+    }
+
+    int64_t rel = compensated_pos - epoch;
+    if (rel < 0) rel = 0;
+
+    // THE canonical timing fact: this clip's content belongs at the arm
+    // target — stored ABSOLUTE (docs/kernel.md). Anchor, launch point,
+    // and lane x are all projections of this one value. Re-stored per
+    // block while Armed; it converges to the chosen boundary.
+    const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
+    origin_samples.store(target);
+    awaiting_start_at.store(target);
+
+    // At (or within a hair of) the target: start immediately.
+    if (compensated_pos >= target || target - compensated_pos < 512) {
+      beginCapture(context, target, compensated_pos);
+      RtLog::instance().post("ClipNode: Recording Started (at Q boundary)");
+      return;
+    }
+  }
+
+  // Whether or not this block re-evaluated (the anticipatory window
+  // skips re-evaluation), a previously chosen target that falls inside
+  // THIS block starts capture exactly at the boundary.
+  const int64_t target = awaiting_start_at.load();
+  if (target > 0 && context.master_pos < target &&
+      context.master_pos + context.num_samples >= target) {
+    beginCapture(context, target, compensated_pos);
+    RtLog::instance().post(
+        "ClipNode: Recording Started (crossed Q boundary at %lld)",
+        (long long)target);
+  }
+}
+
+void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
+                            int64_t compensated_pos) {
+  rec_state_.store((int)RecState::Capturing);
+  awaiting_start_at.store(0);
+  write_position.store(0);
+  live_duration_samples.store(0);
+  // Capture window (performance.md §3): clip position 0 holds the input
+  // that ARRIVED at performance-time `target`, i.e. (target −
+  // compensated) samples after this block's first arrival. A negative
+  // delta (boundary just passed) reaches back into the pre-record ring.
+  capture_uses_ring_ = (context.prerecord_ring != nullptr);
+  capture_next_clock_ = context.input_clock + (target - compensated_pos);
+}
+
 void ClipNode::startRecording() {
   buffer.clear();
   write_position.store(0);
   read_position.store(0);
   current_max_peak.store(0.0f);
-
-  is_pending_start.store(true);
-  is_recording.store(false);
-  is_node_recording.store(true);
+  awaiting_start_at.store(0);
+  stop_requested_.store(false);
 
   duration_samples.store(0);
+  live_duration_samples.store(0);
   is_playing.store(false);
+
+  rec_state_.store((int)RecState::Armed);
 }
 
 void ClipNode::stopRecording() {
-  if (is_node_recording.load()) {
-    int64_t L = (int64_t)write_position.load();
-    int64_t Q = getEffectiveQuantum();
+  switch (recState()) {
+    case RecState::Armed:
+      // Never started capturing: stopping an armed clip is a CANCEL —
+      // back to Idle with no content. (Previously this wedged the clip
+      // into a phantom awaiting-stop before capture had even begun.)
+      rec_state_.store((int)RecState::Idle);
+      awaiting_start_at.store(0);
+      juce::Logger::writeToLog("ClipNode: Arm cancelled before capture");
+      break;
 
-    if (Q > 0) {
-      // ALWAYS wait for the next clean quantum boundary (or subdivision for
-      // short recordings). Math lives in timing.h — shared with the JS
-      // timeline model via the golden vectors.
-      int64_t nextB = timing::nextStopBoundary(L, Q);
+    case RecState::Capturing:
+      if (getEffectiveQuantum() > 0) {
+        // ALWAYS record forward to the next clean boundary (owner
+        // ruling). The boundary itself is computed by the AUDIO thread
+        // at the top of its next block (see process()) — computing it
+        // here from a racing write position was unification_audit.md D2.
+        stop_requested_.store(true);
+        juce::Logger::writeToLog(
+            "ClipNode: Stop requested — finishing to the next boundary");
+      } else {
+        // First clip: immediate commit. The recorded length stands in
+        // for the commit position — a node-level diagnostic only.
+        commit_master_pos.store(write_position.load());
+        commitRecording();
+      }
+      break;
 
-      awaiting_stop_at.store(nextB);
-      is_awaiting_stop.store(true);
-      juce::Logger::writeToLog(
-          "ClipNode: Waiting for next Q boundary B=" + juce::String(nextB) +
-          " (current L=" + juce::String(L) + ")");
-      return;
-    }
-
-    // Immediate stop (first clip): no boundary to await. The recorded
-    // length stands in for the commit position — a node-level
-    // diagnostic; nothing derives timing from it.
-    commit_master_pos.store(write_position.load());
-    commitRecording();
+    case RecState::PendingStop:
+    case RecState::Idle:
+      break;  // already stopping / nothing to stop
   }
 }
 
 void ClipNode::commitRecording(int64_t final_duration) {
-  if (is_node_recording.load()) {
-    is_recording.store(false);
-    is_pending_start.store(false);
-    is_awaiting_stop.store(false);
-    is_node_recording.store(false);
+  if (recState() != RecState::Idle) {
+    rec_state_.store((int)RecState::Idle);
+    stop_requested_.store(false);
+    awaiting_stop_at.store(0);
 
     int64_t L = (int64_t)write_position.load();
     int64_t Q = getEffectiveQuantum();

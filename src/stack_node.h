@@ -108,9 +108,10 @@ class StackNode : public AudioNode {
 
   /**
    * Recursively checks if any child node (including nested stacks) is
-   * recording. Safe on the audio thread.
+   * armed or recording. Safe on the audio thread.
    */
   bool isAnyChildRecording() const;
+  bool isArmedOrRecording() const override { return isAnyChildRecording(); }
 
   /**
    * Returns the number of children in this stack.

@@ -349,17 +349,13 @@ AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
 }
 
 bool StackNode::isAnyChildRecording() const {
+  // Virtual dispatch replaces the old per-child dynamic_cast: clips
+  // answer from their recording state machine, nested stacks recurse
+  // via their own isArmedOrRecording override.
   const auto *kids = renderChildren();
   for (auto *child : *kids) {
-    // Check if this child is recording
-    if (child->is_node_recording.load()) return true;
-
-    // If child is a stack, recursively check its children
-    if (auto *stack = dynamic_cast<const StackNode *>(child)) {
-      if (stack->isAnyChildRecording()) return true;
-    }
+    if (child->isArmedOrRecording()) return true;
   }
-
   return false;
 }
 

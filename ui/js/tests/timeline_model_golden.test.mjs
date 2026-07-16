@@ -12,7 +12,8 @@ import path from 'node:path';
 
 import {
     timelineLcm, launchPointFor, playheadPercent,
-    nextStopBoundary, snapCommittedDuration, computeGhostTiles
+    nextStopBoundary, snapCommittedDuration, computeGhostTiles,
+    armTarget, inAnticipatoryWindow
 } from '../timeline_model.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -46,6 +47,16 @@ for (const c of golden.playhead_cases) {
         failures++;
         console.error(`  FAIL: ${c.name} — expected ${c.expected}, got ${actual}`);
     }
+}
+
+console.log('Golden: armTarget');
+for (const c of golden.arm_target_cases) {
+    check(armTarget(c.rel, c.quantum, c.contextLoop), c.expected, c.name);
+}
+
+console.log('Golden: inAnticipatoryWindow');
+for (const c of golden.anticipatory_cases) {
+    check(inAnticipatoryWindow(c.rel, c.quantum), c.expected, c.name);
 }
 
 console.log('Golden: nextStopBoundary');

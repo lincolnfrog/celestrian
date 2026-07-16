@@ -35,6 +35,46 @@ export const HYSTERESIS_THRESHOLD = 0.15;
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 export const SUBDIVISIONS = [2, 4, 8];
 
+/** PLL arm tolerance (fraction of Q): a record click within this window
+ * BEFORE a boundary means that boundary. Mirrors timing::kArmTolerance. */
+export const ARM_TOLERANCE = 0.25;
+
+/**
+ * True when an epoch-relative position sits in the anticipatory window
+ * (within ARM_TOLERANCE·Q before the next boundary).
+ * Mirrors timing::inAnticipatoryWindow.
+ */
+export function inAnticipatoryWindow(rel, quantum) {
+    if (quantum <= 0) return false;
+    const phase = ((rel % quantum) + quantum) % quantum;
+    return (quantum - phase) < Math.floor(ARM_TOLERANCE * quantum);
+}
+
+/**
+ * The arm target (Q11 ruling): the next Q boundary at/after the
+ * epoch-relative position `rel`, on the CONTEXT loop's grid.
+ * Mirrors timing::armTarget.
+ */
+export function armTarget(rel, quantum, contextLoop) {
+    if (rel < 0) rel = 0;
+    if (quantum <= 0) return rel;
+    if (!contextLoop || contextLoop <= 0) contextLoop = quantum;
+
+    if (contextLoop === quantum) {
+        if (rel % quantum === 0) return rel;
+        return (Math.floor(rel / quantum) + 1) * quantum;
+    }
+
+    const effective = rel % contextLoop;
+    const nextVisual = (effective % quantum === 0)
+        ? effective
+        : (Math.floor(effective / quantum) + 1) * quantum;
+    const loopBase = Math.floor(rel / contextLoop) * contextLoop;
+    let offset = nextVisual % contextLoop;
+    if (offset === 0 && nextVisual > 0) offset = contextLoop;
+    return loopBase + offset;
+}
+
 /**
  * LCM of a set of durations, seeded with the quantum.
  * Mirrors AudioEngine::calculateTimelineLength's core loop.

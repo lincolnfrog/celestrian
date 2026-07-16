@@ -149,7 +149,17 @@ class AudioNode {
     }
   }
 
-  virtual bool isRecording() const { return is_node_recording.load(); }
+  /** Actively capturing (or finishing to a stop boundary). */
+  virtual bool isRecording() const { return false; }
+
+  /**
+   * The recording LIFECYCLE is active: armed, capturing, or pending
+   * stop. Wider than isRecording() (an armed clip hasn't captured a
+   * sample yet). Stacks answer for their subtree. This is what engine
+   * bookkeeping (view freeze, epoch re-base, sibling context scans)
+   * keys on. Audio-thread safe.
+   */
+  virtual bool isArmedOrRecording() const { return isRecording(); }
 
   /**
    * Returns the latest peak sample level for real-time visualization.
@@ -252,7 +262,6 @@ class AudioNode {
   // parameters — safe for the audio thread to read while the message
   // thread edits.
   dsp::EffectRack fx_;
-  std::atomic<bool> is_node_recording{false};
   std::atomic<bool> is_muted{false};
   std::atomic<bool> is_expanded{
       true};  // UI state: expanded (true) or collapsed (false)

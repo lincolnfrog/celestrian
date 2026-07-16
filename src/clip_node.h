@@ -12,6 +12,30 @@ namespace celestrian {
  */
 class ClipNode : public AudioNode {
  public:
+  /**
+   * The recording lifecycle (kernel.md §3 — the last piece of P0-4):
+   * ONE explicit state replaces the old five-boolean encoding, so
+   * illegal flag combinations are unrepresentable.
+   *
+   *   Idle ──startRecording()──▶ Armed ──target reached──▶ Capturing
+   *    ▲          (msg thread)     │        (audio thread)     │
+   *    │◀── stopRecording() = cancel                           │
+   *    │                                stopRecording(), Q>0 ──┤
+   *    │◀── commit ─── PendingStop ◀── (boundary computed on   │
+   *    │               (audio thread)   the audio thread — D2) │
+   *    └◀────────── commit (immediate: Q==0 first clip) ◀──────┘
+   *
+   * "Committed" is Idle-with-content. While Armed, the arm decision
+   * re-evaluates every block — deliberate: the latency-compensated
+   * clock must be able to land back on a boundary the raw clock has
+   * already passed. Transitions: message thread arms/cancels/requests
+   * stop; the audio thread starts capture, picks stop boundaries, and
+   * commits. Every field is atomic; each state's parameters
+   * (awaiting_start_at / awaiting_stop_at) are written before the state
+   * flips.
+   */
+  enum class RecState : int { Idle = 0, Armed, Capturing, PendingStop };
+
   // The default rate is a convenience for unit tests; the engine passes
   // the actual device rate when creating clips (P0-5).
   ClipNode(juce::String name, double source_sample_rate = 44100.0);
@@ -70,10 +94,22 @@ class ClipNode : public AudioNode {
    */
   void stopPlayback();
 
-  bool isRecording() const override { return is_recording.load(); }
+  RecState recState() const { return (RecState)rec_state_.load(); }
+  bool isRecording() const override {
+    const RecState s = recState();
+    return s == RecState::Capturing || s == RecState::PendingStop;
+  }
+  bool isArmedOrRecording() const override {
+    return recState() != RecState::Idle;
+  }
   bool isPlaying() const { return is_playing.load(); }
-  bool isPendingStart() const { return is_pending_start.load(); }
-  bool isAwaitingStop() const { return is_awaiting_stop.load(); }
+  bool isPendingStart() const { return recState() == RecState::Armed; }
+  bool isAwaitingStop() const {
+    // True from the moment the user asked to stop (stop_requested_ is
+    // the one-block bridge until the audio thread picks the boundary).
+    return recState() == RecState::PendingStop ||
+           (recState() == RecState::Capturing && stop_requested_.load());
+  }
   int64_t getCommitMasterPos() const { return commit_master_pos.load(); }
   int64_t getAwaitingStartAt() const { return awaiting_start_at.load(); }
 
@@ -117,14 +153,21 @@ class ClipNode : public AudioNode {
   int64_t capture_next_clock_ = 0;
   bool capture_uses_ring_ = false;
 
-  std::atomic<bool> is_recording{false};
-  std::atomic<bool> is_pending_start{false};
-  std::atomic<bool> is_awaiting_stop{false};
+  /** Armed-state evaluation (audio thread, once per block). */
+  void armEvaluate(const ProcessContext &context);
+  /** Armed → Capturing: fixes the capture window for `target`. */
+  void beginCapture(const ProcessContext &context, int64_t target,
+                    int64_t compensated_pos);
+
+  std::atomic<int> rec_state_{(int)RecState::Idle};
+  // Message-thread stop request; consumed by the audio thread, which
+  // computes the boundary from its own write position (D2 fix).
+  std::atomic<bool> stop_requested_{false};
   std::atomic<bool> is_playing{false};
 
   std::atomic<int64_t> awaiting_start_at{
-      0};  // When to actually start recording
-  std::atomic<int64_t> awaiting_stop_at{0};
+      0};  // Armed: the chosen arm target (0 = none yet)
+  std::atomic<int64_t> awaiting_stop_at{0};  // PendingStop: commit boundary
   std::atomic<int64_t> commit_master_pos{
       0};  // Master pos when recording commits
 

@@ -32,6 +32,30 @@
     { "name": "odd Q: subdivisions through the rounding law (44101/8 -> 5513)", "recordedLength": 3000, "quantum": 44101, "expected": 5513 }
   ],
 
+  "arm_target_cases": [
+    { "name": "on a boundary -> itself", "rel": 1000, "quantum": 1000, "contextLoop": 1000, "expected": 1000 },
+    { "name": "mid-Q, single-clip context -> next boundary", "rel": 500, "quantum": 1000, "contextLoop": 1000, "expected": 1000 },
+    { "name": "arm at 2500 in 1Q context -> 3000", "rel": 2500, "quantum": 1000, "contextLoop": 1000, "expected": 3000 },
+    { "name": "arm at 1500 in 4Q context -> 2000 (slot 2, not 3)", "rel": 1500, "quantum": 1000, "contextLoop": 4000, "expected": 2000 },
+    { "name": "on boundary in 4Q context -> itself", "rel": 2000, "quantum": 1000, "contextLoop": 4000, "expected": 2000 },
+    { "name": "final Q of the cycle -> next cycle top (Q11)", "rel": 3500, "quantum": 1000, "contextLoop": 4000, "expected": 4000 },
+    { "name": "cycle top -> itself", "rel": 4000, "quantum": 1000, "contextLoop": 4000, "expected": 4000 },
+    { "name": "after multiple loops: 10500 in 5Q context -> 11000", "rel": 10500, "quantum": 1000, "contextLoop": 5000, "expected": 11000 },
+    { "name": "second cycle mid-Q: 6500 in 4Q context -> 7000", "rel": 6500, "quantum": 1000, "contextLoop": 4000, "expected": 7000 },
+    { "name": "unsnapped context: grid restarts at context top (5000 in 4600 ctx -> 5600)", "rel": 5000, "quantum": 1000, "contextLoop": 4600, "expected": 5600 },
+    { "name": "rel 0 -> 0", "rel": 0, "quantum": 1000, "contextLoop": 4000, "expected": 0 },
+    { "name": "no quantum -> immediate (rel)", "rel": 777, "quantum": 0, "contextLoop": 0, "expected": 777 }
+  ],
+
+  "anticipatory_cases": [
+    { "name": "the pickup (E-A): 3.9Q is inside the window", "rel": 3900, "quantum": 1000, "expected": true },
+    { "name": "just past a boundary is NOT in the window", "rel": 4010, "quantum": 1000, "expected": false },
+    { "name": "exactly on a boundary is NOT in the window", "rel": 4000, "quantum": 1000, "expected": false },
+    { "name": "window edge: 0.75Q phase is outside (< is strict)", "rel": 750, "quantum": 1000, "expected": false },
+    { "name": "just inside the edge: 0.751Q", "rel": 751, "quantum": 1000, "expected": true },
+    { "name": "no quantum -> never", "rel": 900, "quantum": 0, "expected": false }
+  ],
+
   "qtime_to_samples_cases": [
     { "name": "1Q @44100 -> exact", "num": 1, "den": 1, "qSamples": 44100, "expected": 44100 },
     { "name": "1/2 Q @44100 -> exact", "num": 1, "den": 2, "qSamples": 44100, "expected": 22050 },

@@ -412,6 +412,124 @@ class ClipNodeTests : public juce::UnitTest {
       expectEquals(launch_point, 2 * Q);
     }
 
+    beginTest("State machine: stopping an ARMED clip cancels cleanly");
+    {
+      const double SR = 1000.0;
+      StackNode parent("Parent");
+      parent.setQuantum(1000, 0);  // island Q established, epoch 0
+
+      auto clip = std::make_unique<ClipNode>("Armed", SR);
+      auto *c = clip.get();
+      parent.addChild(std::move(clip));
+
+      float in[50] = {0.5f};
+      float *const ins[] = {in};
+      ProcessContext ctx;
+      ctx.num_samples = 50;
+      ctx.is_recording = true;
+      ctx.master_pos = 100;  // target 1000: too far for immediate start
+
+      c->startRecording();
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(c->isPendingStart(), "armed, not yet capturing");
+      expect(!c->isRecording());
+
+      // Stop while armed = CANCEL (previously wedged into a phantom
+      // awaiting-stop before any capture existed).
+      c->stopRecording();
+      expect(!c->isPendingStart(), "cancel leaves Idle");
+      expect(!c->isRecording());
+      expect(!c->isAwaitingStop());
+      expectEquals(c->duration_samples.load(), (int64_t)0, "no content");
+
+      // And nothing captures afterwards.
+      ctx.master_pos = 1000;
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(!c->isRecording(), "cancelled clip never starts capturing");
+    }
+
+    beginTest("State machine: stop boundary is picked by the AUDIO thread");
+    {
+      // D2 (unification_audit.md): the boundary must come from the audio
+      // thread's own write position, not a racing message-thread read.
+      const double SR = 1000.0;
+      StackNode parent("Parent");
+      parent.setQuantum(1000, 0);
+
+      auto clip = std::make_unique<ClipNode>("StopRace", SR);
+      auto *c = clip.get();
+      parent.addChild(std::move(clip));
+
+      float in[300];
+      for (int i = 0; i < 300; ++i) in[i] = 0.4f;
+      float *const ins[] = {in};
+      ProcessContext ctx;
+      ctx.num_samples = 300;
+      ctx.is_recording = true;
+      ctx.master_pos = 0;  // on the boundary: capture starts immediately
+
+      c->startRecording();
+      c->process(ins, nullptr, 1, 0, ctx);  // L = 300
+      expect(c->isRecording());
+
+      c->stopRecording();  // message thread: request only
+      expect(c->isAwaitingStop(), "awaiting immediately (stop_requested)");
+      expect(c->isRecording(), "still recording while awaiting stop");
+
+      // Next audio block: boundary = nextStopBoundary(300, 1000) = 500
+      // (Q/2 subdivision), computed from the AUDIO thread's L.
+      ctx.num_samples = 100;
+      ctx.master_pos = 300;
+      c->process(ins, nullptr, 1, 0, ctx);  // L = 400, no commit yet
+      expect(c->isRecording(), "boundary (500) not reached at L=400");
+
+      ctx.master_pos = 400;
+      c->process(ins, nullptr, 1, 0, ctx);  // L = 500 -> commit
+      expect(!c->isRecording(), "committed at the boundary");
+      expect(!c->isAwaitingStop());
+      expectEquals(c->duration_samples.load(), (int64_t)500,
+                   "committed exactly at nextStopBoundary(300, 1000)");
+    }
+
+    beginTest("State machine: anticipatory window uses the EPOCH frame");
+    {
+      // A click just before a HEARD boundary means that boundary — even
+      // when the island epoch is not ≡ 0 (mod Q). The old inline check
+      // used the absolute transport and mis-read the heard grid on
+      // islands with re-based/nonzero epochs.
+      const double SR = 1000.0;
+      StackNode parent("Parent");
+      parent.setQuantum(1000, 700);  // epoch 700: heard boundaries at 700+kQ
+
+      auto clip = std::make_unique<ClipNode>("Pickup", SR);
+      auto *c = clip.get();
+      parent.addChild(std::move(clip));
+
+      float in[50] = {0.5f};
+      float *const ins[] = {in};
+      ProcessContext ctx;
+      ctx.num_samples = 50;
+      ctx.is_recording = true;
+
+      // Click at master 1600 = heard phase 900: inside the 25% window
+      // before the heard boundary at 1700 — the arm decision defers.
+      ctx.master_pos = 1600;
+      c->startRecording();
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(c->isPendingStart(), "deferring inside the heard window");
+      expectEquals(c->getAwaitingStartAt(), (int64_t)0,
+                   "no target chosen while deferring");
+
+      // Cross the heard boundary: the target lands ON it.
+      ctx.master_pos = 1700;
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(c->isRecording(), "capture starts at the heard boundary");
+      expectEquals(c->origin_samples.load(), (int64_t)1700,
+                   "origin = epoch + 1Q (the boundary the performer heard)");
+      expectEquals((c->origin_samples.load() - 700) % 1000, (int64_t)0,
+                   "origin is ≡ 0 (mod Q) in the EPOCH frame");
+    }
+
     // Test always-wait-for-next-Q stop behavior
     beginTest("Stop Always Waits for Next Q Boundary");
     {

@@ -99,6 +99,27 @@ class TimingGoldenTests : public juce::UnitTest {
       }
     }
 
+    beginTest("armTarget");
+    if (auto *cases = root.getProperty("arm_target_cases", {}).getArray()) {
+      for (auto &c : *cases) {
+        expectEquals(
+            (juce::int64)armTarget(asInt64(c, "rel"), asInt64(c, "quantum"),
+                                   asInt64(c, "contextLoop")),
+            (juce::int64)asInt64(c, "expected"),
+            c.getProperty("name", "?").toString());
+      }
+    }
+
+    beginTest("inAnticipatoryWindow");
+    if (auto *cases = root.getProperty("anticipatory_cases", {}).getArray()) {
+      for (auto &c : *cases) {
+        expect(inAnticipatoryWindow(asInt64(c, "rel"),
+                                    asInt64(c, "quantum")) ==
+                   (bool)c.getProperty("expected", false),
+               c.getProperty("name", "?").toString());
+      }
+    }
+
     beginTest("nextStopBoundary");
     if (auto *cases = root.getProperty("stop_boundary_cases", {}).getArray()) {
       for (auto &c : *cases) {

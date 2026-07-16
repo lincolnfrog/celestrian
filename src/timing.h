@@ -26,6 +26,10 @@ namespace celestrian::timing {
  * boundary. See docs/recording.md "Hysteresis-Based Snapping". */
 constexpr double kHysteresisThreshold = 0.15;
 
+/** PLL arm tolerance (fraction of Q): a record click within this window
+ * BEFORE a boundary means that boundary ("the pickup", E-A). */
+constexpr double kArmTolerance = 0.25;
+
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 constexpr int kSubdivisions[] = {2, 4, 8};
 
@@ -76,6 +80,55 @@ inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
     }
   }
   return next_b;
+}
+
+/**
+ * True when an epoch-relative position sits in the anticipatory window:
+ * within kArmTolerance·Q BEFORE the next Q boundary. An armed clip seen
+ * here defers its arm decision (re-evaluated per block) so the
+ * latency-compensated clock can land on the boundary the performer
+ * heard, instead of overshooting to the one after.
+ * MUST be called with epoch-relative positions (one-frame rule): the old
+ * inline check used the absolute transport, which only agreed with the
+ * heard grid while the first-clip reset kept the epoch ≡ 0 (mod Q).
+ */
+inline bool inAnticipatoryWindow(int64_t rel, int64_t quantum) {
+  if (quantum <= 0) return false;
+  const int64_t phase = ((rel % quantum) + quantum) % quantum;
+  return (quantum - phase) < (int64_t)(kArmTolerance * (double)quantum);
+}
+
+/**
+ * The arm target (Q11 ruling): the next Q boundary at/after the
+ * epoch-relative position `rel` (a position exactly ON a boundary is its
+ * own target). Boundaries live on the CONTEXT loop's grid — the grid the
+ * performer hears restarts at each context top, so when the context is
+ * not a Q multiple (unsnapped takes) the boundary set is
+ * context-cycle-relative, not global.
+ */
+inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
+  if (rel < 0) rel = 0;
+  if (quantum <= 0) return rel;
+  if (context_loop <= 0) context_loop = quantum;
+
+  if (context_loop == quantum) {
+    // Single-clip context: the pure Q grid.
+    if (rel % quantum == 0) return rel;
+    return (rel / quantum + 1) * quantum;
+  }
+
+  // Multi-clip context: snap the position WITHIN the heard cycle
+  // forward to its next Q mark, then re-base into the current cycle
+  // iteration. `next_visual == context_loop` means "the top of the NEXT
+  // cycle", not the top of this one.
+  const int64_t effective = rel % context_loop;
+  const int64_t next_visual = (effective % quantum == 0)
+                                  ? effective
+                                  : (effective / quantum + 1) * quantum;
+  const int64_t loop_base = (rel / context_loop) * context_loop;
+  int64_t offset = next_visual % context_loop;
+  if (offset == 0 && next_visual > 0) offset = context_loop;
+  return loop_base + offset;
 }
 
 struct SnapResult {

@@ -57,11 +57,19 @@ with kernel.md:
   blob); dead `calculateVisualOffset` deleted from `math_utils.js`.
   The commit-path sibling scan died with it (a piece of P1-6 — the
   arm-path scan remains, see "Context passed down" below).
-- [ ] **Explicit per-clip recording state machine** — one
-  `enum class RecState { Idle, Armed, Capturing, PendingStop,
-  Committed }` replacing the five booleans; pure
-  `timing::armTarget(rel, Q, context_loop)` extracted from the ~60-line
-  arm branch, golden-vector tested (the last piece of P0-4).
+- [x] **Explicit per-clip recording state machine** — ✅ done
+  2026-07-16 (the last piece of P0-4): `ClipNode::RecState { Idle,
+  Armed, Capturing, PendingStop }` replaces the five booleans
+  (Committed = Idle-with-content); `is_node_recording` deleted from
+  AudioNode in favor of a virtual `isArmedOrRecording()` (stacks answer
+  for their subtree — two more dynamic_casts gone). Pure
+  `timing::armTarget` + `inAnticipatoryWindow` extracted to timing.h /
+  timeline_model.js with 18 shared golden vectors. Two fixes rode
+  along: the anticipatory-window check now runs in the EPOCH frame
+  (the old inline check used the absolute transport — wrong grid on
+  re-based/nonzero epochs), and **stop-while-armed now cancels** the
+  arm instead of wedging into a phantom awaiting-stop. Three new
+  state-machine unit tests.
 - [ ] **Commit as an event** — epoch re-base driven by the commit event
   carrying `{origin, duration}`, not by per-block recording-edge
   detection + `scanCommitted` graph scans in the callback; replace the
@@ -78,9 +86,11 @@ with kernel.md:
 - [ ] **D1: Stack mute is a no-op** — `StackNode::process` ignores
   `is_muted`; only clips silence themselves. Fixed structurally by the
   Tier 3 output stage; fix ad-hoc sooner if it bites.
-- [ ] **D2: Stop-boundary race** — `stopRecording` computes
-  `nextStopBoundary` from a racing `write_position`; boundary can never
-  fire. Falls out of the recording state machine.
+- [x] **D2: Stop-boundary race** — ✅ fixed 2026-07-16 by the state
+  machine: `stopRecording` only sets a request flag; the AUDIO thread
+  computes the boundary from its own write position at the next block
+  top and transitions to PendingStop. Pinned by "stop boundary is
+  picked by the AUDIO thread" in clip_node_tests.
 - [ ] **D3: `getWaveform` race** — message thread reads the clip buffer
   while recording writes it (long-known P3 item).
 - [ ] **D4: Silent 60 s recording wall** — buffer full stops capture

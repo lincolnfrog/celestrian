@@ -139,6 +139,11 @@ Committed`) — that part of P0-4 survives — but it becomes a *per-clip*
 machine over an immutable clock, trivially unit-testable, with the
 commit event carrying `origin` + `length` and nothing else. The
 docs' scenario tables in recording.md map 1:1 onto golden vectors for it.
+**✅ Built 2026-07-16:** `ClipNode::RecState` (Committed =
+Idle-with-content), with the arm-target math pure in timing.h
+(`armTarget`, `inAnticipatoryWindow` — both golden-vectored, both now
+epoch-frame) and stop boundaries chosen by the audio thread from its
+own write position (deleting the D2 race).
 
 Sanity checks against the canonical examples (recording.md):
 

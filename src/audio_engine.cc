@@ -956,11 +956,5 @@ int64_t AudioEngine::calculateEffectiveCycleLength() const {
 }
 
 bool AudioEngine::isAnyNodeRecording() const {
-  if (!focused_node) return false;
-
-  // Use StackNode's recursive method to check all descendants
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
-    return stack->isAnyChildRecording();
-  }
-  return false;
+  return focused_node != nullptr && focused_node->isArmedOrRecording();
 }
