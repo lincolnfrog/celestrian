@@ -192,13 +192,32 @@ with kernel.md:
 - [ ] **One-shots as a period-source knob** (Q5 ruling) — store the
   kernel triple's `period_source: own_length | context`; deletes the
   last reason `duration` doubles as period.
-- [ ] **Whole-graph immutable snapshots + edits-as-events** — one
-  atomic root swap replaces per-stack snapshots + reclaimer plumbing;
-  bridge collapses toward `apply(edit)`. Unlocks:
-  - [ ] **Undo/redo** — currently absent everywhere; I9's global form.
-  - [ ] **Save/Load (Segment 6)** — serialize the snapshot
-    (QTime-based, device-independent). Doubles as the canonical-state
-    audit.
+- [ ] **Edits-as-events → undo/save-load → (later) immutable root** —
+  STAGED (audit verdict 2026-07-16; the full-RT-rewrite framing is the
+  wrong entry point):
+  - [ ] **Step 1: `apply(edit)` + undo log — ZERO RT changes.** Inverse
+    edits over the existing mutable graph; the undo stack OWNS removed
+    subtrees (safe: no-overdub means committed buffers are write-once).
+    In-flight takes are never undoable (cancel is the verb). Ships
+    undo/redo in one low-risk session.
+  - [ ] **Step 2: Save/Load (Segment 6)** — serialize the graph between
+    edits on the message thread; no snapshots needed. CANONICAL fields
+    (must serialize): origin, duration, loop points + bypass,
+    **contextCycle** (a recorded fact — the take's heard frame, NOT
+    derivable), island quantum + epoch, fx params, name, inputChannel,
+    child order. DERIVED (never serialize): launchPoint, anchors, all
+    cycle projections. TRANSIENT (neither): island take-lifecycle
+    state (active_takes_/lcm_before_take_/heard_cycle_at_arm_). Format
+    QTime-READY but do not bundle the Q12 engine migration in.
+  - [ ] **Step 3 (later, with the pure-render split §2.3): whole-graph
+    immutable root** — one atomic swap replaces per-stack snapshots +
+    reclaimer plumbing; bridge fully collapses to `apply(edit)`. The
+    live take stays OUTSIDE the snapshot until commit (standard
+    carve-out, not a blocker). RT trap to avoid: the audio thread
+    traverses raw pointers off one atomic root load — never copies
+    shared_ptrs (last-reference destruction on the audio thread);
+    lifetimes stay on the epoch-graveyard. performance.md §1 is
+    PRESERVED by all steps, not rewritten.
 - [ ] **Pure render function** — `out = render(snapshot, t, n)`;
   control decisions become events applied between blocks; engine
   testable as `render(state, t) == golden`.
