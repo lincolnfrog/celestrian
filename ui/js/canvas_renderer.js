@@ -18,6 +18,13 @@
 
 const TAPE = { top: '#f0b45a', mid: '#e8a13c', bottom: '#c9871f' };
 const COMPOSITE = { top: '#d98a52', mid: '#c96f3a', bottom: '#a85526' };
+// Echo tone ("ghosts show what SOUNDS", 2026-07-16 + owner follow-up):
+// EVERY ghost tile is an audible repetition — of the full take or of a
+// window segment — and draws in this cool tone. Warm tape hues are
+// reserved for MATERIAL (the take tile, the live bar, the composite),
+// so "echo of sound" and "muted original material" can never be
+// confused anywhere in the timeline.
+const ECHO = { top: '#9fc4bb', mid: '#79a89d', bottom: '#578479' };
 
 /**
  * One envelope value per CSS pixel column, max-pooled over the peaks
@@ -94,7 +101,7 @@ export function drawWaveform(canvas, peaks, arg3 = null, arg4 = false) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    const tone = opts.isComposite ? COMPOSITE : TAPE;
+    const tone = opts.isEcho ? ECHO : (opts.isComposite ? COMPOSITE : TAPE);
     const midY = cssH / 2;
 
     if (!peaks || peaks.length === 0) {

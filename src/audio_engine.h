@@ -194,28 +194,23 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
                                         const juce::String &uuid);
 
-  // LCM Timeline: Calculate the length at which the timeline wraps
-  // Returns LCM of all clip durations in focused_node
-  int64_t calculateTimelineLength() const;
-
   /**
-   * The AUDIBLE island cycle (E-C): like calculateTimelineLength, but
-   * a node with an active loop window contributes its window length
+   * The AUDIBLE island cycle (E-C): the LCM of clip periods where a
+   * node with an active loop window contributes its window length
    * (AudioNode::getEffectivePeriod). This is the cycle the published
    * masterPos wraps on — the playhead must loop with what is heard
    * (field 2026-07-11: it sailed past an active window). Commit and
-   * epoch re-base logic stay on the INTRINSIC length: windows are
-   * reversible view-of-time state, not committed material.
+   * epoch re-base logic (now in StackNode::takeCommitted) stay on the
+   * INTRINSIC length: windows are reversible view-of-time state, not
+   * committed material.
    */
   int64_t calculateEffectiveCycleLength() const;
 
-  // Returns true if any clip in focused_node is actively recording
-  bool isAnyNodeRecording() const;
-
   juce::AudioDeviceManager device_manager;
 
-  // The root of the hierarchical audio graph
-  std::unique_ptr<celestrian::AudioNode> root_node;
+  // The root of the hierarchical audio graph — always a stack (it is
+  // the island root: owns Q, epoch, and the take-lifecycle counter).
+  std::unique_ptr<celestrian::StackNode> root_node;
 
   // Navigation focus (no stack needed for single-level editing)
   celestrian::AudioNode *focused_node = nullptr;
@@ -238,8 +233,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // epoch (AudioNode::getIslandEpoch), keeping ONE cycle frame everywhere.
   int64_t islandEpoch() const;
 
-  bool was_any_node_recording_ = false;   // audio thread only (view upkeep)
-  int64_t view_lcm_before_ = 0;           // audio thread only
+  bool was_any_node_recording_ = false;  // audio thread only (view upkeep)
   std::atomic<int64_t> view_base_{0};
   std::atomic<int64_t> view_anchor_t_{0};
   std::atomic<bool> view_recording_{false};

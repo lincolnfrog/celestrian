@@ -491,15 +491,42 @@ class ClipNodeTests : public juce::UnitTest {
                    "committed exactly at nextStopBoundary(300, 1000)");
     }
 
-    beginTest("State machine: anticipatory window uses the EPOCH frame");
+    beginTest("Take lifecycle: island counter tracks arm/cancel/removal");
     {
-      // A click just before a HEARD boundary means that boundary — even
-      // when the island epoch is not ≡ 0 (mod Q). The old inline check
-      // used the absolute transport and mis-read the heard grid on
-      // islands with re-based/nonzero epochs.
       const double SR = 1000.0;
       StackNode parent("Parent");
-      parent.setQuantum(1000, 700);  // epoch 700: heard boundaries at 700+kQ
+      parent.setQuantum(1000, 0);
+
+      auto clipA = std::make_unique<ClipNode>("A", SR);
+      auto *a = clipA.get();
+      parent.addChild(std::move(clipA));
+
+      expect(!parent.hasActiveTake());
+      a->startRecording();
+      expect(parent.hasActiveTake(), "armed take counted on the island");
+      a->stopRecording();  // Armed -> cancel
+      expect(!parent.hasActiveTake(), "cancel balances the counter");
+
+      // Removing a live take must balance the counter too (its
+      // commit/cancel event will never arrive).
+      auto clipB = std::make_unique<ClipNode>("B", SR);
+      auto *b = clipB.get();
+      parent.addChild(std::move(clipB));
+      b->startRecording();
+      expect(parent.hasActiveTake());
+      parent.removeChild(b->getUuid());  // b is destroyed here
+      expect(!parent.hasActiveTake(), "removal balances the counter");
+    }
+
+    beginTest("The pickup: a click just before a heard boundary lands ON it");
+    {
+      // E-A with a nonzero epoch: heard boundaries at 700 + kQ. The arm
+      // target is the next HEARD boundary — no deferral window (deleted
+      // 2026-07-16: it overshot the take by a full Q when the latency
+      // compensation was small; field repro in regression_tests).
+      const double SR = 1000.0;
+      StackNode parent("Parent");
+      parent.setQuantum(1000, 700);
 
       auto clip = std::make_unique<ClipNode>("Pickup", SR);
       auto *c = clip.get();
@@ -511,23 +538,50 @@ class ClipNodeTests : public juce::UnitTest {
       ctx.num_samples = 50;
       ctx.is_recording = true;
 
-      // Click at master 1600 = heard phase 900: inside the 25% window
-      // before the heard boundary at 1700 — the arm decision defers.
+      // Click at master 1600 = heard phase 900, 100 before the heard
+      // boundary at 1700: target 1700, within the near window (<512) →
+      // capture starts now, anchored ON the boundary.
       ctx.master_pos = 1600;
       c->startRecording();
       c->process(ins, nullptr, 1, 0, ctx);
-      expect(c->isPendingStart(), "deferring inside the heard window");
-      expectEquals(c->getAwaitingStartAt(), (int64_t)0,
-                   "no target chosen while deferring");
-
-      // Cross the heard boundary: the target lands ON it.
-      ctx.master_pos = 1700;
-      c->process(ins, nullptr, 1, 0, ctx);
-      expect(c->isRecording(), "capture starts at the heard boundary");
+      expect(c->isRecording(), "capture starts (near-boundary window)");
       expectEquals(c->origin_samples.load(), (int64_t)1700,
-                   "origin = epoch + 1Q (the boundary the performer heard)");
+                   "origin = the boundary the performer heard");
       expectEquals((c->origin_samples.load() - 700) % 1000, (int64_t)0,
-                   "origin is ≡ 0 (mod Q) in the EPOCH frame");
+                   "origin ≡ 0 (mod Q) in the EPOCH frame");
+    }
+
+    beginTest("Arm farther out: awaits the boundary, then starts on it");
+    {
+      const double SR = 1000.0;
+      StackNode parent("Parent");
+      parent.setQuantum(1000, 700);
+
+      auto clip = std::make_unique<ClipNode>("Await", SR);
+      auto *c = clip.get();
+      parent.addChild(std::move(clip));
+
+      float in[50] = {0.5f};
+      float *const ins[] = {in};
+      ProcessContext ctx;
+      ctx.num_samples = 50;
+      ctx.is_recording = true;
+
+      // Click at master 1100 = heard 400: target 1700, 600 away (> 512)
+      // -> Armed, awaiting the boundary.
+      ctx.master_pos = 1100;
+      c->startRecording();
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(c->isPendingStart(), "armed, awaiting the boundary");
+      expectEquals(c->getAwaitingStartAt(), (int64_t)1700,
+                   "target = next heard boundary");
+
+      // The block spanning the boundary starts capture exactly there.
+      ctx.master_pos = 1680;
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(c->isRecording(), "capture starts as the block crosses 1700");
+      expectEquals(c->origin_samples.load(), (int64_t)1700,
+                   "origin = the awaited boundary");
     }
 
     // Test always-wait-for-next-Q stop behavior

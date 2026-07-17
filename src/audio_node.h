@@ -44,6 +44,13 @@ struct ProcessContext {
   // received clock, never of view state or a private counter.
   int64_t cycle_epoch = 0;
 
+  // The recording context (P1-6, context passed DOWN): the longest
+  // committed sibling duration in this scope — each stack overwrites it
+  // for its children (recording children contribute 0 because their
+  // duration resets at arm). A clip's arm math uses
+  // max(Q, context_loop); leaves never inspect siblings.
+  int64_t context_loop = 0;
+
   // --- Pre-record ring (docs/performance.md §3) ---
   // The engine continuously copies device input into a ring indexed by a
   // monotonic input clock (total input samples since engine start — unlike
@@ -169,6 +176,56 @@ class AudioNode {
   // Hierarchy
   void setParent(AudioNode *p) { parent.store(p); }
   AudioNode *getParent() const { return parent.load(); }
+
+  /** Topmost node of this subtree — the island root under the current
+   * one-island model. Audio-thread safe (atomic parent walk). */
+  AudioNode *rootNode() {
+    AudioNode *n = this;
+    while (auto *p = n->getParent()) n = p;
+    return n;
+  }
+
+  /**
+   * Allocation-free child traversal (P1-8: replaces dynamic_cast
+   * walks). Leaves are no-ops; StackNode iterates ONE published child
+   * snapshot per call. Recursion is the visitor's choice: call
+   * child->forEachChild(...) inside `fn`. Audio-thread safe.
+   */
+  virtual void forEachChild(void (*fn)(AudioNode *, void *),
+                            void *user) const {
+    (void)fn;
+    (void)user;
+  }
+
+  /** Recursive UUID lookup (self included). */
+  virtual AudioNode *findByUuid(const juce::String &uuid) {
+    return getUuid() == uuid ? this : nullptr;
+  }
+
+  // --- Island / take-lifecycle events (no-ops except on the island
+  // root, i.e. StackNode). Clips report their recording lifecycle to
+  // `rootNode()` through these instead of the engine detecting edges by
+  // scanning the graph every block (unification_audit.md §1.5).
+  /** Establish (Q, epoch) if not yet locked; q == 0 sets a provisional
+   * epoch only (first-clip arm — the epoch capture that replaced the
+   * old transport reset). */
+  virtual void establishIsland(int64_t quantum, int64_t epoch) {
+    (void)quantum;
+    (void)epoch;
+  }
+  /** A take was armed / cancelled / committed in this island. The
+   * commit event carries the take's origin and drives the epoch
+   * re-base (simple-extension rule) — see StackNode. */
+  virtual void takeArmed() {}
+  virtual void takeCancelled() {}
+  virtual void takeCommitted(int64_t origin) { (void)origin; }
+  /** Any take currently armed or capturing in this island. */
+  virtual bool hasActiveTake() const { return false; }
+  /** The committed island cycle the CURRENT take generation was armed
+   * against (0 when no take is active / first take). Clips snapshot
+   * this at capture start — it is the take's heard frame, the modulus
+   * that folds "which cycle" out of its display anchor (Q14). */
+  virtual int64_t activeTakeContextCycle() const { return 0; }
 
   void setLoopPoints(int64_t start, int64_t end) {
     loop_start_samples.store(start);

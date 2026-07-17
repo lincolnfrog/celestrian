@@ -3,7 +3,6 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "rt_log.h"
-#include "stack_node.h"
 #include "timing.h"
 
 namespace celestrian {
@@ -23,6 +22,8 @@ juce::var ClipNode::getMetadata() const {
   obj->setProperty("inputChannel", preferred_input_channel);
   obj->setProperty("isPendingStart", isPendingStart());
   obj->setProperty("isAwaitingStop", isAwaitingStop());
+  // The take's heard frame (Q14 take-marking modulus); 0 = first take.
+  obj->setProperty("contextCycle", (double)take_context_cycle_.load());
   obj->setProperty("isPlaying", (bool)is_playing.load());
 
   // (recordingStartPhase was deleted 2026-07-16: no consumer existed —
@@ -264,11 +265,7 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
     // captured as data at the root (the clock is never reset,
     // kernel.md); commit stores Q + epoch together with the same value.
     origin_samples.store(compensated_pos);
-    AudioNode *top = this;
-    while (auto *p = top->getParent()) top = p;
-    if (auto *island = dynamic_cast<StackNode *>(top)) {
-      if (island->getQuantum() == 0) island->setEpoch(compensated_pos);
-    }
+    rootNode()->establishIsland(0, compensated_pos);
     beginCapture(context, compensated_pos, compensated_pos);
     RtLog::instance().post(
         "ClipNode: Recording Started at master_pos=%lld (first clip)",
@@ -278,55 +275,41 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
 
   // ALL cycle-relative math happens in the ISLAND EPOCH frame — mixing
   // absolute-frame math with the epoch-rebased view was the field bug
-  // "clip 3 anchored at 3Q instead of 0Q" (and, until 2026-07-16, this
-  // function's own anticipatory check used the absolute transport).
+  // "clip 3 anchored at 3Q instead of 0Q".
   const int64_t epoch = getIslandEpoch();
 
-  // Anticipatory window (timing.h): a click just before a heard
-  // boundary means THAT boundary — defer the arm decision so the
-  // compensated clock can land on it instead of overshooting.
-  const bool in_window =
-      timing::inAnticipatoryWindow(context.master_pos - epoch, Q);
+  // Context loop = the loop the performer was listening to: longest
+  // committed sibling, min Q — computed by the PARENT and passed down
+  // (P1-6: leaves never inspect siblings).
+  const int64_t context_loop = std::max(Q, context.context_loop);
 
-  if (!in_window) {
-    // Context loop = the loop the performer was listening to: longest
-    // committed sibling, min Q. (P1-6 remainder: this sibling scan
-    // should become context passed DOWN via ProcessContext.)
-    int64_t context_loop = Q;
-    if (auto *box = dynamic_cast<StackNode *>(parent.load())) {
-      for (auto *sibling : box->getChildrenSnapshot()) {
-        if (sibling != this && !sibling->isArmedOrRecording()) {
-          const int64_t sib_dur = sibling->duration_samples.load();
-          if (sib_dur > context_loop) context_loop = sib_dur;
-        }
-      }
-    }
+  int64_t rel = compensated_pos - epoch;
+  if (rel < 0) rel = 0;
 
-    int64_t rel = compensated_pos - epoch;
-    if (rel < 0) rel = 0;
+  // THE canonical timing fact: this clip's content belongs at the arm
+  // target — stored ABSOLUTE (docs/kernel.md). Anchor, launch point,
+  // and lane x are all projections of this one value. Re-stored per
+  // block while Armed; it converges to the chosen boundary.
+  //
+  // The target is the next Q boundary in the HEARD frame
+  // (latency-compensated, epoch-relative): a click shortly before a
+  // boundary compensates back ONTO it — "the pickup" (E-A) needs no
+  // extra machinery. The old anticipatory-window DEFERRAL is deleted
+  // (field bug 2026-07-16): it added nothing — any click before a
+  // boundary already targets that boundary — and when the compensation
+  // was small it skipped past the boundary and overshot the take to
+  // the NEXT one (clip armed before 2Q anchored at 3Q).
+  const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
+  origin_samples.store(target);
+  awaiting_start_at.store(target);
 
-    // THE canonical timing fact: this clip's content belongs at the arm
-    // target — stored ABSOLUTE (docs/kernel.md). Anchor, launch point,
-    // and lane x are all projections of this one value. Re-stored per
-    // block while Armed; it converges to the chosen boundary.
-    const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
-    origin_samples.store(target);
-    awaiting_start_at.store(target);
-
-    // At (or within a hair of) the target: start immediately.
-    if (compensated_pos >= target || target - compensated_pos < 512) {
-      beginCapture(context, target, compensated_pos);
-      RtLog::instance().post("ClipNode: Recording Started (at Q boundary)");
-      return;
-    }
-  }
-
-  // Whether or not this block re-evaluated (the anticipatory window
-  // skips re-evaluation), a previously chosen target that falls inside
-  // THIS block starts capture exactly at the boundary.
-  const int64_t target = awaiting_start_at.load();
-  if (target > 0 && context.master_pos < target &&
-      context.master_pos + context.num_samples >= target) {
+  // Start when the compensated clock is at/near the target, or when the
+  // target falls inside this block.
+  if (compensated_pos >= target || target - compensated_pos < 512) {
+    beginCapture(context, target, compensated_pos);
+    RtLog::instance().post("ClipNode: Recording Started (at Q boundary)");
+  } else if (context.master_pos < target &&
+             context.master_pos + context.num_samples >= target) {
     beginCapture(context, target, compensated_pos);
     RtLog::instance().post(
         "ClipNode: Recording Started (crossed Q boundary at %lld)",
@@ -336,6 +319,13 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
 
 void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
                             int64_t compensated_pos) {
+  // The take's HEARD FRAME: the committed island cycle it is being
+  // performed against (snapshotted at arm on the island root). Display
+  // take-marking folds by this — "which heard cycle" never matters, the
+  // phase within it always does (Q14) — making the mark stable across
+  // later frame growth and epoch re-bases.
+  take_context_cycle_.store(rootNode()->activeTakeContextCycle());
+
   rec_state_.store((int)RecState::Capturing);
   awaiting_start_at.store(0);
   write_position.store(0);
@@ -349,6 +339,9 @@ void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
 }
 
 void ClipNode::startRecording() {
+  if (recState() != RecState::Idle) return;  // idempotent; keeps the
+                                             // island take counter exact
+
   buffer.clear();
   write_position.store(0);
   read_position.store(0);
@@ -361,6 +354,7 @@ void ClipNode::startRecording() {
   is_playing.store(false);
 
   rec_state_.store((int)RecState::Armed);
+  rootNode()->takeArmed();
 }
 
 void ClipNode::stopRecording() {
@@ -371,6 +365,7 @@ void ClipNode::stopRecording() {
       // into a phantom awaiting-stop before capture had even begun.)
       rec_state_.store((int)RecState::Idle);
       awaiting_start_at.store(0);
+      rootNode()->takeCancelled();
       juce::Logger::writeToLog("ClipNode: Arm cancelled before capture");
       break;
 
@@ -443,30 +438,27 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // creator per owner ruling). Epoch = this clip's origin.
     const int64_t origin = origin_samples.load();
     if (Q == 0) {
-      AudioNode *top = this;
-      while (auto *p = top->getParent()) top = p;
-      if (auto *island = dynamic_cast<StackNode *>(top)) {
-        if (island->getQuantum() == 0) {
-          island->setQuantum(duration, origin);
-          RtLog::instance().post(
-              "ClipNode: Island quantum established: Q=%lld epoch=%lld",
-              (long long)duration, (long long)origin);
-        }
-      }
+      rootNode()->establishIsland(duration, origin);
+      RtLog::instance().post(
+          "ClipNode: Island quantum established: Q=%lld epoch=%lld",
+          (long long)duration, (long long)origin);
     }
 
     // Nothing else to compute: origin was stored at arm and duration
     // above — anchor, launch point, and lane x are all projections of
-    // (origin, duration) derived at read time (kernel.md §2 table). The
-    // old commit-time sibling scan, slot/pixel math, and stored
-    // anchor/launch fields are gone (unification_audit.md §1.2; the
-    // sibling-scan deletion is a piece of P1-6).
+    // (origin, duration) derived at read time (kernel.md §2 table).
     RtLog::instance().post(
         "ClipNode: Commit. Duration=%lld, Origin=%lld, Launch(derived)=%lld",
         (long long)duration, (long long)origin,
         (long long)timing::launchPointFor(origin, duration));
 
     is_playing.store(true);
+
+    // The commit EVENT (unification_audit.md §1.5): carries the take's
+    // origin to the island root, which owns the epoch re-base decision.
+    // Runs AFTER duration_samples is stored so the island's composite
+    // duration includes this take.
+    rootNode()->takeCommitted(origin);
   }
 }
 

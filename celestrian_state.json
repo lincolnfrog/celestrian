@@ -1,5 +1,5 @@
 {
-  "id": "a46387b6d84a48e9b994238f05f24f52",
+  "id": "dbbe055c3aec4eb583314e004677b2e4",
   "name": "SessionRoot",
   "type": "stack",
   "x": 0,
@@ -10,22 +10,49 @@
   "duration": 0,
   "loopStart": 0,
   "loopEnd": 0,
-  "effectiveQuantum": 166400,
+  "loopBypassed": false,
+  "windowActive": false,
+  "effects": {
+    "eq": {
+      "enabled": false,
+      "low": 0,
+      "mid": 0,
+      "high": 0
+    },
+    "compressor": {
+      "enabled": false,
+      "threshold": -18,
+      "ratio": 4,
+      "attack": 10,
+      "release": 100,
+      "makeup": 0
+    },
+    "echo": {
+      "enabled": false,
+      "time": 0.349999994039536,
+      "feedback": 0.349999994039536,
+      "mix": 0.349999994039536
+    },
+    "reverb": {
+      "enabled": false,
+      "size": 0.5,
+      "damp": 0.5,
+      "mix": 0.300000011920929
+    }
+  },
+  "effectiveQuantum": 137728,
   "playhead": 0,
   "isRecording": false,
   "isMuted": false,
-  "anchorPhase": 0,
   "launchPoint": 0,
   "origin": 0,
   "childCount": 1,
   "isExpanded": true,
-  "loopBypassed": false,
-  "windowActive": false,
-  "quantum": 166400,
-  "epoch": 332800,
+  "quantum": 137728,
+  "epoch": 275456,
   "nodes": [
     {
-      "id": "3adc8f3a12c74bc1a86be9337608edb8",
+      "id": "41275a6b0952477a979fcb56b2997aa8",
       "name": "New Stack",
       "type": "stack",
       "x": 0,
@@ -35,82 +62,224 @@
       "currentPeak": 0,
       "duration": 0,
       "loopStart": 0,
-      "loopEnd": 166400,
-      "effectiveQuantum": 166400,
-      "playhead": 0.563076923076923,
+      "loopEnd": 0,
+      "loopBypassed": false,
+      "windowActive": false,
+      "effects": {
+        "eq": {
+          "enabled": false,
+          "low": 0,
+          "mid": 0,
+          "high": 0
+        },
+        "compressor": {
+          "enabled": false,
+          "threshold": -18,
+          "ratio": 4,
+          "attack": 10,
+          "release": 100,
+          "makeup": 0
+        },
+        "echo": {
+          "enabled": false,
+          "time": 0.349999994039536,
+          "feedback": 0.349999994039536,
+          "mix": 0.349999994039536
+        },
+        "reverb": {
+          "enabled": false,
+          "size": 0.5,
+          "damp": 0.5,
+          "mix": 0.300000011920929
+        }
+      },
+      "effectiveQuantum": 137728,
+      "playhead": 0,
       "isRecording": false,
       "isMuted": false,
-      "anchorPhase": 0,
       "launchPoint": 0,
       "origin": 0,
-      "childCount": 2,
+      "childCount": 3,
       "isExpanded": true,
-      "loopBypassed": false,
-      "windowActive": true,
       "quantum": 0,
       "epoch": 0,
       "nodes": [
         {
-          "id": "039424e173db49cda587b01830371592",
+          "id": "a5096738fe1c4085ab961aad14cb5c04",
           "name": "New Clip",
           "type": "clip",
           "x": 0,
           "y": 0,
           "w": 200,
           "h": 100,
-          "currentPeak": 0.000500193273183,
-          "duration": 166400,
+          "currentPeak": 0.004397706128657,
+          "duration": 137728,
           "loopStart": 0,
-          "loopEnd": 166400,
-          "effectiveQuantum": 166400,
-          "playhead": 0.563076923076923,
+          "loopEnd": 137728,
+          "loopBypassed": false,
+          "windowActive": true,
+          "effects": {
+            "eq": {
+              "enabled": false,
+              "low": 0,
+              "mid": 0,
+              "high": 0
+            },
+            "compressor": {
+              "enabled": false,
+              "threshold": -18,
+              "ratio": 4,
+              "attack": 10,
+              "release": 100,
+              "makeup": 0
+            },
+            "echo": {
+              "enabled": false,
+              "time": 0.349999994039536,
+              "feedback": 0.349999994039536,
+              "mix": 0.349999994039536
+            },
+            "reverb": {
+              "enabled": false,
+              "size": 0.5,
+              "damp": 0.5,
+              "mix": 0.300000011920929
+            }
+          },
+          "effectiveQuantum": 137728,
+          "playhead": 0.312267657992565,
           "isRecording": false,
           "isMuted": false,
-          "anchorPhase": 0,
           "launchPoint": 0,
           "origin": 0,
           "sampleRate": 48000,
           "inputChannel": 0,
           "isPendingStart": false,
           "isAwaitingStop": false,
+          "contextCycle": 0,
           "isPlaying": true
         },
         {
-          "id": "1b770dc8512346f999b0c91a006ce1fb",
+          "id": "4d537aa900fa4779b1d4f8bd69741c10",
           "name": "New Clip",
           "type": "clip",
           "x": 0,
           "y": 0,
           "w": 200,
           "h": 100,
-          "currentPeak": 0.000496103253681,
-          "duration": 332800,
+          "currentPeak": 0.006505973637104,
+          "duration": 550912,
           "loopStart": 0,
-          "loopEnd": 332800,
-          "effectiveQuantum": 166400,
-          "playhead": 0.281538461538462,
+          "loopEnd": 550912,
+          "loopBypassed": false,
+          "windowActive": true,
+          "effects": {
+            "eq": {
+              "enabled": false,
+              "low": 0,
+              "mid": 0,
+              "high": 0
+            },
+            "compressor": {
+              "enabled": false,
+              "threshold": -18,
+              "ratio": 4,
+              "attack": 10,
+              "release": 100,
+              "makeup": 0
+            },
+            "echo": {
+              "enabled": false,
+              "time": 0.349999994039536,
+              "feedback": 0.349999994039536,
+              "mix": 0.349999994039536
+            },
+            "reverb": {
+              "enabled": false,
+              "size": 0.5,
+              "damp": 0.5,
+              "mix": 0.300000011920929
+            }
+          },
+          "effectiveQuantum": 137728,
+          "playhead": 0.328066914498141,
           "isRecording": false,
           "isMuted": false,
-          "anchorPhase": 0,
-          "launchPoint": 0,
-          "origin": 332800,
+          "launchPoint": 275456,
+          "origin": 275456,
           "sampleRate": 48000,
           "inputChannel": 0,
           "isPendingStart": false,
           "isAwaitingStop": false,
+          "contextCycle": 137728,
+          "isPlaying": true
+        },
+        {
+          "id": "1401d0f7c3d0479ea533c0dede71421f",
+          "name": "New Clip",
+          "type": "clip",
+          "x": 0,
+          "y": 0,
+          "w": 200,
+          "h": 100,
+          "currentPeak": 0.003393554128706,
+          "duration": 275456,
+          "loopStart": 137728,
+          "loopEnd": 275456,
+          "loopBypassed": false,
+          "windowActive": true,
+          "effects": {
+            "eq": {
+              "enabled": false,
+              "low": 0,
+              "mid": 0,
+              "high": 0
+            },
+            "compressor": {
+              "enabled": false,
+              "threshold": -18,
+              "ratio": 4,
+              "attack": 10,
+              "release": 100,
+              "makeup": 0
+            },
+            "echo": {
+              "enabled": false,
+              "time": 0.349999994039536,
+              "feedback": 0.349999994039536,
+              "mix": 0.349999994039536
+            },
+            "reverb": {
+              "enabled": false,
+              "size": 0.5,
+              "damp": 0.5,
+              "mix": 0.300000011920929
+            }
+          },
+          "effectiveQuantum": 137728,
+          "playhead": 0.312267657992565,
+          "isRecording": false,
+          "isMuted": false,
+          "launchPoint": 0,
+          "origin": 1101824,
+          "sampleRate": 48000,
+          "inputChannel": 0,
+          "isPendingStart": false,
+          "isAwaitingStop": false,
+          "contextCycle": 550912,
           "isPlaying": true
         }
       ]
     }
   ],
   "isPlaying": true,
-  "masterPos": 260608,
-  "islandEpoch": 332800,
+  "masterPos": 181248,
+  "islandEpoch": 275456,
   "soloedId": "",
-  "focusedId": "a46387b6d84a48e9b994238f05f24f52",
+  "focusedId": "dbbe055c3aec4eb583314e004677b2e4",
   "perf": {
-    "maxBlockUs": 386,
-    "avgLoadPct": 0.671009929571198,
+    "maxBlockUs": 141,
+    "avgLoadPct": 0.664169999021671,
     "xruns": 0,
     "latencyCompensationSamples": 6676,
     "calibrated": true,

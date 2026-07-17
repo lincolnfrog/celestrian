@@ -7,25 +7,9 @@
 #include "stack_node.h"
 #include "timing.h"
 
-namespace {
-// Audio-thread-safe recursive scan of committed clips: detects whether any
-// duration is not a multiple of the previous cycle (polyrhythmic
-// expansion) and finds the newest origin (largest — origins are monotonic
-// in recording order under the monotonic transport). No allocation.
-void scanCommitted(celestrian::AudioNode *node, int64_t lcm_before,
-                   bool &polyrhythmic, int64_t &newest_origin) {
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
-    for (auto *child : stack->getChildrenSnapshot()) {
-      scanCommitted(child, lcm_before, polyrhythmic, newest_origin);
-    }
-    return;
-  }
-  const int64_t dur = node->getIntrinsicDuration();
-  if (dur <= 0) return;
-  if (dur % lcm_before != 0) polyrhythmic = true;
-  newest_origin = std::max(newest_origin, node->origin_samples.load());
-}
-}  // namespace
+// (The old scanCommitted lived here; the epoch re-base is now driven by
+// the commit EVENT — StackNode::takeCommitted — not by callback edge
+// detection. unification_audit.md §1.5.)
 
 AudioEngine::AudioEngine() {
   // Start with an empty root stack
@@ -81,12 +65,7 @@ void AudioEngine::retire(std::function<void()> deleter) {
   for (auto &free_fn : ready) free_fn();
 }
 
-int64_t AudioEngine::islandEpoch() const {
-  if (auto *island = dynamic_cast<celestrian::StackNode *>(root_node.get())) {
-    return island->getEpoch();
-  }
-  return 0;
-}
+int64_t AudioEngine::islandEpoch() const { return root_node->getEpoch(); }
 
 void AudioEngine::flushGraveyard() {
   std::vector<RetiredItem> pending;
@@ -115,11 +94,7 @@ void AudioEngine::init(int inputs, int outputs) {
 
 celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
                                                    const juce::String &uuid) {
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
-    return stack->findNodeByUuid(uuid);
-  }
-  if (node && node->getUuid() == uuid) return node;
-  return nullptr;
+  return node ? node->findByUuid(uuid) : nullptr;
 }
 
 void AudioEngine::startRecordingInNode(const juce::String &uuid) {
@@ -607,40 +582,21 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       // committed LCM (recording.md cursor table).
       const int64_t old_pos = global_transport_pos.load();
 
-      const bool is_recording = isAnyNodeRecording();
+      // The take LIFECYCLE lives on the island root now (a counter fed
+      // by arm/cancel/commit events); the per-block graph scan is gone,
+      // and the epoch re-base runs inside the commit event itself
+      // (StackNode::takeCommitted) — no more edge detection here.
+      // What remains is purely VIEW upkeep: freeze the cycle view's
+      // base when a take begins so the cursor extends past the
+      // committed LCM while recording (recording.md cursor table).
+      const bool is_recording = root_node->hasActiveTake();
       if (is_recording && !was_any_node_recording_) {
         // The frozen base continues the view the user was WATCHING —
-        // the effective (window-aware) wrap. The re-base comparison
-        // (view_lcm_before_) stays intrinsic: simple-extension
-        // detection is about committed material, not window state.
+        // the effective (window-aware) wrap.
         const int64_t view_cycle = calculateEffectiveCycleLength();
         const int64_t rel = old_pos - islandEpoch();
         view_base_.store(view_cycle > 0 ? rel % view_cycle : rel);
         view_anchor_t_.store(old_pos);
-        view_lcm_before_ = calculateTimelineLength();
-      } else if (!is_recording && was_any_node_recording_) {
-        // Commit: when the cycle grew as a simple extension (every
-        // duration divides into multiples of the old cycle), re-base
-        // the ISLAND epoch to the newest committed origin, so the
-        // cycle top becomes the new phrase's top (recording.md "LCM
-        // Expansion Snap", reborn as a pure epoch re-base — the clock
-        // and the audio are untouched). The same epoch drives clip
-        // arm/commit math, so visuals and audio share ONE frame.
-        // Polyrhythmic expansions keep the old epoch: the cursor sails
-        // on (recording.md example).
-        const int64_t new_cycle = calculateTimelineLength();
-        if (view_lcm_before_ > 0 && new_cycle > view_lcm_before_) {
-          bool polyrhythmic = false;
-          int64_t newest_origin = islandEpoch();
-          scanCommitted(focused_node, view_lcm_before_, polyrhythmic,
-                        newest_origin);
-          if (!polyrhythmic) {
-            if (auto *island =
-                    dynamic_cast<celestrian::StackNode *>(root_node.get())) {
-              island->setEpoch(newest_origin);
-            }
-          }
-        }
       }
       was_any_node_recording_ = is_recording;
       view_recording_.store(is_recording);
@@ -908,39 +864,26 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
 // --- LCM Timeline Helpers ---
 
 namespace {
-// Recursive helper to compute LCM across all clips, even nested in stacks.
-// Plain free function (not a std::function) because this runs per block on
-// the audio thread and must not allocate. Iterates the published child
-// snapshot — one atomic load per stack, no locks.
-int64_t computeLcmRecursive(celestrian::AudioNode *node, int64_t current_lcm) {
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(node)) {
-    for (auto *child : stack->getChildrenSnapshot()) {
-      current_lcm = computeLcmRecursive(child, current_lcm);
-    }
-  } else {
-    // It's a clip - use its duration for LCM
-    int64_t dur = node->getIntrinsicDuration();
-    if (dur > 0) {
-      current_lcm = celestrian::timing::lcm(current_lcm, dur);
-    }
+// Recursive LCM across all clips, even nested in stacks. Function-pointer
+// visitor (no std::function) because this runs per block on the audio
+// thread and must not allocate; forEachChild iterates one published
+// child snapshot per stack — no locks, no dynamic_cast (P1-8).
+void lcmVisit(celestrian::AudioNode *node, void *raw) {
+  auto *acc = static_cast<int64_t *>(raw);
+  if (node->getNodeType() == celestrian::NodeType::Stack) {
+    node->forEachChild(lcmVisit, raw);
+    return;
   }
+  const int64_t dur = node->getIntrinsicDuration();
+  if (dur > 0) *acc = celestrian::timing::lcm(*acc, dur);
+}
+
+int64_t computeLcmRecursive(celestrian::AudioNode *node, int64_t current_lcm) {
+  lcmVisit(node, &current_lcm);
   return current_lcm;
 }
 }  // namespace
 
-int64_t AudioEngine::calculateTimelineLength() const {
-  // Fallback timeline: 1 second at the actual device rate (P0-5).
-  const int64_t one_second = (int64_t)cached_sample_rate_.load();
-
-  if (!focused_node) {
-    return one_second;
-  }
-
-  int64_t quantum = focused_node->getEffectiveQuantum();
-  if (quantum <= 0) quantum = one_second;
-
-  return computeLcmRecursive(focused_node, quantum);
-}
 
 int64_t AudioEngine::calculateEffectiveCycleLength() const {
   const int64_t one_second = (int64_t)cached_sample_rate_.load();
@@ -955,6 +898,3 @@ int64_t AudioEngine::calculateEffectiveCycleLength() const {
   return p > 0 ? celestrian::timing::lcm(quantum, p) : quantum;
 }
 
-bool AudioEngine::isAnyNodeRecording() const {
-  return focused_node != nullptr && focused_node->isArmedOrRecording();
-}

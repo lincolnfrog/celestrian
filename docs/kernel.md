@@ -154,6 +154,10 @@ Sanity checks against the canonical examples (recording.md):
   other node's `(origin, period)` → I4 holds with zero code.
 - **Polyrhythmic 3Q into 4Q**: cycle view lengthens to 12Q; `t` sails on
   monotonically; the cursor "continues from 7Q" because nothing happened.
+  *(Refined 2026-07-16, Q14b: the island EPOCH — data, not the clock —
+  re-bases to the take's heard top at commit, so it is the WATCHED,
+  whole-cycle-shifted cursor that continues; see step 3's correction
+  note below.)*
 
 ## 4. What it buys the roadmap
 
@@ -236,8 +240,17 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    epoch re-base**: at commit, if the cycle grew as a simple extension,
    the island epoch (root stack) moves to the newest committed origin so
    the cycle top is the new phrase's top — clock and audio untouched;
-   polyrhythmic expansions keep the old epoch (cursor sails on, per
-   recording.md).
+   ~~polyrhythmic expansions keep the old epoch (cursor sails on, per
+   recording.md)~~. **Refined 2026-07-16 (field: the 5Q take teleported
+   to 12Q of the exploded 20Q frame):** EVERY cycle growth re-bases the
+   epoch to the take's HEARD top — its origin floored to whole
+   pre-take cycles (`StackNode::takeCommitted`). Whole-old-cycle moves
+   are phase-neutral for all committed clips, so this is strictly a
+   frame choice; it makes the take-anchored view the user WATCHED while
+   recording (view_model's whole-cycle shift) persist at commit. The
+   "cursor sails on" intent survives — it is the watched (shifted)
+   cursor that sails on. Each take also stores its heard frame
+   (`contextCycle`) so display take-marking survives later re-bases.
    **One-frame rule (field-hardened):** every cycle-relative projection
    — the UI view AND the clip arm/commit math (anchors, slots, effective
    positions) — must be computed relative to `getIslandEpoch()`. Mixing
@@ -262,6 +275,12 @@ Estimated end-state deletions: the six-field clip timing block, the
 rotation machinery, the transport branch-pile, `internal_transport_`,
 and most of `clip_node.cc`'s arm-time context scanning (P1-6 falls out —
 the parent computes the context once and passes it down).
+**✅ All achieved as of 2026-07-16** (see tasks.md Tier 1): the clip's
+timing state is exactly `origin`; the clock is never mutated; the
+recording lifecycle is an explicit state machine; commits are events
+handled by the island root; traversal is cast-free; context flows down
+through `ProcessContext`. Migration step 4 (time-maps phases 2–3)
+remains, gated on QTime (Q12, in place since the same day).
 
 ## 6. Risks and open questions
 

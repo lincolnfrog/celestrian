@@ -105,6 +105,14 @@ class StackNode : public AudioNode {
    * sub-stacks.
    */
   AudioNode *findNodeByUuid(const juce::String &uuid);
+  AudioNode *findByUuid(const juce::String &uuid) override {
+    return findNodeByUuid(uuid);
+  }
+
+  /** One snapshot load, then plain iteration (see AudioNode). */
+  void forEachChild(void (*fn)(AudioNode *, void *), void *user) const override {
+    for (auto *child : *renderChildren()) fn(child, user);
+  }
 
   /**
    * Recursively checks if any child node (including nested stacks) is
@@ -158,6 +166,26 @@ class StackNode : public AudioNode {
    * cycle top to the new phrase's origin — audio untouched).
    */
   void setEpoch(int64_t epoch) { epoch_samples_.store(epoch); }
+
+  /** Establish (Q, epoch) once; q == 0 sets a provisional epoch only
+   * (first-clip arm). No-op once Q is locked. */
+  void establishIsland(int64_t quantum, int64_t epoch) override {
+    if (quantum_samples_.load() != 0) return;
+    epoch_samples_.store(epoch);
+    if (quantum > 0) quantum_samples_.store(quantum);
+  }
+
+  // --- Take lifecycle (commit as an EVENT, unification_audit.md §1.5).
+  // Clips report arm/cancel/commit to the island root; the engine's
+  // per-block edge detection and graph scans are gone. Counter drift on
+  // node removal is guarded in removeChild/clearChildren.
+  void takeArmed() override;
+  void takeCancelled() override { active_takes_.fetch_sub(1); }
+  void takeCommitted(int64_t origin) override;
+  bool hasActiveTake() const override { return active_takes_.load() > 0; }
+  int64_t activeTakeContextCycle() const override {
+    return lcm_before_take_.load();
+  }
 
   int64_t getIslandEpoch() const override {
     if (quantum_samples_.load() > 0) return epoch_samples_.load();
@@ -218,6 +246,12 @@ class StackNode : public AudioNode {
   // 0 = no quantum established in this scope yet.
   std::atomic<int64_t> quantum_samples_{0};
   std::atomic<int64_t> epoch_samples_{0};
+
+  // Take lifecycle: count of armed/capturing takes in this island, and
+  // the committed cycle length snapshotted when the first of them armed
+  // (the epoch re-base compares the post-commit cycle against it).
+  std::atomic<int> active_takes_{0};
+  std::atomic<int64_t> lcm_before_take_{0};
 
   /**
    * If this child's island has no quantum yet and the child carries

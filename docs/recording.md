@@ -367,7 +367,7 @@ If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 
 ### 3. The "First Clip" Case
 - **Ideal State**: The first clip defines the timeline origin (Q=0). It should have **Anchor Offset = 0**.
 - **Result**: Primary Instance at 0. No gap at the start. **No Left Ghost**.
-- **Edge Case**: If the transport is running *before* the first recording, the first clip might capture a non-zero anchor. This causes it to appear offset (e.g., at Q=2) and generate a Left Ghost. This is visually confusing for the first clip and is considered a bug/artifact of an un-reset transport.
+- ~~**Edge Case**: If the transport is running *before* the first recording, the first clip might capture a non-zero anchor… bug/artifact of an un-reset transport.~~ **Superseded (2026-07-16):** the transport is never reset at all (kernel.md §2 holds without exceptions); the first clip's arm moment is captured as the ISLAND EPOCH instead, so anchor 0 holds **by construction** no matter how long the transport ran first — the edge case cannot occur. Pinned by `tests/monotonic_clock_tests.cc`.
 
 ---
 
@@ -457,10 +457,11 @@ When Clip 3 commits at 4Q:
 
 ### Transport Model: Monotonic Clock, Derived Cycle View
 
-> **Superseded (2026-07-07, kernel.md step 3).** The engine transport is
-> now **monotonic**: it only moves forward while playing, is reset once
-> per island (the first-clip epoch capture) and by an explicit user
-> stop, and is never wrapped, snapped, or mutated by commits.
+> **Superseded (2026-07-07, kernel.md step 3; completed 2026-07-16).**
+> The engine transport is now **monotonic** and NEVER mutated: not by
+> commits, not by first clips (the island epoch is captured as data at
+> the first arm), not by stop (pause/resume — stop freezes the view,
+> play resumes the phase).
 >
 > The old model mutated the clock on commit — snap-to-0 when the LCM
 > grew, a suppression branch for polyrhythmic expansions, a special
@@ -715,6 +716,17 @@ Step 5: Stop Clip 3 at 3Q
 - Cursor continues from position 3Q → 4Q → 5Q... (no snap)
 - At 12Q, cursor loops to 0Q
 ```
+
+> **Refined (2026-07-16, ruling Q14b):** the cursor continuity above is
+> the **watched** cursor. While recording, the view shifts by whole
+> committed cycles to the cycle the take started in; at commit the
+> island epoch re-bases to the take's HEARD top (origin floored to
+> whole pre-take cycles — phase-neutral for every committed clip), so
+> the shifted frame the performer watched persists. The old rule
+> ("polyrhythmic expansions keep the epoch") predated the recording
+> view shift and teleported the new take to its raw frame position at
+> commit (field: a 5Q take from a heard top displayed at 12Q–17Q of
+> the exploded 20Q frame).
 
 ### Current Implementation Issues
 

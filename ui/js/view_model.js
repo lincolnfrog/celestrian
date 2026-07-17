@@ -74,7 +74,7 @@ function displayPeriodQ(node, quantum) {
  * (ghost: false); clipped pieces are marked wrapped. Q-unit exact —
  * no pixel tolerances (computeGhostTiles is the px-space equivalent).
  */
-export function unrollReps({ periodQ, offsetQ, cycleQ, maxTiles = 256 }) {
+export function unrollReps({ periodQ, offsetQ, cycleQ, takeQ, maxTiles = 256 }) {
     if (periodQ <= 0 || cycleQ <= 0) return [];
     // Safety net: a degenerate frame (e.g. Q not yet established) must
     // never explode into thousands of tiles (mirrors computeGhostTiles)
@@ -85,13 +85,23 @@ export function unrollReps({ periodQ, offsetQ, cycleQ, maxTiles = 256 }) {
     // of every period, and routing the phase through mod-frame breaks
     // tile alignment (found by the take-anchored frame tests).
     const first = ((offsetQ % periodQ) + periodQ) % periodQ;
-    // The MAIN (non-ghost) tile is the first full repetition in the
-    // frame. Owner ruling 2026-07-10: a looping clip has no privileged
-    // historical rep — "which cycle it was recorded in" is not a
-    // musical fact ("it doesn't matter how many times I let clip 1 loop
-    // before recording clip 2"), so origin-modular take marking drew
-    // the bright tile in arbitrary mid-frame positions.
-    const takeStart = first;
+    // Take marking (owner ruling 2026-07-10 + refinement 2026-07-16):
+    // whole CYCLES never matter ("it doesn't matter how many times I
+    // let clip 1 loop before recording clip 2"), but the performed
+    // PHASE within the cycle does ("clip 3 recorded at 2Q must anchor
+    // 2Q→4Q, not jump to 0Q" — folding by the clip's own period erased
+    // it, since a 2Q loop at 2Q sounds identical to one at 0Q). Callers
+    // pass takeQ = the performed cycle position for takes made in the
+    // current epoch era; without it (pre-epoch takes, groups) the take
+    // is the first full repetition.
+    let takeStart = first;
+    if (takeQ !== undefined && takeQ >= 0 && takeQ < cycleQ) {
+        // Snap onto this lane's tile grid — exact when the committed
+        // cycle is a multiple of the period (it always is); the round
+        // guards float drift for fractional-Q periods.
+        const snapped = first + Math.round((takeQ - first) / periodQ) * periodQ;
+        if (snapped >= 0 && snapped < cycleQ) takeStart = snapped;
+    }
     // Walk tile starts from the (possibly negative) wrapped predecessor
     for (let s = first - periodQ; s < cycleQ; s += periodQ) {
         const startQ = Math.max(0, s);
@@ -100,7 +110,7 @@ export function unrollReps({ periodQ, offsetQ, cycleQ, maxTiles = 256 }) {
         reps.push({
             startQ,
             endQ,
-            ghost: s !== takeStart,
+            ghost: Math.abs(s - takeStart) > 1e-9,
             wrapped: startQ !== s || endQ !== s + periodQ,
         });
     }
@@ -121,6 +131,51 @@ export function windowDragTarget({ edge, rawQ, startQ, endQ, maxQ }) {
         return { startQ: Math.min(Math.max(0, q), endQ - 1), endQ };
     }
     return { startQ, endQ: Math.max(Math.min(maxQ, q), startQ + 1) };
+}
+
+/**
+ * "Ghosts show what SOUNDS" (owner-ratified 2026-07-16, open question
+ * 10): for a clip with an ACTIVE window, ghost tiles become ECHOES of
+ * the window segment at its audible repetitions — positions ≡ the
+ * clip's offset (mod the window length; the engine's clip-window
+ * playback is origin-anchored) — instead of repetitions of raw take
+ * material that never sounds. The take tile stays whole: it is the ONE
+ * place that renders recorded truth (the original material, dimmed
+ * outside the brackets by the overlay) — everywhere else shows audible
+ * truth. Echo reps carry `echo: true` and a `src` content range
+ * (fractions of the take's peaks) so the renderer draws the segment's
+ * waveform in a visibly different tone. Clips only for now: a group's
+ * composite already draws audible truth into one canvas.
+ */
+export function echoReps({ reps, win, offsetQ, cycleQ, intrinsicQ }) {
+    const winLen = win.endQ - win.startQ;
+    if (!(winLen > 0) || !(intrinsicQ > 0)) return reps;
+    if (cycleQ / winLen > 64) return reps; // degenerate guard
+    const take = reps.find(r => !r.ghost);
+    if (!take) return reps;
+    const src = [win.startQ / intrinsicQ, win.endQ / intrinsicQ];
+
+    const out = [take];
+    const push = (s, e) => {
+        const startQ = Math.max(0, s);
+        const endQ = Math.min(cycleQ, e);
+        if (endQ - startQ <= 1e-9) return;
+        out.push({
+            startQ, endQ, ghost: true, echo: true, src,
+            wrapped: endQ - startQ < winLen - 1e-9,
+        });
+    };
+    const first = ((offsetQ % winLen) + winLen) % winLen;
+    for (let s = first - winLen; s < cycleQ; s += winLen) {
+        const e = s + winLen;
+        // The take tile's span belongs to recorded truth — trim echoes
+        // around it rather than overdrawing the original material.
+        if (e <= take.startQ || s >= take.endQ) { push(s, e); continue; }
+        if (s < take.startQ) push(s, take.startQ);
+        if (e > take.endQ) push(take.endQ, e);
+    }
+    out.sort((a, b) => a.startQ - b.startQ);
+    return out;
 }
 
 /**
@@ -442,13 +497,54 @@ export function deriveViewModel(state, opts = {}) {
         }
 
         const periodQ = displayPeriodQ(node, quantum);
+        // Take marking (Q14): the bright tile is the one at the take's
+        // HEARD PHASE — its position mod the cycle it was performed
+        // against (`contextCycle`, the engine's per-take heard frame),
+        // on this lane's tile grid (mod period). Whole heard-cycles
+        // fold away; the phase survives later frame growth AND epoch
+        // re-bases (both move by whole multiples of every earlier
+        // take's heard cycle). Fallback for states without
+        // contextCycle (mock scenarios, first takes): era takes fold by
+        // the committed cycle; pre-epoch takes mark the first full rep.
+        const relQ = ((node.origin || 0) - epochSamples) / quantum;
+        const ctxQ = (node.contextCycle || 0) / quantum;
+        let takeQ;
+        if (ctxQ > 0 && periodQ > 0) {
+            const phase = ((offsetQ % ctxQ) + ctxQ) % ctxQ;
+            const firstTile = ((offsetQ % periodQ) + periodQ) % periodQ;
+            // First tile position ≡ the heard phase (mod ctx): exists
+            // within lcm(ctx, period) ≤ the committed cycle.
+            for (let p = firstTile; p < cycleQ; p += periodQ) {
+                const d = ((p - phase) % ctxQ + ctxQ) % ctxQ;
+                if (d < 1e-9 || ctxQ - d < 1e-9) { takeQ = p; break; }
+            }
+        } else if (relQ >= 0 && lcmQ > 0) {
+            takeQ = ((offsetQ % lcmQ) + lcmQ) % lcmQ;
+        }
+        const intrinsicQ = intrinsicPeriod(node, quantum) / quantum;
+        const win = windowOf(node, quantum);
+        let reps = qEstablished
+            ? unrollReps({ periodQ, offsetQ, cycleQ, takeQ })
+            : [];
+        // "Ghosts show what sounds": an ACTIVE window swaps the raw-take
+        // ghosts for echoes of the window segment (see echoReps).
+        if (win && win.active && reps.length) {
+            reps = echoReps({ reps, win, offsetQ, cycleQ, intrinsicQ });
+        }
         lanes.push(Object.assign(laneCommon(node, state), {
             kind: 'clip',
             depth,
             periodQ,
-            intrinsicQ: intrinsicPeriod(node, quantum) / quantum,
-            reps: qEstablished ? unrollReps({ periodQ, offsetQ, cycleQ }) : [],
-            window: windowOf(node, quantum),
+            intrinsicQ,
+            reps,
+            // The take tile's frame position: the CONTENT-frame origin of
+            // this lane. Window brackets/dims/cursor (content-relative
+            // [loopStart, loopEnd)) anchor here — anchoring at frame 0
+            // drew them a whole phase off for takes not at the top
+            // (field 2026-07-16c). The take rep's startQ is the unclipped
+            // tile start by construction (only tile ENDS get clipped).
+            takeStartQ: (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
+            window: win,
             windowPhase: node.windowActive ? (node.playhead || 0) : 0,
             armable: isArmable(node),
             // Recording input (hardware channel index; −1 = device default)

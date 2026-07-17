@@ -168,6 +168,10 @@ class ClipNode : public AudioNode {
   std::atomic<int64_t> awaiting_start_at{
       0};  // Armed: the chosen arm target (0 = none yet)
   std::atomic<int64_t> awaiting_stop_at{0};  // PendingStop: commit boundary
+  // The committed island cycle this take was performed against (its
+  // heard frame; 0 for the first take). Set at capture start, kept
+  // after commit — published as `contextCycle` for display take-marking.
+  std::atomic<int64_t> take_context_cycle_{0};
   std::atomic<int64_t> commit_master_pos{
       0};  // Master pos when recording commits
 

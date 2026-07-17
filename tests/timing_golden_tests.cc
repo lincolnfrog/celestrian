@@ -110,16 +110,6 @@ class TimingGoldenTests : public juce::UnitTest {
       }
     }
 
-    beginTest("inAnticipatoryWindow");
-    if (auto *cases = root.getProperty("anticipatory_cases", {}).getArray()) {
-      for (auto &c : *cases) {
-        expect(inAnticipatoryWindow(asInt64(c, "rel"),
-                                    asInt64(c, "quantum")) ==
-                   (bool)c.getProperty("expected", false),
-               c.getProperty("name", "?").toString());
-      }
-    }
-
     beginTest("nextStopBoundary");
     if (auto *cases = root.getProperty("stop_boundary_cases", {}).getArray()) {
       for (auto &c : *cases) {

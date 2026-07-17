@@ -470,8 +470,15 @@ function layersOf(body) {
     return body._layers;
 }
 
-/** Redraw a rep canvas only when its peaks identity/length/size changed. */
-function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live, pxPerSlot) {
+/** Redraw a rep canvas only when its peaks identity/length/size changed.
+ * `src` (window echoes): [startFrac, endFrac] of the peaks to draw — the
+ * window segment. Sliced only on redraw; identity tracking stays on the
+ * ORIGINAL peaks array so polls don't churn.
+ * `isGhost`: EVERY ghost tile is an audible repetition ("ghosts show
+ * what sounds") and draws in the cool ECHO tone — warm hues are
+ * reserved for material (the take tile / the live bar). */
+function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live,
+                       pxPerSlot, src, isGhost) {
     let canvas = div.firstElementChild;
     if (!peaks || !peaks.length) {
         // Peaks can be transiently empty around a commit (cache regen /
@@ -489,7 +496,9 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live, pxPer
     // while recording (same ref, growing length) — both covered here
     const dk = peaks.length + ':' + Math.round(cssWidth) + ':' +
         Math.round(cssHeight) + ':' + isComposite + ':' + !!live + ':' +
-        Math.round((pxPerSlot || 0) * 1000);
+        Math.round((pxPerSlot || 0) * 1000) + ':' +
+        (src ? src[0].toFixed(4) + '-' + src[1].toFixed(4) : '') +
+        ':' + !!isGhost;
     if (div._peaksRef === peaks && div._dk === dk) return false;
 
     // CONTENT SWAP → CROSS-FADE: a new peaks array replacing an old one
@@ -521,7 +530,17 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live, pxPer
         // Pinned, like the live bar: the div's transition reveals/clips
         // the canvas — stretching it mid-morph distorted the content
         canvas.style.width = Math.round(cssWidth) + 'px';
-        drawWaveform(canvas, peaks, { cssWidth, cssHeight, isComposite });
+        // Window echoes draw only their segment; all ghosts draw in the
+        // echo tone (audible repetitions — warm is for material)
+        let drawPeaks = peaks;
+        if (src) {
+            const n = peaks.length;
+            const a = Math.max(0, Math.floor(src[0] * n));
+            const b = Math.min(n, Math.max(a + 1, Math.ceil(src[1] * n)));
+            drawPeaks = peaks.slice(a, b);
+        }
+        drawWaveform(canvas, drawPeaks,
+            { cssWidth, cssHeight, isComposite, isEcho: !!isGhost || !!src });
     }
     return true; // redrew
 }
@@ -606,7 +625,8 @@ function patchLaneBody(row, lane, vm, aux) {
             requestAnimationFrame(() =>
                 requestAnimationFrame(() => { div.style.transition = ''; }));
         }
-        const cls = 'rep' + (rep.ghost ? ' ghost' : '') + (rep.bar ? ' recording-bar' : '');
+        const cls = 'rep' + (rep.ghost ? ' ghost' : '') +
+            (rep.echo ? ' echo' : '') + (rep.bar ? ' recording-bar' : '');
         if (div.className !== cls) div.className = cls;
         // The live bar draws at a FIXED px-per-slot scale: a peak's
         // pixels are a function of its slot index only, never of the
@@ -622,7 +642,7 @@ function patchLaneBody(row, lane, vm, aux) {
             cssW = Math.max(2, Math.ceil(peaks.length * pxPerSlot));
         }
         const redrew = drawRepCanvas(div, peaks, cssW, bodyH,
-            lane.kind === 'group', !!rep.bar, pxPerSlot);
+            lane.kind === 'group', !!rep.bar, pxPerSlot, rep.src, !!rep.ghost);
 
         // MORPH ONLY PURE MOVES; SNAP RE-LAYOUTS. When the canvas was
         // redrawn AND the geometry changed in the same patch (a commit
@@ -651,7 +671,12 @@ function patchLaneBody(row, lane, vm, aux) {
         lane.reps.length === 0 && lane.armed) || (lane.recording && lane.pendingStart);
     const armQ = vm.armAtQ % cycleQ;
     const win = lane.window || latentWindow(lane, vm);
-    const overlayKey = JSON.stringify([win, armedEmpty && armQ, cycleQ]);
+    // Window geometry is CONTENT-relative; the lane's content-frame
+    // origin is its take tile (takeStartQ) — brackets/dims/cursor all
+    // shift by it (field 2026-07-16c: they drew a phase off for takes
+    // not anchored at the frame top).
+    const anchorQ = lane.takeStartQ || 0;
+    const overlayKey = JSON.stringify([win, armedEmpty && armQ, cycleQ, anchorQ]);
     if (body._winDrag) return;
 
     // The heard-time WINDOW CURSOR: where in its window this lane is
@@ -668,7 +693,7 @@ function patchLaneBody(row, lane, vm, aux) {
             // The animator draws this cursor at 60fps (same clock as
             // the playhead); the poll corrects its phase (wrap-aware,
             // ease small errors, snap teleports)
-            winCursor._startQ = w.startQ;
+            winCursor._startQ = anchorQ + w.startQ;
             winCursor._lenQ = lenQ;
             winCursor._cycleQ = cycleQ;
             const target = lane.windowPhase || 0;
@@ -679,7 +704,7 @@ function patchLaneBody(row, lane, vm, aux) {
             }
             if (winCursor.style.transition !== 'none') winCursor.style.transition = 'none';
         } else {
-            const posQ = w.startQ + (lane.windowPhase || 0) * lenQ;
+            const posQ = anchorQ + w.startQ + (lane.windowPhase || 0) * lenQ;
             // Glides like the playhead; a wrap (phase 1 → 0) must snap
             // back, never sweep backwards through the window
             const frac = posQ / cycleQ;
@@ -720,17 +745,17 @@ function patchLaneBody(row, lane, vm, aux) {
             const latentCls = latent ? ' latent' : '';
             const b1 = document.createElement('div');
             b1.className = 'win-bracket start' + latentCls;
-            b1.style.left = pct(startQ, cycleQ);
+            b1.style.left = pct(anchorQ + startQ, cycleQ);
             const b2 = document.createElement('div');
             b2.className = 'win-bracket end' + latentCls;
-            b2.style.left = pct(endQ, cycleQ);
+            b2.style.left = pct(anchorQ + endQ, cycleQ);
             o.append(b1, b2);
             if (!latent) {
                 const chip = document.createElement('div');
                 // A window ending AT the display cycle would put the
                 // chip past the lane's overflow clip — align it inward
-                chip.className = 'win-chip' + (endQ >= cycleQ ? ' at-end' : '');
-                chip.style.left = pct(endQ, cycleQ);
+                chip.className = 'win-chip' + (anchorQ + endQ >= cycleQ ? ' at-end' : '');
+                chip.style.left = pct(anchorQ + endQ, cycleQ);
                 chip.textContent = bypassed ? 'window · bypassed' : active ? 'window · active' : 'window';
                 o.appendChild(chip);
                 if (active && !bypassed) {
@@ -779,7 +804,20 @@ function buildWindowDims(o, win, lane, cycleQ) {
         d.style.width = pct(to - from, cycleQ);
         o.appendChild(d);
     };
-    for (let base = 0; base < cycleQ; base += P) {
+    const anchorQ = lane.takeStartQ || 0;
+    if (lane.kind === 'clip') {
+        // Clips render raw material in ONE place — the take tile; every
+        // other tile is an audible echo of the window segment and must
+        // not be dimmed as "outside the window" (ghosts show what
+        // sounds, Q 2026-07-16).
+        addDim(anchorQ, anchorQ + win.startQ);
+        addDim(anchorQ + win.endQ, anchorQ + P);
+        return;
+    }
+    // Groups: every tile shows the composite (raw material) — dim the
+    // outside-window regions per period tile, on the lane's grid.
+    const first = ((anchorQ % P) + P) % P;
+    for (let base = first - P; base < cycleQ; base += P) {
         addDim(base, base + win.startQ);
         addDim(base + win.endQ, base + P);
     }
@@ -814,14 +852,18 @@ function wireWindow(o, lane, vm, body, win) {
     if (maxQ < 1) return;
     let cur = { startQ: win.startQ, endQ: win.endQ };
     const dimsLive = (win.active && !win.bypassed) || win.latent;
+    // Window Qs are CONTENT-relative; the pointer moves in FRAME Qs.
+    // The lane's content-frame origin is its take tile.
+    const anchorQ = lane.takeStartQ || 0;
 
     /** Re-render the SNAPPED preview: ghost bracket, dims, chip badge. */
     const previewSnap = (t, edge, ghost) => {
         cur = t;
-        ghost.style.left = pct(edge === 'start' ? t.startQ : t.endQ, vm.cycleQ);
+        ghost.style.left =
+            pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), vm.cycleQ);
         if (chip) {
-            chip.style.left = pct(t.endQ, vm.cycleQ);
-            chip.classList.toggle('at-end', t.endQ >= vm.cycleQ);
+            chip.style.left = pct(anchorQ + t.endQ, vm.cycleQ);
+            chip.classList.toggle('at-end', anchorQ + t.endQ >= vm.cycleQ);
             setText(chip, (t.endQ - t.startQ) + 'Q window');
         }
         if (dimsLive) {
@@ -848,13 +890,15 @@ function wireWindow(o, lane, vm, body, win) {
         el.addEventListener('pointermove', e => {
             if (!body._winDrag || !ghost) return;
             const r = body.getBoundingClientRect();
-            const rawQ = ((e.clientX - r.left) / r.width) * vm.cycleQ;
+            // Frame Q under the pointer → content Q for the snap math
+            const rawQ =
+                ((e.clientX - r.left) / r.width) * vm.cycleQ - anchorQ;
             // The handle tracks the pointer continuously, inside the
             // same bounds the snap enforces (≥1Q window, lane extent)
             const freeQ = edge === 'start'
                 ? Math.min(Math.max(0, rawQ), cur.endQ - 1)
                 : Math.max(Math.min(maxQ, rawQ), cur.startQ + 1);
-            el.style.left = pct(freeQ, vm.cycleQ);
+            el.style.left = pct(anchorQ + freeQ, vm.cycleQ);
             const t = windowDragTarget({ edge, rawQ, ...cur, maxQ });
             if (t.startQ !== cur.startQ || t.endQ !== cur.endQ) {
                 previewSnap(t, edge, ghost);

@@ -23,7 +23,10 @@ export function buildCacheKey(stack, targetPeaks) {
                 child.duration || 0,
                 child.origin || 0,
                 child.loopStart || 0,
-                child.loopEnd || 0
+                child.loopEnd || 0,
+                // Window ACTIVATION changes audibility without moving the
+                // loop points — it must invalidate the mixdown
+                child.loopBypassed ? 1 : 0
             ].join(':'));
         }
     });
@@ -82,59 +85,71 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
     // Cache miss — regenerate composite waveform
     const waveformData = new Array(targetPeaks).fill(0);
 
-    // Each SETTLED clip contributes peaks at its position within the
-    // timeline (recording and fetch-pending children are excluded — see
-    // peaksSig above)
+    // Each SETTLED clip contributes its AUDIBLE content — the composite
+    // is the group's mixdown, so it shows what SOUNDS, not what was
+    // recorded. (Recording and fetch-pending children are excluded —
+    // see peaksSig above.)
     (stack.nodes || []).forEach(child => {
         if (child.type !== 'clip' || skip(child) || !livePeaks.has(child.id)) return;
 
         const childPeaks = livePeaks.get(child.id);
         if (!childPeaks || childPeaks.length === 0) return;
-
-        // The clip's position in the timeline is the cycle projection of
-        // its origin (kernel.md; one-frame rule: epoch-relative). The old
-        // `child.x` read mixed frames — the engine published x in PIXELS,
-        // this divided it by samples, and every offset collapsed to ~0.
-        const rel = (child.origin || 0) - epochSamples;
-        const clipOffsetSamples = stackDuration > 0
-            ? ((rel % stackDuration) + stackDuration) % stackDuration
-            : 0;
         const clipDuration = child.duration || effectiveQ;
+        if (!(clipDuration > 0) || !(stackDuration > 0)) return;
 
-        // Convert to pixel positions
-        const clipStartPx = (clipOffsetSamples / stackDuration) * canvasWidth;
-        const clipWidthPx = (clipDuration / stackDuration) * canvasWidth;
+        // An ACTIVE window reduces the clip to its window segment looping
+        // at the window length (E-C); otherwise the full take loops at
+        // its duration. Field 2026-07-16d: the composite drew the whole
+        // take — including the not-in-window half — for a windowed clip.
+        const winActive = child.windowActive ??
+            (!child.loopBypassed &&
+                (child.loopEnd || 0) > (child.loopStart || 0));
+        const segStart = winActive ? (child.loopStart || 0) : 0;
+        const segLen = winActive
+            ? (child.loopEnd || 0) - segStart
+            : clipDuration;
+        if (!(segLen > 0)) return;
+        // Degenerate guard (mirrors unrollReps' maxTiles)
+        if (stackDuration / segLen > 256) return;
 
-        // Map this clip's peaks into the composite as RANGES, not point
-        // samples: floor-indexed point writes left every other slot
-        // empty whenever targetPeaks exceeds the source resolution — a
-        // sparse comb whose holes surfaced as density collapse at some
-        // canvas widths (field 2026-07-10).
+        // Slice the segment's peaks out of the full-take peaks
         const clipPeakCount = childPeaks.length;
-        const mapClipAt = (startPx) => {
-            for (let i = 0; i < clipPeakCount; i++) {
-                const px0 = startPx + (i / clipPeakCount) * clipWidthPx;
-                const px1 = startPx + ((i + 1) / clipPeakCount) * clipWidthPx;
+        const i0 = Math.max(0,
+            Math.floor((segStart / clipDuration) * clipPeakCount));
+        const i1 = Math.min(clipPeakCount, Math.max(i0 + 1,
+            Math.ceil(((segStart + segLen) / clipDuration) * clipPeakCount)));
+        const segPeaks = childPeaks.slice(i0, i1);
+        const segCount = segPeaks.length;
+        const segWidthPx = (segLen / stackDuration) * canvasWidth;
+
+        // Map segment peaks as RANGES, not point samples: floor-indexed
+        // point writes left every other slot empty whenever targetPeaks
+        // exceeds the source resolution — a sparse comb whose holes read
+        // as density collapse at some canvas widths (field 2026-07-10).
+        const mapSegAt = (startPx) => {
+            for (let i = 0; i < segCount; i++) {
+                const px0 = startPx + (i / segCount) * segWidthPx;
+                const px1 = startPx + ((i + 1) / segCount) * segWidthPx;
                 const t0 = Math.max(0, Math.floor((px0 / canvasWidth) * targetPeaks));
                 const t1 = Math.min(targetPeaks,
                     Math.max(t0 + 1, Math.ceil((px1 / canvasWidth) * targetPeaks)));
-                const v = childPeaks[i] || 0;
+                const v = segPeaks[i] || 0;
                 for (let t = t0; t < t1; t++) {
                     if (v > waveformData[t]) waveformData[t] = v;
                 }
             }
         };
-        const clipStartPxBase = (clipOffsetSamples / stackDuration) * canvasWidth;
-        mapClipAt(clipStartPxBase);
 
-        // Handle looping: if clip loops within LCM, repeat peaks
-        if (clipDuration < stackDuration && clipDuration > 0) {
-            const numLoops = Math.ceil(stackDuration / clipDuration);
-            for (let loopIdx = 1; loopIdx < numLoops && loopIdx < 10; loopIdx++) {
-                const loopStartSamples = clipOffsetSamples + (loopIdx * clipDuration);
-                if (loopStartSamples >= stackDuration) break;
-                mapClipAt((loopStartSamples / stackDuration) * canvasWidth);
-            }
+        // The segment sounds at positions ≡ its origin (mod its period),
+        // in the epoch frame — tiled across the WHOLE cycle, INCLUDING
+        // the wrapped predecessor before its first full repetition. (The
+        // old forward-only tiling left everything before the offset
+        // blank once origins stopped being ~0 — "the stack is blank for
+        // the first 2Q", field 2026-07-16d.)
+        const rel = (child.origin || 0) - epochSamples;
+        const first = ((rel % segLen) + segLen) % segLen;
+        for (let s = first - segLen; s < stackDuration; s += segLen) {
+            mapSegAt((s / stackDuration) * canvasWidth);
         }
     });
 

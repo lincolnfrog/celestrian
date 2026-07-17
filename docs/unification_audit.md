@@ -10,6 +10,13 @@
 > was **ruled the same day**: adopt now, `QTime` exact rational —
 > recorded as **Q12 in design_language.md §5**, which is the canonical
 > statement (this §4 is the decision record that led to it).
+>
+> **Postscript (2026-07-16, end of day): §1 (finish-the-kernel) is
+> COMPLETE** — see tasks.md Tier 1 — and the same-day field session
+> drove out and fixed D9–D13 plus rulings Q13/Q14a-c (take marking,
+> heard-top epoch re-base, echo grammar). §2's four primitives remain
+> the roadmap: QTime engine migration, TimeMap reification, the
+> fractal output stage, immutable graph + edits-as-events.
 
 ---
 

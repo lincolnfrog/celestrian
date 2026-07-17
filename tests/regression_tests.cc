@@ -604,10 +604,15 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           ", ph2=" + juce::String(ph2) + ", ph3=" + juce::String(ph3));
     }
 
-    // LCM: Clip 3 Wait Logic (Fix for "Start Immediately" bug)
-    // Scenario: Context=4Q. User hits record at 3.9Q.
-    // Bug was: next_q calculated as 0 (past), causing immediate start.
-    // Expected: next_q calculated as 4Q, waiting for boundary.
+    // LCM: arm near the cycle top anchors AT the top.
+    // Scenario: Context=4Q. User hits record at 3.9Q. The original bug
+    // computed next_q = 0 (past) and anchored the take at the WRONG
+    // position; the musical observable is the ANCHOR (origin = 4Q).
+    // Capture is allowed to begin inside the <512 near-window — the
+    // arrival-time capture window still points at exactly 4Q, so
+    // content[0] is the audio of the boundary either way. (An
+    // anticipatory-deferral mechanism that also kept isRecording false
+    // here was deleted 2026-07-16 — it overshot anchors by a full Q.)
     beginTest("LCM: Clip 3 Wait Logic at Q Boundary");
     {
       const double SR = 1000.0;  // 1Q = 1000 samples
@@ -647,22 +652,23 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       clip3Ptr->startRecording();
 
       // Process one block.
-      // With bug: next_q=0, 3900 >= 0 -> starts recording immediately.
-      // With fix: next_q=4000, 3900 < 4000 -> waits.
+      // With the original bug: next_q=0 (in the past) -> take anchored
+      // at the wrong position. Fixed: the target is 4Q.
       clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
 
-      // Check we are NOT recording yet (should be waiting)
-      expect(!clip3Ptr->isRecording(),
-             "Clip 3 should be waiting (not recording) at 3.9Q");
+      // THE invariant: the take is anchored at the 4Q boundary
+      // (capture may already be counting inside the <512 near-window).
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)4000,
+                   "Clip 3 anchors at 4Q, never at a past boundary");
 
-      // Advance to 4000 (4Q)
+      // Advance past 4000 (4Q): definitely capturing now.
       ctx.master_pos = 4000;
       ctx.num_samples = 100;
       clip3Ptr->process(inputs, nullptr, 1, 0, ctx);
-
-      // Now it should start
       expect(clip3Ptr->isRecording(),
-             "Clip 3 should have started recording at 4000 (4Q)");
+             "Clip 3 should be recording past 4000 (4Q)");
+      expectEquals(clip3Ptr->origin_samples.load(), (int64_t)4000,
+                   "anchor unchanged through capture start");
     }
 
     // BUG FIX TEST: Clip 2 (4Q) should loop at its own duration, not at 1Q
@@ -1207,6 +1213,138 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // With clip at x=400 (2Q) and duration 1Q in a 4Q context,
       // ghosts should fill 0Q→2Q (left wrap) to complete the LCM cycle.
       // This is verified in the UI layer tests (Playwright).
+    }
+
+    // FIELD REPRO 2026-07-16: "record clip 3 starting right before 2Q,
+    // record 2Q, stop before the end — expected anchored 2Q→4Q, actual
+    // jumps to 0Q–2Q." Full engine flow, zero device latency (the
+    // uncalibrated case). Two engine facts must hold: the origin lands
+    // on the HEARD 2Q boundary (the anticipatory-window deferral used
+    // to overshoot to 3Q when latency ≈ 0), and clip 3's commit must
+    // not re-base the island epoch (the cycle did not grow). The
+    // display half of the bug (take tile folded to 0 by the clip's own
+    // period) is pinned in ui/js/tests/view_model.test.mjs.
+    beginTest("FIELD: mid-cycle 2Q take anchors at its heard 2Q boundary");
+    {
+      AudioEngine engine;
+      const int64_t Q = 44100;
+      const int BLOCK = 512;
+      std::vector<float> buf((size_t)BLOCK, 0.1f);
+      float *ins[] = {buf.data()};
+      float *outs[] = {buf.data(), buf.data()};
+      auto process = [&](int64_t total) {
+        while (total > 0) {
+          int n = (int)std::min<int64_t>(total, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          total -= n;
+        }
+      };
+      auto nthClipId = [&](int n) -> juce::String {
+        auto state = engine.getGraphState();
+        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (*nodes)[n].getDynamicObject()->getProperty("id");
+      };
+      auto clipProp = [&](int n, const char *prop) -> int64_t {
+        auto state = engine.getGraphState();
+        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
+            prop);
+      };
+
+      // 1) Clip 1 establishes Q (recorded from t = 0, exactly 1Q).
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(0));
+      process(Q);
+      engine.stopRecordingInNode(nthClipId(0));  // immediate commit
+      expectEquals(clipProp(0, "duration"), Q, "clip 1 establishes Q");
+
+      // 2) Clip 2: 4Q, armed exactly on the 1Q boundary (t = Q). Stop
+      // slightly early so the stop boundary is 4Q, not 5Q.
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(1));
+      process(4 * Q - 200);
+      engine.stopRecordingInNode(nthClipId(1));
+      process(400);  // audio thread picks boundary 4Q and commits there
+      expectEquals(clipProp(1, "duration"), 4 * Q, "clip 2 is 4Q");
+
+      // Simple extension: the epoch re-based to clip 2's origin (1Q).
+      const int64_t epoch = (int64_t)(double)engine.getGraphState()
+                                .getDynamicObject()
+                                ->getProperty("islandEpoch");
+      expectEquals(epoch, Q, "epoch re-based to clip 2's origin");
+
+      // 3) Clip 3: arm just before the HEARD 2Q of the 4Q cycle.
+      // t is now 5Q + 200; heard rel = (t − epoch) mod 4Q = 200.
+      process(2 * Q - 300);  // heard rel = 2Q − 100: inside the old
+                             // anticipatory window, 100 before 2Q
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(2));
+      process(2 * Q);  // capture ~2Q (arm resolves in the first block)
+      engine.stopRecordingInNode(nthClipId(2));
+      process(2 * Q);  // finish to the boundary and commit
+
+      const int64_t origin3 = clipProp(2, "origin");
+      const int64_t duration3 = clipProp(2, "duration");
+      expectEquals(duration3, 2 * Q, "clip 3 committed at 2Q");
+
+      // THE anchor fact: the take belongs at the heard 2Q boundary.
+      expectEquals(((origin3 - epoch) % (4 * Q) + 4 * Q) % (4 * Q), 2 * Q,
+                   "clip 3 anchors at heard 2Q (deferral used to give 3Q)");
+
+      // And its commit must not move the frame (cycle didn't grow).
+      expectEquals((int64_t)(double)engine.getGraphState()
+                       .getDynamicObject()
+                       ->getProperty("islandEpoch"),
+                   epoch, "clip 3's commit must not re-base the epoch");
+
+      // Clip 3's heard frame was the 4Q cycle — published for display
+      // take-marking (Q14).
+      expectEquals(clipProp(2, "contextCycle"), 4 * Q,
+                   "clip 3's heard frame is the 4Q cycle");
+
+      // 4) FIELD REPRO part 2 (2026-07-16b): clip 4, 5Q, armed at a
+      // HEARD cycle top some cycles later. The cycle explodes to
+      // LCM(4Q, 5Q) = 20Q. The user watched the take grow from the top
+      // of the frame; at commit the epoch must move to the heard top
+      // the take was performed against (origin floored to whole old
+      // cycles) so the watched frame persists — the old
+      // "polyrhythmic expansions keep the epoch" rule teleported the
+      // take to 12Q–17Q of the exploded frame.
+      // t is 11Q − 100 (heard rel 10Q − 100). Advance so heard rel is
+      // 12Q − 500: 500 before the heard cycle top at rel 12Q — inside
+      // the <512 near window, so the arm resolves immediately, anchored
+      // ON the top.
+      process(2 * Q - 400);
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(3));
+      process(5 * Q);  // arm resolves at the top; capture ~5Q
+      engine.stopRecordingInNode(nthClipId(3));
+      process(2 * Q);  // finish to the 5Q boundary and commit
+
+      expectEquals(clipProp(3, "duration"), 5 * Q, "clip 4 committed at 5Q");
+      expectEquals(clipProp(3, "contextCycle"), 4 * Q,
+                   "clip 4's heard frame was still the 4Q cycle");
+
+      const int64_t origin4 = clipProp(3, "origin");
+      expectEquals(((origin4 - epoch) % (4 * Q) + 4 * Q) % (4 * Q),
+                   (int64_t)0, "clip 4 armed at a heard cycle top");
+
+      // THE fix: the epoch moved to clip 4's heard top (a whole number
+      // of old 4Q cycles past the previous epoch) — phase-neutral for
+      // clips 1–3, and clip 4 reads from the top of the new 20Q frame.
+      const int64_t epoch2 = (int64_t)(double)engine.getGraphState()
+                                 .getDynamicObject()
+                                 ->getProperty("islandEpoch");
+      expectEquals(epoch2, origin4,
+                   "epoch re-based to the heard top the take started at");
+      expectEquals(((epoch2 - epoch) % (4 * Q) + 4 * Q) % (4 * Q), (int64_t)0,
+                   "re-base moved by WHOLE old cycles (phase-neutral)");
+
+      // Clip 3's heard phase survives the re-base via its contextCycle:
+      // (origin3 − epoch2) mod 4Q is still 2Q.
+      expectEquals(((clipProp(2, "origin") - epoch2) % (4 * Q) + 4 * Q) %
+                       (4 * Q),
+                   2 * Q, "clip 3's heard 2Q anchor survives the re-base");
     }
   }
 };

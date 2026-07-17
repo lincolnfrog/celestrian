@@ -480,29 +480,25 @@ function commitClip(node, duration) {
         console.log('[MockBackend] First take establishes Q =', duration);
     }
 
-    // Commit epoch re-base (mirrors AudioEngine): ONLY when the cycle
-    // GREW (new_cycle > view_lcm_before_) as a SIMPLE extension (every
-    // committed duration divides the new cycle) does the island epoch
-    // move to the newest committed origin. Comparing against the QUANTUM
-    // here re-based on every commit and rotated all lanes at each stop
-    // ("shifting left/right when you finish" — field 2026-07-10).
+    // The take's HEARD FRAME (Q14): the committed cycle it was
+    // performed against — display take-marking folds by this.
+    node.contextCycle = recView.lcmBefore > 0 ? recView.lcmBefore : 0;
+
+    // Commit epoch re-base (mirrors StackNode::takeCommitted,
+    // 2026-07-16): when the cycle GREW, the epoch moves to the HEARD
+    // top the take was performed against — its origin floored to whole
+    // pre-take cycles. Phase-neutral for every committed lane (their
+    // periods divide the old cycle); the frame the user watched while
+    // recording persists at commit (the old polyrhythmic keep-epoch
+    // rule teleported the take to its raw frame position).
     const newCycle = committedCycle(effectiveQuantumForState());
     if (recView.lcmBefore > 0 && newCycle > recView.lcmBefore && duration > 0) {
-        let polyrhythmic = false;
-        const scan = ns => (ns || []).forEach(n => {
-            if (n.type === 'clip' && !n.isRecording && n.duration > 0 &&
-                Math.round(newCycle) % Math.round(n.duration) !== 0) {
-                polyrhythmic = true;
-            }
-            if (n.nodes) scan(n.nodes);
-        });
-        scan(state.nodes);
-        if (!polyrhythmic) {
-            // recordingStartPos IS the committed origin (assigned to
-            // node.origin just below this block)
-            state.islandEpoch = node.recordingStartPos || 0;
-            console.log('[MockBackend] Simple extension: epoch re-based to', state.islandEpoch);
-        }
+        const rel = Math.max(0,
+            (node.recordingStartPos || 0) - (state.islandEpoch || 0));
+        state.islandEpoch = (state.islandEpoch || 0) +
+            Math.floor(rel / recView.lcmBefore) * recView.lcmBefore;
+        console.log('[MockBackend] Cycle grew: epoch re-based to heard top',
+            state.islandEpoch);
     }
 
     // Release the frozen view base when the LAST recording stops

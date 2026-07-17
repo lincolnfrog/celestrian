@@ -89,25 +89,136 @@ test('arm target is the next Q boundary (Q11), wrapping at the cycle top', () =>
     assert.equal(deriveViewModel(s).armAtQ, 8);
 });
 
-test('main tile is the FIRST full repetition (owner ruling 2026-07-10)', () => {
-    // A looping clip has no privileged historical rep: no matter how
-    // many cycles passed before/after recording, the bright tile is the
-    // first full repetition in the frame.
+test('take marking: performed PHASE is kept; whole cycles fold away', () => {
+    // Owner ruling 2026-07-10 ("it doesn't matter how many times I let
+    // clip 1 loop before recording clip 2") + refinement 2026-07-16
+    // ("clip 3 recorded at 2Q must anchor 2Q→4Q, not jump to 0Q"):
+    // whole CYCLES never matter, but the performed phase WITHIN the
+    // cycle does. A take performed at heard 2Q marks its bright tile at
+    // 2Q — folding by the clip's own period erased it.
     const vm = deriveViewModel(state([clip(4), clip(1, { origin: 2 * Q })]));
     assert.equal(vm.cycleQ, 4);
     const lane = vm.lanes[1];
     const take = lane.reps.find(r => !r.ghost);
-    assert.equal(take.startQ, 0); // NOT at "where it was recorded" (2Q)
-    assert.equal(take.endQ, 1);
+    assert.equal(take.startQ, 2); // where it was performed
+    assert.equal(take.endQ, 3);
     assertTilesCycle(lane, 4);
 
     // A clip whose phase is offset (origin ≢ 0 mod period) keeps its
-    // grid: the first FULL tile is the main one, the head piece wraps
+    // grid: the performed-position tile is the main one, the head wraps
     const shifted = deriveViewModel(
         state([clip(4), clip(4, { origin: 2 * Q })])).lanes[1];
     const t2 = shifted.reps.find(r => !r.ghost);
-    assert.equal(t2.startQ, 2); // grid ≡ 2 (mod 4): first full tile
+    assert.equal(t2.startQ, 2); // grid ≡ 2 (mod 4)
     assert.equal(shifted.reps[0].ghost, true); // wrapped head [0,2)
+});
+
+test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', () => {
+    // The 4-clip flow: 1Q, 4Q (epoch definer), 2Q performed at heard 2Q,
+    // then 5Q performed at a heard cycle TOP three old cycles later. The
+    // frame explodes to 20Q and the engine re-bases the epoch to clip
+    // 4's heard top (whole old cycles — phase-neutral). Each committed
+    // take carries `contextCycle` (its heard frame): the bright tile
+    // marks at the heard PHASE — clip 4 at [0,5), clip 3 STILL at
+    // [2,4) even though its rel is now negative.
+    const E = 13 * Q; // epoch after clip 4's commit (= clip 4's origin)
+    const vm = deriveViewModel(state([
+        clip(1, { origin: 0 }),                          // pre-epoch, ctx 0
+        clip(4, { origin: 1 * Q, contextCycle: 1 * Q }), // rel −12
+        clip(2, { origin: 7 * Q, contextCycle: 4 * Q }), // rel −6, heard 2Q
+        clip(5, { origin: 13 * Q, contextCycle: 4 * Q }),// rel 0, heard top
+    ], { islandEpoch: E, masterPos: 5.5 * Q }));
+    assert.equal(vm.cycleQ, 20);
+    const [c1, c2, c3, c4] = vm.lanes;
+
+    const take4 = c4.reps.find(r => !r.ghost);
+    assert.equal(take4.startQ, 0, 'clip 4 reads from the top it was performed at');
+    assert.equal(take4.endQ, 5);
+
+    const take3 = c3.reps.find(r => !r.ghost);
+    assert.equal(take3.startQ, 2, 'clip 3 keeps its heard 2Q anchor (rel −6, ctx 4)');
+    assert.equal(take3.endQ, 4);
+
+    assert.equal(c2.reps.find(r => !r.ghost).startQ, 0,
+        'clip 2 (heard frame 1Q) marks at the top');
+    assert.equal(c1.reps.find(r => !r.ghost).startQ, 0,
+        'pre-epoch, no ctx: first full repetition');
+    vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
+
+    // takeStartQ: the lane's content-frame origin — window brackets/dims
+    // anchor here (field 2026-07-16c: they drew a phase off otherwise)
+    assert.equal(c3.takeStartQ, 2);
+    assert.equal(c4.takeStartQ, 0);
+    assert.equal(c1.takeStartQ, 0);
+});
+
+test('ghosts show what SOUNDS: windowed clip ghosts become window echoes', () => {
+    // The ruled design (open question 10, 2026-07-16): clip 3 (2Q take
+    // at heard 2Q) windowed to its second half [1Q,2Q). Audibly that 1Q
+    // segment loops every Q. The lane: the take tile [2,4) keeps the
+    // FULL original material (undo stays visible — the dims live only
+    // there); every other tile is an ECHO of the window segment.
+    const vm = deriveViewModel(state([
+        clip(4),
+        clip(2, {
+            origin: 2 * Q, contextCycle: 4 * Q,
+            loopStart: 1 * Q, loopEnd: 2 * Q,
+            windowActive: true, loopBypassed: false,
+        }),
+    ]));
+    assert.equal(vm.cycleQ, 4);
+    const lane = vm.lanes[1];
+
+    assert.deepEqual(lane.reps.map(r => [r.startQ, r.endQ, !!r.ghost, !!r.echo]), [
+        [0, 1, true, true],   // echo of the window segment
+        [1, 2, true, true],   // echo
+        [2, 4, false, false], // the take tile: full original material
+    ]);
+    // Echoes carry the segment's content range (second half of the take)
+    const echo = lane.reps[0];
+    assert.deepEqual(echo.src, [0.5, 1]);
+    assert.equal(lane.takeStartQ, 2);
+    assertTilesCycle(lane, vm.cycleQ);
+
+    // Bypassed window: plain raw-take ghosts return (nothing baked, I9)
+    const byp = deriveViewModel(state([
+        clip(4),
+        clip(2, {
+            origin: 2 * Q, contextCycle: 4 * Q,
+            loopStart: 1 * Q, loopEnd: 2 * Q,
+            windowActive: false, loopBypassed: true,
+        }),
+    ])).lanes[1];
+    assert.ok(byp.reps.every(r => !r.echo), 'bypassed: no echoes');
+    assert.equal(byp.reps.filter(r => r.ghost).length, 1, 'raw ghost at [0,2)');
+});
+
+test('FIELD 2026-07-16: a 2Q take performed at heard 2Q marks at 2Q, not 0', () => {
+    // The report: 1Q clip, 4Q clip, then a 2Q take armed just before the
+    // heard 2Q — it displayed at 2Q while recording, then JUMPED to
+    // 0Q–2Q at commit (its origin mod its own 2Q period is 0). The audio
+    // is identical either way (a 2Q loop sounds at 0 AND 2Q); the take
+    // tile must mark where it was PERFORMED.
+    const E = 100 * Q; // nonzero epoch (re-based to clip 2's origin)
+    const vm = deriveViewModel(state([
+        clip(1, { origin: 0 }),                    // pre-epoch take
+        clip(4, { origin: E }),                    // the epoch definer
+        clip(2, { origin: E + (2 * 4 + 2) * Q }),  // heard 2Q, 2 cycles later
+    ], { islandEpoch: E }));
+    assert.equal(vm.cycleQ, 4);
+    const [c1, c2, c3] = vm.lanes;
+
+    const take3 = c3.reps.find(r => !r.ghost);
+    assert.equal(take3.startQ, 2, 'take drawn where it was performed (2Q)');
+    assert.equal(take3.endQ, 4);
+    assert.equal(c3.reps.find(r => r.ghost).startQ, 0, 'ghost fills 0–2Q');
+
+    // Whole-cycle counts still fold away (the 2 extra cycles above)
+    assert.equal(c2.reps.find(r => !r.ghost).startQ, 0);
+    // Pre-epoch takes have no honest performed position in this frame:
+    // first full repetition (the 2026-07-10 behavior survives for them)
+    assert.equal(c1.reps.find(r => !r.ghost).startQ, 0);
+    vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
 });
 
 test('epoch re-base: the take is ONE solid tile, not 3Q of ghost (field bug)', () => {

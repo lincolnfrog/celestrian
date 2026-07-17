@@ -26,9 +26,6 @@ namespace celestrian::timing {
  * boundary. See docs/recording.md "Hysteresis-Based Snapping". */
 constexpr double kHysteresisThreshold = 0.15;
 
-/** PLL arm tolerance (fraction of Q): a record click within this window
- * BEFORE a boundary means that boundary ("the pickup", E-A). */
-constexpr double kArmTolerance = 0.25;
 
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 constexpr int kSubdivisions[] = {2, 4, 8};
@@ -83,28 +80,19 @@ inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
 }
 
 /**
- * True when an epoch-relative position sits in the anticipatory window:
- * within kArmTolerance·Q BEFORE the next Q boundary. An armed clip seen
- * here defers its arm decision (re-evaluated per block) so the
- * latency-compensated clock can land on the boundary the performer
- * heard, instead of overshooting to the one after.
- * MUST be called with epoch-relative positions (one-frame rule): the old
- * inline check used the absolute transport, which only agreed with the
- * heard grid while the first-clip reset kept the epoch ≡ 0 (mod Q).
- */
-inline bool inAnticipatoryWindow(int64_t rel, int64_t quantum) {
-  if (quantum <= 0) return false;
-  const int64_t phase = ((rel % quantum) + quantum) % quantum;
-  return (quantum - phase) < (int64_t)(kArmTolerance * (double)quantum);
-}
-
-/**
  * The arm target (Q11 ruling): the next Q boundary at/after the
  * epoch-relative position `rel` (a position exactly ON a boundary is its
  * own target). Boundaries live on the CONTEXT loop's grid — the grid the
  * performer hears restarts at each context top, so when the context is
  * not a Q multiple (unsnapped takes) the boundary set is
  * context-cycle-relative, not global.
+ *
+ * Callers pass the HEARD (latency-compensated) position: a click
+ * shortly before a boundary compensates back onto it, which is the
+ * whole of the "pickup"/anticipatory behavior (E-A). A deferral window
+ * that once existed on top of this was deleted 2026-07-16 — it added
+ * nothing and overshot the take by a full Q when compensation was
+ * small.
  */
 inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
   if (rel < 0) rel = 0;

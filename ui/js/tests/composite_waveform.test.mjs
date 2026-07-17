@@ -129,37 +129,95 @@ test('generateCompositeWaveform', async (t) => {
     });
 
     await t.test('offsets a clip by the cycle projection of its origin', () => {
-        // 1Q clip with origin 2Q inside a 4Q stack: its energy must land
-        // in the [2Q,3Q) region (and the 3Q loop tile), with [0,2Q)
-        // silent. This is the origin-based placement that replaced the
-        // frame-mixing `child.x` read (pixels interpreted as samples).
+        // 2Q clip (loud first half, SILENT second half) with origin 1Q
+        // in a 4Q stack: loud content lands at [1,2) and [3,4), silence
+        // at [0,1) and [2,3). This pins origin-based AUDIBLE placement —
+        // the phase, since a loop covers the whole cycle (the old
+        // "[0,2Q) must be silent" expectation pinned the forward-only
+        // tiling bug: a looping clip always sounds before its offset too).
         const stack = makeStack([
-            { id: 'c', type: 'clip', duration: 44100, origin: 88200 }
+            { id: 'c', type: 'clip', duration: 88200, origin: 44100 }
         ]);
-        const livePeaks = new Map([['c', [1, 1, 1, 1]]]);
+        const livePeaks = new Map([['c', [1, 1, 0, 0]]]);
         const result = generateCompositeWaveform({
             stack, stackDuration: 176400, effectiveQ: 44100,
             canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 0
         });
         const n = result.length;
-        const firstHalf = result.slice(0, Math.floor(n / 2));
-        const thirdQuarter = result.slice(Math.floor(n / 2), Math.floor(3 * n / 4));
-        assert.ok(firstHalf.every(v => v === 0), '[0,2Q) must be silent');
-        assert.ok(thirdQuarter.some(v => v > 0), '[2Q,3Q) must carry the clip');
+        assert.equal(result[Math.floor(n / 8)], 0, '[0,1Q) is the silent half');
+        assert.ok(result[Math.floor(3 * n / 8)] > 0, '[1,2Q) is loud');
+        assert.equal(result[Math.floor(5 * n / 8)], 0, '[2,3Q) silent again');
+        assert.ok(result[Math.floor(7 * n / 8)] > 0, '[3,4Q) loud again');
     });
 
     await t.test('origin offsets are epoch-relative (one-frame rule)', () => {
-        // Same clip, but the island epoch IS its origin: the projection
-        // is (origin − epoch) mod stackDuration = 0 → energy at the top.
+        // Same loud/silent clip as above, but the island epoch IS its
+        // origin: rel = 0, so the loud half sits at the frame TOP.
         const stack = makeStack([
-            { id: 'c', type: 'clip', duration: 44100, origin: 88200 }
+            { id: 'c', type: 'clip', duration: 88200, origin: 88200 }
         ]);
-        const livePeaks = new Map([['c', [1, 1, 1, 1]]]);
+        const livePeaks = new Map([['c', [1, 1, 0, 0]]]);
         const result = generateCompositeWaveform({
             stack, stackDuration: 176400, effectiveQ: 44100,
             canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 88200
         });
-        assert.ok(result[0] > 0, 'epoch-relative projection starts at 0');
+        const n = result.length;
+        assert.ok(result[Math.floor(n / 8)] > 0, '[0,1Q) loud (rel 0)');
+        assert.equal(result[Math.floor(3 * n / 8)], 0, '[1,2Q) silent');
+    });
+
+    await t.test('FIELD 2026-07-16d: tiles wrap BEFORE the offset (no blank head)', () => {
+        // A 2Q clip whose cycle position is 1Q (rel −1Q) in a 4Q stack:
+        // its loop sounds at [1,3) AND wraps to cover [3,4)+[0,1). The
+        // old forward-only tiling left [0,1) blank ("the stack is blank
+        // for the first 2Q").
+        const stack = makeStack([
+            { id: 'c', type: 'clip', duration: 88200, origin: 3 * 44100,
+              loopStart: 0, loopEnd: 0 }
+        ]);
+        const livePeaks = new Map([['c', [1, 1, 1, 1]]]);
+        const result = generateCompositeWaveform({
+            stack, stackDuration: 176400, effectiveQ: 44100,
+            canvasWidth: 100, livePeaks, cache: new Map(),
+            epochSamples: 4 * 44100  // rel = −1Q
+        });
+        assert.ok(result.every(v => v > 0),
+            'a looping clip covers the WHOLE cycle, including before its offset');
+    });
+
+    await t.test('FIELD 2026-07-16d: an ACTIVE window contributes ONLY its segment', () => {
+        // 2Q clip at heard 2Q, peaks: silent first half, loud second
+        // half. Window selects the loud second half [1Q,2Q): audibly it
+        // loops every 1Q — the composite must be loud EVERYWHERE (and
+        // must NOT draw the silent not-in-window half anywhere).
+        const clip = {
+            id: 'c', type: 'clip', duration: 88200, origin: 88200,
+            loopStart: 44100, loopEnd: 88200, windowActive: true,
+            loopBypassed: false,
+        };
+        const livePeaks = new Map([['c', [0, 0, 1, 1]]]);
+        const active = generateCompositeWaveform({
+            stack: makeStack([clip]), stackDuration: 176400,
+            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            cache: new Map(), epochSamples: 0
+        });
+        assert.ok(active.every(v => v > 0),
+            'window segment (loud) tiles the whole cycle');
+
+        // Bypassed: the full take loops at 2Q — the silent half lands at
+        // [0,1) and [2,3), the loud half at [1,2) and [3,4).
+        const bypassed = generateCompositeWaveform({
+            stack: makeStack([{ ...clip, id: 'c2', windowActive: false,
+                loopBypassed: true }]),
+            stackDuration: 176400, effectiveQ: 44100, canvasWidth: 100,
+            livePeaks: new Map([['c2', [0, 0, 1, 1]]]),
+            cache: new Map(), epochSamples: 0
+        });
+        const n = bypassed.length;
+        assert.equal(bypassed[Math.floor(n / 8)], 0,
+            'bypassed: the silent recorded half shows again');
+        assert.ok(bypassed[Math.floor(3 * n / 8)] > 0,
+            'bypassed: the loud half at its recorded position');
     });
 
     await t.test('caches result and returns cached on second call', () => {

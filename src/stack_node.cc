@@ -123,16 +123,52 @@ int64_t StackNode::getEffectiveQuantum() const {
 }
 
 void StackNode::maybeEstablishQuantumFrom(const AudioNode &child) {
-  // Find the island root (topmost stack in this hierarchy).
-  const AudioNode *top = this;
-  while (auto *p = top->getParent()) top = p;
-  auto *island = dynamic_cast<StackNode *>(const_cast<AudioNode *>(top));
-  if (island == nullptr || island->getQuantum() > 0) return;
-
   const int64_t d = child.getIntrinsicDuration();
   if (d > 0) {
-    island->setQuantum(d, child.origin_samples.load());
+    rootNode()->establishIsland(d, child.origin_samples.load());
   }
+}
+
+// --- Take lifecycle (commit as an EVENT — unification_audit.md §1.5) ---
+
+void StackNode::takeArmed() {
+  if (active_takes_.fetch_add(1) == 0) {
+    // Snapshot the committed cycle the take begins against; the commit
+    // event compares the grown cycle to this.
+    lcm_before_take_.store(
+        timing::lcm(quantum_samples_.load(), getIntrinsicDuration()));
+  }
+}
+
+void StackNode::takeCommitted(int64_t origin) {
+  active_takes_.fetch_sub(1);
+
+  // Epoch re-base on cycle growth (recording.md "LCM Expansion Snap",
+  // completed 2026-07-16): the cycle top moves to the HEARD top the
+  // take was performed against — its origin floored to a whole multiple
+  // of the pre-take cycle. Whole-old-cycle moves are PHASE-NEUTRAL for
+  // every committed clip (their periods divide the old cycle), so audio
+  // alignment and I3 are untouched; what it buys is that the frame the
+  // performer WATCHED while recording (the take-anchored whole-cycle
+  // shift in the view, view_model.js) persists at commit instead of
+  // snapping back (field 2026-07-16: a 5Q take recorded from a heard
+  // cycle top displayed at 12Q–17Q of the exploded 20Q frame).
+  //   - Simple extension armed at a top: floor(rel/before)·before = rel,
+  //     so epoch := origin — the historical rule, unchanged.
+  //   - Polyrhythmic growth: previously "keep the old epoch" (the
+  //     cursor-sails-on ruling, which predates the recording view
+  //     shift); now the WATCHED cursor is what sails on.
+  const int64_t before = lcm_before_take_.load();
+  if (before <= 0) return;  // first take: epoch was established at arm
+
+  const int64_t after =
+      timing::lcm(quantum_samples_.load(), getIntrinsicDuration());
+  if (after <= before) return;
+
+  const int64_t epoch = epoch_samples_.load();
+  int64_t rel = origin - epoch;
+  if (rel < 0) rel = 0;
+  epoch_samples_.store(epoch + (rel / before) * before);
 }
 
 void StackNode::addChild(std::unique_ptr<AudioNode> child) {
@@ -140,6 +176,9 @@ void StackNode::addChild(std::unique_ptr<AudioNode> child) {
   if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
     if (reclaimer_) stack->setReclaimer(reclaimer_);
   }
+  // A live take arriving via a move re-registers with this island
+  // (removeChild balanced it out on the way).
+  if (child->isArmedOrRecording()) rootNode()->takeArmed();
   maybeEstablishQuantumFrom(*child);
   children.push_back(std::move(child));
   republishChildren();
@@ -150,6 +189,7 @@ void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
   if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
     if (reclaimer_) stack->setReclaimer(reclaimer_);
   }
+  if (child->isArmedOrRecording()) rootNode()->takeArmed();
   maybeEstablishQuantumFrom(*child);
   if (index < 0) index = 0;
   if (index >= (int)children.size()) {
@@ -166,6 +206,9 @@ void StackNode::removeChild(const juce::String &uuid) {
                            return node->getUuid() == uuid;
                          });
   if (it != children.end()) {
+    // Balance the island's take counter if a live take is being removed
+    // (its commit/cancel event will never arrive).
+    if ((*it)->isArmedOrRecording()) rootNode()->takeCancelled();
     (*it)->setParent(nullptr);
     AudioNode *removed = it->release();
     children.erase(it);
@@ -180,6 +223,7 @@ void StackNode::clearChildren() {
   if (children.empty()) return;
   auto *removed = new std::vector<std::unique_ptr<AudioNode>>();
   for (auto &child : children) {
+    if (child->isArmedOrRecording()) rootNode()->takeCancelled();
     child->setParent(nullptr);
     removed->push_back(std::move(child));
   }
@@ -192,6 +236,7 @@ std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
   if (index >= 0 && index < (int)children.size()) {
     auto child = std::move(children[index]);
     children.erase(children.begin() + index);
+    if (child->isArmedOrRecording()) rootNode()->takeCancelled();
     child->setParent(nullptr);
     republishChildren();
     return child;
@@ -247,6 +292,18 @@ void StackNode::process(const float *const *input_channels,
   // Process each child and sum their results — iterating the immutable
   // published snapshot, no locks on the audio thread.
   const auto *kids = renderChildren();
+
+  // Recording context, passed DOWN (P1-6): the longest committed child
+  // duration in this scope. Recording/armed children contribute 0
+  // (duration resets at arm); nested-stack children contribute their
+  // stored duration_samples (0 — stacks don't store one), matching the
+  // historical sibling-scan semantics exactly.
+  int64_t longest_committed = 0;
+  for (AudioNode *child : *kids) {
+    const int64_t d = child->duration_samples.load();
+    if (d > longest_committed) longest_committed = d;
+  }
+  child_context.context_loop = longest_committed;
 
   // With the effect rack ON, children sum into the mono fx accumulator
   // first — the rack shapes the GROUP's summed signal (a stack reverb
@@ -336,13 +393,9 @@ juce::var StackNode::getWaveform(int num_peaks) const {
 AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
   if (getUuid() == uuid) return this;
 
-  const auto *kids = renderChildren();
-  for (auto *child : *kids) {
-    if (child->getUuid() == uuid) return child;
-
-    if (auto *stack = dynamic_cast<StackNode *>(child)) {
-      if (auto *found = stack->findNodeByUuid(uuid)) return found;
-    }
+  // Virtual recursion (findByUuid) — no per-child dynamic_cast.
+  for (auto *child : *renderChildren()) {
+    if (auto *found = child->findByUuid(uuid)) return found;
   }
 
   return nullptr;

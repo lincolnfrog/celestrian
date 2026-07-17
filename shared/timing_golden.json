@@ -47,15 +47,6 @@
     { "name": "no quantum -> immediate (rel)", "rel": 777, "quantum": 0, "contextLoop": 0, "expected": 777 }
   ],
 
-  "anticipatory_cases": [
-    { "name": "the pickup (E-A): 3.9Q is inside the window", "rel": 3900, "quantum": 1000, "expected": true },
-    { "name": "just past a boundary is NOT in the window", "rel": 4010, "quantum": 1000, "expected": false },
-    { "name": "exactly on a boundary is NOT in the window", "rel": 4000, "quantum": 1000, "expected": false },
-    { "name": "window edge: 0.75Q phase is outside (< is strict)", "rel": 750, "quantum": 1000, "expected": false },
-    { "name": "just inside the edge: 0.751Q", "rel": 751, "quantum": 1000, "expected": true },
-    { "name": "no quantum -> never", "rel": 900, "quantum": 0, "expected": false }
-  ],
-
   "qtime_to_samples_cases": [
     { "name": "1Q @44100 -> exact", "num": 1, "den": 1, "qSamples": 44100, "expected": 44100 },
     { "name": "1/2 Q @44100 -> exact", "num": 1, "den": 2, "qSamples": 44100, "expected": 22050 },

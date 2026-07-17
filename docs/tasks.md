@@ -31,6 +31,11 @@ each tier de-risks the next.
 
 ## Tier 1: Finish the Kernel (deletions, not designs)
 
+> **✅ TIER COMPLETE (2026-07-16).** kernel.md §2–§3 now hold in code
+> without exceptions: one monotonic never-mutated clock, one stored
+> origin per clip, an explicit recording state machine, commit as an
+> event, cast-free traversal, context passed down.
+
 From `unification_audit.md` §1 — each item is the code catching up
 with kernel.md:
 
@@ -70,16 +75,29 @@ with kernel.md:
   re-based/nonzero epochs), and **stop-while-armed now cancels** the
   arm instead of wedging into a phantom awaiting-stop. Three new
   state-machine unit tests.
-- [ ] **Commit as an event** — epoch re-base driven by the commit event
-  carrying `{origin, duration}`, not by per-block recording-edge
-  detection + `scanCommitted` graph scans in the callback; replace the
-  per-block `isAnyNodeRecording()` scan with a counter.
-- [ ] **Kill `dynamic_cast` traversal** (P1-8) — virtual
-  `forEachChild`; named "island root" lookup.
-- [ ] **Context passed down, not scanned up** (P1-6 remainder) — parent
-  computes `{context_loop, Q}` once and passes via `ProcessContext`;
-  one sibling scan left (ClipNode ARM path — the commit-path scan was
-  deleted 2026-07-16 with the pixel math).
+- [x] **Commit as an event** — ✅ done 2026-07-16: the island root
+  (StackNode) owns the take lifecycle — `takeArmed` snapshots the
+  pre-take cycle, `takeCommitted(origin)` performs the epoch re-base
+  (simple-extension rule), `takeCancelled` balances, and an
+  `active_takes_` counter answers `hasActiveTake()`. The callback's
+  recording-edge detection, `scanCommitted`, `view_lcm_before_`, and
+  the per-block `isAnyNodeRecording()` graph scan are all deleted (the
+  view-freeze upkeep keys on the counter). Node add/remove/move
+  re-balances live takes (pinned by a unit test). D5 fixed in the same
+  stroke. `calculateTimelineLength` became dead and was deleted.
+- [x] **Kill `dynamic_cast` traversal** (P1-8) — ✅ done 2026-07-16:
+  allocation-free virtual `forEachChild` (function-pointer visitor, one
+  snapshot load per stack), virtual `findByUuid`, `rootNode()` +
+  island-event virtuals (`establishIsland`/`take*`) replacing
+  walk-to-root casts, and `root_node` typed as StackNode. Zero
+  traversal casts remain; the survivors are message-thread type checks
+  on user-supplied targets (createNode/reorder/combine) and reclaimer
+  propagation — legitimate type discrimination, not traversal.
+- [x] **Context passed down, not scanned up** (P1-6) — ✅ done
+  2026-07-16: `ProcessContext.context_loop` — each stack publishes its
+  longest committed child duration to its children; clip arm math uses
+  `max(Q, context_loop)`. Leaves never inspect siblings; ClipNode no
+  longer includes stack_node.h at all.
 
 ## Tier 2: Defects (audit §3 — fix inside Tier 1/3 rewrites)
 
@@ -95,10 +113,51 @@ with kernel.md:
   while recording writes it (long-known P3 item).
 - [ ] **D4: Silent 60 s recording wall** — buffer full stops capture
   with no signal; surface it (grow, or warn).
-- [ ] **D5: Epoch re-base scope mismatch** — `scanCommitted` walks
-  `focused_node`, re-base hits `root_node`; latent until nested focus.
+- [x] **D5: Epoch re-base scope mismatch** — ✅ fixed 2026-07-16 by
+  commit-as-an-event: the island root scans exactly its own subtree in
+  `takeCommitted`; `focused_node` no longer participates.
 - [x] **D6: `recordingStartPhase` uses absolute frame** — ✅ fixed
   2026-07-16 with the clock-mutation deletion: now epoch-relative.
+- [x] **D9 (field 2026-07-16): take tile folded by the clip's own
+  period** — a 2Q take performed at heard 2Q jumped to 0Q–2Q at commit
+  (audio identical, display wrong). ✅ Fixed per ruling Q14: era takes
+  mark at their performed phase, whole cycles fold, pre-epoch takes
+  keep first-full-rep. Pinned in view_model tests + the FIELD engine
+  repro in regression_tests.
+- [x] **D10 (field 2026-07-16, same flow): anticipatory-window deferral
+  overshot the anchor by a full Q** when latency compensation was small
+  (uncalibrated I/O) — a click just before 2Q anchored at 3Q. ✅ Fixed
+  by deleting the deferral (`inAnticipatoryWindow` and its vectors are
+  gone); `armTarget` over the heard clock subsumes the pickup.
+- [x] **D13 (field 2026-07-16d): composite waveform drew recorded, not
+  audible, content** — two defects: loop tiling ran FORWARD-only from
+  the clip's offset (everything before it blank — "the stack is blank
+  for the first 2Q"), and active windows were ignored (the not-in-window
+  half drew at 3Q). ✅ Fixed: the composite now mixes each clip's
+  AUDIBLE content — window segment (or full take) tiled at positions ≡
+  origin (mod its period) across the whole cycle including the wrap;
+  window bypass added to the cache key. Pinned by four composite unit
+  tests (one prior test had encoded the forward-only bug as an
+  expectation — rewritten to pin phase by amplitude pattern).
+- [x] **D12 (field 2026-07-16c): loop-window brackets drew a phase off**
+  for clips whose take tile is not at the frame top — window geometry
+  is CONTENT-relative but the overlay anchored it at frame 0. ✅ Fixed:
+  the view model exposes `takeStartQ` (the lane's content-frame origin
+  = its take tile) and the whole overlay — brackets, chip, dims tiling,
+  heard-time cursor (both animator and poll paths), and the drag
+  pointer↔content mapping — shifts by it. Pinned in the 16b view-model
+  test; verified live (brackets wrap the take tile at 25%/75% for a
+  take at [1Q,3Q) of a 4Q frame).
+- [x] **D11 (field 2026-07-16b): frame explosion teleported the new
+  take** — a 5Q take from a heard cycle top drew at 12Q–17Q of the
+  exploded 20Q frame (and clip 3's mark drifted to 6Q). ✅ Fixed per
+  Q14b: every cycle growth re-bases the epoch to the take's heard top
+  (whole pre-take cycles — phase-neutral; supersedes the polyrhythmic
+  keep-epoch rule), and each take stores `contextCycle` (its heard
+  frame) so take marks fold by the cycle they were performed against,
+  surviving growth and re-bases. Engine + mock + view model in
+  lockstep; pinned by the extended FIELD repro (C++), the 16b
+  view-model test, and a live mid-cycle-armed browser run.
 
 ## Tier 3: The Unifying Primitives (audit §2)
 
@@ -227,6 +286,7 @@ with kernel.md:
 | 7 | Record on a composite — ✅ resolved (Q7): group arm, empty clips only; takes/templates as companions | design_language.md Q7 |
 | 8 | Stop/play policy — **implemented default (2026-07-16): pause/resume** (stop freezes, play continues the phase). The old reset only restarted "from the top" when the epoch happened to be 0. If restart-from-top is wanted, it's a root time-map + congruent epoch handling, not a clock reset — owner preference pending field use | audio_engine.cc togglePlayback |
 | 9 | Grid honesty when auto-quantize is disabled — deferred with that feature | design_language.md Q3 |
+| 10 | **Windowed-clip lane rendering** — ✅ RULED & IMPLEMENTED (2026-07-16): **ghosts show what SOUNDS.** A windowed clip's ghost tiles are ECHOES of the window segment at its audible repetitions, drawn in a distinct cool tone (canvas_renderer ECHO palette, owner: "an entirely different color for ghosts") at higher presence than raw-take ghosts; the take tile stays whole as the ONE place showing recorded truth (original material dimmed outside the brackets — the visible undo), and window dims apply only there on clip lanes. Nothing baked: bypass restores raw ghosts (pinned in view_model tests). Generalizes to multi-segment maps (phase 3) | view_model echoReps; session_view; D13 composite |
 
 ---
 

@@ -219,4 +219,15 @@ past a top-level window (field report). Commit/epoch-re-base logic
 keeps the intrinsic length. The window-not-at-0 sole-lane case leaves
 the island playhead sweeping [0, len) outside the brackets (amber
 cursor carries heard time) — revisit in phase 2.
+**Phase 1 extension 3 (2026-07-16, display grammar — Q14/Q14c):**
+windowed lanes render per "ghosts show what sounds": ghost tiles are
+ECHOES of the window segment at its audible repetitions (origin-anchored
+phase, matching the engine's clip-window playback), drawn in the echo
+tone; the take tile is the one place showing recorded truth, with
+window dims applied only there; the group composite mixes audible
+content (window segments, wrap-tiled). Take marks fold by each take's
+stored heard frame (`contextCycle`), so they survive frame growth and
+epoch re-bases. The phase-3 cell/punch editor inherits all of this:
+multi-segment maps are the same echo rendering with more segments.
+
 **Phase 2 (record-through-map) and phase 3 (cell/punch editor): pending.**

@@ -26,12 +26,14 @@ one-line definitions.
 | **Context loop** | The loop the performer was listening to when they hit record: the longest committed sibling (min Q). Determines how their intent wraps. |
 | **Cycle (LCM)** | The period after which *every* member of a scope returns to phase 0 simultaneously: LCM of member periods. **A derived legibility device, not a modeling principle** — it exists to make I1 visible, never to constrain it (owner ruling, Q2). |
 | **Launch point** | Derived: the playback offset that makes a clip honor its origin. `launch = (−origin) mod period`. |
-| **Ghost** | The visual unrolling of a loop across the cycle: repetitions of content that exist mathematically but not as separate audio. |
+| **Ghost** | The visual unrolling of a loop across the cycle: its AUDIBLE repetitions, drawn in the cool **echo tone** (Q14c: warm hues are reserved for material — the take tile, the live bar, the composite). For a windowed clip, ghosts echo the WINDOW segment (what sounds), never raw take material. Whole cycle-counts fold away; the performed phase is kept (Q14). |
+| **Heard frame (`contextCycle`)** | The committed island cycle a take was performed against, recorded per take at capture start. The modulus that folds "which cycle" out of a take's display anchor (Q14) — it makes take marks stable across frame growth and epoch re-bases. |
+| **Echo** | A ghost tile's rendering: the audible repetition of a take (or of its window segment), in the echo tone. Full-take echoes are quiet (they duplicate the adjacent bright take); window echoes are more present (they are the only visible representation of what sounds there). |
 | **One-shot** | A clip that sounds once per context cycle instead of looping at its own length. *(See Q5 — the current formula in design.md/recording.md is garbled.)* |
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM. |
 | **Loop window** | A `[start, end)` restriction on a node's cycle — a one-segment time-map. Active iff valid and not bypassed; independent of view state (time_maps.md, implemented 2026-07-09). |
 | **Time-map** | THE mechanism that transforms time: an ordered segment list phased off the cycle epoch, `m(t) = segments[(t − epoch) mod period]`. Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md, kernel.md). |
-| **Hysteresis snap** | Gesture quantization with tolerance. ARM: clicking within 25% of Q before a boundary means that boundary (the PLL). STOP — **owner ruling 2026-07-10: always forward** — a stop request records on to the NEXT boundary (`nextStopBoundary`; the engine's actual behavior); the UI shows "finishing…" (`isAwaitingStop`). The snap-BACK idea ("I hit stop a bit late" → keep the whole take, auto-add a loop window ending at the previous boundary) is deliberately deferred: *"too complicated — keep it simple for now; the user can post-hoc fix it by moving the boundary. Explore later if I hit it in practice."* |
+| **Hysteresis snap** | Gesture quantization with tolerance. ARM: the target is always the next Q boundary in the HEARD (latency-compensated, epoch-relative) frame — so ANY click before a boundary means that boundary; the old 25%-window deferral mechanism was deleted 2026-07-16 (it overshot by a full Q when compensation was small — Q14). STOP — **owner ruling 2026-07-10: always forward** — a stop request records on to the NEXT boundary (`nextStopBoundary`, computed by the audio thread; the UI shows "finishing…" via `isAwaitingStop`). The snap-BACK idea ("I hit stop a bit late" → keep the whole take, auto-add a loop window ending at the previous boundary) is deliberately deferred: *"too complicated — keep it simple for now; the user can post-hoc fix it by moving the boundary. Explore later if I hit it in practice."* |
 | **Fractality** | The law that any subtree, collapsed, obeys exactly the laws of a clip. If a rule doesn't hold recursively, it isn't a rule yet. |
 
 Convention proposal: **samples are the only engine unit; Q is the only
@@ -108,7 +110,10 @@ Q = 1000 samples throughout.
 ### E-A. The Pickup (anticipatory start)
 
 User hits record at 3.9Q while a 4Q context loops — 0.1Q before the
-boundary, inside the 25% PLL tolerance, so intent = "the upcoming 1".
+boundary, so intent = "the upcoming 1". *(Mechanism note, 2026-07-16:
+no special window delivers this — the arm target is simply the next
+boundary in the heard, latency-compensated frame, which any click
+before a boundary already resolves to. The values below are unchanged.)*
 
 ```
 Timeline:   |--Q--|--Q--|--Q--|--Q--|
@@ -370,9 +375,11 @@ recording should start at the next Q (or Q0 if you are in the middle of
 the final Q of the LCM sequence)." Canon: **the arm target is always the
 next Q boundary in the epoch frame** — the cycle top is not special; it
 is simply the next boundary when you click within the cycle's final Q.
-(Matches recording.md Example 4 and the implemented PLL; the anticipatory
-tolerance — clicking within 25% of Q *before* a boundary means that
-boundary — still applies on top.)
+(Matches recording.md Example 4. Mechanism note 2026-07-16: the target
+is computed in the HEARD — latency-compensated, epoch-relative — frame
+via `timing::armTarget`, which makes "clicking just before a boundary
+means that boundary" true with no extra tolerance machinery; the old
+25% deferral window is deleted, Q14.)
 
 **Q10. Transport with multiple islands.**
 **RESOLVED (direction) — one active island at a time, for now.** Owner:
@@ -447,6 +454,74 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   the exchange rate rather than being expressed in it. Its period is
   exactly 1Q by definition before and after the trim, so a re-trim
   changes `Q_samples` and the epoch, never any stored QTime fact.
+
+**Q14. Where does the take tile draw for a mid-cycle take?**
+**RESOLVED (2026-07-16) — performed phase is kept; whole cycles fold
+away.** Field report (owner): *"record clip 3 starting right before 2Q,
+record 2Q in length, stop before end. Expected: clip 3 is anchored from
+2Q to 4Q in the timeline. Actual: clip 3 jumps to 0Q-2Q."* This refines
+the 2026-07-10 take-marking ruling (*"it doesn't matter how many times
+I let clip 1 loop before recording clip 2"*): that ruling is about
+whole CYCLE counts, which still fold away — but the performed PHASE
+within the cycle is a real fact the display must keep. (The audio
+cannot distinguish: a 2Q loop at 2Q sounds identical to one at 0Q —
+this is purely take marking.) Canon:
+
+- An **era take** (origin ≥ current epoch) marks its bright tile at its
+  performed cycle position, `(origin − epoch) mod committed-cycle`.
+- A **pre-epoch take** (the frame re-based after it committed) has no
+  honest performed position in the current frame and marks the first
+  full repetition (the 2026-07-10 behavior survives for exactly these).
+
+Fixed alongside (same field flow, engine side): the anticipatory-window
+DEFERRAL overshot the anchor by a full Q when latency compensation was
+small (uncalibrated I/O) — deleted; `armTarget` over the heard
+(latency-compensated) clock already lands any click before a boundary
+ON that boundary, which is all the "pickup" ever needed. The vocabulary
+entry's "clicking within 25% of Q before a boundary means that
+boundary" holds trivially: ANY click before a boundary means that
+boundary now.
+
+**Q14b (2026-07-16, same session — the frame-explosion follow-up).**
+Owner: *"record clip 4 0Q-5Q — the timeline blows up to a big LCM (as
+expected) but the wrong section of clip 4 is highlighted"* (it drew at
+12Q–17Q of the new 20Q frame — its raw position, the whole-cycle count
+leaking back in once the fold modulus grew). Canon, completing Q14:
+
+- Each take records its **heard frame** (`contextCycle`: the committed
+  island cycle at its arm). The take tile marks at the tile ≡ its heard
+  PHASE (mod contextCycle) — stable across frame growth and epoch
+  re-bases, for positive and negative rel alike (this subsumes the
+  era/pre-epoch split; takes with no contextCycle keep first-full-rep).
+- **Every cycle growth re-bases the island epoch to the take's heard
+  top** (origin floored to whole pre-take cycles). Whole-old-cycle
+  moves are phase-neutral for all committed clips; the polyrhythmic
+  keep-the-epoch rule is superseded — it predated the recording view's
+  whole-cycle shift, and keeping the raw frame teleported the take at
+  commit. "The cursor sails on" now refers to the WATCHED (shifted)
+  cursor, which is continuous through commit by construction.
+
+**Q14c (2026-07-16, same session): ghosts show what SOUNDS.** Owner
+ratified the windowed-lane rendering rule: a windowed clip's ghost
+tiles are ECHOES of the window segment at its audible repetitions,
+in a visibly different (cool) tone — *"the missing piece … is
+distinguishing between ghosts and original-audio-outside-current-
+loop-window … maybe an entirely different color for ghosts."* The take
+tile is the ONE place that renders recorded truth (original material,
+dimmed outside the brackets — the standing visual proof that a window
+edit is reversible, I9); everywhere else renders audible truth,
+matching the composite (Q14b/D13). Window dims apply only to the take
+tile on clip lanes.
+
+Follow-up ruling (owner, same day): *"it seems like the ghosts of
+clip 1 should be teal too"* — correct, and ratified as the uniform
+color grammar: the echo tone marks **every** ghost tile (they are all
+audible repetitions, windowed or not, clips and groups alike — I5);
+warm tape hues are reserved for MATERIAL (the take tile, the live
+recording bar, the group composite). Presence still differs: full-take
+ghosts stay quiet (0.22 — they duplicate the adjacent bright take)
+while window echoes are more present (0.38 — they are the only visible
+representation of what sounds there).
 
 ---
 

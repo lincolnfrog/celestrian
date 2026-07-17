@@ -35,25 +35,11 @@ export const HYSTERESIS_THRESHOLD = 0.15;
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 export const SUBDIVISIONS = [2, 4, 8];
 
-/** PLL arm tolerance (fraction of Q): a record click within this window
- * BEFORE a boundary means that boundary. Mirrors timing::kArmTolerance. */
-export const ARM_TOLERANCE = 0.25;
-
 /**
- * True when an epoch-relative position sits in the anticipatory window
- * (within ARM_TOLERANCE·Q before the next boundary).
- * Mirrors timing::inAnticipatoryWindow.
- */
-export function inAnticipatoryWindow(rel, quantum) {
-    if (quantum <= 0) return false;
-    const phase = ((rel % quantum) + quantum) % quantum;
-    return (quantum - phase) < Math.floor(ARM_TOLERANCE * quantum);
-}
-
-/**
- * The arm target (Q11 ruling): the next Q boundary at/after the
- * epoch-relative position `rel`, on the CONTEXT loop's grid.
- * Mirrors timing::armTarget.
+ * The arm target (Q11 ruling): the next Q boundary at/after the HEARD
+ * (latency-compensated) epoch-relative position `rel`, on the CONTEXT
+ * loop's grid. Mirrors timing::armTarget — see its header comment for
+ * why no anticipatory-deferral window exists on top of this.
  */
 export function armTarget(rel, quantum, contextLoop) {
     if (rel < 0) rel = 0;

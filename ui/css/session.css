@@ -347,6 +347,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    display-normalized; the Q gridlines mark boundaries (a per-rep tick
    notch read as "waveform corruption" in the field) */
 .rep.ghost { opacity: 0.22; }
+/* Echo tiles: audible repetitions of a window segment ("ghosts show
+   what sounds"). Cool-toned canvas (canvas_renderer ECHO palette) and
+   slightly more present than raw-take ghosts — they ARE sounding. */
+.rep.ghost.echo { opacity: 0.38; }
 .rep.recording-bar {
     background: linear-gradient(to bottom, #3a2a1d, #2c1f16);
     /* box-shadow, never border: state must not move the waveform (I2) */
