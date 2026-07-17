@@ -136,7 +136,36 @@ class AudioNode {
                      (double)timing::launchPointFor(origin_samples.load(),
                                                     duration_samples.load()));
     obj->setProperty("origin", (double)origin_samples.load());
+
+    // Device-independent musical facts (Q12 / D-T3): the same values
+    // projected onto the island's musical frame through the ONE law
+    // (timing.h). These are the canonical facts the save format
+    // serializes (sample fields above stay for the UI). `qSamples` is the
+    // island exchange rate (physical) that reconstructs them on load.
+    const int64_t q_samples = getEffectiveQuantum();
+    const int64_t epoch = getIslandEpoch();
+    obj->setProperty("qSamples", (double)q_samples);
+    obj->setProperty(
+        "originQ",
+        qtimeVar(timing::originQ(origin_samples.load(), epoch, q_samples)));
+    obj->setProperty(
+        "periodQ",
+        qtimeVar(timing::periodQ(duration_samples.load(), q_samples)));
+    obj->setProperty("windowStartQ",
+                     qtimeVar(timing::fromSamples(loop_start_samples.load(),
+                                                  q_samples)));
+    obj->setProperty(
+        "windowEndQ",
+        qtimeVar(timing::fromSamples(loop_end_samples.load(), q_samples)));
     return juce::var(obj);
+  }
+
+  /** A QTime as a {num, den} var for the metadata/persistence boundary. */
+  static juce::var qtimeVar(timing::QTime q) {
+    auto *o = new juce::DynamicObject();
+    o->setProperty("num", (double)q.num);
+    o->setProperty("den", (double)q.den);
+    return juce::var(o);
   }
 
   void setName(const juce::String &new_name) { node_name = new_name; }

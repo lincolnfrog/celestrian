@@ -15,9 +15,29 @@
  */
 
 import { gcd, lcm } from './math_utils.js';
-import { qtime, toSamples } from './qtime.js';
+import { qtime, toSamples, fromSamples } from './qtime.js';
 
 export { gcd, lcm };
+
+// === The physical/musical boundary (Q12 / D-T3), JS mirror of timing.h ===
+// Musical facts project onto the island's Q frame through the one law
+// (qtime.js fromSamples); physical facts (clock, epoch, buffer lengths,
+// q_samples) stay in samples. These back the device-independent metadata
+// the save format serializes.
+
+/**
+ * A clip's origin as a musical offset from the island epoch (D-T3):
+ * (origin − epoch) / qSamples · Q. Exact; unsnapped origins yield an
+ * ugly-but-exact rational (D-T5). Mirrors timing::originQ.
+ */
+export function originQ(originSamples, epochSamples, qSamples) {
+    return fromSamples(originSamples - epochSamples, qSamples);
+}
+
+/** A period / duration as musical time (D-T3). Mirrors timing::periodQ. */
+export function periodQ(durationSamples, qSamples) {
+    return fromSamples(durationSamples, qSamples);
+}
 
 /**
  * A Q subdivision boundary in samples, through THE rounding law

@@ -43,6 +43,41 @@ inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
   return toSamples(qtime(1, denominator), quantum);
 }
 
+// === The physical/musical boundary (Q12 / D-T3) ===
+//
+// PHYSICAL facts stay in samples: the monotonic clock t, the epoch (a
+// clock timestamp), pre-record ring indices, buffer lengths, the
+// calibration constant C, and the island exchange rate `q_samples`
+// (samples per 1Q) itself. MUSICAL facts are QTime rationals of Q — a
+// clip's origin as an OFFSET FROM THE EPOCH, its period, its window
+// segments, arm targets, and Q subdivisions.
+//
+// The RT hot path stores the musical facts as sample atomics (owner
+// ruling: QTime-on-node defers to the immutable-root step); the helpers
+// below project those atomics onto the musical frame for the
+// metadata/persistence boundary, so the UI and the save format are
+// device-independent. THE RULE: no engine code converts musical↔samples
+// except through toSamples / fromSamples / subdivisionSamples — never a
+// bare `x / quantum`, which silently floors (the bug D-T4 closed).
+
+/**
+ * A clip's origin as a musical offset from the island epoch (D-T3).
+ * `origin_samples` is stored ABSOLUTE (performance-clock frame); the
+ * musical fact is (origin − epoch) / q_samples · Q. Exact by
+ * construction (fromSamples never rounds). An unsnapped or
+ * context-relative origin yields an ugly-but-exact rational (D-T5) —
+ * that is correct, not a defect: QTime says where content BELONGS.
+ */
+inline QTime originQ(int64_t origin_samples, int64_t epoch_samples,
+                     int64_t q_samples) {
+  return fromSamples(origin_samples - epoch_samples, q_samples);
+}
+
+/** A period / duration as musical time (D-T3). */
+inline QTime periodQ(int64_t duration_samples, int64_t q_samples) {
+  return fromSamples(duration_samples, q_samples);
+}
+
 /**
  * Where playback starts within a clip so that when the context phase equals
  * the recording start phase, the clip plays its first recorded sample.

@@ -13,8 +13,9 @@ import path from 'node:path';
 import {
     timelineLcm, launchPointFor, playheadPercent,
     nextStopBoundary, snapCommittedDuration, computeGhostTiles,
-    armTarget
+    armTarget, originQ
 } from '../timeline_model.js';
+import { toSamples } from '../qtime.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const golden = JSON.parse(readFileSync(path.resolve(__dirname, '../../../shared/timing_golden.json'), 'utf8'));
@@ -65,6 +66,15 @@ for (const c of golden.snap_cases) {
     check(r.duration, c.expectedDuration, `${c.name} (duration)`);
     check(r.loopEnd, c.expectedLoopEnd, `${c.name} (loopEnd)`);
     check(r.snapped, c.expectedSnapped, `${c.name} (snapped)`);
+}
+
+console.log('Golden: originQ (D-T3 physical/musical boundary projection)');
+for (const c of golden.qtime_origin_cases) {
+    const q = originQ(c.origin, c.epoch, c.qSamples);
+    check(q.num, c.expectedNum, `originQ num: ${c.name}`);
+    check(q.den, c.expectedDen, `originQ den: ${c.name}`);
+    // Lossless at the same exchange rate: Q → samples lands exactly (I1).
+    check(toSamples(q, c.qSamples), c.origin - c.epoch, `originQ round-trip: ${c.name}`);
 }
 
 // --- Ghost tiling (JS-only; the C++ engine does not render ghosts) ---

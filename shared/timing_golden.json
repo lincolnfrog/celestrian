@@ -88,6 +88,15 @@
     { "name": "2/4 + 0 normalizes input to 1/2", "op": "add", "aNum": 2, "aDen": 4, "bNum": 0, "bDen": 1, "expectedNum": 1, "expectedDen": 2 }
   ],
 
+  "qtime_origin_cases": [
+    { "name": "origin AT epoch -> 0Q", "origin": 44100, "epoch": 44100, "qSamples": 44100, "expectedNum": 0, "expectedDen": 1 },
+    { "name": "2Q past epoch @44100", "origin": 132300, "epoch": 44100, "qSamples": 44100, "expectedNum": 2, "expectedDen": 1 },
+    { "name": "half-Q offset from epoch 0", "origin": 22050, "epoch": 0, "qSamples": 44100, "expectedNum": 1, "expectedDen": 2 },
+    { "name": "3Q offset @48000 (device-rate independence)", "origin": 144000, "epoch": 0, "qSamples": 48000, "expectedNum": 3, "expectedDen": 1 },
+    { "name": "unsnapped offset stays exact rational (D-T5)", "origin": 30000, "epoch": 0, "qSamples": 44100, "expectedNum": 100, "expectedDen": 147 },
+    { "name": "origin before epoch -> negative offset", "origin": 0, "epoch": 22050, "qSamples": 44100, "expectedNum": -1, "expectedDen": 2 }
+  ],
+
   "snap_cases": [
     { "name": "1Q + 900 samples -> Late Snap down to 1Q", "recordedLength": 45000, "quantum": 44100, "expectedDuration": 44100, "expectedLoopEnd": 44100, "expectedSnapped": true },
     { "name": "just under 2Q -> Late Snap up to 2Q", "recordedLength": 88000, "quantum": 44100, "expectedDuration": 88200, "expectedLoopEnd": 88200, "expectedSnapped": true },
