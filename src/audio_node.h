@@ -221,11 +221,18 @@ class AudioNode {
   virtual void takeCommitted(int64_t origin) { (void)origin; }
   /** Any take currently armed or capturing in this island. */
   virtual bool hasActiveTake() const { return false; }
-  /** The committed island cycle the CURRENT take generation was armed
-   * against (0 when no take is active / first take). Clips snapshot
-   * this at capture start — it is the take's heard frame, the modulus
-   * that folds "which cycle" out of its display anchor (Q14). */
-  virtual int64_t activeTakeContextCycle() const { return 0; }
+  /** The HEARD island cycle the CURRENT take generation was armed
+   * against — the EFFECTIVE cycle (E-C: active windows shorten it), 0
+   * when no take is active / first take. Clips snapshot this at
+   * capture start: it is the take's heard frame (`contextCycle`), the
+   * modulus that folds "which cycle" out of its display anchor (Q14)
+   * AND the audible-equivalence step for the origin fold (Q15). */
+  virtual int64_t activeTakeHeardCycle() const { return 0; }
+  /** The INTRINSIC committed cycle at arm (windows ignored) — the
+   * frame modulus for the origin fold and the growth baseline for the
+   * commit epoch re-base. Windows are reversible view-of-time state
+   * and must not leak into either permanently. */
+  virtual int64_t activeTakeIntrinsicCycle() const { return 0; }
 
   void setLoopPoints(int64_t start, int64_t end) {
     loop_start_samples.store(start);

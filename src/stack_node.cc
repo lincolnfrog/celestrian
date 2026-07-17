@@ -133,10 +133,13 @@ void StackNode::maybeEstablishQuantumFrom(const AudioNode &child) {
 
 void StackNode::takeArmed() {
   if (active_takes_.fetch_add(1) == 0) {
-    // Snapshot the committed cycle the take begins against; the commit
-    // event compares the grown cycle to this.
-    lcm_before_take_.store(
-        timing::lcm(quantum_samples_.load(), getIntrinsicDuration()));
+    // Snapshot the cycles the take begins against: the INTRINSIC
+    // committed cycle (growth baseline for the commit re-base; windows
+    // must not leak into epoch permanence) and the HEARD cycle (E-C —
+    // what the performer is actually listening to; windows shorten it).
+    const int64_t q = quantum_samples_.load();
+    lcm_before_take_.store(timing::lcm(q, getIntrinsicDuration()));
+    heard_cycle_at_arm_.store(timing::lcm(q, getEffectivePeriod()));
   }
 }
 

@@ -129,6 +129,17 @@ with kernel.md:
   (uncalibrated I/O) — a click just before 2Q anchored at 3Q. ✅ Fixed
   by deleting the deferral (`inAnticipatoryWindow` and its vectors are
   gone); `armTarget` over the heard clock subsumes the pickup.
+- [x] **D14 (field 2026-07-16e): takes under a shortened heard cycle
+  anchored at a die-roll slot** — with a window collapsing the audible
+  cycle (e.g. 4Q clip windowed to 1Q), arming anchored the take at
+  whichever intrinsic-frame Q slot the next boundary happened to fall
+  in — unhearable and invisible to the performer ("started at 1Q
+  instead of 0Q"). ✅ Fixed per ruling Q15: the heard-frame ORIGIN FOLD
+  — capture starts at the real boundary, the stored origin folds back
+  by whole heard cycles into the first heard window of the frame.
+  Engine + mock in lockstep; `contextCycle` now sources from the heard
+  (effective) cycle. Pinned by the "shortened heard cycle" FIELD repro
+  in regression_tests.
 - [x] **D13 (field 2026-07-16d): composite waveform drew recorded, not
   audible, content** — two defects: loop tiling ran FORWARD-only from
   the clip's offset (everything before it blank — "the stack is blank

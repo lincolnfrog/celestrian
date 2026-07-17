@@ -27,7 +27,7 @@ one-line definitions.
 | **Cycle (LCM)** | The period after which *every* member of a scope returns to phase 0 simultaneously: LCM of member periods. **A derived legibility device, not a modeling principle** — it exists to make I1 visible, never to constrain it (owner ruling, Q2). |
 | **Launch point** | Derived: the playback offset that makes a clip honor its origin. `launch = (−origin) mod period`. |
 | **Ghost** | The visual unrolling of a loop across the cycle: its AUDIBLE repetitions, drawn in the cool **echo tone** (Q14c: warm hues are reserved for material — the take tile, the live bar, the composite). For a windowed clip, ghosts echo the WINDOW segment (what sounds), never raw take material. Whole cycle-counts fold away; the performed phase is kept (Q14). |
-| **Heard frame (`contextCycle`)** | The committed island cycle a take was performed against, recorded per take at capture start. The modulus that folds "which cycle" out of a take's display anchor (Q14) — it makes take marks stable across frame growth and epoch re-bases. |
+| **Heard frame (`contextCycle`)** | The EFFECTIVE island cycle a take was performed against (E-C: active windows shorten it), recorded per take at capture start. The modulus that folds "which cycle" out of a take's display anchor (Q14) and the audible-equivalence step for the origin fold (Q15) — it makes take marks stable across frame growth and epoch re-bases. |
 | **Echo** | A ghost tile's rendering: the audible repetition of a take (or of its window segment), in the echo tone. Full-take echoes are quiet (they duplicate the adjacent bright take); window echoes are more present (they are the only visible representation of what sounds there). |
 | **One-shot** | A clip that sounds once per context cycle instead of looping at its own length. *(See Q5 — the current formula in design.md/recording.md is garbled.)* |
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM. |
@@ -522,6 +522,30 @@ recording bar, the group composite). Presence still differs: full-take
 ghosts stay quiet (0.22 — they duplicate the adjacent bright take)
 while window echoes are more present (0.38 — they are the only visible
 representation of what sounds there).
+
+**Q15. Where does a take anchor when windows shorten the heard cycle?**
+**RESOLVED (2026-07-16) — the heard-frame origin fold.** Field report
+(owner): with a 4Q clip windowed to [2,3), the heard cycle collapses to
+1Q and the cursor loops 1Q; arming then anchored the take at a Q slot
+of the intrinsic 4Q frame the performer could neither hear nor see —
+*"I hit record… trying to start at 0Q. It started recording at 1Q
+instead!"* Analysis: the heard world is exactly heard-cycle-periodic
+(E-C is exact), so every anchor in `origin − k·heardCycle` is **audibly
+identical**; the engine was die-rolling among equivalents and surfacing
+the roll. Re-basing the epoch instead would rotate other lanes
+(violates I4: whole-INTRINSIC-cycle moves are the only phase-neutral
+ones); waiting for the 0-mod-intrinsic boundary would stall recording
+up to a full frame (violates Q11 responsiveness). Canon: **capture
+starts at the real next heard boundary (Q11 unchanged), but the STORED
+origin is the equivalence-class representative folded back by whole
+heard cycles into the first heard window of the intrinsic frame** —
+the take anchors where the cursor actually sweeps. I1 holds exactly
+(playback shifts by whole heard cycles); nothing else moves; a no-op
+whenever heard == intrinsic (the windowless mainline). The island
+snapshots BOTH cycles at arm: intrinsic (`lcm_before_take_` — re-base
+baseline and fold frame; windows must not leak into epoch permanence)
+and heard (`heard_cycle_at_arm_` — the fold step, and now the true
+source of each take's `contextCycle`).
 
 ---
 

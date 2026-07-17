@@ -300,7 +300,31 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
   // was small it skipped past the boundary and overshot the take to
   // the NEXT one (clip armed before 2Q anchored at 3Q).
   const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
-  origin_samples.store(target);
+
+  // HEARD-FRAME ORIGIN FOLD (Q15, field 2026-07-16e): when active
+  // windows make the audible cycle SHORTER than the intrinsic one, the
+  // heard world is exactly heard-cycle-periodic — so every boundary in
+  // {target − k·heard} is AUDIBLY IDENTICAL as an anchor, differing
+  // only by intrinsic phase the performer can neither hear nor see
+  // (the cursor wraps on the heard cycle). Store the representative
+  // that lands in the FIRST heard window of the intrinsic frame: the
+  // take anchors where the cursor actually sweeps, instead of a
+  // die-roll among equivalent slots (field: take "started at 1Q
+  // instead of 0Q"). Capture still starts at the REAL boundary
+  // (`target`); I1 holds exactly (playback shifts by whole heard
+  // cycles); nothing else moves (no epoch change — I4). No-op in the
+  // mainline (heard == intrinsic when no window is active).
+  int64_t origin = target;
+  {
+    const int64_t heard = rootNode()->activeTakeHeardCycle();
+    const int64_t intrinsic = rootNode()->activeTakeIntrinsicCycle();
+    if (heard > 0 && intrinsic > heard) {
+      const int64_t rel_t =
+          ((target - epoch) % intrinsic + intrinsic) % intrinsic;
+      origin = target - (rel_t / heard) * heard;
+    }
+  }
+  origin_samples.store(origin);
   awaiting_start_at.store(target);
 
   // Start when the compensated clock is at/near the target, or when the
@@ -319,12 +343,15 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
 
 void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
                             int64_t compensated_pos) {
-  // The take's HEARD FRAME: the committed island cycle it is being
-  // performed against (snapshotted at arm on the island root). Display
+  // The take's HEARD FRAME: the EFFECTIVE island cycle it is being
+  // performed against (snapshotted at arm on the island root; falls
+  // back to the intrinsic cycle for pre-window engine states). Display
   // take-marking folds by this — "which heard cycle" never matters, the
   // phase within it always does (Q14) — making the mark stable across
   // later frame growth and epoch re-bases.
-  take_context_cycle_.store(rootNode()->activeTakeContextCycle());
+  const int64_t heard = rootNode()->activeTakeHeardCycle();
+  take_context_cycle_.store(
+      heard > 0 ? heard : rootNode()->activeTakeIntrinsicCycle());
 
   rec_state_.store((int)RecState::Capturing);
   awaiting_start_at.store(0);

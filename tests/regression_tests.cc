@@ -1346,6 +1346,92 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
                        (4 * Q),
                    2 * Q, "clip 3's heard 2Q anchor survives the re-base");
     }
+
+    // FIELD REPRO 2026-07-16e (Q15): recording while a WINDOW shortens
+    // the audible cycle. 1Q clip + 4Q clip windowed to [2Q,3Q): the
+    // heard cycle collapses to 1Q (E-C) and the cursor loops 1Q. Arming
+    // then hits "the next Q boundary" — whose intrinsic-frame slot
+    // (0/1/2/3Q) is neither hearable nor visible: the take anchored at
+    // a die-roll slot ("started recording at 1Q instead of 0Q"). The
+    // heard-frame ORIGIN FOLD stores the audibly-identical
+    // representative in the FIRST heard window: the take anchors where
+    // the cursor sweeps. Capture still starts at the real boundary;
+    // nothing else moves.
+    beginTest("FIELD: take under a shortened heard cycle anchors at the top");
+    {
+      AudioEngine engine;
+      const int64_t Q = 44100;
+      const int BLOCK = 512;
+      std::vector<float> buf((size_t)BLOCK, 0.1f);
+      float *ins[] = {buf.data()};
+      float *outs[] = {buf.data(), buf.data()};
+      auto process = [&](int64_t total) {
+        while (total > 0) {
+          int n = (int)std::min<int64_t>(total, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          total -= n;
+        }
+      };
+      auto nthClipId = [&](int n) -> juce::String {
+        auto state = engine.getGraphState();
+        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (*nodes)[n].getDynamicObject()->getProperty("id");
+      };
+      auto clipProp = [&](int n, const char *prop) -> int64_t {
+        auto state = engine.getGraphState();
+        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
+            prop);
+      };
+
+      // Clip 1 (1Q) and clip 2 (4Q, epoch re-bases to its origin at Q).
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(0));
+      process(Q);
+      engine.stopRecordingInNode(nthClipId(0));
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(1));
+      process(4 * Q - 200);
+      engine.stopRecordingInNode(nthClipId(1));
+      process(400);
+      const int64_t epoch = (int64_t)(double)engine.getGraphState()
+                                .getDynamicObject()
+                                ->getProperty("islandEpoch");
+      expectEquals(epoch, Q, "epoch at clip 2's origin");
+
+      // Window clip 2 to [2Q,3Q): the heard cycle is now 1Q.
+      engine.setLoopPoints(nthClipId(1), 2 * Q, 3 * Q);
+
+      // Arm mid-Q: the next boundary is rel 5Q ≡ 1Q (mod 4Q) — the
+      // die-roll slot the user could neither hear nor see.
+      process(300);  // t = 5Q + 500, rel = 4Q + 500
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(2));
+      process(4 * Q + 100);  // capture starts at the 5Q-rel boundary
+      engine.stopRecordingInNode(nthClipId(2));
+      process(Q);  // finish to the 4Q boundary and commit
+
+      expectEquals(clipProp(2, "duration"), 4 * Q, "take committed at 4Q");
+      expectEquals(clipProp(2, "contextCycle"), Q,
+                   "the take's heard frame is the SHORTENED 1Q cycle");
+
+      // THE FOLD: origin stored ≡ 0 (mod 4Q) — the audibly-identical
+      // representative at the frame top (unfolded it was ≡ 1Q).
+      const int64_t origin3 = clipProp(2, "origin");
+      expectEquals(((origin3 - epoch) % (4 * Q) + 4 * Q) % (4 * Q),
+                   (int64_t)0,
+                   "take anchors at the heard/frame top, not a die-roll slot");
+
+      // Nothing else moved: epoch unchanged (no cycle growth), clip 2's
+      // anchor untouched.
+      expectEquals((int64_t)(double)engine.getGraphState()
+                       .getDynamicObject()
+                       ->getProperty("islandEpoch"),
+                   epoch, "no epoch move (cycle did not grow)");
+      expectEquals(((clipProp(1, "origin") - epoch) % (4 * Q) + 4 * Q) %
+                       (4 * Q),
+                   (int64_t)0, "clip 2's anchor unchanged (I4)");
+    }
   }
 };
 

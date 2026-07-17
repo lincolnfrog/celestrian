@@ -183,7 +183,10 @@ class StackNode : public AudioNode {
   void takeCancelled() override { active_takes_.fetch_sub(1); }
   void takeCommitted(int64_t origin) override;
   bool hasActiveTake() const override { return active_takes_.load() > 0; }
-  int64_t activeTakeContextCycle() const override {
+  int64_t activeTakeHeardCycle() const override {
+    return heard_cycle_at_arm_.load();
+  }
+  int64_t activeTakeIntrinsicCycle() const override {
     return lcm_before_take_.load();
   }
 
@@ -248,10 +251,13 @@ class StackNode : public AudioNode {
   std::atomic<int64_t> epoch_samples_{0};
 
   // Take lifecycle: count of armed/capturing takes in this island, and
-  // the committed cycle length snapshotted when the first of them armed
-  // (the epoch re-base compares the post-commit cycle against it).
+  // two cycle snapshots taken when the first of them armed: the
+  // INTRINSIC committed cycle (epoch re-base growth baseline + origin
+  // fold frame) and the HEARD/effective cycle (the take's context
+  // frame + audible-equivalence step, Q15).
   std::atomic<int> active_takes_{0};
   std::atomic<int64_t> lcm_before_take_{0};
+  std::atomic<int64_t> heard_cycle_at_arm_{0};
 
   /**
    * If this child's island has no quantum yet and the child carries

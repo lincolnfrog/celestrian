@@ -218,7 +218,12 @@ island LCM, so the playhead loops with what is heard and never sails
 past a top-level window (field report). Commit/epoch-re-base logic
 keeps the intrinsic length. The window-not-at-0 sole-lane case leaves
 the island playhead sweeping [0, len) outside the brackets (amber
-cursor carries heard time) — revisit in phase 2.
+cursor carries heard time) — revisit in phase 2. *(Partially addressed
+2026-07-16, Q15: takes recorded while the heard cycle is shortened now
+anchor INSIDE the swept [0, heard) region via the heard-frame origin
+fold, so the cursor, the new take, and the heard loop read as one
+coherent frame; the sweep-vs-bracket mismatch itself remains a phase-2
+item.)*
 **Phase 1 extension 3 (2026-07-16, display grammar — Q14/Q14c):**
 windowed lanes render per "ghosts show what sounds": ghost tiles are
 ECHOES of the window segment at its audible repetitions (origin-anchored

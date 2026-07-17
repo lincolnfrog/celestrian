@@ -400,7 +400,8 @@ function startRecordingInNode(id) {
         const rel = raw - (state.islandEpoch || 0);
         recView.base = viewCycle > 0 ? ((rel % viewCycle) + viewCycle) % viewCycle : rel;
         recView.anchor = raw;
-        recView.lcmBefore = committedCycle(Q); // engine's view_lcm_before_
+        recView.lcmBefore = committedCycle(Q); // engine's lcm_before_take_
+        recView.heardAtArm = viewCycle;        // engine's heard_cycle_at_arm_
         recView.active = true;
     }
 
@@ -480,21 +481,32 @@ function commitClip(node, duration) {
         console.log('[MockBackend] First take establishes Q =', duration);
     }
 
-    // The take's HEARD FRAME (Q14): the committed cycle it was
+    // HEARD-FRAME ORIGIN FOLD (Q15, mirrors ClipNode::armEvaluate):
+    // when active windows made the audible cycle shorter than the
+    // intrinsic one at arm, every heard boundary is audibly identical —
+    // store the representative in the FIRST heard window of the frame.
+    let foldedOrigin = node.recordingStartPos || 0;
+    const heardAtArm = recView.heardAtArm || 0;
+    if (heardAtArm > 0 && recView.lcmBefore > heardAtArm) {
+        const relT = (((foldedOrigin - (state.islandEpoch || 0)) %
+            recView.lcmBefore) + recView.lcmBefore) % recView.lcmBefore;
+        foldedOrigin -= Math.floor(relT / heardAtArm) * heardAtArm;
+    }
+
+    // The take's HEARD FRAME (Q14/Q15): the EFFECTIVE cycle it was
     // performed against — display take-marking folds by this.
-    node.contextCycle = recView.lcmBefore > 0 ? recView.lcmBefore : 0;
+    node.contextCycle = heardAtArm > 0 ? heardAtArm
+        : (recView.lcmBefore > 0 ? recView.lcmBefore : 0);
 
     // Commit epoch re-base (mirrors StackNode::takeCommitted,
     // 2026-07-16): when the cycle GREW, the epoch moves to the HEARD
-    // top the take was performed against — its origin floored to whole
-    // pre-take cycles. Phase-neutral for every committed lane (their
-    // periods divide the old cycle); the frame the user watched while
-    // recording persists at commit (the old polyrhythmic keep-epoch
-    // rule teleported the take to its raw frame position).
+    // top the take was performed against — its (folded) origin floored
+    // to whole pre-take INTRINSIC cycles. Phase-neutral for every
+    // committed lane; the frame the user watched while recording
+    // persists at commit.
     const newCycle = committedCycle(effectiveQuantumForState());
     if (recView.lcmBefore > 0 && newCycle > recView.lcmBefore && duration > 0) {
-        const rel = Math.max(0,
-            (node.recordingStartPos || 0) - (state.islandEpoch || 0));
+        const rel = Math.max(0, foldedOrigin - (state.islandEpoch || 0));
         state.islandEpoch = (state.islandEpoch || 0) +
             Math.floor(rel / recView.lcmBefore) * recView.lcmBefore;
         console.log('[MockBackend] Cycle grew: epoch re-based to heard top',
@@ -509,9 +521,9 @@ function commitClip(node, duration) {
     if (!anyStillRecording) recView.active = false;
 
     // Origin is THE canonical timing fact (docs/kernel.md): the cycle
-    // moment content[0] belongs to. Launch point is its projection,
-    // kept for UI compatibility (Audio Memory Principle, recording.md).
-    node.origin = node.recordingStartPos || 0;
+    // moment content[0] belongs to — heard-frame FOLDED (Q15, above).
+    // Launch point is its projection, kept for UI compatibility.
+    node.origin = foldedOrigin;
     node.launchPoint = launchPointFor(node.origin, duration);
 
     console.log(`[MockBackend] Committed ${node.id}: Dur=${duration} (Q=${Q})`);
