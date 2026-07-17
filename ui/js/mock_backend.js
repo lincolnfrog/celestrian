@@ -418,15 +418,35 @@ function getLatencyCalibration() {
     };
 }
 
+// Committed clips in the island (parity with
+// AudioEngine::islandCommittedClipCount) — drives Q13 mutability.
+function committedClipCount() {
+    let n = 0;
+    (function visit(nodes) {
+        (nodes || []).forEach(node => {
+            if (node.type === 'clip' && !node.isRecording && (node.duration || 0) > 0) n++;
+            if (node.nodes) visit(node.nodes);
+        });
+    })(state.nodes);
+    return n;
+}
+
 function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
-    if (node) {
-        node.loopStart = loopStart;
-        node.loopEnd = loopEnd;
-        // Window phase is derived from the clock (time_maps.md) —
-        // nothing to reset when the region changes.
-        console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
+    if (!node) return;
+    node.loopStart = loopStart;
+    node.loopEnd = loopEnd;
+    // Q13 parity (AudioEngine::setLoopPoints): while the island's only
+    // committed content is this clip, its loop region re-establishes
+    // (Q, epoch): Q := window length (the mock derives Q from the min
+    // node.effectiveQuantum), epoch := origin + window start.
+    if (loopEnd > loopStart && node.type === 'clip' && (node.duration || 0) > 0 &&
+        committedClipCount() === 1) {
+        node.effectiveQuantum = loopEnd - loopStart;
+        state.islandEpoch = (node.origin || 0) + loopStart;
+        console.log('[MockBackend] Q13 re-trim → Q =', node.effectiveQuantum);
     }
+    console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
 }
 
 function toggleLoopWindow(id) {

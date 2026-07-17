@@ -248,11 +248,15 @@ with kernel.md:
     `setQuantum`). Pinned by `tests/qtime_lock_tests.cc` (re-trim +
     undo/redo; 2nd clip locks; delete reverts; delete 2→1 re-opens).
     Canon amended (design_language.md Q1 refinement + Q13 non-sticky).
-  - [ ] **UI affordance** — locked/unlocked handles on the sole clip:
-    always-draggable Q-handles (even at full span), distinct styling,
-    live Q readout during drag. `view_model.js` exposes `soleQDefinerId`;
-    mock derives Q from the sole clip's window. Field-motivated: trimming
-    dead air out of the scratch loop before building on it.
+  - [x] **UI affordance** ✅ done 2026-07-16: `view_model.js` exposes
+    `soleQDefinerId` + per-lane `isQDefiner`; the sole clip's loop handles
+    are always shown (even at 1Q — `latentWindow` override), styled
+    tempo-red ("sets tempo · drag to trim" chip), and drag FREE (sub-Q)
+    with a live `Q = N.NNs` readout since they DEFINE Q rather than snap
+    to it. Mock derives Q from the sole clip's window (parity). Pinned by
+    `ui/js/tests/q13.test.mjs`; verified in the preview (drag → Q changes,
+    undo restores). Field-motivated: trimming dead air out of the scratch
+    loop before building on it.
 - [ ] **Track Controls** — Play/Solo/Record buttons; partially done.
 - [ ] **Creation Menu** — contextual node creation; partially done.
 - [ ] **Selective Recording** — record into specific nodes.

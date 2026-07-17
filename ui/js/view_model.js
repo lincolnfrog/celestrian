@@ -276,6 +276,22 @@ export function deriveViewModel(state, opts = {}) {
     const fxOpen = opts.fxOpen || null;
     const nodes = state.nodes || [];
     const quantum = computeEffectiveQuantum(nodes);
+
+    // Q13 provisional mutability: Q is re-establishable while the island's
+    // only committed content is ONE clip (the Q-definer). Its loop handles
+    // re-establish (Q, epoch); once a 2nd take commits, Q locks. Surface
+    // the sole definer so the rail can render draggable "sets tempo"
+    // handles even at full span (which windowOf normally suppresses).
+    const committedClips = [];
+    (function visit(ns) {
+        (ns || []).forEach(n => {
+            if (n.type === 'clip' && !n.isRecording && (n.duration || 0) > 0) {
+                committedClips.push(n);
+            }
+            if (n.nodes) visit(n.nodes);
+        });
+    })(nodes);
+    const soleQDefinerId = committedClips.length === 1 ? committedClips[0].id : null;
     // The island epoch is published explicitly (getGraphState
     // "islandEpoch"): commit RE-BASES it on simple extensions, and the
     // root node's `origin` metadata does NOT follow — reading origin as
@@ -547,6 +563,8 @@ export function deriveViewModel(state, opts = {}) {
             window: win,
             windowPhase: node.windowActive ? (node.playhead || 0) : 0,
             armable: isArmable(node),
+            // Q13: this lane's loop handles re-establish Q (provisional).
+            isQDefiner: node.id === soleQDefinerId,
             // Recording input (hardware channel index; −1 = device default)
             inputChannel: node.inputChannel ?? -1,
         }));
@@ -571,6 +589,8 @@ export function deriveViewModel(state, opts = {}) {
         playheadQ,
         isPlaying: !!state.isPlaying,
         qEstablished,
+        soleQDefinerId,  // Q13: the sole committed clip (provisional Q), or null
+        sampleRate: (state.perf && state.perf.sampleRate) || 44100,
         armAtQ,
         ruler: { cycleQ, ticks },
         lanes,

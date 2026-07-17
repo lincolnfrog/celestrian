@@ -541,6 +541,15 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .win-bracket.latent { opacity: 0; }
 .lane-body:hover .win-bracket.latent { opacity: 0.35; }
 .win-bracket.latent.dragging { opacity: 1; }
+/* Q-definer (Q13): the sole committed clip's handles RE-ESTABLISH Q.
+   Unlike ordinary windows they're a first-class affordance — visible at
+   rest (not a hidden hover reveal) and tempo-red — and drag free (sub-Q)
+   because they DEFINE Q rather than snap to it. */
+.win-bracket.q-definer { border-color: var(--rec); opacity: 0.55; }
+.win-bracket.q-definer.latent { opacity: 0.55; }
+.lane-body:hover .win-bracket.q-definer.latent { opacity: 0.9; }
+.win-bracket.q-definer.dragging { opacity: 1; }
+.win-chip.q-definer { color: var(--rec); border-color: var(--rec); cursor: default; }
 .win-chip {
     position: absolute;
     top: 4px;

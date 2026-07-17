@@ -753,21 +753,28 @@ function patchLaneBody(row, lane, vm, aux) {
                 // regions once per period tile across the whole cycle
                 buildWindowDims(o, { startQ, endQ }, lane, cycleQ);
             }
+            // Q13: the sole Q-definer's handles re-establish Q — style
+            // them as "sets tempo" and always show the chip (even latent).
+            const qDef = !!lane.isQDefiner;
+            const qCls = qDef ? ' q-definer' : '';
             const latentCls = latent ? ' latent' : '';
             const b1 = document.createElement('div');
-            b1.className = 'win-bracket start' + latentCls;
+            b1.className = 'win-bracket start' + latentCls + qCls;
             b1.style.left = pct(anchorQ + startQ, cycleQ);
             const b2 = document.createElement('div');
-            b2.className = 'win-bracket end' + latentCls;
+            b2.className = 'win-bracket end' + latentCls + qCls;
             b2.style.left = pct(anchorQ + endQ, cycleQ);
             o.append(b1, b2);
-            if (!latent) {
+            if (!latent || qDef) {
                 const chip = document.createElement('div');
                 // A window ending AT the display cycle would put the
                 // chip past the lane's overflow clip — align it inward
-                chip.className = 'win-chip' + (anchorQ + endQ >= cycleQ ? ' at-end' : '');
+                chip.className = 'win-chip' + qCls +
+                    (anchorQ + endQ >= cycleQ ? ' at-end' : '');
                 chip.style.left = pct(anchorQ + endQ, cycleQ);
-                chip.textContent = bypassed ? 'window · bypassed' : active ? 'window · active' : 'window';
+                chip.textContent = qDef
+                    ? 'sets tempo · drag to trim'
+                    : bypassed ? 'window · bypassed' : active ? 'window · active' : 'window';
                 o.appendChild(chip);
                 if (active && !bypassed) {
                     // Heard-time cursor: positioned per poll below
@@ -793,7 +800,14 @@ function patchLaneBody(row, lane, vm, aux) {
 function latentWindow(lane, vm) {
     if (lane.window || lane.recording || !vm.qEstablished) return null;
     const maxQ = Math.round(lane.intrinsicQ || 0);
-    if (maxQ < 2) return null; // a 1Q lane has no sub-window to make
+    // The SOLE Q-definer always gets handles, even at 1Q: dragging them
+    // re-establishes Q (Q13, provisional). A normal lane needs ≥2Q to
+    // carve a sub-window.
+    if (lane.isQDefiner) {
+        return { startQ: 0, endQ: Math.max(1, maxQ), active: false,
+                 bypassed: false, latent: true, qDefiner: true };
+    }
+    if (maxQ < 2) return null;
     return { startQ: 0, endQ: maxQ, active: false, bypassed: false, latent: true };
 }
 
@@ -848,8 +862,9 @@ function buildWindowDims(o, win, lane, cycleQ) {
 function wireWindow(o, lane, vm, body, win) {
     const chip = o.querySelector('.win-chip');
     // Fractal (I5): clip and group windows toggle alike — the engine's
-    // toggleLoopWindow works on any node since 2026-07-11
-    if (chip) {
+    // toggleLoopWindow works on any node since 2026-07-11. The Q-definer's
+    // chip is a live readout, not a toggle (there's no window to bypass).
+    if (chip && !lane.isQDefiner) {
         chip.classList.add('toggle');
         chip.title = 'Toggle window: active ↔ bypassed (brackets stay editable)';
         chip.addEventListener('click', () => cb.onToggleWindow(lane.id));
@@ -875,7 +890,9 @@ function wireWindow(o, lane, vm, body, win) {
         if (chip) {
             chip.style.left = pct(anchorQ + t.endQ, vm.cycleQ);
             chip.classList.toggle('at-end', anchorQ + t.endQ >= vm.cycleQ);
-            setText(chip, (t.endQ - t.startQ) + 'Q window');
+            setText(chip, lane.isQDefiner
+                ? 'Q = ' + ((t.endQ - t.startQ) * vm.quantum / vm.sampleRate).toFixed(2) + 's'
+                : (t.endQ - t.startQ) + 'Q window');
         }
         if (dimsLive) {
             o.querySelectorAll('.win-dim').forEach(d => d.remove());
@@ -904,6 +921,18 @@ function wireWindow(o, lane, vm, body, win) {
             // Frame Q under the pointer → content Q for the snap math
             const rawQ =
                 ((e.clientX - r.left) / r.width) * vm.cycleQ - anchorQ;
+            // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
+            // not snapping to it. The handle position is the landing; a
+            // small min length keeps Q positive.
+            if (lane.isQDefiner) {
+                const minLen = 0.05;
+                const t = edge === 'start'
+                    ? { startQ: Math.min(Math.max(0, rawQ), cur.endQ - minLen), endQ: cur.endQ }
+                    : { startQ: cur.startQ, endQ: Math.max(Math.min(maxQ, rawQ), cur.startQ + minLen) };
+                el.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), vm.cycleQ);
+                previewSnap(t, edge, ghost);
+                return;
+            }
             // The handle tracks the pointer continuously, inside the
             // same bounds the snap enforces (≥1Q window, lane extent)
             const freeQ = edge === 'start'
