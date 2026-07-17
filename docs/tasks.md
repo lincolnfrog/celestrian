@@ -195,20 +195,29 @@ with kernel.md:
 - [ ] **Edits-as-events → undo/save-load → (later) immutable root** —
   STAGED (audit verdict 2026-07-16; the full-RT-rewrite framing is the
   wrong entry point):
-  - [ ] **Step 1: `apply(edit)` + undo log — ZERO RT changes.** Inverse
-    edits over the existing mutable graph; the undo stack OWNS removed
-    subtrees (safe: no-overdub means committed buffers are write-once).
-    In-flight takes are never undoable (cancel is the verb). Ships
-    undo/redo in one low-risk session.
-  - [ ] **Step 2: Save/Load (Segment 6)** — serialize the graph between
-    edits on the message thread; no snapshots needed. CANONICAL fields
-    (must serialize): origin, duration, loop points + bypass,
-    **contextCycle** (a recorded fact — the take's heard frame, NOT
-    derivable), island quantum + epoch, fx params, name, inputChannel,
-    child order. DERIVED (never serialize): launchPoint, anchors, all
-    cycle projections. TRANSIENT (neither): island take-lifecycle
-    state (active_takes_/lcm_before_take_/heard_cycle_at_arm_). Format
-    QTime-READY but do not bundle the Q12 engine migration in.
+  - [x] **Step 1: `apply(edit)` + undo log — ZERO RT changes.** ✅ done
+    2026-07-16: `src/edit.h` vocabulary; `AudioEngine::applyEdit` returns
+    the inverse (structural removes own the detached subtree — safe by
+    no-overdub); undo_/redo_ stacks, Position drags coalesce, dropped
+    owned subtrees go through the reclaimer. New user verb `deleteNode`
+    (the motivating undoable); armed takes are not undoable. Bridge (3
+    places) + Cmd/Ctrl+Z/Shift+Z; `canUndo/canRedo` on getGraphState.
+    `tests/undo_tests.cc` + `ui/js/tests/undo.test.mjs`; verified in the
+    mock preview. Effect enable/param undo deferred (non-destructive
+    knobs; drag-flood) — follow-up.
+  - [x] **Step 2: Save/Load (Segment 6)** — ✅ done 2026-07-16:
+    `src/session_io.{h,cc}` writes a bundle (session.json + audio/*.wav),
+    device-independent + QTime-based (originQ/periodQ/windowQ from the
+    Phase A helpers; **contextCycle** serialized as the recorded fact it
+    is; island quantum + epoch + qSamples). Clip buffers → 32-bit float
+    WAV; fx params round-trip generically. `AudioEngine::loadSession`
+    swaps the root's CONTENTS in place (root identity stable → no
+    audio-thread race), refuses mid-take, clears undo history. Bridge (3
+    places) + native FileChooser + Cmd/Ctrl+S/O.
+    `tests/session_io_tests.cc` + `ui/js/tests/session.test.mjs`; verified
+    in the mock preview. The Q12 engine migration landed SEPARATELY (its
+    own commit: the D-T3 type-discipline boundary — metadata now publishes
+    device-independent QTime, pinned by `qtime_origin_cases` goldens).
   - [ ] **Step 3 (later, with the pure-render split §2.3): whole-graph
     immutable root** — one atomic swap replaces per-stack snapshots +
     reclaimer plumbing; bridge fully collapses to `apply(edit)`. The
