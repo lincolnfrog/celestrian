@@ -89,6 +89,33 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "deleteNode",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 0)
+                      audio_engine.deleteNode(args[0].toString());
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "undo",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    audio_engine.undo();
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "redo",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    audio_engine.redo();
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "renameNode",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

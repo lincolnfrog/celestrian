@@ -73,6 +73,7 @@ class ClipNode : public AudioNode {
    * Assigns the preferred hardware input channel for this clip.
    */
   void setInputChannel(int index) { preferred_input_channel = index; }
+  int getInputChannel() const { return preferred_input_channel; }
   // Clip-specific methods
   /**
    * Starts capturing hardware input into the internal buffer.

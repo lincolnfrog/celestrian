@@ -31,11 +31,19 @@ export const BRIDGE_METHODS = [
 
     // Graph structure
     { name: 'createNode', params: ['type', 'parentUuid?'] },
+    { name: 'deleteNode', params: ['uuid'] },
     { name: 'renameNode', params: ['uuid', 'name'] },
     { name: 'reorderNode', params: ['uuid', 'newParentUuid', 'newIndex'] },
     { name: 'setNodePosition', params: ['uuid', 'x', 'y'] },
     { name: 'combineNodes', params: ['draggedUuid', 'targetUuid'], returns: 'new stack uuid' },
     { name: 'toggleStackExpand', params: ['uuid'] },
+
+    // Undo / redo (edits-as-events, unification_audit.md §2.2 Step 1).
+    // Every structural + property mutation is reversible; canUndo/canRedo
+    // publish on getGraphState. Effect enable/param edits are excluded
+    // this pass (non-destructive; a documented follow-up).
+    { name: 'undo', params: [] },
+    { name: 'redo', params: [] },
 
     // Per-node audio state
     { name: 'togglePlay', params: ['uuid'] },

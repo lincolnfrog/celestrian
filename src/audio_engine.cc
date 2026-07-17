@@ -97,6 +97,267 @@ celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
   return node ? node->findByUuid(uuid) : nullptr;
 }
 
+// ===================================================================
+// Edits-as-events: apply / undo / redo (unification_audit.md §2.2 Step 1)
+// Message thread only. applyEdit performs one mutation and returns its
+// INVERSE (Nop if it could not apply); the undo stack is a list of
+// inverses, redo a list of forwards. Symmetric per kind, so applying an
+// inverse reproduces the forward (that is redo). Zero audio-thread
+// changes — the existing imperative mutations, made reversible.
+// ===================================================================
+
+namespace {
+using celestrian::Edit;
+// Continuous drags (Position) collapse into ONE undo step: when the new
+// inverse targets the same node/kind as the top of the stack, the older
+// inverse already restores further back, so the new one is dropped.
+bool editsCoalesce(const Edit &top, const Edit &fresh) {
+  if (top.kind != fresh.kind || top.uuid != fresh.uuid) return false;
+  return top.kind == Edit::Kind::Position;
+}
+}  // namespace
+
+celestrian::StackNode *AudioEngine::parentOf(celestrian::AudioNode *node,
+                                             int *index_out) const {
+  if (index_out) *index_out = -1;
+  if (!node) return nullptr;
+  auto *parent = dynamic_cast<celestrian::StackNode *>(node->getParent());
+  if (!parent) return nullptr;
+  const auto &kids = parent->getChildrenSnapshot();
+  for (int i = 0; i < (int)kids.size(); ++i) {
+    if (kids[i] == node) {
+      if (index_out) *index_out = i;
+      break;
+    }
+  }
+  return parent;
+}
+
+celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
+  using celestrian::AudioNode;
+  using celestrian::StackNode;
+  using K = Edit::Kind;
+  auto find = [&](const juce::String &u) {
+    return findNodeByUuid(root_node.get(), u);
+  };
+  auto asStack = [&](const juce::String &u) {
+    return dynamic_cast<StackNode *>(find(u));
+  };
+
+  switch (e.kind) {
+    case K::Insert: {
+      auto *parent = asStack(e.parentUuid);
+      if (!parent || !e.node) return {};
+      const juce::String uid = e.node->getUuid();
+      parent->insertChildAt(std::move(e.node), e.index);
+      Edit inv(K::Remove);
+      inv.uuid = uid;
+      return inv;
+    }
+    case K::Remove: {
+      auto *node = find(e.uuid);
+      if (!node || node == root_node.get()) return {};
+      if (node->isArmedOrRecording()) return {};  // cancel is the verb
+      int idx = -1;
+      auto *parent = parentOf(node, &idx);
+      if (!parent || idx < 0) return {};
+      Edit inv(K::Insert);
+      inv.parentUuid = parent->getUuid();
+      inv.index = idx;
+      inv.node = parent->removeChild(idx);  // non-retiring detach; owned here
+      return inv;
+    }
+    case K::Move: {
+      auto *node = find(e.uuid);
+      auto *newParent = asStack(e.parentUuid);
+      if (!node || !newParent) return {};
+      int oldIdx = -1;
+      auto *oldParent = parentOf(node, &oldIdx);
+      if (!oldParent || oldIdx < 0) return {};
+      auto owned = oldParent->removeChild(oldIdx);
+      newParent->insertChildAt(std::move(owned), e.index);
+      Edit inv(K::Move);
+      inv.uuid = e.uuid;
+      inv.parentUuid = oldParent->getUuid();
+      inv.index = oldIdx;
+      return inv;
+    }
+    case K::Combine: {
+      auto *dragged = find(e.uuid);
+      auto *target = find(e.uuid2);
+      if (!dragged || !target || dragged == target) return {};
+      int draggedIdx = -1, targetIdx = -1;
+      auto *draggedParent = parentOf(dragged, &draggedIdx);
+      auto *targetParent = parentOf(target, &targetIdx);
+      if (!draggedParent || !targetParent) return {};
+      auto draggedOwned = draggedParent->removeChild(draggedIdx);
+      // Target index may have shifted if it shared a parent with dragged.
+      int tIdx = -1;
+      auto *tParent = parentOf(target, &tIdx);
+      auto targetOwned = tParent->removeChild(tIdx);
+      auto newStack = std::make_unique<StackNode>("Combined Stack");
+      newStack->x_pos.store(targetOwned->x_pos.load());
+      newStack->y_pos.store(targetOwned->y_pos.load());
+      newStack->addChild(std::move(targetOwned));  // target first (index 0)
+      newStack->addChild(std::move(draggedOwned));  // dragged second (index 1)
+      const juce::String newUuid = newStack->getUuid();
+      tParent->insertChildAt(std::move(newStack), tIdx);
+      Edit inv(K::Explode);
+      inv.uuid = newUuid;
+      inv.parentUuid = targetParent->getUuid();  // child[0] restore
+      inv.index = targetIdx;
+      inv.parentUuid2 = draggedParent->getUuid();  // child[1] restore
+      inv.index2 = draggedIdx;
+      return inv;
+    }
+    case K::Explode: {
+      auto *stack = asStack(e.uuid);
+      if (!stack || stack->getNumChildren() != 2) return {};
+      auto child0 = stack->removeChild(0);  // target
+      auto child1 = stack->removeChild(0);  // dragged (now at 0)
+      const juce::String draggedUuid = child1->getUuid();
+      const juce::String targetUuid = child0->getUuid();
+      auto *tParent = asStack(e.parentUuid);
+      auto *dParent = asStack(e.parentUuid2);
+      if (!tParent || !dParent) return {};
+      // Reinsert in ascending index order so a shared parent reproduces
+      // the exact original arrangement (inserting the lower slot first).
+      const bool targetFirst = e.index <= e.index2;
+      if (targetFirst) {
+        tParent->insertChildAt(std::move(child0), e.index);
+        dParent->insertChildAt(std::move(child1), e.index2);
+      } else {
+        dParent->insertChildAt(std::move(child1), e.index2);
+        tParent->insertChildAt(std::move(child0), e.index);
+      }
+      // Remove the now-empty combined stack (retire — nothing owns it).
+      parentOf(stack, nullptr);
+      auto *stackParent = dynamic_cast<StackNode *>(stack->getParent());
+      if (stackParent) stackParent->removeChild(stack->getUuid());
+      Edit inv(K::Combine);
+      inv.uuid = draggedUuid;
+      inv.uuid2 = targetUuid;
+      return inv;
+    }
+    case K::Rename: {
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::Rename);
+      inv.uuid = e.uuid;
+      inv.s1 = node->getName();
+      node->setName(e.s1);
+      return inv;
+    }
+    case K::Mute: {
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::Mute);
+      inv.uuid = e.uuid;
+      inv.b1 = node->is_muted.load();
+      node->is_muted.store(e.b1);
+      return inv;
+    }
+    case K::LoopPoints: {
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::LoopPoints);
+      inv.uuid = e.uuid;
+      inv.d1 = (double)node->getLoopStart();
+      inv.d2 = (double)node->getLoopEnd();
+      node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
+      return inv;
+    }
+    case K::LoopBypass: {
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::LoopBypass);
+      inv.uuid = e.uuid;
+      inv.b1 = node->isLoopWindowBypassed();
+      node->setLoopWindowBypassed(e.b1);
+      return inv;
+    }
+    case K::Input: {
+      auto *clip = dynamic_cast<celestrian::ClipNode *>(find(e.uuid));
+      if (!clip) return {};
+      Edit inv(K::Input);
+      inv.uuid = e.uuid;
+      inv.d1 = (double)clip->getInputChannel();
+      clip->setInputChannel((int)e.d1);
+      return inv;
+    }
+    case K::Position: {
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::Position);
+      inv.uuid = e.uuid;
+      inv.d1 = node->x_pos.load();
+      inv.d2 = node->y_pos.load();
+      node->x_pos.store(e.d1);
+      node->y_pos.store(e.d2);
+      return inv;
+    }
+    case K::Nop:
+      return {};
+  }
+  return {};
+}
+
+void AudioEngine::retireEdit(celestrian::Edit &&e) {
+  // Never free a detached subtree inline — an in-flight callback may read
+  // it for ≤2 more callbacks. Hand it to the same graveyard the graph
+  // mutations use.
+  if (e.node) {
+    celestrian::AudioNode *n = e.node.release();
+    retire([n] { delete n; });
+  }
+  if (e.node2) {
+    celestrian::AudioNode *n = e.node2.release();
+    retire([n] { delete n; });
+  }
+}
+
+void AudioEngine::clearRedo() {
+  for (auto &e : redo_) retireEdit(std::move(e));
+  redo_.clear();
+}
+
+void AudioEngine::record(celestrian::Edit forward) {
+  celestrian::Edit inv = applyEdit(std::move(forward));
+  if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
+  if (!undo_.empty() && editsCoalesce(undo_.back(), inv)) {
+    clearRedo();  // a fresh user action still invalidates the redo branch
+    return;       // keep the older inverse (restores further back)
+  }
+  undo_.push_back(std::move(inv));
+  while (undo_.size() > kUndoDepth) {
+    retireEdit(std::move(undo_.front()));
+    undo_.erase(undo_.begin());
+  }
+  clearRedo();
+}
+
+void AudioEngine::undo() {
+  if (undo_.empty()) return;
+  celestrian::Edit inv = std::move(undo_.back());
+  undo_.pop_back();
+  celestrian::Edit fwd = applyEdit(std::move(inv));
+  if (fwd.kind != celestrian::Edit::Kind::Nop) redo_.push_back(std::move(fwd));
+}
+
+void AudioEngine::redo() {
+  if (redo_.empty()) return;
+  celestrian::Edit fwd = std::move(redo_.back());
+  redo_.pop_back();
+  celestrian::Edit inv = applyEdit(std::move(fwd));
+  if (inv.kind != celestrian::Edit::Kind::Nop) undo_.push_back(std::move(inv));
+}
+
+void AudioEngine::deleteNode(const juce::String &uuid) {
+  celestrian::Edit e(celestrian::Edit::Kind::Remove);
+  e.uuid = uuid;
+  record(std::move(e));
+}
+
 void AudioEngine::startRecordingInNode(const juce::String &uuid) {
   juce::Logger::writeToLog("AudioEngine: start_recording requested for " +
                            uuid);
@@ -173,6 +434,8 @@ juce::var AudioEngine::getGraphState() const {
     obj->setProperty("islandEpoch", (double)islandEpoch());
     obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
+    obj->setProperty("canUndo", canUndo());
+    obj->setProperty("canRedo", canRedo());
     obj->setProperty("perf", makePerfState());
     return metadata;
   }
@@ -182,6 +445,8 @@ juce::var AudioEngine::getGraphState() const {
   state->setProperty("masterPos", master_view);
   state->setProperty("islandEpoch", (double)islandEpoch());
   state->setProperty("soloedId", soloed_node_uuid);
+  state->setProperty("canUndo", canUndo());
+  state->setProperty("canRedo", canRedo());
   state->setProperty("nodes", juce::Array<juce::var>());
   state->setProperty("perf", makePerfState());
   return juce::var(state.get());
@@ -244,113 +509,55 @@ void AudioEngine::createNode(const juce::String &type,
 
   new_node->setParent(target_stack);
   // Visual positioning is handled by the frontend.
-  // Backend only manages ordered list membership.
-  target_stack->addChild(std::move(new_node));
+  // Backend only manages ordered list membership. Routed through the
+  // edit log so create is undoable (the same node is retained and
+  // re-inserted, so uuid/state survive undo→redo).
+  celestrian::Edit e(celestrian::Edit::Kind::Insert);
+  e.parentUuid = target_stack->getUuid();
+  e.index = target_stack->getNumChildren();  // append
+  e.node = std::move(new_node);
+  record(std::move(e));
 }
 
 void AudioEngine::renameNode(const juce::String &uuid,
                              const juce::String &new_name) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
-    node->setName(new_name);
-  }
+  celestrian::Edit e(celestrian::Edit::Kind::Rename);
+  e.uuid = uuid;
+  e.s1 = new_name;
+  record(std::move(e));
 }
 
 void AudioEngine::reorderNode(const juce::String &node_uuid,
                               const juce::String &new_parent_uuid,
                               int new_index) {
-  // Find the node to move
-  auto *node = findNodeByUuid(root_node.get(), node_uuid);
-  if (!node) {
-    juce::Logger::writeToLog("reorderNode: Node not found: " + node_uuid);
-    return;
-  }
-
-  // Find the new parent stack
-  auto *new_parent = findNodeByUuid(root_node.get(), new_parent_uuid);
-  auto *new_parent_stack = dynamic_cast<celestrian::StackNode *>(new_parent);
-  if (!new_parent_stack) {
-    juce::Logger::writeToLog("reorderNode: Invalid parent: " + new_parent_uuid);
-    return;
-  }
-
-  // Get current parent
-  auto *old_parent = node->getParent();
-  auto *old_parent_stack = dynamic_cast<celestrian::StackNode *>(old_parent);
-
-  // Remove from old parent and insert at new index
-  if (old_parent_stack) {
-    for (int i = 0; i < old_parent_stack->getNumChildren(); ++i) {
-      if (old_parent_stack->getChild(i) == node) {
-        auto owned_node = old_parent_stack->removeChild(i);
-        owned_node->setParent(new_parent_stack);
-
-        // Insert at the index specified by the frontend
-        juce::Logger::writeToLog("reorderNode: " + node_uuid + " to " +
-                                 new_parent_uuid + " at index " +
-                                 juce::String(new_index));
-        new_parent_stack->insertChildAt(std::move(owned_node), new_index);
-        return;
-      }
-    }
-  }
+  // Routed through the edit log (Move): the detach/insert dance and its
+  // exact-inverse (back to the old parent/index) live in applyEdit.
+  celestrian::Edit e(celestrian::Edit::Kind::Move);
+  e.uuid = node_uuid;
+  e.parentUuid = new_parent_uuid;
+  e.index = new_index;
+  record(std::move(e));
 }
 
 juce::String AudioEngine::combineNodes(const juce::String &dragged_uuid,
                                        const juce::String &target_uuid) {
-  using celestrian::StackNode;
-
-  auto *dragged = findNodeByUuid(root_node.get(), dragged_uuid);
-  auto *target = findNodeByUuid(root_node.get(), target_uuid);
-  if (!dragged || !target || dragged == target) {
-    juce::Logger::writeToLog("combineNodes: Node not found or identical (" +
-                             dragged_uuid + ", " + target_uuid + ")");
-    return {};
+  // The whole combine (detach both, build the stack target-first, insert
+  // at the target's slot) lives in applyEdit(Combine); its inverse is an
+  // Explode that restores each child to its original parent/index. We
+  // record the inverse directly here (rather than via record()) so we can
+  // still return the new stack's uuid to the frontend.
+  celestrian::Edit e(celestrian::Edit::Kind::Combine);
+  e.uuid = dragged_uuid;
+  e.uuid2 = target_uuid;
+  celestrian::Edit inv = applyEdit(std::move(e));
+  if (inv.kind == celestrian::Edit::Kind::Nop) return {};
+  const juce::String new_uuid = inv.uuid;  // Explode carries the new stack
+  undo_.push_back(std::move(inv));
+  while (undo_.size() > kUndoDepth) {
+    retireEdit(std::move(undo_.front()));
+    undo_.erase(undo_.begin());
   }
-
-  auto *dragged_parent = dynamic_cast<StackNode *>(dragged->getParent());
-  auto *target_parent = dynamic_cast<StackNode *>(target->getParent());
-  if (!dragged_parent || !target_parent) {
-    juce::Logger::writeToLog("combineNodes: Node has no parent stack");
-    return {};
-  }
-
-  // Detach the dragged node from its parent.
-  std::unique_ptr<celestrian::AudioNode> dragged_owned;
-  for (int i = 0; i < dragged_parent->getNumChildren(); ++i) {
-    if (dragged_parent->getChild(i) == dragged) {
-      dragged_owned = dragged_parent->removeChild(i);
-      break;
-    }
-  }
-  if (!dragged_owned) return {};
-
-  // Find the target's index AFTER the dragged removal (it may have shifted
-  // if both nodes share a parent), then detach the target too.
-  int target_index = -1;
-  for (int i = 0; i < target_parent->getNumChildren(); ++i) {
-    if (target_parent->getChild(i) == target) {
-      target_index = i;
-      break;
-    }
-  }
-  if (target_index < 0) {
-    // Should not happen; restore the dragged node rather than losing it.
-    dragged_parent->addChild(std::move(dragged_owned));
-    return {};
-  }
-  auto target_owned = target_parent->removeChild(target_index);
-
-  // Build the combined stack at the target's position, target first
-  // (mirrors the mock backend semantics used by drag & drop).
-  auto new_stack = std::make_unique<StackNode>("Combined Stack");
-  new_stack->x_pos.store(target_owned->x_pos.load());
-  new_stack->y_pos.store(target_owned->y_pos.load());
-  new_stack->addChild(std::move(target_owned));
-  new_stack->addChild(std::move(dragged_owned));
-
-  juce::String new_uuid = new_stack->getUuid();
-  target_parent->insertChildAt(std::move(new_stack), target_index);
-
+  clearRedo();
   juce::Logger::writeToLog("combineNodes: Combined " + dragged_uuid + " + " +
                            target_uuid + " into stack " + new_uuid);
   return new_uuid;
@@ -358,11 +565,12 @@ juce::String AudioEngine::combineNodes(const juce::String &dragged_uuid,
 
 void AudioEngine::setNodePosition(const juce::String &node_uuid, double x,
                                   double y) {
-  auto *node = findNodeByUuid(root_node.get(), node_uuid);
-  if (node) {
-    node->x_pos = x;
-    node->y_pos = y;
-  }
+  // Position drags coalesce into a single undo step (editsCoalesce).
+  celestrian::Edit e(celestrian::Edit::Kind::Position);
+  e.uuid = node_uuid;
+  e.d1 = x;
+  e.d2 = y;
+  record(std::move(e));
 }
 
 juce::var AudioEngine::getInputList() const {
@@ -382,10 +590,10 @@ juce::var AudioEngine::getInputList() const {
 }
 
 void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
-  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
-          findNodeByUuid(root_node.get(), uuid))) {
-    clip->setInputChannel(channel_index);
-  }
+  celestrian::Edit e(celestrian::Edit::Kind::Input);
+  e.uuid = uuid;
+  e.d1 = (double)channel_index;
+  record(std::move(e));
 }
 
 void AudioEngine::setEffectEnabled(const juce::String &uuid,
@@ -429,26 +637,23 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
                            " start=" + juce::String(start) +
                            " end=" + juce::String(end));
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
-    node->setLoopPoints(start, end);
-
-    // Window phase is derived from the island clock (time_maps.md);
-    // nothing to reset when the region changes.
-    juce::Logger::writeToLog("  -> Found node, loop points set successfully");
-  } else {
-    juce::Logger::writeToLog("  -> ERROR: Node not found!");
-  }
+  // Window phase is derived from the island clock (time_maps.md); nothing
+  // to reset when the region changes. Undoable (LoopPoints).
+  celestrian::Edit e(celestrian::Edit::Kind::LoopPoints);
+  e.uuid = uuid;
+  e.d1 = (double)start;
+  e.d2 = (double)end;
+  record(std::move(e));
 }
 
 void AudioEngine::toggleLoopWindow(const juce::String &uuid) {
   // Fractal (I5): window state lives on AudioNode — clips toggle their
   // single-segment window exactly like stacks toggle their time-map.
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
-    const bool bypassed = !node->isLoopWindowBypassed();
-    node->setLoopWindowBypassed(bypassed);
-    juce::Logger::writeToLog(
-        "AudioEngine: Loop window for " + uuid +
-        (bypassed ? " BYPASSED" : " ACTIVE"));
+    celestrian::Edit e(celestrian::Edit::Kind::LoopBypass);
+    e.uuid = uuid;
+    e.b1 = !node->isLoopWindowBypassed();  // toggle to the opposite state
+    record(std::move(e));
   }
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(
@@ -853,11 +1058,10 @@ void AudioEngine::togglePlay(const juce::String &uuid) {
 }
 void AudioEngine::toggleMute(const juce::String &uuid) {
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
-    bool newState = !node->is_muted.load();
-    node->is_muted.store(newState);
-    juce::Logger::writeToLog(
-        "AudioEngine: Mute toggled for " + uuid +
-        " (New State: " + juce::String(newState ? "true" : "false") + ")");
+    celestrian::Edit e(celestrian::Edit::Kind::Mute);
+    e.uuid = uuid;
+    e.b1 = !node->is_muted.load();  // toggle to the opposite state
+    record(std::move(e));
   }
 }
 

@@ -22,6 +22,51 @@ let state = {
     nextId: 1
 };
 
+// --- Undo / redo (mirrors AudioEngine's edits-as-events observably) ---
+// The C++ engine records inverse EDITS; the mock takes the simpler
+// equivalent for e2e — a snapshot of the mutable graph taken before every
+// undoable mutation. Same observable contract: canUndo/canRedo on
+// getState, undo() restores the pre-edit graph, a fresh edit clears redo.
+let undoStack = [];
+let redoStack = [];
+const UNDOABLE = new Set([
+    'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
+    'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
+    'setNodeInput',
+]);
+
+function undoSnapshot() {
+    return JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch || 0 });
+}
+function undoRestore(snap) {
+    const o = JSON.parse(snap);
+    state.nodes = o.nodes;
+    state.islandEpoch = o.islandEpoch;
+}
+function pushUndo() {
+    undoStack.push(undoSnapshot());
+    if (undoStack.length > 128) undoStack.shift();
+    redoStack = [];  // a fresh action invalidates the redo branch
+}
+function mockUndo() {
+    if (!undoStack.length) return false;
+    redoStack.push(undoSnapshot());
+    undoRestore(undoStack.pop());
+    return true;
+}
+function mockRedo() {
+    if (!redoStack.length) return false;
+    undoStack.push(undoSnapshot());
+    undoRestore(redoStack.pop());
+    return true;
+}
+function deleteNode(id) {
+    const node = findNode(id);
+    if (!node || node.isRecording) return;  // cancel is the verb for takes
+    removeNodeFromParent(id);
+    console.log('[MockBackend] Deleted node:', id);
+}
+
 /**
  * Handler table for every protocol method. Keys must match
  * protocol.js BRIDGE_METHOD_NAMES exactly (see protocol_contract.test.mjs).
@@ -35,6 +80,9 @@ export const handlers = {
     getWaveform: (id, numPeaks) => getWaveform(id, numPeaks),
     toggleStackExpand: (id) => toggleStackExpand(id),
     createNode: (type, parentId) => createNode(type, parentId),
+    deleteNode: (id) => deleteNode(id),
+    undo: () => mockUndo(),
+    redo: () => mockRedo(),
     renameNode: (id, name) => renameNode(id, name),
     reorderNode: (id, parentId, index) => reorderNode(id, parentId, index),
     setNodePosition: (id, x, y) => setNodePosition(id, x, y),
@@ -64,6 +112,9 @@ export async function callNative(method, ...args) {
         console.warn(`[MockBackend] Unknown method: ${method}`);
         return null;
     }
+    // Snapshot BEFORE any undoable mutation so undo restores the pre-edit
+    // graph (single interception point, mirrors AudioEngine::record).
+    if (UNDOABLE.has(method)) pushUndo();
     return handler(...args);
 }
 
@@ -747,6 +798,8 @@ export function getState() {
         // Island epoch (mirrors getGraphState): the UI's frame origin.
         // Commit re-bases it to the newest origin on simple extensions.
         islandEpoch: state.islandEpoch || 0,
+        canUndo: undoStack.length > 0,
+        canRedo: redoStack.length > 0,
         nodes: enrichNodes(state.nodes),
         // Mirrors AudioEngine::makePerfState so calibration-aware UI
         // (e.g. the calibrate button label) behaves in mock mode.
@@ -850,6 +903,10 @@ export function loadScenario(name) {
     transport.speed = 1.0;
     recView.active = false;
     state.islandEpoch = 0;
+    // Loading a scenario is a fresh session — undo history does not carry
+    // across it (test isolation + mirrors constructing a fresh engine).
+    undoStack = [];
+    redoStack = [];
 
     switch (name) {
         case 'empty':

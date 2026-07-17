@@ -102,6 +102,7 @@ target_sources(CelestrianTests PRIVATE
     tests/stack_loop_tests.cc
     tests/regression_tests.cc
     tests/audio_engine_tests.cc
+    tests/undo_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
     tests/effects_tests.cc

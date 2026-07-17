@@ -9,6 +9,7 @@
 
 #include "audio_node.h"
 #include "clip_node.h"
+#include "edit.h"
 #include "stack_node.h"
 
 class AudioEngine : public juce::AudioIODeviceCallback,
@@ -111,6 +112,23 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void toggleMute(const juce::String &uuid);
 
   /**
+   * Deletes a node (and its subtree) — the user-facing verb the undo
+   * system exists to protect (a mis-click deleting a take is otherwise
+   * fatal, unification_audit.md §2.2). A no-op on the root or on a node
+   * that is armed/recording (cancel is that verb). Undoable.
+   */
+  void deleteNode(const juce::String &uuid);
+
+  // --- Undo / redo (edits-as-events, Step 1). Message thread only.
+  // The undo stack holds inverse edits; redo holds forwards. Structural
+  // inverses OWN the detached subtree (safe: no-overdub ⇒ write-once
+  // buffers). See src/edit.h.
+  void undo();
+  void redo();
+  bool canUndo() const { return !undo_.empty(); }
+  bool canRedo() const { return !redo_.empty(); }
+
+  /**
    * Toggles a stack's loop window between active and bypassed
    * (time_maps.md). Activation is data, not view state: expansion no
    * longer affects whether the window applies.
@@ -193,6 +211,30 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void init(int inputs, int outputs);
   celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
                                         const juce::String &uuid);
+
+  // --- Edits-as-events plumbing (message thread) ---
+  /**
+   * Performs one Edit and returns its INVERSE (Nop if it could not apply
+   * — node gone, armed take, root delete). Symmetric per kind, so
+   * applying an inverse yields the forward again (that is how redo
+   * works). Structural removes hand the detached subtree to the inverse.
+   */
+  celestrian::Edit applyEdit(celestrian::Edit e);
+  /** Apply `forward`, push its inverse to the undo stack, clear redo. */
+  void record(celestrian::Edit forward);
+  /** The parent stack of `node` and its index within it (nullptr/−1 if
+   * top-level unknown). */
+  celestrian::StackNode *parentOf(celestrian::AudioNode *node,
+                                  int *index_out) const;
+  /** Frees any subtree an about-to-be-dropped edit owns via the reclaimer
+   * (never inline — an in-flight callback may still read a just-detached
+   * node). */
+  void retireEdit(celestrian::Edit &&e);
+  void clearRedo();
+
+  std::vector<celestrian::Edit> undo_;
+  std::vector<celestrian::Edit> redo_;
+  static constexpr size_t kUndoDepth = 128;
 
   /**
    * The AUDIBLE island cycle (E-C): the LCM of clip periods where a

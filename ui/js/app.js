@@ -315,6 +315,26 @@ export function initApp() {
         if (e.code === 'Space') {
             e.preventDefault();
             callNative('togglePlayback');
+            return;
+        }
+        // Undo / redo (edits-as-events, §2.2 Step 1). Cmd/Ctrl+Z undoes;
+        // Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes. The next poll refreshes
+        // the view from the restored graph.
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            if (e.shiftKey) {
+                callNative('redo');
+                setLogLine('Redo');
+            } else {
+                callNative('undo');
+                setLogLine('Undo');
+            }
+            return;
+        }
+        if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
+            e.preventDefault();
+            callNative('redo');
+            setLogLine('Redo');
         }
     });
 
