@@ -133,6 +133,21 @@ celestrian::StackNode *AudioEngine::parentOf(celestrian::AudioNode *node,
   return parent;
 }
 
+namespace {
+int countCommittedClips(const celestrian::AudioNode *node) {
+  if (node->getNodeType() == celestrian::NodeType::Clip)
+    return node->getIntrinsicDuration() > 0 ? 1 : 0;
+  const auto *stack = static_cast<const celestrian::StackNode *>(node);
+  int n = 0;
+  for (auto *child : stack->getChildrenSnapshot()) n += countCommittedClips(child);
+  return n;
+}
+}  // namespace
+
+int AudioEngine::islandCommittedClipCount() const {
+  return root_node ? countCommittedClips(root_node.get()) : 0;
+}
+
 celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   using celestrian::AudioNode;
   using celestrian::StackNode;
@@ -149,7 +164,13 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
       auto *parent = asStack(e.parentUuid);
       if (!parent || !e.node) return {};
       const juce::String uid = e.node->getUuid();
+      const bool restoreIsland = e.setsIsland;
+      const int64_t iq = e.iq, iepoch = e.iepoch;
       parent->insertChildAt(std::move(e.node), e.index);
+      // Restore the island grid this insert carries (undo of a
+      // provisional-Q-revert delete). The Remove inverse re-derives the
+      // revert on redo, so it needs no island payload.
+      if (restoreIsland) root_node->setQuantum(iq, iepoch);
       Edit inv(K::Remove);
       inv.uuid = uid;
       return inv;
@@ -165,6 +186,17 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
       inv.parentUuid = parent->getUuid();
       inv.index = idx;
       inv.node = parent->removeChild(idx);  // non-retiring detach; owned here
+      // Provisional Q revert (Q13 non-sticky): if this delete emptied the
+      // island of committed content, Q is no longer defined by anything —
+      // revert it, carrying the old (Q, epoch) so undo restores the grid
+      // together with the clip. A delete that only drops 2→1 leaves Q
+      // untouched (it just becomes re-mutable again — derived, no state).
+      if (islandCommittedClipCount() == 0 && root_node->getQuantum() != 0) {
+        inv.setsIsland = true;
+        inv.iq = root_node->getQuantum();
+        inv.iepoch = root_node->getEpoch();
+        root_node->setQuantum(0, 0);
+      }
       return inv;
     }
     case K::Move: {
@@ -265,6 +297,16 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
       inv.d1 = (double)node->getLoopStart();
       inv.d2 = (double)node->getLoopEnd();
       node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
+      // Q13 re-trim: if the forward edit carries an island re-establishment
+      // (built by setLoopPoints when the target is the sole committed
+      // clip), apply it and capture the old (Q, epoch) into the inverse so
+      // undo restores the grid, not just the window.
+      if (e.setsIsland) {
+        inv.setsIsland = true;
+        inv.iq = root_node->getQuantum();
+        inv.iepoch = root_node->getEpoch();
+        root_node->setQuantum(e.iq, e.iepoch);
+      }
       return inv;
     }
     case K::LoopBypass: {
@@ -688,6 +730,22 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   e.uuid = uuid;
   e.d1 = (double)start;
   e.d2 = (double)end;
+  // Q13 — re-trim before lock: while the island's ONLY committed content
+  // is the Q-definer, adjusting its loop region re-establishes the island
+  // (Q, epoch): Q := window length, epoch := origin + window start (the
+  // performance moment of the trimmed loop's top). Only provisional
+  // (exactly one committed clip); once a 2nd take commits, count ≥ 2 and
+  // this no longer fires — Q is locked (derived). The re-establishment
+  // rides the LoopPoints edit so it undoes atomically with the window.
+  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+          findNodeByUuid(root_node.get(), uuid))) {
+    if (end > start && clip->getIntrinsicDuration() > 0 &&
+        islandCommittedClipCount() == 1) {
+      e.setsIsland = true;
+      e.iq = end - start;
+      e.iepoch = clip->origin_samples.load() + start;
+    }
+  }
   record(std::move(e));
 }
 

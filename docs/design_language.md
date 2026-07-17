@@ -265,6 +265,15 @@ stored at the island root, not derived from surviving clips. Today's
 derived-min behavior, where deleting/shortening a clip silently changes
 Q, is confirmed as a bug, not a feature.
 
+**Refinement (2026-07-16, Q13 non-sticky):** "survives its creator"
+applies to the *locked* Q — once a second take has committed against it,
+the DNA is load-bearing and permanent. While still **provisional** (the
+island's only committed content is the Q-definer), Q is not yet DNA:
+deleting that sole clip reverts the island to no-Q (a blank slate), and
+re-trimming its loop re-establishes Q. Survival and reversibility do not
+conflict — they are the locked and provisional phases of the same rule
+(see Q13).
+
 **Q2. Is the LCM a fact about the music, or just a fact about the math?**
 **RESOLVED — neither; it's a display device.** Owner: "the only goal of
 LCM is a very simple overarching principle: all audio should play back
@@ -441,10 +450,20 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   adjusting that clip's loop region **re-establishes the island's
   (Q, epoch)**: `Q_samples := window length`, `epoch := origin +
   window start` (the performance moment of the trimmed loop's top).
-- The moment any other take commits in the island, **Q locks**. The
-  `setQuantum` "called exactly once" invariant becomes "re-settable
-  until locked"; the UI should reflect the locked/unlocked state on
-  the Q-definer's loop handles.
+- **Lock is DERIVED, not sticky (owner ruling 2026-07-16):** Q is
+  mutable ⟺ the island has **exactly one committed clip**; it is locked
+  while ≥2 exist. So the lock is a pure function of committed-clip count,
+  not a latched flag — if you later delete back down to one clip, Q
+  **re-opens** (and whatever clip is now the sole survivor can redefine
+  it). `setQuantum` becomes "re-settable while provisional"; the UI
+  reflects the locked/unlocked state on the sole clip's loop handles.
+- **Deleting the sole committed clip reverts (Q, epoch)** to
+  unestablished — nothing defines Q anymore, so the next take
+  establishes it fresh (companion to the re-open above; both are the
+  count==1 boundary).
+- All three transitions (re-trim, revert, re-open) ride the undo log:
+  the LoopPoints / Remove edits carry the island `(Q, epoch)` so undo
+  restores the grid, not just the clip or window.
 - This refines Q1 (Q survives its creator): survival applies to the
   *locked* Q — the DNA that later takes were performed against. Before
   lock, no other performance depends on Q, so re-trimming breaks

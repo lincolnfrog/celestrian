@@ -236,6 +236,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * top-level unknown). */
   celestrian::StackNode *parentOf(celestrian::AudioNode *node,
                                   int *index_out) const;
+  /** Number of COMMITTED clips in the island (ClipNode, duration>0),
+   * recursive. Drives provisional-Q mutability: Q is re-establishable
+   * while this is 1, locked while ≥2, reverts at 0 (Q13 non-sticky). */
+  int islandCommittedClipCount() const;
   /** Frees any subtree an about-to-be-dropped edit owns via the reclaimer
    * (never inline — an in-flight callback may still read a just-detached
    * node). */

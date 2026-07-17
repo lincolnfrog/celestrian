@@ -65,6 +65,17 @@ struct Edit {
   double d1 = 0.0, d2 = 0.0;
   bool b1 = false;
 
+  // Island (Q, epoch) payload (Q13 / provisional Q mutability). While the
+  // island's only committed clip is the Q-definer, a LoopPoints re-trim
+  // re-establishes (Q, epoch) and a Remove that empties the island reverts
+  // it — both must ride the same edit so undo restores the GRID, not just
+  // the clip/window. applyEdit is a pure applier: it sets `iq/iepoch` when
+  // `setsIsland` is true and captures the old values into the inverse. The
+  // *decision* to touch Q is made where the forward edit is built.
+  bool setsIsland = false;
+  int64_t iq = 0;      // island quantum to set
+  int64_t iepoch = 0;  // island epoch to set
+
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;
   std::unique_ptr<AudioNode> node2;

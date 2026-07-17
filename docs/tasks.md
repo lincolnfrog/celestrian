@@ -234,16 +234,25 @@ with kernel.md:
 ## Tier 4: Feature Work (carried forward)
 
 ### Interaction (Segment 4, in progress)
-- [ ] **Q re-trim before lock (Q13, ruled 2026-07-16)** — while the
-  island's only committed content is the Q-defining clip, dragging its
-  loop region re-establishes `(Q, epoch)` (`Q_samples := window len`,
-  `epoch := origin + window start`); Q locks at the next commit.
-  Engine: relax `StackNode::setQuantum` once-only to
-  re-settable-until-locked, hook `setLoopPoints` on the sole
-  Q-definer. UI: locked/unlocked affordance on the Q-definer's loop
-  handles. Field-motivated: trimming dead air out of the scratch loop
-  before building on it. Should ride along with Tier 1's island/epoch
-  work (same code).
+- **Q re-trim before lock (Q13, ruled 2026-07-16; non-sticky + revert
+  amendment 2026-07-16)** — Q mutable ⟺ exactly one committed clip.
+  - [x] **Engine + undo** ✅ done 2026-07-16: `setLoopPoints` on the sole
+    committed clip re-establishes `(Q := window len, epoch := origin +
+    window start)`; deleting the sole committed clip reverts `(Q,epoch)`
+    to 0; deleting back down to one **re-opens** (lock is derived from
+    `AudioEngine::islandCommittedClipCount()`, not a latched flag). All
+    three ride the edit log — `Edit` gained a `setsIsland/iq/iepoch`
+    payload so LoopPoints/Remove undo restores the GRID with the
+    clip/window. `establishIsland` once-only guard untouched (first
+    commit still establishes; provisional re-establishment goes through
+    `setQuantum`). Pinned by `tests/qtime_lock_tests.cc` (re-trim +
+    undo/redo; 2nd clip locks; delete reverts; delete 2→1 re-opens).
+    Canon amended (design_language.md Q1 refinement + Q13 non-sticky).
+  - [ ] **UI affordance** — locked/unlocked handles on the sole clip:
+    always-draggable Q-handles (even at full span), distinct styling,
+    live Q readout during drag. `view_model.js` exposes `soleQDefinerId`;
+    mock derives Q from the sole clip's window. Field-motivated: trimming
+    dead air out of the scratch loop before building on it.
 - [ ] **Track Controls** — Play/Solo/Record buttons; partially done.
 - [ ] **Creation Menu** — contextual node creation; partially done.
 - [ ] **Selective Recording** — record into specific nodes.
