@@ -335,6 +335,20 @@ export function initApp() {
             e.preventDefault();
             callNative('redo');
             setLogLine('Redo');
+            return;
+        }
+        // Save / Load a session bundle (empty path → native chooser in the
+        // desktop build; the mock keeps an in-memory bundle).
+        if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
+            e.preventDefault();
+            callNative('saveSession', '').then(ok =>
+                setLogLine(ok ? 'Session saved' : 'Save cancelled'));
+            return;
+        }
+        if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || e.key === 'O')) {
+            e.preventDefault();
+            callNative('loadSession', '').then(ok =>
+                setLogLine(ok ? 'Session loaded' : 'Load cancelled'));
         }
     });
 

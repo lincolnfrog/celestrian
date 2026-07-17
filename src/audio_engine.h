@@ -10,6 +10,7 @@
 #include "audio_node.h"
 #include "clip_node.h"
 #include "edit.h"
+#include "session_io.h"
 #include "stack_node.h"
 
 class AudioEngine : public juce::AudioIODeviceCallback,
@@ -128,6 +129,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   bool canUndo() const { return !undo_.empty(); }
   bool canRedo() const { return !redo_.empty(); }
 
+  // --- Save / Load (edits-as-events, Step 2). Message thread only.
+  // A session is a bundle directory (session.json + audio/*.wav);
+  // device-independent, QTime-based (src/session_io.h). Load swaps the
+  // root's contents in place through the existing safe child-snapshot
+  // path — the root node's identity never changes, so the audio thread
+  // sees no pointer race.
+  bool saveSession(const juce::String &path);
+  bool loadSession(const juce::String &path);
+
   /**
    * Toggles a stack's loop window between active and bypassed
    * (time_maps.md). Activation is data, not view state: expansion no
@@ -231,6 +241,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * node). */
   void retireEdit(celestrian::Edit &&e);
   void clearRedo();
+  /** Empties both undo and redo, retiring any owned subtrees (load and
+   * teardown discard history). */
+  void clearHistory();
 
   std::vector<celestrian::Edit> undo_;
   std::vector<celestrian::Edit> redo_;

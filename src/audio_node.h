@@ -171,6 +171,10 @@ class AudioNode {
   void setName(const juce::String &new_name) { node_name = new_name; }
   juce::String getName() const { return node_name; }
   juce::String getUuid() const { return node_uuid; }
+  /** Restore a persisted uuid on load (session_io) so save→load→save is
+   * stable and references survive. Message thread, before the node joins
+   * the graph. */
+  void setUuid(const juce::String &u) { node_uuid = u; }
 
   virtual NodeType getNodeType() const = 0;
 

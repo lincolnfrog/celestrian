@@ -321,6 +321,12 @@ void AudioEngine::clearRedo() {
   redo_.clear();
 }
 
+void AudioEngine::clearHistory() {
+  for (auto &e : undo_) retireEdit(std::move(e));
+  undo_.clear();
+  clearRedo();
+}
+
 void AudioEngine::record(celestrian::Edit forward) {
   celestrian::Edit inv = applyEdit(std::move(forward));
   if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
@@ -356,6 +362,45 @@ void AudioEngine::deleteNode(const juce::String &uuid) {
   celestrian::Edit e(celestrian::Edit::Kind::Remove);
   e.uuid = uuid;
   record(std::move(e));
+}
+
+bool AudioEngine::saveSession(const juce::String &path) {
+  return celestrian::session_io::save(*root_node, cached_sample_rate_.load(),
+                                      juce::File(path));
+}
+
+bool AudioEngine::loadSession(const juce::String &path) {
+  // Refuse mid-take: an in-flight capture is TRANSIENT, not saved, and
+  // tearing the graph out from under it would corrupt the buffer.
+  if (root_node->hasActiveTake()) return false;
+
+  auto loaded =
+      celestrian::session_io::load(juce::File(path), cached_sample_rate_.load());
+  if (!loaded.ok) return false;
+
+  // Swap the root's CONTENTS in place: root_node's identity never
+  // changes, so the audio thread (which dereferences root_node) sees no
+  // pointer race — only the child snapshot swaps, through the proven
+  // reclaimer path. There is a ≤2-callback window of an empty root
+  // (brief silence) during the load, which is acceptable for a load.
+  root_node->clearChildren();
+  for (auto &child : loaded.children) root_node->addChild(std::move(child));
+
+  // Force the island facts. addChild may have transiently re-established
+  // (Q, epoch) from the first committed clip using the CLIP's origin as
+  // the epoch (wrong); this overrides it with the persisted values.
+  root_node->setQuantum(loaded.q_samples, loaded.epoch);
+  root_node->is_muted.store(loaded.root_muted);
+  celestrian::session_io::applyEffects(*root_node, loaded.root_effects,
+                                       loaded.sample_rate);
+
+  focused_node = root_node.get();
+  soloed_node_uuid = "";
+  soloed_node_ptr_.store(nullptr);
+  clearHistory();  // a loaded session starts with no undo history
+
+  juce::Logger::writeToLog("AudioEngine: session loaded from " + path);
+  return true;
 }
 
 void AudioEngine::startRecordingInNode(const juce::String &uuid) {

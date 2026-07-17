@@ -67,6 +67,24 @@ function deleteNode(id) {
     console.log('[MockBackend] Deleted node:', id);
 }
 
+// Save/Load (mirrors AudioEngine's session_io observably). The mock keeps
+// the bundle in memory instead of a session.json + audio/ directory, so
+// e2e can round-trip without a filesystem. Load clears undo history.
+let mockSavedSession = null;
+function saveSession(_path) {
+    mockSavedSession = JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch || 0 });
+    return true;
+}
+function loadSession(_path) {
+    if (!mockSavedSession) return false;
+    const o = JSON.parse(mockSavedSession);
+    state.nodes = o.nodes;
+    state.islandEpoch = o.islandEpoch;
+    undoStack = [];
+    redoStack = [];
+    return true;
+}
+
 /**
  * Handler table for every protocol method. Keys must match
  * protocol.js BRIDGE_METHOD_NAMES exactly (see protocol_contract.test.mjs).
@@ -83,6 +101,8 @@ export const handlers = {
     deleteNode: (id) => deleteNode(id),
     undo: () => mockUndo(),
     redo: () => mockRedo(),
+    saveSession: (path) => saveSession(path),
+    loadSession: (path) => loadSession(path),
     renameNode: (id, name) => renameNode(id, name),
     reorderNode: (id, parentId, index) => reorderNode(id, parentId, index),
     setNodePosition: (id, x, y) => setNodePosition(id, x, y),

@@ -36,6 +36,20 @@ int childCount(const juce::var& state) {
   auto* arr = kids(state);
   return arr ? arr->size() : 0;
 }
+// The uuid of child `childIdx` inside top-level stack `stackIdx`. Holds
+// the intermediate vars alive (getProperty returns BY VALUE — a pointer
+// into its result dangles the moment the temporary dies; test_harness.md
+// gotcha). Everything stays inside this call while `state` is alive.
+juce::String nestedId(const juce::var& state, int stackIdx, int childIdx) {
+  auto* top = kids(state);
+  if (!top || stackIdx >= top->size()) return {};
+  const juce::var stackVar = (*top)[stackIdx];
+  const juce::var nodesVar = stackVar.getProperty("nodes", juce::var());
+  auto* arr = nodesVar.getArray();
+  return (arr && childIdx < arr->size())
+             ? (*arr)[childIdx].getProperty("id", "").toString()
+             : juce::String();
+}
 }  // namespace
 
 class UndoTests : public juce::UnitTest {
@@ -150,19 +164,14 @@ class UndoTests : public juce::UnitTest {
       const juce::String stackId = idAt(engine.getGraphState(), 0);
       engine.createNode("clip", stackId);
       engine.createNode("clip", stackId);
-      auto stackKids = [&]() -> juce::Array<juce::var>* {
-        return (*kids(engine.getGraphState()))[0]
-            .getProperty("nodes", juce::var())
-            .getArray();
-      };
-      const juce::String first = (*stackKids())[0].getProperty("id", "");
-      const juce::String second = (*stackKids())[1].getProperty("id", "");
+      const juce::String first = nestedId(engine.getGraphState(), 0, 0);
+      const juce::String second = nestedId(engine.getGraphState(), 0, 1);
 
       engine.reorderNode(second, stackId, 0);  // move second to front
-      expect((*stackKids())[0].getProperty("id", "").toString() == second,
+      expect(nestedId(engine.getGraphState(), 0, 0) == second,
              "second moved to front");
       engine.undo();
-      expect((*stackKids())[0].getProperty("id", "").toString() == first,
+      expect(nestedId(engine.getGraphState(), 0, 0) == first,
              "order restored by undo");
     }
 

@@ -45,6 +45,12 @@ export const BRIDGE_METHODS = [
     { name: 'undo', params: [] },
     { name: 'redo', params: [] },
 
+    // Save / Load (edits-as-events Step 2). A session is a bundle dir
+    // (session.json + audio/*.wav), device-independent + QTime-based
+    // (src/session_io.h). An empty path opens a native file chooser.
+    { name: 'saveSession', params: ['path?'], returns: 'true on success' },
+    { name: 'loadSession', params: ['path?'], returns: 'true on success' },
+
     // Per-node audio state
     { name: 'togglePlay', params: ['uuid'] },
     { name: 'toggleSolo', params: ['uuid'] },

@@ -107,6 +107,33 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "saveSession",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    juce::String path =
+                        args.size() > 0 ? args[0].toString() : juce::String();
+                    if (path.isNotEmpty()) {
+                      completion(audio_engine.saveSession(path));
+                      return;
+                    }
+                    // Empty path: pick a bundle directory to create.
+                    chooseSessionPath(true, std::move(completion));
+                  })
+              .withNativeFunction(
+                  "loadSession",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    juce::String path =
+                        args.size() > 0 ? args[0].toString() : juce::String();
+                    if (path.isNotEmpty()) {
+                      completion(audio_engine.loadSession(path));
+                      return;
+                    }
+                    chooseSessionPath(false, std::move(completion));
+                  })
+              .withNativeFunction(
                   "redo",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
@@ -313,6 +340,35 @@ MainComponent::MainComponent()
 }
 
 MainComponent::~MainComponent() {}
+
+void MainComponent::chooseSessionPath(
+    bool saving, juce::WebBrowserComponent::NativeFunctionCompletion done) {
+  auto start = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                   .getChildFile("Celestrian Sessions");
+  const auto title =
+      saving ? juce::String("Save session as…") : juce::String("Open session");
+  session_chooser_ = std::make_unique<juce::FileChooser>(title, start);
+
+  const int flags =
+      juce::FileBrowserComponent::canSelectDirectories |
+      (saving ? juce::FileBrowserComponent::saveMode
+              : juce::FileBrowserComponent::openMode);
+
+  session_chooser_->launchAsync(
+      flags, [this, saving, done = std::move(done)](
+                 const juce::FileChooser &fc) mutable {
+        const auto file = fc.getResult();
+        if (file == juce::File()) {
+          done(false);  // cancelled
+          return;
+        }
+        const bool ok = saving
+                            ? audio_engine.saveSession(file.getFullPathName())
+                            : audio_engine.loadSession(file.getFullPathName());
+        done(ok);
+      });
+}
+
 void MainComponent::timerCallback() {}
 void MainComponent::paint(juce::Graphics &g) {
   g.fillAll(

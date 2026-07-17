@@ -74,6 +74,10 @@ class ClipNode : public AudioNode {
    */
   void setInputChannel(int index) { preferred_input_channel = index; }
   int getInputChannel() const { return preferred_input_channel; }
+  double getSampleRate() const { return sample_rate; }
+  /** The take's heard frame (contextCycle) — a recorded fact that must
+   * persist (session_io); 0 for the first take. */
+  int64_t contextCycle() const { return take_context_cycle_.load(); }
   // Clip-specific methods
   /**
    * Starts capturing hardware input into the internal buffer.
@@ -131,6 +135,25 @@ class ClipNode : public AudioNode {
 
   void commitRecording(int64_t final_duration = -1);
   const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
+
+  /**
+   * Restore a committed take on session load (session_io): copies `audio`
+   * into the buffer, marks it playable, and sets the recorded facts that
+   * are not public atomics (write position, contextCycle). The caller
+   * sets origin/duration/loop points/mute separately (public). Message
+   * thread only — the node is not yet in the live graph.
+   */
+  void loadCommitted(const juce::AudioBuffer<float> &audio,
+                     int64_t context_cycle) {
+    const int n = std::min(audio.getNumSamples(), buffer.getNumSamples());
+    buffer.clear();
+    if (n > 0 && audio.getNumChannels() > 0)
+      buffer.copyFrom(0, 0, audio, 0, 0, n);
+    write_position.store(n);
+    take_context_cycle_.store(context_cycle);
+    rec_state_.store((int)RecState::Idle);
+    is_playing.store(true);  // committed clips sound
+  }
 
  private:
   juce::AudioBuffer<float> buffer;

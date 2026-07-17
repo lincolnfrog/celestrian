@@ -45,6 +45,7 @@ target_sources(Celestrian PRIVATE
     src/timing.h
     src/clip_node.cc
     src/stack_node.cc
+    src/session_io.cc
     src/dsp/effects.cc
 )
 
@@ -103,18 +104,21 @@ target_sources(CelestrianTests PRIVATE
     tests/regression_tests.cc
     tests/audio_engine_tests.cc
     tests/undo_tests.cc
+    tests/session_io_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
     tests/effects_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc
+    src/session_io.cc
     src/dsp/effects.cc
 )
 
 target_link_libraries(CelestrianTests PRIVATE
     juce::juce_audio_basics
     juce::juce_audio_devices
+    juce::juce_audio_formats
     juce::juce_audio_utils
     juce::juce_gui_basics
     juce::juce_core
