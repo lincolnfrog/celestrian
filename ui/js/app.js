@@ -263,6 +263,11 @@ export function initApp() {
         onSolo: id => callNative('toggleSolo', id),
         onAddStack: () => callNative('createNode', 'stack', ''),
         onAddClip: groupId => callNative('createNode', 'clip', groupId),
+        onDelete: async id => {
+            // No confirm: undo is the safety net (edits-as-events).
+            await callNative('deleteNode', id);
+            setLogLine('Deleted — ⌘Z to undo');
+        },
         onRename: async (id, name) => {
             await callNative('renameNode', id, name);
             setLogLine(`Renamed to "${name}"`);

@@ -252,6 +252,22 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .rail-btn.arm-btn.recording { animation: recpulse 1.1s ease-in-out infinite; }
 .rail-btn:disabled { opacity: 0.35; cursor: default; }
 
+/* Delete: a compact card-close ✕ at the rail's top-right. Understated at
+   rest (destructive, secondary), reveals on rail hover, turns record-red
+   on its own hover. Undo is the safety net (⌘Z), so no confirm. */
+.rail-btn.delete-btn {
+    flex: none;
+    width: 20px; height: 20px;
+    border: none; background: none;
+    font-size: 0.7rem; line-height: 1;
+    color: var(--text-dim);
+    opacity: 0.28;
+    transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+.lane-rail:hover .rail-btn.delete-btn { opacity: 0.7; }
+.rail-btn.delete-btn:hover { opacity: 1; color: #fff; background: var(--rec); border-radius: 6px; }
+.rail-btn.delete-btn:disabled { opacity: 0.12; background: none; color: var(--text-dim); }
+
 /* Input picker: chip reads at rest ("in 2"); menu opens below the rail */
 .rail-btn.input-btn {
     width: auto;

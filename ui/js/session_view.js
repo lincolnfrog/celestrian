@@ -152,6 +152,16 @@ function buildLane(lane) {
     const status = document.createElement('span');
     status.className = 'rail-status armed-word mono';
     head.appendChild(status);
+    // Delete — top-right of the rail (card-close position); the flexing
+    // name yields the room, so it never overflows the button row. No
+    // confirm: undo is the safety net (⌘Z). Disabled mid-take (the engine
+    // refuses to delete an armed/capturing take — cancel is that verb).
+    const del = document.createElement('button');
+    del.className = 'rail-btn delete-btn';
+    del.textContent = '✕';
+    del.title = 'Delete (⌘Z to undo)';
+    del.addEventListener('click', () => cb.onDelete && cb.onDelete(lane.id));
+    head.appendChild(del);
     rail.appendChild(head);
 
     const foot = document.createElement('div');
@@ -207,6 +217,7 @@ function buildLane(lane) {
         add.addEventListener('click', () => cb.onAddClip(lane.id));
         foot.appendChild(add);
     }
+
     rail.appendChild(foot);
 
     const body = document.createElement('div');
@@ -991,6 +1002,14 @@ function patchRail(row, lane) {
     if (fold) setText(fold, lane.folded ? '▸' : '▾');
     row.querySelector('.mute-btn').classList.toggle('on', lane.muted);
     row.querySelector('.solo-btn').classList.toggle('on', lane.soloed);
+
+    // Delete is refused mid-take by the engine (cancel is the verb), so
+    // disable it while recording/armed rather than offer a dead click.
+    const del = row.querySelector('.delete-btn');
+    if (del) {
+        const busy = lane.recording || lane.armed;
+        if (del.disabled !== busy) del.disabled = busy;
+    }
 
     const fxBtn = row.querySelector('.fx-btn');
     if (fxBtn) {
