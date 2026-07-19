@@ -37,3 +37,43 @@ test('mock: deleting the sole clip reverts Q (derived → fallback)', async () =
     assert.equal(vm.soleQDefinerId, null, 'no definer once empty');
     assert.equal(vm.qEstablished, false, 'Q reverts to unestablished');
 });
+
+// Provisional display: the definer frames its FULL buffer with the loop
+// as a selection overlay — so trimming never hides the rest of the clip.
+const perf = { sampleRate: 44100 };
+const definerClip = () => ({
+    id: 'c1', type: 'clip', name: 'A', duration: 200, effectiveQuantum: 100,
+    loopStart: 20, loopEnd: 120, isRecording: false,
+});
+
+test('provisional definer frames the full buffer, loop as selection', () => {
+    const vm = deriveViewModel({ nodes: [definerClip()], islandEpoch: 0, masterPos: 0, perf });
+    assert.equal(vm.provisionalDefiner, true, 'provisional');
+    // Frame = full buffer: cycleQ = duration/quantum = 200/100.
+    assert.equal(vm.cycleQ, 2, 'frame spans the whole recorded buffer');
+    const lane = vm.lanes.find(l => l.id === 'c1');
+    assert.equal(lane.isQDefiner, true);
+    assert.equal(lane.reps.length, 1, 'one full tile (no echoes)');
+    assert.equal(lane.reps[0].startQ, 0);
+    assert.equal(lane.reps[0].endQ, 2, 'tile spans the full buffer');
+    assert.equal(lane.window.startQ, 0.2, 'selection start (loopStart/quantum)');
+    assert.equal(lane.window.endQ, 1.2, 'selection end (loopEnd/quantum)');
+});
+
+test('a 2nd committed clip LOCKS: definer collapses to normal rendering', () => {
+    const c2 = { id: 'c2', type: 'clip', name: 'B', duration: 100,
+                 effectiveQuantum: 100, loopStart: 0, loopEnd: 0, isRecording: false };
+    const vm = deriveViewModel({ nodes: [definerClip(), c2], islandEpoch: 0, masterPos: 0, perf });
+    assert.equal(vm.provisionalDefiner, false, 'locked with 2 committed clips');
+    assert.equal(vm.soleQDefinerId, null, 'no sole definer');
+});
+
+test('a clip RECORDING (armed 2nd take) suspends the provisional view', () => {
+    const rec = { id: 'c2', type: 'clip', name: 'B', duration: 0,
+                  effectiveQuantum: 0, isRecording: true };
+    const vm = deriveViewModel({ nodes: [definerClip(), rec], islandEpoch: 0, masterPos: 0, perf });
+    // c1 is still the sole COMMITTED clip, but recording suspends the
+    // full-buffer view (we're transitioning to locked).
+    assert.equal(vm.soleQDefinerId, 'c1', 'c1 still the sole committed clip');
+    assert.equal(vm.provisionalDefiner, false, 'suspended while recording');
+});

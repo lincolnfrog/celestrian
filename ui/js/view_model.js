@@ -292,6 +292,19 @@ export function deriveViewModel(state, opts = {}) {
         });
     })(nodes);
     const soleQDefinerId = committedClips.length === 1 ? committedClips[0].id : null;
+
+    // While the Q-definer is provisional AND idle (nothing recording), it
+    // renders its FULL recorded buffer with the loop region drawn as a
+    // SELECTION overlay (dead air dimmed but visible) — so dragging the
+    // handles moves the selection over a stable waveform while Q/epoch
+    // update live underneath, rather than reframing to the selection and
+    // dropping the rest of the clip. It collapses to the selection (normal
+    // windowed rendering) the moment a second take records or commits.
+    const anyRecording = (function visit(ns) {
+        return (ns || []).some(n => n.isRecording || (n.nodes && visit(n.nodes)));
+    })(nodes);
+    const provisionalDefiner = !!soleQDefinerId && !anyRecording;
+    const definerNode = provisionalDefiner ? committedClips[0] : null;
     // The island epoch is published explicitly (getGraphState
     // "islandEpoch"): commit RE-BASES it on simple extensions, and the
     // root node's `origin` metadata does NOT follow — reading origin as
@@ -330,6 +343,14 @@ export function deriveViewModel(state, opts = {}) {
         if (p > 0) loopSamples = lcm(Math.round(loopSamples), Math.round(p));
     });
 
+    // Provisional Q-definer: frame the FULL recorded buffer (not the Q
+    // cycle). cycleQ = duration/quantum and the selection brackets are
+    // both ÷quantum, so as the drag changes Q nothing rescales — the
+    // waveform fills the frame and the selection moves within it.
+    if (provisionalDefiner && (definerNode.duration || 0) > 0) {
+        cycleSamples = definerNode.duration;
+    }
+
     // First-take frame: before any Q exists there is no cycle — the only
     // meaningful timeline is the growing take itself. Track it (+1 so the
     // playhead never wraps at the take's own edge) and suppress the Q
@@ -359,10 +380,8 @@ export function deriveViewModel(state, opts = {}) {
     // grows linearly past the committed LCM from a base frozen at record
     // start. The VM must NOT re-wrap it: re-deriving with mod caused the
     // "looping 1Q over and over" field bug (2026-07-09). The mock mirrors
-    // this contract (mock_backend.viewMasterPos).
-    const anyRecording = (function visit(ns) {
-        return (ns || []).some(n => n.isRecording || (n.nodes && visit(n.nodes)));
-    })(nodes);
+    // this contract (mock_backend.viewMasterPos). anyRecording is computed
+    // up top (it also gates the provisional-definer display).
     let playheadQ = Math.max(0, (state.masterPos || 0) / quantum);
 
     // GROWING FRAME, PHASE-PRESERVING: while recording, the frame shifts
@@ -492,6 +511,36 @@ export function deriveViewModel(state, opts = {}) {
             return;
         }
 
+        // Provisional Q-definer (idle, sole committed clip): render the
+        // FULL recorded buffer as ONE tile with the loop region as a
+        // SELECTION overlay — brackets + dimmed (but visible) dead air.
+        // No windowed reframe, no echo tiles: dragging the handles moves
+        // the selection over a stable waveform. Q/epoch update live
+        // underneath (the engine); this view just doesn't collapse until a
+        // second take locks it.
+        if (provisionalDefiner && node.id === soleQDefinerId) {
+            const fullQ = (node.duration || 0) / quantum;
+            const hasSel = node.loopEnd > node.loopStart;
+            const selStartQ = hasSel ? node.loopStart / quantum : 0;
+            const selEndQ = hasSel ? node.loopEnd / quantum : fullQ;
+            lanes.push(Object.assign(laneCommon(node, state), {
+                kind: 'clip',
+                depth,
+                periodQ: fullQ,
+                intrinsicQ: fullQ,          // drag/dim extent = the whole buffer
+                reps: [{ startQ: 0, endQ: fullQ, ghost: false }],  // one full tile
+                takeStartQ: 0,              // buffer starts at frame 0 (ignore epoch)
+                window: { startQ: selStartQ, endQ: selEndQ,
+                          active: true, bypassed: false, latent: false },
+                windowPhase: node.playhead || 0,  // amber cursor sweeps the selection
+                armable: false,
+                inputChannel: node.inputChannel ?? -1,
+                isQDefiner: true,
+            }));
+            if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
+            return;
+        }
+
         if (node.isRecording) {
             // The bar is [playhead − length, playhead]: under the
             // masterPos contract the playhead IS the take's end, and the
@@ -590,6 +639,7 @@ export function deriveViewModel(state, opts = {}) {
         isPlaying: !!state.isPlaying,
         qEstablished,
         soleQDefinerId,  // Q13: the sole committed clip (provisional Q), or null
+        provisionalDefiner,  // Q13: framing the full buffer to trim the loop
         sampleRate: (state.perf && state.perf.sampleRate) || 44100,
         armAtQ,
         ruler: { cycleQ, ticks },

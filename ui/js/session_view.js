@@ -817,8 +817,8 @@ function latentWindow(lane, vm) {
  * so the window reads as a subset of each tile, never as a reframe.
  */
 function buildWindowDims(o, win, lane, cycleQ) {
-    const P = Math.round(lane.intrinsicQ || 0);
-    if (P <= 0) return;
+    const intrinsicQ = lane.intrinsicQ || 0;
+    if (intrinsicQ <= 0) return;
     const addDim = (fromQ, toQ) => {
         const from = Math.max(0, fromQ);
         const to = Math.min(cycleQ, toQ);
@@ -834,13 +834,17 @@ function buildWindowDims(o, win, lane, cycleQ) {
         // Clips render raw material in ONE place — the take tile; every
         // other tile is an audible echo of the window segment and must
         // not be dimmed as "outside the window" (ghosts show what
-        // sounds, Q 2026-07-16).
+        // sounds, Q 2026-07-16). Use the RAW intrinsicQ (not rounded):
+        // the provisional Q-definer's tile is buffer/selection, a
+        // fractional number of Q, so rounding dropped its trailing dim.
         addDim(anchorQ, anchorQ + win.startQ);
-        addDim(anchorQ + win.endQ, anchorQ + P);
+        addDim(anchorQ + win.endQ, anchorQ + intrinsicQ);
         return;
     }
     // Groups: every tile shows the composite (raw material) — dim the
     // outside-window regions per period tile, on the lane's grid.
+    const P = Math.round(intrinsicQ);
+    if (P <= 0) return;
     const first = ((anchorQ % P) + P) % P;
     for (let base = first - P; base < cycleQ; base += P) {
         addDim(base, base + win.startQ);
@@ -1136,7 +1140,13 @@ export function patchSessionView(vm, aux) {
     setTitle(els.recordBtn, anyRecording ? 'Stop recording'
         : anyArmed ? 'Recording starts at the next Q boundary'
             : 'Record every empty track (or a new one)');
-    if (vm.qEstablished) {
+    if (vm.provisionalDefiner) {
+        // Q13: while trimming the sole clip, Q-units are circular (the
+        // loop IS 1Q by definition). Read out the tempo being set — the
+        // loop length in seconds — not the full-buffer frame in Q.
+        const sr = aux.sampleRate || vm.sampleRate || 44100;
+        setText(els.readout, 'loop ' + (vm.quantum / sr).toFixed(2) + ' s · sets tempo');
+    } else if (vm.qEstablished) {
         // When windows shorten the audible cycle (E-C) the playhead
         // wraps before the frame end — the readout says why
         const loopNote = !vm.frameExtended && vm.loopCycleQ < vm.lcmQ
