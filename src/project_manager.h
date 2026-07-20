@@ -81,11 +81,20 @@ class ProjectManager {
   std::vector<Info> listTemplates() const;
   std::vector<Info> listRecents(int max = 10) const;
 
+  // --- Default template (the Ableton launch ritual) ---
+  /** The last template used or saved, persisted in <base>/state.json. */
+  juce::String lastTemplateName() const;
+  /** Launch ritual: with an empty session and a remembered template on
+   * disk, load it — the app boots instrument-ready, zero clicks to
+   * record. Unborn as ever: the seed take dates the project. */
+  bool autoLoadLastTemplate();
+
  private:
   juce::File base() const;
   /** First free YYYYMMDD-NN folder for today, NN from 01. */
   juce::File nextSerialFolder() const;
   bool mirror(bool incremental);
+  void rememberLastTemplate(const juce::String &name);
 
   AudioEngine &engine_;
   juce::File base_override_;

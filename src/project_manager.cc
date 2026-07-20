@@ -93,7 +93,34 @@ bool ProjectManager::newFromTemplate(const juce::String &template_name) {
   folder_ = juce::File();
   display_name_ = "";
   created_ = "";
+  rememberLastTemplate(template_name);
   return true;
+}
+
+void ProjectManager::rememberLastTemplate(const juce::String &name) {
+  auto *o = new juce::DynamicObject();
+  o->setProperty("lastTemplate", name);
+  base().createDirectory();
+  base().getChildFile("state.json")
+      .replaceWithText(juce::JSON::toString(juce::var(o), true));
+}
+
+juce::String ProjectManager::lastTemplateName() const {
+  const auto f = base().getChildFile("state.json");
+  if (!f.existsAsFile()) return {};
+  const auto v = juce::JSON::parse(f.loadFileAsString());
+  return v.getProperty("lastTemplate", "").toString();
+}
+
+bool ProjectManager::autoLoadLastTemplate() {
+  if (engine_.islandCommittedClipCount() > 0) return false;  // not empty
+  const auto name = lastTemplateName();
+  if (name.isEmpty()) return false;
+  if (!templatesRoot().getChildFile(name).getChildFile("session.json")
+           .existsAsFile()) {
+    return false;  // remembered template no longer on disk
+  }
+  return newFromTemplate(name);
 }
 
 bool ProjectManager::saveAsTemplate(const juce::String &template_name) {
@@ -103,7 +130,10 @@ bool ProjectManager::saveAsTemplate(const juce::String &template_name) {
   opts.display_name = name;
   opts.created = juce::Time::getCurrentTime().toISO8601(true);
   opts.strip_performances = true;
-  return engine_.saveSessionTo(templatesRoot().getChildFile(name), opts);
+  const bool ok =
+      engine_.saveSessionTo(templatesRoot().getChildFile(name), opts);
+  if (ok) rememberLastTemplate(name);  // your newest rig is the default
+  return ok;
 }
 
 juce::File ProjectManager::duplicateProject() {

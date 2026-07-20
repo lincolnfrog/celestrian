@@ -172,6 +172,24 @@ class ProjectManagerTests : public juce::UnitTest {
       expectEquals(engine2.islandCommittedClipCount(), 0, "no takes");
     }
 
+    beginTest("launch ritual: the last template auto-loads (Ableton default)");
+    {
+      // saveAsTemplate above remembered "My Rig" in state.json — a
+      // fresh app boot with an empty session loads it automatically.
+      AudioEngine engine;
+      ProjectManager pm(engine);
+      pm.setRootForTest(tempBase);
+      expectEquals(pm.lastTemplateName(), juce::String("My Rig"),
+                   "the newest rig is the default");
+      expect(pm.autoLoadLastTemplate(), "boots instrument-ready");
+      expect(!pm.born(), "still unborn — the seed take dates the project");
+      const juce::var s = engine.getGraphState();
+      auto* n = nodesOf(s);
+      expect(n && n->size() == 1 &&
+                 (*n)[0].getProperty("name", "").toString() == "Kick",
+             "the rig's named tracks are on stage");
+    }
+
     beginTest("recents list, newest first, by display name");
     {
       AudioEngine engine;

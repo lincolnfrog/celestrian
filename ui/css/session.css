@@ -17,6 +17,7 @@
     --rec: #d94f30;
     --grid: #322920;
     --grid-q4: #453727;
+    --line: #3d3123;      /* hairline borders (chips, menus, bar buttons) */
     --rail-w: 208px;
 
     font-size: 16px;
@@ -54,10 +55,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 
 /* ===== Transport ===== */
 #transport {
+    position: relative;   /* anchors the project menu */
     display: flex;
     align-items: center;
-    gap: 18px;
-    padding: 10px 18px;
+    flex-wrap: nowrap;
+    gap: 14px;
+    padding: 10px 16px;
     background: var(--panel);
     border-bottom: 1px solid var(--lane-line);
 }
@@ -93,7 +96,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     font-family: ui-monospace, "SF Mono", Menlo, monospace;
     font-size: 1.25rem;
     font-variant-numeric: tabular-nums;
-    min-width: 15ch;
+    /* The readout yields before anything clips: shrink + ellipsis. */
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 #q-info {
     color: var(--text-dim);
@@ -102,7 +110,25 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: nowrap;
 }
 #transport .spacer { flex: 1; }
-#add-stack-btn { padding: 10px 16px; font-size: 0.9rem; }
+/* Right-cluster bar buttons: one height, one voice, never wrap. */
+#transport .bar-btn {
+    flex: none;
+    height: 34px;
+    padding: 0 14px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+#transport .bar-btn:hover { color: var(--text); border-color: var(--tape); }
+
+/* Narrow windows: decoration yields first, then secondary info —
+   transport controls and the readout never clip. */
+@media (max-width: 900px) { #transport .brand { display: none; } }
+@media (max-width: 680px) { #q-info { display: none; } }
 
 /* ===== Session grid ===== */
 #session {
@@ -609,18 +635,47 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-top-color: #f7efe2;
 }
 
-/* Empty state */
+/* Empty state: the HERO. With no content, record IS the product —
+   one glowing affordance, the pitch under it, projects a step below. */
 #empty-state {
     color: var(--text-dim);
     text-align: center;
-    padding: 64px 0;
+    padding: 11vh 24px 48px;
     font-size: 1rem;
     display: none;
 }
+#hero-record {
+    width: 92px;
+    height: 92px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    background: radial-gradient(circle at 38% 34%, #ff8a70, var(--rec) 62%);
+    box-shadow: 0 0 0 10px color-mix(in srgb, var(--rec) 14%, transparent),
+                0 8px 40px color-mix(in srgb, var(--rec) 35%, transparent);
+    transition: transform 140ms ease, box-shadow 140ms ease;
+}
+#hero-record:hover {
+    transform: scale(1.06);
+    box-shadow: 0 0 0 14px color-mix(in srgb, var(--rec) 18%, transparent),
+                0 10px 48px color-mix(in srgb, var(--rec) 45%, transparent);
+}
+#hero-record:active { transform: scale(0.97); }
+#hero-title {
+    margin-top: 26px;
+    font-size: 1.35rem;
+    font-weight: 600;
+    color: var(--text);
+}
+#hero-sub {
+    margin-top: 8px;
+    font-size: 0.95rem;
+    color: var(--text-dim);
+}
 /* Templates + recents on the empty state (docs/projects.md): the boot
    ritual is "load template, play the seed" — so templates lead. */
-#empty-projects { margin-top: 24px; }
-#empty-projects .proj-row { margin-top: 10px; }
+#empty-projects { margin-top: 44px; }
+#empty-projects .proj-row { margin-top: 14px; }
 #empty-projects .proj-label {
     font-size: 0.75rem;
     letter-spacing: 0.12em;
@@ -629,45 +684,30 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     margin-right: 10px;
 }
 #empty-projects button {
-    margin: 2px 4px;
-    padding: 6px 14px;
-    border-radius: 8px;
+    margin: 2px 5px;
+    padding: 8px 18px;
+    border-radius: 999px;
     border: 1px solid var(--line);
     background: none;
     color: var(--text);
     cursor: pointer;
+    font-size: 0.9rem;
+    transition: border-color 120ms ease, color 120ms ease,
+                transform 120ms ease;
 }
+#empty-projects button:active { transform: scale(0.97); }
 #empty-projects button:hover { border-color: var(--tape); color: var(--tape); }
 
-/* Project name in the transport bar: quiet identity, click to rename
-   (display name only — the folder/id never moves). */
-#project-name {
-    color: var(--text-dim);
-    font-size: 0.8rem;
-    margin-right: 12px;
-    cursor: text;
-}
-#project-name:hover { color: var(--text); }
-#project-name:empty { display: none; }
+
 
 /* Project menu (docs/projects.md): the compact "file menu" — save,
    rename, templates, recents, duplicate. */
-#project-menu-btn {
-    background: none;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    color: var(--text-dim);
-    padding: 6px 10px;
-    margin-right: 8px;
-    cursor: pointer;
-    font-size: 0.8rem;
-}
-#project-menu-btn:hover { color: var(--text); border-color: var(--tape); }
+/* (project-menu-btn shares .bar-btn; label carries the project name.) */
 #project-menu {
     display: none;
     position: absolute;
-    top: 52px;
-    right: 120px;
+    top: calc(100% + 6px);
+    right: 16px;
     z-index: 50;
     min-width: 240px;
     background: var(--panel, #241f19);

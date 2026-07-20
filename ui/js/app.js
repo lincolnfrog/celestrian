@@ -268,12 +268,14 @@ function refreshProjectInfo(announceSave = false) {
         const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
         const wasBorn = projectInfo.born;
         projectInfo = info;
-        const el = document.getElementById('project-name');
-        if (el && !el._editing) {
-            el.textContent = info.born ? info.name : '';
-            el.title = info.born
-                ? `${info.id} — click to rename (the folder never moves)`
-                : '';
+        // The menu button IS the project's identity in the chrome: quiet
+        // "Project ▾" pre-birth, the display name once it exists.
+        const btn = document.getElementById('project-menu-btn');
+        if (btn) {
+            btn.textContent = info.born ? `${info.name} ▾` : 'Project ▾';
+            btn.title = info.born
+                ? `${info.id} — save, rename, templates`
+                : 'Project — save, rename, templates';
         }
         if (!wasBorn && info.born) {
             setLogLine(`Project ${info.id} created — mirroring to disk`);
@@ -282,39 +284,6 @@ function refreshProjectInfo(announceSave = false) {
             setLogLine(`Saved ${info.name}`);
         }
     }).catch(() => {});
-}
-
-function renameProjectInline() {
-    const el = document.getElementById('project-name');
-    if (!el || !projectInfo.born || el._editing) return;
-    el._editing = true;
-    const input = document.createElement('input');
-    input.value = projectInfo.name;
-    input.className = 'mono';
-    input.style.cssText =
-        'background:none;border:1px solid var(--line);border-radius:6px;' +
-        'color:var(--text);font-size:0.8rem;padding:2px 6px;width:14ch;';
-    el.textContent = '';
-    el.appendChild(input);
-    input.focus();
-    input.select();
-    const done = commit => {
-        el._editing = false;
-        input.remove();
-        if (commit && input.value.trim()) {
-            callNative('renameProject', input.value.trim())
-                .then(() => refreshProjectInfo())
-                .then(() => setLogLine('Project renamed (folder unchanged)'));
-        } else {
-            refreshProjectInfo();
-        }
-    };
-    input.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') done(true);
-        if (ev.key === 'Escape') done(false);
-        ev.stopPropagation();
-    });
-    input.addEventListener('blur', () => done(true));
 }
 
 function renderEmptyProjects() {
@@ -396,10 +365,39 @@ function buildProjectMenu(menu) {
         menu.appendChild(d);
     };
 
+    // Inline text row (rename, save-as-template): input + one action.
+    const inlineRow = (placeholder, initial, actionLabel, onCommit) => {
+        const row = document.createElement('div');
+        row.className = 'pm-inline';
+        const input = document.createElement('input');
+        input.placeholder = placeholder;
+        input.value = initial || '';
+        const go = document.createElement('button');
+        go.textContent = actionLabel;
+        go.addEventListener('click', () => {
+            const v = input.value.trim();
+            if (v) { close(); onCommit(v); }
+        });
+        input.addEventListener('keydown', ev => {
+            if (ev.key === 'Enter') go.click();
+            if (ev.key === 'Escape') close();
+            ev.stopPropagation();
+        });
+        row.append(input, go);
+        menu.appendChild(row);
+    };
+
     const born = projectInfo.born;
     item(born ? `Save now (${projectInfo.name})` : 'Save now — creates today’s project',
         () => callNative('saveProjectNow').then(() => refreshProjectInfo(true)));
-    item('Rename project…', renameProjectInline, !born);
+    if (born) {
+        head('Rename (the folder never moves)');
+        inlineRow('project name', projectInfo.name, 'Rename', name =>
+            callNative('renameProject', name).then(() => {
+                setLogLine('Project renamed (folder unchanged)');
+                refreshProjectInfo();
+            }));
+    }
     item('Duplicate project (next serial)', () =>
         callNative('duplicateProject').then(id => {
             setLogLine(id ? `Forked to ${id} — the original stays as a checkpoint`
@@ -414,28 +412,12 @@ function buildProjectMenu(menu) {
 
     sep();
     head('Save as template');
-    const row = document.createElement('div');
-    row.className = 'pm-inline';
-    const input = document.createElement('input');
-    input.placeholder = 'e.g. My Rig';
-    const go = document.createElement('button');
-    go.textContent = 'Save';
-    go.addEventListener('click', () => {
-        const name = input.value.trim();
-        if (!name) return;
+    inlineRow('e.g. My Rig', '', 'Save', name =>
         callNative('saveAsTemplate', name).then(ok => {
-            setLogLine(ok ? `Template "${name}" saved (structure + inputs, no audio)`
+            setLogLine(ok ? `Template "${name}" saved — it loads automatically next launch`
                           : 'Template save failed');
-            close();
             renderEmptyProjects();
-        });
-    });
-    input.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') go.click();
-        ev.stopPropagation();
-    });
-    row.append(input, go);
-    menu.appendChild(row);
+        }));
 
     callNative('listTemplates').then(raw => {
         const templates = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -464,8 +446,11 @@ function buildProjectMenu(menu) {
 }
 
 function initProjectUI() {
-    const el = document.getElementById('project-name');
-    if (el) el.addEventListener('click', renameProjectInline);
+    // The hero record button IS the record button (one verb, two homes:
+    // the transport and the empty-state hero).
+    const hero = document.getElementById('hero-record');
+    if (hero) hero.addEventListener('click', () =>
+        document.getElementById('record-btn').click());
     const btn = document.getElementById('project-menu-btn');
     const menu = document.getElementById('project-menu');
     if (btn && menu) {

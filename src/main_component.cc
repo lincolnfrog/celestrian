@@ -426,10 +426,11 @@ MainComponent::MainComponent()
                     completion(true);
                   })) {
   audio_engine.initialiseAudioDevice();
-  // Boot into the TRUE empty state (docs/projects.md): the empty-state
-  // panel is where templates and recents live, and record-on-empty
-  // already creates a fresh track on demand — a pre-made default
-  // stack+clip only hid the project surface.
+  // The launch ritual (docs/projects.md): auto-load the LAST template
+  // used or saved — the app boots instrument-ready, zero clicks to
+  // record. With no template yet, the empty-state hero carries the
+  // record affordance (record-on-empty creates a fresh track).
+  project_manager_.autoLoadLastTemplate();
 
   addAndMakeVisible(web_browser);
 

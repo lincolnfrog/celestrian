@@ -25,13 +25,13 @@
             <button id="play-btn" title="Play / stop (space)">▶</button>
             <button id="record-btn" title="Record"></button>
             <span id="position-readout">—</span>
-            <span id="q-info"></span>
             <span class="spacer"></span>
-            <span id="project-name" class="mono"
-                  title="Project (click to rename — the folder never moves)"></span>
-            <button id="project-menu-btn" title="Project menu">Project ▾</button>
+            <span id="q-info"></span>
+            <button id="project-menu-btn" class="bar-btn"
+                    title="Project — save, rename, templates">Project ▾</button>
+            <button id="add-stack-btn" class="bar-btn"
+                    title="Add a track group (a stack of tracks that mix together)">＋ Track group</button>
             <div id="project-menu" class="mono"></div>
-            <button id="add-stack-btn">+ New Stack</button>
         </div>
 
         <!-- SESSION -->
@@ -45,7 +45,11 @@
                 <div id="playhead"></div>
             </div>
             <div id="empty-state">
-                <div id="empty-msg">No takes yet — hit record, or + New Stack to build a kit.</div>
+                <button id="hero-record"
+                        title="Record — the first take sets the tempo"></button>
+                <div id="hero-title">Record your first loop</div>
+                <div id="hero-sub">The first take sets the tempo — trim it
+                    after, then build on top of it.</div>
                 <div id="empty-projects"></div>
             </div>
         </div>
