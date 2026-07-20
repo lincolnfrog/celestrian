@@ -95,65 +95,27 @@ async function stopClips(clips) {
     for (const c of clips) await callNative('stopRecordingInNode', c.id);
 }
 
-/* ARM = STAGING (owner ruling 2026-07-19g): the ring is pure VIEW STATE
- * — clicking it never touches the engine, nothing records. The
- * transport ● is the ONLY trigger: it records the staged tracks, or
- * every empty track when nothing is staged (so the boot flow stays one
- * click). A ring on a RECORDING track stops that track. */
-const stagedIds = new Set();
-
-function onArm(lane) {
+/* PER-TRACK RECORD (owner ruling 2026-07-19h): there is NO global
+ * record button — the track's ● is the record verb, which keeps the
+ * core journey direct: song looping → ＋ Track → hit its ● → recording
+ * at the next Q boundary. A group's ● records all its empty tracks
+ * (the drum-mic case); a recording track's ● stops it. */
+async function onArm(lane) {
     const node = lastNodesById.get(lane.id);
     if (!node) return;
     const clips = clipsUnder(node);
-    const hot = clips.filter(isHotClip);
-    if (hot.length > 0) {
-        stopClips(hot).then(() => setLogLine('Stopped recording'));
-        return;
-    }
-    const armable = clips.filter(isArmableClip);
-    if (armable.length === 0) return;
-    const allStaged = armable.every(c => stagedIds.has(c.id));
-    armable.forEach(c => allStaged ? stagedIds.delete(c.id)
-                                   : stagedIds.add(c.id));
-    const n = [...stagedIds].length;
-    setLogLine(n ? `${n} track${n > 1 ? 's' : ''} armed — ● records`
-                 : 'Disarmed');
-}
-
-/** Global ●: records the STAGED tracks; with none staged, every empty
- * track (Q7 group record); with nothing armable, a fresh track. */
-async function onRecord() {
-    const roots = [...lastNodesById.values()].filter(n => !findParentIn(n));
-    const clips = [];
-    roots.forEach(r => clipsUnder(r, clips));
-
     const hot = clips.filter(isHotClip);
     if (hot.length > 0) {
         await stopClips(hot);
         setLogLine('Stopped recording');
         return;
     }
-    const armable = clips.filter(isArmableClip);
-    const targets = stagedIds.size
-        ? armable.filter(c => stagedIds.has(c.id))
-        : armable;
-    if (targets.length > 0) {
-        await armClips(targets);
-        stagedIds.clear();  // staging is consumed by the take
-        setLogLine(targets.length > 1
-            ? `Recording ${targets.length} empty tracks (full ones just play)`
-            : 'Recording');
-        return;
-    }
-    // Nothing armable anywhere: record into a fresh top-level track
-    const clipId = await callNative('createNode', 'clip', '');
-    if (clipId) {
-        await callNative('startRecordingInNode', clipId);
-        setLogLine('Recording into a new track');
-    } else {
-        setLogLine('New track created — hit ● to record');
-    }
+    const targets = clips.filter(isArmableClip);
+    if (targets.length === 0) return;
+    await armClips(targets);
+    setLogLine(targets.length > 1
+        ? `Recording ${targets.length} empty tracks (full ones just play)`
+        : 'Recording');
 }
 
 // A node is a root iff nothing in the index has it as a child
@@ -243,7 +205,7 @@ async function startPolling() {
                         pendingFetch.add(n.id);
                     }
                 }
-                const vm = deriveViewModel(state, { fxOpen, staged: stagedIds });
+                const vm = deriveViewModel(state, { fxOpen });
                 patchSessionView(vm, {
                     livePeaks,
                     pendingFetch,
@@ -427,8 +389,22 @@ export function initApp() {
         onFold: id => callNative('toggleStackExpand', id),
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
-        onAddStack: () => callNative('createNode', 'stack', ''),
         onAddTrack: () => callNative('createNode', 'clip', ''),
+        // Drag-to-group (2026-07-19h): clip target → combine into a new
+        // group; group target → move the dragged track inside (append).
+        onDropLane: async (draggedId, target) => {
+            const dragged = lastNodesById.get(draggedId);
+            const tNode = lastNodesById.get(target.id);
+            if (!dragged || !tNode) return;
+            if (tNode.type === 'stack') {
+                await callNative('reorderNode', draggedId, target.id,
+                    (tNode.nodes || []).length);
+                setLogLine(`Moved "${dragged.name}" into "${tNode.name}"`);
+            } else {
+                await callNative('combineNodes', draggedId, target.id);
+                setLogLine(`Grouped "${dragged.name}" with "${tNode.name}" — rename the group on its rail`);
+            }
+        },
         onAddClip: groupId => callNative('createNode', 'clip', groupId),
         onDelete: async id => {
             // No confirm: undo is the safety net (edits-as-events).
@@ -478,7 +454,6 @@ export function initApp() {
         onSetEffectParam: (id, fx, param, value) =>
             callNative('setEffectParam', id, fx, param, value),
         onArm,
-        onRecord,
     });
     wireStatusStrip();
 

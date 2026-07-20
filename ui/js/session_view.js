@@ -49,7 +49,6 @@ export function initSessionView(callbacks) {
     cb = callbacks;
     els = {
         playBtn: document.getElementById('play-btn'),
-        recordBtn: document.getElementById('record-btn'),
         readout: document.getElementById('position-readout'),
         qInfo: document.getElementById('q-info'),
         ruler: document.getElementById('ruler'),
@@ -59,16 +58,10 @@ export function initSessionView(callbacks) {
         gridArea: document.getElementById('grid-area'),
     };
     els.playBtn.addEventListener('click', () => cb.onTogglePlay());
-    // Global record = group record over the island (Q7): records every
-    // armable (empty) track; full ones just play. With nothing armable
-    // it creates a fresh track and records into it.
-    els.recordBtn.addEventListener('click', () => cb.onRecord());
     // Creation lives in the CANVAS (2026-07-19g): the persistent row
     // under the lanes makes tracks/groups; the transport is transport.
     document.getElementById('create-track-btn')
         .addEventListener('click', () => cb.onAddTrack());
-    document.getElementById('create-group-btn')
-        .addEventListener('click', () => cb.onAddStack());
 
     // Input menus dismiss on outside press or Escape
     document.addEventListener('pointerdown', e => {
@@ -137,6 +130,35 @@ function buildLane(lane) {
     const rail = document.createElement('div');
     rail.className = 'lane-rail';
 
+    // GROUPING BY DRAG (owner ruling 2026-07-19h): grouping is a
+    // post-hoc gesture, not an upfront decision — drag one track's rail
+    // onto another's. Clip target → the two combine into a new group
+    // (engine Combine edit, undoable); group target → the dragged track
+    // moves inside. Nested groups fall out (drop onto a track that
+    // lives in a group combines in place).
+    rail.draggable = true;
+    rail.addEventListener('dragstart', e => {
+        if (row._renaming) { e.preventDefault(); return; }
+        e.dataTransfer.setData('text/plain', row._lane.id);
+        e.dataTransfer.effectAllowed = 'move';
+        rail.classList.add('dragging');
+    });
+    rail.addEventListener('dragend', () => rail.classList.remove('dragging'));
+    rail.addEventListener('dragover', e => {
+        e.preventDefault();  // allow drop
+        e.dataTransfer.dropEffect = 'move';
+        rail.classList.add('drop-target');
+    });
+    rail.addEventListener('dragleave', () => rail.classList.remove('drop-target'));
+    rail.addEventListener('drop', e => {
+        e.preventDefault();
+        rail.classList.remove('drop-target');
+        const draggedId = e.dataTransfer.getData('text/plain');
+        const target = row._lane;
+        if (!draggedId || draggedId === target.id) return;
+        cb.onDropLane(draggedId, target);
+    });
+
     const head = document.createElement('div');
     head.className = 'rail-head';
     if (lane.kind === 'group') {
@@ -193,7 +215,7 @@ function buildLane(lane) {
     // ring fills red when armed; the glyph stays empty at rest.
     const arm = document.createElement('button');
     arm.className = 'rail-btn arm-btn';
-    arm.title = 'Arm — this track records when you hit ● in the transport';
+    arm.title = 'Record into this track';
     arm.addEventListener('click', () => cb.onArm(row._lane));
 
     const mute = document.createElement('button');
@@ -1031,14 +1053,13 @@ function patchRail(row, lane) {
                 ? `Record all ${g.armable} empty track${g.armable > 1 ? 's' : ''} (full ones just play)`
                 : 'Stop recording');
     } else {
-        arm.classList.toggle('on', lane.armed || lane.staged);
+        arm.classList.toggle('on', lane.armed);
         if (arm.disabled !== !lane.armable) arm.disabled = !lane.armable;
         setTitle(arm, !lane.armable
             ? 'Already has a take (re-recording arrives with takes)'
             : lane.recording ? 'Stop recording'
             : lane.armed ? 'Recording starts at the next Q boundary'
-            : lane.staged ? 'Armed — ● in the transport records this track'
-                : 'Arm — this track records when you hit ●');
+                : 'Record into this track');
     }
 
     // Sub-line: the period only. Status is the red word on the name row.
@@ -1169,12 +1190,6 @@ export function patchSessionView(vm, aux) {
     setText(els.playBtn, vm.isPlaying ? '⏸' : '▶');
     els.playBtn.classList.toggle('playing', vm.isPlaying);
     const anyRecording = vm.lanes.some(l => l.recording);
-    const anyArmed = vm.lanes.some(l => l.armed && !l.recording);
-    els.recordBtn.classList.toggle('recording', anyRecording);
-    els.recordBtn.classList.toggle('armed', anyArmed);
-    setTitle(els.recordBtn, anyRecording ? 'Stop recording'
-        : anyArmed ? 'Recording starts at the next Q boundary'
-            : 'Record every empty track (or a new one)');
     if (vm.provisionalDefiner) {
         // Q13: while trimming the sole clip, Q-units are circular (the
         // loop IS 1Q by definition). Read out the tempo being set — the

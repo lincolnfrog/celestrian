@@ -63,22 +63,24 @@ whichever instrument wants to start, Q is born, build.
   and saves over Default (the Ableton default-set ritual). **The app
   never boots into an empty screen, and recording is always one
   click.**
-- ONE record button. The transport's red circle is the only record
-  verb on screen; per-track arm controls are small RINGS (state
-  toggles — filled when armed) so "what will record" is glanceable
-  without competing with the verb. (Field: three identical red dots
-  read as three mystery record buttons.)
-- **Arm = STAGING** (owner refinement, same day): the ring is pure
-  view state — clicking it records nothing. The transport ● records
-  the staged tracks; with none staged, every empty track (so boot →
-  ● stays one click); on a recording track the ring stops that track.
-  Staging is consumed by the take.
+- **PER-TRACK RECORD, no global button** (owner ruling 2026-07-19h,
+  supersedes the same-day staging model): the track's ● is THE record
+  verb — the core journey is "song looping → ＋ Track → hit its ● →
+  recording at the next boundary", and a global button optimized the
+  first-run demo at that journey's expense. A group's ● records all
+  its empty tracks (the drum-mic case); a recording track's ● stops
+  it; full tracks disable it (no overdub).
 - **The tempo track is explicit**: while Q is provisional, the
   definer's rail wears a red TEMPO chip; the badge retires when a
   second take locks the island (Q belongs to the island, not a track).
-- **Creation lives in the canvas**: a persistent ＋ Track / ＋ Group
-  row under the lanes (groups keep their internal add-track rows for
-  nesting). The transport carries no creation buttons.
+- **Creation lives in the canvas**: a persistent ＋ Track row under
+  the lanes. **Groups are a post-hoc GESTURE, not an upfront
+  decision** (owner ruling): drag one track's rail onto another's —
+  clip target → the two combine into a new group (undoable Combine
+  edit); group target → the dragged track moves inside; nesting falls
+  out (drop onto a track inside a group combines in place). Groups
+  keep their internal add-track rows. The transport carries no
+  creation or record buttons — it is transport + project identity.
 - No onboarding copy in the product. The empty state (only reachable
   by deleting every track) is one dry line.
 
@@ -98,7 +100,5 @@ whichever instrument wants to start, Q is born, build.
   cleanup pass on close/save later).
 - Device-name-aware input fallback on cross-machine load (today:
   channel indices load as-is).
-- Default-template auto-open on launch (today: the empty state offers
-  templates one click away).
 - Cross-rate load (the QTime storage makes it possible without a
   re-cut; not yet implemented).

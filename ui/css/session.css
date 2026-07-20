@@ -176,6 +176,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     grid-template-columns: var(--rail-w) 1fr;
     gap: 12px;
 }
+/* Drag-to-group feedback */
+.lane-rail.dragging { opacity: 0.45; }
+.lane-rail.drop-target {
+    outline: 2px dashed var(--tape);
+    outline-offset: -2px;
+}
 .lane-rail {
     display: flex;
     flex-direction: column;
