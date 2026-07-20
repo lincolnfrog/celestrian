@@ -48,6 +48,10 @@ void ProjectManager::tick() {
   // Transient capture state is never saved; try again next tick.
   if (engine_.hasActiveTake()) return;
 
+  // D4: return arm-time virtual reservations to exact size (idle
+  // committed takes only; cheap no-op when there is nothing to do).
+  engine_.compactIdleTakes();
+
   if (!born()) {
     // BIRTH at the first committed take (owner ruling): the moment there
     // is a performance worth keeping, it is on disk — crash-safe from

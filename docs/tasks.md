@@ -111,17 +111,23 @@ with kernel.md:
   picked by the AUDIO thread" in clip_node_tests.
 - [ ] **D3: `getWaveform` race** — message thread reads the clip buffer
   while recording writes it (long-known P3 item).
-- [ ] **D4: Silent 60 s recording wall** — every clip preallocates 60 s
-  (constructor, `sample_rate * 60`); when full, capture silently stops
-  WRITING while the take stays "recording" — a zombie state with a
-  frozen write position. **Owner-flagged 2026-07-19 as a real-world
-  blocker.** Plan: (quick) allocate the capture buffer at ARM to a
-  configurable cap (message thread, clip empty — no RT race) and treat
-  wall-hit as an auto stop-request (existing PendingStop machinery →
-  clean commit at the last boundary + UI notice); (proper, pairs with
-  Tier 3 Step 3) compact-on-commit — an exact-size immutable content
-  buffer swapped in via the reclaimer, so long scratch takes don't pin
-  their arm-time allocation forever.
+- [x] **D4: The recording wall is GONE** ✅ done 2026-07-19i (owner
+  ruling: no fixed limit — memory is the only limit): at ARM the
+  content buffer becomes a huge VIRTUAL reservation (~6.7 h at
+  44.1 kHz, `ClipNode::kMaxTakeSamples`; address space only — the OS
+  commits pages as capture writes, so a take costs exactly what it
+  records). Post-commit COMPACTION (`AudioEngine::compactIdleTakes`,
+  app heartbeat) swaps an exact-size buffer in atomically — content is
+  behind ONE atomic pointer, old buffers retire via the reclaimer, so
+  the swap is safe under an actively rendering clip; keep =
+  recordedLength so a lock-collapsed definer retains its material for
+  uncollapse. The integrity guard at the reservation bound
+  auto-finishes CLEANLY at the last boundary that fits (capHit
+  surfaced; never a silent zombie). loadCommitted sizes exactly (long
+  saved takes no longer truncate to a prior capacity). Pinned by
+  `tests/take_capacity_tests.cc` (70 s take intact; compaction
+  bit-identical; wall-guard clean commit; collapse+compaction+
+  uncollapse round trip).
 - [x] **D5: Epoch re-base scope mismatch** — ✅ fixed 2026-07-16 by
   commit-as-an-event: the island root scans exactly its own subtree in
   `takeCommitted`; `focused_node` no longer participates.

@@ -10,9 +10,13 @@ namespace celestrian {
 
 ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
     : AudioNode(std::move(node_name)), sample_rate(source_sample_rate) {
-  // Initial size of 60 seconds
-  buffer.setSize(1, (int)(sample_rate * 60));
-  buffer.clear();
+  // Baseline: one second. The real capacity arrives at ARM as a huge
+  // virtual reservation (see the D4 block in the header) and returns
+  // to exact size at post-commit compaction — idle clips cost nothing.
+  content_owned_ =
+      std::make_unique<juce::AudioBuffer<float>>(1, (int)sample_rate);
+  content_owned_->clear();
+  content_.store(content_owned_.get());
   fx_scratch_.resize(4096, 0.0f);  // typical max device block
 }
 
@@ -75,6 +79,37 @@ void ClipNode::control(const float *const *input_channels,
 
   // Handle Recording (Capturing or PendingStop)
   if (isRecording()) {
+    // ONE content load per control pass (the message thread swaps this
+    // pointer only for idle clips, never mid-capture).
+    juce::AudioBuffer<float> &buffer = *content_.load();
+
+    // D4 wall guard — integrity, not policy: the arm-time reservation
+    // is ~hours, but IF capture ever nears it, finish CLEANLY at the
+    // last boundary that fits instead of silently dropping audio.
+    if (recState() == RecState::Capturing && !stop_requested_.load()) {
+      const int64_t cap = buffer.getNumSamples();
+      const int64_t wp = write_position.load();
+      const int64_t Q =
+          context.quantum > 0 ? context.quantum : getEffectiveQuantum();
+      if (Q > 0) {
+        if (cap - wp <= Q + 8192) {  // next boundary must still fit
+          stop_requested_.store(true);
+          cap_hit_.store(true);
+          RtLog::instance().post(
+              "ClipNode: take reached the reservation bound — finishing "
+              "at the last clean boundary");
+        }
+      } else if (cap - wp <= context.num_samples) {
+        // Pre-Q first take: commit at the wall (duration = written).
+        commit_master_pos.store(context.master_pos);
+        cap_hit_.store(true);
+        RtLog::instance().post(
+            "ClipNode: first take reached the reservation bound — "
+            "committed at %lld samples", (long long)wp);
+        commitRecording(-1, &context);
+        return;
+      }
+    }
     if (context.is_recording && capture_uses_ring_ &&
         context.prerecord_ring != nullptr &&
         context.prerecord_ring_channels > 0) {
@@ -184,6 +219,9 @@ void ClipNode::control(const float *const *input_channels,
 
 void ClipNode::render(float *const *output_channels, int num_output_channels,
                       const ProcessContext &context) const {
+  // ONE content load per render (compaction may swap the pointer under
+  // a playing clip; the retired buffer outlives this block).
+  const juce::AudioBuffer<float> &buffer = *content_.load();
   // The kernel playback equation (§2.3 render phase): a pure function
   // of (buffer, origin, window, t). The commit block renders SILENT
   // (committed_this_block_) — identical to the historical process(),
@@ -417,7 +455,19 @@ void ClipNode::startRecording() {
   if (recState() != RecState::Idle) return;  // idempotent; keeps the
                                              // island take counter exact
 
-  buffer.clear();
+  // D4: VIRTUAL reservation — address space only, deliberately not
+  // cleared (touching the pages would commit them; capture writes are
+  // the only thing that should). Nothing ever reads past
+  // write_position, so the uninitialized tail is unreachable.
+  {
+    auto &buffer = *content_.load();
+    const int want = (int)std::min<int64_t>(
+        kMaxTakeSamples, std::numeric_limits<int>::max() - 64);
+    if (buffer.getNumSamples() < want) {
+      buffer.setSize(1, want, false, false, false);
+    }
+  }
+  cap_hit_.store(false);
   write_position.store(0);
   read_position.store(0);
   current_max_peak.store(0.0f);
@@ -562,6 +612,7 @@ void ClipNode::startPlayback() {
 void ClipNode::stopPlayback() { is_playing.store(false); }
 
 juce::var ClipNode::getWaveform(int num_peaks) const {
+  const juce::AudioBuffer<float> &buffer = *content_.load();
   juce::Array<juce::var> peaks;
   int total_samples = (int)duration_samples;
   if (total_samples <= 0) total_samples = write_position.load();

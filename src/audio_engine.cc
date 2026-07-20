@@ -23,6 +23,40 @@ AudioEngine::AudioEngine() {
   prerecord_ring_.clear();
 }
 
+void AudioEngine::compactIdleTakes() {
+  // D4 compaction (message thread): a committed take shrinks to exactly
+  // its recorded material and the arm-time virtual reservation returns
+  // to the OS. Safe under an actively RENDERING clip: content is
+  // reached through one atomic pointer, and the old buffer retires
+  // through the reclaimer (an in-flight callback may read it for ≤2
+  // more callbacks — Step 3 lifetime discipline). Armed/recording
+  // clips are never touched; keep = recordedLength (not duration!) so
+  // a lock-collapsed definer keeps its dead air for uncollapse.
+  const std::function<void(celestrian::StackNode &)> visit =
+      [&](celestrian::StackNode &stack) {
+        for (const auto &child : stack.ownedChildren()) {
+          if (child->getNodeType() == celestrian::NodeType::Stack) {
+            visit(static_cast<celestrian::StackNode &>(*child));
+            continue;
+          }
+          auto &clip = static_cast<celestrian::ClipNode &>(*child);
+          if (clip.isArmedOrRecording()) continue;
+          const int64_t keep = std::max<int64_t>(
+              clip.recordedLength(), (int64_t)clip.getSampleRate());
+          // Compact only when the win is real (≥ ~4 MB of samples).
+          if (clip.contentCapacity() - keep < (int64_t{1} << 20)) continue;
+          auto fresh =
+              std::make_unique<juce::AudioBuffer<float>>(1, (int)keep);
+          fresh->copyFrom(0, 0, clip.getAudioBuffer(), 0, 0,
+                          (int)std::min<int64_t>(
+                              keep, clip.getAudioBuffer().getNumSamples()));
+          juce::AudioBuffer<float> *old = clip.swapContent(std::move(fresh));
+          retire([old] { delete old; });
+        }
+      };
+  visit(*root_node);
+}
+
 void AudioEngine::publishGraph() {
   const auto *fresh = celestrian::buildGraphSnapshot(*root_node);
   const auto *old = graph_snapshot_.exchange(fresh, std::memory_order_acq_rel);

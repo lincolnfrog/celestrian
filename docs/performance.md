@@ -45,6 +45,16 @@ equation; mutables are DSP scratch + playhead telemetry only).
 `AudioNode::process` is the non-virtual sequencer; never interleave a
 decision into a render path.
 
+**Take content storage (D4, 2026-07-19i):** a clip's content buffer is
+reached through ONE atomic pointer. Arm makes it a huge VIRTUAL
+reservation (message thread, clip idle — pages commit as capture
+writes; deliberately never cleared, and nothing reads past
+write_position). Post-commit compaction swaps an exact-size copy in on
+the message thread and retires the old buffer via the reclaimer — legal
+under an actively rendering clip because render loads the pointer once
+per block. Never resize or swap a buffer the audio thread might be
+CAPTURING into (compaction skips armed/recording clips).
+
 **Threading split after Step 3:** node ownership vectors
 (`StackNode::ownedChildren`) and the traversal virtuals
 (`getIntrinsicDuration`, `getEffectivePeriod`, `findNodeByUuid`,

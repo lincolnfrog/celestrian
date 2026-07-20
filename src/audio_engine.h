@@ -152,6 +152,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                                         dir, opts);
   }
   bool hasActiveTake() const { return root_node->hasActiveTake(); }
+  /** D4 compaction: shrink idle committed takes to their recorded
+   * material (atomic content swap + reclaimer retire). Message thread;
+   * driven by the app heartbeat (ProjectManager::tick) and tests. */
+  void compactIdleTakes();
   /** Number of COMMITTED clips in the island (ClipNode, duration>0),
    * recursive. Drives provisional-Q mutability (Q13 non-sticky) and the
    * project-birth trigger (ProjectManager). Message thread. */

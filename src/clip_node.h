@@ -122,7 +122,7 @@ class ClipNode : public AudioNode {
   /**
    * Returns the total recorded sample count in the buffer.
    */
-  int getSampleCount() const { return buffer.getNumSamples(); }
+  int getSampleCount() const { return content_.load()->getNumSamples(); }
 
   /**
    * Returns the atomic write position for the recording process.
@@ -140,7 +140,40 @@ class ClipNode : public AudioNode {
    * there). */
   void commitRecording(int64_t final_duration = -1,
                        const ProcessContext *ctx = nullptr);
-  const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
+  const juce::AudioBuffer<float> &getAudioBuffer() const {
+    return *content_.load();
+  }
+
+  // --- Take content storage (D4: NO recording wall) ---
+  // The content buffer is reached through ONE atomic pointer. At ARM it
+  // becomes a huge VIRTUAL reservation (address space only — the OS
+  // commits physical pages as capture writes them), so a take's memory
+  // cost is exactly what it records and the only real limit is the
+  // machine. The reservation bound (~6.7 h at 44.1 kHz; juce sample
+  // counts are int) exists for integrity, not policy: reaching it
+  // auto-finishes CLEANLY at the last boundary that fits (never a
+  // silent zombie). After commit the engine COMPACTS: an exact-size
+  // copy swaps in atomically (safe under an actively rendering clip)
+  // and the old buffer retires through the reclaimer (Step 3 lifetime
+  // discipline).
+  static constexpr int64_t kMaxTakeSamples = (int64_t{1} << 30);
+  int64_t contentCapacity() const { return content_.load()->getNumSamples(); }
+  /** Total recorded samples (the full take, ≥ duration after a
+   * lock-collapse — compaction must keep it all for uncollapse). */
+  int64_t recordedLength() const { return write_position.load(); }
+  /** Message thread: swap in a replacement content buffer (compaction).
+   * The caller retires the returned old buffer — an in-flight render
+   * may still be reading it this block. */
+  juce::AudioBuffer<float> *swapContent(
+      std::unique_ptr<juce::AudioBuffer<float>> fresh) {
+    juce::AudioBuffer<float> *old = content_owned_.release();
+    content_owned_ = std::move(fresh);
+    content_.store(content_owned_.get());
+    return old;
+  }
+  /** TEST-ONLY: mutable content access (wall-guard simulations). */
+  juce::AudioBuffer<float> &contentForTest() { return *content_.load(); }
+  bool capHit() const { return cap_hit_.load(); }
 
   // --- Q13 lock-collapse (owner ruling 2026-07-19) ---
   /** Where this clip's committed content begins inside the storage
@@ -180,7 +213,11 @@ class ClipNode : public AudioNode {
    */
   void loadCommitted(const juce::AudioBuffer<float> &audio,
                      int64_t context_cycle) {
-    const int n = std::min(audio.getNumSamples(), buffer.getNumSamples());
+    // Exact-size: a saved take is never truncated to some prior
+    // capacity (the old fixed 60 s buffer clipped long takes on load).
+    auto &buffer = *content_.load();
+    const int n = audio.getNumSamples();
+    if (n > 0) buffer.setSize(1, n, false, false, false);
     buffer.clear();
     if (n > 0 && audio.getNumChannels() > 0)
       buffer.copyFrom(0, 0, audio, 0, 0, n);
@@ -191,7 +228,12 @@ class ClipNode : public AudioNode {
   }
 
  private:
-  juce::AudioBuffer<float> buffer;
+  // Content storage (see the D4 block above): owned on the message
+  // thread, read through the atomic by both threads.
+  std::unique_ptr<juce::AudioBuffer<float>> content_owned_;
+  std::atomic<juce::AudioBuffer<float> *> content_{nullptr};
+  // Set when the take auto-finished at the reservation bound.
+  std::atomic<bool> cap_hit_{false};
 
   // Mono scratch for the effect rack: playback renders here, the rack
   // processes in place, then the result sums into the parent. Sized in
