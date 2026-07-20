@@ -112,6 +112,23 @@ juce::String ProjectManager::lastTemplateName() const {
   return v.getProperty("lastTemplate", "").toString();
 }
 
+void ProjectManager::ensureLaunchSession() {
+  if (autoLoadLastTemplate()) return;
+  if (engine_.islandCommittedClipCount() > 0) return;  // already loaded
+  // First run: one track, ready to record — then persist it as the
+  // "Default" template so every later boot (and the user's edits to
+  // their setup, saved over it) follow the same path.
+  engine_.createNode("clip", "");
+  const juce::var s = engine_.getGraphState();
+  if (auto *nodes = s.getProperty("nodes", juce::var()).getArray()) {
+    if (nodes->size() > 0) {
+      engine_.renameNode(
+          nodes->getFirst().getProperty("id", "").toString(), "Track 1");
+    }
+  }
+  saveAsTemplate("Default");
+}
+
 bool ProjectManager::autoLoadLastTemplate() {
   if (engine_.islandCommittedClipCount() > 0) return false;  // not empty
   const auto name = lastTemplateName();

@@ -55,12 +55,27 @@ whichever instrument wants to start, Q is born, build.
 - ⌘S remains as "checkpoint now" — and an explicit ⌘S before the
   first take is intent enough to birth the project early.
 
+## The launch ritual (owner-refined 2026-07-19g)
+
+- Boot = the last template used or saved. On the very first run, the
+  app BUILDS the minimal **Default** template (one ready track,
+  "Track 1"), saves it, and boots into it — the user edits their setup
+  and saves over Default (the Ableton default-set ritual). **The app
+  never boots into an empty screen, and recording is always one
+  click.**
+- ONE record button. The transport's red circle is the only record
+  verb on screen; per-track arm controls are small RINGS (state
+  toggles — filled when armed) so "what will record" is glanceable
+  without competing with the verb. (Field: three identical red dots
+  read as three mystery record buttons.)
+- No onboarding copy in the product. The empty state (only reachable
+  by deleting every track) is one dry line.
+
 ## Surfaces
 
-- Transport bar: display name (click to rename inline; the ID lives in
-  the tooltip). Hidden until birth.
-- Empty state: **Start from template** (the boot ritual) + **Recent
-  projects** (newest first, display names).
+- Transport bar: the project name IS the menu button
+  ("20260719-01 ▾"); rename is an inline row in the menu.
+- Templates and recents live in the Project menu.
 - Bridge: `getProjectInfo`, `renameProject`, `saveProjectNow`,
   `listTemplates`, `listRecentProjects`, `newProjectFromTemplate`,
   `openProjectPath`, `saveAsTemplate`, `duplicateProject` (3-place

@@ -173,9 +173,13 @@ function buildLane(lane) {
     // Arm/record: on clips it starts/stops the take; on groups it arms
     // every ARMABLE child (Q7 — arm targets emptiness). State is set in
     // patchRail; the click hands the current lane back to app.js.
+    // Arm is a STATE TOGGLE, not a record button — the transport's red
+    // circle is the one record verb (owner ruling 2026-07-19: three
+    // identical red dots read as three mystery record buttons). The
+    // ring fills red when armed; the glyph stays empty at rest.
     const arm = document.createElement('button');
     arm.className = 'rail-btn arm-btn';
-    arm.textContent = '●';
+    arm.title = 'Arm — this track records when you hit ● in the transport';
     arm.addEventListener('click', () => cb.onArm(row._lane));
 
     const mute = document.createElement('button');

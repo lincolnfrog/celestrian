@@ -89,6 +89,13 @@ class ProjectManager {
    * record. Unborn as ever: the seed take dates the project. */
   bool autoLoadLastTemplate();
 
+  /** Boot: last template if there is one; otherwise build the canonical
+   * minimal session (ONE ready track) and save it as the "Default"
+   * template — from then on the user edits their setup and saves over
+   * it (the Ableton default-set ritual). The app NEVER boots into an
+   * empty screen. */
+  void ensureLaunchSession();
+
  private:
   juce::File base() const;
   /** First free YYYYMMDD-NN folder for today, NN from 01. */

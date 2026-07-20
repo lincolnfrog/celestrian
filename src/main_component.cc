@@ -426,11 +426,11 @@ MainComponent::MainComponent()
                     completion(true);
                   })) {
   audio_engine.initialiseAudioDevice();
-  // The launch ritual (docs/projects.md): auto-load the LAST template
-  // used or saved — the app boots instrument-ready, zero clicks to
-  // record. With no template yet, the empty-state hero carries the
-  // record affordance (record-on-empty creates a fresh track).
-  project_manager_.autoLoadLastTemplate();
+  // The launch ritual (docs/projects.md): boot into the last template —
+  // or, on first run, build the minimal Default template (one ready
+  // track) and boot into that. Either way: launch → hit record. One
+  // click, never an empty screen.
+  project_manager_.ensureLaunchSession();
 
   addAndMakeVisible(web_browser);
 

@@ -279,64 +279,12 @@ function refreshProjectInfo(announceSave = false) {
         }
         if (!wasBorn && info.born) {
             setLogLine(`Project ${info.id} created — mirroring to disk`);
-            renderEmptyProjects();  // a born project joins the recents
         } else if (announceSave && info.born) {
             setLogLine(`Saved ${info.name}`);
         }
     }).catch(() => {});
 }
 
-function renderEmptyProjects() {
-    const host = document.getElementById('empty-projects');
-    if (!host) return;
-    Promise.all([
-        callNative('listTemplates'),
-        callNative('listRecentProjects'),
-    ]).then(([tRaw, rRaw]) => {
-        const templates = typeof tRaw === 'string' ? JSON.parse(tRaw) : tRaw;
-        const recents = typeof rRaw === 'string' ? JSON.parse(rRaw) : rRaw;
-        host.textContent = '';
-        const row = (label, items, onPick) => {
-            if (!items || !items.length) return;
-            const div = document.createElement('div');
-            div.className = 'proj-row';
-            const span = document.createElement('span');
-            span.className = 'proj-label';
-            span.textContent = label;
-            div.appendChild(span);
-            items.forEach(item => {
-                const b = document.createElement('button');
-                b.textContent = item.name;
-                if (item.id !== item.name) b.title = item.id;
-                b.addEventListener('click', () => onPick(item));
-                div.appendChild(b);
-            });
-            host.appendChild(div);
-        };
-        row('Start from template', templates, t =>
-            callNative('newProjectFromTemplate', t.id).then(ok => {
-                setLogLine(ok ? `Template "${t.name}" loaded — play the seed`
-                              : 'Template failed to load');
-                refreshProjectInfo();
-            }));
-        row('Recent projects', recents.slice(0, 6), r =>
-            callNative('openProjectPath', r.path).then(ok => {
-                setLogLine(ok ? `Opened ${r.name}` : 'Open failed');
-                refreshProjectInfo();
-            }));
-        if (!templates.length) {
-            // First run: point at the ritual — build the rig once, save
-            // it as a template, and every session after starts wired.
-            const hint = document.createElement('div');
-            hint.className = 'proj-row';
-            hint.style.opacity = '0.6';
-            hint.textContent =
-                'First time? Build your rig (+ New Stack, name tracks, set ' +
-                'inputs), then Project ▾ → Save as template.';
-            host.appendChild(hint);
-        }
-    }).catch(() => {});
-}
 
 /* The project menu — the compact "file menu": everything the bridge
  * offers, one popover. Rebuilt on every open so templates/recents are
@@ -413,11 +361,9 @@ function buildProjectMenu(menu) {
     sep();
     head('Save as template');
     inlineRow('e.g. My Rig', '', 'Save', name =>
-        callNative('saveAsTemplate', name).then(ok => {
+        callNative('saveAsTemplate', name).then(ok =>
             setLogLine(ok ? `Template "${name}" saved — it loads automatically next launch`
-                          : 'Template save failed');
-            renderEmptyProjects();
-        }));
+                          : 'Template save failed')));
 
     callNative('listTemplates').then(raw => {
         const templates = typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -446,11 +392,6 @@ function buildProjectMenu(menu) {
 }
 
 function initProjectUI() {
-    // The hero record button IS the record button (one verb, two homes:
-    // the transport and the empty-state hero).
-    const hero = document.getElementById('hero-record');
-    if (hero) hero.addEventListener('click', () =>
-        document.getElementById('record-btn').click());
     const btn = document.getElementById('project-menu-btn');
     const menu = document.getElementById('project-menu');
     if (btn && menu) {
@@ -467,7 +408,6 @@ function initProjectUI() {
             if (!menu.contains(ev.target)) menu.classList.remove('open');
         });
     }
-    renderEmptyProjects();
     refreshProjectInfo();
     setInterval(refreshProjectInfo, 2000);  // birth/rename follow the mirror
 }

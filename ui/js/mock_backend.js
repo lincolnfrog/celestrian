@@ -1657,5 +1657,14 @@ export function loadScenario(name) {
     }
 }
 
-// Initialize with empty state
+// Initialize with the launch-ritual boot (ProjectManager parity,
+// docs/projects.md): the app never boots empty — one ready track.
+// Tests reset with loadScenario(...) as ever.
 loadScenario('empty');
+{
+    const bootId = createNode('clip', '');
+    const boot = findNode(bootId) ||
+        (state.nodes[0] && state.nodes[0].type === 'clip' ? state.nodes[0] : null);
+    if (boot) boot.name = 'Track 1';
+    undoStack = [];  // boot setup is not a user action
+}

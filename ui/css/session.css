@@ -188,7 +188,16 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .rail-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .rail-foot { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.rail-foot .rail-sub { flex: 1; min-width: 0; }
+.rail-foot .rail-sub {
+    flex: 1;
+    min-width: 0;
+    /* Crowded rails squeeze this to a few px — a hard-clipped letter
+       fragment reads as a glitch. Fade the tail instead: tiny widths
+       render as nothing, full widths lose only the last few px. */
+    text-overflow: clip;
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent);
+            mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent);
+}
 .lane[data-depth="1"] .lane-rail { margin-left: 22px; }
 .lane[data-depth="2"] .lane-rail { margin-left: 44px; }
 .lane[data-depth="1"] .lane-rail, .lane[data-depth="2"] .lane-rail { min-height: 56px; }
@@ -271,9 +280,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 .rail-btn.on { color: var(--ground); background: var(--tape); border-color: var(--tape); }
-.rail-btn.arm-btn { color: var(--rec); font-size: 0.9rem; }
+/* Arm: a small RING (state), never a big red dot (verb). Hierarchy —
+   the transport record is the only record button on screen; these fill
+   red when armed so "what will record" is glanceable. */
+.rail-btn.arm-btn {
+    border-radius: 50%;
+    width: 22px; height: 22px;
+    padding: 0;
+    border: 2px solid color-mix(in srgb, var(--rec) 55%, var(--line));
+    background: none;
+}
+.rail-btn.arm-btn:hover { border-color: var(--rec); }
 .rail-btn.arm-btn.on,
-.rail-btn.arm-btn.some { color: #fff; background: var(--rec); border-color: var(--rec); }
+.rail-btn.arm-btn.some { background: var(--rec); border-color: var(--rec); }
 .rail-btn.arm-btn.some { opacity: 0.6; }
 .rail-btn.arm-btn.recording { animation: recpulse 1.1s ease-in-out infinite; }
 .rail-btn:disabled { opacity: 0.35; cursor: default; }
@@ -635,68 +654,15 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-top-color: #f7efe2;
 }
 
-/* Empty state: the HERO. With no content, record IS the product —
-   one glowing affordance, the pitch under it, projects a step below. */
+/* Empty state — rarely seen: the app always boots into a template.
+   One dry line, no ceremony. */
 #empty-state {
     color: var(--text-dim);
     text-align: center;
-    padding: 11vh 24px 48px;
-    font-size: 1rem;
+    padding: 64px 0;
+    font-size: 0.95rem;
     display: none;
 }
-#hero-record {
-    width: 92px;
-    height: 92px;
-    border-radius: 50%;
-    border: none;
-    cursor: pointer;
-    background: radial-gradient(circle at 38% 34%, #ff8a70, var(--rec) 62%);
-    box-shadow: 0 0 0 10px color-mix(in srgb, var(--rec) 14%, transparent),
-                0 8px 40px color-mix(in srgb, var(--rec) 35%, transparent);
-    transition: transform 140ms ease, box-shadow 140ms ease;
-}
-#hero-record:hover {
-    transform: scale(1.06);
-    box-shadow: 0 0 0 14px color-mix(in srgb, var(--rec) 18%, transparent),
-                0 10px 48px color-mix(in srgb, var(--rec) 45%, transparent);
-}
-#hero-record:active { transform: scale(0.97); }
-#hero-title {
-    margin-top: 26px;
-    font-size: 1.35rem;
-    font-weight: 600;
-    color: var(--text);
-}
-#hero-sub {
-    margin-top: 8px;
-    font-size: 0.95rem;
-    color: var(--text-dim);
-}
-/* Templates + recents on the empty state (docs/projects.md): the boot
-   ritual is "load template, play the seed" — so templates lead. */
-#empty-projects { margin-top: 44px; }
-#empty-projects .proj-row { margin-top: 14px; }
-#empty-projects .proj-label {
-    font-size: 0.75rem;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    opacity: 0.6;
-    margin-right: 10px;
-}
-#empty-projects button {
-    margin: 2px 5px;
-    padding: 8px 18px;
-    border-radius: 999px;
-    border: 1px solid var(--line);
-    background: none;
-    color: var(--text);
-    cursor: pointer;
-    font-size: 0.9rem;
-    transition: border-color 120ms ease, color 120ms ease,
-                transform 120ms ease;
-}
-#empty-projects button:active { transform: scale(0.97); }
-#empty-projects button:hover { border-color: var(--tape); color: var(--tape); }
 
 
 
