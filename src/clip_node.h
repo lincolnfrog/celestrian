@@ -136,6 +136,35 @@ class ClipNode : public AudioNode {
   void commitRecording(int64_t final_duration = -1);
   const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
 
+  // --- Q13 lock-collapse (owner ruling 2026-07-19) ---
+  /** Where this clip's committed content begins inside the storage
+   * buffer. 0 for every normally-recorded take; a lock-collapse shifts
+   * it to the trimmed window's start. Content coordinates (loop points,
+   * playback phase, waveform, save) stay 0-based — the base is a pure
+   * storage detail, so nothing downstream ever sees the dead air. */
+  int64_t getContentBase() const { return content_base_.load(); }
+  /** Collapse the committed content to its window [shift, shift+len):
+   * the trimmed region BECOMES the take — content base and origin move
+   * by `shift`, duration := len, window consumed (full-span). The take
+   * now reads as performed exactly; the cut material stays in the
+   * buffer, unreachable except by uncollapse (undo). Message thread;
+   * all-atomic (same exposure discipline as setLoopPoints). */
+  void collapseToWindow(int64_t shift, int64_t len) {
+    content_base_.store(content_base_.load() + shift);
+    origin_samples.store(origin_samples.load() + shift);
+    duration_samples.store(len);
+    setLoopPoints(0, len);
+  }
+  /** Inverse of collapseToWindow: restore the pre-collapse buffer view
+   * and the trim (window [shift, shift + current duration)). */
+  void uncollapseFromWindow(int64_t shift, int64_t old_duration) {
+    const int64_t len = duration_samples.load();
+    content_base_.store(content_base_.load() - shift);
+    origin_samples.store(origin_samples.load() - shift);
+    duration_samples.store(old_duration);
+    setLoopPoints(shift, shift + len);
+  }
+
   /**
    * Restore a committed take on session load (session_io): copies `audio`
    * into the buffer, marks it playable, and sets the recorded facts that
@@ -166,6 +195,11 @@ class ClipNode : public AudioNode {
 
   std::atomic<int> write_position{0};
   std::atomic<int> read_position{0};
+
+  // Q13 lock-collapse: storage offset of the committed content (see
+  // getContentBase). Playback/waveform/save add it; capture never does
+  // (recording clips always have base 0).
+  std::atomic<int64_t> content_base_{0};
 
   // Pre-record capture window (docs/performance.md §3). When the engine
   // provides a pre-record ring, capture no longer copies "whatever input

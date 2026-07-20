@@ -464,6 +464,43 @@ Once you start recording new tracks, Q becomes locked."* Canon:
 - All three transitions (re-trim, revert, re-open) ride the undo log:
   the LoopPoints / Remove edits carry the island `(Q, epoch)` so undo
   restores the grid, not just the clip or window.
+- **Amendments (2026-07-19, from the two-cursors field bug):**
+  (a) the epoch contract is now enforced in PLAYBACK — clip windows
+  anchor at `origin + loopStart`, so island phase 0 audibly IS the
+  trimmed loop's top (see time_maps.md phase-1-extension note; without
+  this a sub-Q trim put the arm grid mid-loop). (b) In the trim view
+  the ONE playhead (I8) maps into the selection (`selStart +
+  islandPos`) and loops exactly over it; the lane draws no separate
+  amber cursor. (c) Re-trim is gated on `!hasActiveTake()` — a
+  performing take already plays against the grid, so a drag mid-take
+  is an ordinary window edit, not a Q change.
+- **LOCK-COLLAPSE (owner ruling 2026-07-19b — the unifying
+  simplification):** the trim is a PRE-LOCK affordance, nothing more.
+  The moment a second take ARMS, the definer's window **becomes the
+  take** — `duration := Q`, `origin := the window top (= epoch)`,
+  window consumed, content base shifted (`Edit::CollapseTake`,
+  undoable) — *"as if the trimmed clip is the only content there, like
+  I recorded it perfectly and didn't need to edit."* After lock the
+  looper is an ORDINARY whole-Q looper: no incommensurate buffer
+  survives to poison arm boundaries, context loops, heard/intrinsic
+  cycle snapshots, or LCMs (field: take 2 anchored at origin − epoch =
+  56298 ∉ Q·Z; frame exploded to 142336Q). The dead air is undo-only
+  state — ⌘Z restores the full buffer and the trim; session save
+  writes the collapsed take. The pre-Q-lock state is therefore the
+  ONLY state where the model deviates from the plain looper, and it
+  ends at arm.
+- **Companions (2026-07-19c, field):** (a) **RE-OPEN ⟹ UNCOLLAPSE** —
+  deleting back down to the sole take restores its full material with
+  the old trim as the window (audio-neutral by construction: the
+  windowed playback of the restored buffer is the identical loop), so
+  the trim can grow again; rides the Remove edit (undo re-collapses
+  via a uuid2 rider). (b) **PHASE-PRESERVING TRIM** — a provisional
+  re-trim re-anchors the clip's origin so the buffer position sounding
+  at the edit moment does not move (folded into the new window if cut
+  off): `origin' := t0 − p_target`, epoch := origin' + start as ever.
+  The audio and the cursor flow continuously while the handles are
+  nudged; the bar line re-derives silently. Legitimate because the
+  provisional grid is free — nothing else depends on it yet.
 - This refines Q1 (Q survives its creator): survival applies to the
   *locked* Q — the DNA that later takes were performed against. Before
   lock, no other performance depends on Q, so re-trimming breaks

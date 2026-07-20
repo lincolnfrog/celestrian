@@ -47,6 +47,12 @@ struct Edit {
     LoopBypass,  // b1 = bypassed
     Input,       // d1 = channel index
     Position,    // d1 = x, d2 = y
+    CollapseTake,  // Q13 lock-collapse: the clip's window BECOMES the
+                   // take (duration = window len, origin += start,
+                   // content base shifts; window consumed). Forward
+                   // needs no payload (derived from the clip's window);
+                   // the inverse sets b1 with iq = shift, iepoch = the
+                   // old duration, restoring buffer view + trim.
   };
   // Effect enable/param edits are deliberately NOT undoable in this pass
   // (non-destructive knobs; slider drags would flood the log without
@@ -75,6 +81,12 @@ struct Edit {
   bool setsIsland = false;
   int64_t iq = 0;      // island quantum to set
   int64_t iepoch = 0;  // island epoch to set
+  // Phase-preserving trim (rides LoopPoints with setsIsland): the
+  // provisional re-trim RE-ANCHORS the clip's origin so the currently
+  // sounding buffer position does not move — the grid re-derives, the
+  // audio flows. The inverse captures the old origin the same way.
+  bool setsOrigin = false;
+  int64_t iorg = 0;    // clip origin to set
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

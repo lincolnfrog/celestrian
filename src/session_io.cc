@@ -40,7 +40,12 @@ juce::var effectsBlob(const AudioNode &node) {
 void writeClipWav(const ClipNode &clip, int64_t duration,
                   const juce::File &audioDir) {
   const auto &buf = clip.getAudioBuffer();
-  const int n = (int)std::min<int64_t>(duration, buf.getNumSamples());
+  // Content base (Q13 lock-collapse): save the COMMITTED content —
+  // [base, base + duration). A collapsed take saves as the perfect
+  // window; the cut material is undo-only state, not session state.
+  const int64_t base = clip.getContentBase();
+  const int n =
+      (int)std::min<int64_t>(duration, (int64_t)buf.getNumSamples() - base);
   if (n <= 0) return;
   audioDir.createDirectory();
   auto file = audioDir.getChildFile(clip.getUuid() + ".wav");
@@ -54,7 +59,7 @@ void writeClipWav(const ClipNode &clip, int64_t duration,
       stream.get(), clip.getSampleRate(), 1, 32, {}, 0));
   if (!writer) return;
   stream.release();  // the writer owns the stream now
-  writer->writeFromAudioSampleBuffer(buf, 0, n);
+  writer->writeFromAudioSampleBuffer(buf, (int)base, n);
 }
 
 bool readClipWav(const juce::File &file, juce::AudioBuffer<float> &out) {

@@ -776,8 +776,12 @@ function patchLaneBody(row, lane, vm, aux) {
                     ? 'sets tempo · drag to trim'
                     : bypassed ? 'window · bypassed' : active ? 'window · active' : 'window';
                 o.appendChild(chip);
-                if (active && !bypassed) {
-                    // Heard-time cursor: positioned per poll below
+                if (active && !bypassed && !qDef) {
+                    // Heard-time cursor: positioned per poll below. NOT
+                    // on the Q-definer — there the MAIN playhead is
+                    // mapped into the selection (vm.loopStartQ), and a
+                    // second cursor over the same span was the "two
+                    // cursors" field bug (2026-07-19).
                     const cur = document.createElement('div');
                     cur.className = 'win-cursor';
                     o.appendChild(cur);
@@ -800,14 +804,9 @@ function patchLaneBody(row, lane, vm, aux) {
 function latentWindow(lane, vm) {
     if (lane.window || lane.recording || !vm.qEstablished) return null;
     const maxQ = Math.round(lane.intrinsicQ || 0);
-    // The SOLE Q-definer always gets handles, even at 1Q: dragging them
-    // re-establishes Q (Q13, provisional). A normal lane needs ≥2Q to
-    // carve a sub-window.
-    if (lane.isQDefiner) {
-        return { startQ: 0, endQ: Math.max(1, maxQ), active: false,
-                 bypassed: false, latent: true, qDefiner: true };
-    }
-    if (maxQ < 2) return null;
+    // (The Q-definer never reaches here: its lane always carries a
+    // window — the provisional branch builds the selection explicitly.)
+    if (maxQ < 2) return null; // a 1Q lane has no sub-window to make
     return { startQ: 0, endQ: maxQ, active: false, bypassed: false, latent: true };
 }
 
@@ -927,12 +926,16 @@ function wireWindow(o, lane, vm, body, win) {
                 ((e.clientX - r.left) / r.width) * vm.cycleQ - anchorQ;
             // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
             // not snapping to it. The handle position is the landing; a
-            // small min length keeps Q positive.
+            // small min length keeps Q positive. Clamp to the RAW
+            // fractional buffer extent: the rounded maxQ let the end
+            // handle land up to half a Q past the recorded material,
+            // making a window (and a Q) longer than the content.
             if (lane.isQDefiner) {
                 const minLen = 0.05;
+                const extQ = lane.intrinsicQ || 0;
                 const t = edge === 'start'
                     ? { startQ: Math.min(Math.max(0, rawQ), cur.endQ - minLen), endQ: cur.endQ }
-                    : { startQ: cur.startQ, endQ: Math.max(Math.min(maxQ, rawQ), cur.startQ + minLen) };
+                    : { startQ: cur.startQ, endQ: Math.max(Math.min(extQ, rawQ), cur.startQ + minLen) };
                 el.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), vm.cycleQ);
                 previewSnap(t, edge, ghost);
                 return;
@@ -1074,7 +1077,7 @@ function patchRail(row, lane) {
  */
 const anim = {
     raf: 0, running: false, posQ: 0, velQperMs: 0,
-    loopQ: 0, cycleQ: 1, timelineW: 0, lastFrame: 0,
+    loopQ: 0, loopStartQ: 0, cycleQ: 1, timelineW: 0, lastFrame: 0,
     lastPollQ: null, lastPollMs: 0,
 };
 
@@ -1082,20 +1085,26 @@ function animatorPoll(vm, aux) {
     const now = performance.now();
     const nominal = aux.sampleRate > 0 && vm.quantum > 1
         ? aux.sampleRate / vm.quantum / 1000 : 0;
+    // The audible loop may not start at frame 0 (Q13 trim view: the
+    // playhead loops over the SELECTION, [loopStartQ, loopStartQ +
+    // loopCycleQ)). The wrap math (forwardDelta/advance/correct) runs in
+    // LOOP coordinates; drawing adds the offset back.
+    const relQ = vm.playheadQ - (vm.loopStartQ || 0);
     if (anim.lastPollQ === null) {
-        anim.posQ = vm.playheadQ;
+        anim.posQ = relQ;
         anim.velQperMs = 0; // ramps up from observation, never assumed
     } else {
-        const d = forwardDelta(vm.playheadQ, anim.lastPollQ, vm.loopCycleQ);
+        const d = forwardDelta(relQ, anim.lastPollQ, vm.loopCycleQ);
         const { vel, teleport } = estimateVelocity(
             anim.velQperMs, d, now - anim.lastPollMs, nominal);
         anim.velQperMs = vel;
-        anim.posQ = teleport ? vm.playheadQ
-            : correctPosition(anim.posQ, vm.playheadQ, vm.loopCycleQ);
+        anim.posQ = teleport ? relQ
+            : correctPosition(anim.posQ, relQ, vm.loopCycleQ);
     }
-    anim.lastPollQ = vm.playheadQ;
+    anim.lastPollQ = relQ;
     anim.lastPollMs = now;
     anim.loopQ = vm.loopCycleQ;
+    anim.loopStartQ = vm.loopStartQ || 0;
     anim.cycleQ = vm.cycleQ;
     anim.timelineW = els.ruler.clientWidth;
     if (!anim.running) {
@@ -1117,8 +1126,9 @@ function animTick(t) {
     const dt = Math.min(t - anim.lastFrame, 100); // hidden-tab clamp
     anim.lastFrame = t;
     anim.posQ = advancePosition(anim.posQ, anim.velQperMs, dt, anim.loopQ);
-    els.playhead.style.left = (anim.posQ / anim.cycleQ) * anim.timelineW + 'px';
-    els.playhead._left = (anim.posQ / anim.cycleQ) * anim.timelineW;
+    const frameQ = anim.loopStartQ + anim.posQ; // loop coords → frame coords
+    els.playhead.style.left = (frameQ / anim.cycleQ) * anim.timelineW + 'px';
+    els.playhead._left = (frameQ / anim.cycleQ) * anim.timelineW;
     // Window cursors: same clock, own phase, wrap at their own window
     document.querySelectorAll('.win-cursor').forEach(el => {
         if (!(el._lenQ > 0)) return;

@@ -142,6 +142,19 @@ int countCommittedClips(const celestrian::AudioNode *node) {
   for (auto *child : stack->getChildrenSnapshot()) n += countCommittedClips(child);
   return n;
 }
+
+celestrian::ClipNode *firstCommittedClip(celestrian::AudioNode *node) {
+  if (node->getNodeType() == celestrian::NodeType::Clip) {
+    return node->getIntrinsicDuration() > 0
+               ? static_cast<celestrian::ClipNode *>(node)
+               : nullptr;
+  }
+  auto *stack = static_cast<celestrian::StackNode *>(node);
+  for (auto *child : stack->getChildrenSnapshot()) {
+    if (auto *c = firstCommittedClip(child)) return c;
+  }
+  return nullptr;
+}
 }  // namespace
 
 int AudioEngine::islandCommittedClipCount() const {
@@ -171,6 +184,21 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
       // provisional-Q-revert delete). The Remove inverse re-derives the
       // revert on redo, so it needs no island payload.
       if (restoreIsland) root_node->setQuantum(iq, iepoch);
+      // Undo of a RE-OPENING delete (uuid2 = the definer that delete
+      // uncollapsed): re-collapse it so the locked island is exactly as
+      // it was. Same derivation as the forward CollapseTake; redo's
+      // Remove re-derives the uncollapse, so no payload rides back.
+      if (e.uuid2.isNotEmpty()) {
+        if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+                findNodeByUuid(root_node.get(), e.uuid2))) {
+          const int64_t dur = clip->getIntrinsicDuration();
+          const int64_t ls = clip->getLoopStart();
+          const int64_t le = std::min(clip->getLoopEnd(), dur);
+          if (le - ls > 0 && !(ls == 0 && le >= dur)) {
+            clip->collapseToWindow(ls, le - ls);
+          }
+        }
+      }
       Edit inv(K::Remove);
       inv.uuid = uid;
       return inv;
@@ -196,6 +224,24 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
         inv.iq = root_node->getQuantum();
         inv.iepoch = root_node->getEpoch();
         root_node->setQuantum(0, 0);
+      }
+      // RE-OPEN ⟹ UNCOLLAPSE (companion of collapse-at-arm, owner
+      // ruling 2026-07-19b): if this delete brought the island back down
+      // to its sole take and that take was lock-collapsed (there is
+      // trimmed-away material beyond its duration), restore the full
+      // buffer with the old trim as the window — audio-neutral by
+      // construction (the windowed playback of the restored buffer is
+      // sample-identical), and the user can trim LONGER again. The
+      // inverse Insert carries uuid2 so undo re-collapses with the
+      // re-inserted take; redo re-derives the uncollapse right here.
+      if (islandCommittedClipCount() == 1) {
+        if (auto *survivor = firstCommittedClip(root_node.get());
+            survivor &&
+            survivor->getWritePosition() > survivor->getIntrinsicDuration()) {
+          survivor->uncollapseFromWindow(survivor->getContentBase(),
+                                         survivor->getWritePosition());
+          inv.uuid2 = survivor->getUuid();
+        }
       }
       return inv;
     }
@@ -306,6 +352,43 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
         inv.iq = root_node->getQuantum();
         inv.iepoch = root_node->getEpoch();
         root_node->setQuantum(e.iq, e.iepoch);
+      }
+      // Phase-preserving trim: the re-anchored origin rides the same
+      // edit (see setLoopPoints); the inverse restores the old one.
+      if (e.setsOrigin) {
+        inv.setsOrigin = true;
+        inv.iorg = node->origin_samples.load();
+        node->origin_samples.store(e.iorg);
+      }
+      return inv;
+    }
+    case K::CollapseTake: {
+      // Q13 lock-collapse (owner ruling 2026-07-19): the trim is a
+      // PRE-LOCK affordance — when a take arms against a provisionally
+      // trimmed island, the trimmed region BECOMES the take, as if it
+      // had been performed exactly (duration = window len, origin =
+      // its own window top = the epoch, window consumed). (Q, epoch)
+      // do not move: the collapse lands the clip exactly on the grid
+      // the trim already established.
+      auto *clip = dynamic_cast<celestrian::ClipNode *>(
+          findNodeByUuid(root_node.get(), e.uuid));
+      if (!clip) return {};
+      Edit inv(K::CollapseTake);
+      inv.uuid = e.uuid;
+      if (!e.b1) {
+        const int64_t dur = clip->getIntrinsicDuration();
+        const int64_t ls = clip->getLoopStart();
+        const int64_t le = std::min(clip->getLoopEnd(), dur);
+        const int64_t len = le - ls;
+        // Full-span (or invalid) window: nothing to collapse.
+        if (len <= 0 || (ls == 0 && le >= dur)) return {};
+        clip->collapseToWindow(ls, len);
+        inv.b1 = true;  // inverse = uncollapse, carrying what it needs
+        inv.iq = ls;
+        inv.iepoch = dur;
+      } else {
+        clip->uncollapseFromWindow(e.iq, e.iepoch);
+        // inverse of the inverse: the parameterless forward re-derives.
       }
       return inv;
     }
@@ -460,6 +543,24 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
           findNodeByUuid(root_node.get(), uuid))) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
 
+    // Q13 LOCK-COLLAPSE (owner ruling 2026-07-19): arming a take
+    // against a provisionally-trimmed island FINALIZES the trim — the
+    // sole committed clip collapses to its window BEFORE the arm, so
+    // every boundary computation (context loop, heard/intrinsic cycle
+    // snapshots, LCMs) sees an ordinary whole-Q looper. Leaving the
+    // incommensurate buffer alive poisoned them all: field 2026-07-19b,
+    // take 2 anchored at origin − epoch = 56298 ∉ Q·Z. Undoable —
+    // ⌘Z restores the full buffer and the trim.
+    if (islandCommittedClipCount() == 1) {
+      if (auto *definer = firstCommittedClip(root_node.get());
+          definer && definer->getUuid() != uuid &&
+          definer->isLoopWindowActive()) {
+        celestrian::Edit e(celestrian::Edit::Kind::CollapseTake);
+        e.uuid = definer->getUuid();
+        record(std::move(e));  // no-op (not recorded) if already full-span
+      }
+    }
+
     // The clock is NEVER reset (kernel.md §2) — not even for the first
     // clip. What the old "Initial Recording Reset" actually provided was
     // the island epoch; that is now captured as data (epoch := arm
@@ -519,6 +620,9 @@ juce::var AudioEngine::getGraphState() const {
     // `origin` metadata — commit re-bases the epoch (see processBlock),
     // and the UI marking take-vs-ghost tiles needs the re-based value.
     obj->setProperty("islandEpoch", (double)islandEpoch());
+    // NOTE: the focused stack's metadata already carries `quantum` (its
+    // stored island Q, stack_node.cc) — the VM reads it as the top-level
+    // Q fact instead of re-deriving min-over-nodes (P0-3 completion).
     obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
     obj->setProperty("canUndo", canUndo());
@@ -531,6 +635,8 @@ juce::var AudioEngine::getGraphState() const {
   state->setProperty("isPlaying", (bool)is_playing_global.load());
   state->setProperty("masterPos", master_view);
   state->setProperty("islandEpoch", (double)islandEpoch());
+  state->setProperty("quantum",
+                     (double)(root_node ? root_node->getQuantum() : 0));
   state->setProperty("soloedId", soloed_node_uuid);
   state->setProperty("canUndo", canUndo());
   state->setProperty("canRedo", canRedo());
@@ -739,11 +845,46 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   // rides the LoopPoints edit so it undoes atomically with the window.
   if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
           findNodeByUuid(root_node.get(), uuid))) {
+    // A clip window selects recorded material — clamp to the buffer. A
+    // fractional-Q drag rounded past the take's end once produced a
+    // window (and a Q) longer than the content it loops.
+    start = std::max((int64_t)0, start);
+    end = std::min(end, clip->getIntrinsicDuration());
+    e.d1 = (double)start;
+    e.d2 = (double)end;
+    // hasActiveTake: an armed/capturing take is already performing
+    // against the current grid — committed-count alone would let a drag
+    // re-establish Q mid-take (the count only rises at commit). While a
+    // take is in flight this is an ordinary window edit.
     if (end > start && clip->getIntrinsicDuration() > 0 &&
-        islandCommittedClipCount() == 1) {
+        islandCommittedClipCount() == 1 && !root_node->hasActiveTake()) {
+      // PHASE-PRESERVING TRIM (owner request 2026-07-19c): the loop must
+      // keep flowing while its region is nudged. The provisional grid is
+      // free (no other content depends on it), so re-anchor the clip's
+      // origin such that the buffer position sounding RIGHT NOW does not
+      // move: fold the current position into the new window and solve
+      // origin' = t0 − p_target (playback is buffer[start + ((t −
+      // origin − start) mod len)], so this pins pos(t0) = p_target).
+      // Epoch := origin' + start as ever — the bar line re-derives
+      // silently under continuous audio instead of re-timing it.
+      const int64_t t0 = global_transport_pos.load();
+      const int64_t oldStart = clip->getLoopStart();
+      const int64_t oldEnd =
+          std::min(clip->getLoopEnd(), clip->getIntrinsicDuration());
+      const int64_t oldLen = oldEnd - oldStart;
+      const int64_t oldOrg = clip->origin_samples.load();
+      const int64_t len = end - start;
+      const int64_t p0 =
+          oldLen > 0
+              ? oldStart + (((t0 - oldOrg - oldStart) % oldLen) + oldLen) %
+                               oldLen
+              : start;
+      const int64_t pT = start + (((p0 - start) % len) + len) % len;
+      e.setsOrigin = true;
+      e.iorg = t0 - pT;
       e.setsIsland = true;
-      e.iq = end - start;
-      e.iepoch = clip->origin_samples.load() + start;
+      e.iq = len;
+      e.iepoch = e.iorg + start;
     }
   }
   record(std::move(e));

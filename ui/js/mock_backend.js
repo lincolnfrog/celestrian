@@ -36,12 +36,14 @@ const UNDOABLE = new Set([
 ]);
 
 function undoSnapshot() {
-    return JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch || 0 });
+    return JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch || 0,
+                            islandQ: state.islandQ || 0 });
 }
 function undoRestore(snap) {
     const o = JSON.parse(snap);
     state.nodes = o.nodes;
     state.islandEpoch = o.islandEpoch;
+    state.islandQ = o.islandQ || 0;
 }
 function pushUndo() {
     undoStack.push(undoSnapshot());
@@ -64,6 +66,38 @@ function deleteNode(id) {
     const node = findNode(id);
     if (!node || node.isRecording) return;  // cancel is the verb for takes
     removeNodeFromParent(id);
+    // Q13 revert (engine parity, applyEdit Remove): deleting the last
+    // committed content leaves nothing defining Q — (Q, epoch) revert to
+    // unestablished. Undo restores them via the snapshot. A 2→1 delete
+    // touches nothing (mutability is derived from the count).
+    if (state.islandQ > 0 && committedClipCount() === 0) {
+        state.islandQ = 0;
+        state.islandEpoch = 0;
+        console.log('[MockBackend] Q13 revert: island (Q, epoch) → unestablished');
+    }
+    // RE-OPEN ⟹ UNCOLLAPSE (engine parity): back down to the sole take
+    // with a lock-collapse behind it — restore the full material with
+    // the old trim as the window, so it can be trimmed LONGER again.
+    // Audio-neutral; Q/epoch untouched. Undo snapshot covers.
+    if (committedClipCount() === 1) {
+        const survivor = (function find(ns) {
+            for (const n of ns || []) {
+                if (n.type === 'clip' && !n.isRecording && (n.duration || 0) > 0) return n;
+                const c = n.nodes && find(n.nodes);
+                if (c) return c;
+            }
+            return null;
+        })(state.nodes);
+        if (survivor && survivor._precollapse) {
+            const pre = survivor._precollapse;
+            survivor.duration = pre.dur;
+            survivor.loopStart = pre.ls;
+            survivor.loopEnd = pre.le;
+            survivor.origin = pre.origin;
+            delete survivor._precollapse;
+            console.log('[MockBackend] Q13 re-open: uncollapsed', survivor.id);
+        }
+    }
     console.log('[MockBackend] Deleted node:', id);
 }
 
@@ -72,7 +106,8 @@ function deleteNode(id) {
 // e2e can round-trip without a filesystem. Load clears undo history.
 let mockSavedSession = null;
 function saveSession(_path) {
-    mockSavedSession = JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch || 0 });
+    mockSavedSession = JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch || 0,
+                                        islandQ: state.islandQ || 0 });
     return true;
 }
 function loadSession(_path) {
@@ -80,6 +115,7 @@ function loadSession(_path) {
     const o = JSON.parse(mockSavedSession);
     state.nodes = o.nodes;
     state.islandEpoch = o.islandEpoch;
+    state.islandQ = o.islandQ || 0;
     undoStack = [];
     redoStack = [];
     return true;
@@ -246,11 +282,14 @@ function getWaveform(id, numPeaks = 100) {
 }
 
 /**
- * The effective quantum for the mock graph, mirroring the C++ derivation
- * (minimum positive committed clip duration), with the scenario-declared
- * `effectiveQuantum` as fallback.
+ * The island quantum, mirroring the C++ model (P0-3): a STORED fact
+ * (`state.islandQ` — established at first commit, re-established by a
+ * provisional re-trim, reverted when the last committed clip goes).
+ * The legacy min-duration/declared derivation survives only for
+ * scenario fixtures that predate the stored field.
  */
 function effectiveQuantumForState() {
+    if (state.islandQ > 0) return state.islandQ;
     let minDuration = 0;
     let declaredQ = 0;
 
@@ -418,6 +457,15 @@ function getLatencyCalibration() {
     };
 }
 
+// Any armed/capturing take (parity with StackNode::hasActiveTake) —
+// gates provisional re-trim: a performing take already plays against
+// the current grid, so a drag mid-take is an ordinary window edit.
+function anyNodeRecording() {
+    return (function visit(nodes) {
+        return (nodes || []).some(n => n.isRecording || (n.nodes && visit(n.nodes)));
+    })(state.nodes);
+}
+
 // Committed clips in the island (parity with
 // AudioEngine::islandCommittedClipCount) — drives Q13 mutability.
 function committedClipCount() {
@@ -434,17 +482,40 @@ function committedClipCount() {
 function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
     if (!node) return;
+    // Pre-edit window (the phase-preserve math below needs it).
+    const oldLs = node.loopStart || 0;
+    const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
     node.loopStart = loopStart;
     node.loopEnd = loopEnd;
+    // Clamp to the recorded material (engine parity): a fractional-Q
+    // drag rounded past the take's end must not window silence.
+    if (node.type === 'clip' && (node.duration || 0) > 0) {
+        loopStart = Math.max(0, loopStart);
+        loopEnd = Math.min(loopEnd, node.duration);
+        node.loopStart = loopStart;
+        node.loopEnd = loopEnd;
+    }
     // Q13 parity (AudioEngine::setLoopPoints): while the island's only
-    // committed content is this clip, its loop region re-establishes
-    // (Q, epoch): Q := window length (the mock derives Q from the min
-    // node.effectiveQuantum), epoch := origin + window start.
+    // committed content is this clip (and no take is in flight), its
+    // loop region re-establishes the STORED island (Q, epoch):
+    // Q := window length, epoch := origin + window start. PHASE-
+    // PRESERVING (engine parity): re-anchor origin so the buffer
+    // position sounding right now doesn't move — fold it into the new
+    // window and solve origin' = t0 − p_target.
     if (loopEnd > loopStart && node.type === 'clip' && (node.duration || 0) > 0 &&
-        committedClipCount() === 1) {
-        node.effectiveQuantum = loopEnd - loopStart;
-        state.islandEpoch = (node.origin || 0) + loopStart;
-        console.log('[MockBackend] Q13 re-trim → Q =', node.effectiveQuantum);
+        committedClipCount() === 1 && !anyNodeRecording()) {
+        const t0 = state.masterPos || 0;
+        const mod = (a, m) => ((a % m) + m) % m;
+        const oldLen = oldLe - oldLs;
+        const len = loopEnd - loopStart;
+        const p0 = oldLen > 0
+            ? oldLs + mod(t0 - (node.origin || 0) - oldLs, oldLen)
+            : loopStart;
+        const pT = loopStart + mod(p0 - loopStart, len);
+        node.origin = t0 - pT;
+        state.islandQ = len;
+        state.islandEpoch = node.origin + loopStart;
+        console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
     }
     console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
 }
@@ -465,6 +536,41 @@ function startRecordingInNode(id) {
     if (!node) return;
 
     console.log('[MockBackend] startRecordingInNode', id);
+
+    // Q13 LOCK-COLLAPSE (engine parity, AudioEngine::startRecordingInNode
+    // → Edit::CollapseTake): arming a take against a provisionally
+    // trimmed island finalizes the trim — the sole committed clip's
+    // window BECOMES the take (duration = window len, origin moves to
+    // the window top, window consumed). Undo (snapshot) restores.
+    if (committedClipCount() === 1) {
+        const definer = (function find(ns) {
+            for (const n of ns || []) {
+                if (n.type === 'clip' && !n.isRecording && (n.duration || 0) > 0) return n;
+                const c = n.nodes && find(n.nodes);
+                if (c) return c;
+            }
+            return null;
+        })(state.nodes);
+        if (definer && definer.id !== id && !definer.loopBypassed) {
+            const ls = definer.loopStart || 0;
+            const le = Math.min(definer.loopEnd || 0, definer.duration);
+            const len = le - ls;
+            if (len > 0 && !(ls === 0 && le >= definer.duration)) {
+                pushUndo();
+                // The engine keeps the cut material behind content_base_;
+                // the mock (no buffers) remembers the pre-collapse facts
+                // so a re-opening delete can uncollapse (see deleteNode).
+                definer._precollapse = { dur: definer.duration, ls, le,
+                                         origin: definer.origin || 0 };
+                definer.origin = (definer.origin || 0) + ls;
+                definer.duration = len;
+                definer.loopStart = 0;
+                definer.loopEnd = len;
+                console.log('[MockBackend] Q13 lock-collapse:', definer.id,
+                    '→ duration =', len);
+            }
+        }
+    }
 
     // FIRST CLIP SNAP LOGIC (Simulation)
     // If this is the "first clip" (no effective quantum established globally yet),
@@ -565,9 +671,10 @@ function commitClip(node, duration) {
     node.loopEnd = loopEnd;
 
     // First committed take ESTABLISHES Q (design_language.md Q1: the DNA
-    // of the scratch track). Declare it on the node so state consumers
-    // (computeEffectiveQuantum) agree with the mock's internal Q.
+    // of the scratch track) — STORED island state (P0-3), plus the
+    // per-node declaration legacy consumers still read.
     if (Q <= 0 && duration > 0) {
+        state.islandQ = duration;
         node.effectiveQuantum = duration;
         console.log('[MockBackend] First take establishes Q =', duration);
     }
@@ -751,7 +858,15 @@ function enrichNodes(nodes) {
         }
         if (windowActive) {
             const loopLen = node.loopEnd - node.loopStart;
-            const rel = (state.masterPos || 0) - (state.islandEpoch || 0);
+            // Engine parity: a STACK's window phase is island-aligned
+            // ((t − epoch) mod len); a CLIP's anchors at the window
+            // top's own performance moment, origin + loopStart (the
+            // kernel playback equation applied to the surviving
+            // material — clip_node.cc, 2026-07-19).
+            const anchor = node.type === 'clip'
+                ? (node.origin || 0) + node.loopStart
+                : (state.islandEpoch || 0);
+            const rel = (state.masterPos || 0) - anchor;
             updatedNode.playhead = (((rel % loopLen) + loopLen) % loopLen) / loopLen;
         }
 
@@ -838,6 +953,10 @@ export function getState() {
         // Island epoch (mirrors getGraphState): the UI's frame origin.
         // Commit re-bases it to the newest origin on simple extensions.
         islandEpoch: state.islandEpoch || 0,
+        // The STORED island quantum (mirrors the root stack's `quantum`
+        // metadata). 0 for scenario fixtures that predate the field —
+        // the VM then falls back to its min-over-nodes derivation.
+        quantum: state.islandQ || 0,
         canUndo: undoStack.length > 0,
         canRedo: redoStack.length > 0,
         nodes: enrichNodes(state.nodes),

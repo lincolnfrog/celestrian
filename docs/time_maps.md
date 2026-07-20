@@ -205,11 +205,22 @@ first-class — window state (bypass flag, `windowActive`/`loopBypassed`
 metadata) hoisted from StackNode to AudioNode, `toggleLoopWindow`
 accepts any node, and ClipNode playback falls back to the full take
 when bypassed (its loop points were always a single-segment map; the
-flag makes it toggleable). One asymmetry stands, deliberately: a
+flag makes it toggleable). One asymmetry stood, deliberately: a
 stack's window phase is island-aligned ((t − epoch) mod len, §1) while
-a clip's remains origin-anchored (the kernel playback equation through
-`launchPointFor`); revisit if it bites when the cell/punch editor
-lands. UI: same brackets/latents/chip/heard-time cursor on both.
+a clip's remained origin-anchored (the kernel playback equation through
+`launchPointFor`); "revisit if it bites." **It bit (2026-07-19, via
+Q13):** the provisional re-trim defines `epoch := origin + loopStart`
+("the trimmed loop's top is island phase 0"), but origin-anchored
+playback put the audible loop top at island phase (−loopStart mod
+len) — a sub-Q trim made the grid every later take arms against point
+mid-loop. Clip windows now anchor at **origin + loopStart**
+(`launchPointFor(origin + start, dur)`, clip_node.cc): the window's
+content sounds at its OWN performed moment (mod len) — the kernel
+equation applied to the surviving material, the un-windowed case
+(start = 0) unchanged, and the fractal twin of the stack's
+window-start re-base. Pinned in qtime_lock_tests.cc ("windowed
+playback anchors at origin + loopStart"). UI: same
+brackets/latents/chip/heard-time cursor on both.
 **Phase 1 extension 2 (2026-07-11, E-C in the transport):** the
 engine's published masterPos wraps on the EFFECTIVE island cycle
 (`calculateEffectiveCycleLength` / `AudioNode::getEffectivePeriod`,
@@ -223,12 +234,18 @@ cursor carries heard time) — revisit in phase 2. *(Partially addressed
 anchor INSIDE the swept [0, heard) region via the heard-frame origin
 fold, so the cursor, the new take, and the heard loop read as one
 coherent frame; the sweep-vs-bracket mismatch itself remains a phase-2
-item.)*
+item.)* *(Resolved for the Q13 provisional trim view, 2026-07-19: the
+VM maps the ONE playhead into the selection — `playheadQ = selStartQ +
+islandPos`, `loopStartQ` tells the animator where the loop region
+begins — so the main cursor sweeps exactly [selStart, selEnd) and the
+lane draws no separate amber cursor. The "two cursors" field bug was
+this mismatch: the island playhead swept the first Q of DEAD AIR at
+the buffer frame's left while the amber cursor swept the selection.)*
 **Phase 1 extension 3 (2026-07-16, display grammar — Q14/Q14c):**
 windowed lanes render per "ghosts show what sounds": ghost tiles are
-ECHOES of the window segment at its audible repetitions (origin-anchored
-phase, matching the engine's clip-window playback), drawn in the echo
-tone; the take tile is the one place showing recorded truth, with
+ECHOES of the window segment at its audible repetitions (anchored at
+origin + window start since 2026-07-19, matching the engine's
+clip-window playback), drawn in the echo tone; the take tile is the one place showing recorded truth, with
 window dims applied only there; the group composite mixes audible
 content (window segments, wrap-tiled). Take marks fold by each take's
 stored heard frame (`contextCycle`), so they survive frame growth and

@@ -208,8 +208,20 @@ void ClipNode::process(const float *const *input_channels,
       // through the launch-point form ((t + launch) mod dur with
       // launch = (−origin) mod dur) so the shared timing.h math — pinned
       // by the golden vectors — stays the single implementation.
+      //
+      // WINDOWED: the surviving content starts at buffer[start], whose
+      // performance moment is origin + start — so the launch anchors
+      // there, and buffer[start + x] sounds at (origin + start + x)
+      // mod dur, its performed moment. The un-windowed case (start = 0)
+      // reduces to the historical equation. Anchoring at bare `origin`
+      // shifted window content by (start mod dur) — a whole-Q rotation
+      // for Q-snapped windows, and for the Q13 provisional definer it
+      // broke the epoch contract (epoch = origin + loopStart names the
+      // trimmed loop's top as island phase 0; time_maps.md asymmetry,
+      // resolved 2026-07-19). This also matches the stack time-map,
+      // which re-bases the child clock to its window start (I5).
       const int64_t offset =
-          timing::launchPointFor(origin_samples.load(), dur);
+          timing::launchPointFor(origin_samples.load() + start, dur);
 
       if (!isSilenced) {
         // Render into the mono fx scratch, run the rack, then sum to
@@ -219,11 +231,14 @@ void ClipNode::process(const float *const *input_channels,
         if ((int)fx_scratch_.size() < context.num_samples) {
           fx_scratch_.resize((size_t)context.num_samples);
         }
+        // Content base (Q13 lock-collapse): the committed content may
+        // start mid-buffer; content coordinates stay 0-based.
+        const int64_t base = content_base_.load();
         for (int i = 0; i < context.num_samples; ++i) {
           int64_t current_master_pos = context.master_pos + i;
           int64_t effective_pos = (current_master_pos + offset) % dur;
           int current_read_position =
-              (int)((start + effective_pos) % buffer.getNumSamples());
+              (int)((base + start + effective_pos) % buffer.getNumSamples());
           fx_scratch_[(size_t)i] =
               buffer.getReadPointer(0)[current_read_position];
         }
@@ -507,16 +522,22 @@ juce::var ClipNode::getWaveform(int num_peaks) const {
 
   int window_size = std::max(1, total_samples / num_peaks);
   const float *data = buffer.getReadPointer(0);
+  // Content base (Q13 lock-collapse): peaks cover the COMMITTED content
+  // [base, base + duration) — the cut material never renders.
+  const int64_t base = content_base_.load();
+  const int64_t cap = buffer.getNumSamples();
 
-  // Raw reads: the buffer IS the origin frame; the UI positions it via
-  // the clip's origin (x), so no index remapping is needed anywhere.
+  // Base-relative reads: the content IS the origin frame; the UI
+  // positions it via the clip's origin (x), so no other remapping is
+  // needed anywhere.
   for (int i = 0; i < num_peaks; ++i) {
     int start = i * window_size;
     int end = std::max(start + 1, std::min(start + window_size, total_samples));
     float peak = 0.0f;
     if (start < total_samples) {
       for (int s = start; s < end; ++s) {
-        peak = std::max(peak, std::abs(data[s]));
+        const int64_t idx = base + s;
+        if (idx < cap) peak = std::max(peak, std::abs(data[idx]));
       }
     }
     peaks.add(peak);

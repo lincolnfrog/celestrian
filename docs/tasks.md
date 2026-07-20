@@ -257,6 +257,37 @@ with kernel.md:
     `ui/js/tests/q13.test.mjs`; verified in the preview (drag → Q changes,
     undo restores). Field-motivated: trimming dead air out of the scratch
     loop before building on it.
+  - [x] **Phase + cursor fixes** ✅ done 2026-07-19 (from the two-cursors
+    field bug): clip-window playback now anchors at `origin + loopStart`
+    so island phase 0 audibly IS the trimmed loop's top (the time_maps.md
+    "deliberate asymmetry" bit — resolved; pinned sample-exact in
+    `qtime_lock_tests.cc`); the ONE playhead maps into the selection
+    (`vm.loopStartQ`, animator wraps in loop coords) and the lane's amber
+    cursor is gone; re-trim gated on `!hasActiveTake()`; loop points
+    clamped to the buffer (engine + mock + fractional drag clamp); island
+    Q now STORED in the mock (`state.islandQ`) and published top-level
+    (`quantum`) engine+mock, the VM prefers it over min-derivation — the
+    JS side of P0-3 done; echo tiles follow the new anchoring
+    (`echoReps` first ≡ offset + winStart).
+  - [x] **LOCK-COLLAPSE** ✅ done 2026-07-19b (owner ruling — the
+    unifying simplification): arming take 2 makes the trimmed region
+    THE take (`Edit::CollapseTake`: duration := Q, origin := epoch,
+    window consumed, `ClipNode::content_base_` shifts; undoable; save
+    writes the collapsed take). Kills the incommensurate-buffer bug
+    class at the source — off-grid take anchors (origin − epoch =
+    56298), exploded frames, mismatched cursors. `commensuratePeriod`
+    (timeline_model) stays as a defensive display net. Engine + mock
+    parity; VM trim view ends at ARM (matches the hasActiveTake gate).
+    Pinned: qtime_lock_tests.cc (collapse + on-grid take-2 anchor +
+    undo/redo; content-base playback sample-exact), q13.test.mjs.
+  - [x] **Re-open uncollapse + phase-preserving trim** ✅ done
+    2026-07-19c (field): deleting back to one clip UNCOLLAPSES the
+    survivor (full material returns, old trim = window, audio-neutral;
+    undo re-collapses via the Insert edit's uuid2 rider); provisional
+    re-trims RE-ANCHOR origin (`Edit.setsOrigin/iorg` rides LoopPoints)
+    so the sounding position never jumps while nudging handles. Engine
+    + mock parity; pinned in qtime_lock_tests.cc (re-open restore +
+    undo/redo; exact position continuity) and q13.test.mjs.
 - [ ] **Track Controls** — Play/Solo/Record buttons; partially done.
 - [ ] **Creation Menu** — contextual node creation; partially done.
 - [ ] **Selective Recording** — record into specific nodes.

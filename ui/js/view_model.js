@@ -20,7 +20,8 @@
  */
 
 import {
-    lcm, calculateStackLCM, computeEffectiveQuantum, nextStopBoundary,
+    lcm, calculateStackLCM, commensuratePeriod, computeEffectiveQuantum,
+    nextStopBoundary,
 } from './timeline_model.js';
 
 /** A node's intrinsic period in samples (stack = children LCM). */
@@ -137,9 +138,11 @@ export function windowDragTarget({ edge, rawQ, startQ, endQ, maxQ }) {
  * "Ghosts show what SOUNDS" (owner-ratified 2026-07-16, open question
  * 10): for a clip with an ACTIVE window, ghost tiles become ECHOES of
  * the window segment at its audible repetitions — positions ≡ the
- * clip's offset (mod the window length; the engine's clip-window
- * playback is origin-anchored) — instead of repetitions of raw take
- * material that never sounds. The take tile stays whole: it is the ONE
+ * clip's offset + the window start (mod the window length; the engine's
+ * clip-window playback anchors at origin + loopStart since 2026-07-19,
+ * so the segment sounds at ITS OWN performed moment, not the buffer
+ * top's) — instead of repetitions of raw take material that never
+ * sounds. The take tile stays whole: it is the ONE
  * place that renders recorded truth (the original material, dimmed
  * outside the brackets by the overlay) — everywhere else shows audible
  * truth. Echo reps carry `echo: true` and a `src` content range
@@ -165,7 +168,7 @@ export function echoReps({ reps, win, offsetQ, cycleQ, intrinsicQ }) {
             wrapped: endQ - startQ < winLen - 1e-9,
         });
     };
-    const first = ((offsetQ % winLen) + winLen) % winLen;
+    const first = (((offsetQ + win.startQ) % winLen) + winLen) % winLen;
     for (let s = first - winLen; s < cycleQ; s += winLen) {
         const e = s + winLen;
         // The take tile's span belongs to recorded truth — trim echoes
@@ -275,7 +278,12 @@ export function deriveViewModel(state, opts = {}) {
     // the app shell — like fold, but client-side only)
     const fxOpen = opts.fxOpen || null;
     const nodes = state.nodes || [];
-    const quantum = computeEffectiveQuantum(nodes);
+    // The island quantum is a STORED fact published top-level by the
+    // engine (P0-3 — the root stack's `quantum` metadata; the mock
+    // mirrors it). Prefer it; min-over-nodes derivation survives only
+    // as a fallback for states that predate the field (old fixtures).
+    const quantum = state.quantum > 1
+        ? state.quantum : computeEffectiveQuantum(nodes);
 
     // Q13 provisional mutability: Q is re-establishable while the island's
     // only committed content is ONE clip (the Q-definer). Its loop handles
@@ -293,18 +301,38 @@ export function deriveViewModel(state, opts = {}) {
     })(nodes);
     const soleQDefinerId = committedClips.length === 1 ? committedClips[0].id : null;
 
-    // While the Q-definer is provisional AND idle (nothing recording), it
-    // renders its FULL recorded buffer with the loop region drawn as a
-    // SELECTION overlay (dead air dimmed but visible) — so dragging the
-    // handles moves the selection over a stable waveform while Q/epoch
-    // update live underneath, rather than reframing to the selection and
-    // dropping the rest of the clip. It collapses to the selection (normal
-    // windowed rendering) the moment a second take records or commits.
+    // While the Q-definer is provisional AND idle (nothing armed or
+    // recording), it renders its FULL recorded buffer with the loop
+    // region drawn as a SELECTION overlay (dead air dimmed but visible)
+    // — so dragging the handles moves the selection over a stable
+    // waveform while Q/epoch update live underneath, rather than
+    // reframing to the selection and dropping the rest of the clip. The
+    // moment a second take ARMS, the engine LOCK-COLLAPSES the definer
+    // (its window becomes the take — owner ruling 2026-07-19), so the
+    // trim view ends at arm, not at commit: the armed gate here matches
+    // the engine's hasActiveTake re-trim refusal.
     const anyRecording = (function visit(ns) {
         return (ns || []).some(n => n.isRecording || (n.nodes && visit(n.nodes)));
     })(nodes);
-    const provisionalDefiner = !!soleQDefinerId && !anyRecording;
+    const anyTakeActive = anyRecording || (function visit(ns) {
+        return (ns || []).some(n => n.isPendingStart || (n.nodes && visit(n.nodes)));
+    })(nodes);
+    // The window must not be BYPASSED for the trim view: a bypassed
+    // window plays the full take, so the selection isn't the audible
+    // loop and the mapping below would lie. (The definer chip offers no
+    // bypass toggle, so this only guards imported/odd states.)
+    const provisionalDefiner = !!soleQDefinerId && !anyTakeActive &&
+        !committedClips[0].loopBypassed;
     const definerNode = provisionalDefiner ? committedClips[0] : null;
+    // The definer's selection in Q units (Q = selection length, so the
+    // selection is exactly 1Q wide and starts at loopStart/quantum).
+    // The engine commits every clip with loop [0, duration); a fixture
+    // without loop points means the same thing — the whole buffer.
+    const defHasSel = !!definerNode && definerNode.loopEnd > definerNode.loopStart;
+    const defSelStartQ = defHasSel ? definerNode.loopStart / quantum : 0;
+    const defSelEndQ = !definerNode ? 0
+        : defHasSel ? definerNode.loopEnd / quantum
+            : (definerNode.duration || 0) / quantum;
     // The island epoch is published explicitly (getGraphState
     // "islandEpoch"): commit RE-BASES it on simple extensions, and the
     // root node's `origin` metadata does NOT follow — reading origin as
@@ -313,11 +341,21 @@ export function deriveViewModel(state, opts = {}) {
     const epochSamples = state.islandEpoch ?? state.origin ?? 0;
 
     // Island cycle: LCM over top-level INTRINSIC periods — windows never
-    // reframe the timeline (law 13; see displayPeriodQ).
+    // reframe the timeline (law 13; see displayPeriodQ). Clip
+    // contributions are COMMENSURATE (timeline_model.commensuratePeriod):
+    // law 13 assumes whole-Q material, and a Q13-trimmed definer's raw
+    // buffer length is a multiple of the OLD Q — LCM-ing it exploded the
+    // frame to ~142336Q the moment take 2 armed (waveforms vanished
+    // behind the maxTiles guards; field 2026-07-19b). The lane still
+    // RENDERS its true fractional extent (intrinsicQ) — only the shared
+    // frame math sees the whole-Q contribution.
     let cycleSamples = quantum;
     nodes.forEach(n => {
-        const pQ = displayPeriodQ(n, quantum);
-        if (pQ > 0) cycleSamples = lcm(Math.round(cycleSamples), Math.round(pQ * quantum));
+        if (n.isRecording) return;
+        const p = n.type === 'stack'
+            ? calculateStackLCM(n.nodes, quantum)  // commensurate inside
+            : commensuratePeriod(n, quantum);
+        if (p > 0) cycleSamples = lcm(Math.round(cycleSamples), Math.round(p));
     });
 
     // The AUDIBLE cycle (E-C, mirrors calculateEffectiveCycleLength):
@@ -450,11 +488,31 @@ export function deriveViewModel(state, opts = {}) {
     // draw the playhead off the timeline. Never wrap while recording.
     if (!anyRecording && frameQ > 0) playheadQ = playheadQ % frameQ;
 
+    // Q13 provisional frame: the timeline shows BUFFER time but the
+    // transport publishes ISLAND time, wrapped on the trimmed loop —
+    // [0, 1Q), where island phase 0 is the selection's top (epoch =
+    // origin + loopStart, and clip playback anchors there). Map the ONE
+    // playhead (I8) into the buffer frame: heard position = selection
+    // start + island phase. The cursor sweeps exactly the selection —
+    // the dead air on either side is never audible time, so the cursor
+    // never visits it. loopStartQ tells the animator where the loop
+    // region begins so its wrap math stays in loop coordinates.
+    let loopStartQ = 0;
+    if (provisionalDefiner) {
+        loopStartQ = defSelStartQ;
+        playheadQ = defSelStartQ + playheadQ;
+    }
+
     // Q11: the arm target is always the next Q boundary in the epoch
     // frame (the cycle top is just the next boundary in the final Q).
     // The engine's own pending-start target is authoritative once a clip
-    // is armed; this is the display value for "if you arm now".
-    const armAtQ = Math.ceil(playheadQ) === playheadQ ? playheadQ + 1 : Math.ceil(playheadQ);
+    // is armed; this is the display value for "if you arm now". Island Q
+    // boundaries sit at loopStartQ + k (loopStartQ = 0 outside the
+    // provisional trim view, where this reduces to plain ceil) — for a
+    // genuine 1Q selection the next boundary IS the selection end.
+    const relPosQ = playheadQ - loopStartQ;
+    const armAtQ = loopStartQ +
+        (Math.ceil(relPosQ) === relPosQ ? relPosQ + 1 : Math.ceil(relPosQ));
 
     const lanes = [];
     const pushLane = (node, depth) => {
@@ -520,9 +578,6 @@ export function deriveViewModel(state, opts = {}) {
         // second take locks it.
         if (provisionalDefiner && node.id === soleQDefinerId) {
             const fullQ = (node.duration || 0) / quantum;
-            const hasSel = node.loopEnd > node.loopStart;
-            const selStartQ = hasSel ? node.loopStart / quantum : 0;
-            const selEndQ = hasSel ? node.loopEnd / quantum : fullQ;
             lanes.push(Object.assign(laneCommon(node, state), {
                 kind: 'clip',
                 depth,
@@ -530,9 +585,13 @@ export function deriveViewModel(state, opts = {}) {
                 intrinsicQ: fullQ,          // drag/dim extent = the whole buffer
                 reps: [{ startQ: 0, endQ: fullQ, ghost: false }],  // one full tile
                 takeStartQ: 0,              // buffer starts at frame 0 (ignore epoch)
-                window: { startQ: selStartQ, endQ: selEndQ,
+                window: { startQ: defSelStartQ, endQ: defSelEndQ,
                           active: true, bypassed: false, latent: false },
-                windowPhase: node.playhead || 0,  // amber cursor sweeps the selection
+                // No per-lane heard-time cursor: the MAIN playhead is
+                // mapped into the selection (one playhead, I8) — a
+                // second amber cursor sweeping the same span was the
+                // "two cursors" field bug (2026-07-19).
+                windowPhase: 0,
                 armable: false,
                 inputChannel: node.inputChannel ?? -1,
                 isQDefiner: true,
@@ -612,8 +671,11 @@ export function deriveViewModel(state, opts = {}) {
             window: win,
             windowPhase: node.windowActive ? (node.playhead || 0) : 0,
             armable: isArmable(node),
-            // Q13: this lane's loop handles re-establish Q (provisional).
-            isQDefiner: node.id === soleQDefinerId,
+            // NOT isQDefiner here: the definer renders through the
+            // provisional branch above. This branch gets the sole clip
+            // only while a take is in flight — and then a bracket drag
+            // is an ordinary window edit (the engine's hasActiveTake
+            // gate refuses to move Q under a performing take).
             // Recording input (hardware channel index; −1 = device default)
             inputChannel: node.inputChannel ?? -1,
         }));
@@ -634,6 +696,7 @@ export function deriveViewModel(state, opts = {}) {
         cycleQ,          // the DISPLAY FRAME: what lanes tile and views fit
         lcmQ,            // the committed cycle (≤ cycleQ; equal unless recording extends)
         loopCycleQ: loopSamples / quantum, // the AUDIBLE cycle (E-C): < lcmQ when windows shorten it
+        loopStartQ,      // frame origin of the audible loop (Q13 trim view; else 0)
         frameExtended,   // true while a take has grown the frame past the LCM
         playheadQ,
         isPlaying: !!state.isPlaying,

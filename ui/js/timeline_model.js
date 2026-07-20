@@ -95,8 +95,33 @@ export function timelineLcm(durations, quantum) {
 }
 
 /**
+ * A clip's contribution (samples) to any whole-Q cycle math (frame LCM,
+ * composite duration). Normally-committed clips have whole-Q durations
+ * and contribute them unchanged. A Q13-trimmed definer's buffer is a
+ * multiple of the OLD Q — incommensurate with the grid its own window
+ * defined — and LCM-ing the raw duration exploded the display frame
+ * ("142336Q", waveforms vanished behind the maxTiles guards; field
+ * 2026-07-19b). Its whole-Q truth is the WINDOW (exactly 1Q by
+ * construction); ceil-to-Q is the defensive fallback so even a bypassed
+ * incommensurate clip yields a finite frame. Audio is untouched — the
+ * engine wraps the transport on the EFFECTIVE cycle, which already uses
+ * the window.
+ */
+export function commensuratePeriod(node, effectiveQ) {
+    const d = Math.round(node.duration || 0);
+    const q = Math.round(effectiveQ || 0);
+    if (!(d > 0) || !(q > 1)) return d;
+    if (d % q === 0) return d;
+    const winLen = Math.round((node.loopEnd || 0) - (node.loopStart || 0));
+    if (!node.loopBypassed && winLen > 0 && winLen % q === 0) return winLen;
+    return Math.ceil(d / q) * q;
+}
+
+/**
  * LCM for a stack's children (recursive for nested stacks).
  * A nested stack contributes its internal LCM as its composite duration.
+ * Clip contributions are COMMENSURATE (see commensuratePeriod): the
+ * composite stays a whole-Q fact even over a Q13-trimmed take.
  */
 export function calculateStackLCM(stackNodes, effectiveQ) {
     let stackLCM = effectiveQ;
@@ -106,8 +131,9 @@ export function calculateStackLCM(stackNodes, effectiveQ) {
         if (child.isRecording) return; // Skip recording clips
 
         if (child.type === 'clip' && child.duration > 0) {
-            stackLCM = lcm(Math.round(stackLCM), Math.round(child.duration));
-            maxDuration = Math.max(maxDuration, child.duration);
+            const p = commensuratePeriod(child, effectiveQ);
+            stackLCM = lcm(Math.round(stackLCM), p);
+            maxDuration = Math.max(maxDuration, p);
         } else if (child.type === 'stack' && child.nodes) {
             const childLCM = calculateStackLCM(child.nodes, effectiveQ);
             stackLCM = lcm(Math.round(stackLCM), Math.round(childLCM));

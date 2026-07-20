@@ -14,6 +14,7 @@
 #include <set>
 
 #include "../src/audio_engine.h"
+#include "../src/clip_node.h"
 
 namespace celestrian {
 
@@ -27,13 +28,16 @@ int64_t islandQ(AudioEngine& e) {
 int64_t islandEp(AudioEngine& e) {
   return (int64_t)(double)e.getGraphState().getProperty("epoch", 0);
 }
-int64_t clipOrigin(AudioEngine& e, const juce::String& uuid) {
+int64_t clipProp(AudioEngine& e, const juce::String& uuid, const char* prop) {
   const juce::var s = e.getGraphState();  // hold: getArray() dangles past it
   if (auto* n = nodesOf(s))
     for (auto& x : *n)
       if (x.getProperty("id", "").toString() == uuid)
-        return (int64_t)(double)x.getProperty("origin", 0);
+        return (int64_t)(double)x.getProperty(prop, 0);
   return 0;
+}
+int64_t clipOrigin(AudioEngine& e, const juce::String& uuid) {
+  return clipProp(e, uuid, "origin");
 }
 // Committed ⟺ not recording and has a duration. (getMetadata publishes
 // live_duration as "duration" while recording, so gate on isRecording.)
@@ -108,13 +112,15 @@ class QTimeLockTests : public juce::UnitTest {
       auto c1 = recordClip(engine, process, Q);  // ~1Q take
       const int64_t q0 = islandQ(engine), ep0 = islandEp(engine);
       expect(q0 > 0, "Q established by the sole take");
-      const int64_t origin = clipOrigin(engine, c1);
 
       // Trim to a sub-window [ws, ws+len): Q := len, epoch := origin+ws.
+      // (The trim RE-ANCHORS origin for phase continuity, so read it
+      // back after the edit.)
       const int64_t ws = 5000, len = 30000;
       engine.setLoopPoints(c1, ws, ws + len);
       expectEquals(islandQ(engine), len, "Q re-established to the window length");
-      expectEquals(islandEp(engine), origin + ws, "epoch := origin + window start");
+      expectEquals(islandEp(engine), clipOrigin(engine, c1) + ws,
+                   "epoch := origin + window start");
 
       engine.undo();
       expectEquals(islandQ(engine), q0, "undo restores the old Q");
@@ -173,6 +179,190 @@ class QTimeLockTests : public juce::UnitTest {
 
       engine.setLoopPoints(c1, 0, 12345);  // now provisional again
       expectEquals(islandQ(engine), (int64_t)12345, "Q re-opened: re-trim moves it");
+    }
+
+    beginTest("LOCK-COLLAPSE: arming take 2 makes the trimmed region THE take");
+    {
+      // Owner ruling 2026-07-19: the trim is a PRE-LOCK affordance —
+      // once you build on it, clip 1 reads as if it was performed
+      // exactly (duration = Q, origin = epoch, window consumed). The
+      // looper is normal again; no incommensurate buffer survives to
+      // poison arm boundaries / context loops / LCMs (field: take 2
+      // anchored at origin − epoch = 56298 ∉ Q·Z).
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      auto c1 = recordClip(engine, process, Q);
+      const int64_t dur0 = clipProp(engine, c1, "duration");
+
+      const int64_t ws = 5000, len = 30000;
+      engine.setLoopPoints(c1, ws, ws + len);  // provisional trim: Q := len
+      const int64_t originT = clipOrigin(engine, c1);  // post-re-anchor
+
+      // Take 2 through the real flow — the arm inside triggers collapse.
+      auto c2 = recordClip(engine, process, 2 * len);
+
+      expectEquals(clipProp(engine, c1, "duration"), len,
+                   "clip 1 collapsed: the window IS the take");
+      expectEquals(clipOrigin(engine, c1), originT + ws,
+                   "clip 1 origin = the trimmed loop's top");
+      // Commit may RE-BASE the epoch (simple-extension rule) — but only
+      // by whole cycles of the trimmed grid: phase is preserved.
+      const int64_t ep1 = islandEp(engine);
+      expectEquals((((ep1 - (originT + ws)) % len) + len) % len, (int64_t)0,
+                   "epoch stays on the trimmed grid");
+      expectEquals(islandQ(engine), len, "Q unmoved");
+      expectEquals(clipProp(engine, c1, "loopStart"), (int64_t)0,
+                   "window consumed (full span)");
+      expectEquals(clipProp(engine, c1, "loopEnd"), len, "…");
+
+      // THE regression: take 2 lands ON the grid.
+      const int64_t rel = clipOrigin(engine, c2) - islandEp(engine);
+      expectEquals(((rel % len) + len) % len, (int64_t)0,
+                   "take 2 anchors on a Q boundary of the epoch grid");
+
+      // Undo. Log order is [.., trim, Insert(c2), CollapseTake] — the
+      // collapse rode the ARM, which happens after the take's create —
+      // so the first undo uncollapses, the second removes c2.
+      engine.undo();  // uncollapse
+      engine.undo();  // remove c2
+      expectEquals(clipProp(engine, c1, "duration"), dur0,
+                   "undo restores the full buffer");
+      expectEquals(clipOrigin(engine, c1), originT, "…and the origin");
+      expectEquals(clipProp(engine, c1, "loopStart"), ws,
+                   "…and the trim window");
+      expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "…");
+      engine.redo();  // re-insert c2
+      engine.redo();  // re-collapse
+      expectEquals(clipProp(engine, c1, "duration"), len, "redo re-collapses");
+    }
+
+    beginTest("RE-OPEN uncollapses: deleting take 2 restores the trimmed-away material");
+    {
+      // Owner report 2026-07-19c: after building on a trim and deleting
+      // back down to one clip, the trim view returned but the dead air
+      // was gone — you couldn't trim LONGER. Re-open now uncollapses
+      // the survivor (audio-neutral: the restored window plays the
+      // identical loop), riding the same Remove edit.
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      auto c1 = recordClip(engine, process, Q);
+      const int64_t dur0 = clipProp(engine, c1, "duration");
+      const int64_t ws = 5000, len = 30000;
+      engine.setLoopPoints(c1, ws, ws + len);
+      auto c2 = recordClip(engine, process, 2 * len);  // arm collapses c1
+      expectEquals(clipProp(engine, c1, "duration"), len, "locked: collapsed");
+
+      engine.deleteNode(c2);  // 2 → 1: re-open ⟹ uncollapse
+      expectEquals(clipProp(engine, c1, "duration"), dur0,
+                   "full buffer restored — trimming longer is possible again");
+      expectEquals(clipProp(engine, c1, "loopStart"), ws,
+                   "the trim survives as the window");
+      expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "…");
+      expectEquals(islandQ(engine), len, "Q untouched (still the trimmed loop)");
+
+      engine.undo();  // re-insert c2 AND re-collapse c1 (uuid2 rider)
+      expectEquals(clipProp(engine, c1, "duration"), len,
+                   "undo of the delete re-collapses the definer");
+      engine.redo();  // delete again → uncollapse re-derives
+      expectEquals(clipProp(engine, c1, "duration"), dur0,
+                   "redo re-opens and uncollapses");
+    }
+
+    beginTest("phase-preserving trim: the sounding position never jumps");
+    {
+      // Owner report 2026-07-19c: nudging the loop region reset
+      // playback. The provisional grid is free, so a trim re-anchors
+      // the clip's origin such that the buffer position sounding at the
+      // edit moment is unchanged (folded into the new window if it fell
+      // outside). masterPos maps back to buffer position as
+      // loopStart + view — continuity is exact, no processing between
+      // the measurement and the edit.
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      auto c1 = recordClip(engine, process, Q);
+      process(12345);  // put the phase somewhere nonzero
+      auto viewPos = [&] {
+        const juce::var s = engine.getGraphState();
+        return (int64_t)(double)s.getProperty("masterPos", 0);
+      };
+      const int64_t p0 = clipProp(engine, c1, "loopStart") + viewPos();
+
+      const int64_t ws = 5000, len = 30000;
+      engine.setLoopPoints(c1, ws, ws + len);
+      const int64_t p1 = clipProp(engine, c1, "loopStart") + viewPos();
+      const int64_t expect1 = ws + (((p0 - ws) % len) + len) % len;
+      expectEquals(p1, expect1, "position continuous (folded into the window)");
+
+      // A small nudge that keeps the current position inside the window
+      // must not move it at all.
+      engine.setLoopPoints(c1, ws - 2000, ws - 2000 + len);
+      const int64_t p2 = clipProp(engine, c1, "loopStart") + viewPos();
+      expectEquals(p2, p1, "nudge: the sounding position does not move");
+    }
+
+    beginTest("windowed playback anchors at origin + loopStart (epoch contract)");
+    {
+      // Q13's epoch := origin + loopStart names the trimmed loop's top
+      // as island phase 0 — so at t = origin + loopStart the clip must
+      // sound buffer[loopStart]. The old origin-anchored launch played
+      // buffer[loopStart + (loopStart mod len)] there: a sub-Q trim put
+      // the audible loop top at an arbitrary island phase, and the grid
+      // every later take arms against pointed mid-loop.
+      ClipNode clip("phase-clip");
+      const int N = 1000;
+      std::vector<float> ramp(N);
+      for (int i = 0; i < N; ++i) ramp[i] = (float)i / N;  // content[j] = j/N
+      float* ins[] = {ramp.data()};
+      ProcessContext recCtx;
+      recCtx.num_samples = N;
+      recCtx.is_recording = true;
+      clip.startRecording();
+      clip.process(ins, nullptr, 1, 0, recCtx);
+      clip.stopRecording();
+      clip.origin_samples.store(100);
+
+      const int64_t ws = 250, len = 400;  // ws mod len ≠ 0: discriminates
+      clip.setLoopPoints(ws, ws + len);
+      clip.startPlayback();
+
+      auto sampleAt = [&](int64_t t) {
+        // Distinct channel buffers: the clip SUMS into every output
+        // channel, so aliased arrays double the sample.
+        float outL[4] = {0.0f}, outR[4] = {0.0f};
+        float* outs[] = {outL, outR};
+        ProcessContext playCtx;
+        playCtx.num_samples = 1;
+        playCtx.is_playing = true;
+        playCtx.master_pos = t;
+        clip.process(nullptr, outs, 0, 2, playCtx);
+        return outL[0];
+      };
+      // Loop top at its performance moment, and one period later.
+      expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
+                                "island phase 0 sounds buffer[loopStart]");
+      expectWithinAbsoluteError(sampleAt(100 + ws + len), ramp[ws], 1e-6f,
+                                "…and every period after");
+      // Mid-window content sounds at ITS performed moment (Audio Memory
+      // applied to the surviving material).
+      expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123],
+                                1e-6f, "buffer[ws+x] sounds at origin+ws+x");
+
+      // LOCK-COLLAPSE (content base): the window becomes the take —
+      // playback through content_base_ is sample-identical to the
+      // windowed playback above, at the same island moments.
+      clip.collapseToWindow(ws, len);
+      expectEquals(clip.getIntrinsicDuration(), len, "duration = window len");
+      expectEquals(clip.origin_samples.load(), (int64_t)100 + ws,
+                   "origin = the old window top");
+      expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
+                                "collapsed take: phase 0 = old loop top");
+      expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123],
+                                1e-6f, "…content unchanged mid-take");
+      clip.uncollapseFromWindow(ws, N);
+      expectEquals(clip.getIntrinsicDuration(), (int64_t)N, "uncollapse restores");
+      expectEquals(clip.getLoopStart(), ws, "…including the trim");
+      expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
+                                "…and playback is unchanged");
     }
   }
 };
