@@ -355,12 +355,133 @@ function renderEmptyProjects() {
                 setLogLine(ok ? `Opened ${r.name}` : 'Open failed');
                 refreshProjectInfo();
             }));
+        if (!templates.length) {
+            // First run: point at the ritual — build the rig once, save
+            // it as a template, and every session after starts wired.
+            const hint = document.createElement('div');
+            hint.className = 'proj-row';
+            hint.style.opacity = '0.6';
+            hint.textContent =
+                'First time? Build your rig (+ New Stack, name tracks, set ' +
+                'inputs), then Project ▾ → Save as template.';
+            host.appendChild(hint);
+        }
     }).catch(() => {});
+}
+
+/* The project menu — the compact "file menu": everything the bridge
+ * offers, one popover. Rebuilt on every open so templates/recents are
+ * always fresh. */
+function buildProjectMenu(menu) {
+    menu.textContent = '';
+    const close = () => menu.classList.remove('open');
+    const item = (label, fn, disabled = false) => {
+        const b = document.createElement('button');
+        b.className = 'pm-item';
+        b.textContent = label;
+        b.disabled = disabled;
+        b.addEventListener('click', () => { close(); fn(); });
+        menu.appendChild(b);
+        return b;
+    };
+    const head = label => {
+        const d = document.createElement('div');
+        d.className = 'pm-head';
+        d.textContent = label;
+        menu.appendChild(d);
+    };
+    const sep = () => {
+        const d = document.createElement('div');
+        d.className = 'pm-sep';
+        menu.appendChild(d);
+    };
+
+    const born = projectInfo.born;
+    item(born ? `Save now (${projectInfo.name})` : 'Save now — creates today’s project',
+        () => callNative('saveProjectNow').then(() => refreshProjectInfo(true)));
+    item('Rename project…', renameProjectInline, !born);
+    item('Duplicate project (next serial)', () =>
+        callNative('duplicateProject').then(id => {
+            setLogLine(id ? `Forked to ${id} — the original stays as a checkpoint`
+                          : 'Nothing to duplicate yet');
+            refreshProjectInfo();
+        }), !born);
+    item('Open project folder…', () =>
+        callNative('loadSession', '').then(ok => {
+            setLogLine(ok ? 'Project opened' : 'Open cancelled');
+            refreshProjectInfo();
+        }));
+
+    sep();
+    head('Save as template');
+    const row = document.createElement('div');
+    row.className = 'pm-inline';
+    const input = document.createElement('input');
+    input.placeholder = 'e.g. My Rig';
+    const go = document.createElement('button');
+    go.textContent = 'Save';
+    go.addEventListener('click', () => {
+        const name = input.value.trim();
+        if (!name) return;
+        callNative('saveAsTemplate', name).then(ok => {
+            setLogLine(ok ? `Template "${name}" saved (structure + inputs, no audio)`
+                          : 'Template save failed');
+            close();
+            renderEmptyProjects();
+        });
+    });
+    input.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') go.click();
+        ev.stopPropagation();
+    });
+    row.append(input, go);
+    menu.appendChild(row);
+
+    callNative('listTemplates').then(raw => {
+        const templates = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!templates.length) return;
+        sep();
+        head('New from template');
+        templates.forEach(t => item(t.name, () =>
+            callNative('newProjectFromTemplate', t.id).then(ok => {
+                setLogLine(ok ? `Template "${t.name}" loaded — play the seed`
+                              : 'Template failed to load');
+                refreshProjectInfo();
+            })));
+    });
+    callNative('listRecentProjects').then(raw => {
+        const recents = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!recents.length) return;
+        sep();
+        head('Recent projects');
+        recents.slice(0, 6).forEach(r => item(
+            r.name === r.id ? r.id : `${r.name} · ${r.id}`, () =>
+            callNative('openProjectPath', r.path).then(ok => {
+                setLogLine(ok ? `Opened ${r.name}` : 'Open failed');
+                refreshProjectInfo();
+            })));
+    });
 }
 
 function initProjectUI() {
     const el = document.getElementById('project-name');
     if (el) el.addEventListener('click', renameProjectInline);
+    const btn = document.getElementById('project-menu-btn');
+    const menu = document.getElementById('project-menu');
+    if (btn && menu) {
+        btn.addEventListener('click', ev => {
+            ev.stopPropagation();
+            if (menu.classList.contains('open')) {
+                menu.classList.remove('open');
+            } else {
+                buildProjectMenu(menu);
+                menu.classList.add('open');
+            }
+        });
+        document.addEventListener('click', ev => {
+            if (!menu.contains(ev.target)) menu.classList.remove('open');
+        });
+    }
     renderEmptyProjects();
     refreshProjectInfo();
     setInterval(refreshProjectInfo, 2000);  // birth/rename follow the mirror

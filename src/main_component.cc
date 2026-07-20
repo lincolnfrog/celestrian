@@ -426,7 +426,10 @@ MainComponent::MainComponent()
                     completion(true);
                   })) {
   audio_engine.initialiseAudioDevice();
-  audio_engine.createDefaultSession();
+  // Boot into the TRUE empty state (docs/projects.md): the empty-state
+  // panel is where templates and recents live, and record-on-empty
+  // already creates a fresh track on demand — a pre-made default
+  // stack+clip only hid the project surface.
 
   addAndMakeVisible(web_browser);
 
@@ -461,9 +464,12 @@ void MainComponent::chooseSessionPath(
           done(false);  // cancelled
           return;
         }
+        // Loads route through the ProjectManager so the opened bundle
+        // becomes the CURRENT project (identity, name, mirror target) —
+        // a raw engine load would leave the mirror pointed elsewhere.
         const bool ok = saving
                             ? audio_engine.saveSession(file.getFullPathName())
-                            : audio_engine.loadSession(file.getFullPathName());
+                            : project_manager_.openProject(file);
         done(ok);
       });
 }

@@ -650,6 +650,75 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 #project-name:hover { color: var(--text); }
 #project-name:empty { display: none; }
 
+/* Project menu (docs/projects.md): the compact "file menu" — save,
+   rename, templates, recents, duplicate. */
+#project-menu-btn {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text-dim);
+    padding: 6px 10px;
+    margin-right: 8px;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+#project-menu-btn:hover { color: var(--text); border-color: var(--tape); }
+#project-menu {
+    display: none;
+    position: absolute;
+    top: 52px;
+    right: 120px;
+    z-index: 50;
+    min-width: 240px;
+    background: var(--panel, #241f19);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 6px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+    font-size: 0.8rem;
+}
+#project-menu.open { display: block; }
+#project-menu .pm-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.8rem;
+}
+#project-menu .pm-item:hover { background: rgba(255,255,255,0.06); }
+#project-menu .pm-item:disabled { opacity: 0.35; cursor: default; }
+#project-menu .pm-head {
+    padding: 8px 10px 3px;
+    font-size: 0.65rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+#project-menu .pm-sep { border-top: 1px solid var(--line); margin: 6px 0; }
+#project-menu .pm-inline { display: flex; gap: 6px; padding: 4px 10px 8px; }
+#project-menu .pm-inline input {
+    flex: 1;
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 8px;
+    font-size: 0.8rem;
+}
+#project-menu .pm-inline button {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 10px;
+    cursor: pointer;
+}
+
 /* ===== Status strip ===== */
 #status-strip {
     display: flex;
