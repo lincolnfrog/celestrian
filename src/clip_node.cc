@@ -37,9 +37,12 @@ int64_t ClipNode::getEffectiveQuantum() const {
   return 0;
 }
 
-void ClipNode::process(const float *const *input_channels,
-                       float *const *output_channels, int num_input_channels,
-                       int num_output_channels, const ProcessContext &context) {
+void ClipNode::control(const float *const *input_channels,
+                       int num_input_channels, const ProcessContext &context) {
+  // A new block: last block's commit (if any) has been rendered-silent
+  // once; playback proceeds from this block on.
+  committed_this_block_.store(false);
+
   // === Armed: choose/reach the arm target (state machine, kernel.md §3;
   // re-evaluated every block — deliberate: the latency-compensated clock
   // must be able to land back on a boundary the raw clock already
@@ -177,9 +180,15 @@ void ClipNode::process(const float *const *input_channels,
       }
     }
   }
+}
 
-  // Handle Playback
-  if (context.is_playing && is_playing) {
+void ClipNode::render(float *const *output_channels, int num_output_channels,
+                      const ProcessContext &context) const {
+  // The kernel playback equation (§2.3 render phase): a pure function
+  // of (buffer, origin, window, t). The commit block renders SILENT
+  // (committed_this_block_) — identical to the historical process(),
+  // which returned right after commit.
+  if (context.is_playing && is_playing && !committed_this_block_.load()) {
     int64_t start = loop_start_samples.load();
     int64_t end = loop_end_samples.load();
     // Loop window, fractal (I5): the clip's loop region is the
@@ -536,6 +545,10 @@ void ClipNode::commitRecording(int64_t final_duration,
         ctx && ctx->snap ? snapIntrinsicDuration(*ctx->snap, 0)
                          : island->getIntrinsicDuration();
     island->takeCommitted(origin, intrinsic_after);
+
+    // §2.3: the commit block renders silent (see render()); playback
+    // begins on the next block, as it always has.
+    committed_this_block_.store(true);
   }
 }
 

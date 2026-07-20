@@ -193,6 +193,17 @@ out nearly free:
 
 ### 2.3 Control plane / data plane split
 
+> **Status 2026-07-19e: implemented.** `AudioNode::process` is a
+> NON-virtual sequencer over two virtuals: `control(inputs, ctx)` (arm
+> targets, stop boundaries, capture, commit + island consequences) and
+> `render(outputs, ctx) const` (the kernel equation). Called at the
+> root, control settles across the WHOLE graph before the first sample
+> renders. Purity is compiler-enforced: the only `mutable` members are
+> DSP scratch (mix/fx buffers, effect state) and playhead telemetry,
+> explicitly marked. The historical commit-block silence is preserved
+> by a per-clip gate. Pinned by `tests/render_purity_tests.cc` —
+> `render(state, t) == golden`, determinism, state invariance.
+
 The endgame of "playback is one equation" is that rendering is a
 *pure function*: `out = render(graph_snapshot, t, n)`. Today
 `process()` interleaves rendering with decisions (arm scheduling,

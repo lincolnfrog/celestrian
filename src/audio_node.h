@@ -102,17 +102,41 @@ class AudioNode {
   virtual ~AudioNode() = default;
 
   /**
-   * Processes audio into the provided output channels or captures from input.
-   * @param input_channels Pointer to input samples.
-   * @param output_channels Pointer to output samples to be filled.
-   * @param num_input_channels Number of available hardware input channels.
-   * @param num_output_channels Number of hardware output channels.
-   * @param context Current processing context (sample rate, transport, etc.).
+   * CONTROL/INGEST phase (unification_audit.md §2.3 — the control
+   * plane): everything that DECIDES or CAPTURES. Arm targets, stop
+   * boundaries, input capture, commit events (and their island
+   * consequences: establish, epoch re-base). Mutates node state.
+   * Inputs flow in here; nothing is rendered.
    */
-  virtual void process(const float *const *input_channels,
-                       float *const *output_channels, int num_input_channels,
-                       int num_output_channels,
+  virtual void control(const float *const *input_channels,
+                       int num_input_channels,
                        const ProcessContext &context) = 0;
+
+  /**
+   * RENDER phase (§2.3 — the data plane): the kernel playback equation
+   * as a PURE function of (structure, settled state, t). CONST-ENFORCED:
+   * render decides nothing and mutates no musical state — the only
+   * `mutable` members are DSP scratch (mix/fx buffers, effect state)
+   * and view telemetry (playhead phase), both explicitly marked.
+   * Outputs flow out of here; inputs are not visible.
+   */
+  virtual void render(float *const *output_channels, int num_output_channels,
+                      const ProcessContext &context) const = 0;
+
+  /**
+   * Phase sequencer: control, then render. NON-virtual — the split is
+   * the contract. Called at the ROOT by the engine, this yields
+   * whole-graph phase separation: every decision in the graph settles
+   * before the first sample renders, so render never observes state
+   * that changes mid-pass (§2.3 "events applied between blocks").
+   * Node-level tests call it for the historical single-node behavior.
+   */
+  void process(const float *const *input_channels,
+               float *const *output_channels, int num_input_channels,
+               int num_output_channels, const ProcessContext &context) {
+    control(input_channels, num_input_channels, context);
+    render(output_channels, num_output_channels, context);
+  }
 
   /**
    * Generates waveform peaks for visualization.
@@ -367,7 +391,10 @@ class AudioNode {
   std::atomic<double> width{200.0}, height{100.0};
 
   // Transport state
-  std::atomic<double> playhead_pos{0.0};          // 0.0 to 1.0 (normalized)
+  // View telemetry, written by the CONST render phase (§2.3): an output
+  // for the UI, not musical state — the sanctioned exception to render
+  // purity, hence `mutable`.
+  mutable std::atomic<double> playhead_pos{0.0};  // 0.0 to 1.0 (normalized)
   std::atomic<int64_t> duration_samples{0};       // Length of the loop
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
   std::atomic<int64_t> loop_start_samples{0};
@@ -378,8 +405,10 @@ class AudioNode {
 
   // Built-in effect rack (dsp/effects.h): fixed slots, all-atomic
   // parameters — safe for the audio thread to read while the message
-  // thread edits.
-  dsp::EffectRack fx_;
+  // thread edits. `mutable`: effect DSP state (echo/reverb lines)
+  // advances during the CONST render phase — DSP scratch, not musical
+  // state (§2.3 sanctioned exception).
+  mutable dsp::EffectRack fx_;
   std::atomic<bool> is_muted{false};
   std::atomic<bool> is_expanded{
       true};  // UI state: expanded (true) or collapsed (false)

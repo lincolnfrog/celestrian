@@ -197,23 +197,14 @@ std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
   return nullptr;
 }
 
-void StackNode::process(const float *const *input_channels,
-                        float *const *output_channels, int num_input_channels,
-                        int num_output_channels,
-                        const ProcessContext &context) {
-  // Guard for atypical block sizes/channel counts. At normal sizes the
-  // buffer was preallocated in the constructor and this never triggers.
-  if (mix_buffer.getNumSamples() < context.num_samples ||
-      mix_buffer.getNumChannels() < num_output_channels) {
-    mix_buffer.setSize(num_output_channels, context.num_samples, false, true,
-                       true);
-  }
-
+ProcessContext StackNode::childContext(const ProcessContext &context) const {
   // === LOOP WINDOW AS TIME-MAP (time_maps.md phase 1) ===
   // The window applies iff it is ACTIVE (valid + not bypassed) —
   // independent of expansion (I6b: collapse is purely visual). Phase is
   // a pure function of the received clock: (t − cycle_epoch) mod len.
   // No private counter, no reset-on-collapse, fully deterministic.
+  // Shared by BOTH §2.3 phases so control decisions and rendering see
+  // the SAME mapped child clock.
   ProcessContext child_context = context;
 
   const int64_t window_start = loop_start_samples.load();
@@ -235,12 +226,14 @@ void StackNode::process(const float *const *input_channels,
     child_context.master_pos = context.cycle_epoch + window_start + rel;
     // For nested maps: the child frame's cycle top is the window top.
     child_context.cycle_epoch = context.cycle_epoch + window_start;
-
-    // Publish the window phase for the UI (fraction within the window).
-    playhead_pos.store((double)rel / (double)len);
-  } else {
-    playhead_pos.store(0.0);
   }
+  return child_context;
+}
+
+void StackNode::control(const float *const *input_channels,
+                        int num_input_channels,
+                        const ProcessContext &context) {
+  ProcessContext child_context = childContext(context);
 
   // Children come from the WHOLE-GRAPH snapshot (one engine-side load
   // per callback — Tier 3 Step 3): index spans, no per-stack atomics,
@@ -263,13 +256,57 @@ void StackNode::process(const float *const *input_channels,
   // duration in this scope. Recording/armed children contribute 0
   // (duration resets at arm); nested-stack children contribute their
   // stored duration_samples (0 — stacks don't store one), matching the
-  // historical sibling-scan semantics exactly.
+  // historical sibling-scan semantics exactly. A CONTROL fact: render
+  // never needs it.
   int64_t longest_committed = 0;
   for (int k = 0; k < child_count; ++k) {
     const int64_t d = childNode(k)->duration_samples.load();
     if (d > longest_committed) longest_committed = d;
   }
   child_context.context_loop = longest_committed;
+
+  for (int k = 0; k < child_count; ++k) {
+    child_context.self = childEntry(k);
+    childNode(k)->control(input_channels, num_input_channels, child_context);
+  }
+}
+
+void StackNode::render(float *const *output_channels, int num_output_channels,
+                       const ProcessContext &context) const {
+  // Guard for atypical block sizes/channel counts. At normal sizes the
+  // buffer was preallocated in the constructor and this never triggers.
+  if (mix_buffer.getNumSamples() < context.num_samples ||
+      mix_buffer.getNumChannels() < num_output_channels) {
+    mix_buffer.setSize(num_output_channels, context.num_samples, false, true,
+                       true);
+  }
+
+  ProcessContext child_context = childContext(context);
+
+  // Window-phase telemetry for the UI (render output, not state —
+  // playhead_pos is the sanctioned mutable).
+  {
+    const int64_t ws = loop_start_samples.load();
+    const int64_t we = loop_end_samples.load();
+    if (!loop_window_bypassed_.load() && we > ws) {
+      const int64_t rel = child_context.master_pos - child_context.cycle_epoch;
+      playhead_pos.store((double)rel / (double)(we - ws));
+    } else {
+      playhead_pos.store(0.0);
+    }
+  }
+
+  const GraphSnapshot *snap = context.snap;
+  const int child_count =
+      snap ? snap->entries[(size_t)context.self].childCount
+           : (int)children.size();
+  auto childEntry = [&](int k) -> int {
+    return snap ? snap->childAt(context.self, k) : 0;
+  };
+  auto childNode = [&](int k) -> const AudioNode * {
+    return snap ? snap->entries[(size_t)snap->childAt(context.self, k)].node
+                : children[(size_t)k].get();
+  };
 
   // With the effect rack ON, children sum into the mono fx accumulator
   // first — the rack shapes the GROUP's summed signal (a stack reverb
@@ -286,15 +323,14 @@ void StackNode::process(const float *const *input_channels,
   }
 
   for (int k = 0; k < child_count; ++k) {
-    AudioNode *child = childNode(k);
+    const AudioNode *child = childNode(k);
     // Clear mix buffer for this specific child
     mix_buffer.clear();
 
-    // Pass the same input to children (effectively parallel input)
-    // Output from child goes into our mix_buffer
+    // Child renders into our mix_buffer.
     child_context.self = childEntry(k);
-    child->process(input_channels, mix_buffer.getArrayOfWritePointers(),
-                   num_input_channels, num_output_channels, child_context);
+    child->render(mix_buffer.getArrayOfWritePointers(), num_output_channels,
+                  child_context);
 
     if (use_fx) {
       fx_accum_.addFrom(0, 0, mix_buffer.getReadPointer(0),
@@ -323,7 +359,6 @@ void StackNode::process(const float *const *input_channels,
     }
   }
 }
-
 juce::var StackNode::getWaveform(int num_peaks) const {
   const auto &kids = children;  // message thread: ownership vector
 

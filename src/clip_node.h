@@ -41,13 +41,14 @@ class ClipNode : public AudioNode {
   ClipNode(juce::String name, double source_sample_rate = 44100.0);
   ~ClipNode() override = default;
 
-  // AudioNode implementation
-  /**
-   * Processes the audio buffer for recording or playback.
-   */
-  void process(const float *const *input_channels,
-               float *const *output_channels, int num_input_channels,
-               int num_output_channels, const ProcessContext &context) override;
+  // AudioNode implementation (§2.3 control/render split)
+  /** Decisions + capture: arm targets, stop boundaries, input ingest,
+   * commit (with island consequences). */
+  void control(const float *const *input_channels, int num_input_channels,
+               const ProcessContext &context) override;
+  /** The kernel playback equation — pure; see AudioNode::render. */
+  void render(float *const *output_channels, int num_output_channels,
+              const ProcessContext &context) const override;
 
   /**
    * Overrides GetWaveform to return peak data from the internal buffer.
@@ -195,8 +196,15 @@ class ClipNode : public AudioNode {
   // Mono scratch for the effect rack: playback renders here, the rack
   // processes in place, then the result sums into the parent. Sized in
   // the constructor; grows only if the device block exceeds it (rare —
-  // the StackNode::mix_buffer precedent). Audio-thread only.
-  std::vector<float> fx_scratch_;
+  // the StackNode::mix_buffer precedent). Audio-thread only. `mutable`:
+  // DSP scratch written by the CONST render phase (§2.3).
+  mutable std::vector<float> fx_scratch_;
+
+  // §2.3 phase split: set when commitRecording fires, cleared at the
+  // top of the next control pass. render() gates on it so the commit
+  // block stays SILENT — the historical semantics (process used to
+  // return right after commit, skipping playback for that block).
+  mutable std::atomic<bool> committed_this_block_{false};
 
   std::atomic<int> write_position{0};
   std::atomic<int> read_position{0};

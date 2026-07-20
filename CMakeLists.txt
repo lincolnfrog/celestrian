@@ -106,6 +106,7 @@ target_sources(CelestrianTests PRIVATE
     tests/undo_tests.cc
     tests/qtime_lock_tests.cc
     tests/graph_snapshot_tests.cc
+    tests/render_purity_tests.cc
     tests/session_io_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc

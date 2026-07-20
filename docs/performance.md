@@ -38,6 +38,13 @@ counter has advanced two callbacks past retirement. This covers nodes AND
 superseded graph snapshots (publish the successor first, then retire).
 Never `delete` a node or snapshot directly from a mutation path.
 
+**Phase split (§2.3, 2026-07-19e):** each callback runs CONTROL over the
+whole graph (decisions + capture: arm, boundaries, commit — the only
+place musical state changes), then RENDER (`const` — the kernel
+equation; mutables are DSP scratch + playhead telemetry only).
+`AudioNode::process` is the non-virtual sequencer; never interleave a
+decision into a render path.
+
 **Threading split after Step 3:** node ownership vectors
 (`StackNode::ownedChildren`) and the traversal virtuals
 (`getIntrinsicDuration`, `getEffectivePeriod`, `findNodeByUuid`,

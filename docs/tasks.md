@@ -253,9 +253,15 @@ with kernel.md:
     from Step 3's original text:** bridge collapse to `apply(edit)`
     (UI-facing, not kernel) and the §2.3 pure-render split (§2.3 is its
     own item below).
-- [ ] **Pure render function** — `out = render(snapshot, t, n)`;
-  control decisions become events applied between blocks; engine
-  testable as `render(state, t) == golden`.
+- [x] **Pure render function** ✅ done 2026-07-19e (§2.3):
+  `AudioNode::process` = non-virtual `{ control; render; }` sequencer —
+  control (arm/boundaries/capture/commit) settles across the WHOLE
+  graph before the first sample renders; `render(outputs, ctx) const`
+  is the kernel equation with compiler-enforced purity (`mutable` only
+  on DSP scratch + playhead telemetry). Commit-block silence preserved
+  via a per-clip gate (historical semantics, bit-for-bit). Pinned by
+  `tests/render_purity_tests.cc` (golden determinism, musical-state
+  invariance, gate sequencing, fractal purity through stacks).
 
 ## Tier 4: Feature Work (carried forward)
 

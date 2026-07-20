@@ -42,13 +42,14 @@ class StackNode : public AudioNode {
   ~StackNode() override;
 
   // AudioNode implementation
-  /**
-   * Recursively sums the output of all child nodes into the provided output
-   * channels. Lock-free: iterates the published child snapshot.
-   */
-  void process(const float *const *input_channels,
-               float *const *output_channels, int num_input_channels,
-               int num_output_channels, const ProcessContext &context) override;
+  // §2.3 control/render split: control recurses decisions/capture down
+  // the (snapshot) children with the window-mapped clock; render sums
+  // children renders through the same map + the group fx rack. Both
+  // iterate the whole-graph snapshot (ProcessContext.snap).
+  void control(const float *const *input_channels, int num_input_channels,
+               const ProcessContext &context) override;
+  void render(float *const *output_channels, int num_output_channels,
+              const ProcessContext &context) const override;
 
   /**
    * Aggregate waveform visualization for all children.
@@ -200,14 +201,21 @@ class StackNode : public AudioNode {
   std::vector<std::unique_ptr<AudioNode>> children;
 
   // Scratch buffer for summing children without affecting parent output
-  // directly until ready. Preallocated so process() does not touch the
-  // heap at normal block sizes.
-  juce::AudioBuffer<float> mix_buffer;
+  // directly until ready. Preallocated so render() does not touch the
+  // heap at normal block sizes. `mutable`: DSP scratch written by the
+  // CONST render phase (§2.3).
+  mutable juce::AudioBuffer<float> mix_buffer;
 
   // Mono accumulator for the effect rack: children sum here, the rack
   // processes in place, the result adds to the parent. Same
   // preallocation/growth discipline as mix_buffer. Audio-thread only.
-  juce::AudioBuffer<float> fx_accum_;
+  // `mutable`: same §2.3 DSP-scratch exception.
+  mutable juce::AudioBuffer<float> fx_accum_;
+
+  /** The window-mapped context handed to children — the time-map
+   * primitive, shared by BOTH phases so control and render see the
+   * same child clock. `self`/`context_loop` are set by the caller. */
+  ProcessContext childContext(const ProcessContext &context) const;
 
   // Island state (P0-3): explicit, stored once — never derived from
   // child durations (deriving caused the retroactive-Q bug class).
