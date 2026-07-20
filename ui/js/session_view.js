@@ -63,7 +63,11 @@ export function initSessionView(callbacks) {
     // armable (empty) track; full ones just play. With nothing armable
     // it creates a fresh track and records into it.
     els.recordBtn.addEventListener('click', () => cb.onRecord());
-    document.getElementById('add-stack-btn')
+    // Creation lives in the CANVAS (2026-07-19g): the persistent row
+    // under the lanes makes tracks/groups; the transport is transport.
+    document.getElementById('create-track-btn')
+        .addEventListener('click', () => cb.onAddTrack());
+    document.getElementById('create-group-btn')
         .addEventListener('click', () => cb.onAddStack());
 
     // Input menus dismiss on outside press or Escape
@@ -152,6 +156,16 @@ function buildLane(lane) {
     const status = document.createElement('span');
     status.className = 'rail-status armed-word mono';
     head.appendChild(status);
+    // The Q-DEFINER badge (owner request 2026-07-19g): while the island's
+    // tempo is still provisional, the track that defines it says so.
+    // Locked islands own their Q — the badge retires at the 2nd take.
+    const tempo = document.createElement('span');
+    tempo.className = 'tempo-chip mono';
+    tempo.textContent = 'tempo';
+    tempo.title = 'This take defines the loop length (Q) — drag its ' +
+        'handles to trim. Locks when you record another track.';
+    tempo.style.display = 'none';
+    head.appendChild(tempo);
     // Delete — top-right of the rail (card-close position); the flexing
     // name yields the room, so it never overflows the button row. No
     // confirm: undo is the safety net (⌘Z). Disabled mid-take (the engine
@@ -998,6 +1012,11 @@ function patchRail(row, lane) {
     // Never patch the name over an open rename editor (or its optimistic
     // value — the backend echoes the new name on the next poll anyway)
     if (!row._renaming) setText(row.querySelector('.rail-name'), lane.name);
+    const tempoChip = row.querySelector('.tempo-chip');
+    if (tempoChip) {
+        const show = lane.isQDefiner ? '' : 'none';
+        if (tempoChip.style.display !== show) tempoChip.style.display = show;
+    }
 
     const arm = row.querySelector('.arm-btn');
     arm.classList.toggle('recording', lane.recording);
@@ -1012,12 +1031,14 @@ function patchRail(row, lane) {
                 ? `Record all ${g.armable} empty track${g.armable > 1 ? 's' : ''} (full ones just play)`
                 : 'Stop recording');
     } else {
-        arm.classList.toggle('on', lane.armed);
+        arm.classList.toggle('on', lane.armed || lane.staged);
         if (arm.disabled !== !lane.armable) arm.disabled = !lane.armable;
         setTitle(arm, !lane.armable
             ? 'Already has a take (re-recording arrives with takes)'
-            : lane.armed || lane.recording ? 'Stop recording'
-                : 'Record into this track');
+            : lane.recording ? 'Stop recording'
+            : lane.armed ? 'Recording starts at the next Q boundary'
+            : lane.staged ? 'Armed — ● in the transport records this track'
+                : 'Arm — this track records when you hit ●');
     }
 
     // Sub-line: the period only. Status is the red word on the name row.

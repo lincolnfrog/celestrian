@@ -68,6 +68,17 @@ whichever instrument wants to start, Q is born, build.
   toggles — filled when armed) so "what will record" is glanceable
   without competing with the verb. (Field: three identical red dots
   read as three mystery record buttons.)
+- **Arm = STAGING** (owner refinement, same day): the ring is pure
+  view state — clicking it records nothing. The transport ● records
+  the staged tracks; with none staged, every empty track (so boot →
+  ● stays one click); on a recording track the ring stops that track.
+  Staging is consumed by the take.
+- **The tempo track is explicit**: while Q is provisional, the
+  definer's rail wears a red TEMPO chip; the badge retires when a
+  second take locks the island (Q belongs to the island, not a track).
+- **Creation lives in the canvas**: a persistent ＋ Track / ＋ Group
+  row under the lanes (groups keep their internal add-track rows for
+  nesting). The transport carries no creation buttons.
 - No onboarding copy in the product. The empty state (only reachable
   by deleting every track) is one dry line.
 

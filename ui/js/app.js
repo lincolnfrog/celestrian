@@ -95,25 +95,34 @@ async function stopClips(clips) {
     for (const c of clips) await callNative('stopRecordingInNode', c.id);
 }
 
-async function onArm(lane) {
+/* ARM = STAGING (owner ruling 2026-07-19g): the ring is pure VIEW STATE
+ * — clicking it never touches the engine, nothing records. The
+ * transport ● is the ONLY trigger: it records the staged tracks, or
+ * every empty track when nothing is staged (so the boot flow stays one
+ * click). A ring on a RECORDING track stops that track. */
+const stagedIds = new Set();
+
+function onArm(lane) {
     const node = lastNodesById.get(lane.id);
     if (!node) return;
     const clips = clipsUnder(node);
     const hot = clips.filter(isHotClip);
     if (hot.length > 0) {
-        await stopClips(hot);
-        setLogLine('Stopped recording');
-    } else {
-        const targets = clips.filter(isArmableClip);
-        if (targets.length === 0) return;
-        await armClips(targets);
-        setLogLine(targets.length > 1
-            ? `Recording ${targets.length} empty tracks (full ones just play)`
-            : 'Recording');
+        stopClips(hot).then(() => setLogLine('Stopped recording'));
+        return;
     }
+    const armable = clips.filter(isArmableClip);
+    if (armable.length === 0) return;
+    const allStaged = armable.every(c => stagedIds.has(c.id));
+    armable.forEach(c => allStaged ? stagedIds.delete(c.id)
+                                   : stagedIds.add(c.id));
+    const n = [...stagedIds].length;
+    setLogLine(n ? `${n} track${n > 1 ? 's' : ''} armed — ● records`
+                 : 'Disarmed');
 }
 
-/** Global ●: island-wide group record; creates a track when none is empty. */
+/** Global ●: records the STAGED tracks; with none staged, every empty
+ * track (Q7 group record); with nothing armable, a fresh track. */
 async function onRecord() {
     const roots = [...lastNodesById.values()].filter(n => !findParentIn(n));
     const clips = [];
@@ -125,25 +134,25 @@ async function onRecord() {
         setLogLine('Stopped recording');
         return;
     }
-    const targets = clips.filter(isArmableClip);
+    const armable = clips.filter(isArmableClip);
+    const targets = stagedIds.size
+        ? armable.filter(c => stagedIds.has(c.id))
+        : armable;
     if (targets.length > 0) {
         await armClips(targets);
+        stagedIds.clear();  // staging is consumed by the take
         setLogLine(targets.length > 1
             ? `Recording ${targets.length} empty tracks (full ones just play)`
             : 'Recording');
         return;
     }
-    // Nothing armable anywhere: record into a fresh track
-    let parentId = roots.find(n => n.type === 'stack')?.id;
-    if (!parentId) parentId = await callNative('createNode', 'stack', '');
-    const clipId = await callNative('createNode', 'clip', parentId || '');
+    // Nothing armable anywhere: record into a fresh top-level track
+    const clipId = await callNative('createNode', 'clip', '');
     if (clipId) {
         await callNative('startRecordingInNode', clipId);
         setLogLine('Recording into a new track');
     } else {
-        // Bridge returned no id (older backend): the track exists, arm it
-        // from its rail — surface that instead of failing silently.
-        setLogLine('New track created — hit its ● to record');
+        setLogLine('New track created — hit ● to record');
     }
 }
 
@@ -234,7 +243,7 @@ async function startPolling() {
                         pendingFetch.add(n.id);
                     }
                 }
-                const vm = deriveViewModel(state, { fxOpen });
+                const vm = deriveViewModel(state, { fxOpen, staged: stagedIds });
                 patchSessionView(vm, {
                     livePeaks,
                     pendingFetch,
@@ -419,6 +428,7 @@ export function initApp() {
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
         onAddStack: () => callNative('createNode', 'stack', ''),
+        onAddTrack: () => callNative('createNode', 'clip', ''),
         onAddClip: groupId => callNative('createNode', 'clip', groupId),
         onDelete: async id => {
             // No confirm: undo is the safety net (edits-as-events).

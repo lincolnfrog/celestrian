@@ -195,13 +195,16 @@ function isArmable(clip) {
  * { state: 'all'|'some'|'none', armable: count }. armable === 0 means
  * the rail's group-arm control has nothing to do (disable it).
  */
-function groupArmState(node) {
+function groupArmState(node, staged) {
+    // "Armed" for display = engine-armed OR staged (arm rings are view
+    // state; the transport records staged tracks — 2026-07-19g).
     let armed = 0, armable = 0;
     const visit = n => (n.nodes || []).forEach(c => {
         if (c.type === 'clip') {
             if (!isArmable(c)) return;
             armable++;
-            if (c.isPendingStart || c.isRecording) armed++;
+            if (c.isPendingStart || c.isRecording ||
+                (staged && staged.has(c.id))) armed++;
         } else if (c.type === 'stack') visit(c);
     });
     visit(node);
@@ -209,10 +212,11 @@ function groupArmState(node) {
     return { state, armable };
 }
 
-function laneCommon(node, state) {
+function laneCommon(node, state, staged) {
     return {
         id: node.id,
         name: node.name || node.id,
+        staged: !!(staged && staged.has(node.id)),
         muted: !!node.isMuted,
         soloed: state.soloedId === node.id,
         recording: !!node.isRecording,
@@ -277,6 +281,9 @@ export function deriveViewModel(state, opts = {}) {
     // Lanes whose effects panel is expanded (pure view state, owned by
     // the app shell — like fold, but client-side only)
     const fxOpen = opts.fxOpen || null;
+    // Staged-to-record track ids (view state, owned by the app shell):
+    // rings fill for staged OR engine-armed lanes.
+    const staged = opts.staged || null;
     const nodes = state.nodes || [];
     // The island quantum is a STORED fact published top-level by the
     // engine (P0-3 — the root stack's `quantum` metadata; the mock
@@ -525,7 +532,7 @@ export function deriveViewModel(state, opts = {}) {
 
         if (node.type === 'stack') {
             const periodQ = displayPeriodQ(node, quantum);
-            const lane = Object.assign(laneCommon(node, state), {
+            const lane = Object.assign(laneCommon(node, state, staged), {
                 kind: 'group',
                 depth,
                 periodQ,
@@ -548,7 +555,7 @@ export function deriveViewModel(state, opts = {}) {
                 // churn the overlay's reconcile key.
                 windowPhase: node.windowActive ? (node.playhead || 0) : 0,
                 folded: node.isExpanded === false,
-                groupArm: groupArmState(node),
+                groupArm: groupArmState(node, staged),
             });
             lanes.push(lane);
             if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
@@ -578,7 +585,7 @@ export function deriveViewModel(state, opts = {}) {
         // second take locks it.
         if (provisionalDefiner && node.id === soleQDefinerId) {
             const fullQ = (node.duration || 0) / quantum;
-            lanes.push(Object.assign(laneCommon(node, state), {
+            lanes.push(Object.assign(laneCommon(node, state, staged), {
                 kind: 'clip',
                 depth,
                 periodQ: fullQ,
@@ -605,7 +612,7 @@ export function deriveViewModel(state, opts = {}) {
             // masterPos contract the playhead IS the take's end, and the
             // engine grows `duration` live while writing. Zero length =
             // pending start (armed, waiting for the Q boundary).
-            lanes.push(Object.assign(laneCommon(node, state), {
+            lanes.push(Object.assign(laneCommon(node, state, staged), {
                 kind: 'clip',
                 depth,
                 periodQ: 0,
@@ -655,7 +662,7 @@ export function deriveViewModel(state, opts = {}) {
         if (win && win.active && reps.length) {
             reps = echoReps({ reps, win, offsetQ, cycleQ, intrinsicQ });
         }
-        lanes.push(Object.assign(laneCommon(node, state), {
+        lanes.push(Object.assign(laneCommon(node, state, staged), {
             kind: 'clip',
             depth,
             periodQ,

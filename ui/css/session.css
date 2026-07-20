@@ -264,6 +264,18 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .armed-word { color: var(--rec); }
+/* Q-definer badge: quiet red identity while the tempo is provisional */
+.tempo-chip {
+    flex: none;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--rec);
+    border: 1px solid color-mix(in srgb, var(--rec) 55%, transparent);
+    border-radius: 999px;
+    padding: 1px 7px;
+    opacity: 0.85;
+}
 .rail-status {
     flex: none;
     font-size: 0.68rem;
@@ -653,6 +665,21 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border: 6px solid transparent;
     border-top-color: #f7efe2;
 }
+
+/* Creation row: persistent under the lanes — tracks and groups are
+   made IN the canvas (the transport is transport). Same dashed voice
+   as the in-group add-track rows. */
+#create-row { display: flex; gap: 10px; margin-top: 10px; }
+#create-row button {
+    flex: 1;
+    min-height: 52px;
+    border: 2px dashed var(--line);
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+}
+#create-row button:hover { border-color: var(--tape); color: var(--tape); }
 
 /* Empty state — rarely seen: the app always boots into a template.
    One dry line, no ceremony. */
