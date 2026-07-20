@@ -1,5 +1,6 @@
 #include "stack_node.h"
 
+#include "graph_snapshot.h"
 #include "timing.h"
 
 namespace celestrian {
@@ -14,46 +15,21 @@ constexpr int kMaxExpectedBlockSize = 8192;
 StackNode::StackNode(juce::String node_name) : AudioNode(std::move(node_name)) {
   mix_buffer.setSize(kMaxExpectedChannels, kMaxExpectedBlockSize);
   fx_accum_.setSize(1, kMaxExpectedBlockSize);
-  render_children_.store(new std::vector<AudioNode *>());
 }
 
-StackNode::~StackNode() {
-  // By destruction time nothing else references this stack; the snapshot
-  // can be freed directly.
-  delete render_children_.load();
-}
+StackNode::~StackNode() = default;
 
-void StackNode::setReclaimer(GraphReclaimer *reclaimer) {
-  reclaimer_ = reclaimer;
-  for (auto &child : children) {
-    if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
-      stack->setReclaimer(reclaimer);
-    }
-  }
-}
-
-void StackNode::retireOrDelete(std::function<void()> deleter) {
-  if (reclaimer_) {
-    reclaimer_->retire(std::move(deleter));
-  } else {
-    deleter();
-  }
-}
-
-void StackNode::republishChildren() {
-  auto *fresh = new std::vector<AudioNode *>();
-  fresh->reserve(children.size());
-  for (auto &child : children) fresh->push_back(child.get());
-
-  const auto *old = render_children_.exchange(fresh, std::memory_order_acq_rel);
-  if (old) retireOrDelete([old] { delete old; });
-}
+// (The per-stack snapshot machinery — render_children_ +
+// republishChildren + the reclaimer plumbed through every stack — is
+// gone: the audio thread traverses the WHOLE-GRAPH snapshot published
+// by the engine (graph_snapshot.h, Tier 3 Step 3). Node lifetime on
+// structural edits is owned by the edit log / the engine's reclaimer.)
 
 juce::var StackNode::getMetadata() const {
-  const auto *kids = renderChildren();
+  const auto &kids = children;  // message thread: ownership vector
   auto base = AudioNode::getMetadata();
   auto *obj = base.getDynamicObject();
-  obj->setProperty("childCount", (int)kids->size());
+  obj->setProperty("childCount", (int)kids.size());
   obj->setProperty("isExpanded", (bool)is_expanded.load());
   // Loop window state (loopBypassed/windowActive) publishes from the
   // AudioNode base — fractal with clips (I5). The stack's `playhead`
@@ -65,7 +41,7 @@ juce::var StackNode::getMetadata() const {
   obj->setProperty("quantum", (double)quantum_samples_.load());
   obj->setProperty("epoch", (double)epoch_samples_.load());
   juce::Array<juce::var> childData;
-  for (auto *child : *kids) {
+  for (const auto &child : kids) {
     childData.add(child->getMetadata());
   }
   obj->setProperty("nodes", childData);
@@ -77,11 +53,11 @@ int64_t StackNode::getIntrinsicDuration() const {
   // Stacks and Composite Duration"). Previously this returned the MIN
   // child duration, which doubled as a derived quantum — both wrong;
   // the quantum is now stored island state (P0-3).
-  const auto *kids = renderChildren();
-  if (kids->empty()) return 0;
+  const auto &kids = children;  // message thread: ownership vector
+  if (kids.empty()) return 0;
 
   int64_t composite = 0;
-  for (auto *child : *kids) {
+  for (const auto &child : kids) {
     int64_t d = child->getIntrinsicDuration();
     if (d > 0) {
       composite = (composite == 0) ? d : timing::lcm(composite, d);
@@ -97,11 +73,11 @@ int64_t StackNode::getEffectivePeriod() const {
   // contribute their window length, so nested windows shorten the
   // audible cycle. Same shape as getIntrinsicDuration, one recursion
   // deeper in honesty.
-  const auto *kids = renderChildren();
-  if (kids->empty()) return 0;
+  const auto &kids = children;  // message thread: ownership vector
+  if (kids.empty()) return 0;
 
   int64_t composite = 0;
-  for (auto *child : *kids) {
+  for (const auto &child : kids) {
     int64_t p = child->getEffectivePeriod();
     if (p > 0) {
       composite = (composite == 0) ? p : timing::lcm(composite, p);
@@ -143,7 +119,7 @@ void StackNode::takeArmed() {
   }
 }
 
-void StackNode::takeCommitted(int64_t origin) {
+void StackNode::takeCommitted(int64_t origin, int64_t intrinsic_after) {
   active_takes_.fetch_sub(1);
 
   // Epoch re-base on cycle growth (recording.md "LCM Expansion Snap",
@@ -164,8 +140,9 @@ void StackNode::takeCommitted(int64_t origin) {
   const int64_t before = lcm_before_take_.load();
   if (before <= 0) return;  // first take: epoch was established at arm
 
-  const int64_t after =
-      timing::lcm(quantum_samples_.load(), getIntrinsicDuration());
+  // Passed in (snapshot space) — this event fires on the AUDIO thread,
+  // and the stack's own traversal is message-thread-only (Step 3).
+  const int64_t after = timing::lcm(quantum_samples_.load(), intrinsic_after);
   if (after <= before) return;
 
   const int64_t epoch = epoch_samples_.load();
@@ -176,22 +153,15 @@ void StackNode::takeCommitted(int64_t origin) {
 
 void StackNode::addChild(std::unique_ptr<AudioNode> child) {
   child->setParent(this);
-  if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
-    if (reclaimer_) stack->setReclaimer(reclaimer_);
-  }
   // A live take arriving via a move re-registers with this island
   // (removeChild balanced it out on the way).
   if (child->isArmedOrRecording()) rootNode()->takeArmed();
   maybeEstablishQuantumFrom(*child);
   children.push_back(std::move(child));
-  republishChildren();
 }
 
 void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
   child->setParent(this);
-  if (auto *stack = dynamic_cast<StackNode *>(child.get())) {
-    if (reclaimer_) stack->setReclaimer(reclaimer_);
-  }
   if (child->isArmedOrRecording()) rootNode()->takeArmed();
   maybeEstablishQuantumFrom(*child);
   if (index < 0) index = 0;
@@ -200,39 +170,20 @@ void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
   } else {
     children.insert(children.begin() + index, std::move(child));
   }
-  republishChildren();
 }
 
-void StackNode::removeChild(const juce::String &uuid) {
-  auto it = std::find_if(children.begin(), children.end(),
-                         [&uuid](const std::unique_ptr<AudioNode> &node) {
-                           return node->getUuid() == uuid;
-                         });
-  if (it != children.end()) {
-    // Balance the island's take counter if a live take is being removed
-    // (its commit/cancel event will never arrive).
-    if ((*it)->isArmedOrRecording()) rootNode()->takeCancelled();
-    (*it)->setParent(nullptr);
-    AudioNode *removed = it->release();
-    children.erase(it);
-    republishChildren();
-    // The audio thread may still be processing this node for one more
-    // callback; defer destruction.
-    retireOrDelete([removed] { delete removed; });
-  }
-}
-
-void StackNode::clearChildren() {
-  if (children.empty()) return;
-  auto *removed = new std::vector<std::unique_ptr<AudioNode>>();
+std::vector<std::unique_ptr<AudioNode>> StackNode::clearChildren() {
+  // DETACH ONLY: the caller (the engine) owns retirement — the audio
+  // thread may still traverse these nodes through the outgoing graph
+  // snapshot for ≤2 callbacks after the next publish.
+  std::vector<std::unique_ptr<AudioNode>> removed;
   for (auto &child : children) {
     if (child->isArmedOrRecording()) rootNode()->takeCancelled();
     child->setParent(nullptr);
-    removed->push_back(std::move(child));
+    removed.push_back(std::move(child));
   }
   children.clear();
-  republishChildren();
-  retireOrDelete([removed] { delete removed; });
+  return removed;
 }
 
 std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
@@ -241,7 +192,6 @@ std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
     children.erase(children.begin() + index);
     if (child->isArmedOrRecording()) rootNode()->takeCancelled();
     child->setParent(nullptr);
-    republishChildren();
     return child;
   }
   return nullptr;
@@ -292,9 +242,22 @@ void StackNode::process(const float *const *input_channels,
     playhead_pos.store(0.0);
   }
 
-  // Process each child and sum their results — iterating the immutable
-  // published snapshot, no locks on the audio thread.
-  const auto *kids = renderChildren();
+  // Children come from the WHOLE-GRAPH snapshot (one engine-side load
+  // per callback — Tier 3 Step 3): index spans, no per-stack atomics,
+  // structural consistency across the entire callback. The ownership
+  // fallback is the node-level unit-test path only (no engine, single
+  // thread, race-free by construction).
+  const GraphSnapshot *snap = context.snap;
+  const int child_count =
+      snap ? snap->entries[(size_t)context.self].childCount
+           : (int)children.size();
+  auto childEntry = [&](int k) -> int {
+    return snap ? snap->childAt(context.self, k) : 0;
+  };
+  auto childNode = [&](int k) -> AudioNode * {
+    return snap ? snap->entries[(size_t)snap->childAt(context.self, k)].node
+                : children[(size_t)k].get();
+  };
 
   // Recording context, passed DOWN (P1-6): the longest committed child
   // duration in this scope. Recording/armed children contribute 0
@@ -302,8 +265,8 @@ void StackNode::process(const float *const *input_channels,
   // stored duration_samples (0 — stacks don't store one), matching the
   // historical sibling-scan semantics exactly.
   int64_t longest_committed = 0;
-  for (AudioNode *child : *kids) {
-    const int64_t d = child->duration_samples.load();
+  for (int k = 0; k < child_count; ++k) {
+    const int64_t d = childNode(k)->duration_samples.load();
     if (d > longest_committed) longest_committed = d;
   }
   child_context.context_loop = longest_committed;
@@ -322,12 +285,14 @@ void StackNode::process(const float *const *input_channels,
     fx_accum_.clear();
   }
 
-  for (AudioNode *child : *kids) {
+  for (int k = 0; k < child_count; ++k) {
+    AudioNode *child = childNode(k);
     // Clear mix buffer for this specific child
     mix_buffer.clear();
 
     // Pass the same input to children (effectively parallel input)
     // Output from child goes into our mix_buffer
+    child_context.self = childEntry(k);
     child->process(input_channels, mix_buffer.getArrayOfWritePointers(),
                    num_input_channels, num_output_channels, child_context);
 
@@ -360,19 +325,19 @@ void StackNode::process(const float *const *input_channels,
 }
 
 juce::var StackNode::getWaveform(int num_peaks) const {
-  const auto *kids = renderChildren();
+  const auto &kids = children;  // message thread: ownership vector
 
-  if (kids->empty()) return juce::Array<juce::var>();
+  if (kids.empty()) return juce::Array<juce::var>();
 
   // If we only have one child, return its waveform directly to save compute
-  if (kids->size() == 1) return (*kids)[0]->getWaveform(num_peaks);
+  if (kids.size() == 1) return kids[0]->getWaveform(num_peaks);
 
   // Aggregate: Sum peaks from all children (simplified for now)
   // Future: Better recursive mixdown normalization
   juce::Array<juce::var> aggregatePeaks;
   for (int i = 0; i < num_peaks; ++i) aggregatePeaks.add(0.0f);
 
-  for (auto *child : *kids) {
+  for (const auto &child : kids) {
     juce::var childWaveform = child->getWaveform(num_peaks);
     if (childWaveform.isArray()) {
       auto *childArr = childWaveform.getArray();
@@ -387,7 +352,7 @@ juce::var StackNode::getWaveform(int num_peaks) const {
   // children exist
   for (int i = 0; i < num_peaks; ++i) {
     aggregatePeaks.set(
-        i, (float)aggregatePeaks[i] / (float)std::max(1, (int)kids->size()));
+        i, (float)aggregatePeaks[i] / (float)std::max(1, (int)kids.size()));
   }
 
   return aggregatePeaks;
@@ -397,7 +362,7 @@ AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
   if (getUuid() == uuid) return this;
 
   // Virtual recursion (findByUuid) — no per-child dynamic_cast.
-  for (auto *child : *renderChildren()) {
+  for (const auto &child : children) {
     if (auto *found = child->findByUuid(uuid)) return found;
   }
 
@@ -408,8 +373,8 @@ bool StackNode::isAnyChildRecording() const {
   // Virtual dispatch replaces the old per-child dynamic_cast: clips
   // answer from their recording state machine, nested stacks recurse
   // via their own isArmedOrRecording override.
-  const auto *kids = renderChildren();
-  for (auto *child : *kids) {
+  const auto &kids = children;  // message thread: ownership vector
+  for (const auto &child : kids) {
     if (child->isArmedOrRecording()) return true;
   }
   return false;

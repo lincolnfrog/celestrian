@@ -133,7 +133,12 @@ class ClipNode : public AudioNode {
    */
   float getCurrentPeak() const override { return last_block_peak.load(); }
 
-  void commitRecording(int64_t final_duration = -1);
+  /** Commit the take. `ctx` is present on the audio-thread path (from
+   * process) and carries the island facts + snapshot; null on the
+   * message-thread first-clip immediate stop (parent walks are fine
+   * there). */
+  void commitRecording(int64_t final_duration = -1,
+                       const ProcessContext *ctx = nullptr);
   const juce::AudioBuffer<float> &getAudioBuffer() const { return buffer; }
 
   // --- Q13 lock-collapse (owner ruling 2026-07-19) ---

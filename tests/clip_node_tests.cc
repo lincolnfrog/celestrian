@@ -514,7 +514,12 @@ class ClipNodeTests : public juce::UnitTest {
       parent.addChild(std::move(clipB));
       b->startRecording();
       expect(parent.hasActiveTake());
-      parent.removeChild(b->getUuid());  // b is destroyed here
+      for (int i = 0; i < parent.getNumChildren(); ++i) {
+        if (parent.getChild(i) == b) {
+          parent.removeChild(i);  // detached ownership drops → destroyed
+          break;
+        }
+      }
       expect(!parent.hasActiveTake(), "removal balances the counter");
     }
 

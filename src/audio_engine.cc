@@ -14,13 +14,23 @@
 AudioEngine::AudioEngine() {
   // Start with an empty root stack
   auto root = std::make_unique<celestrian::StackNode>("SessionRoot");
-  root->setReclaimer(this);
   focused_node = root.get();
   root_node = std::move(root);
+  publishGraph();
 
   // Pre-record ring: preallocated here so the audio thread never resizes it.
   prerecord_ring_.setSize(kPreRecordRingChannels, kPreRecordRingLen);
   prerecord_ring_.clear();
+}
+
+void AudioEngine::publishGraph() {
+  const auto *fresh = celestrian::buildGraphSnapshot(*root_node);
+  const auto *old = graph_snapshot_.exchange(fresh, std::memory_order_acq_rel);
+  // Publish-then-retire: an in-flight callback may still traverse the
+  // old snapshot; the reclaimer's 2-callback grace covers it. (Nodes a
+  // structural edit removed are retired by their own paths AFTER this
+  // publish, so the old snapshot never outlives its referents.)
+  if (old) retire([old] { delete old; });
 }
 
 void AudioEngine::initialiseAudioDevice() { init(1, 2); }
@@ -40,6 +50,7 @@ AudioEngine::~AudioEngine() {
   device_manager.removeAudioCallback(this);
   // No callback can be in flight anymore.
   flushGraveyard();
+  delete graph_snapshot_.exchange(nullptr);  // the final published snapshot
   celestrian::RtLog::instance().drain();
 }
 
@@ -123,9 +134,9 @@ celestrian::StackNode *AudioEngine::parentOf(celestrian::AudioNode *node,
   if (!node) return nullptr;
   auto *parent = dynamic_cast<celestrian::StackNode *>(node->getParent());
   if (!parent) return nullptr;
-  const auto &kids = parent->getChildrenSnapshot();
+  const auto &kids = parent->ownedChildren();  // message thread
   for (int i = 0; i < (int)kids.size(); ++i) {
-    if (kids[i] == node) {
+    if (kids[i].get() == node) {
       if (index_out) *index_out = i;
       break;
     }
@@ -139,7 +150,8 @@ int countCommittedClips(const celestrian::AudioNode *node) {
     return node->getIntrinsicDuration() > 0 ? 1 : 0;
   const auto *stack = static_cast<const celestrian::StackNode *>(node);
   int n = 0;
-  for (auto *child : stack->getChildrenSnapshot()) n += countCommittedClips(child);
+  for (const auto &child : stack->ownedChildren())
+    n += countCommittedClips(child.get());
   return n;
 }
 
@@ -150,8 +162,8 @@ celestrian::ClipNode *firstCommittedClip(celestrian::AudioNode *node) {
                : nullptr;
   }
   auto *stack = static_cast<celestrian::StackNode *>(node);
-  for (auto *child : stack->getChildrenSnapshot()) {
-    if (auto *c = firstCommittedClip(child)) return c;
+  for (const auto &child : stack->ownedChildren()) {
+    if (auto *c = firstCommittedClip(child.get())) return c;
   }
   return nullptr;
 }
@@ -162,6 +174,21 @@ int AudioEngine::islandCommittedClipCount() const {
 }
 
 celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
+  using K = celestrian::Edit::Kind;
+  const K kind = e.kind;
+  celestrian::Edit inv = applyEditImpl(std::move(e));
+  // Structural mutations re-publish the whole-graph snapshot (Tier 3
+  // Step 3): record/undo/redo all funnel through here, so this is the
+  // one place topology changes become visible to the audio thread.
+  if (inv.kind != K::Nop &&
+      (kind == K::Insert || kind == K::Remove || kind == K::Move ||
+       kind == K::Combine || kind == K::Explode)) {
+    publishGraph();
+  }
+  return inv;
+}
+
+celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
   using celestrian::AudioNode;
   using celestrian::StackNode;
   using K = Edit::Kind;
@@ -308,10 +335,15 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
         dParent->insertChildAt(std::move(child1), e.index2);
         tParent->insertChildAt(std::move(child0), e.index);
       }
-      // Remove the now-empty combined stack (retire — nothing owns it).
-      parentOf(stack, nullptr);
-      auto *stackParent = dynamic_cast<StackNode *>(stack->getParent());
-      if (stackParent) stackParent->removeChild(stack->getUuid());
+      // Remove the now-empty combined stack; retire it — an in-flight
+      // callback may still traverse it via the outgoing graph snapshot.
+      int stackIdx = -1;
+      if (auto *stackParent = parentOf(stack, &stackIdx); stackParent &&
+                                                          stackIdx >= 0) {
+        auto owned = stackParent->removeChild(stackIdx);
+        celestrian::AudioNode *n = owned.release();
+        retire([n] { delete n; });
+      }
       Edit inv(K::Combine);
       inv.uuid = draggedUuid;
       inv.uuid2 = targetUuid;
@@ -508,7 +540,16 @@ bool AudioEngine::loadSession(const juce::String &path) {
   // pointer race — only the child snapshot swaps, through the proven
   // reclaimer path. There is a ≤2-callback window of an empty root
   // (brief silence) during the load, which is acceptable for a load.
-  root_node->clearChildren();
+  // clearChildren DETACHES; retirement is ours — the audio thread may
+  // still traverse the old graph snapshot for ≤2 callbacks after the
+  // publish below.
+  {
+    auto removed = root_node->clearChildren();
+    for (auto &node : removed) {
+      celestrian::AudioNode *n = node.release();
+      retire([n] { delete n; });
+    }
+  }
   for (auto &child : loaded.children) root_node->addChild(std::move(child));
 
   // Force the island facts. addChild may have transiently re-established
@@ -518,6 +559,7 @@ bool AudioEngine::loadSession(const juce::String &path) {
   root_node->is_muted.store(loaded.root_muted);
   celestrian::session_io::applyEffects(*root_node, loaded.root_effects,
                                        loaded.sample_rate);
+  publishGraph();  // the audio thread sees the loaded topology
 
   focused_node = root_node.get();
   soloed_node_uuid = "";
@@ -1011,6 +1053,14 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // Cycle-top of the island frame — loop-window time-maps phase off
     // this (time_maps.md); windowed stacks re-base it for their children.
     pc.cycle_epoch = islandEpoch();
+    // Whole-graph snapshot + island facts (Tier 3 Step 3): ONE structure
+    // load for the entire callback; leaves read island state from the
+    // context instead of walking parents.
+    pc.snap = graph_snapshot_.load(std::memory_order_acquire);
+    pc.self = 0;
+    pc.quantum = root_node->getQuantum();
+    pc.island_epoch = pc.cycle_epoch;
+    pc.island = root_node.get();
 
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished
@@ -1041,8 +1091,13 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       const bool is_recording = root_node->hasActiveTake();
       if (is_recording && !was_any_node_recording_) {
         // The frozen base continues the view the user was WATCHING —
-        // the effective (window-aware) wrap.
-        const int64_t view_cycle = calculateEffectiveCycleLength();
+        // the effective (window-aware) wrap. Snapshot-space math: this
+        // runs on the AUDIO thread (graph_snapshot.h).
+        const int64_t view_cycle = pc.snap
+            ? celestrian::snapEffectiveCycle(
+                  *pc.snap, root_node->getQuantum(),
+                  (int64_t)cached_sample_rate_.load())
+            : calculateEffectiveCycleLength();
         const int64_t rel = old_pos - islandEpoch();
         view_base_.store(view_cycle > 0 ? rel % view_cycle : rel);
         view_anchor_t_.store(old_pos);
@@ -1311,26 +1366,6 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
 
 // --- LCM Timeline Helpers ---
 
-namespace {
-// Recursive LCM across all clips, even nested in stacks. Function-pointer
-// visitor (no std::function) because this runs per block on the audio
-// thread and must not allocate; forEachChild iterates one published
-// child snapshot per stack — no locks, no dynamic_cast (P1-8).
-void lcmVisit(celestrian::AudioNode *node, void *raw) {
-  auto *acc = static_cast<int64_t *>(raw);
-  if (node->getNodeType() == celestrian::NodeType::Stack) {
-    node->forEachChild(lcmVisit, raw);
-    return;
-  }
-  const int64_t dur = node->getIntrinsicDuration();
-  if (dur > 0) *acc = celestrian::timing::lcm(*acc, dur);
-}
-
-int64_t computeLcmRecursive(celestrian::AudioNode *node, int64_t current_lcm) {
-  lcmVisit(node, &current_lcm);
-  return current_lcm;
-}
-}  // namespace
 
 
 int64_t AudioEngine::calculateEffectiveCycleLength() const {

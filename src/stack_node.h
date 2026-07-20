@@ -83,12 +83,6 @@ class StackNode : public AudioNode {
   void insertChildAt(std::unique_ptr<AudioNode> child, int index);
 
   /**
-   * Removes and destroys a child node (via the reclaimer when set).
-   * (Message thread only.)
-   */
-  void removeChild(const juce::String &uuid);
-
-  /**
    * Removes and returns a child node by index (for moving between stacks).
    * The caller keeps the node alive; the audio thread may still be
    * processing it until the next callback. (Message thread only.)
@@ -96,56 +90,44 @@ class StackNode : public AudioNode {
   std::unique_ptr<AudioNode> removeChild(int index);
 
   /**
-   * Removes and deletes all child nodes. (Message thread only.)
+   * Detaches and returns ALL children — the caller (the engine) owns
+   * retirement, since the audio thread may still traverse them through
+   * the outgoing graph snapshot. (Message thread only.)
    */
-  void clearChildren();
+  std::vector<std::unique_ptr<AudioNode>> clearChildren();
 
   /**
    * Recursively searches for a node by its UUID within this stack and its
-   * sub-stacks.
+   * sub-stacks. (Message thread only.)
    */
   AudioNode *findNodeByUuid(const juce::String &uuid);
   AudioNode *findByUuid(const juce::String &uuid) override {
     return findNodeByUuid(uuid);
   }
 
-  /** One snapshot load, then plain iteration (see AudioNode). */
-  void forEachChild(void (*fn)(AudioNode *, void *), void *user) const override {
-    for (auto *child : *renderChildren()) fn(child, user);
-  }
-
   /**
    * Recursively checks if any child node (including nested stacks) is
-   * armed or recording. Safe on the audio thread.
+   * armed or recording. (Message thread only.)
    */
   bool isAnyChildRecording() const;
   bool isArmedOrRecording() const override { return isAnyChildRecording(); }
 
-  /**
-   * Returns the number of children in this stack.
-   */
-  int getNumChildren() const { return (int)renderChildren()->size(); }
+  /** Number of children. (Message thread only.) */
+  int getNumChildren() const { return (int)children.size(); }
+
+  /** Child at index. (Message thread only.) */
+  AudioNode *getChild(int index) { return children[(size_t)index].get(); }
 
   /**
-   * Returns a raw pointer to the child at the specified index.
+   * The OWNERSHIP children — message thread only (the vector mutates on
+   * structural edits with no synchronization). Audio-thread traversal
+   * goes through the whole-graph snapshot (ProcessContext.snap /
+   * graph_snapshot.h); this accessor exists for the snapshot builder
+   * and message-side readers (metadata, session_io, engine helpers).
    */
-  AudioNode *getChild(int index) { return (*renderChildren())[(size_t)index]; }
-
-  /**
-   * Returns the current immutable child snapshot. Audio-thread iteration
-   * must use this (one atomic load for the whole loop) rather than paired
-   * getNumChildren()/getChild() calls, which could straddle a republish.
-   * The reference stays valid for the remainder of the current callback.
-   */
-  const std::vector<AudioNode *> &getChildrenSnapshot() const {
-    return *renderChildren();
+  const std::vector<std::unique_ptr<AudioNode>> &ownedChildren() const {
+    return children;
   }
-
-  /**
-   * Wires the deferred-free sink for this stack and (recursively) any
-   * nested stacks. New stacks added later inherit it automatically.
-   */
-  void setReclaimer(GraphReclaimer *reclaimer);
 
   // --- Island quantum (P0-3 / kernel.md migration step 1) ---
   /**
@@ -181,7 +163,7 @@ class StackNode : public AudioNode {
   // node removal is guarded in removeChild/clearChildren.
   void takeArmed() override;
   void takeCancelled() override { active_takes_.fetch_sub(1); }
-  void takeCommitted(int64_t origin) override;
+  void takeCommitted(int64_t origin, int64_t intrinsic_after) override;
   bool hasActiveTake() const override { return active_takes_.load() > 0; }
   int64_t activeTakeHeardCycle() const override {
     return heard_cycle_at_arm_.load();
@@ -206,33 +188,16 @@ class StackNode : public AudioNode {
    * E-C, recursive: an active window on THIS stack wins (base class);
    * otherwise the LCM of the children's EFFECTIVE periods — a windowed
    * child contributes its window length, so nested windows shorten the
-   * audible cycle all the way up. Audio-thread safe (snapshot walk).
+   * audible cycle all the way up. Message thread only — the audio
+   * thread uses the snapshot-space twin (snapEffectivePeriod,
+   * graph_snapshot.h).
    */
   int64_t getEffectivePeriod() const override;
 
  private:
-  const std::vector<AudioNode *> *renderChildren() const {
-    return render_children_.load(std::memory_order_acquire);
-  }
-
-  /**
-   * Rebuilds the immutable child-pointer snapshot from `children` and
-   * atomically publishes it. Call after every mutation, on the message
-   * thread, before returning to the caller.
-   */
-  void republishChildren();
-
-  /** Hands an object to the reclaimer, or frees it now if there is none. */
-  void retireOrDelete(std::function<void()> deleter);
-
-  // Ownership: message thread only.
+  // Ownership: message thread only. The audio thread traverses the
+  // WHOLE-GRAPH snapshot (graph_snapshot.h) — never this vector.
   std::vector<std::unique_ptr<AudioNode>> children;
-
-  // Immutable snapshot read by the audio thread. Never null after
-  // construction.
-  std::atomic<const std::vector<AudioNode *> *> render_children_{nullptr};
-
-  GraphReclaimer *reclaimer_ = nullptr;
 
   // Scratch buffer for summing children without affecting parent output
   // directly until ready. Preallocated so process() does not touch the

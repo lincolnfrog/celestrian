@@ -111,8 +111,17 @@ with kernel.md:
   picked by the AUDIO thread" in clip_node_tests.
 - [ ] **D3: `getWaveform` race** — message thread reads the clip buffer
   while recording writes it (long-known P3 item).
-- [ ] **D4: Silent 60 s recording wall** — buffer full stops capture
-  with no signal; surface it (grow, or warn).
+- [ ] **D4: Silent 60 s recording wall** — every clip preallocates 60 s
+  (constructor, `sample_rate * 60`); when full, capture silently stops
+  WRITING while the take stays "recording" — a zombie state with a
+  frozen write position. **Owner-flagged 2026-07-19 as a real-world
+  blocker.** Plan: (quick) allocate the capture buffer at ARM to a
+  configurable cap (message thread, clip empty — no RT race) and treat
+  wall-hit as an auto stop-request (existing PendingStop machinery →
+  clean commit at the last boundary + UI notice); (proper, pairs with
+  Tier 3 Step 3) compact-on-commit — an exact-size immutable content
+  buffer swapped in via the reclaimer, so long scratch takes don't pin
+  their arm-time allocation forever.
 - [x] **D5: Epoch re-base scope mismatch** — ✅ fixed 2026-07-16 by
   commit-as-an-event: the island root scans exactly its own subtree in
   `takeCommitted`; `focused_node` no longer participates.
@@ -173,10 +182,12 @@ with kernel.md:
 ## Tier 3: The Unifying Primitives (audit §2)
 
 - [ ] **Reify `TimeMap` as a type** — clips and stacks share one
-  implementation (fixes the deliberate clip/stack window-phase
-  asymmetry noted in time_maps.md before the cell/punch editor makes it
-  bite); window state (`none|active|bypassed` + segments) becomes its
-  data.
+  implementation; window state (`none|active|bypassed` + segments)
+  becomes its data. *(Updated 2026-07-19: the clip/stack window-phase
+  asymmetry this entry cited is RESOLVED — clip windows now anchor at
+  origin + loopStart, the fractal twin of the stack's re-base — so the
+  reify is pure unification for the phase-3 multi-segment editor, no
+  longer a latent-bug fix. Urgency downgraded accordingly.)*
 - [ ] **time_maps.md phase 2** — recording through an active map (heard-
   time arm math, one-period cap, dense buffers with silence in
   unvisited regions — semantics already owner-ratified).
@@ -218,15 +229,30 @@ with kernel.md:
     in the mock preview. The Q12 engine migration landed SEPARATELY (its
     own commit: the D-T3 type-discipline boundary — metadata now publishes
     device-independent QTime, pinned by `qtime_origin_cases` goldens).
-  - [ ] **Step 3 (later, with the pure-render split §2.3): whole-graph
-    immutable root** — one atomic swap replaces per-stack snapshots +
-    reclaimer plumbing; bridge fully collapses to `apply(edit)`. The
-    live take stays OUTSIDE the snapshot until commit (standard
-    carve-out, not a blocker). RT trap to avoid: the audio thread
-    traverses raw pointers off one atomic root load — never copies
-    shared_ptrs (last-reference destruction on the audio thread);
-    lifetimes stay on the epoch-graveyard. performance.md §1 is
-    PRESERVED by all steps, not rewritten.
+  - [x] **Step 3: whole-graph immutable snapshot** ✅ done 2026-07-19d
+    (core; see carve-outs): `src/graph_snapshot.h` — flat DFS arena
+    (entries + packed child spans), built on the message thread after
+    every STRUCTURAL edit (`AudioEngine::publishGraph`, called from the
+    applyEdit wrapper + loadSession), loaded ONCE per callback into
+    `ProcessContext.snap`. Stacks iterate child index spans; leaves
+    resolve solo-ancestry by parent indices; island facts (quantum,
+    invariant epoch, island root) ride the context; audio-side cycle
+    math lives in snapshot-space free functions (`snapIntrinsicDuration`
+    / `snapEffectivePeriod` / `snapEffectiveCycle`). DELETED:
+    `render_children_` + `republishChildren` + `getChildrenSnapshot` +
+    per-stack reclaimer plumbing (`setReclaimer`/`retireOrDelete`) +
+    `removeChild(uuid)` + the dead `forEachChild` LCM visitor; node
+    traversal virtuals and parent walks are message-thread-only now
+    (raw pointers off one atomic load — no shared_ptrs, lifetimes on
+    the engine graveyard, exactly per the RT-trap note). The live-take
+    carve-out holds: snapshots pin STRUCTURE, per-node state stays
+    atomics, so capture/commit need no republish. performance.md §1
+    updated (rules + checklist), pinned by
+    `tests/graph_snapshot_tests.cc` (builder shape, snapshot-vs-node
+    math agreement, publish discipline incl. undo/redo). **Deferred
+    from Step 3's original text:** bridge collapse to `apply(edit)`
+    (UI-facing, not kernel) and the §2.3 pure-render split (§2.3 is its
+    own item below).
 - [ ] **Pure render function** — `out = render(snapshot, t, n)`;
   control decisions become events applied between blocks; engine
   testable as `render(state, t) == golden`.

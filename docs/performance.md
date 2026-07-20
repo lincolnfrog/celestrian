@@ -19,31 +19,45 @@
 
 Everything reachable from `AudioEngine::audioDeviceIOCallbackWithContext`
 (`StackNode::process`, `ClipNode::process`, `commitRecording` when it fires
-from `process`, `calculateTimelineLength`, `isAnyNodeRecording`) must obey:
+from `process`, the snapshot-space cycle math in `graph_snapshot.h`) must
+obey:
 
 | Rule | Why | Enforced by (today) |
 |---|---|---|
-| No locks (mutex, recursive_mutex) | Priority inversion with the message thread → dropouts | Child lists are immutable snapshots published by atomic swap (`StackNode::renderChildren`); the old `children_mutex` is deleted |
-| No heap allocation/free | malloc can take a lock or syscall | `ProcessContext` is POD; `mix_buffer` preallocated (8192 frames); LCM helper is a free function, not `std::function`; deferred frees go through `AudioEngine::retire()` |
+| No locks (mutex, recursive_mutex) | Priority inversion with the message thread → dropouts | The audio thread traverses ONE immutable whole-graph snapshot per callback (`ProcessContext.snap`, published by atomic swap in `AudioEngine::publishGraph` — Tier 3 Step 3); the old per-stack snapshots and `children_mutex` are deleted |
+| No heap allocation/free | malloc can take a lock or syscall | `ProcessContext` is POD; `mix_buffer` preallocated (8192 frames); snapshot math is free functions over index spans; deferred frees go through `AudioEngine::retire()` |
 | No file I/O / logging | `juce::Logger` writes files | `src/rt_log.h` fixed-slot ring; drained on the message thread in `getGraphState()` |
-| No buffer copies proportional to clip length | A 30 s clip copy is milliseconds of stall | No rotation exists at all — content is stored in the origin frame and playback offsets reads by the clip's origin (kernel.md); samples never move |
+| No buffer copies proportional to clip length | A 30 s clip copy is milliseconds of stall | No rotation exists at all — content is stored in the origin frame and playback offsets reads by the clip's origin (kernel.md; plus a `content_base_` storage offset after a Q13 lock-collapse); samples never move |
 | No unbounded waits | — | The one remaining lock-ish thing is the RtLog `SpinLock`, held for a ≤160-byte memcpy, with try-lock (drops the message on contention) |
 | No device queries per block | Driver calls can block | Latencies cached in `audioDeviceAboutToStart` |
-| Iterate child snapshots with **one** load | Paired `getNumChildren()`/`getChild(i)` calls can straddle a republish | Use `getChildrenSnapshot()` in anything audio-thread-reachable |
+| **One structure load per callback** | Per-stack loads could straddle a republish mid-callback; a whole-graph load can't | The engine loads `graph_snapshot_` once into `ProcessContext.snap`; stacks iterate child index spans, leaves resolve ancestry by parent indices. Island facts (quantum, epoch, island root) ride the context — the audio thread never walks node parent pointers or reads the ownership vectors |
 
 **Object lifetime rule:** anything removed from the graph while audio runs is
 freed via `AudioEngine::retire()` — the deleter runs only after the callback
-counter has advanced two callbacks past retirement. Never `delete` a node or
-snapshot directly from a mutation path; `StackNode::retireOrDelete` handles
-the no-reclaimer (unit test) case.
+counter has advanced two callbacks past retirement. This covers nodes AND
+superseded graph snapshots (publish the successor first, then retire).
+Never `delete` a node or snapshot directly from a mutation path.
+
+**Threading split after Step 3:** node ownership vectors
+(`StackNode::ownedChildren`) and the traversal virtuals
+(`getIntrinsicDuration`, `getEffectivePeriod`, `findNodeByUuid`,
+metadata/waveform) are MESSAGE THREAD ONLY; their audio-side twins are the
+snapshot-space free functions in `graph_snapshot.h`
+(`snapIntrinsicDuration`, `snapEffectivePeriod`, `snapEffectiveCycle`,
+`snapIsUnderSolo`). Parent-pointer walks (`getParent`/`rootNode`/
+`getEffectiveQuantum`) survive only as message-thread helpers and the
+single-threaded unit-test fallback inside `process` paths.
 
 **PR checklist for anything touching the process path:**
 
 - [ ] No `new`/`delete`/`setSize`/`makeCopyOf`/`juce::String`/`juce::var`
       construction on the audio thread (grep the diff).
 - [ ] No `juce::Logger` — use `RtLog::instance().post(...)`.
-- [ ] Child iteration uses `getChildrenSnapshot()`.
-- [ ] Cross-thread fields are `std::atomic` (see `AudioNode::parent`).
+- [ ] Structure traversal uses `ProcessContext.snap` / `graph_snapshot.h`
+      — never `ownedChildren()`, never parent pointers.
+- [ ] Island facts come from the context (`quantum`, `island_epoch`,
+      `island`) — no walks.
+- [ ] Cross-thread fields are `std::atomic`.
 - [ ] Destruction of graph objects goes through `retire()`.
 
 Known residual violations (tracked in refactoring_proposal.md):

@@ -11,6 +11,7 @@
 namespace celestrian {
 
 class AudioNode;
+struct GraphSnapshot;
 
 /**
  * Context for audio processing, passed down the recursive graph.
@@ -64,6 +65,25 @@ struct ProcessContext {
   int prerecord_ring_len = 0;       // samples per channel
   int prerecord_ring_channels = 0;  // valid channels in the ring
   int64_t input_clock = 0;          // arrival index of this block's sample 0
+
+  // --- Whole-graph snapshot (unification_audit §2.2, Tier 3 Step 3) ---
+  // The engine loads ONE snapshot per callback and passes it down; each
+  // node receives its own entry index (`self`) from its parent. All
+  // audio-thread structure traversal (children, ancestors) goes through
+  // `snap` — never through per-node pointers. Null only in node-level
+  // unit tests driving process() directly (single-threaded, where the
+  // ownership-vector fallback is race-free by construction).
+  const GraphSnapshot *snap = nullptr;
+  int self = 0;  // this node's entry index in `snap`
+
+  // Island facts, passed DOWN so leaves never walk up (the audio-thread
+  // parent walks are gone): the island quantum (0 = unestablished), the
+  // INVARIANT island epoch (unlike cycle_epoch, never re-based by
+  // windowed stacks on the way down), and the island root — the target
+  // of take lifecycle events and establishIsland.
+  int64_t quantum = 0;
+  int64_t island_epoch = 0;
+  AudioNode *island = nullptr;
 };
 
 /**
@@ -206,28 +226,22 @@ class AudioNode {
    */
   virtual float getCurrentPeak() const = 0;
 
-  // Hierarchy
+  // Hierarchy. The parent pointer is a MESSAGE-THREAD convenience
+  // (metadata walks, engine helpers) plus the single-threaded unit-test
+  // fallback; the audio thread resolves ancestry through the
+  // whole-graph snapshot (ProcessContext.snap) and receives island
+  // facts in the context — it never walks these pointers (Tier 3
+  // Step 3).
   void setParent(AudioNode *p) { parent.store(p); }
   AudioNode *getParent() const { return parent.load(); }
 
   /** Topmost node of this subtree — the island root under the current
-   * one-island model. Audio-thread safe (atomic parent walk). */
+   * one-island model. Message thread / unit-test fallback only; the
+   * audio thread uses ProcessContext.island. */
   AudioNode *rootNode() {
     AudioNode *n = this;
     while (auto *p = n->getParent()) n = p;
     return n;
-  }
-
-  /**
-   * Allocation-free child traversal (P1-8: replaces dynamic_cast
-   * walks). Leaves are no-ops; StackNode iterates ONE published child
-   * snapshot per call. Recursion is the visitor's choice: call
-   * child->forEachChild(...) inside `fn`. Audio-thread safe.
-   */
-  virtual void forEachChild(void (*fn)(AudioNode *, void *),
-                            void *user) const {
-    (void)fn;
-    (void)user;
   }
 
   /** Recursive UUID lookup (self included). */
@@ -251,7 +265,14 @@ class AudioNode {
    * re-base (simple-extension rule) — see StackNode. */
   virtual void takeArmed() {}
   virtual void takeCancelled() {}
-  virtual void takeCommitted(int64_t origin) { (void)origin; }
+  /** Commit event. `intrinsic_after` = the island's composite duration
+   * INCLUDING the just-committed take — computed by the caller (in
+   * snapshot space on the audio thread; graph_snapshot.h), because the
+   * island's own tree traversal is message-thread-only. */
+  virtual void takeCommitted(int64_t origin, int64_t intrinsic_after) {
+    (void)origin;
+    (void)intrinsic_after;
+  }
   /** Any take currently armed or capturing in this island. */
   virtual bool hasActiveTake() const { return false; }
   /** The HEARD island cycle the CURRENT take generation was armed

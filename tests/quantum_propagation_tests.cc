@@ -82,7 +82,14 @@ class QuantumPropagationTests : public juce::UnitTest {
                    "Q must not change when a shorter clip commits");
 
       // Q survives its creator: delete the establishing clip.
-      root.removeChild(c1->getUuid());
+      // (removeChild(index) detaches and returns ownership; letting it
+      // drop destroys the node — fine single-threaded.)
+      for (int i = 0; i < root.getNumChildren(); ++i) {
+        if (root.getChild(i) == c1) {
+          root.removeChild(i);
+          break;
+        }
+      }
       expectEquals(root.getEffectiveQuantum(), (int64_t)1000,
                    "Q survives deletion of the clip that established it");
     }

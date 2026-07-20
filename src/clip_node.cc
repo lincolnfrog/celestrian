@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "graph_snapshot.h"
 #include "rt_log.h"
 #include "timing.h"
 
@@ -52,7 +53,11 @@ void ClipNode::process(const float *const *input_channels,
   // old message-thread computation raced the recorder and could pick a
   // boundary already behind the write head (unification_audit.md D2).
   if (recState() == RecState::Capturing && stop_requested_.load()) {
-    const int64_t Q = getEffectiveQuantum();
+    // Island Q rides the context (Tier 3 Step 3 — no audio-thread parent
+    // walks); the walk survives only as the node-level unit-test
+    // fallback (single-threaded, race-free by construction).
+    const int64_t Q =
+        context.quantum > 0 ? context.quantum : getEffectiveQuantum();
     if (Q > 0) {
       const int64_t boundary =
           timing::nextStopBoundary(write_position.load(), Q);
@@ -123,7 +128,7 @@ void ClipNode::process(const float *const *input_channels,
             int64_t target = awaiting_stop_at.load();
             if (start_p < target && end_p >= target) {
               commit_master_pos.store(context.master_pos);
-              commitRecording(target);
+              commitRecording(target, &context);
               return;
             }
           }
@@ -163,7 +168,7 @@ void ClipNode::process(const float *const *input_channels,
           int64_t target = awaiting_stop_at.load();
           if (start_p < target && end_p >= target) {
             commit_master_pos.store(context.master_pos);
-            commitRecording(target);
+            commitRecording(target, &context);
             return;
           }
         }
@@ -191,14 +196,22 @@ void ClipNode::process(const float *const *input_channels,
     if (dur > 0) {
       bool isSilenced = is_muted.load() || (context.solo_node != nullptr);
       if (isSilenced && !is_muted.load()) {
-        // Check if we or any ancestor is soloed
-        const celestrian::AudioNode *curr = this;
-        while (curr != nullptr) {
-          if (curr == context.solo_node) {
-            isSilenced = false;
-            break;
+        // Solo audibility: are we (or an ancestor) the soloed node?
+        // Index walk over the whole-graph snapshot — the audio thread
+        // never chases parent pointers (Tier 3 Step 3). The pointer
+        // walk survives only as the unit-test fallback.
+        if (context.snap) {
+          isSilenced =
+              !snapIsUnderSolo(*context.snap, context.self, context.solo_node);
+        } else {
+          const celestrian::AudioNode *curr = this;
+          while (curr != nullptr) {
+            if (curr == context.solo_node) {
+              isSilenced = false;
+              break;
+            }
+            curr = curr->getParent();
           }
-          curr = curr->getParent();
         }
       }
 
@@ -265,7 +278,13 @@ void ClipNode::process(const float *const *input_channels,
 }
 
 void ClipNode::armEvaluate(const ProcessContext &context) {
-  const int64_t Q = getEffectiveQuantum();
+  // Island facts ride the context (Tier 3 Step 3): quantum, invariant
+  // epoch, and the island root itself — no audio-thread parent walks.
+  // The walks survive only as the node-level unit-test fallback.
+  const int64_t Q =
+      context.quantum > 0 ? context.quantum : getEffectiveQuantum();
+  celestrian::AudioNode *island =
+      context.island ? context.island : rootNode();
 
   // Latency compensation: the performer plays against what they HEARD
   // (delayed by output latency); it reaches the software input latency
@@ -280,7 +299,7 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
     // captured as data at the root (the clock is never reset,
     // kernel.md); commit stores Q + epoch together with the same value.
     origin_samples.store(compensated_pos);
-    rootNode()->establishIsland(0, compensated_pos);
+    island->establishIsland(0, compensated_pos);
     beginCapture(context, compensated_pos, compensated_pos);
     RtLog::instance().post(
         "ClipNode: Recording Started at master_pos=%lld (first clip)",
@@ -290,8 +309,11 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
 
   // ALL cycle-relative math happens in the ISLAND EPOCH frame — mixing
   // absolute-frame math with the epoch-rebased view was the field bug
-  // "clip 3 anchored at 3Q instead of 0Q".
-  const int64_t epoch = getIslandEpoch();
+  // "clip 3 anchored at 3Q instead of 0Q". The INVARIANT epoch rides
+  // the context (cycle_epoch gets re-based by windowed stacks; this one
+  // never is).
+  const int64_t epoch =
+      context.island ? context.island_epoch : getIslandEpoch();
 
   // Context loop = the loop the performer was listening to: longest
   // committed sibling, min Q — computed by the PARENT and passed down
@@ -331,8 +353,8 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
   // mainline (heard == intrinsic when no window is active).
   int64_t origin = target;
   {
-    const int64_t heard = rootNode()->activeTakeHeardCycle();
-    const int64_t intrinsic = rootNode()->activeTakeIntrinsicCycle();
+    const int64_t heard = island->activeTakeHeardCycle();
+    const int64_t intrinsic = island->activeTakeIntrinsicCycle();
     if (heard > 0 && intrinsic > heard) {
       const int64_t rel_t =
           ((target - epoch) % intrinsic + intrinsic) % intrinsic;
@@ -364,9 +386,11 @@ void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
   // take-marking folds by this — "which heard cycle" never matters, the
   // phase within it always does (Q14) — making the mark stable across
   // later frame growth and epoch re-bases.
-  const int64_t heard = rootNode()->activeTakeHeardCycle();
+  celestrian::AudioNode *island =
+      context.island ? context.island : rootNode();
+  const int64_t heard = island->activeTakeHeardCycle();
   take_context_cycle_.store(
-      heard > 0 ? heard : rootNode()->activeTakeIntrinsicCycle());
+      heard > 0 ? heard : island->activeTakeIntrinsicCycle());
 
   rec_state_.store((int)RecState::Capturing);
   awaiting_start_at.store(0);
@@ -434,14 +458,20 @@ void ClipNode::stopRecording() {
   }
 }
 
-void ClipNode::commitRecording(int64_t final_duration) {
+void ClipNode::commitRecording(int64_t final_duration,
+                               const ProcessContext *ctx) {
   if (recState() != RecState::Idle) {
     rec_state_.store((int)RecState::Idle);
     stop_requested_.store(false);
     awaiting_stop_at.store(0);
 
+    // Commit fires on the AUDIO thread (from process) with the context,
+    // or on the message thread (first-clip immediate stop) without one
+    // — the parent walks below are the message/unit-test path only.
+    celestrian::AudioNode *island =
+        ctx && ctx->island ? ctx->island : rootNode();
     int64_t L = (int64_t)write_position.load();
-    int64_t Q = getEffectiveQuantum();
+    int64_t Q = ctx && ctx->quantum > 0 ? ctx->quantum : getEffectiveQuantum();
     int64_t duration = L;
 
     if (Q > 0 && final_duration <= 0) {
@@ -480,7 +510,7 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // creator per owner ruling). Epoch = this clip's origin.
     const int64_t origin = origin_samples.load();
     if (Q == 0) {
-      rootNode()->establishIsland(duration, origin);
+      island->establishIsland(duration, origin);
       RtLog::instance().post(
           "ClipNode: Island quantum established: Q=%lld epoch=%lld",
           (long long)duration, (long long)origin);
@@ -499,8 +529,13 @@ void ClipNode::commitRecording(int64_t final_duration) {
     // The commit EVENT (unification_audit.md §1.5): carries the take's
     // origin to the island root, which owns the epoch re-base decision.
     // Runs AFTER duration_samples is stored so the island's composite
-    // duration includes this take.
-    rootNode()->takeCommitted(origin);
+    // duration includes this take — computed here in SNAPSHOT space
+    // (audio thread; graph_snapshot.h) and passed in, because the
+    // island's own traversal is message-thread-only.
+    const int64_t intrinsic_after =
+        ctx && ctx->snap ? snapIntrinsicDuration(*ctx->snap, 0)
+                         : island->getIntrinsicDuration();
+    island->takeCommitted(origin, intrinsic_after);
   }
 }
 

@@ -163,6 +163,13 @@ retrofitting units is the expensive path. §4 states the decision.
 
 ### 2.2 The graph as an immutable value; edits as events
 
+> **Status 2026-07-19d: implemented** (staged — Step 1 undo 2026-07-16,
+> Step 2 save/load 2026-07-16, Step 3 whole-graph snapshot 2026-07-19d;
+> see tasks.md Tier 3). The audio thread now loads ONE immutable graph
+> snapshot per callback (`graph_snapshot.h`); the per-stack snapshot
+> machinery and its reclaimer plumbing are deleted. Remaining from this
+> section's text: the bridge collapse to `apply(edit)` (UI surface).
+
 `StackNode` already invented copy-on-write for one level (immutable
 child snapshots + the reclaimer graveyard). Generalize: **every
 mutation publishes a whole immutable graph snapshot; the audio thread

@@ -107,7 +107,7 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
     o->setProperty("x", node.x_pos.load());
     o->setProperty("y", node.y_pos.load());
     juce::Array<juce::var> kids;
-    for (auto *child : stack.getChildrenSnapshot())
+    for (const auto &child : stack.ownedChildren())
       kids.add(serializeNode(*child, q, epoch, audioDir));
     o->setProperty("nodes", kids);
   }
@@ -202,7 +202,7 @@ bool save(const StackNode &root, double device_sample_rate,
   top->setProperty("rootEffects", effectsBlob(root));
 
   juce::Array<juce::var> nodes;
-  for (auto *child : root.getChildrenSnapshot())
+  for (const auto &child : root.ownedChildren())
     nodes.add(serializeNode(*child, q, epoch, audioDir));
   top->setProperty("nodes", nodes);
 

@@ -10,6 +10,7 @@
 #include "audio_node.h"
 #include "clip_node.h"
 #include "edit.h"
+#include "graph_snapshot.h"
 #include "session_io.h"
 #include "stack_node.h"
 
@@ -129,6 +130,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   bool canUndo() const { return !undo_.empty(); }
   bool canRedo() const { return !redo_.empty(); }
 
+  /** TEST-ONLY: the currently published whole-graph snapshot (pins the
+   * publish discipline in graph_snapshot_tests). */
+  const celestrian::GraphSnapshot *currentGraphSnapshotForTest() const {
+    return graph_snapshot_.load();
+  }
+
   // --- Save / Load (edits-as-events, Step 2). Message thread only.
   // A session is a bundle directory (session.json + audio/*.wav);
   // device-independent, QTime-based (src/session_io.h). Load swaps the
@@ -230,6 +237,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * works). Structural removes hand the detached subtree to the inverse.
    */
   celestrian::Edit applyEdit(celestrian::Edit e);
+  celestrian::Edit applyEditImpl(celestrian::Edit e);
   /** Apply `forward`, push its inverse to the undo stack, clear redo. */
   void record(celestrian::Edit forward);
   /** The parent stack of `node` and its index within it (nullptr/−1 if
@@ -355,6 +363,17 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
   juce::String current_device_key_;  // empty when no device has started
   juce::File calibration_file_override_;
+
+  // --- Whole-graph snapshot (unification_audit §2.2, Tier 3 Step 3) ---
+  // The one structure the audio thread traverses: rebuilt on the message
+  // thread after every structural mutation (publishGraph), loaded ONCE
+  // per callback into ProcessContext.snap. Superseded snapshots retire
+  // through the reclaimer like any graph object.
+  std::atomic<const celestrian::GraphSnapshot *> graph_snapshot_{nullptr};
+  /** Rebuild + atomically publish the snapshot from the current
+   * ownership tree; retires the predecessor. Message thread, after any
+   * structural change (applyEdit does this for structural kinds). */
+  void publishGraph();
 
   // Deferred destruction: retired items are freed once the callback counter
   // has advanced two callbacks past their retirement, guaranteeing no
