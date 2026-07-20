@@ -66,7 +66,10 @@ export function initSessionView(callbacks) {
     // Selection: Escape or a click on empty canvas clears; the floating
     // bar groups the selection in place.
     document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') clearSelection();
+        if (e.key === 'Escape') {
+            clearSelection();
+            if (cb.onWindowEdit) cb.onWindowEdit(null, false);
+        }
     });
     document.getElementById('session').addEventListener('click', e => {
         if (e.target.id === 'session' || e.target.id === 'grid-area' ||
@@ -659,8 +662,11 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live,
             const b = Math.min(n, Math.max(a + 1, Math.ceil(src[1] * n)));
             drawPeaks = peaks.slice(a, b);
         }
+        // Tone follows GHOSTNESS, not segment-ness: a heard-view lane's
+        // bright tile carries `src` (it draws the window segment) but is
+        // the sounding material — warm tape, not the cool echo tone.
         drawWaveform(canvas, drawPeaks,
-            { cssWidth, cssHeight, isComposite, isEcho: !!isGhost || !!src });
+            { cssWidth, cssHeight, isComposite, isEcho: !!isGhost });
     }
     return true; // redrew
 }
@@ -676,7 +682,10 @@ function reconcileMarkers(container, key, build) {
 function patchLaneBody(row, lane, vm, aux) {
     if (lane.kind === 'add' || lane.kind === 'fx') return;
     const body = row.querySelector('.lane-body');
-    const cycleQ = vm.cycleQ;
+    // Per-lane scale (law 13 amendment): a window-EDITING lane shows its
+    // full raw take on its own horizontal frame — an inspector, not a
+    // timeline. Everything below maps through this local cycle.
+    const cycleQ = lane.frameQ || vm.cycleQ;
     const { grid, reps: repsL, overlay } = layersOf(body);
     const peaks = lanePeaks(lane, aux);
     const bodyW = body.clientWidth;
@@ -790,6 +799,34 @@ function patchLaneBody(row, lane, vm, aux) {
     const armedEmpty = (lane.kind === 'clip' && !lane.recording &&
         lane.reps.length === 0 && lane.armed) || (lane.recording && lane.pendingStart);
     const armQ = vm.armAtQ % cycleQ;
+    // HEARD-VIEW chrome (law 13 amendment): a quiet chip + edge grips
+    // that EXPAND the lane into its edit view (full raw take with the
+    // selection brackets — the seed track's trim view, per lane).
+    if (lane.windowChipQ && !lane.windowEditing) {
+        let chip = overlay.querySelector('.win-open-chip');
+        if (!chip) {
+            overlay.textContent = '';
+            overlay._key = 'heard';
+            chip = document.createElement('div');
+            chip.className = 'win-chip win-open-chip toggle';
+            chip.title = 'Open the window editor — see the whole take, drag to re-trim';
+            chip.addEventListener('click', () => cb.onWindowEdit(lane.id, true));
+            overlay.appendChild(chip);
+            ['start', 'end'].forEach(edge => {
+                const grip = document.createElement('div');
+                grip.className = 'win-bracket latent ' + edge + ' win-open-grip';
+                grip.style.left = edge === 'start' ? '0%' : '100%';
+                grip.title = 'Grab to edit the window (expands the lane)';
+                grip.addEventListener('pointerdown', ev => {
+                    ev.preventDefault();
+                    cb.onWindowEdit(lane.id, true);
+                });
+                overlay.appendChild(grip);
+            });
+        }
+        setText(chip, 'window ' + lane.windowChipQ + 'Q');
+        return;
+    }
     const win = lane.window || latentWindow(lane, vm);
     // Window geometry is CONTENT-relative; the lane's content-frame
     // origin is its take tile (takeStartQ) — brackets/dims/cursor all
@@ -885,6 +922,16 @@ function patchLaneBody(row, lane, vm, aux) {
                     ? 'sets tempo · drag to trim'
                     : bypassed ? 'window · bypassed' : active ? 'window · active' : 'window';
                 o.appendChild(chip);
+                if (lane.windowEditing) {
+                    const done = document.createElement('div');
+                    done.className = 'win-chip win-done-chip toggle';
+                    done.textContent = 'done';
+                    done.title = 'Close the window editor (Esc)';
+                    done.style.left = pct(anchorQ + startQ, cycleQ);
+                    done.addEventListener('click', () =>
+                        cb.onWindowEdit(lane.id, false));
+                    o.appendChild(done);
+                }
                 if (active && !bypassed && !qDef) {
                     // Heard-time cursor: positioned per poll below. NOT
                     // on the Q-definer — there the MAIN playhead is
@@ -912,6 +959,10 @@ function patchLaneBody(row, lane, vm, aux) {
  */
 function latentWindow(lane, vm) {
     if (lane.window || lane.recording || !vm.qEstablished) return null;
+    // Heard-view windowed lanes edit through the EXPAND view (chip /
+    // edge grip) — a latent full-span drag here would reinterpret the
+    // collapsed coordinates as raw loop points.
+    if (lane.windowChipQ) return null;
     const maxQ = Math.round(lane.intrinsicQ || 0);
     // (The Q-definer never reaches here: its lane always carries a
     // window — the provisional branch builds the selection explicitly.)
@@ -972,6 +1023,9 @@ function buildWindowDims(o, win, lane, cycleQ) {
  * captured bracket node would orphan the gesture.
  */
 function wireWindow(o, lane, vm, body, win) {
+    // Per-lane scale (law 13 amendment): an editing lane maps through
+    // its own frame, not the shared one.
+    const laneCycleQ = lane.frameQ || vm.cycleQ;
     const chip = o.querySelector('.win-chip');
     // Fractal (I5): clip and group windows toggle alike — the engine's
     // toggleLoopWindow works on any node since 2026-07-11. The Q-definer's
@@ -998,17 +1052,17 @@ function wireWindow(o, lane, vm, body, win) {
     const previewSnap = (t, edge, ghost) => {
         cur = t;
         ghost.style.left =
-            pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), vm.cycleQ);
+            pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), laneCycleQ);
         if (chip) {
-            chip.style.left = pct(anchorQ + t.endQ, vm.cycleQ);
-            chip.classList.toggle('at-end', anchorQ + t.endQ >= vm.cycleQ);
+            chip.style.left = pct(anchorQ + t.endQ, laneCycleQ);
+            chip.classList.toggle('at-end', anchorQ + t.endQ >= laneCycleQ);
             setText(chip, lane.isQDefiner
                 ? 'Q = ' + ((t.endQ - t.startQ) * vm.quantum / vm.sampleRate).toFixed(2) + 's'
                 : (t.endQ - t.startQ) + 'Q window');
         }
         if (dimsLive) {
             o.querySelectorAll('.win-dim').forEach(d => d.remove());
-            buildWindowDims(o, t, lane, vm.cycleQ);
+            buildWindowDims(o, t, lane, laneCycleQ);
         }
     };
 
@@ -1032,7 +1086,7 @@ function wireWindow(o, lane, vm, body, win) {
             const r = body.getBoundingClientRect();
             // Frame Q under the pointer → content Q for the snap math
             const rawQ =
-                ((e.clientX - r.left) / r.width) * vm.cycleQ - anchorQ;
+                ((e.clientX - r.left) / r.width) * laneCycleQ - anchorQ;
             // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
             // not snapping to it. The handle position is the landing; a
             // small min length keeps Q positive. Clamp to the RAW
@@ -1045,7 +1099,7 @@ function wireWindow(o, lane, vm, body, win) {
                 const t = edge === 'start'
                     ? { startQ: Math.min(Math.max(0, rawQ), cur.endQ - minLen), endQ: cur.endQ }
                     : { startQ: cur.startQ, endQ: Math.max(Math.min(extQ, rawQ), cur.startQ + minLen) };
-                el.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), vm.cycleQ);
+                el.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), laneCycleQ);
                 previewSnap(t, edge, ghost);
                 return;
             }
@@ -1054,7 +1108,7 @@ function wireWindow(o, lane, vm, body, win) {
             const freeQ = edge === 'start'
                 ? Math.min(Math.max(0, rawQ), cur.endQ - 1)
                 : Math.max(Math.min(maxQ, rawQ), cur.startQ + 1);
-            el.style.left = pct(anchorQ + freeQ, vm.cycleQ);
+            el.style.left = pct(anchorQ + freeQ, laneCycleQ);
             const t = windowDragTarget({ edge, rawQ, ...cur, maxQ });
             if (t.startQ !== cur.startQ || t.endQ !== cur.endQ) {
                 previewSnap(t, edge, ghost);

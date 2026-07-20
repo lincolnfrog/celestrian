@@ -15,6 +15,7 @@ const dbg = m => { if (DEBUG) log(m); };
 const livePeaks = new Map();        // clip id → peak array
 const peakDurations = new Map();    // clip id → duration the peaks were fetched at
 const fxOpen = new Set();           // lane ids with the effects panel expanded (view state)
+const windowEdit = new Set();       // lanes expanded into the window editor
 
 /* ---------- waveform peaks ---------- */
 let fetchInFlight = null;
@@ -216,7 +217,7 @@ async function startPolling() {
                         pendingFetch.add(n.id);
                     }
                 }
-                const vm = deriveViewModel(state, { fxOpen });
+                const vm = deriveViewModel(state, { fxOpen, windowEdit });
                 patchSessionView(vm, {
                     livePeaks,
                     pendingFetch,
@@ -401,6 +402,11 @@ export function initApp() {
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
         onAddTrack: () => callNative('createNode', 'clip', ''),
+        // Law 13 amendment: expand/collapse a lane's window editor.
+        onWindowEdit: (id, open) => {
+            if (id === null) { windowEdit.clear(); return; }
+            if (open) windowEdit.add(id); else windowEdit.delete(id);
+        },
         // Drag-to-group (2026-07-19h/j): clip target → combine into a
         // new group; group target → move inside. A multi-drag (selected
         // rails) applies to every dragged track.

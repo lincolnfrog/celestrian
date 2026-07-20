@@ -667,6 +667,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .lane-body:hover .win-bracket.q-definer.latent { opacity: 0.9; }
 .win-bracket.q-definer.dragging { opacity: 1; }
 .win-chip.q-definer { color: var(--rec); border-color: var(--rec); cursor: default; }
+.win-open-chip {
+    right: 4px;
+    left: auto !important;
+    cursor: pointer;
+}
+.win-open-grip { cursor: ew-resize; }
+.win-done-chip { cursor: pointer; color: var(--tape); border-color: var(--tape); }
 .win-chip {
     position: absolute;
     top: 4px;

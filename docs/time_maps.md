@@ -252,4 +252,27 @@ stored heard frame (`contextCycle`), so they survive frame growth and
 epoch re-bases. The phase-3 cell/punch editor inherits all of this:
 multi-segment maps are the same echo rendering with more segments.
 
+**Phase 1 extension 4 (2026-07-20, LAW 13 AMENDED — the heard frame):**
+the 2026-07-19 anchoring change made a clip window's frame position an
+EDIT fact (where the material came from), not a playback fact (the
+window loops continuously, anchored at origin + start) — but the
+display still drew it as a playback fact, so the island cursor swept
+regions that never sound while the sounding material sat where the
+cursor never goes (field screenshot 2026-07-19). Law 13 ("windows
+never reframe") is amended per the owner's ruling: **the resting view
+is HEARD TIME.** A windowed clip lane displays the window's CONTENT
+tiled where it audibly sounds (displayed period = window length; every
+rep carries the segment src); the display frame = the audible cycle;
+the one white cursor is honest on every lane. The window's raw-take
+truth lives in the **EDIT VIEW**: grabbing the lane's edge grip or its
+"window NQ" chip expands the lane to its full raw duration on its OWN
+horizontal scale (an inspector — the seed track's trim view, per
+lane), with selection brackets, dims, the amber heard cursor, and a
+"done" exit (Esc works too). Law 13's original concern — content
+hidden with no way to see it — is answered by the edit view instead of
+by refusing to reframe. Supersedes the Q14c clip-echo rendering (the
+whole heard-view lane IS audible truth; `echoReps` remains for
+bypass-free legacy paths). Pinned in view_model tests ("heard view" /
+"heard view is fractal").
+
 **Phase 2 (record-through-map) and phase 3 (cell/punch editor): pending.**

@@ -152,12 +152,11 @@ test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', (
     assert.equal(c1.takeStartQ, 0);
 });
 
-test('ghosts show what SOUNDS: windowed clip ghosts become window echoes', () => {
-    // The ruled design (open question 10, 2026-07-16): clip 3 (2Q take
-    // at heard 2Q) windowed to its second half [1Q,2Q). Audibly that 1Q
-    // segment loops every Q. The lane: the take tile [2,4) keeps the
-    // FULL original material (undo stays visible — the dims live only
-    // there); every other tile is an ECHO of the window segment.
+test('HEARD VIEW (law 13 amended): a windowed lane shows what sounds', () => {
+    // 2026-07-19k: the window's CONTENT is the lane's material, tiled
+    // where it audibly sounds (period = window length, anchored at
+    // origin + start). Every tile carries the segment src; no brackets
+    // in the resting view (the edit view holds the raw take).
     const vm = deriveViewModel(state([
         clip(4),
         clip(2, {
@@ -168,17 +167,31 @@ test('ghosts show what SOUNDS: windowed clip ghosts become window echoes', () =>
     ]));
     assert.equal(vm.cycleQ, 4);
     const lane = vm.lanes[1];
-
-    assert.deepEqual(lane.reps.map(r => [r.startQ, r.endQ, !!r.ghost, !!r.echo]), [
-        [0, 1, true, true],   // echo of the window segment
-        [1, 2, true, true],   // echo
-        [2, 4, false, false], // the take tile: full original material
-    ]);
-    // Echoes carry the segment's content range (second half of the take)
-    const echo = lane.reps[0];
-    assert.deepEqual(echo.src, [0.5, 1]);
-    assert.equal(lane.takeStartQ, 2);
+    assert.equal(lane.periodQ, 1, 'displayed period = window length');
+    assert.equal(lane.reps.length, 4, 'window content tiles the frame');
+    assert.ok(lane.reps.every(r => r.src && r.src[0] === 0.5 && r.src[1] === 1),
+        'every tile draws the window SEGMENT (second half of the take)');
+    assert.equal(lane.window, null, 'no brackets at rest');
+    assert.equal(lane.windowChipQ, 1, 'the chip advertises the edit view');
     assertTilesCycle(lane, vm.cycleQ);
+
+    // EDIT VIEW: the lane expands to its full raw duration on its own
+    // scale, with the selection brackets — the seed track's trim view.
+    const editState = state([
+        clip(4),
+        clip(2, {
+            origin: 2 * Q, contextCycle: 4 * Q,
+            loopStart: 1 * Q, loopEnd: 2 * Q,
+            windowActive: true, loopBypassed: false,
+        }),
+    ]);
+    const editId = editState.nodes[1].id;
+    const vmE = deriveViewModel(editState, { windowEdit: new Set([editId]) });
+    const editing = vmE.lanes[1];
+    assert.equal(editing.windowEditing, true, 'lane enters the edit view');
+    assert.equal(editing.frameQ, 2, 'per-lane scale = the full take');
+    assert.deepEqual([editing.window.startQ, editing.window.endQ], [1, 2],
+        'brackets select over the raw material');
 
     // Bypassed window: plain raw-take ghosts return (nothing baked, I9)
     const byp = deriveViewModel(state([
@@ -359,19 +372,20 @@ test('windowDragTarget: Q-snap, clamps, and the 1Q minimum', () => {
         { startQ: 1, endQ: 2 });
 });
 
-test('fractal windows: a clip\'s subset window renders like a stack\'s', () => {
-    // I5: a clip's loop region is the single-segment case of the
-    // stack's time-map — same window object, same activation semantics
+test('heard view is fractal: a windowed clip collapses to its audible loop', () => {
+    // 2026-07-19k (supersedes the intrinsic-period assertion of law 13):
+    // the displayed period is the WINDOW length; the window's frame
+    // position is an edit fact, not a playback fact — brackets and the
+    // amber cursor live in the edit view.
     const c = clip(4, {
         loopStart: 1 * Q, loopEnd: 2 * Q, windowActive: true, playhead: 0.25,
     });
     const vm = deriveViewModel(state([c, clip(1)]));
     const lane = vm.lanes[0];
-    assert.deepEqual(
-        { s: lane.window.startQ, e: lane.window.endQ, a: lane.window.active },
-        { s: 1, e: 2, a: true });
-    assert.equal(lane.periodQ, 4);      // display period stays intrinsic
-    assert.equal(lane.windowPhase, 0.25);
+    assert.equal(lane.window, null, 'no brackets at rest');
+    assert.equal(lane.periodQ, 1, 'displayed period = the audible loop');
+    assert.equal(lane.windowPhase, 0, 'no second cursor — the white one is honest');
+    assert.equal(vm.cycleQ, 1, 'the frame IS the audible loop');
 });
 
 test('windowPhase: engine-published heard-time, zero when inactive', () => {

@@ -340,6 +340,16 @@ with kernel.md:
     so the sounding position never jumps while nudging handles. Engine
     + mock parity; pinned in qtime_lock_tests.cc (re-open restore +
     undo/redo; exact position continuity) and q13.test.mjs.
+- [x] **Heard-frame windows (law 13 amended)** ✅ done 2026-07-20
+    (owner-chosen design A from three mocks): windowed clip lanes REST
+    in heard time — window content tiled at its audible positions,
+    frame = audible loop, one honest cursor, "window NQ" chip; grabbing
+    an edge grip or the chip EXPANDS the lane to its full raw take on
+    its own scale (per-lane trim view: brackets, dims, amber cursor,
+    done/Esc). vm windowEdit view state; lane.frameQ threads a
+    per-lane scale through the patch layer; renderer tone follows
+    ghostness (bright src tiles are warm). Supersedes Q14c clip echo
+    rendering. See time_maps.md phase-1-extension-4.
 - [ ] **Track Controls** — Play/Solo/Record buttons; partially done.
 - [ ] **Creation Menu** — contextual node creation; partially done.
 - [ ] **Selective Recording** — record into specific nodes.

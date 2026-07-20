@@ -277,6 +277,10 @@ export function deriveViewModel(state, opts = {}) {
     // Lanes whose effects panel is expanded (pure view state, owned by
     // the app shell — like fold, but client-side only)
     const fxOpen = opts.fxOpen || null;
+    // Lanes whose window is being EDITED (view state, app shell): they
+    // expand to their full raw duration on their own scale (law 13
+    // amendment, 2026-07-19k).
+    const windowEdit = opts.windowEdit || null;
     const nodes = state.nodes || [];
     // The island quantum is a STORED fact published top-level by the
     // engine (P0-3 — the root stack's `quantum` metadata; the mock
@@ -350,11 +354,24 @@ export function deriveViewModel(state, opts = {}) {
     // RENDERS its true fractional extent (intrinsicQ) — only the shared
     // frame math sees the whole-Q contribution.
     let cycleSamples = quantum;
+    const clipCycleContribution = n => {
+        // LAW 13 AMENDED (2026-07-19k): a clip's ACTIVE window IS its
+        // displayed material (heard view), so it contributes the window
+        // length — the display frame equals the audible loop and the
+        // one cursor is honest everywhere. (Law 13's original concern —
+        // hidden content — is answered by the expand-to-edit view.)
+        const d = n.duration || 0;
+        const ls = n.loopStart || 0, le = Math.min(n.loopEnd || 0, d);
+        if (!n.loopBypassed && le > ls && !(ls <= 0 && le >= d)) {
+            return Math.round(le - ls);
+        }
+        return commensuratePeriod(n, quantum);
+    };
     nodes.forEach(n => {
         if (n.isRecording) return;
         const p = n.type === 'stack'
             ? calculateStackLCM(n.nodes, quantum)  // commensurate inside
-            : commensuratePeriod(n, quantum);
+            : clipCycleContribution(n);
         if (p > 0) cycleSamples = lcm(Math.round(cycleSamples), Math.round(p));
     });
 
@@ -621,6 +638,42 @@ export function deriveViewModel(state, opts = {}) {
         }
 
         const periodQ = displayPeriodQ(node, quantum);
+        const intrinsicQ = intrinsicPeriod(node, quantum) / quantum;
+        const win = windowOf(node, quantum);
+
+        // WINDOW EDIT VIEW (law 13 amendment): the lane expands to its
+        // FULL raw duration on its OWN horizontal scale — the seed
+        // track's trim view, per lane. Brackets select over the whole
+        // take; the amber cursor carries heard time; the rest of the
+        // timeline (and the white cursor) stay in the audible frame.
+        if (win && windowEdit && windowEdit.has(node.id)) {
+            lanes.push(Object.assign(laneCommon(node, state), {
+                kind: 'clip',
+                depth,
+                periodQ: intrinsicQ,
+                intrinsicQ,
+                frameQ: intrinsicQ,  // per-lane scale: an inspector
+                reps: [{ startQ: 0, endQ: intrinsicQ, ghost: false }],
+                takeStartQ: 0,
+                window: win,
+                windowPhase: node.windowActive ? (node.playhead || 0) : 0,
+                windowEditing: true,
+                armable: false,
+                inputChannel: node.inputChannel ?? -1,
+            }));
+            if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
+            return;
+        }
+
+        // HEARD VIEW (law 13 amendment): an ACTIVE window's CONTENT is
+        // the lane's material, tiled where it audibly sounds (anchored
+        // at origin + start, period = window length). Every rep carries
+        // the segment src so the renderer draws window content in every
+        // tile — the whole lane is audible truth, and the one white
+        // cursor is honest on it. The raw take lives one grab away.
+        const heard = !!(win && win.active);
+        const lanePeriodQ = heard ? win.endQ - win.startQ : periodQ;
+        const laneOffsetQ = heard ? offsetQ + win.startQ : offsetQ;
         // Take marking (Q14): the bright tile is the one at the take's
         // HEARD PHASE — its position mod the cycle it was performed
         // against (`contextCycle`, the engine's per-take heard frame),
@@ -633,33 +686,33 @@ export function deriveViewModel(state, opts = {}) {
         const relQ = ((node.origin || 0) - epochSamples) / quantum;
         const ctxQ = (node.contextCycle || 0) / quantum;
         let takeQ;
-        if (ctxQ > 0 && periodQ > 0) {
-            const phase = ((offsetQ % ctxQ) + ctxQ) % ctxQ;
-            const firstTile = ((offsetQ % periodQ) + periodQ) % periodQ;
+        if (ctxQ > 0 && lanePeriodQ > 0) {
+            const phase = ((laneOffsetQ % ctxQ) + ctxQ) % ctxQ;
+            const firstTile = ((laneOffsetQ % lanePeriodQ) + lanePeriodQ) % lanePeriodQ;
             // First tile position ≡ the heard phase (mod ctx): exists
             // within lcm(ctx, period) ≤ the committed cycle.
-            for (let p = firstTile; p < cycleQ; p += periodQ) {
+            for (let p = firstTile; p < cycleQ; p += lanePeriodQ) {
                 const d = ((p - phase) % ctxQ + ctxQ) % ctxQ;
                 if (d < 1e-9 || ctxQ - d < 1e-9) { takeQ = p; break; }
             }
         } else if (relQ >= 0 && lcmQ > 0) {
-            takeQ = ((offsetQ % lcmQ) + lcmQ) % lcmQ;
+            takeQ = ((laneOffsetQ % lcmQ) + lcmQ) % lcmQ;
         }
-        const intrinsicQ = intrinsicPeriod(node, quantum) / quantum;
-        const win = windowOf(node, quantum);
         let reps = qEstablished
-            ? unrollReps({ periodQ, offsetQ, cycleQ, takeQ })
+            ? unrollReps({ periodQ: lanePeriodQ, offsetQ: laneOffsetQ,
+                           cycleQ, takeQ })
             : [];
-        // "Ghosts show what sounds": an ACTIVE window swaps the raw-take
-        // ghosts for echoes of the window segment (see echoReps).
-        if (win && win.active && reps.length) {
-            reps = echoReps({ reps, win, offsetQ, cycleQ, intrinsicQ });
+        if (heard) {
+            const src = [win.startQ / intrinsicQ, win.endQ / intrinsicQ];
+            reps = reps.map(r => Object.assign({}, r, { src }));
         }
         lanes.push(Object.assign(laneCommon(node, state), {
             kind: 'clip',
             depth,
-            periodQ,
-            intrinsicQ,
+            periodQ: lanePeriodQ,
+            // Heard view: the lane's material IS the window content, so
+            // its extent is the window length (drag/dim math included).
+            intrinsicQ: heard ? lanePeriodQ : intrinsicQ,
             reps,
             // The take tile's frame position: the CONTENT-frame origin of
             // this lane. Window brackets/dims/cursor (content-relative
@@ -668,8 +721,12 @@ export function deriveViewModel(state, opts = {}) {
             // (field 2026-07-16c). The take rep's startQ is the unclipped
             // tile start by construction (only tile ENDS get clipped).
             takeStartQ: (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
-            window: win,
-            windowPhase: node.windowActive ? (node.playhead || 0) : 0,
+            // Heard view: no brackets on the lane (the whole tile IS the
+            // window); the chip + latent edge grips open the edit view.
+            window: heard ? null : win,
+            windowChipQ: heard ? lanePeriodQ : 0,
+            windowPhase: heard ? 0
+                : node.windowActive ? (node.playhead || 0) : 0,
             armable: isArmable(node),
             // NOT isQDefiner here: the definer renders through the
             // provisional branch above. This branch gets the sole clip
