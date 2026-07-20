@@ -77,6 +77,7 @@ function indexNodes(nodes, map = new Map()) {
 }
 
 let lastNodesById = new Map(); // refreshed every poll, used by arm handlers
+let lastRootId = '';           // island root uuid (move-to-top target)
 
 /* ---------- record & arm (Q7: arm targets emptiness) ---------- */
 function clipsUnder(node, out = []) {
@@ -116,6 +117,15 @@ async function onArm(lane) {
     setLogLine(targets.length > 1
         ? `Recording ${targets.length} empty tracks (full ones just play)`
         : 'Recording');
+}
+
+function findStackIn(nodes, id) {
+    for (const n of nodes || []) {
+        if (n.id === id) return n;
+        const hit = findStackIn(n.nodes, id);
+        if (hit) return hit;
+    }
+    return null;
 }
 
 // A node is a root iff nothing in the index has it as a child
@@ -196,6 +206,7 @@ async function startPolling() {
             if (state) {
                 refreshPeaks(state.nodes, (state.perf && state.perf.sampleRate) || 44100);
                 lastNodesById = indexNodes(state.nodes);
+                lastRootId = state.id || '';
                 // Committed clips whose real waveform hasn't landed yet:
                 // composites must not blend their live meter peaks
                 const pendingFetch = new Set();
@@ -390,20 +401,72 @@ export function initApp() {
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
         onAddTrack: () => callNative('createNode', 'clip', ''),
-        // Drag-to-group (2026-07-19h): clip target → combine into a new
-        // group; group target → move the dragged track inside (append).
-        onDropLane: async (draggedId, target) => {
-            const dragged = lastNodesById.get(draggedId);
+        // Drag-to-group (2026-07-19h/j): clip target → combine into a
+        // new group; group target → move inside. A multi-drag (selected
+        // rails) applies to every dragged track.
+        onDropLane: async (ids, target) => {
             const tNode = lastNodesById.get(target.id);
-            if (!dragged || !tNode) return;
-            if (tNode.type === 'stack') {
-                await callNative('reorderNode', draggedId, target.id,
-                    (tNode.nodes || []).length);
-                setLogLine(`Moved "${dragged.name}" into "${tNode.name}"`);
-            } else {
-                await callNative('combineNodes', draggedId, target.id);
-                setLogLine(`Grouped "${dragged.name}" with "${tNode.name}" — rename the group on its rail`);
+            if (!tNode) return;
+            let stackId = tNode.type === 'stack' ? target.id : '';
+            let grouped = 0;
+            for (const id of ids) {
+                const node = lastNodesById.get(id);
+                if (!node) continue;
+                if (!stackId) {
+                    // First drop onto a clip: combine forms the group.
+                    stackId = await callNative('combineNodes', id, target.id);
+                    grouped++;
+                    continue;
+                }
+                const parent = await callNative('getGraphState').then(st =>
+                    (findStackIn(st.nodes, stackId) || {}));
+                await callNative('reorderNode', id, stackId,
+                    ((parent.nodes || []).length) || 99);
+                grouped++;
             }
+            const tName = tNode.name || 'group';
+            setLogLine(grouped > 1
+                ? `Grouped ${grouped} tracks with "${tName}"`
+                : tNode.type === 'stack'
+                    ? `Moved into "${tName}"`
+                    : `Grouped with "${tName}" — rename the group on its rail`);
+        },
+        // Floating bar: group the SELECTION in place (no outside target).
+        onGroupSelection: async ids => {
+            if (ids.length < 2) return;
+            // combine(dragged, target): the new stack lands at the
+            // TARGET's slot — use the first-selected as the anchor.
+            const stackId = await callNative('combineNodes', ids[1], ids[0]);
+            for (let i = 2; i < ids.length; i++) {
+                await callNative('reorderNode', ids[i], stackId, 99);
+            }
+            setLogLine(`Grouped ${ids.length} tracks — rename the group on its rail`);
+        },
+        // Drag-out: back to the top level (the island root).
+        onMoveToTop: async ids => {
+            if (!lastRootId) return;
+            for (const id of ids) {
+                await callNative('reorderNode', id, lastRootId, 99);
+            }
+            setLogLine(ids.length > 1
+                ? `Moved ${ids.length} tracks to the top level`
+                : 'Moved to the top level');
+        },
+        // Ungroup: children move up to the group's slot; the shell goes.
+        onUngroup: async groupId => {
+            const group = lastNodesById.get(groupId);
+            if (!group) return;
+            const parentNode = findParentIn(group);
+            const parentId = parentNode ? parentNode.id : lastRootId;
+            const siblings = parentNode
+                ? (parentNode.nodes || [])
+                : [...lastNodesById.values()].filter(n => !findParentIn(n));
+            let idx = Math.max(0, siblings.indexOf(group));
+            for (const child of [...(group.nodes || [])]) {
+                await callNative('reorderNode', child.id, parentId, idx++);
+            }
+            await callNative('deleteNode', groupId);
+            setLogLine(`Ungrouped "${group.name}" — tracks moved up (⌘Z steps back through it)`);
         },
         onAddClip: groupId => callNative('createNode', 'clip', groupId),
         onDelete: async id => {

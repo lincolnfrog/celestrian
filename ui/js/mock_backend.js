@@ -392,17 +392,19 @@ function reorderNode(nodeId, newParentId, newIndex) {
     // Remove from current parent
     removeNodeFromParent(nodeId);
 
-    // Add to new parent at specified index
+    // Add to new parent at specified index. The ROOT is a valid parent
+    // (engine parity: Move to the island root = top level) — and an
+    // unknown parent must never LOSE the node.
     const newParent = findNode(newParentId);
     if (newParent && newParent.type === 'stack') {
         newParent.nodes = newParent.nodes || [];
-
-        // Clamp index to valid range
         const index = Math.max(0, Math.min(newIndex, newParent.nodes.length));
-
-        // Insert at specified index
         newParent.nodes.splice(index, 0, node);
         console.log('[MockBackend] Reordered node:', nodeId, 'to', newParentId, 'at index', index);
+    } else {
+        const index = Math.max(0, Math.min(newIndex, state.nodes.length));
+        state.nodes.splice(index, 0, node);
+        console.log('[MockBackend] Reordered node:', nodeId, 'to TOP LEVEL at', index);
     }
 }
 
@@ -1018,6 +1020,9 @@ export function getState() {
     advanceTransport();
 
     return {
+        // Root identity (engine parity: the focused root's uuid) — the
+        // move-to-top target for drag-out.
+        id: 'mock-root',
         isPlaying: state.isPlaying,
         masterPos: viewMasterPos(),
         // Island epoch (mirrors getGraphState): the UI's frame origin.

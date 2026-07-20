@@ -81,6 +81,16 @@ whichever instrument wants to start, Q is born, build.
   out (drop onto a track inside a group combines in place). Groups
   keep their internal add-track rows. The transport carries no
   creation or record buttons — it is transport + project identity.
+- **Selection + the grouping verbs' inverses** (2026-07-19j): click a
+  rail to select (⌘-click adds, Escape/canvas-click clears); ≥2
+  selected raises a floating "Group N tracks" bar (combine at the
+  first-selected's slot); dragging a selected rail carries the whole
+  selection. DRAG-OUT: while dragging, the ＋ Track row becomes the
+  "move to top level" target — the same physical language, inverted.
+  UNGROUP: a hover control on group rails moves the children up to the
+  group's slot and removes the shell. Composed verbs step through ⌘Z
+  one edit at a time (single-edit undo for composites is a recorded
+  follow-up).
 - No onboarding copy in the product. The empty state (only reachable
   by deleting every track) is one dry line.
 

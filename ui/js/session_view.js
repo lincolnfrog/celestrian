@@ -63,6 +63,52 @@ export function initSessionView(callbacks) {
     document.getElementById('create-track-btn')
         .addEventListener('click', () => cb.onAddTrack());
 
+    // Selection: Escape or a click on empty canvas clears; the floating
+    // bar groups the selection in place.
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape') clearSelection();
+    });
+    document.getElementById('session').addEventListener('click', e => {
+        if (e.target.id === 'session' || e.target.id === 'grid-area' ||
+            e.target.id === 'lanes') clearSelection();
+    });
+    const selBar = document.getElementById('selection-bar');
+    if (selBar) {
+        selBar.querySelector('.sel-group').addEventListener('click', () => {
+            const ids = [...selection];
+            clearSelection();
+            cb.onGroupSelection(ids);
+        });
+        selBar.querySelector('.sel-clear')
+            .addEventListener('click', clearSelection);
+    }
+
+    // The ＋ Track row doubles as the DRAG-OUT target: drop a nested
+    // track here to move it to the top level (the inverse of
+    // drag-onto-to-group, in the same physical language).
+    const createRow = document.getElementById('create-row');
+    const trackBtn = document.getElementById('create-track-btn');
+    createRow.addEventListener('dragover', e => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        createRow.classList.add('drop-target');
+        trackBtn.textContent = '⤒ Move to top level';
+    });
+    createRow.addEventListener('dragleave', () => {
+        createRow.classList.remove('drop-target');
+        trackBtn.textContent = '＋ Track';
+    });
+    createRow.addEventListener('drop', e => {
+        e.preventDefault();
+        createRow.classList.remove('drop-target');
+        trackBtn.textContent = '＋ Track';
+        let ids;
+        try { ids = JSON.parse(e.dataTransfer.getData('text/plain')); }
+        catch { return; }
+        if (!Array.isArray(ids)) ids = [ids];
+        if (ids.length) { clearSelection(); cb.onMoveToTop(ids); }
+    });
+
     // Input menus dismiss on outside press or Escape
     document.addEventListener('pointerdown', e => {
         if (!e.target.closest('.input-menu') && !e.target.closest('.input-btn')) {
@@ -137,9 +183,17 @@ function buildLane(lane) {
     // moves inside. Nested groups fall out (drop onto a track that
     // lives in a group combines in place).
     rail.draggable = true;
+    // Click = select (buttons and inputs keep their own verbs).
+    rail.addEventListener('click', e => {
+        if (e.target.closest('button, input')) return;
+        toggleSelect(row, e.metaKey || e.ctrlKey || e.shiftKey);
+    });
     rail.addEventListener('dragstart', e => {
         if (row._renaming) { e.preventDefault(); return; }
-        e.dataTransfer.setData('text/plain', row._lane.id);
+        // Dragging a SELECTED rail carries the whole selection.
+        const ids = selection.has(row._lane.id) && selection.size > 1
+            ? [...selection] : [row._lane.id];
+        e.dataTransfer.setData('text/plain', JSON.stringify(ids));
         e.dataTransfer.effectAllowed = 'move';
         rail.classList.add('dragging');
     });
@@ -153,10 +207,15 @@ function buildLane(lane) {
     rail.addEventListener('drop', e => {
         e.preventDefault();
         rail.classList.remove('drop-target');
-        const draggedId = e.dataTransfer.getData('text/plain');
+        let ids;
+        try { ids = JSON.parse(e.dataTransfer.getData('text/plain')); }
+        catch { return; }
+        if (!Array.isArray(ids)) ids = [ids];
         const target = row._lane;
-        if (!draggedId || draggedId === target.id) return;
-        cb.onDropLane(draggedId, target);
+        ids = ids.filter(id => id && id !== target.id);
+        if (!ids.length) return;
+        clearSelection();
+        cb.onDropLane(ids, target);
     });
 
     const head = document.createElement('div');
@@ -188,6 +247,16 @@ function buildLane(lane) {
         'handles to trim. Locks when you record another track.';
     tempo.style.display = 'none';
     head.appendChild(tempo);
+    if (lane.kind === 'group') {
+        // Ungroup: children move up to this group's slot; the shell
+        // deletes. The inverse of drag-to-group, one hover away.
+        const ungroup = document.createElement('button');
+        ungroup.className = 'rail-btn ungroup-btn';
+        ungroup.textContent = '⤒';
+        ungroup.title = 'Ungroup — move the tracks up and remove the group';
+        ungroup.addEventListener('click', () => cb.onUngroup(lane.id));
+        head.appendChild(ungroup);
+    }
     // Delete — top-right of the rail (card-close position); the flexing
     // name yields the room, so it never overflows the button row. No
     // confirm: undo is the safety net (⌘Z). Disabled mid-take (the engine
@@ -1025,11 +1094,61 @@ function lanePeaks(lane, aux) {
     });
 }
 
+/* ---------- selection (view state) ----------
+ * Click a rail to select it (⌘/shift-click adds, Escape or a canvas
+ * click clears). Selection feeds the two bulk verbs: the floating
+ * "Group N tracks" bar, and multi-drag (dragging a selected rail
+ * carries the whole selection).
+ */
+const selection = new Set();
+
+function updateSelectionBar() {
+    const bar = document.getElementById('selection-bar');
+    if (!bar) return;
+    const n = selection.size;
+    if (n < 2) { bar.classList.remove('open'); return; }
+    bar.classList.add('open');
+    bar.querySelector('.sel-count').textContent =
+        `${n} tracks selected`;
+}
+
+function clearSelection() {
+    selection.clear();
+    document.querySelectorAll('.lane-rail.selected')
+        .forEach(el => el.classList.remove('selected'));
+    updateSelectionBar();
+}
+
+function toggleSelect(row, additive) {
+    const id = row._lane.id;
+    if (!additive) {
+        const wasSole = selection.size === 1 && selection.has(id);
+        clearSelection();
+        if (wasSole) return;  // plain click on the sole selection clears
+        selection.add(id);
+    } else if (selection.has(id)) {
+        selection.delete(id);
+    } else {
+        selection.add(id);
+    }
+    document.querySelectorAll('.lane').forEach(r => {
+        const rail = r.querySelector('.lane-rail');
+        if (rail && r._lane) {
+            rail.classList.toggle('selected', selection.has(r._lane.id));
+        }
+    });
+    updateSelectionBar();
+}
+
 /* ---------- rail state ---------- */
 function patchRail(row, lane) {
     if (lane.kind === 'add') return; // affordance row: nothing to patch
     if (lane.kind === 'fx') return patchFxRow(row, lane);
     row._lane = lane; // current lane snapshot for click handlers
+    {
+        const railEl = row.querySelector('.lane-rail');
+        if (railEl) railEl.classList.toggle('selected', selection.has(lane.id));
+    }
     row.dataset.depth = String(Math.min(lane.depth, 2));
     // Never patch the name over an open rename editor (or its optimistic
     // value — the backend echoes the new name on the next poll anyway)
