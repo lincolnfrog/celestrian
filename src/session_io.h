@@ -45,6 +45,24 @@ struct LoadedSession {
   bool root_muted = false;
   juce::var root_effects;  // fx blob for the root stack (may be void)
   std::vector<std::unique_ptr<AudioNode>> children;
+  juce::String display_name;  // project display name (docs/projects.md)
+  juce::String created;       // creation stamp, echoed verbatim
+};
+
+/** Project-model options (docs/projects.md). */
+struct SaveOptions {
+  juce::String display_name;  // stored as "name" — rename never moves dirs
+  juce::String created;       // stored as "created"
+  // Template save: keep STRUCTURE (names, order, inputs, mute, fx) and
+  // drop every PERFORMANCE fact (audio, durations, origins, windows,
+  // Q/epoch). A template is a project with no performances — and since
+  // Q is born from the first take, it is pre-Q by construction.
+  bool strip_performances = false;
+  // Mirror save: a committed take's audio is immutable (no overdub), so
+  // skip rewriting a wav whose on-disk length already matches the
+  // clip's duration. (A Q13 lock-collapse CHANGES the duration, so the
+  // mismatch triggers the rewrite exactly when needed.)
+  bool incremental = false;
 };
 
 /**
@@ -53,7 +71,16 @@ struct LoadedSession {
  * be recreated at the right size on load. Returns false on I/O failure.
  */
 bool save(const StackNode &root, double device_sample_rate,
-          const juce::File &dir);
+          const juce::File &dir, const SaveOptions &opts = {});
+
+/** Peek a bundle's identity without loading it (recents listings,
+ * post-load name recovery). Cheap: parses session.json only. */
+struct BundleInfo {
+  bool ok = false;
+  juce::String name;
+  juce::String created;
+};
+BundleInfo readBundleInfo(const juce::File &dir);
 
 /** Parse a bundle. `ok` is false on any failure (missing/invalid json). */
 LoadedSession load(const juce::File &dir, double device_sample_rate);

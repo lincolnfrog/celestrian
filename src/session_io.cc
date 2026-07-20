@@ -38,7 +38,7 @@ juce::var effectsBlob(const AudioNode &node) {
 }
 
 void writeClipWav(const ClipNode &clip, int64_t duration,
-                  const juce::File &audioDir) {
+                  const juce::File &audioDir, bool incremental) {
   const auto &buf = clip.getAudioBuffer();
   // Content base (Q13 lock-collapse): save the COMMITTED content —
   // [base, base + duration). A collapsed take saves as the perfect
@@ -49,6 +49,14 @@ void writeClipWav(const ClipNode &clip, int64_t duration,
   if (n <= 0) return;
   audioDir.createDirectory();
   auto file = audioDir.getChildFile(clip.getUuid() + ".wav");
+  if (incremental && file.existsAsFile()) {
+    // Committed audio is immutable; a matching length means current.
+    // Duration changes (lock-collapse / uncollapse) mismatch → rewrite.
+    juce::WavAudioFormat probe;
+    std::unique_ptr<juce::AudioFormatReader> r(
+        probe.createReaderFor(file.createInputStream().release(), true));
+    if (r && r->lengthInSamples == n) return;
+  }
   file.deleteFile();
 
   juce::WavAudioFormat fmt;
@@ -75,18 +83,20 @@ bool readClipWav(const juce::File &file, juce::AudioBuffer<float> &out) {
 }
 
 juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
-                        const juce::File &audioDir) {
+                        const juce::File &audioDir, const SaveOptions &opts) {
   auto *o = new juce::DynamicObject();
   o->setProperty("id", node.getUuid());
   o->setProperty("name", node.getName());
   o->setProperty("type", node.getNodeTypeString());
   o->setProperty("muted", (bool)node.is_muted.load());
-  o->setProperty("loopBypassed", node.isLoopWindowBypassed());
+  o->setProperty("loopBypassed",
+                 opts.strip_performances ? false : node.isLoopWindowBypassed());
   // Window segments are musical (QTime): stored device-independently.
-  o->setProperty("windowStartQ",
-                 qvar(timing::fromSamples(node.getLoopStart(), q)));
-  o->setProperty("windowEndQ",
-                 qvar(timing::fromSamples(node.getLoopEnd(), q)));
+  // Templates strip them (a window is a fact about a performance).
+  const int64_t ws = opts.strip_performances ? 0 : node.getLoopStart();
+  const int64_t we = opts.strip_performances ? 0 : node.getLoopEnd();
+  o->setProperty("windowStartQ", qvar(timing::fromSamples(ws, q)));
+  o->setProperty("windowEndQ", qvar(timing::fromSamples(we, q)));
   o->setProperty("effects", effectsBlob(node));
 
   if (node.getNodeType() == NodeType::Clip) {
@@ -95,20 +105,25 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
     const int64_t duration = node.duration_samples.load();
     o->setProperty("inputChannel", clip.getInputChannel());
     // origin as an OFFSET FROM EPOCH, period, contextCycle — all musical.
-    o->setProperty("originQ", qvar(timing::originQ(origin, epoch, q)));
-    o->setProperty("periodQ", qvar(timing::periodQ(duration, q)));
+    // Templates strip performances: the clip persists as a named, wired,
+    // EMPTY track (docs/projects.md).
+    const int64_t sOrigin = opts.strip_performances ? 0 : origin;
+    const int64_t sDur = opts.strip_performances ? 0 : duration;
+    o->setProperty("originQ", qvar(timing::originQ(sOrigin, epoch, q)));
+    o->setProperty("periodQ", qvar(timing::periodQ(sDur, q)));
     o->setProperty("contextCycleQ",
-                   qvar(timing::fromSamples(clip.contextCycle(), q)));
-    const bool hasAudio = duration > 0;
+                   qvar(timing::fromSamples(
+                       opts.strip_performances ? 0 : clip.contextCycle(), q)));
+    const bool hasAudio = sDur > 0;
     o->setProperty("hasAudio", hasAudio);
-    if (hasAudio) writeClipWav(clip, duration, audioDir);
+    if (hasAudio) writeClipWav(clip, duration, audioDir, opts.incremental);
   } else {
     const auto &stack = static_cast<const StackNode &>(node);
     o->setProperty("x", node.x_pos.load());
     o->setProperty("y", node.y_pos.load());
     juce::Array<juce::var> kids;
     for (const auto &child : stack.ownedChildren())
-      kids.add(serializeNode(*child, q, epoch, audioDir));
+      kids.add(serializeNode(*child, q, epoch, audioDir, opts));
     o->setProperty("nodes", kids);
   }
   return juce::var(o);
@@ -167,6 +182,19 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
 
 // getMetadata()'s param keys match setParam()'s keys exactly, so restore
 // is generic: for each fx, replay enabled + every numeric field.
+BundleInfo readBundleInfo(const juce::File &dir) {
+  BundleInfo out;
+  const auto jf = dir.getChildFile("session.json");
+  if (!jf.existsAsFile()) return out;
+  const auto root = juce::JSON::parse(jf.loadFileAsString());
+  auto *o = root.getDynamicObject();
+  if (!o) return out;
+  out.ok = true;
+  out.name = o->getProperty("name").toString();
+  out.created = o->getProperty("created").toString();
+  return out;
+}
+
 void applyEffects(AudioNode &node, const juce::var &blob, double sr) {
   if (!blob.isObject()) return;
   node.effects().prepare(sr);
@@ -185,16 +213,20 @@ void applyEffects(AudioNode &node, const juce::var &blob, double sr) {
 }
 
 bool save(const StackNode &root, double device_sample_rate,
-          const juce::File &dir) {
+          const juce::File &dir, const SaveOptions &opts) {
   dir.createDirectory();
   const auto audioDir = dir.getChildFile("audio");
   audioDir.createDirectory();
 
-  const int64_t q = root.getQuantum();
-  const int64_t epoch = root.getEpoch();
+  // Templates are pre-Q by construction (no performances → no grid).
+  const int64_t q = opts.strip_performances ? 0 : root.getQuantum();
+  const int64_t epoch = opts.strip_performances ? 0 : root.getEpoch();
 
   auto *top = new juce::DynamicObject();
   top->setProperty("version", 1);
+  if (opts.display_name.isNotEmpty())
+    top->setProperty("name", opts.display_name);
+  if (opts.created.isNotEmpty()) top->setProperty("created", opts.created);
   top->setProperty("sampleRate", device_sample_rate);
   top->setProperty("qSamples", (double)q);
   top->setProperty("epoch", (double)epoch);
@@ -203,7 +235,7 @@ bool save(const StackNode &root, double device_sample_rate,
 
   juce::Array<juce::var> nodes;
   for (const auto &child : root.ownedChildren())
-    nodes.add(serializeNode(*child, q, epoch, audioDir));
+    nodes.add(serializeNode(*child, q, epoch, audioDir, opts));
   top->setProperty("nodes", nodes);
 
   const auto json = juce::JSON::toString(juce::var(top), true);
@@ -226,6 +258,8 @@ LoadedSession load(const juce::File &dir, double device_sample_rate) {
                         : device_sample_rate;
   out.root_muted = (bool)o->getProperty("rootMuted");
   out.root_effects = o->getProperty("rootEffects");
+  out.display_name = o->getProperty("name").toString();
+  out.created = o->getProperty("created").toString();
 
   const auto audioDir = dir.getChildFile("audio");
   if (auto *nodes = o->getProperty("nodes").getArray()) {

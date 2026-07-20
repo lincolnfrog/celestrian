@@ -51,6 +51,20 @@ export const BRIDGE_METHODS = [
     { name: 'saveSession', params: ['path?'], returns: 'true on success' },
     { name: 'loadSession', params: ['path?'], returns: 'true on success' },
 
+    // The project model (docs/projects.md): a project is a FOLDER named
+    // YYYYMMDD-NN (the ID — renames never move it), BORN at the first
+    // committed take, continuously MIRRORED after. A template is a
+    // project with no performances (pre-Q by construction).
+    { name: 'getProjectInfo', params: [], returns: 'JSON {id, name, born}' },
+    { name: 'renameProject', params: ['name'] },
+    { name: 'saveProjectNow', params: [], returns: 'true on success' },
+    { name: 'listTemplates', params: [], returns: 'JSON [{id, name, path}]' },
+    { name: 'listRecentProjects', params: [], returns: 'JSON [{id, name, path}]' },
+    { name: 'newProjectFromTemplate', params: ['name'], returns: 'true on success' },
+    { name: 'openProjectPath', params: ['path'], returns: 'true on success' },
+    { name: 'saveAsTemplate', params: ['name'], returns: 'true on success' },
+    { name: 'duplicateProject', params: [], returns: 'new project id or ""' },
+
     // Per-node audio state
     { name: 'togglePlay', params: ['uuid'] },
     { name: 'toggleSolo', params: ['uuid'] },

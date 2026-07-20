@@ -27,6 +27,8 @@
             <span id="position-readout">—</span>
             <span id="q-info"></span>
             <span class="spacer"></span>
+            <span id="project-name" class="mono"
+                  title="Project (click to rename — the folder never moves)"></span>
             <button id="add-stack-btn">+ New Stack</button>
         </div>
 
@@ -40,7 +42,10 @@
                 <div id="lanes"></div>
                 <div id="playhead"></div>
             </div>
-            <div id="empty-state">No takes yet — hit record, or + New Stack to build a kit.</div>
+            <div id="empty-state">
+                <div id="empty-msg">No takes yet — hit record, or + New Stack to build a kit.</div>
+                <div id="empty-projects"></div>
+            </div>
         </div>
 
         <!-- STATUS STRIP -->

@@ -6,6 +6,21 @@
 #include <cstring>
 #include <vector>
 
+namespace {
+juce::String projectInfosToJson(
+    const std::vector<celestrian::ProjectManager::Info> &infos) {
+  juce::Array<juce::var> arr;
+  for (const auto &i : infos) {
+    auto *o = new juce::DynamicObject();
+    o->setProperty("id", i.id);
+    o->setProperty("name", i.name);
+    o->setProperty("path", i.path);
+    arr.add(juce::var(o));
+  }
+  return juce::JSON::toString(juce::var(arr), true);
+}
+}  // namespace
+
 MainComponent::MainComponent()
     : web_browser(
           juce::WebBrowserComponent::Options{}
@@ -132,6 +147,87 @@ MainComponent::MainComponent()
                       return;
                     }
                     chooseSessionPath(false, std::move(completion));
+                  })
+              .withNativeFunction(
+                  "getProjectInfo",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    auto *o = new juce::DynamicObject();
+                    o->setProperty("id", project_manager_.id());
+                    o->setProperty("name", project_manager_.displayName());
+                    o->setProperty("born", project_manager_.born());
+                    completion(juce::JSON::toString(juce::var(o), true));
+                  })
+              .withNativeFunction(
+                  "renameProject",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    project_manager_.rename(
+                        args.size() > 0 ? args[0].toString() : "");
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "saveProjectNow",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    completion(project_manager_.saveNow());
+                  })
+              .withNativeFunction(
+                  "listTemplates",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    completion(projectInfosToJson(
+                        project_manager_.listTemplates()));
+                  })
+              .withNativeFunction(
+                  "listRecentProjects",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    completion(projectInfosToJson(
+                        project_manager_.listRecents(10)));
+                  })
+              .withNativeFunction(
+                  "newProjectFromTemplate",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    completion(project_manager_.newFromTemplate(
+                        args.size() > 0 ? args[0].toString() : ""));
+                  })
+              .withNativeFunction(
+                  "openProjectPath",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    completion(project_manager_.openProject(juce::File(
+                        args.size() > 0 ? args[0].toString() : "")));
+                  })
+              .withNativeFunction(
+                  "saveAsTemplate",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    completion(project_manager_.saveAsTemplate(
+                        args.size() > 0 ? args[0].toString() : ""));
+                  })
+              .withNativeFunction(
+                  "duplicateProject",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    (void)args;
+                    const auto dest = project_manager_.duplicateProject();
+                    completion(dest == juce::File() ? juce::String("")
+                                                    : dest.getFileName());
                   })
               .withNativeFunction(
                   "redo",
@@ -337,6 +433,9 @@ MainComponent::MainComponent()
   web_browser.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());
 
   setSize(800, 600);
+
+  // Project heartbeat (docs/projects.md): birth + mirror every 3 s.
+  startTimer(3000);
 }
 
 MainComponent::~MainComponent() {}
@@ -369,7 +468,11 @@ void MainComponent::chooseSessionPath(
       });
 }
 
-void MainComponent::timerCallback() {}
+void MainComponent::timerCallback() {
+  // Project heartbeat (docs/projects.md): births the project at the
+  // first committed take, then keeps the folder mirroring the session.
+  project_manager_.tick();
+}
 void MainComponent::paint(juce::Graphics &g) {
   g.fillAll(
       getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));

@@ -229,6 +229,20 @@ with kernel.md:
     in the mock preview. The Q12 engine migration landed SEPARATELY (its
     own commit: the D-T3 type-discipline boundary — metadata now publishes
     device-independent QTime, pinned by `qtime_origin_cases` goldens).
+  - [x] **Projects (docs/projects.md)** ✅ done 2026-07-19f
+    (owner-ratified model): a project is a dated FOLDER
+    (`YYYYMMDD-NN` = ID; rename never moves it; loading never reads
+    the folder name → portable), BORN at the first committed take,
+    continuously MIRRORED after (incremental take wavs — immutable
+    post-commit, lock-collapse triggers the one legit rewrite; crash
+    loses ≤ the take in flight). Templates = performance-stripped
+    projects (pre-Q by construction) with save-as/new-from; recents;
+    duplicate-to-next-serial (the -02 habit). `ProjectManager` +
+    session_io SaveOptions + 9 bridge methods (3-place) + empty-state
+    template/recents UI + header rename. Pinned by
+    project_manager_tests.cc; verified in the mock preview. Deferred:
+    orphan pruning, device-aware input fallback, auto-open default
+    template, cross-rate load.
   - [x] **Step 3: whole-graph immutable snapshot** ✅ done 2026-07-19d
     (core; see carve-outs): `src/graph_snapshot.h` — flat DFS arena
     (entries + packed child spans), built on the message thread after

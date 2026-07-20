@@ -46,6 +46,7 @@ target_sources(Celestrian PRIVATE
     src/clip_node.cc
     src/stack_node.cc
     src/session_io.cc
+    src/project_manager.cc
     src/dsp/effects.cc
 )
 
@@ -107,6 +108,7 @@ target_sources(CelestrianTests PRIVATE
     tests/qtime_lock_tests.cc
     tests/graph_snapshot_tests.cc
     tests/render_purity_tests.cc
+    tests/project_manager_tests.cc
     tests/session_io_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
@@ -115,6 +117,7 @@ target_sources(CelestrianTests PRIVATE
     src/stack_node.cc
     src/audio_engine.cc
     src/session_io.cc
+    src/project_manager.cc
     src/dsp/effects.cc
 )
 

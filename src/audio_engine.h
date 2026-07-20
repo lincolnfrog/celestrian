@@ -144,6 +144,18 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // sees no pointer race.
   bool saveSession(const juce::String &path);
   bool loadSession(const juce::String &path);
+  /** Project-model save (docs/projects.md): options carry display name
+   * / template-strip / incremental-mirror. Message thread. */
+  bool saveSessionTo(const juce::File &dir,
+                     const celestrian::session_io::SaveOptions &opts) {
+    return celestrian::session_io::save(*root_node, cached_sample_rate_.load(),
+                                        dir, opts);
+  }
+  bool hasActiveTake() const { return root_node->hasActiveTake(); }
+  /** Number of COMMITTED clips in the island (ClipNode, duration>0),
+   * recursive. Drives provisional-Q mutability (Q13 non-sticky) and the
+   * project-birth trigger (ProjectManager). Message thread. */
+  int islandCommittedClipCount() const;
 
   /**
    * Toggles a stack's loop window between active and bypassed
@@ -244,10 +256,6 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * top-level unknown). */
   celestrian::StackNode *parentOf(celestrian::AudioNode *node,
                                   int *index_out) const;
-  /** Number of COMMITTED clips in the island (ClipNode, duration>0),
-   * recursive. Drives provisional-Q mutability: Q is re-establishable
-   * while this is 1, locked while ≥2, reverts at 0 (Q13 non-sticky). */
-  int islandCommittedClipCount() const;
   /** Frees any subtree an about-to-be-dropped edit owns via the reclaimer
    * (never inline — an in-flight callback may still read a just-detached
    * node). */

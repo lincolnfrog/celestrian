@@ -617,6 +617,38 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     font-size: 1rem;
     display: none;
 }
+/* Templates + recents on the empty state (docs/projects.md): the boot
+   ritual is "load template, play the seed" — so templates lead. */
+#empty-projects { margin-top: 24px; }
+#empty-projects .proj-row { margin-top: 10px; }
+#empty-projects .proj-label {
+    font-size: 0.75rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.6;
+    margin-right: 10px;
+}
+#empty-projects button {
+    margin: 2px 4px;
+    padding: 6px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: none;
+    color: var(--text);
+    cursor: pointer;
+}
+#empty-projects button:hover { border-color: var(--tape); color: var(--tape); }
+
+/* Project name in the transport bar: quiet identity, click to rename
+   (display name only — the folder/id never moves). */
+#project-name {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    margin-right: 12px;
+    cursor: text;
+}
+#project-name:hover { color: var(--text); }
+#project-name:empty { display: none; }
 
 /* ===== Status strip ===== */
 #status-strip {

@@ -255,6 +255,117 @@ async function startPolling() {
 }
 
 /* ---------- init ---------- */
+/* ---------- The project model (docs/projects.md) ----------
+ * A project is a dated folder BORN at the first committed take and
+ * continuously mirrored after. The UI's jobs: show the display name
+ * (click to rename — the folder never moves), announce the birth, and
+ * offer templates/recents on the empty state.
+ */
+let projectInfo = { id: '', name: '', born: false };
+
+function refreshProjectInfo(announceSave = false) {
+    return callNative('getProjectInfo').then(raw => {
+        const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const wasBorn = projectInfo.born;
+        projectInfo = info;
+        const el = document.getElementById('project-name');
+        if (el && !el._editing) {
+            el.textContent = info.born ? info.name : '';
+            el.title = info.born
+                ? `${info.id} — click to rename (the folder never moves)`
+                : '';
+        }
+        if (!wasBorn && info.born) {
+            setLogLine(`Project ${info.id} created — mirroring to disk`);
+            renderEmptyProjects();  // a born project joins the recents
+        } else if (announceSave && info.born) {
+            setLogLine(`Saved ${info.name}`);
+        }
+    }).catch(() => {});
+}
+
+function renameProjectInline() {
+    const el = document.getElementById('project-name');
+    if (!el || !projectInfo.born || el._editing) return;
+    el._editing = true;
+    const input = document.createElement('input');
+    input.value = projectInfo.name;
+    input.className = 'mono';
+    input.style.cssText =
+        'background:none;border:1px solid var(--line);border-radius:6px;' +
+        'color:var(--text);font-size:0.8rem;padding:2px 6px;width:14ch;';
+    el.textContent = '';
+    el.appendChild(input);
+    input.focus();
+    input.select();
+    const done = commit => {
+        el._editing = false;
+        input.remove();
+        if (commit && input.value.trim()) {
+            callNative('renameProject', input.value.trim())
+                .then(() => refreshProjectInfo())
+                .then(() => setLogLine('Project renamed (folder unchanged)'));
+        } else {
+            refreshProjectInfo();
+        }
+    };
+    input.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') done(true);
+        if (ev.key === 'Escape') done(false);
+        ev.stopPropagation();
+    });
+    input.addEventListener('blur', () => done(true));
+}
+
+function renderEmptyProjects() {
+    const host = document.getElementById('empty-projects');
+    if (!host) return;
+    Promise.all([
+        callNative('listTemplates'),
+        callNative('listRecentProjects'),
+    ]).then(([tRaw, rRaw]) => {
+        const templates = typeof tRaw === 'string' ? JSON.parse(tRaw) : tRaw;
+        const recents = typeof rRaw === 'string' ? JSON.parse(rRaw) : rRaw;
+        host.textContent = '';
+        const row = (label, items, onPick) => {
+            if (!items || !items.length) return;
+            const div = document.createElement('div');
+            div.className = 'proj-row';
+            const span = document.createElement('span');
+            span.className = 'proj-label';
+            span.textContent = label;
+            div.appendChild(span);
+            items.forEach(item => {
+                const b = document.createElement('button');
+                b.textContent = item.name;
+                if (item.id !== item.name) b.title = item.id;
+                b.addEventListener('click', () => onPick(item));
+                div.appendChild(b);
+            });
+            host.appendChild(div);
+        };
+        row('Start from template', templates, t =>
+            callNative('newProjectFromTemplate', t.id).then(ok => {
+                setLogLine(ok ? `Template "${t.name}" loaded — play the seed`
+                              : 'Template failed to load');
+                refreshProjectInfo();
+            }));
+        row('Recent projects', recents.slice(0, 6), r =>
+            callNative('openProjectPath', r.path).then(ok => {
+                setLogLine(ok ? `Opened ${r.name}` : 'Open failed');
+                refreshProjectInfo();
+            }));
+    }).catch(() => {});
+}
+
+function initProjectUI() {
+    const el = document.getElementById('project-name');
+    if (el) el.addEventListener('click', renameProjectInline);
+    renderEmptyProjects();
+    refreshProjectInfo();
+    setInterval(refreshProjectInfo, 2000);  // birth/rename follow the mirror
+}
+
 export function initApp() {
     initSessionView({
         onTogglePlay: () => callNative('togglePlayback'),
@@ -342,12 +453,12 @@ export function initApp() {
             setLogLine('Redo');
             return;
         }
-        // Save / Load a session bundle (empty path → native chooser in the
-        // desktop build; the mock keeps an in-memory bundle).
+        // ⌘S = checkpoint the PROJECT (docs/projects.md): the mirror
+        // already saves continuously; an explicit save births an unborn
+        // project (intent enough) and stamps the folder now.
         if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
             e.preventDefault();
-            callNative('saveSession', '').then(ok =>
-                setLogLine(ok ? 'Session saved' : 'Save cancelled'));
+            callNative('saveProjectNow').then(() => refreshProjectInfo(true));
             return;
         }
         if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || e.key === 'O')) {
@@ -357,6 +468,7 @@ export function initApp() {
         }
     });
 
+    initProjectUI();
     startPolling();
 }
 
