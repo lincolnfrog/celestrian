@@ -67,8 +67,10 @@ int64_t StackNode::getIntrinsicDuration() const {
 }
 
 int64_t StackNode::getEffectivePeriod() const {
-  // E-C: an active window on this stack IS the period (base class).
-  if (isLoopWindowActive()) return getLoopEnd() - getLoopStart();
+  // E-C: an active map on this stack IS the period (base class).
+  if (const timing::TimeMap map = activeTimeMap(); map.active()) {
+    return map.period();
+  }
   // Otherwise LCM of children's EFFECTIVE periods — windowed children
   // contribute their window length, so nested windows shorten the
   // audible cycle. Same shape as getIntrinsicDuration, one recursion
@@ -198,34 +200,37 @@ std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
 }
 
 ProcessContext StackNode::childContext(const ProcessContext &context) const {
-  // === LOOP WINDOW AS TIME-MAP (time_maps.md phase 1) ===
-  // The window applies iff it is ACTIVE (valid + not bypassed) —
+  // === THE TIME-MAP (time_maps.md §2, reified) ===
+  // The map applies iff it is ACTIVE (valid + not bypassed) —
   // independent of expansion (I6b: collapse is purely visual). Phase is
-  // a pure function of the received clock: (t − cycle_epoch) mod len.
+  // a pure function of the received clock:
+  // walk_segments((t − cycle_epoch) mod period).
   // No private counter, no reset-on-collapse, fully deterministic.
   // Shared by BOTH §2.3 phases so control decisions and rendering see
   // the SAME mapped child clock.
   ProcessContext child_context = context;
 
-  const int64_t window_start = loop_start_samples.load();
-  const int64_t window_end = loop_end_samples.load();
-  const bool window_active =
-      !loop_window_bypassed_.load() && window_end > window_start;
+  const timing::TimeMap map = activeTimeMap();
+  if (map.active()) {
+    const int64_t rel = context.master_pos - context.cycle_epoch;
 
-  if (window_active) {
-    const int64_t len = window_end - window_start;
-    int64_t rel = context.master_pos - context.cycle_epoch;
-    rel = ((rel % len) + len) % len;
-
-    // The window selects VIEW positions [start, end) of the received
-    // cycle, so the mapped time stays IN THE RECEIVED FRAME:
-    // t_child = epoch + start + rel. Children align by their ABSOLUTE
-    // origins — dropping the epoch here shifted every child whose
-    // origin ≢ 0 (mod duration): field bug 2026-07-09, "2Q clip loops
-    // its Q2 when the window selects Q1".
-    child_context.master_pos = context.cycle_epoch + window_start + rel;
-    // For nested maps: the child frame's cycle top is the window top.
-    child_context.cycle_epoch = context.cycle_epoch + window_start;
+    // The map selects VIEW positions of the received cycle, so the
+    // mapped time stays IN THE RECEIVED FRAME:
+    // t_child = epoch + mapOffset(rel). Children align by their
+    // ABSOLUTE origins — dropping the epoch here shifted every child
+    // whose origin ≢ 0 (mod duration): field bug 2026-07-09, "2Q clip
+    // loops its Q2 when the window selects Q1". (mapOffset folds rel
+    // by the map period, negatives included.)
+    child_context.master_pos = context.cycle_epoch + map.mapOffset(rel);
+    // Time-map facts for the subtree (phase 2): the map itself and the
+    // RECEIVED frame's cycle top — the heard grid anchor through-map
+    // arm math runs against. Captured BEFORE the re-base below.
+    child_context.map = map;
+    child_context.map_heard_epoch = context.cycle_epoch;
+    ++child_context.map_count;
+    // For nested maps: the child frame's cycle top is where the map
+    // lands at heard phase 0 (the first segment's start).
+    child_context.cycle_epoch = context.cycle_epoch + map.mapOffset(0);
   }
   return child_context;
 }
@@ -233,6 +238,48 @@ ProcessContext StackNode::childContext(const ProcessContext &context) const {
 void StackNode::control(const float *const *input_channels,
                         int num_input_channels,
                         const ProcessContext &context) {
+  // SUB-BLOCK SEAM SPLIT (time_maps.md §5): an active map's seam
+  // mid-block would hand children a linearly-advancing clock across a
+  // mapped-time JUMP — up to a block of wrong positions per seam. Split
+  // the block into runs at seam boundaries (bounded: ≤ segments + 1
+  // per pass crossing, allocation-free) and recurse per run.
+  const timing::TimeMap own_map = activeTimeMap();
+  if (own_map.active() && context.num_samples > 0) {
+    const int64_t p = own_map.period();
+    int64_t rel = context.master_pos - context.cycle_epoch;
+    rel = ((rel % p) + p) % p;
+    int done = 0;
+    while (done < context.num_samples) {
+      const int run = (int)std::min<int64_t>(context.num_samples - done,
+                                             own_map.seamDistance(rel));
+      const float *shifted[kMaxSplitChannels];
+      const float *const *ins = input_channels;
+      int nin = num_input_channels;
+      if (input_channels != nullptr && done > 0) {
+        nin = std::min(num_input_channels, kMaxSplitChannels);
+        for (int ch = 0; ch < nin; ++ch) {
+          shifted[ch] =
+              input_channels[ch] ? input_channels[ch] + done : nullptr;
+        }
+        ins = shifted;
+      }
+      ProcessContext sub = context;
+      sub.master_pos = context.master_pos + done;
+      sub.island_pos = context.island_pos + done;
+      sub.num_samples = run;
+      sub.input_clock = context.input_clock + done;
+      controlChildren(ins, nin, sub);
+      done += run;
+      rel = (rel + run) % p;
+    }
+    return;
+  }
+  controlChildren(input_channels, num_input_channels, context);
+}
+
+void StackNode::controlChildren(const float *const *input_channels,
+                                int num_input_channels,
+                                const ProcessContext &context) {
   ProcessContext child_context = childContext(context);
 
   // Children come from the WHOLE-GRAPH snapshot (one engine-side load
@@ -263,7 +310,14 @@ void StackNode::control(const float *const *input_channels,
     const int64_t d = childNode(k)->duration_samples.load();
     if (d > longest_committed) longest_committed = d;
   }
-  child_context.context_loop = longest_committed;
+  // Under an ACTIVE map the heard loop IS the map period (time_maps.md
+  // ruling 2): children listen to one map pass, not the intrinsic
+  // sibling cycle.
+  if (const timing::TimeMap own_map = activeTimeMap(); own_map.active()) {
+    child_context.context_loop = own_map.period();
+  } else {
+    child_context.context_loop = longest_committed;
+  }
 
   for (int k = 0; k < child_count; ++k) {
     child_context.self = childEntry(k);
@@ -273,6 +327,45 @@ void StackNode::control(const float *const *input_channels,
 
 void StackNode::render(float *const *output_channels, int num_output_channels,
                        const ProcessContext &context) const {
+  // SUB-BLOCK SEAM SPLIT — render twin of control's (time_maps.md §5):
+  // both phases must see the SAME mapped child clock, run for run.
+  const timing::TimeMap own_map = activeTimeMap();
+  if (own_map.active() && context.num_samples > 0) {
+    const int64_t p = own_map.period();
+    int64_t rel = context.master_pos - context.cycle_epoch;
+    rel = ((rel % p) + p) % p;
+    int done = 0;
+    while (done < context.num_samples) {
+      const int run = (int)std::min<int64_t>(context.num_samples - done,
+                                             own_map.seamDistance(rel));
+      float *shifted[kMaxSplitChannels];
+      float *const *outs = output_channels;
+      int nout = num_output_channels;
+      if (output_channels != nullptr && done > 0) {
+        nout = std::min(num_output_channels, kMaxSplitChannels);
+        for (int ch = 0; ch < nout; ++ch) {
+          shifted[ch] =
+              output_channels[ch] ? output_channels[ch] + done : nullptr;
+        }
+        outs = shifted;
+      }
+      ProcessContext sub = context;
+      sub.master_pos = context.master_pos + done;
+      sub.island_pos = context.island_pos + done;
+      sub.num_samples = run;
+      sub.input_clock = context.input_clock + done;
+      renderChildren(outs, nout, sub);
+      done += run;
+      rel = (rel + run) % p;
+    }
+    return;
+  }
+  renderChildren(output_channels, num_output_channels, context);
+}
+
+void StackNode::renderChildren(float *const *output_channels,
+                               int num_output_channels,
+                               const ProcessContext &context) const {
   // Guard for atypical block sizes/channel counts. At normal sizes the
   // buffer was preallocated in the constructor and this never triggers.
   if (mix_buffer.getNumSamples() < context.num_samples ||

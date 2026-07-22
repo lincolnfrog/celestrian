@@ -110,6 +110,7 @@ target_sources(CelestrianTests PRIVATE
     tests/render_purity_tests.cc
     tests/project_manager_tests.cc
     tests/take_capacity_tests.cc
+    tests/time_map_record_tests.cc
     tests/session_io_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc

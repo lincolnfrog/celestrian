@@ -233,8 +233,9 @@ cursor carries heard time) — revisit in phase 2. *(Partially addressed
 2026-07-16, Q15: takes recorded while the heard cycle is shortened now
 anchor INSIDE the swept [0, heard) region via the heard-frame origin
 fold, so the cursor, the new take, and the heard loop read as one
-coherent frame; the sweep-vs-bracket mismatch itself remains a phase-2
-item.)* *(Resolved for the Q13 provisional trim view, 2026-07-19: the
+coherent frame; the sweep-vs-bracket mismatch itself was resolved in
+phase 2, 2026-07-21: a sole top-level stack window maps the ONE
+playhead into its brackets, mirroring the Q13 resolution.)* *(Resolved for the Q13 provisional trim view, 2026-07-19: the
 VM maps the ONE playhead into the selection — `playheadQ = selStartQ +
 islandPos`, `loopStartQ` tells the animator where the loop region
 begins — so the main cursor sweeps exactly [selStart, selEnd) and the
@@ -275,4 +276,61 @@ whole heard-view lane IS audible truth; `echoReps` remains for
 bypass-free legacy paths). Pinned in view_model tests ("heard view" /
 "heard view is fractal").
 
-**Phase 2 (record-through-map) and phase 3 (cell/punch editor): pending.**
+**Phase 2 ✅ implemented (2026-07-21), on the reified `TimeMap`:**
+the map is a TYPE — `src/time_map.h` ↔ `ui/js/time_map.js` (segments +
+`period`/`mapOffset`/`seamDistance`), pinned by the `time_map_cases`
+goldens including MULTI-SEGMENT vectors, and consumed by
+`childContext`/`getEffectivePeriod`/`snapEffectivePeriod` — so every
+phase-2 mechanism below is segment-general TODAY even though only
+single-segment windows can be created until the phase-3 editor.
+Recording through an active map works end to end:
+
+- **Context**: `ProcessContext` carries `island_pos` (the invariant
+  monotonic clock — the folded `master_pos` cannot drive arm triggers),
+  the innermost active `map`, its heard grid anchor
+  (`map_heard_epoch`), and `map_count`; a mapping stack publishes them
+  in `childContext` and sets `context_loop = period` (ruling 2).
+- **Arm** (`ClipNode::armEvaluate` through-map branch): heard-time
+  `armTarget` on the map-period grid; the anchor maps to an inner
+  origin through `m`. The Q15 origin fold is SUBSUMED (an inner-time
+  origin has no equivalent slots). Fixing the goldens exposed a latent
+  `armTarget` bug: a next-Q mark overshooting an unsnapped context top
+  folded into the PAST — it now arms at the top itself (both mirrors).
+- **Capture** (`timing::throughMapDest`): destinations fold through the
+  frozen map — bounded seam runs, dense zero-initialized `[0, C)`
+  buffer (zeroed at ARM on the message thread; documented D4
+  deviation), literal silence in unvisited regions.
+- **One-period cap**: heard length is clamped to one map pass; a full
+  pass auto-finishes cleanly (D4 wall-guard discipline); user stops
+  clamp their boundary to the period. Commit: `duration = C` (the
+  mapping node's full inner cycle, snapshotted at arm), no epoch
+  re-base (C divides the island cycle). Compaction keeps
+  `max(recordedLength, duration)`.
+- **Sub-block seam split** (§5, delivered): `StackNode`
+  control/render split blocks into runs at `seamDistance` boundaries —
+  playback through a map is sample-exact across mid-block seams (the
+  I1 block round-trip test), fixing the pre-existing wrap blur.
+- **Gates**: nested ACTIVE ancestor maps refuse the arm (their
+  composition is a map product — phase 3+); window edits on a stack
+  whose subtree holds a live take are REFUSED until commit
+  (owner-ruled 2026-07-21; siblings stay editable); a mapped cycle too
+  large for a dense buffer refuses with a log.
+- **UI** (ruling 5): recording lanes under a map carry
+  `throughMap`/`mapPeriodQ` — amber-tinted capped bar + "⟲ NQ map"
+  rail cue; the mapping group's rail shows "⟲ map live". The
+  extension-2 sweep-vs-bracket item is RESOLVED for stack windows: a
+  sole top-level stack window maps the ONE playhead into its brackets
+  (the Q13 resolution, mirrored). Mock in lockstep (heard-time pend,
+  cap, dense-C commit, refusals, gates).
+- Pinned by `tests/time_map_record_tests.cc` (context plumbing,
+  FIELD-style fold/cap/commit, I1 round trip, I9 degradation round
+  trip, multi-segment node-level fold, bypassed==plain, engine gates)
+  and `ui/js/tests/map_record.test.mjs` (mock + VM parity).
+
+**Phase 3 (cell/punch editor) pending.** Its engine remainder is only
+multi-segment STORAGE + `setSegments` bridge (3-place) + session_io
+segments serialization + the editor UI ("sequencer" cell mode, punch
+mode with linked kQ edges): recording, playback, fold, cap, and arm
+math are already segment-general and golden-pinned. The
+windowed-group-children heard-frame unroll (view_model.js phase-3
+TODO) also lands there.

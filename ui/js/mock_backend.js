@@ -13,7 +13,8 @@
  * so its behavior cannot drift from the UI or the C++ engine.
  */
 
-import { launchPointFor, nextStopBoundary } from './timeline_model.js';
+import { launchPointFor, nextStopBoundary, armTarget } from './timeline_model.js';
+import { singleSegment, mapPeriod, mapOffset } from './time_map.js';
 
 // In-memory state
 let state = {
@@ -551,9 +552,24 @@ function committedClipCount() {
     return n;
 }
 
+// A live take anywhere in this subtree (parity with the engine's
+// per-node isArmedOrRecording) — gates mid-take map edits.
+function subtreeRecording(node) {
+    if (!node) return false;
+    if (node.isRecording) return true;
+    return (node.nodes || []).some(subtreeRecording);
+}
+
 function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
     if (!node) return;
+    // MID-TAKE MAP-EDIT GATE (engine parity, owner-ruled): a take
+    // recording through this stack's map froze its geometry at arm —
+    // refuse window edits until it commits. Siblings stay editable.
+    if (node.type === 'stack' && subtreeRecording(node)) {
+        console.log('[MockBackend] setLoopPoints refused — take recording in subtree');
+        return;
+    }
     // Pre-edit window (the phase-preserve math below needs it).
     const oldLs = node.loopStart || 0;
     const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
@@ -597,6 +613,11 @@ function toggleLoopWindow(id) {
     // window exactly like stacks toggle their time-map.
     const node = findNode(id);
     if (node) {
+        // MID-TAKE MAP-EDIT GATE (see setLoopPoints).
+        if (node.type === 'stack' && subtreeRecording(node)) {
+            console.log('[MockBackend] toggleLoopWindow refused — take recording in subtree');
+            return;
+        }
         node.loopBypassed = !node.loopBypassed;
         console.log('[MockBackend] Loop window', id, '→',
             node.loopBypassed ? 'BYPASSED' : 'ACTIVE');
@@ -674,7 +695,68 @@ function startRecordingInNode(id) {
         recView.active = true;
     }
 
+    // THROUGH-MAP ARM (time_maps.md phase 2, engine parity with
+    // AudioEngine::startRecordingInNode): an ACTIVE map on an ancestor
+    // group shapes this take — heard arm math on the map period's
+    // grid, one-period cap, dense [0, C) commit. Nested active maps
+    // refuse (composed maps are phase-3+ territory).
+    let mapArm = null;
+    {
+        const activeAncestors = [];
+        for (let p = findParent(id); p; p = findParent(p.id)) {
+            if (!p.loopBypassed && (p.loopEnd || 0) > (p.loopStart || 0)) {
+                activeAncestors.push(p);
+            }
+        }
+        if (activeAncestors.length > 1) {
+            console.log('[MockBackend] record refused — nested active loop windows');
+            return;
+        }
+        const Qnow = effectiveQuantumForState();
+        if (activeAncestors.length === 1 && Qnow > 0) {
+            const g = activeAncestors[0];
+            const map = singleSegment(g.loopStart || 0, g.loopEnd || 0);
+            const intrinsicOf = (n) => {
+                if (n.type !== 'stack') return n.isRecording ? 0 : (n.duration || 0);
+                let comp = 0;
+                (n.nodes || []).forEach(c => {
+                    const d = intrinsicOf(c);
+                    if (d > 0) comp = comp > 0 ? lcmInt(comp, d) : d;
+                });
+                return comp;
+            };
+            const period = mapPeriod(map);
+            const C = Math.max(intrinsicOf(g), period);
+            // Single-level mock: the mapping group's received frame is
+            // the island frame, so its heard grid anchor is the epoch.
+            mapArm = { map, period, C, heardEpoch: state.islandEpoch || 0 };
+        }
+    }
+
     node.isRecording = true;
+
+    if (mapArm) {
+        const Qm = effectiveQuantumForState();
+        const raw = state.masterPos || 0;
+        const relH = Math.max(0, raw - mapArm.heardEpoch);
+        const tRel = armTarget(relH, Qm, mapArm.period);
+        const at = mapArm.heardEpoch + tRel;
+        node._mapArm = {
+            C: mapArm.C,
+            period: mapArm.period,
+            innerOrigin: mapArm.heardEpoch + mapOffset(mapArm.map, tRel),
+        };
+        node.duration = 0;
+        if (at > raw) {
+            node.isPendingStart = true;
+            node.pendingStartAt = at;
+            console.log('[MockBackend] Through-map pending start at', at,
+                '(inner origin', node._mapArm.innerOrigin + ')');
+        } else {
+            node.recordingStartPos = at;
+        }
+        return;
+    }
 
     // Q11 (engine parity): with Q established, arming PENDS until the
     // next Q boundary in the epoch frame — recording begins there, so
@@ -720,6 +802,10 @@ function stopRecordingInNode(id) {
     if (Q > 0) {
         node.isAwaitingStop = true;
         node.awaitingStopAt = nextStopBoundary(rawLen, Q);
+        // Through-map: one map pass is the hard ceiling (engine parity).
+        if (node._mapArm) {
+            node.awaitingStopAt = Math.min(node.awaitingStopAt, node._mapArm.period);
+        }
         console.log('[MockBackend] Awaiting stop at len', node.awaitingStopAt,
             '(current', rawLen + ')');
         return;
@@ -732,6 +818,16 @@ function commitClip(node, duration) {
     // Q BEFORE committing, so the stopping clip cannot define its own
     // quantum (mirrors C++ commit order)
     const Q = effectiveQuantumForState();
+
+    // THROUGH-MAP COMMIT (engine parity, ClipNode::commitRecording):
+    // the take commits at the mapping node's full inner cycle C —
+    // heard snapping chose WHEN, C is WHAT commits.
+    const mapArm = node._mapArm || null;
+    if (mapArm) {
+        duration = mapArm.C;
+        delete node._mapArm;
+        console.log('[MockBackend] Through-map commit — C =', duration);
+    }
 
     node.isRecording = false;
     node.isAwaitingStop = false;
@@ -757,7 +853,11 @@ function commitClip(node, duration) {
     // store the representative in the FIRST heard window of the frame.
     let foldedOrigin = node.recordingStartPos || 0;
     const heardAtArm = recView.heardAtArm || 0;
-    if (heardAtArm > 0 && recView.lcmBefore > heardAtArm) {
+    if (mapArm) {
+        // Through-map origin: the anchor's INNER position (Q15 fold
+        // subsumed — the origin is already an inner-time fact).
+        foldedOrigin = mapArm.innerOrigin;
+    } else if (heardAtArm > 0 && recView.lcmBefore > heardAtArm) {
         const relT = (((foldedOrigin - (state.islandEpoch || 0)) %
             recView.lcmBefore) + recView.lcmBefore) % recView.lcmBefore;
         foldedOrigin -= Math.floor(relT / heardAtArm) * heardAtArm;
@@ -1090,6 +1190,10 @@ function growRecordingClips(nodes, samples) {
                 node.currentPeak = 0.3 + Math.random() * 0.4;
                 if (node.isAwaitingStop && node.duration >= node.awaitingStopAt) {
                     commitClip(node, node.awaitingStopAt);
+                } else if (node._mapArm && node.duration >= node._mapArm.period) {
+                    // One-period cap (engine parity): a full map pass
+                    // auto-finishes cleanly.
+                    commitClip(node, node._mapArm.period);
                 }
             }
         }
@@ -1137,6 +1241,7 @@ export function loadScenario(name) {
     transport.speed = 1.0;
     recView.active = false;
     state.islandEpoch = 0;
+    state.islandQ = 0;  // fresh session: Q re-establishes per scenario
     // Loading a scenario is a fresh session — undo history does not carry
     // across it (test isolation + mirrors constructing a fresh engine).
     undoStack = [];

@@ -139,6 +139,82 @@ class TimingGoldenTests : public juce::UnitTest {
       }
     }
 
+    // Shared helper: build a TimeMap from a golden case's "segments".
+    auto mapFrom = [this](const juce::var &c, const juce::String &name) {
+      TimeMap m;
+      if (auto *segs = c.getProperty("segments", {}).getArray()) {
+        for (auto &s : *segs) {
+          auto *pair = s.getArray();
+          expect(pair != nullptr && pair->size() == 2 &&
+                     m.n < TimeMap::kMaxSegments,
+                 name + " (segment shape)");
+          if (pair == nullptr || pair->size() != 2) continue;
+          m.segs[m.n++] = {(int64_t)(double)(*pair)[0],
+                           (int64_t)(double)(*pair)[1]};
+        }
+      }
+      return m;
+    };
+
+    beginTest("through-map arm (heard armTarget on the map-period grid)");
+    if (auto *cases =
+            root.getProperty("through_map_arm_cases", {}).getArray()) {
+      for (auto &c : *cases) {
+        const auto name = c.getProperty("name", "?").toString();
+        const TimeMap m = mapFrom(c, name);
+        const int64_t t_rel =
+            armTarget(asInt64(c, "relHeard"), asInt64(c, "quantum"),
+                      m.period());
+        expectEquals((juce::int64)t_rel,
+                     (juce::int64)asInt64(c, "expectedHeardTargetRel"),
+                     name + " (heard target)");
+        expectEquals((juce::int64)m.mapOffset(t_rel),
+                     (juce::int64)asInt64(c, "expectedInnerOffset"),
+                     name + " (inner offset)");
+      }
+    }
+
+    beginTest("through-map capture fold (throughMapDest)");
+    if (auto *cases =
+            root.getProperty("through_map_dest_cases", {}).getArray()) {
+      for (auto &c : *cases) {
+        const auto name = c.getProperty("name", "?").toString();
+        const TimeMap m = mapFrom(c, name);
+        if (auto *probes = c.getProperty("probes", {}).getArray()) {
+          for (auto &p : *probes) {
+            expectEquals(
+                (juce::int64)throughMapDest(asInt64(p, "i"),
+                                            asInt64(c, "anchorOff"), m,
+                                            asInt64(c, "commitCycle")),
+                (juce::int64)asInt64(p, "dest"),
+                name + " dest(i=" + juce::String(asInt64(p, "i")) + ")");
+          }
+        }
+      }
+    }
+
+    beginTest("TimeMap (reified map: period / mapOffset / seamDistance)");
+    if (auto *cases = root.getProperty("time_map_cases", {}).getArray()) {
+      for (auto &c : *cases) {
+        const auto name = c.getProperty("name", "?").toString();
+        const TimeMap m = mapFrom(c, name);
+        expectEquals((juce::int64)m.period(),
+                     (juce::int64)asInt64(c, "expectedPeriod"),
+                     name + " (period)");
+        if (auto *probes = c.getProperty("probes", {}).getArray()) {
+          for (auto &p : *probes) {
+            const auto h = juce::String(asInt64(p, "h"));
+            expectEquals((juce::int64)m.mapOffset(asInt64(p, "h")),
+                         (juce::int64)asInt64(p, "inner"),
+                         name + " mapOffset(h=" + h + ")");
+            expectEquals((juce::int64)m.seamDistance(asInt64(p, "h")),
+                         (juce::int64)asInt64(p, "seam"),
+                         name + " seamDistance(h=" + h + ")");
+          }
+        }
+      }
+    }
+
     beginTest("originQ (D-T3 physical/musical boundary projection)");
     if (auto *cases = root.getProperty("qtime_origin_cases", {}).getArray()) {
       for (auto &c : *cases) {

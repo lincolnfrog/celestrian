@@ -41,8 +41,12 @@ void AudioEngine::compactIdleTakes() {
           }
           auto &clip = static_cast<celestrian::ClipNode &>(*child);
           if (clip.isArmedOrRecording()) continue;
+          // Through-map takes store a dense [0, C) buffer with the
+          // content folded past the heard length — keep the full
+          // committed duration, not just recordedLength.
           const int64_t keep = std::max<int64_t>(
-              clip.recordedLength(), (int64_t)clip.getSampleRate());
+              {clip.recordedLength(), clip.duration_samples.load(),
+               (int64_t)clip.getSampleRate()});
           // Compact only when the win is real (≥ ~4 MB of samples).
           if (clip.contentCapacity() - keep < (int64_t{1} << 20)) continue;
           auto fresh =
@@ -637,12 +641,50 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
       }
     }
 
+    // THROUGH-MAP ARM (time_maps.md phase 2): an ACTIVE map on an
+    // ancestor shapes this take — the take records THROUGH it (heard
+    // arm math, one-period cap, dense [0, C) commit). The walk runs on
+    // the message thread (parent chains are legal here); C = the
+    // mapping node's full inner cycle, snapshotted at arm (map edits
+    // are gated while the take is live).
+    int64_t through_map_cycle = 0;
+    {
+      int active_maps = 0;
+      celestrian::AudioNode *mapping = nullptr;
+      for (auto *a = clip->getParent(); a != nullptr; a = a->getParent()) {
+        if (a->activeTimeMap().active()) {
+          ++active_maps;
+          if (mapping == nullptr) mapping = a;  // nearest wins
+        }
+      }
+      if (active_maps > 1) {
+        // Composed active maps are a multi-segment PRODUCT — outside
+        // the ratified phase-2 scope (single map). Refuse the arm.
+        juce::Logger::writeToLog(
+            "AudioEngine: record refused — nested active loop windows "
+            "(bypass one to record through the other)");
+        return;
+      }
+      if (mapping != nullptr && root_node->getQuantum() > 0) {
+        const int64_t period = mapping->activeTimeMap().period();
+        const int64_t C =
+            std::max(mapping->getIntrinsicDuration(), period);
+        if (C > celestrian::ClipNode::kMaxTakeSamples / 2) {
+          juce::Logger::writeToLog(
+              "AudioEngine: record refused — the mapped cycle is too "
+              "large for a dense take buffer");
+          return;
+        }
+        through_map_cycle = C;
+      }
+    }
+
     // The clock is NEVER reset (kernel.md §2) — not even for the first
     // clip. What the old "Initial Recording Reset" actually provided was
     // the island epoch; that is now captured as data (epoch := arm
     // moment) in ClipNode's first-clip arm path, leaving the clock
     // untouched.
-    clip->startRecording();
+    clip->startRecording(through_map_cycle);
   } else {
     juce::Logger::writeToLog("AudioEngine: CLIP NOT FOUND for " + uuid);
   }
@@ -906,6 +948,20 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
                            " start=" + juce::String(start) +
                            " end=" + juce::String(end));
+  // MID-TAKE MAP-EDIT GATE (time_maps.md phase 2, owner-ruled): a take
+  // recording THROUGH this node's map froze the map's geometry at arm
+  // (anchor, seams, commit cycle) — editing the window under it would
+  // change time under the recorder. Refuse until the take commits.
+  // Sibling windows stay editable (they don't shape this recorder's
+  // clock; their heard-cycle effect was snapshotted at arm).
+  if (auto *target = findNodeByUuid(root_node.get(), uuid);
+      target && target->getNodeType() == celestrian::NodeType::Stack &&
+      target->isArmedOrRecording()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setLoopPoints refused — a take is recording "
+        "through this window (finish or cancel it first)");
+    return;
+  }
   // Window phase is derived from the island clock (time_maps.md); nothing
   // to reset when the region changes. Undoable (LoopPoints).
   celestrian::Edit e(celestrian::Edit::Kind::LoopPoints);
@@ -970,6 +1026,15 @@ void AudioEngine::toggleLoopWindow(const juce::String &uuid) {
   // Fractal (I5): window state lives on AudioNode — clips toggle their
   // single-segment window exactly like stacks toggle their time-map.
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    // MID-TAKE MAP-EDIT GATE (see setLoopPoints): flipping a stack's
+    // map under a live take would change time under the recorder.
+    if (node->getNodeType() == celestrian::NodeType::Stack &&
+        node->isArmedOrRecording()) {
+      juce::Logger::writeToLog(
+          "AudioEngine::toggleLoopWindow refused — a take is recording "
+          "in this subtree (finish or cancel it first)");
+      return;
+    }
     celestrian::Edit e(celestrian::Edit::Kind::LoopBypass);
     e.uuid = uuid;
     e.b1 = !node->isLoopWindowBypassed();  // toggle to the opposite state
@@ -1095,6 +1160,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.quantum = root_node->getQuantum();
     pc.island_epoch = pc.cycle_epoch;
     pc.island = root_node.get();
+    // The invariant monotonic clock (master_pos twin of island_epoch):
+    // mapping stacks fold master_pos on the way down but never this.
+    pc.island_pos = global_transport_pos;
 
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished

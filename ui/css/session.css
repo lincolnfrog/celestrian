@@ -491,6 +491,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-radius: 6px;
     animation: recpulse 1.6s ease-in-out infinite;
 }
+/* Through-map take (time_maps.md phase 2): the map's amber window tone
+   rides the record red — the visual cue that a map is shaping time
+   (ruling 5). Same box metrics (STATE-METRICS LAW). */
+.rep.recording-bar.map-bar {
+    background: linear-gradient(to bottom, #3a3220, #2c2616);
+    box-shadow: inset 0 0 0 1px var(--rec), inset 0 0 0 3px rgba(228, 180, 90, 0.35);
+}
 
 /* STATE-METRICS LAW: a lane body's box never changes with state — no
    state border/padding may shift its absolutely-positioned children

@@ -755,7 +755,10 @@ function patchLaneBody(row, lane, vm, aux) {
                 requestAnimationFrame(() => { div.style.transition = ''; }));
         }
         const cls = 'rep' + (rep.ghost ? ' ghost' : '') +
-            (rep.echo ? ' echo' : '') + (rep.bar ? ' recording-bar' : '');
+            (rep.echo ? ' echo' : '') +
+            (rep.bar
+                ? ' recording-bar' + (lane.throughMap ? ' map-bar' : '')
+                : '');
         if (div.className !== cls) div.className = cls;
         // The live bar draws at a FIXED px-per-slot scale: a peak's
         // pixels are a function of its slot index only, never of the
@@ -1246,12 +1249,17 @@ function patchRail(row, lane) {
     }
 
     const status = row.querySelector('.rail-status');
+    // "A map is shaping time" (time_maps.md ruling 5): through-map
+    // takes carry the ⟲ cue on the recording lane AND the mapping
+    // group's rail.
+    const mapCue = lane.throughMap ? ' ⟲' + lane.mapPeriodQ + 'Q map' : '';
     setText(status, lane.recording
-        ? (lane.awaitingStop ? 'finishing…' : 'recording…')
+        ? (lane.awaitingStop ? 'finishing…' : 'recording…') + mapCue
         : lane.kind === 'group'
-            ? (lane.groupArm.state !== 'none'
-                ? 'armed ' + (lane.groupArm.state === 'all' ? 'all' : 'some') : '')
-            : lane.armed ? 'armed' : '');
+            ? (lane.mapRecording ? '⟲ map live'
+                : lane.groupArm.state !== 'none'
+                    ? 'armed ' + (lane.groupArm.state === 'all' ? 'all' : 'some') : '')
+            : lane.armed ? 'armed' + mapCue : '');
 
     const fold = row.querySelector('.fold-btn');
     if (fold) setText(fold, lane.folded ? '▸' : '▾');

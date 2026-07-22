@@ -1,0 +1,70 @@
+/**
+ * The reified time-map (time_maps.md §2) — JS mirror of src/time_map.h.
+ *
+ * A map is an ordered list of segments over a node's inner timeline;
+ * today's loop window is the single-segment case, and the phase-3
+ * cell/punch editor edits the same object with more segments. Every
+ * consumer is segment-general NOW.
+ *
+ * Shape: { segs: [[start, end), ...] } in samples. Pure functions, no
+ * state — pinned to the `time_map_cases` golden vectors in
+ * shared/timing_golden.json alongside the C++ side.
+ */
+
+export const MAX_SEGMENTS = 8;
+
+/** No active map. */
+export function noMap() {
+    return { segs: [] };
+}
+
+/** Today's loop window: one segment, empty when invalid. */
+export function singleSegment(start, end) {
+    return end > start ? { segs: [[start, end]] } : { segs: [] };
+}
+
+export function mapActive(map) {
+    return !!(map && map.segs && map.segs.length > 0);
+}
+
+/** Heard-time length of one map pass: Σ (end − start). */
+export function mapPeriod(map) {
+    if (!mapActive(map)) return 0;
+    let p = 0;
+    for (const [s, e] of map.segs) p += e - s;
+    return p;
+}
+
+/**
+ * walk_segments: a HEARD offset (any integer — folded mod period,
+ * negatives included) → the inner-time offset it selects. The caller
+ * re-bases into absolute time by adding the received cycle epoch.
+ */
+export function mapOffset(map, heardOff) {
+    const p = mapPeriod(map);
+    if (p <= 0) return heardOff;
+    let h = ((heardOff % p) + p) % p;
+    for (const [s, e] of map.segs) {
+        const len = e - s;
+        if (h < len) return s + h;
+        h -= len;
+    }
+    return map.segs[0][0]; // unreachable: h < p by construction
+}
+
+/**
+ * Samples from heardOff for which the map advances CONTINUOUSLY: the
+ * distance to the end of the containing segment. Segment boundaries
+ * always count as seams. Returns 0 when the map is inactive.
+ */
+export function seamDistance(map, heardOff) {
+    const p = mapPeriod(map);
+    if (p <= 0) return 0;
+    let h = ((heardOff % p) + p) % p;
+    for (const [s, e] of map.segs) {
+        const len = e - s;
+        if (h < len) return len - h;
+        h -= len;
+    }
+    return 0; // unreachable
+}

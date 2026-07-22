@@ -84,6 +84,24 @@ struct ProcessContext {
   int64_t quantum = 0;
   int64_t island_epoch = 0;
   AudioNode *island = nullptr;
+
+  // --- Time-map facts (time_maps.md phase 2) ---
+  // The INVARIANT monotonic island clock: the engine's transport
+  // position, never folded by a mapping stack on the way down (the
+  // master_pos twin of island_epoch). Through-map arm triggers compare
+  // against THIS clock — the folded master_pos wraps every map period
+  // and never crosses a target at/past the map's end.
+  int64_t island_pos = 0;
+  // The innermost enclosing ACTIVE map (empty when none): set by a
+  // mapping stack in childContext for its whole subtree, alongside
+  // map_heard_epoch — the RECEIVED frame's cycle top at that stack,
+  // i.e. the heard grid anchor (pass tops occur at island times
+  // ≡ map_heard_epoch mod map.period()). map_count counts active maps
+  // on the delivered chain: > 1 means composed maps (multi-segment
+  // product), which recording refuses until phase 3+.
+  timing::TimeMap map{};
+  int64_t map_heard_epoch = 0;
+  int map_count = 0;
 };
 
 /**
@@ -338,6 +356,20 @@ class AudioNode {
            loop_end_samples.load() > loop_start_samples.load();
   }
 
+  /**
+   * The node's ACTIVE time-map as the reified value type (time_maps.md
+   * §2): today a single segment built from the phase-1 window atomics
+   * (empty when bypassed/invalid); multi-segment storage arrives with
+   * the phase-3 editor. Consumers must be segment-general — use
+   * period()/mapOffset()/seamDistance(), never the raw loop atomics.
+   * Audio-thread safe (atomic loads into a POD value).
+   */
+  timing::TimeMap activeTimeMap() const {
+    if (loop_window_bypassed_.load()) return timing::TimeMap::none();
+    return timing::TimeMap::single(loop_start_samples.load(),
+                                   loop_end_samples.load());
+  }
+
   // --- Built-in effects (docs/ui_overhaul.md effects bar) ---
   /**
    * The node's effect rack — FRACTAL like windows: a clip's rack
@@ -360,9 +392,8 @@ class AudioNode {
    * LCM its children's effective periods (nested windows shorten it).
    */
   virtual int64_t getEffectivePeriod() const {
-    if (isLoopWindowActive()) {
-      return loop_end_samples.load() - loop_start_samples.load();
-    }
+    const timing::TimeMap map = activeTimeMap();
+    if (map.active()) return map.period();
     return getIntrinsicDuration();
   }
 

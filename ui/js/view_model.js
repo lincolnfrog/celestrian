@@ -520,6 +520,29 @@ export function deriveViewModel(state, opts = {}) {
         playheadQ = defSelStartQ + playheadQ;
     }
 
+    // STACK-WINDOW CURSOR HONESTY (time_maps.md extension-2, resolved
+    // with phase 2): when the audible cycle IS a sole top-level stack
+    // window's pass, the transport sweeps [0, winLen) but the brackets
+    // sit at [ws, ws+winLen) in the intrinsic frame — the cursor swept
+    // dead air while the sounding material sat where it never went.
+    // Mirror the Q13 resolution: map the ONE playhead into the window
+    // (heard position = window start + island phase). Display-only;
+    // recording keeps the growing-frame math above.
+    if (!provisionalDefiner && !anyRecording && qEstablished) {
+        const winGroups = nodes.filter(n => n.type === 'stack' &&
+            n.windowActive && (n.loopEnd || 0) > (n.loopStart || 0));
+        if (winGroups.length === 1) {
+            const g = winGroups[0];
+            const winLen = g.loopEnd - g.loopStart;
+            if (Math.round(winLen) === Math.round(loopSamples)) {
+                const wsQ = g.loopStart / quantum;
+                const lenQ = winLen / quantum;
+                loopStartQ = wsQ;
+                playheadQ = wsQ + (playheadQ % lenQ);
+            }
+        }
+    }
+
     // Q11: the arm target is always the next Q boundary in the epoch
     // frame (the cycle top is just the next boundary in the final Q).
     // The engine's own pending-start target is authoritative once a clip
@@ -532,7 +555,14 @@ export function deriveViewModel(state, opts = {}) {
         (Math.ceil(relPosQ) === relPosQ ? relPosQ + 1 : Math.ceil(relPosQ));
 
     const lanes = [];
-    const pushLane = (node, depth) => {
+    // A live take anywhere below (drives the group lane's map cue).
+    const subtreeRec = n =>
+        (n.nodes || []).some(c => c.isRecording || subtreeRec(c));
+    // mapCtx: the nearest enclosing ACTIVE map, threaded down the group
+    // recursion (time_maps.md phase 2) — recording lanes under one gain
+    // throughMap/mapPeriodQ/mapStartQ (the ruling-5 visual-cue hooks;
+    // the engine caps the take at one map period).
+    const pushLane = (node, depth, mapCtx = null) => {
         if (depth > maxDepth) return;
         // Tile offsets are epoch-relative (origins are ABSOLUTE; the
         // frame's x axis is the engine's epoch-phase view), rotated by
@@ -566,16 +596,28 @@ export function deriveViewModel(state, opts = {}) {
                 windowPhase: node.windowActive ? (node.playhead || 0) : 0,
                 folded: node.isExpanded === false,
                 groupArm: groupArmState(node),
+                // The map cue on the MAPPING group itself: a take is
+                // recording through this window right now.
+                mapRecording: !!(node.windowActive &&
+                    (node.loopEnd || 0) > (node.loopStart || 0) &&
+                    subtreeRec(node)),
             });
             lanes.push(lane);
             if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
+            // The nearest enclosing active map wins (engine parity).
+            const ownMap = node.windowActive &&
+                (node.loopEnd || 0) > (node.loopStart || 0)
+                ? { periodQ: (node.loopEnd - node.loopStart) / quantum,
+                    startQ: (node.loopStart || 0) / quantum }
+                : null;
             // TODO(phase 3): children of a group with an ACTIVE window
             // live in the window's re-based inner frame (time_maps.md §2
             // — the window re-bases the epoch for its children). Phase 1
             // unrolls them against the island cycle; revisit when the
             // shell renders windowed groups interactively.
             if (!lane.folded) {
-                (node.nodes || []).forEach(c => pushLane(c, depth + 1));
+                (node.nodes || []).forEach(c =>
+                    pushLane(c, depth + 1, ownMap || mapCtx));
                 // Synthetic affordance row: "+ add track" at the bottom of
                 // the open group (field-preferred placement, 2026-07-09)
                 lanes.push({
@@ -632,6 +674,12 @@ export function deriveViewModel(state, opts = {}) {
                 inputChannel: node.inputChannel ?? -1,
                 recordingLengthQ: (node.duration || 0) / quantum,
                 pendingStart: !(node.duration > 0),
+                // Recording THROUGH an enclosing map (phase 2): the cue
+                // hooks + the bar's cap (the engine commits ≤ one map
+                // period).
+                throughMap: !!mapCtx,
+                mapPeriodQ: mapCtx ? mapCtx.periodQ : 0,
+                mapStartQ: mapCtx ? mapCtx.startQ : 0,
             }));
             if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
             return;

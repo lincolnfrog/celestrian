@@ -16,8 +16,25 @@
 
 import { gcd, lcm } from './math_utils.js';
 import { qtime, toSamples, fromSamples } from './qtime.js';
+import { mapOffset } from './time_map.js';
 
 export { gcd, lcm };
+
+/**
+ * Capture-fold for a take recorded THROUGH an active map (time_maps.md
+ * §3), JS mirror of timing.h throughMapDest: the buffer destination
+ * index for heard-elapsed sample heardI of a take anchored at heard
+ * offset anchorOff within the map period, folded into the dense
+ * [0, commitCycle) buffer. Segment-general.
+ * Precondition: 0 ≤ heardI < mapPeriod(map) ≤ commitCycle.
+ */
+export function throughMapDest(heardI, anchorOff, map, commitCycle) {
+    const originInner = mapOffset(map, anchorOff);
+    const inner = mapOffset(map, anchorOff + heardI);
+    let d = inner - originInner;
+    if (commitCycle > 0) d = ((d % commitCycle) + commitCycle) % commitCycle;
+    return d;
+}
 
 // === The physical/musical boundary (Q12 / D-T3), JS mirror of timing.h ===
 // Musical facts project onto the island's Q frame through the one law
@@ -76,8 +93,11 @@ export function armTarget(rel, quantum, contextLoop) {
         ? effective
         : (Math.floor(effective / quantum) + 1) * quantum;
     const loopBase = Math.floor(rel / contextLoop) * contextLoop;
-    let offset = nextVisual % contextLoop;
-    if (offset === 0 && nextVisual > 0) offset = contextLoop;
+    // A mark at/past the context top = the top of the NEXT cycle — the
+    // heard grid restarts there (folding % contextLoop put an unsnapped
+    // context's final-partial-Q boundary in the PAST; fixed with the
+    // through-window vectors, phase 2).
+    const offset = nextVisual >= contextLoop ? contextLoop : nextVisual;
     return loopBase + offset;
 }
 

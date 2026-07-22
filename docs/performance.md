@@ -54,6 +54,14 @@ the message thread and retires the old buffer via the reclaimer — legal
 under an actively rendering clip because render loads the pointer once
 per block. Never resize or swap a buffer the audio thread might be
 CAPTURING into (compaction skips armed/recording clips).
+*Documented deviation (time_maps.md phase 2, 2026-07-21):* a
+THROUGH-MAP arm zeroes exactly `[0, C)` at arm time on the message
+thread — the commit is a dense buffer with literal silence in
+unvisited regions (ruling 2), and reads DO cover the whole span; an
+audio-thread memset at commit would violate this contract. The
+reservation tail past C stays uncleared. Compaction keeps
+`max(recordedLength, duration)` (through-map content folds past the
+heard length).
 
 **Threading split after Step 3:** node ownership vectors
 (`StackNode::ownedChildren`) and the traversal virtuals

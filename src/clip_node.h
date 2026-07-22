@@ -82,8 +82,17 @@ class ClipNode : public AudioNode {
   // Clip-specific methods
   /**
    * Starts capturing hardware input into the internal buffer.
+   *
+   * `through_map_commit_cycle` > 0 arms the take THROUGH an enclosing
+   * ACTIVE time-map (time_maps.md phase 2): the value is C, the mapping
+   * node's full inner cycle — the dense buffer span the take commits at
+   * (ruling 2). The engine computes it on the message thread (nearest
+   * active-map ancestor's intrinsic duration); 0 = plain recording.
    */
-  void startRecording();
+  void startRecording(int64_t through_map_commit_cycle = 0);
+
+  /** The C a through-map arm will commit at; 0 = plain take. */
+  int64_t throughMapCommitCycle() const { return map_commit_cycle_.load(); }
 
   /**
    * Signals the recording thread to stop and flush the buffer.
@@ -271,6 +280,22 @@ class ClipNode : public AudioNode {
   /** Armed → Capturing: fixes the capture window for `target`. */
   void beginCapture(const ProcessContext &context, int64_t target,
                     int64_t compensated_pos);
+  /** Write `n` captured samples whose heard-elapsed index starts at
+   * `heard_pos` — plain takes write linearly; through-map takes fold
+   * destinations through the frozen map (bounded seam runs). */
+  void captureWrite(juce::AudioBuffer<float> &buffer, int64_t heard_pos,
+                    const float *src, int n);
+
+  // --- Through-map take state (time_maps.md phase 2) ---
+  // The commit cycle C, set at arm on the message thread (atomic: the
+  // audio thread's arm branch keys on it); cleared at commit/cancel.
+  std::atomic<int64_t> map_commit_cycle_{0};
+  // Frozen by the through-map arm branch when capture begins — the map
+  // shaping this take and the anchor's heard offset within its period.
+  // Audio-thread-only plain fields (capture_next_clock_ discipline).
+  bool through_map_capture_ = false;
+  timing::TimeMap take_map_{};
+  int64_t map_anchor_off_ = 0;
 
   std::atomic<int> rec_state_{(int)RecState::Idle};
   // Message-thread stop request; consumed by the audio thread, which

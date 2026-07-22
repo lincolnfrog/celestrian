@@ -13,9 +13,10 @@ import path from 'node:path';
 import {
     timelineLcm, launchPointFor, playheadPercent,
     nextStopBoundary, snapCommittedDuration, computeGhostTiles,
-    armTarget, originQ
+    armTarget, originQ, throughMapDest
 } from '../timeline_model.js';
 import { toSamples } from '../qtime.js';
+import { mapPeriod, mapOffset, seamDistance } from '../time_map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const golden = JSON.parse(readFileSync(path.resolve(__dirname, '../../../shared/timing_golden.json'), 'utf8'));
@@ -75,6 +76,33 @@ for (const c of golden.qtime_origin_cases) {
     check(q.den, c.expectedDen, `originQ den: ${c.name}`);
     // Lossless at the same exchange rate: Q → samples lands exactly (I1).
     check(toSamples(q, c.qSamples), c.origin - c.epoch, `originQ round-trip: ${c.name}`);
+}
+
+console.log('Golden: through-map arm (heard armTarget on the map-period grid)');
+for (const c of golden.through_map_arm_cases) {
+    const map = { segs: c.segments };
+    const tRel = armTarget(c.relHeard, c.quantum, mapPeriod(map));
+    check(tRel, c.expectedHeardTargetRel, `${c.name} (heard target)`);
+    check(mapOffset(map, tRel), c.expectedInnerOffset, `${c.name} (inner offset)`);
+}
+
+console.log('Golden: through-map capture fold (throughMapDest)');
+for (const c of golden.through_map_dest_cases) {
+    const map = { segs: c.segments };
+    for (const p of c.probes) {
+        check(throughMapDest(p.i, c.anchorOff, map, c.commitCycle), p.dest,
+            `${c.name} dest(i=${p.i})`);
+    }
+}
+
+console.log('Golden: TimeMap (reified map: period / mapOffset / seamDistance)');
+for (const c of golden.time_map_cases) {
+    const map = { segs: c.segments };
+    check(mapPeriod(map), c.expectedPeriod, `${c.name} (period)`);
+    for (const p of c.probes) {
+        check(mapOffset(map, p.h), p.inner, `${c.name} mapOffset(h=${p.h})`);
+        check(seamDistance(map, p.h), p.seam, `${c.name} seamDistance(h=${p.h})`);
+    }
 }
 
 // --- Ghost tiling (JS-only; the C++ engine does not render ghosts) ---

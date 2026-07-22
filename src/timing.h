@@ -7,6 +7,7 @@
 #include <limits>
 
 #include "qtime.h"
+#include "time_map.h"
 
 /**
  * Pure timing math for the Celestrian engine.
@@ -142,16 +143,43 @@ inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
 
   // Multi-clip context: snap the position WITHIN the heard cycle
   // forward to its next Q mark, then re-base into the current cycle
-  // iteration. `next_visual == context_loop` means "the top of the NEXT
-  // cycle", not the top of this one.
+  // iteration. A mark at/past the context top means "the top of the
+  // NEXT cycle" — the heard grid restarts there, so an unsnapped
+  // context's final partial Q arms at the top itself (folding it
+  // `% context_loop` put the boundary in the PAST — latent bug fixed
+  // with the through-window vectors, phase 2).
   const int64_t effective = rel % context_loop;
   const int64_t next_visual = (effective % quantum == 0)
                                   ? effective
                                   : (effective / quantum + 1) * quantum;
   const int64_t loop_base = (rel / context_loop) * context_loop;
-  int64_t offset = next_visual % context_loop;
-  if (offset == 0 && next_visual > 0) offset = context_loop;
+  const int64_t offset =
+      next_visual >= context_loop ? context_loop : next_visual;
   return loop_base + offset;
+}
+
+/**
+ * Capture-fold for a take recorded THROUGH an active map (time_maps.md
+ * §3): the buffer destination index for heard-elapsed sample `heard_i`
+ * of a take anchored at heard offset `anchor_off` within the map
+ * period. Content index 0 is the take's origin (= the anchor's inner
+ * position); later samples land wherever the mapped clock names,
+ * folded into the dense [0, commit_cycle) buffer — silence stays in
+ * unvisited regions by construction. Segment-general: each map seam
+ * jumps the destination; the single-segment window degenerates to one
+ * seam at (period − anchor_off) with the tail landing at
+ * [commit_cycle − anchor_off, commit_cycle).
+ *
+ * Precondition: 0 ≤ heard_i < map.period() (the one-period cap) and
+ * map.period() ≤ commit_cycle.
+ */
+inline int64_t throughMapDest(int64_t heard_i, int64_t anchor_off,
+                              const TimeMap &map, int64_t commit_cycle) {
+  const int64_t origin_inner = map.mapOffset(anchor_off);
+  const int64_t inner = map.mapOffset(anchor_off + heard_i);
+  int64_t d = inner - origin_inner;
+  if (commit_cycle > 0) d = ((d % commit_cycle) + commit_cycle) % commit_cycle;
+  return d;
 }
 
 struct SnapResult {

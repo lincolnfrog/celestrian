@@ -66,8 +66,12 @@ void ClipNode::control(const float *const *input_channels,
     const int64_t Q =
         context.quantum > 0 ? context.quantum : getEffectiveQuantum();
     if (Q > 0) {
-      const int64_t boundary =
-          timing::nextStopBoundary(write_position.load(), Q);
+      int64_t boundary = timing::nextStopBoundary(write_position.load(), Q);
+      // Through-map: one map pass is the hard ceiling (ruling 2) — a
+      // stop in the final stretch clamps to the period itself.
+      if (through_map_capture_) {
+        boundary = std::min(boundary, take_map_.period());
+      }
       awaiting_stop_at.store(boundary);
       rec_state_.store((int)RecState::PendingStop);
       RtLog::instance().post("ClipNode: PendingStop at B=%lld (L=%lld)",
@@ -133,24 +137,31 @@ void ClipNode::control(const float *const *input_channels,
 
       if (src < available_end) {
         const int wp = write_position.load();
-        const int space = buffer.getNumSamples() - wp;
-        const int n =
-            (int)std::min<int64_t>(available_end - src, (int64_t)space);
+        int64_t space = buffer.getNumSamples() - wp;
+        // One-period cap (through-map, ruling 2): heard length never
+        // exceeds one map pass — no overdub by construction.
+        if (through_map_capture_) {
+          space = std::min(space, take_map_.period() - wp);
+        }
+        const int n = (int)std::min<int64_t>(available_end - src, space);
         if (n > 0) {
           const int ch = std::min(preferred_input_channel,
                                   context.prerecord_ring_channels - 1);
           const float *ring = context.prerecord_ring[ch];
           const int idx = (int)(src % ring_len);
           const int first = std::min(n, ring_len - idx);
-          buffer.copyFrom(0, wp, ring + idx, first);
-          if (n > first) buffer.copyFrom(0, wp + first, ring, n - first);
+          captureWrite(buffer, wp, ring + idx, first);
+          if (n > first) captureWrite(buffer, wp + first, ring, n - first);
           capture_next_clock_ = src + n;
 
-          // Peak tracking over the captured region
+          // Peak tracking over the captured region — iterate the SOURCE
+          // (the through-map fold scatters destinations).
           float blockPeak = 0.0f;
-          const float *written = buffer.getReadPointer(0) + wp;
-          for (int i = 0; i < n; ++i) {
-            blockPeak = std::max(blockPeak, std::abs(written[i]));
+          for (int i = 0; i < first; ++i) {
+            blockPeak = std::max(blockPeak, std::abs(ring[idx + i]));
+          }
+          for (int i = first; i < n; ++i) {
+            blockPeak = std::max(blockPeak, std::abs(ring[i - first]));
           }
           last_block_peak.store(blockPeak);
           if (blockPeak > current_max_peak.load()) {
@@ -170,17 +181,32 @@ void ClipNode::control(const float *const *input_channels,
               return;
             }
           }
+          // One-period cap wall: a full map pass auto-finishes CLEANLY
+          // (the D4 wall-guard discipline; the pass end IS a boundary).
+          if (through_map_capture_ && end_p >= take_map_.period()) {
+            commit_master_pos.store(context.master_pos);
+            RtLog::instance().post(
+                "ClipNode: through-map take completed one map period — "
+                "committing");
+            commitRecording(-1, &context);
+            return;
+          }
         }
       }
     } else if (context.is_recording && input_channels != nullptr &&
                num_input_channels > 0) {
       const float *in = input_channels[std::min(preferred_input_channel,
                                                 num_input_channels - 1)];
-      int samples_to_write = std::min(
-          context.num_samples, buffer.getNumSamples() - write_position.load());
+      int64_t space = buffer.getNumSamples() - write_position.load();
+      // One-period cap (through-map, ruling 2) — see the ring path.
+      if (through_map_capture_) {
+        space = std::min(space, take_map_.period() - write_position.load());
+      }
+      const int samples_to_write =
+          (int)std::min<int64_t>(context.num_samples, space);
 
       if (samples_to_write > 0) {
-        buffer.copyFrom(0, write_position.load(), in, samples_to_write);
+        captureWrite(buffer, write_position.load(), in, samples_to_write);
 
         // Peak tracking
         float blockPeak = 0.0f;
@@ -210,10 +236,44 @@ void ClipNode::control(const float *const *input_channels,
             return;
           }
         }
+        // One-period cap wall (through-map) — see the ring path.
+        if (through_map_capture_ && end_p >= take_map_.period()) {
+          commit_master_pos.store(context.master_pos);
+          RtLog::instance().post(
+              "ClipNode: through-map take completed one map period — "
+              "committing");
+          commitRecording(-1, &context);
+          return;
+        }
         // Note: if samples_to_write <= 0, buffer is full - just stop writing
         // Do NOT call commitRecording here; wait for explicit stop
       }
     }
+  }
+}
+
+void ClipNode::captureWrite(juce::AudioBuffer<float> &buffer,
+                            int64_t heard_pos, const float *src, int n) {
+  if (!through_map_capture_) {
+    buffer.copyFrom(0, (int)heard_pos, src, n);
+    return;
+  }
+  // THROUGH-MAP FOLD (time_maps.md §3): destinations follow the mapped
+  // clock — content lands at the inner positions the performance was
+  // heard against, folded into the dense [0, C) buffer. Each map seam
+  // jumps the write cursor (bounded by the map's segment count per
+  // pass; allocation-free). heard_pos < period by the one-period cap.
+  const int64_t C = map_commit_cycle_.load();
+  int64_t pos = heard_pos;
+  while (n > 0) {
+    const int64_t seam = take_map_.seamDistance(map_anchor_off_ + pos);
+    const int run = (int)std::min<int64_t>(n, seam > 0 ? seam : n);
+    const int64_t dest =
+        timing::throughMapDest(pos, map_anchor_off_, take_map_, C);
+    buffer.copyFrom(0, (int)dest, src, run);
+    pos += run;
+    src += run;
+    n -= run;
   }
 }
 
@@ -354,6 +414,53 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
     return;
   }
 
+  // === THROUGH-MAP ARM (time_maps.md phase 2): an enclosing ACTIVE
+  // map shapes this take. Arm math runs in HEARD time on the map
+  // period's grid (ruling 2: the map IS the context loop), anchored at
+  // the heard grid anchor; the chosen boundary then maps to an
+  // inner-time origin through m (§3 arm/anchor semantics). The trigger
+  // clock is the INVARIANT island clock — the folded master_pos wraps
+  // every map period and never crosses a target at/past the map's end.
+  // The Q15 origin fold is SUBSUMED here: a through-map origin is
+  // already an inner-time fact inside one map pass — there are no
+  // audibly-equivalent intrinsic slots to choose among.
+  if (map_commit_cycle_.load() > 0 && context.map.active()) {
+    const int64_t period = context.map.period();
+    int64_t heard = context.island_pos -
+                    (context.input_latency + context.output_latency);
+    if (heard < 0) heard = 0;
+    int64_t rel_h = heard - context.map_heard_epoch;
+    if (rel_h < 0) rel_h = 0;
+
+    const int64_t t_rel = timing::armTarget(rel_h, Q, period);
+    const int64_t heard_target = context.map_heard_epoch + t_rel;
+    // The anchor's inner position, absolute: segments select view
+    // positions of the mapping node's received frame, whose cycle top
+    // is map_heard_epoch (the one-frame rule, time_maps.md §2).
+    const int64_t origin =
+        context.map_heard_epoch + context.map.mapOffset(t_rel);
+
+    origin_samples.store(origin);
+    awaiting_start_at.store(heard_target);
+
+    const bool reached =
+        heard >= heard_target || heard_target - heard < 512 ||
+        (context.island_pos < heard_target &&
+         context.island_pos + context.num_samples >= heard_target);
+    if (reached) {
+      // Freeze the take's map facts before capture begins.
+      take_map_ = context.map;
+      map_anchor_off_ = ((t_rel % period) + period) % period;
+      through_map_capture_ = true;
+      beginCapture(context, heard_target, heard);
+      RtLog::instance().post(
+          "ClipNode: Through-map recording started (heard target %lld, "
+          "inner origin %lld)",
+          (long long)heard_target, (long long)origin);
+    }
+    return;
+  }
+
   // ALL cycle-relative math happens in the ISLAND EPOCH frame — mixing
   // absolute-frame math with the epoch-rebased view was the field bug
   // "clip 3 anchored at 3Q instead of 0Q". The INVARIANT epoch rides
@@ -451,7 +558,7 @@ void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
   capture_next_clock_ = context.input_clock + (target - compensated_pos);
 }
 
-void ClipNode::startRecording() {
+void ClipNode::startRecording(int64_t through_map_commit_cycle) {
   if (recState() != RecState::Idle) return;  // idempotent; keeps the
                                              // island take counter exact
 
@@ -466,7 +573,19 @@ void ClipNode::startRecording() {
     if (buffer.getNumSamples() < want) {
       buffer.setSize(1, want, false, false, false);
     }
+    // THROUGH-MAP take (time_maps.md phase 2, ruling 2): the commit is
+    // a dense [0, C) buffer with LITERAL SILENCE in unvisited regions —
+    // zero exactly that span now (message thread, clip idle; an
+    // audio-thread memset at commit would violate the RT contract).
+    // The reservation tail past C stays uncleared per D4.
+    if (through_map_commit_cycle > 0) {
+      buffer.clear(0, 0,
+                   (int)std::min<int64_t>(through_map_commit_cycle,
+                                          buffer.getNumSamples()));
+    }
   }
+  map_commit_cycle_.store(through_map_commit_cycle);
+  through_map_capture_ = false;
   cap_hit_.store(false);
   write_position.store(0);
   read_position.store(0);
@@ -490,6 +609,7 @@ void ClipNode::stopRecording() {
       // into a phantom awaiting-stop before capture had even begun.)
       rec_state_.store((int)RecState::Idle);
       awaiting_start_at.store(0);
+      map_commit_cycle_.store(0);
       rootNode()->takeCancelled();
       juce::Logger::writeToLog("ClipNode: Arm cancelled before capture");
       break;
@@ -533,7 +653,22 @@ void ClipNode::commitRecording(int64_t final_duration,
     int64_t Q = ctx && ctx->quantum > 0 ? ctx->quantum : getEffectiveQuantum();
     int64_t duration = L;
 
-    if (Q > 0 && final_duration <= 0) {
+    const int64_t map_C =
+        through_map_capture_ ? map_commit_cycle_.load() : 0;
+    if (map_C > 0) {
+      // THROUGH-MAP COMMIT (time_maps.md ruling 2): the take IS the
+      // mapping node's full inner cycle — one dense buffer, zeroed at
+      // arm, content where the mapped clock wrote, literal silence in
+      // unvisited regions. Heard-time snapping already chose WHEN this
+      // commit fired (stop boundary / one-period cap); C is WHAT
+      // commits, so no duration snap applies.
+      duration = map_C;
+      loop_start_samples.store(0);
+      loop_end_samples.store(duration);
+      RtLog::instance().post(
+          "ClipNode: Through-map commit — C=%lld (heard L=%lld)",
+          (long long)map_C, (long long)L);
+    } else if (Q > 0 && final_duration <= 0) {
       // Hysteresis snapping — shared math in timing.h.
       auto snap = timing::snapCommittedDuration(L, Q);
       duration = snap.duration;
@@ -599,6 +734,12 @@ void ClipNode::commitRecording(int64_t final_duration,
     // §2.3: the commit block renders silent (see render()); playback
     // begins on the next block, as it always has.
     committed_this_block_.store(true);
+
+    // Through-map take state ends with the take.
+    map_commit_cycle_.store(0);
+    through_map_capture_ = false;
+    take_map_ = timing::TimeMap::none();
+    map_anchor_off_ = 0;
   }
 }
 

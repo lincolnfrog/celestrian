@@ -44,7 +44,10 @@
     { "name": "second cycle mid-Q: 6500 in 4Q context -> 7000", "rel": 6500, "quantum": 1000, "contextLoop": 4000, "expected": 7000 },
     { "name": "unsnapped context: grid restarts at context top (5000 in 4600 ctx -> 5600)", "rel": 5000, "quantum": 1000, "contextLoop": 4600, "expected": 5600 },
     { "name": "rel 0 -> 0", "rel": 0, "quantum": 1000, "contextLoop": 4000, "expected": 0 },
-    { "name": "no quantum -> immediate (rel)", "rel": 777, "quantum": 0, "contextLoop": 0, "expected": 777 }
+    { "name": "no quantum -> immediate (rel)", "rel": 777, "quantum": 0, "contextLoop": 0, "expected": 777 },
+    { "name": "through-window context: 2Q map period is the grid", "rel": 1500, "quantum": 1000, "contextLoop": 2000, "expected": 2000 },
+    { "name": "through-window context: second pass mid-Q -> 3000", "rel": 2100, "quantum": 1000, "contextLoop": 2000, "expected": 3000 },
+    { "name": "through-window context: non-Q-multiple punch period (2600)", "rel": 2500, "quantum": 1000, "contextLoop": 2600, "expected": 2600 }
   ],
 
   "qtime_to_samples_cases": [
@@ -105,5 +108,77 @@
     { "name": "0.68Q -> outside tolerance, loop region defaults to Q/2", "recordedLength": 30000, "quantum": 44100, "expectedDuration": 30000, "expectedLoopEnd": 22050, "expectedSnapped": false },
     { "name": "4Q + 3600 samples -> Late Snap down to 4Q", "recordedLength": 180000, "quantum": 44100, "expectedDuration": 176400, "expectedLoopEnd": 176400, "expectedSnapped": true },
     { "name": "odd Q: near Q/8 snaps to the law's boundary (44101/8 -> 5513)", "recordedLength": 5500, "quantum": 44101, "expectedDuration": 5513, "expectedLoopEnd": 5513, "expectedSnapped": true }
+  ],
+
+  "through_map_arm_cases": [
+    { "name": "mid-window arm mid-Q: heard next Q, inner inside window", "relHeard": 500, "quantum": 1000, "segments": [[1000, 3000]], "expectedHeardTargetRel": 1000, "expectedInnerOffset": 2000 },
+    { "name": "final Q of window -> next pass top (inner = window start)", "relHeard": 1999, "quantum": 1000, "segments": [[1000, 3000]], "expectedHeardTargetRel": 2000, "expectedInnerOffset": 1000 },
+    { "name": "exactly on a heard boundary -> itself", "relHeard": 1000, "quantum": 1000, "segments": [[1000, 3000]], "expectedHeardTargetRel": 1000, "expectedInnerOffset": 2000 },
+    { "name": "window not at frame top: pass top maps to window start", "relHeard": 250, "quantum": 1000, "segments": [[500, 1500]], "expectedHeardTargetRel": 1000, "expectedInnerOffset": 500 },
+    { "name": "cells {Q1,Q3-Q5}: heard 2.5Q arms at heard 3Q = inner 4Q", "relHeard": 2500, "quantum": 1000, "segments": [[0, 1000], [2000, 5000]], "expectedHeardTargetRel": 3000, "expectedInnerOffset": 4000 },
+    { "name": "sub-Q punch: anchor lands inside a visited segment", "relHeard": 1400, "quantum": 1000, "segments": [[0, 1500], [2500, 4000]], "expectedHeardTargetRel": 2000, "expectedInnerOffset": 3000 }
+  ],
+
+  "through_map_dest_cases": [
+    { "name": "anchor at window top: identity fold", "segments": [[1000, 3000]], "anchorOff": 0, "commitCycle": 4000,
+      "probes": [ { "i": 0, "dest": 0 }, { "i": 1000, "dest": 1000 }, { "i": 1999, "dest": 1999 } ] },
+    { "name": "mid-window anchor: one seam, tail lands at [C-a, C)", "segments": [[1000, 3000]], "anchorOff": 500, "commitCycle": 4000,
+      "probes": [
+        { "i": 0, "dest": 0 },
+        { "i": 1499, "dest": 1499 },
+        { "i": 1500, "dest": 3500 },
+        { "i": 1999, "dest": 3999 }
+      ] },
+    { "name": "cells {Q1,Q3-Q5} anchored mid-Q1: two seams across the pass", "segments": [[0, 1000], [2000, 5000]], "anchorOff": 500, "commitCycle": 5000,
+      "probes": [
+        { "i": 0, "dest": 0 },
+        { "i": 499, "dest": 499 },
+        { "i": 500, "dest": 1500 },
+        { "i": 3499, "dest": 4499 },
+        { "i": 3500, "dest": 4500 },
+        { "i": 3999, "dest": 4999 }
+      ] }
+  ],
+
+  "time_map_cases": [
+    { "name": "single window [1000,2000) — today's loop window", "segments": [[1000, 2000]], "expectedPeriod": 1000,
+      "probes": [
+        { "h": 0, "inner": 1000, "seam": 1000 },
+        { "h": 500, "inner": 1500, "seam": 500 },
+        { "h": 999, "inner": 1999, "seam": 1 },
+        { "h": 1000, "inner": 1000, "seam": 1000 },
+        { "h": 2500, "inner": 1500, "seam": 500 },
+        { "h": -1, "inner": 1999, "seam": 1 }
+      ] },
+    { "name": "window at frame top [0,3000)", "segments": [[0, 3000]], "expectedPeriod": 3000,
+      "probes": [
+        { "h": 0, "inner": 0, "seam": 3000 },
+        { "h": 2999, "inner": 2999, "seam": 1 },
+        { "h": 3000, "inner": 0, "seam": 3000 }
+      ] },
+    { "name": "cells {Q1, Q3-Q5} skip Q2 (owner case): [[0,1000],[2000,5000]]", "segments": [[0, 1000], [2000, 5000]], "expectedPeriod": 4000,
+      "probes": [
+        { "h": 0, "inner": 0, "seam": 1000 },
+        { "h": 999, "inner": 999, "seam": 1 },
+        { "h": 1000, "inner": 2000, "seam": 3000 },
+        { "h": 2500, "inner": 3500, "seam": 1500 },
+        { "h": 3999, "inner": 4999, "seam": 1 },
+        { "h": 4000, "inner": 0, "seam": 1000 },
+        { "h": 9500, "inner": 2500, "seam": 2500 }
+      ] },
+    { "name": "sub-Q punch cut [1500,2500) removed from 4Q: [[0,1500],[2500,4000]]", "segments": [[0, 1500], [2500, 4000]], "expectedPeriod": 3000,
+      "probes": [
+        { "h": 1499, "inner": 1499, "seam": 1 },
+        { "h": 1500, "inner": 2500, "seam": 1500 },
+        { "h": 2999, "inner": 3999, "seam": 1 },
+        { "h": 3000, "inner": 0, "seam": 1500 }
+      ] },
+    { "name": "inner-adjacent segments [[0,1000],[1000,2000]]: boundary still a seam", "segments": [[0, 1000], [1000, 2000]], "expectedPeriod": 2000,
+      "probes": [
+        { "h": 500, "inner": 500, "seam": 500 },
+        { "h": 999, "inner": 999, "seam": 1 },
+        { "h": 1000, "inner": 1000, "seam": 1000 },
+        { "h": 1500, "inner": 1500, "seam": 500 }
+      ] }
   ]
 }

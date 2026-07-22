@@ -62,6 +62,18 @@
                 <div id="playhead"></div>
             </div>
             <div id="empty-state">No takes yet — hit record, or + New Stack to build a kit.</div>
+            <!-- Keep in lockstep with index.html: initSessionView binds
+                 these (the harness crashed at init when create-row landed
+                 only in index.html — 2026-07-21). -->
+            <div id="selection-bar" class="mono">
+                <span class="sel-count"></span>
+                <button class="sel-group">Group</button>
+                <button class="sel-clear" title="Esc">Clear</button>
+            </div>
+            <div id="create-row">
+                <button id="create-track-btn"
+                        title="Add a track — drag one track onto another to group them">＋ Track</button>
+            </div>
         </div>
 
         <!-- STATUS STRIP -->

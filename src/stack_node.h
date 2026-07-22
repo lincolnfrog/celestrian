@@ -45,7 +45,10 @@ class StackNode : public AudioNode {
   // §2.3 control/render split: control recurses decisions/capture down
   // the (snapshot) children with the window-mapped clock; render sums
   // children renders through the same map + the group fx rack. Both
-  // iterate the whole-graph snapshot (ProcessContext.snap).
+  // iterate the whole-graph snapshot (ProcessContext.snap). When this
+  // stack's map is ACTIVE, both split the block into runs at map seams
+  // (time_maps.md §5) — the *Children helpers hold the pre-split
+  // bodies.
   void control(const float *const *input_channels, int num_input_channels,
                const ProcessContext &context) override;
   void render(float *const *output_channels, int num_output_channels,
@@ -216,6 +219,17 @@ class StackNode : public AudioNode {
    * primitive, shared by BOTH phases so control and render see the
    * same child clock. `self`/`context_loop` are set by the caller. */
   ProcessContext childContext(const ProcessContext &context) const;
+
+  // Pre-split phase bodies (see control/render): each receives a
+  // context whose [master_pos, +num_samples) crosses no map seam.
+  void controlChildren(const float *const *input_channels,
+                       int num_input_channels, const ProcessContext &context);
+  void renderChildren(float *const *output_channels, int num_output_channels,
+                      const ProcessContext &context) const;
+
+  // Channel-pointer bound for the seam split's shifted-pointer arrays
+  // (stack storage; devices never approach this).
+  static constexpr int kMaxSplitChannels = 64;
 
   // Island state (P0-3): explicit, stored once — never derived from
   // child durations (deriving caused the retroactive-Q bug class).

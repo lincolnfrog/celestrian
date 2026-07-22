@@ -107,8 +107,8 @@ inline int64_t snapIntrinsicDuration(const GraphSnapshot &s, int idx) {
  * and stacks the LCM of children's effective periods. */
 inline int64_t snapEffectivePeriod(const GraphSnapshot &s, int idx) {
   const auto &e = s.entries[(size_t)idx];
-  if (e.node->isLoopWindowActive()) {
-    return e.node->getLoopEnd() - e.node->getLoopStart();
+  if (const timing::TimeMap map = e.node->activeTimeMap(); map.active()) {
+    return map.period();
   }
   if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
   int64_t composite = 0;

@@ -187,19 +187,44 @@ with kernel.md:
 
 ## Tier 3: The Unifying Primitives (audit §2)
 
-- [ ] **Reify `TimeMap` as a type** — clips and stacks share one
-  implementation; window state (`none|active|bypassed` + segments)
-  becomes its data. *(Updated 2026-07-19: the clip/stack window-phase
-  asymmetry this entry cited is RESOLVED — clip windows now anchor at
-  origin + loopStart, the fractal twin of the stack's re-base — so the
-  reify is pure unification for the phase-3 multi-segment editor, no
-  longer a latent-bug fix. Urgency downgraded accordingly.)*
-- [ ] **time_maps.md phase 2** — recording through an active map (heard-
-  time arm math, one-period cap, dense buffers with silence in
-  unvisited regions — semantics already owner-ratified).
+- [x] **Reify `TimeMap` as a type** — ✅ done 2026-07-21 (pulled
+  forward as phase 2's foundation per owner direction: phase 2 must be
+  segment-general from day one): `src/time_map.h` ↔ `ui/js/time_map.js`
+  POD value type (segments, `period`/`mapOffset`/`seamDistance`),
+  pinned by `time_map_cases` goldens incl. multi-segment + sub-Q punch
+  vectors; consumed by `childContext`, `getEffectivePeriod`,
+  `snapEffectivePeriod`. Multi-segment STORAGE (`setSegments` bridge,
+  atomic immutable segment publication, session_io) rides with the
+  phase-3 editor — the math and every record/playback consumer are
+  already segment-general.
+- [x] **time_maps.md phase 2** — ✅ done 2026-07-21: recording through
+  an active map, end to end. Heard-time arm on the map-period grid
+  (`island_pos` invariant clock + map facts on ProcessContext; Q15
+  fold subsumed), capture fold through the frozen map
+  (`timing::throughMapDest`, dense zero-initialized `[0, C)` commit,
+  literal silence in unvisited regions), one-period cap (auto-finish,
+  clamped stops), commit at the mapping node's full inner cycle (no
+  epoch re-base), compaction keeps `max(recordedLength, duration)`.
+  PLUS: sub-block seam splitting in StackNode control/render (§5 —
+  playback through maps now sample-exact across mid-block seams,
+  pinned by the I1 block round-trip test); nested-active-map arms
+  refused (phase-3 scope); mid-take map edits REFUSED (owner-ruled;
+  siblings editable); UI cue (ruling 5: "⟲ NQ map" rail cue + amber
+  capped bar + "⟲ map live" on the group) and the extension-2
+  sweep-vs-bracket fix for sole top-level stack windows. Latent
+  `armTarget` bug fixed en route (final-partial-Q arm in an unsnapped
+  context folded into the past; now arms at the context top — both
+  mirrors, golden-pinned). Engine + mock + VM in lockstep. Pinned by
+  `tests/time_map_record_tests.cc` + `ui/js/tests/map_record.test.mjs`;
+  verified in the mock preview. (Also fixed: `index_test.html` had
+  drifted from `index.html` — missing `create-row`/`selection-bar`
+  crashed the harness at init since 2026-07-19g.)
 - [ ] **time_maps.md phase 3** — cell mode + punch mode editor (seam
   theorem: cuts groove-transparent iff removed length ≡ 0 mod Q);
-  zero-crossing micro-snap; seam audition.
+  zero-crossing micro-snap; seam audition. Engine remainder is only
+  multi-segment storage + `setSegments` bridge + session_io segments
+  (record/playback are already segment-general, see above); includes
+  the windowed-group-children heard-frame unroll (view_model.js TODO).
 - [ ] **Fractal output stage** — per-node `sum/render → time-map →
   gain/pan → fx → mute/solo`, applied identically at every level (I5).
   Adds the missing **gain** primitive (no volume fader exists!),
