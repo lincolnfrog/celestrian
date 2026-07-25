@@ -68,6 +68,12 @@ target_link_libraries(Celestrian PRIVATE
 target_compile_definitions(Celestrian PRIVATE
     JUCE_WEB_BROWSER=1
     JUCE_USE_WIN_WEBVIEW2=1
+    # NEEDS_WEBVIEW2 links WebView2LoaderStatic.lib, so JUCE must call
+    # CreateCoreWebView2EnvironmentWithOptions directly. Without this it
+    # tries LoadLibrary("WebView2Loader.dll"), fails (no such DLL beside
+    # the exe), and silently falls back to the legacy IE backend — which
+    # ignores the resource provider and shows "Can't reach this page".
+    JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
 )
 
 # Copy UI files to the build directory (for development)
