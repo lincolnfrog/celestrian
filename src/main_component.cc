@@ -25,6 +25,14 @@ MainComponent::MainComponent()
     : web_browser(
           juce::WebBrowserComponent::Options{}
               .withNativeIntegrationEnabled()
+#if JUCE_WINDOWS
+              // On Windows JUCE's default backend is Internet Explorer, which
+              // ignores the resource provider entirely (the UI would never
+              // load). WebView2 has to be opted into explicitly.
+              .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+              .withWinWebView2Options(
+                  juce::WebBrowserComponent::Options::WinWebView2{})
+#endif
               .withResourceProvider(
                   [this](const juce::String &path)
                       -> std::optional<juce::WebBrowserComponent::Resource> {

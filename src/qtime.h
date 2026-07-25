@@ -4,6 +4,10 @@
 #include <cstdint>
 #include <cstdlib>
 
+#if !defined(__SIZEOF_INT128__)
+#include <intrin.h>  // MSVC: _umul128 / _div128 for the Int128 fallback below
+#endif
+
 /**
  * QTime — exact rational musical time in units of the island quantum Q.
  *
@@ -26,6 +30,82 @@
  * effects, audio-thread safe.
  */
 namespace celestrian::timing {
+
+// ---------------------------------------------------------------------------
+// Portable 128-bit signed intermediate.
+//
+// The rational-time math below needs a wider-than-64-bit intermediate for a
+// handful of overflow-safe operations (cross-multiply compares in qcmp; the
+// 2·num·q_samples product and floor-division in toSamples). Clang and GCC
+// provide native __int128; MSVC does not, so we supply a minimal fallback
+// backed by MSVC's 128-bit intrinsics. int128_t is the alias used everywhere
+// below, so the two paths are otherwise identical.
+// ---------------------------------------------------------------------------
+#if defined(__SIZEOF_INT128__)
+using int128_t = __int128;  // GCC/Clang: native, zero-cost
+#else
+namespace detail {
+// Two's-complement signed 128-bit. Only the operations qtime.h actually uses
+// are implemented. Division assumes the divisor fits in int64 (true for every
+// call site here: divisors are 2·den with den a small positive int64).
+struct Int128 {
+  uint64_t lo = 0;
+  int64_t hi = 0;
+
+  Int128() = default;
+  Int128(int64_t v) : lo(static_cast<uint64_t>(v)), hi(v < 0 ? -1 : 0) {}
+  Int128(int64_t high, uint64_t low) : lo(low), hi(high) {}
+
+  explicit operator int64_t() const { return static_cast<int64_t>(lo); }
+};
+
+inline bool operator<(Int128 a, Int128 b) {
+  return a.hi != b.hi ? a.hi < b.hi : a.lo < b.lo;
+}
+inline bool operator>(Int128 a, Int128 b) { return b < a; }
+inline bool operator!=(Int128 a, Int128 b) { return a.hi != b.hi || a.lo != b.lo; }
+inline bool operator==(Int128 a, Int128 b) { return !(a != b); }
+
+inline Int128 operator+(Int128 a, Int128 b) {
+  const uint64_t lo = a.lo + b.lo;
+  const int64_t hi = a.hi + b.hi + (lo < a.lo ? 1 : 0);  // carry
+  return Int128(hi, lo);
+}
+
+inline Int128 operator-(Int128 a, Int128 b) {
+  const uint64_t lo = a.lo - b.lo;
+  const int64_t hi = a.hi - b.hi - (a.lo < b.lo ? 1 : 0);  // borrow
+  return Int128(hi, lo);
+}
+
+// Low 128 bits of the product. Computing modulo 2^128 on the two's-complement
+// representations yields the correct signed result.
+inline Int128 operator*(Int128 a, Int128 b) {
+  uint64_t hh;
+  const uint64_t lo = _umul128(a.lo, b.lo, &hh);
+  const uint64_t hi = hh + a.lo * static_cast<uint64_t>(b.hi) +
+                      static_cast<uint64_t>(a.hi) * b.lo;
+  return Int128(static_cast<int64_t>(hi), lo);
+}
+
+// Signed 128/64 division (divisor fits int64; quotient fits int64 at all call
+// sites). Truncates toward zero, matching native __int128 '/' and '%'.
+inline Int128 operator/(Int128 a, Int128 b) {
+  int64_t remainder;
+  const int64_t q = _div128(a.hi, static_cast<int64_t>(a.lo),
+                            static_cast<int64_t>(b.lo), &remainder);
+  return Int128(q);
+}
+
+inline Int128 operator%(Int128 a, Int128 b) {
+  int64_t remainder;
+  _div128(a.hi, static_cast<int64_t>(a.lo), static_cast<int64_t>(b.lo),
+          &remainder);
+  return Int128(remainder);
+}
+}  // namespace detail
+using int128_t = detail::Int128;  // MSVC fallback
+#endif
 
 /**
  * value = (num / den) · Q.
@@ -57,11 +137,11 @@ inline int64_t lcm(int64_t a, int64_t b) {
 }
 
 namespace detail {
-/** Floor division for __int128 (C++ '/' truncates toward zero). */
-inline int64_t floordiv128(__int128 a, __int128 b) {
-  __int128 q = a / b;
-  const __int128 r = a % b;
-  if (r != 0 && ((r < 0) != (b < 0))) --q;
+/** Floor division for int128_t (C++ '/' truncates toward zero). */
+inline int64_t floordiv128(int128_t a, int128_t b) {
+  int128_t q = a / b;
+  const int128_t r = a % b;
+  if (r != 0 && ((r < 0) != (b < 0))) q = q - int128_t(1);
   return (int64_t)q;
 }
 }  // namespace detail
@@ -83,8 +163,8 @@ inline bool qeq(QTime a, QTime b) {
 
 /** Three-way compare: −1, 0, +1 as a <, ==, > b. Exact (no division). */
 inline int qcmp(QTime a, QTime b) {
-  const __int128 lhs = (__int128)a.num * b.den;
-  const __int128 rhs = (__int128)b.num * a.den;
+  const int128_t lhs = (int128_t)a.num * b.den;
+  const int128_t rhs = (int128_t)b.num * a.den;
   return lhs < rhs ? -1 : (lhs > rhs ? 1 : 0);
 }
 
@@ -125,8 +205,8 @@ inline QTime qlcm(QTime a, QTime b) {
  */
 inline int64_t toSamples(QTime t, int64_t q_samples) {
   if (q_samples <= 0) return 0;
-  const __int128 n2 = (__int128)2 * t.num * q_samples + t.den;
-  const __int128 d2 = (__int128)2 * t.den;
+  const int128_t n2 = (int128_t)2 * t.num * q_samples + t.den;
+  const int128_t d2 = (int128_t)2 * t.den;
   return detail::floordiv128(n2, d2);
 }
 
