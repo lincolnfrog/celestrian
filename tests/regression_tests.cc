@@ -1422,15 +1422,18 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
                    (int64_t)0,
                    "take anchors at the heard/frame top, not a die-roll slot");
 
-      // Nothing else moved: epoch unchanged (no cycle growth), clip 2's
-      // anchor untouched.
+      // Nothing else moved: epoch unchanged (no cycle growth). Clip 2's
+      // anchor may rotate by WHOLE Qs only — the playing window edit
+      // re-anchors origin for phase continuity (2026-07-25h: the
+      // sounding sample keeps sounding), and whole-Q geometry means the
+      // anchor's GRID PHASE (mod Q) is exactly preserved — the
+      // anchoring law's surviving invariant (I4 as amended).
       expectEquals((int64_t)(double)engine.getGraphState()
                        .getDynamicObject()
                        ->getProperty("islandEpoch"),
                    epoch, "no epoch move (cycle did not grow)");
-      expectEquals(((clipProp(1, "origin") - epoch) % (4 * Q) + 4 * Q) %
-                       (4 * Q),
-                   (int64_t)0, "clip 2's anchor unchanged (I4)");
+      expectEquals(((clipProp(1, "origin") - epoch) % Q + Q) % Q,
+                   (int64_t)0, "clip 2's anchor keeps its grid phase");
     }
   }
 };

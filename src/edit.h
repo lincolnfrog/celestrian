@@ -43,8 +43,13 @@ struct Edit {
     Explode,     // undo of Combine: dissolve stack `uuid`, restore kids
     Rename,      // s1 = name
     Mute,        // b1 = muted
-    LoopPoints,  // d1 = start, d2 = end (samples)
+    LoopPoints,  // d1 = start, d2 = end (samples); may carry a removed
+                 // multi-segment override back on undo (setsMap/tmap)
     LoopBypass,  // b1 = bypassed
+    Segments,    // tmap = the full multi-segment map (phase 3). Applied
+                 // by NORMALIZATION: n≥2 installs an immutable override,
+                 // n==1 writes the single-window atomics, n==0 clears
+                 // both. The inverse captures the RAW old storage.
     Input,       // d1 = channel index
     Position,    // d1 = x, d2 = y
     CollapseTake,  // Q13 lock-collapse: the clip's window BECOMES the
@@ -88,9 +93,19 @@ struct Edit {
   bool setsOrigin = false;
   int64_t iorg = 0;    // clip origin to set
 
+  // Multi-segment map payload (phase 3): the map value for Segments
+  // edits, and the override a LoopPoints undo reinstalls (setsMap).
+  // POD by design — edits stay move-only without custom machinery.
+  bool setsMap = false;
+  timing::TimeMap tmap{};
+
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;
   std::unique_ptr<AudioNode> node2;
+  // A multi-segment lock-collapse SPLICES the kept material into a new
+  // buffer; its inverse OWNS the pre-splice buffer (same write-once
+  // safety argument as owned subtrees). Retired, never freed inline.
+  std::unique_ptr<juce::AudioBuffer<float>> buffer;
 
   Edit() = default;
   Edit(Kind k) : kind(k) {}

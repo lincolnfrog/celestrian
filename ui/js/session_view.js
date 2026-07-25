@@ -16,6 +16,9 @@ import { generateCompositeWaveform } from './composite_waveform.js';
 import { calculateStackLCM } from './timeline_model.js';
 import { liveBoost, PEAKS_PER_SECOND } from './live_peaks.js';
 import { windowDragTarget } from './view_model.js';
+import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
+         slideCutTarget } from './map_edit.js';
+import { mapOffset } from './time_map.js';
 import {
     forwardDelta, estimateVelocity, advancePosition, correctPosition,
 } from './playhead_clock.js';
@@ -26,6 +29,15 @@ import {
 } from './fx_viz.js';
 
 const pct = (q, cycleQ) => (q / cycleQ) * 100 + '%';
+
+/* Q labels: snap fp noise to the whole Q it means (an exactly-1Q map
+ * once printed "0.9999…Q" — field 2026-07-25); honest fractions keep
+ * two decimals. */
+const fmtQ = q => {
+    const r = Math.round(q);
+    if (Math.abs(q - r) < 1e-6) return String(r);
+    return String(Math.round(q * 100) / 100);
+};
 
 /**
  * Idempotent DOM writes. Assigning textContent/innerHTML REPLACES the
@@ -142,8 +154,8 @@ function patchRuler(vm) {
             lb.className = 'tick-label' + (t.q === vm.cycleQ ? ' cycle-end' : '');
             lb.style.left = pct(t.q, vm.cycleQ);
             lb.textContent = t.q === vm.cycleQ
-                ? vm.cycleQ + 'Q' + (vm.frameExtended ? '…' : ' ↺')
-                : t.q + 'Q';
+                ? fmtQ(vm.cycleQ) + 'Q' + (vm.frameExtended ? '…' : ' ↺')
+                : fmtQ(t.q) + 'Q';
             els.ruler.appendChild(lb);
         }
     });
@@ -310,6 +322,7 @@ function buildLane(lane) {
     fx.title = 'Effects: EQ · Compressor · Echo · Reverb';
     fx.addEventListener('click', () => cb.onToggleFx(lane.id));
     foot.appendChild(fx);
+
 
     // Recording input picker — clips only (Q7: group record captures
     // each child from ITS OWN input; a group has no input of its own)
@@ -601,7 +614,7 @@ function layersOf(body) {
  * what sounds") and draws in the cool ECHO tone — warm hues are
  * reserved for material (the take tile / the live bar). */
 function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live,
-                       pxPerSlot, src, isGhost) {
+                       pxPerSlot, src, isGhost, rotFrac) {
     let canvas = div.firstElementChild;
     if (!peaks || !peaks.length) {
         // Peaks can be transiently empty around a commit (cache regen /
@@ -620,8 +633,8 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live,
     const dk = peaks.length + ':' + Math.round(cssWidth) + ':' +
         Math.round(cssHeight) + ':' + isComposite + ':' + !!live + ':' +
         Math.round((pxPerSlot || 0) * 1000) + ':' +
-        (src ? src[0].toFixed(4) + '-' + src[1].toFixed(4) : '') +
-        ':' + !!isGhost;
+        (src ? src.map(r => r[0].toFixed(4) + '-' + r[1].toFixed(4)).join(',') : '') +
+        ':' + !!isGhost + ':' + ((rotFrac || 0).toFixed(4));
     if (div._peaksRef === peaks && div._dk === dk) return false;
 
     // CONTENT SWAP → CROSS-FADE: a new peaks array replacing an old one
@@ -653,14 +666,28 @@ function drawRepCanvas(div, peaks, cssWidth, cssHeight, isComposite, live,
         // Pinned, like the live bar: the div's transition reveals/clips
         // the canvas — stretching it mid-morph distorted the content
         canvas.style.width = Math.round(cssWidth) + 'px';
-        // Window echoes draw only their segment; all ghosts draw in the
-        // echo tone (audible repetitions — warm is for material)
+        // Map content draws only its segment(s) — `src` is a LIST of
+        // content ranges (phase 3: a multi-segment map concatenates its
+        // slices, the heard-time picture); all ghosts draw in the echo
+        // tone (audible repetitions — warm is for material).
         let drawPeaks = peaks;
         if (src) {
             const n = peaks.length;
-            const a = Math.max(0, Math.floor(src[0] * n));
-            const b = Math.min(n, Math.max(a + 1, Math.ceil(src[1] * n)));
-            drawPeaks = peaks.slice(a, b);
+            drawPeaks = [];
+            for (const [f0, f1] of src) {
+                const a = Math.max(0, Math.floor(f0 * n));
+                const b = Math.min(n, Math.max(a + 1, Math.ceil(f1 * n)));
+                for (let i = a; i < b; i++) drawPeaks.push(peaks[i]);
+            }
+            // Phase rotation (heard tiles sit on the frame grid; the
+            // loop's top appears at rotFrac of the tile — every sample
+            // stays at its true island phase with no wrap sliver).
+            const m = drawPeaks.length;
+            const rotN = Math.round(((rotFrac || 0) % 1) * m);
+            if (rotN > 0 && m > 1) {
+                drawPeaks = drawPeaks.slice(m - rotN)
+                    .concat(drawPeaks.slice(0, m - rotN));
+            }
         }
         // Tone follows GHOSTNESS, not segment-ness: a heard-view lane's
         // bright tile carries `src` (it draws the window segment) but is
@@ -696,6 +723,11 @@ function patchLaneBody(row, lane, vm, aux) {
     body.classList.toggle('is-recording', !!lane.recording);
     body.classList.toggle('armed-empty',
         lane.kind === 'clip' && !lane.recording && lane.reps.length === 0 && lane.armed);
+    // Inspector honesty (field 2026-07-22): an edit-view lane frames
+    // its raw take on its own scale — the global playhead is suppressed
+    // over it (stacking, see .inspecting) and the amber heard cursor is
+    // its one honest cursor.
+    body.classList.toggle('inspecting', !!lane.windowEditing);
 
     // Grid layer: rebuilt only when the frame's tick set changes
     reconcileMarkers(grid, 'g:' + cycleQ + ':' + vm.ruler.ticks.length, g => {
@@ -774,7 +806,9 @@ function patchLaneBody(row, lane, vm, aux) {
             cssW = Math.max(2, Math.ceil(peaks.length * pxPerSlot));
         }
         const redrew = drawRepCanvas(div, peaks, cssW, bodyH,
-            lane.kind === 'group', !!rep.bar, pxPerSlot, rep.src, !!rep.ghost);
+            lane.kind === 'group', !!rep.bar, pxPerSlot,
+            rep.srcSegs || (rep.src ? [rep.src] : null), !!rep.ghost,
+            rep.srcTopFrac || 0);
 
         // MORPH ONLY PURE MOVES; SNAP RE-LAYOUTS. When the canvas was
         // redrawn AND the geometry changed in the same patch (a commit
@@ -802,32 +836,85 @@ function patchLaneBody(row, lane, vm, aux) {
     const armedEmpty = (lane.kind === 'clip' && !lane.recording &&
         lane.reps.length === 0 && lane.armed) || (lane.recording && lane.pendingStart);
     const armQ = vm.armAtQ % cycleQ;
+    // Cut-band creation is wired ONCE per body and reads per-patch
+    // state — refresh it before any early return so a lane changing
+    // views never leaves a stale (wrong-frame) editor behind.
+    wireBandCreate(body, lane, vm, cycleQ);
     // HEARD-VIEW chrome (law 13 amendment): a quiet chip + edge grips
     // that EXPAND the lane into its edit view (full raw take with the
     // selection brackets — the seed track's trim view, per lane).
     if (lane.windowChipQ && !lane.windowEditing) {
-        let chip = overlay.querySelector('.win-open-chip');
-        if (!chip) {
-            overlay.textContent = '';
-            overlay._key = 'heard';
-            chip = document.createElement('div');
+        // HEARD-VIEW chrome, MODELESS (field 2026-07-23: "just let me
+        // manipulate the drag handles live"): the edge grips ARE trim
+        // handles (drag adjusts the outer bounds directly, whole-Q
+        // snap, commit on release); cuts render as SEAM HANDLES (drag
+        // slides the cut freely, ⌥-drag resizes, double-click heals);
+        // the chip opens the raw-take inspector for INSPECTION only —
+        // never required for editing, and it no longer eats a drag.
+        const heardKey = JSON.stringify(
+            ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
+             lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
+             lane.reps.map(r => [r.startQ, r.endQ])]);
+        if (body._winDrag) return;
+        reconcileMarkers(overlay, heardKey, o => {
+            const chip = document.createElement('div');
             chip.className = 'win-chip win-open-chip toggle';
-            chip.title = 'Open the window editor — see the whole take, drag to re-trim';
+            chip.title = 'Inspect the whole take (editing works right here)';
+            chip.textContent = (lane.mapMulti ? 'map ' : 'window ') +
+                fmtQ(lane.windowChipQ) + 'Q';
             chip.addEventListener('click', () => cb.onWindowEdit(lane.id, true));
-            overlay.appendChild(chip);
-            ['start', 'end'].forEach(edge => {
-                const grip = document.createElement('div');
-                grip.className = 'win-bracket latent ' + edge + ' win-open-grip';
-                grip.style.left = edge === 'start' ? '0%' : '100%';
-                grip.title = 'Grab to edit the window (expands the lane)';
-                grip.addEventListener('pointerdown', ev => {
-                    ev.preventDefault();
-                    cb.onWindowEdit(lane.id, true);
-                });
-                overlay.appendChild(grip);
-            });
-        }
-        setText(chip, 'window ' + lane.windowChipQ + 'Q');
+            o.appendChild(chip);
+            appendTrimGrips(o, lane, vm, body, cycleQ);
+            appendCutBands(o, lane, vm, body, cycleQ);  // heard → seams
+        });
+        return;
+    }
+    // MULTI-SEGMENT map on a group (phase 3): dims over the uncovered
+    // regions + segment boundary ticks + ONE chip (bypass toggle) + the
+    // inner cuts as draggable BANDS. No per-segment brackets.
+    if (lane.mapSegs) {
+        const mapKey = JSON.stringify(
+            ['map', lane.mapSegs, lane.mapBypassed, cycleQ,
+             lane.bandEditable]);
+        // The sound cursor keeps moving through a band drag (the
+        // reconcile below is frozen, but the ear isn't).
+        patchWinCursor(overlay, lane, vm, cycleQ);
+        if (body._winDrag) return;
+        reconcileMarkers(overlay, mapKey, o => {
+            if (!lane.mapBypassed) {
+                buildWindowDims(o, { segs: lane.mapSegs }, lane, cycleQ);
+            }
+            for (const [s, e] of lane.mapSegs) {
+                for (const q of [s, e]) {
+                    const t = document.createElement('div');
+                    t.className = 'map-seam-tick';
+                    t.style.left = pct(q, cycleQ);
+                    o.appendChild(t);
+                }
+            }
+            const chip = document.createElement('div');
+            chip.className = 'win-chip toggle' +
+                (lane.mapSegs[lane.mapSegs.length - 1][1] >= cycleQ
+                    ? ' at-end' : '');
+            chip.style.left =
+                pct(lane.mapSegs[lane.mapSegs.length - 1][1], cycleQ);
+            chip.textContent = lane.mapBypassed
+                ? 'map · bypassed'
+                : 'map · ' + fmtQ(lane.mapChipQ) + 'Q';
+            chip.title = 'Toggle the map (bypass keeps its shape)';
+            chip.addEventListener('click', () => cb.onToggleWindow(lane.id));
+            o.appendChild(chip);
+            if (!lane.mapBypassed) {
+                // Heard-time cursor: jumps across the cuts (seam-aware
+                // positioning below) — the honest line on a lane whose
+                // intrinsic frame the audible cycle no longer matches.
+                const cur = document.createElement('div');
+                cur.className = 'win-cursor';
+                o.appendChild(cur);
+            }
+            appendCutBands(o, lane, vm, body, cycleQ);
+        });
+        patchWinCursor(overlay, lane, vm, cycleQ);
         return;
     }
     const win = lane.window || latentWindow(lane, vm);
@@ -836,54 +923,50 @@ function patchLaneBody(row, lane, vm, aux) {
     // shift by it (field 2026-07-16c: they drew a phase off for takes
     // not anchored at the frame top).
     const anchorQ = lane.takeStartQ || 0;
-    const overlayKey = JSON.stringify([win, armedEmpty && armQ, cycleQ, anchorQ]);
-    if (body._winDrag) return;
+    const overlayKey = JSON.stringify(
+        [win, armedEmpty && armQ, cycleQ, anchorQ,
+         lane.bandSegs || null, lane.bandEditable || false,
+         lane.windowEditing || false, lane.parentMapSegs || null]);
 
     // The heard-time WINDOW CURSOR: where in its window this lane is
     // sounding right now (the engine publishes the window phase on
     // `playhead`). The island playhead sweeps ISLAND time — under an
     // active window the lane hears MAPPED time, and without this cursor
     // the loop looked dead ("the loop window doesn't work anymore",
-    // field 2026-07-11). Patched every poll, OUTSIDE the keyed rebuild.
-    const winCursor = overlay.querySelector('.win-cursor');
-    if (winCursor && lane.window) {
-        const w = lane.window;
-        const lenQ = w.endQ - w.startQ;
-        if (anim.running) {
-            // The animator draws this cursor at 60fps (same clock as
-            // the playhead); the poll corrects its phase (wrap-aware,
-            // ease small errors, snap teleports)
-            winCursor._startQ = anchorQ + w.startQ;
-            winCursor._lenQ = lenQ;
-            winCursor._cycleQ = cycleQ;
-            const target = lane.windowPhase || 0;
-            if (winCursor._phase === undefined) {
-                winCursor._phase = target;
-            } else {
-                winCursor._phase = correctPosition(winCursor._phase, target, 1, 0.15);
-            }
-            if (winCursor.style.transition !== 'none') winCursor.style.transition = 'none';
-        } else {
-            const posQ = anchorQ + w.startQ + (lane.windowPhase || 0) * lenQ;
-            // Glides like the playhead; a wrap (phase 1 → 0) must snap
-            // back, never sweep backwards through the window
-            const frac = posQ / cycleQ;
-            if (winCursor.style.transition === 'none') winCursor.style.transition = '';
-            if (winCursor._pos !== undefined &&
-                frac < winCursor._pos - 0.5 * lenQ / cycleQ) {
-                winCursor.style.transition = 'none';
-                requestAnimationFrame(() =>
-                    requestAnimationFrame(() => { winCursor.style.transition = ''; }));
-            }
-            winCursor._pos = frac;
-            winCursor._phase = undefined;
-            setStyle(winCursor, 'left', pct(posQ, cycleQ));
-        }
-        const disp = vm.isPlaying ? '' : 'none';
-        if (winCursor.style.display !== disp) winCursor.style.display = disp;
-    }
+    // field 2026-07-11). Patched every poll, OUTSIDE the keyed rebuild —
+    // and BEFORE the drag gate: during an expanded map drag this same
+    // lane frames the RAW take (per-lane scale), the phase maps through
+    // the live-committed segments, and the cursor jumps the cuts — the
+    // "where is the sound" line the editing view was missing (field
+    // 2026-07-25).
+    patchWinCursor(overlay, lane, vm, cycleQ);
+    if (body._winDrag) return;
 
     reconcileMarkers(overlay, overlayKey, o => {
+        // Enclosing-map projection (phase 3): the group map's excluded
+        // regions dim this child lane too — what the map silences, the
+        // child shows silenced. Tiled per GROUP cycle.
+        if (lane.parentMapSegs && lane.parentMapPeriodQ > 0) {
+            const P = lane.parentMapPeriodQ;
+            const addDim = (fromQ, toQ) => {
+                const from = Math.max(0, fromQ);
+                const to = Math.min(cycleQ, toQ);
+                if (to - from <= 1e-9) return;
+                const d = document.createElement('div');
+                d.className = 'win-dim parent-map-dim';
+                d.style.left = pct(from, cycleQ);
+                d.style.width = pct(to - from, cycleQ);
+                o.appendChild(d);
+            };
+            for (let base = 0; base < cycleQ; base += P) {
+                let prev = 0;
+                for (const [s, e] of lane.parentMapSegs) {
+                    addDim(base + prev, base + s);
+                    prev = e;
+                }
+                addDim(base + prev, base + P);
+            }
+        }
         if (armedEmpty) {
             const m = document.createElement('div');
             m.className = 'arm-marker';
@@ -948,7 +1031,855 @@ function patchLaneBody(row, lane, vm, aux) {
             }
             wireWindow(o, lane, vm, body, win);
         }
+        // Cut bands ride alongside the bracket chrome wherever the lane
+        // frames its raw material (groups, clip edit views, windowless
+        // resting clips).
+        appendCutBands(o, lane, vm, body, cycleQ);
+        if (lane.windowEditing && !o.querySelector('.win-done-chip')) {
+            const done = document.createElement('div');
+            done.className = 'win-chip win-done-chip toggle';
+            done.textContent = 'done';
+            done.title = 'Close the take view (Esc)';
+            done.addEventListener('click', () =>
+                cb.onWindowEdit(lane.id, false));
+            o.appendChild(done);
+        }
     });
+}
+
+/* ---------- CUT BANDS (time_maps.md §4, owner-chosen design A) ----------
+ *
+ * A cut is a first-class object in the bracket vocabulary: a dim band
+ * with two bracket-style handles and a length chip. Double-click the
+ * take → a 1Q cut on that Q cell; double-click a cut → it heals; drag
+ * the chip → the cut SLIDES freely, length held (the "exclude 1Q off
+ * the boundary" move); drag a handle → resize, length snapping to
+ * whole Qs on release (⌥ = free, badged "N.NNQ ⚠" — the seam theorem
+ * made visible). One setSegments per finished gesture = one undo step.
+ * Leading/trailing exclusions stay the WINDOW brackets' domain — bands
+ * are only the INNER gaps, so the two gestures never overlap.
+ */
+
+/** Per-patch band state stashed on the body for the once-wired
+ * creation/drag handlers (elements rebuild per reconcile; handlers on
+ * the body must read fresh state). */
+function bandState(lane, vm, cycleQ) {
+    return {
+        laneId: lane.id,
+        segs: lane.bandSegs,           // covered set (Q); null = full span
+        totalQ: lane.bandTotalQ || 0,
+        anchorQ: lane.takeStartQ || 0,
+        editable: !!lane.bandEditable,
+        heard: !!lane.bandHeard,       // lane frames HEARD time (seams,
+        periodQ: lane.bandPeriodQ || 0,  // not bands)
+        quantum: vm.quantum,
+        cycleQ,
+    };
+}
+
+function commitBandSegs(st, segsQ) {
+    if (segsQ === null) return;  // refusal: keep the previous map
+    const flat = [];
+    segsQ.forEach(([s, e]) =>
+        flat.push(Math.round(s * st.quantum), Math.round(e * st.quantum)));
+    cb.onSetSegments(st.laneId, flat);
+}
+
+function bandContentQ(st, body, clientX) {
+    const r = body.getBoundingClientRect();
+    const laneQ = ((clientX - r.left) / r.width) * st.cycleQ;
+    if (st.heard && st.periodQ > 0) {
+        // Heard lane: the pointer lives in heard time — hop through the
+        // map to the RAW position it selects.
+        const h = (((laneQ - st.anchorQ) % st.periodQ) + st.periodQ)
+            % st.periodQ;
+        return mapOffset({ segs: st.segs || [[0, st.totalQ]] }, h);
+    }
+    const P = st.totalQ;
+    return (((laneQ - st.anchorQ) % P) + P) % P;
+}
+
+/* While any map gesture is live, the SHARED display frame is PINNED:
+ * live commits change the audible cycle, and letting the frame follow
+ * re-scaled every lane + the ruler under the pointer mid-drag (owner
+ * video, 2026-07-23g — the world must not squirm while you hold it).
+ * The frame settles once, on release. */
+/* Map-gesture flight recorder (field 2026-07-25g: a flicker survives
+ * that the mock cannot reproduce). Ring of the last 400 gesture events
+ * — read `window.__mapDbg` in the app's console after a repro. Also
+ * warns loudly when two renders under a near-still pointer disagree on
+ * the pending segments (the flicker's signature). */
+const mapDbgRing = (typeof window !== 'undefined')
+    ? (window.__mapDbg = []) : [];
+let mapDbgPrev = null;
+function mapDbg(a, rec) {
+    const e = Object.assign({ t: Math.round(performance.now()), a }, rec);
+    mapDbgRing.push(e);
+    if (mapDbgRing.length > 400) mapDbgRing.splice(0, mapDbgRing.length - 400);
+    if (a === 'render') {
+        const sig = JSON.stringify(rec.segs);
+        if (mapDbgPrev && Math.abs(rec.bound - mapDbgPrev.bound) < 0.05 &&
+            sig !== mapDbgPrev.sig) {
+            console.warn('[map-flicker] segs changed under a still pointer:',
+                mapDbgPrev.sig, '→', sig, 'bound', rec.bound);
+        }
+        mapDbgPrev = { bound: rec.bound, sig };
+    } else if (a === 'up' || a === 'engage') {
+        mapDbgPrev = null;
+    }
+}
+
+let dragPinQ = null;
+let dragPinFoldQ = null;  // audible-cycle fold pinned with the frame
+let lastFrameQ = 0;  // vm.cycleQ as of the latest patch (pin source)
+let lastFoldQ = 0;   // vm.loopCycleQ ditto — the cursor's fold cycle
+export function mapDragPinQ() { return dragPinQ; }
+export function mapDragPinFoldQ() { return dragPinFoldQ; }
+
+/* ---------- EXPANDED MAP DRAG (owner-ruled, field 2026-07-23e) -------
+ *
+ * "When you are dragging a drag handle the clip expands to show the
+ * entire clip timeline (including excluded sections)." Geometry edits
+ * are RAW-frame facts; editing them in heard space made handles wrap,
+ * chunks vanish off edges, and the ground shift mid-gesture. So:
+ * grabbing any handle on a heard lane EXPANDS it to the raw take for
+ * the duration of the drag — excluded material visible as dims, the
+ * cut a real band, the trim bracket over visible content — commits
+ * stream live (audible), and release collapses back to the heard view.
+ * The main cursor is suppressed over the expanded lane (.inspecting);
+ * the raw-frame preview is the ground truth under the pointer.
+ */
+
+/** Absolute pointer → RAW-take Q inside the expanded lane. */
+function rawQAt(st, body, clientX) {
+    const r = body.getBoundingClientRect();
+    const q = ((clientX - r.left) / r.width) * st.totalQ;
+    return Math.max(0, Math.min(st.totalQ, q));
+}
+
+/** Trim one outer bound to an absolute raw position (heal reveals,
+ * cut consumes); null = refusal, keep previous. */
+function trimBoundTo(segs, edge, boundQ, totalQ) {
+    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
+    if (edge === 'start') {
+        const first = cov[0][0];
+        if (boundQ < first - 1e-9) return healCut(cov, boundQ, first, totalQ);
+        return applyCut(cov, 0, boundQ, totalQ);
+    }
+    const last = cov[cov.length - 1][1];
+    if (boundQ > last + 1e-9) return healCut(cov, last, boundQ, totalQ);
+    return applyCut(cov, boundQ, totalQ, totalQ);
+}
+
+/** The raw-frame drag preview — TWO-LAYER FEEDBACK (the bracket law):
+ * a pointer-attached FOLLOW element moves continuously with the mouse
+ * (`follow`: a bracket or a band), while a dashed snap ghost + badge
+ * show the whole-Q landing (`active`), over dims of the pending kept
+ * set. Rebuilt per move (a dozen nodes; the overlay is frozen and
+ * OWNED by the gesture). */
+function renderRawPreview(o, st, segsPreview, active, follow) {
+    // NEVER wipe the overlay itself: the grabbed handle lives there and
+    // holds the pointer capture — clearing it mid-gesture killed the
+    // drag (found by real-input verification, 2026-07-23e). The preview
+    // owns a dedicated layer; the stale chrome fades via .drag-live.
+    let layer = o.querySelector('.drag-preview-layer');
+    if (!layer) {
+        layer = document.createElement('div');
+        layer.className = 'drag-preview-layer';
+        o.appendChild(layer);
+        o.classList.add('drag-live');
+    }
+    layer.textContent = '';
+    o._key = 'expanded-drag';  // poisons the key → fresh reconcile after
+    const cov = (segsPreview && segsPreview.length)
+        ? segsPreview
+        : (segsPreview ? [[0, st.totalQ]] : null);
+    if (!cov) return;
+    const fake = { intrinsicQ: st.totalQ, takeStartQ: 0, kind: 'clip' };
+    buildWindowDims(layer, { segs: cov }, fake, st.totalQ);
+    // Resting bracket lines at the PENDING kept bounds (context).
+    for (const [edge, q] of [['start', cov[0][0]],
+                             ['end', cov[cov.length - 1][1]]]) {
+        if (follow && follow.kind === 'bracket' && follow.edge === edge) {
+            continue;  // the follow element replaces this edge's bracket
+        }
+        const b = document.createElement('div');
+        b.className = 'win-bracket ' + edge;
+        b.style.left = pct(q, st.totalQ);
+        layer.appendChild(b);
+    }
+    // THE FOLLOW ELEMENT: attached to the pointer, continuous — you
+    // always see exactly what you're holding.
+    if (follow) {
+        if (follow.kind === 'bracket') {
+            const fb = document.createElement('div');
+            fb.className = 'win-bracket dragging ' + follow.edge;
+            fb.style.left = pct(follow.q, st.totalQ);
+            layer.appendChild(fb);
+        } else {
+            const band = document.createElement('div');
+            band.className = 'cut-band';
+            band.style.left = pct(follow.a, st.totalQ);
+            band.style.width = pct(follow.b - follow.a, st.totalQ);
+            layer.appendChild(band);
+            for (const [edge, q] of [['start', follow.a], ['end', follow.b]]) {
+                const h = document.createElement('div');
+                h.className = 'cut-handle ' + edge;
+                h.style.left = 'calc(' + pct(q, st.totalQ) +
+                    (edge === 'end' ? ' - 14px)' : ')');
+                h.style.pointerEvents = 'none';
+                layer.appendChild(h);
+            }
+        }
+    }
+    if (active) {
+        const badge = document.createElement('div');
+        badge.className = 'cut-chip mono' +
+            (active.incoherent ? ' incoherent' : '');
+        badge.textContent = active.text;
+        badge.style.left = pct(active.q, st.totalQ);
+        // Ride above the lane's midline: at center the badge text sat
+        // right on the follow bracket and the snap ghost (unreadable
+        // "loop er,d" in the field video).
+        badge.style.top = '22%';
+        // Edge-aware anchoring so the text never clips off the lane
+        // ("oop start · 3Q" in the field video).
+        badge.style.transform = active.q < st.totalQ * 0.15
+            ? 'translate(0, -50%)'
+            : active.q > st.totalQ * 0.85 ? 'translate(-100%, -50%)'
+            : 'translate(-50%, -50%)';
+        layer.appendChild(badge);
+        // Dashed snap ghost only when the landing differs from the
+        // pointer (free slides have no snap to preview).
+        if (active.ghost) {
+            const line = document.createElement('div');
+            line.className = 'cut-ghost';
+            line.style.display = '';
+            line.style.left = pct(active.q, st.totalQ);
+            layer.appendChild(line);
+        }
+    }
+}
+
+/** Shared gesture runner: expand → drag in raw space → live commits →
+ * final commit → collapse. `onMove(rawQ, altKey)` receives the
+ * pointer's EFFECTIVE raw-take Q (null for the at-rest render at
+ * pointerdown) and returns { segs, active, follow } or null.
+ *
+ * EASED CAPTURE (field 2026-07-25b, replacing both earlier schemes):
+ * the grab pixel lives in HEARD geometry but the expanded lane is RAW
+ * geometry, so once the lane opens the pointer is genuinely NOT over
+ * the thing it grabbed — a pure delta kept that offset forever (the
+ * handle rode ~1 cut-width from the mouse; edge bounds unreachable),
+ * and a pure absolute glue TELEPORTED the handle on the first move.
+ * Resolution (owner-ruled 2026-07-25f): the bound is RELATIVE —
+ * `anchorQ` (the grabbed thing's raw position) plus accumulated
+ * pointer deltas — and the native cursor WARP that unifies pointer
+ * and handle is purely cosmetic, so its timing can never disturb the
+ * gesture. Where warping is unsupported the mode flips to ABSOLUTE
+ * (handle snaps to the pointer, stays glued). (> 4px before anything
+ * happens — a sloppy grab-release must not edit.) */
+function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    try { ev.target.setPointerCapture(ev.pointerId); } catch (_) {}
+    const downX = ev.clientX;
+    // THE GORDIAN CUT, simplified (owner-ruled 2026-07-25f): the bound
+    // is RELATIVE — anchorQ plus accumulated pointer deltas — for the
+    // whole gesture, and the warp is pure COSMETICS. Because the
+    // cursor's absolute position never feeds the bound, the warp can
+    // land early, late, or mid-flight without resetting anything: a
+    // user who grabs and immediately moves fast loses nothing. The
+    // delta filter also swallows warp echoes (CGWarp during a held
+    // button can interleave warped and un-warped event positions — the
+    // suppression-interval gotcha; any single ≥150px jump is not a
+    // hand, it only rebases).
+    //
+    // Backends that cannot warp (the mock harness) resolve false and
+    // the mode flips to ABSOLUTE: the handle snaps to the pointer and
+    // stays glued (one visible jump, but every bound stays reachable —
+    // owner-ruled: better a snap than easing complexity).
+    let boundQ = anchorQ;
+    let absolute = false;
+    let prevX = ev.clientX;
+    let lastClientY = ev.clientY;
+    let warpState = 0;  // 0 untried · 1 requesting · 2 settled
+    let echoUntil = 0;  // echo filter armed only just after the warp
+    let lastAlt = ev.altKey;
+    let engaged = false;
+    let last = null;
+    let lastLive = 0;
+    const apply = () => {
+        const res = onMove(boundQ, lastAlt);
+        if (!res) return;
+        last = res;
+        renderRawPreview(o, st, res.segs, res.active, res.follow);
+        mapDbg('render', { bound: +boundQ.toFixed(3),
+            segs: res.segs && res.segs.map(s => +((s[1] - s[0]).toFixed(2))) });
+        const now = performance.now();
+        if (res.segs && now - lastLive > 90) {
+            lastLive = now;
+            commitBandSegs(st, res.segs);  // LIVE: audible while dragging
+        }
+    };
+    // Warp the OS cursor onto the grabbed handle, once the raw view
+    // has landed (the pixel mapping is expanded-frame; the horizontal
+    // geometry flips in one patch — the lane-open ease is vertical
+    // only, so there is no intermediate to ride).
+    const tryWarp = () => {
+        if (warpState || !body._winDrag) return;
+        if (!cb.onWarpPointer) { warpState = 2; absolute = true; return; }
+        if (!body.classList.contains('inspecting')) {
+            setTimeout(tryWarp, 30);   // expansion still in flight
+            return;
+        }
+        warpState = 1;
+        const br = body.getBoundingClientRect();
+        const x = br.left + (boundQ / st.totalQ) * br.width;
+        Promise.resolve(cb.onWarpPointer(x, lastClientY)).then(ok => {
+            warpState = 2;
+            mapDbg('warp', { ok });
+            if (!ok) { absolute = true; return; }  // snap-to-pointer
+            // Warp echoes (warped/un-warped stream interleave) can only
+            // exist inside the macOS suppression interval — arm the
+            // jump filter for just that window. Armed forever, it ate
+            // genuine fast-flick deltas and the handle fell ~1Q behind
+            // the pointer with no way to resync (owner video
+            // 2026-07-25h, "drag quickly → cursor disconnected").
+            echoUntil = performance.now() + 400;
+        });
+    };
+    // THE ENGAGE GATE (field 2026-07-25g): expansion AND warp start
+    // only once the press is a real drag — > 4px of travel or a 160ms
+    // hold. A quick click(-click) never expands and never moves the
+    // cursor, so double-click heal/create keeps stable geometry under
+    // both of its clicks (the immediate warp used to teleport the
+    // cursor between them, and the expansion moved the seam out from
+    // under click two — the "doubled split").
+    const engage = () => {
+        if (engaged || !body.isConnected) return;
+        engaged = true;
+        mapDbg('engage', {});
+        clearTimeout(body._flashT);     // a drag supersedes a flash
+        body._winDrag = true;           // freeze the overlay reconcile
+        dragPinQ = lastFrameQ;          // freeze the SHARED frame
+        dragPinFoldQ = lastFoldQ;       // …and the cursor's fold cycle
+        cb.onWindowEdit(lane.id, true); // expand to the raw take
+        // The raw-frame SOUND CURSOR lives through the gesture (the
+        // poll keeps positioning it — patchWinCursor runs before the
+        // _winDrag gates): you hear the live splice AND see where it
+        // is sounding.
+        if (!o.querySelector('.win-cursor')) {
+            const cur = document.createElement('div');
+            cur.className = 'win-cursor';
+            o.appendChild(cur);
+        }
+        // Immediate feedback: the preview (dims + the followed handle
+        // at rest) appears with the expansion, not on the first move.
+        const initial = onMove(null, lastAlt);
+        if (initial) {
+            renderRawPreview(o, st, initial.segs, initial.active,
+                initial.follow);
+        }
+        tryWarp();
+    };
+    const holdT = setTimeout(engage, 160);
+    const move = mv => {
+        if (!engaged && Math.abs(mv.clientX - downX) <= 4) return;
+        engage();
+        if (absolute) {
+            boundQ = rawQAt(st, body, mv.clientX);
+        } else {
+            const dx = mv.clientX - prevX;
+            if (Math.abs(dx) >= 150 && performance.now() < echoUntil) {
+                mapDbg('echo', { dx: Math.round(dx) });
+                // warp echo (only possible in the post-warp suppression
+                // window): rebase without applying
+            } else {
+                const w = body.getBoundingClientRect().width || 1;
+                boundQ = Math.max(0, Math.min(st.totalQ,
+                    boundQ + (dx / w) * st.totalQ));
+            }
+        }
+        prevX = mv.clientX;
+        lastAlt = mv.altKey;
+        lastClientY = mv.clientY;
+        apply();
+    };
+    const up = () => {
+        ev.target.removeEventListener('pointermove', move);
+        ev.target.removeEventListener('pointerup', up);
+        ev.target.removeEventListener('pointercancel', up);
+        clearTimeout(holdT);
+        if (!engaged) return;             // a click: nothing to undo
+        mapDbg('up', {});
+        body._winDrag = false;
+        dragPinQ = null;                  // let the frame settle once
+        dragPinFoldQ = null;
+        const layer = o.querySelector('.drag-preview-layer');
+        if (layer) layer.remove();
+        o.classList.remove('drag-live');
+        if (last && last.segs) commitBandSegs(st, last.segs);
+        cb.onWindowEdit(lane.id, false);  // relax back to the heard view
+    };
+    ev.target.addEventListener('pointermove', move);
+    ev.target.addEventListener('pointerup', up);
+    ev.target.addEventListener('pointercancel', up);
+}
+
+/** The once-per-body dblclick wiring: create a cell-snapped 1Q cut on
+ * the take; heal the cut under the pointer. */
+function wireBandCreate(body, lane, vm, cycleQ) {
+    body._bandState = bandState(lane, vm, cycleQ);
+    if (body._bandsWired) return;
+    body._bandsWired = true;
+    body.addEventListener('dblclick', ev => {
+        const st = body._bandState;
+        if (!st || !st.editable || st.totalQ < 2) return;
+        // HEARD lanes: a cut has ZERO width (it IS the splice), so the
+        // pointer can never be "inside" it — a dblclick meant to heal
+        // instead landed on adjacent content and cut ANOTHER Q, which
+        // merged into a doubled cut (field 2026-07-25g, "‖ 2Q cut").
+        // Near a seam (±12px, matching the handle's reach) the dblclick
+        // means HEAL.
+        if (st.heard && st.segs && st.segs.length > 1) {
+            const br = body.getBoundingClientRect();
+            const periodQ = st.periodQ ||
+                st.segs.reduce((n, [a, b]) => n + (b - a), 0);
+            let acc = 0;
+            for (let i = 0; i < st.segs.length - 1; i++) {
+                acc += st.segs[i][1] - st.segs[i][0];
+                const first = ((((st.anchorQ + acc) % st.cycleQ) +
+                    st.cycleQ) % st.cycleQ) % periodQ;
+                for (let q = first; q < st.cycleQ; q += periodQ) {
+                    const px = br.left + (q / st.cycleQ) * br.width;
+                    if (Math.abs(ev.clientX - px) < 12) {
+                        commitBandSegs(st, healCut(st.segs,
+                            st.segs[i][1], st.segs[i + 1][0], st.totalQ));
+                        return;
+                    }
+                }
+            }
+        }
+        const q = bandContentQ(st, body, ev.clientX);
+        const cut = innerCuts(st.segs, st.totalQ)
+            .find(([a, b]) => q >= a && q < b);
+        if (cut) {
+            commitBandSegs(st, healCut(st.segs, cut[0], cut[1], st.totalQ));
+        } else {
+            const [a, b] = cellCutAt(q, st.totalQ);
+            commitBandSegs(st, applyCut(st.segs, a, b, st.totalQ));
+        }
+        // FLASH-EXPAND (the one principle: every manipulation shows the
+        // whole clip + map structure): a heard lane opens briefly so
+        // the new cut is seen landing in raw context, then relaxes —
+        // unless a drag has taken over in the meantime.
+        if (st.heard) {
+            clearTimeout(body._flashT);
+            cb.onWindowEdit(st.laneId, true);
+            body._flashT = setTimeout(() => {
+                if (!body._winDrag) cb.onWindowEdit(st.laneId, false);
+            }, 900);
+        }
+    });
+}
+
+/** The bands themselves, rebuilt per overlay reconcile. On heard-view
+ * lanes a cut has ZERO width (it IS the splice), so it renders as a
+ * SEAM HANDLE: passive ticks on every rep, one grabbable handle + chip
+ * per cut on the take rep — drag slides the cut freely (length held),
+ * ⌥-drag resizes (whole-Q snap), double-click heals. */
+function appendCutBands(o, lane, vm, body, cycleQ) {
+    const st = bandState(lane, vm, cycleQ);
+    if (!st.editable || st.totalQ < 2) return;
+    if (st.heard) {
+        appendSeamHandles(o, lane, st, body, cycleQ);
+        return;
+    }
+    const cuts = innerCuts(st.segs, st.totalQ);
+    cuts.forEach(cut => {
+        const band = document.createElement('div');
+        band.className = 'cut-band';
+        const chip = document.createElement('div');
+        chip.className = 'cut-chip mono';
+        chip.title = 'Drag to slide the cut (length held) — ' +
+            'right-click or double-click heals';
+        const handles = {};
+        for (const edge of ['start', 'end']) {
+            const h = document.createElement('div');
+            h.className = 'cut-handle ' + edge;
+            h.title = 'Drag to resize — length snaps to whole Qs, ⌥ for free';
+            handles[edge] = h;
+        }
+        const ghost = document.createElement('div');
+        ghost.className = 'cut-ghost';
+        ghost.style.display = 'none';
+
+        const layout = (a, b, raw) => {
+            band.style.left = pct(st.anchorQ + a, cycleQ);
+            band.style.width = pct(b - a, cycleQ);
+            handles.start.style.left =
+                'calc(' + pct(st.anchorQ + (raw && raw.edge === 'start'
+                    ? raw.q : a), cycleQ) + ')';
+            handles.end.style.left =
+                'calc(' + pct(st.anchorQ + (raw && raw.edge === 'end'
+                    ? raw.q : b), cycleQ) + ' - 14px)';
+            chip.style.left = pct(st.anchorQ + (a + b) / 2, cycleQ);
+            const lenQ = b - a;
+            const whole = Math.abs(lenQ - Math.round(lenQ)) < 0.02;
+            chip.textContent =
+                (whole ? Math.round(lenQ) : lenQ.toFixed(2)) + 'Q cut' +
+                (whole ? '' : ' ⚠');
+            chip.classList.toggle('incoherent', !whole);
+        };
+        layout(cut[0], cut[1]);
+
+        // Drag machinery — the bracket pattern: pointer capture, the
+        // handle/chip follows the pointer, the ghost previews the snap,
+        // release commits ONE setSegments.
+        const startDrag = (kind, edge) => ev => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            // Capture keeps the drag alive off-element; a webview that
+            // refuses (or a synthetic pointer) must not kill the
+            // gesture wiring below.
+            try { ev.target.setPointerCapture(ev.pointerId); } catch (_) {}
+            body._winDrag = true;
+            dragPinQ = lastFrameQ;  // freeze the shared frame (see above)
+            dragPinFoldQ = lastFoldQ;
+            const q0 = bandContentQ(st, body, ev.clientX);
+            let target = null;
+            const move = mv => {
+                const q = bandContentQ(st, body, mv.clientX);
+                if (kind === 'slide') {
+                    target = slideCutTarget({
+                        cut, rawStartQ: cut[0] + (q - q0), maxQ: st.totalQ });
+                    layout(target.inQ, target.outQ);
+                    ghost.style.display = 'none';
+                } else {
+                    target = resizeCutTarget({
+                        cut, edge, rawQ: q, maxQ: st.totalQ,
+                        free: mv.altKey });
+                    layout(target.inQ, target.outQ, { edge, q });
+                    if (!mv.altKey) {
+                        ghost.style.display = '';
+                        ghost.style.left = pct(st.anchorQ +
+                            (edge === 'start' ? target.inQ : target.outQ),
+                            cycleQ);
+                    } else {
+                        ghost.style.display = 'none';
+                    }
+                }
+                // LIVE SPLICE (see the seam handles): audible preview
+                // while dragging, coalesced undo.
+                const now = performance.now();
+                if (target && now - (band._lastLive || 0) > 90) {
+                    band._lastLive = now;
+                    let liveNext = healCut(st.segs, cut[0], cut[1], st.totalQ);
+                    liveNext = applyCut(liveNext, target.inQ, target.outQ,
+                                        st.totalQ);
+                    commitBandSegs(st, liveNext);
+                }
+            };
+            const up = () => {
+                ev.target.removeEventListener('pointermove', move);
+                ev.target.removeEventListener('pointerup', up);
+                ev.target.removeEventListener('pointercancel', up);
+                body._winDrag = false;
+                dragPinQ = null;
+                dragPinFoldQ = null;
+                if (target) {
+                    let next = healCut(st.segs, cut[0], cut[1], st.totalQ);
+                    next = applyCut(next, target.inQ, target.outQ, st.totalQ);
+                    commitBandSegs(st, next);
+                }
+            };
+            ev.target.addEventListener('pointermove', move);
+            ev.target.addEventListener('pointerup', up);
+            ev.target.addEventListener('pointercancel', up);
+        };
+        chip.addEventListener('pointerdown', startDrag('slide'));
+        handles.start.addEventListener('pointerdown', startDrag('resize', 'start'));
+        handles.end.addEventListener('pointerdown', startDrag('resize', 'end'));
+        // Right-click = heal (see the seam handles): the explicit,
+        // timing-proof path.
+        const healMenu = ev => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            commitBandSegs(st, healCut(st.segs, cut[0], cut[1], st.totalQ));
+        };
+        [band, chip, handles.start, handles.end].forEach(el =>
+            el.addEventListener('contextmenu', healMenu));
+
+        o.append(band, handles.start, handles.end, chip, ghost);
+    });
+}
+
+/** Seam handles for heard-view lanes (see appendCutBands). */
+function appendSeamHandles(o, lane, st, body, cycleQ) {
+    const segs = (st.segs && st.segs.length)
+        ? st.segs : [[0, st.totalQ]];
+    if (segs.length < 2) return;  // no inner cuts, no seams
+    // Heard position of each join + the raw cut behind it.
+    const seams = [];
+    let acc = 0;
+    for (let i = 0; i < segs.length - 1; i++) {
+        acc += segs[i][1] - segs[i][0];
+        seams.push({ heardQ: acc, cut: [segs[i][1], segs[i + 1][0]] });
+    }
+    const baseQ = st.anchorQ;
+    const periodQ = st.periodQ ||
+        segs.reduce((n, [a, b]) => n + (b - a), 0);
+    // A lane position for a heard offset, WRAPPED into the frame (the
+    // content may rest mid-phase — field 2026-07-23b: an unwrapped seam
+    // landed on the frame edge, half-clipped and out of reach).
+    const wrapQ = heardQ => {
+        const q = (((baseQ + heardQ) % cycleQ) + cycleQ) % cycleQ;
+        return q;
+    };
+    // Passive ticks at every audible splice across the frame.
+    for (const s of seams) {
+        const first = wrapQ(s.heardQ) % periodQ;
+        for (let q = first; q < cycleQ; q += periodQ) {
+            if (q < 1e-9 || q > cycleQ - 1e-9) continue;
+            const t = document.createElement('div');
+            t.className = 'map-seam-tick';
+            t.style.left = pct(q, cycleQ);
+            o.appendChild(t);
+        }
+    }
+    // Grabbable handle + chip, wrapped with the content.
+    seams.forEach(seam => {
+        const handle = document.createElement('div');
+        handle.className = 'seam-handle';
+        handle.title = 'The cut lives here — drag to slide it, ' +
+            '⌥-drag to resize, right-click (or double-click) to heal';
+        const chip = document.createElement('div');
+        chip.className = 'cut-chip mono';
+        const layout = (heardQ, cut) => {
+            const q = wrapQ(heardQ);
+            handle.style.left = 'calc(' + pct(q, cycleQ) + ' - 7px)';
+            chip.style.left = pct(q, cycleQ);
+            // Keep the chip readable at the frame edges.
+            chip.style.transform = q < 0.4 ? 'translate(0, -50%)'
+                : q > cycleQ - 0.4 ? 'translate(-100%, -50%)'
+                : 'translate(-50%, -50%)';
+            const lenQ = cut[1] - cut[0];
+            const whole = Math.abs(lenQ - Math.round(lenQ)) < 0.02;
+            chip.textContent = '‖ ' +
+                (whole ? Math.round(lenQ) : lenQ.toFixed(2)) + 'Q cut' +
+                (whole ? '' : ' ⚠');
+            chip.classList.toggle('incoherent', !whole);
+        };
+        layout(seam.heardQ, seam.cut);
+
+        handle.addEventListener('dblclick', ev => {
+            ev.stopPropagation();
+            commitBandSegs(st,
+                healCut(st.segs, seam.cut[0], seam.cut[1], st.totalQ));
+        });
+        // Right-click = heal, explicitly (field 2026-07-25g: dblclick
+        // near a seam is a fiddly target and the drag warp can split
+        // its two clicks apart — this path has no timing to break).
+        const healMenu = ev => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            commitBandSegs(st,
+                healCut(st.segs, seam.cut[0], seam.cut[1], st.totalQ));
+        };
+        handle.addEventListener('contextmenu', healMenu);
+        chip.addEventListener('contextmenu', healMenu);
+        const startDrag = ev => {
+            // EXPANDED DRAG (owner-ruled): the lane opens to the raw
+            // take; the cut is a real band over visible content. Drag
+            // slides it freely (length held), ⌥-drag resizes (whole-Q
+            // snap). Deltas are RAW-frame from the first post-expansion
+            // pointer sample, so nothing jumps.
+            // Anchor by the mode chosen at the grab: a slide carries
+            // the cut's start, ⌥-resize carries its end edge.
+            const anchor0 = ev.altKey ? seam.cut[1] : seam.cut[0];
+            runExpandedDrag(ev, o, lane, st, body, anchor0, (rawQ, alt) => {
+                // The seam glyph marks where the cut BEGINS — the cut's
+                // start is what rides the pointer on a slide; ⌥-resize
+                // glues the END edge to it instead.
+                const target = rawQ === null
+                    ? { inQ: seam.cut[0], outQ: seam.cut[1] } // at rest
+                    : alt
+                        ? resizeCutTarget({ cut: seam.cut, edge: 'end',
+                                            rawQ, maxQ: st.totalQ })
+                        : slideCutTarget({ cut: seam.cut,
+                                           rawStartQ: rawQ,
+                                           maxQ: st.totalQ });
+                let next = healCut(st.segs, seam.cut[0], seam.cut[1],
+                                   st.totalQ);
+                next = applyCut(next, target.inQ, target.outQ, st.totalQ);
+                if (next === null) return null;  // refusal: keep previous
+                const lenQ = target.outQ - target.inQ;
+                const whole = Math.abs(lenQ - Math.round(lenQ)) < 0.02;
+                // Follow: the BAND rides the pointer. Slides are free
+                // (band = landing, no ghost); ⌥-resize shows the raw
+                // edge under the pointer with the snap ghost at the
+                // whole-Q landing.
+                const rawEnd = alt && rawQ !== null
+                    ? Math.min(st.totalQ,
+                               Math.max(seam.cut[0] + 0.05, rawQ))
+                    : target.outQ;
+                return { segs: next,
+                    follow: { kind: 'band', a: target.inQ, b: rawEnd },
+                    active: {
+                        q: alt ? target.outQ
+                               : (target.inQ + target.outQ) / 2,
+                        text: (whole ? Math.round(lenQ) : lenQ.toFixed(2)) +
+                            'Q cut' + (whole ? '' : ' ⚠'),
+                        incoherent: !whole,
+                        ghost: alt && Math.abs(rawEnd - target.outQ) > 0.02,
+                    } };
+            });
+        };
+        handle.addEventListener('pointerdown', startDrag);
+        chip.addEventListener('pointerdown', startDrag);
+        o.append(handle, chip);
+    });
+}
+
+/** Live TRIM handles on a heard-view lane's outer edges (field
+ * 2026-07-23: grips must DRAG, never open a mode). Dragging inward
+ * consumes kept time (whole-Q snap); outward reveals more of the take.
+ * One setSegments on release — the single-window case delegates to
+ * setLoopPoints inside the engine, preserving the existing semantics.
+ */
+function appendTrimGrips(o, lane, vm, body, cycleQ) {
+    const st = bandState(lane, vm, cycleQ);
+    if (!st.editable || st.totalQ < 2) return;
+    const segs = (st.segs && st.segs.length) ? st.segs : [[0, st.totalQ]];
+    const periodQ = st.periodQ ||
+        segs.reduce((n, [a, b]) => n + (b - a), 0);
+    // The grips hug the CONTENT's heard bounds (the loop may rest
+    // mid-phase — its top is the bright tile's start, not the frame
+    // edge; field 2026-07-23b).
+    const startPos = st.anchorQ % cycleQ;
+    const endRaw = startPos + Math.min(periodQ, cycleQ);
+    const endPos = endRaw <= cycleQ + 1e-9 ? Math.min(endRaw, cycleQ)
+                                           : endRaw % cycleQ;
+    // The LOOP TOP: when the loop rests mid-phase its start/end meet
+    // mid-lane — mark the spot so the paired grips read as intentional
+    // ("loop end ][ loop start"), not noise (field 2026-07-23c).
+    const coincident = Math.abs(startPos - endPos) < 1e-6 ||
+        Math.abs(Math.abs(startPos - endPos) - cycleQ) < 1e-6;
+    if (coincident && startPos > 1e-6 && startPos < cycleQ - 1e-6) {
+        const top = document.createElement('div');
+        top.className = 'loop-top-chip mono';
+        top.textContent = '↺';
+        top.title = 'The loop\'s top — its end wraps to its start here';
+        top.style.left = pct(startPos, cycleQ);
+        o.appendChild(top);
+    }
+    ['start', 'end'].forEach(edge => {
+        const basePos = edge === 'start' ? startPos : endPos;
+        const grip = document.createElement('div');
+        grip.className = 'win-bracket latent ' + edge + ' trim-grip';
+        grip.style.left = coincident
+            ? 'calc(' + pct(basePos, cycleQ) +
+              (edge === 'start' ? ' + 3px)' : ' - 3px)')
+            : pct(basePos, cycleQ);
+        grip.title = edge === 'start'
+            ? 'Loop START — drag right to trim it in, left to reveal ' +
+              'earlier material (whole-Q snap)'
+            : 'Loop END — drag left to trim it in, right to reveal ' +
+              'later material (whole-Q snap)';
+        grip.addEventListener('pointerdown', ev => {
+            // EXPANDED DRAG (owner-ruled): the lane opens to the raw
+            // take, the excluded material stays visible, and the trim
+            // bracket rides an ABSOLUTE raw bound — dragging back over
+            // dimmed content restores it (nothing is ever off-screen).
+            const bound0 = edge === 'start'
+                ? segs[0][0] : segs[segs.length - 1][1];
+            runExpandedDrag(ev, o, lane, st, body, bound0, rawQ => {
+                const rawBound = rawQ === null
+                    ? bound0                       // at-rest render
+                    : Math.max(0, Math.min(st.totalQ, rawQ));
+                // No snap until the pointer moves — the rest render is
+                // the bound as it IS (a free-trimmed fractional bound
+                // must not preview a rounded landing it never had).
+                const bound = rawQ === null ? rawBound : Math.round(rawBound);
+                const next = trimBoundTo(segs, edge, bound, st.totalQ);
+                if (next === null) return null;  // refusal: keep previous
+                const p = next.length
+                    ? next.reduce((n, [a, b]) => n + (b - a), 0)
+                    : st.totalQ;
+                return { segs: next,
+                    // The bracket rides the pointer; the dashed ghost
+                    // marks the whole-Q landing.
+                    follow: { kind: 'bracket', edge, q: rawBound },
+                    active: {
+                        q: bound,
+                        text: 'loop ' + edge + ' · ' + p + 'Q',
+                        incoherent: false,
+                        ghost: Math.abs(rawBound - bound) > 0.02,
+                    } };
+            });
+        });
+        o.appendChild(grip);
+    });
+}
+
+/**
+ * The heard-time WINDOW/MAP CURSOR — where in its map this lane is
+ * sounding right now (the engine publishes the phase on `playhead`).
+ * Patched every poll, OUTSIDE the keyed rebuild. SEAM-AWARE (phase 3):
+ * the heard phase maps through the SEGMENTS, so over a multi-segment
+ * map the cursor JUMPS across cuts instead of gliding through removed
+ * time; multi lanes skip the linear animator (its glide assumes a
+ * contiguous span) and big jumps snap instead of sweeping.
+ */
+function patchWinCursor(overlay, lane, vm, cycleQ) {
+    const winCursor = overlay.querySelector('.win-cursor');
+    const w = lane.window ||
+        (lane.mapSegs ? { segs: lane.mapSegs, periodQ: lane.mapChipQ } : null);
+    if (!winCursor || !w) return;
+    const anchorQ = lane.takeStartQ || 0;
+    const lenQ = w.periodQ ?? (w.endQ - w.startQ);
+    if (!(lenQ > 0)) return;
+    const multi = !!(w.segs && w.segs.length > 1);
+    if (anim.running && !multi) {
+        // The animator draws this cursor at 60fps (same clock as the
+        // playhead); the poll corrects its phase (wrap-aware, ease
+        // small errors, snap teleports)
+        winCursor._startQ = anchorQ + w.startQ;
+        winCursor._lenQ = lenQ;
+        winCursor._cycleQ = cycleQ;
+        const target = lane.windowPhase || 0;
+        if (winCursor._phase === undefined) {
+            winCursor._phase = target;
+        } else {
+            winCursor._phase = correctPosition(winCursor._phase, target, 1, 0.15);
+        }
+        if (winCursor.style.transition !== 'none') winCursor.style.transition = 'none';
+    } else {
+        const heardQ = (lane.windowPhase || 0) * lenQ;
+        const posQ = anchorQ + (multi
+            ? mapOffset({ segs: w.segs }, heardQ)
+            : (w.startQ ?? 0) + heardQ);
+        // Glides like the playhead; a wrap (phase 1 → 0) must snap
+        // back, never sweep backwards through the window — and a SEAM
+        // jump must snap forward, never sweep through the cut.
+        const frac = posQ / cycleQ;
+        const jumpQ = winCursor._pos !== undefined
+            ? Math.abs(frac - winCursor._pos) * cycleQ : 0;
+        if (winCursor.style.transition === 'none') winCursor.style.transition = '';
+        if (winCursor._pos !== undefined &&
+            (frac < winCursor._pos - 0.5 * lenQ / cycleQ ||
+             (multi && jumpQ > 0.3))) {
+            winCursor.style.transition = 'none';
+            requestAnimationFrame(() =>
+                requestAnimationFrame(() => { winCursor.style.transition = ''; }));
+        }
+        winCursor._pos = frac;
+        winCursor._phase = undefined;
+        setStyle(winCursor, 'left', pct(posQ, cycleQ));
+    }
+    const disp = vm.isPlaying ? '' : 'none';
+    if (winCursor.style.display !== disp) winCursor.style.display = disp;
 }
 
 /**
@@ -991,6 +1922,17 @@ function buildWindowDims(o, win, lane, cycleQ) {
         d.style.width = pct(to - from, cycleQ);
         o.appendChild(d);
     };
+    // Segment-general (phase 3): dim the COMPLEMENT of the map's
+    // covered set. A single window is the one-segment case.
+    const segs = win.segs || [[win.startQ, win.endQ]];
+    const dimComplement = (baseQ, spanQ) => {
+        let prev = 0;
+        for (const [s, e] of segs) {
+            addDim(baseQ + prev, baseQ + s);
+            prev = e;
+        }
+        addDim(baseQ + prev, baseQ + spanQ);
+    };
     const anchorQ = lane.takeStartQ || 0;
     if (lane.kind === 'clip') {
         // Clips render raw material in ONE place — the take tile; every
@@ -999,18 +1941,16 @@ function buildWindowDims(o, win, lane, cycleQ) {
         // sounds, Q 2026-07-16). Use the RAW intrinsicQ (not rounded):
         // the provisional Q-definer's tile is buffer/selection, a
         // fractional number of Q, so rounding dropped its trailing dim.
-        addDim(anchorQ, anchorQ + win.startQ);
-        addDim(anchorQ + win.endQ, anchorQ + intrinsicQ);
+        dimComplement(anchorQ, intrinsicQ);
         return;
     }
     // Groups: every tile shows the composite (raw material) — dim the
-    // outside-window regions per period tile, on the lane's grid.
+    // uncovered regions per period tile, on the lane's grid.
     const P = Math.round(intrinsicQ);
     if (P <= 0) return;
     const first = ((anchorQ % P) + P) % P;
     for (let base = first - P; base < cycleQ; base += P) {
-        addDim(base, base + win.startQ);
-        addDim(base + win.endQ, base + P);
+        dimComplement(base, P);
     }
 }
 
@@ -1026,6 +1966,10 @@ function buildWindowDims(o, win, lane, cycleQ) {
  * captured bracket node would orphan the gesture.
  */
 function wireWindow(o, lane, vm, body, win) {
+    // Multi-segment maps have no draggable brackets (phase 3): the
+    // cell/punch editor owns their geometry. Bypass still toggles via
+    // the map chip (wired in the mapSegs overlay branch).
+    if (win.segs && win.segs.length > 1) return;
     // Per-lane scale (law 13 amendment): an editing lane maps through
     // its own frame, not the shared one.
     const laneCycleQ = lane.frameQ || vm.cycleQ;
@@ -1198,7 +2142,7 @@ function toggleSelect(row, additive) {
 }
 
 /* ---------- rail state ---------- */
-function patchRail(row, lane) {
+function patchRail(row, lane, vm) {
     if (lane.kind === 'add') return; // affordance row: nothing to patch
     if (lane.kind === 'fx') return patchFxRow(row, lane);
     row._lane = lane; // current lane snapshot for click handlers
@@ -1241,9 +2185,9 @@ function patchRail(row, lane) {
     // Sub-line: the period only. Status is the red word on the name row.
     const sub = row.querySelector('.rail-sub');
     if (lane.kind === 'group') {
-        setText(sub, lane.periodQ > 0 ? lane.periodQ + 'Q' : 'group');
+        setText(sub, lane.periodQ > 0 ? fmtQ(lane.periodQ) + 'Q' : 'group');
     } else if (lane.periodQ > 0) {
-        setText(sub, lane.periodQ + 'Q');
+        setText(sub, fmtQ(lane.periodQ) + 'Q');
     } else {
         setText(sub, lane.recording ? '' : 'empty');
     }
@@ -1279,6 +2223,7 @@ function patchRail(row, lane) {
         setText(fxBtn, lane.fxCount > 0 ? 'fx·' + lane.fxCount : 'fx');
         fxBtn.classList.toggle('on', lane.fxCount > 0);
     }
+
 
     const input = row.querySelector('.input-btn');
     if (input) {
@@ -1367,6 +2312,8 @@ function animTick(t) {
 
 /* ---------- top-level patch ---------- */
 export function patchSessionView(vm, aux) {
+    lastFrameQ = vm.cycleQ;  // pin source for map gestures (see dragPinQ)
+    lastFoldQ = vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ;
     // Transport (all writes idempotent — see setText note above)
     setText(els.playBtn, vm.isPlaying ? '⏸' : '▶');
     els.playBtn.classList.toggle('playing', vm.isPlaying);
@@ -1381,8 +2328,8 @@ export function patchSessionView(vm, aux) {
         // When windows shorten the audible cycle (E-C) the playhead
         // wraps before the frame end — the readout says why
         const loopNote = !vm.frameExtended && vm.loopCycleQ < vm.lcmQ
-            ? ' · loop ' + vm.loopCycleQ + 'Q' : '';
-        setText(els.readout, vm.playheadQ.toFixed(1) + 'Q / ' + vm.cycleQ + 'Q'
+            ? ' · loop ' + fmtQ(vm.loopCycleQ) + 'Q' : '';
+        setText(els.readout, vm.playheadQ.toFixed(1) + 'Q / ' + fmtQ(vm.cycleQ) + 'Q'
             + (vm.frameExtended ? '…' : ' ↺') + loopNote);
     } else if (anyRecording) {
         // First take: no Q yet — this recording will define it
@@ -1411,7 +2358,7 @@ export function patchSessionView(vm, aux) {
         if (prev ? row.previousElementSibling !== prev : row !== els.lanes.firstElementChild) {
             els.lanes.insertBefore(row, prev ? prev.nextElementSibling : els.lanes.firstElementChild);
         }
-        patchRail(row, lane);
+        patchRail(row, lane, vm);
         patchLaneBody(row, lane, vm, aux);
         // Add rows match their sibling lanes' real height by measurement
         if (lane.kind === 'add' && prev) {
@@ -1469,8 +2416,51 @@ export function patchSessionView(vm, aux) {
             const hpx = h + 'px';
             if (els.playhead.style.height !== hpx) els.playhead.style.height = hpx;
         }
+        maskPlayheadOverInspectors();
     } else {
         stopAnimator();
         els.playhead.style.display = 'none';
+    }
+}
+
+/* Suppression of the white playhead over INSPECTOR lanes, made
+ * paint-order-independent (field 2026-07-25b): the z-index scheme
+ * (.inspecting body z 7 over playhead z 6) relies on the lane painting
+ * OPAQUELY above the line, and the webview compositor let the line
+ * bleed through in stray frames mid-drag. A vertical mask carves the
+ * inspecting lanes' bands out of the line itself — no stacking, no
+ * compositor, no bleed. */
+function maskPlayheadOverInspectors() {
+    const ph = els.playhead;
+    const bodies = document.querySelectorAll('.lane-body.inspecting');
+    if (!bodies.length) {
+        if (ph._masked) {
+            ph._masked = false;
+            ph.style.webkitMaskImage = '';
+            ph.style.maskImage = '';
+        }
+        return;
+    }
+    const pr = ph.getBoundingClientRect();
+    if (!(pr.height > 0)) return;
+    const bands = [...bodies].map(b => b.getBoundingClientRect())
+        .map(r => [Math.max(0, (r.top - pr.top) / pr.height * 100),
+                   Math.min(100, (r.bottom - pr.top) / pr.height * 100)])
+        .filter(([a, b]) => b > a)
+        .sort((x, y) => x[0] - y[0]);
+    let prevPct = 0;
+    const stops = [];
+    for (const [a, b] of bands) {
+        stops.push('black ' + prevPct + '%, black ' + a + '%, ' +
+                   'transparent ' + a + '%, transparent ' + b + '%');
+        prevPct = b;
+    }
+    stops.push('black ' + prevPct + '%, black 100%');
+    const img = 'linear-gradient(to bottom, ' + stops.join(', ') + ')';
+    if (ph._maskImg !== img) {
+        ph._maskImg = img;
+        ph._masked = true;
+        ph.style.webkitMaskImage = img;
+        ph.style.maskImage = img;
     }
 }

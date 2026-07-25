@@ -219,12 +219,28 @@ with kernel.md:
   verified in the mock preview. (Also fixed: `index_test.html` had
   drifted from `index.html` — missing `create-row`/`selection-bar`
   crashed the harness at init since 2026-07-19g.)
-- [ ] **time_maps.md phase 3** — cell mode + punch mode editor (seam
-  theorem: cuts groove-transparent iff removed length ≡ 0 mod Q);
-  zero-crossing micro-snap; seam audition. Engine remainder is only
-  multi-segment storage + `setSegments` bridge + session_io segments
-  (record/playback are already segment-general, see above); includes
-  the windowed-group-children heard-frame unroll (view_model.js TODO).
+- [x] **time_maps.md phase 3** — ✅ done 2026-07-22, FULLY FRACTAL
+  (owner ruling: "clips too, now"): multi-segment storage (one atomic
+  pointer per node + reclaimer retire), `setSegments` (validated,
+  undoable via `Edit::Segments` with raw-state inverses, n≤1 delegates
+  to the single-window path, mid-take gated), bridge 3-place +
+  `segments` metadata + `segmentsQ` persistence (additive; templates
+  strip). THE ANCHORING LAW: clip map playback = mapOffset((t − origin
+  − mapOffset(0)) mod period), run-split seam-exact in ClipNode::render
+  — the whole legacy suite passes byte-identically. Q13 generalized:
+  segments re-trim of the sole definer re-establishes (Q := period,
+  epoch := origin' + mapOffset(0), phase-preserving via the new
+  `heardOffsetOf` inverse); multi-segment lock-collapse = SPLICE COPY
+  with a buffer-owning edit inverse (undo un-splices). THE SEQUENCER
+  (§4): map_edit.js pure algebra + ✎ editor (click = toggle Q cell,
+  drag = punch with linked kQ edges, Alt = free cut "N.NNQ ⚠", one
+  commit per gesture); resting display = dims + seam ticks + `map · NQ`
+  chip; heard-view lanes tile concatenated segment content; children
+  of a mapped group project its excluded regions as dims. Engine-level
+  record-through-cells pinned over the real callback path. Deferred
+  (post-field): zero-crossing micro-snap, seam audition, per-segment
+  edge drag, true heard-frame child unroll, multi-segment top-level
+  cursor mapping.
 - [ ] **Fractal output stage** — per-node `sum/render → time-map →
   gain/pan → fx → mute/solo`, applied identically at every level (I5).
   Adds the missing **gain** primitive (no volume fader exists!),

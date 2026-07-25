@@ -26,11 +26,15 @@ export function buildCacheKey(stack, targetPeaks) {
                 child.loopEnd || 0,
                 // Window ACTIVATION changes audibility without moving the
                 // loop points — it must invalidate the mixdown
-                child.loopBypassed ? 1 : 0
+                child.loopBypassed ? 1 : 0,
+                // Multi-segment map (phase 3): the segment list shapes
+                // what sounds — it must invalidate too.
+                (child.segments || []).join('.')
             ].join(':'));
         }
     });
-    return `${targetPeaks}:${stack.loopStart || 0}:${stack.loopEnd || 0}:${cacheKeyParts.join(',')}`;
+    return `${targetPeaks}:${stack.loopStart || 0}:${stack.loopEnd || 0}:` +
+        `${(stack.segments || []).join('.')}:${cacheKeyParts.join(',')}`;
 }
 
 /**

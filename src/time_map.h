@@ -76,6 +76,24 @@ struct TimeMap {
   }
 
   /**
+   * Inverse of mapOffset: the heard offset (within [0, period)) at
+   * which the map visits inner position `inner`, or −1 when `inner`
+   * lies outside every segment (unvisited). Each inner position is
+   * visited at most once per pass (segments are disjoint), so the
+   * inverse is well-defined where it exists.
+   */
+  int64_t heardOffsetOf(int64_t inner) const {
+    int64_t heard = 0;
+    for (int i = 0; i < n; ++i) {
+      if (inner >= segs[i].start && inner < segs[i].end) {
+        return heard + (inner - segs[i].start);
+      }
+      heard += segs[i].end - segs[i].start;
+    }
+    return -1;
+  }
+
+  /**
    * Samples from `heard_off` for which the map advances CONTINUOUSLY
    * (inner = mapOffset(heard_off) + i): the distance to the end of the
    * containing segment. Segment boundaries always count as seams even

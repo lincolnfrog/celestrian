@@ -162,7 +162,12 @@ using celestrian::Edit;
 // inverse already restores further back, so the new one is dropped.
 bool editsCoalesce(const Edit &top, const Edit &fresh) {
   if (top.kind != fresh.kind || top.uuid != fresh.uuid) return false;
-  return top.kind == Edit::Kind::Position;
+  // Position drags and LIVE map-edit drags (seam slides stream
+  // throttled setSegments commits so the splice is AUDIBLE while
+  // dragging — time_maps.md, field 2026-07-23c) both flood; keep the
+  // oldest inverse so one gesture is one undo step.
+  return top.kind == Edit::Kind::Position ||
+         top.kind == Edit::Kind::Segments;
 }
 }  // namespace
 
@@ -204,6 +209,41 @@ celestrian::ClipNode *firstCommittedClip(celestrian::AudioNode *node) {
     if (auto *c = firstCommittedClip(child.get())) return c;
   }
   return nullptr;
+}
+
+// PHASE-PRESERVING RE-ANCHOR for ANY clip map edit (owner-ruled
+// 2026-07-25h: "playback should remain continuous as much as
+// possible"): when a clip's map changes while playing, choose origin'
+// so the buffer position sounding RIGHT NOW keeps sounding — as long
+// as the new map still COVERS it. Whole-Q cuts shift origin by whole
+// Qs, so island-grid alignment is preserved (the seam theorem); WHICH
+// cell aligns re-derives from the edit instant — the looper's
+// launch-quantized feel. When the edit REMOVED the sounding region,
+// the origin stays FIXED: an audible jump is expected (you deleted
+// what you were hearing), and re-anchoring to a folded phase rotated
+// the whole heard lane so the new seam rendered at the playhead
+// instead of the click (field 2026-07-25i, "cut appears to the far
+// left"). An inactive map on either side is its full-span form. This
+// is the sole-definer Q13 re-anchor generalized; the Q13 rider keeps
+// its own field-hardened algebra (island re-establish included) and
+// wins when it applies.
+int64_t continuityOrigin(const celestrian::ClipNode &clip,
+                         const celestrian::timing::TimeMap &new_map,
+                         int64_t t0) {
+  using TimeMap = celestrian::timing::TimeMap;
+  const int64_t dur = clip.getIntrinsicDuration();
+  auto effective = [dur](const TimeMap &m) {
+    return m.active() ? m : TimeMap::single(0, dur);
+  };
+  const TimeMap oldm = effective(clip.activeTimeMap());
+  const TimeMap newm = effective(new_map);
+  const int64_t period = newm.period();
+  const int64_t old_org = clip.origin_samples.load();
+  if (period <= 0 || oldm.period() <= 0) return old_org;
+  const int64_t p0 = oldm.mapOffset(t0 - old_org - oldm.mapOffset(0));
+  const int64_t h_new = newm.heardOffsetOf(p0);
+  if (h_new < 0) return old_org;  // sounding region removed: stay put
+  return t0 - newm.mapOffset(0) - h_new;
 }
 }  // namespace
 
@@ -412,7 +452,22 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       inv.uuid = e.uuid;
       inv.d1 = (double)node->getLoopStart();
       inv.d2 = (double)node->getLoopEnd();
+      // Phase 3: an explicit single-window edit SUPERSEDES a
+      // multi-segment override; the inverse carries the removed map
+      // back (setsMap) so undo restores it.
+      if (const auto *old = node->exchangeMapOverride(nullptr)) {
+        inv.setsMap = true;
+        inv.tmap = *old;
+        retire([old] { delete old; });
+      }
       node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
+      if (e.setsMap && e.tmap.n >= 2) {
+        // Undo path: reinstall the override this edit had removed.
+        const auto *fresh = new celestrian::timing::TimeMap(e.tmap);
+        if (const auto *prev = node->exchangeMapOverride(fresh)) {
+          retire([prev] { delete prev; });
+        }
+      }
       // Q13 re-trim: if the forward edit carries an island re-establishment
       // (built by setLoopPoints when the target is the sole committed
       // clip), apply it and capture the old (Q, epoch) into the inverse so
@@ -446,6 +501,24 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       Edit inv(K::CollapseTake);
       inv.uuid = e.uuid;
       if (!e.b1) {
+        // MULTI-SEGMENT definer (phase 3): the collapse is a SPLICE —
+        // the kept cells become the take; the inverse owns the
+        // pre-splice buffer + map + facts (write-once safety, the
+        // owned-subtree argument).
+        if (const auto *m = clip->mapOverride()) {
+          inv.b1 = true;
+          inv.setsMap = true;
+          inv.tmap = *m;
+          inv.iq = clip->origin_samples.load();
+          inv.iepoch = clip->getIntrinsicDuration();
+          inv.d1 = (double)clip->getContentBase();
+          inv.d2 = (double)clip->recordedLength();
+          inv.buffer = clip->spliceToMap(*m);
+          if (const auto *old = clip->exchangeMapOverride(nullptr)) {
+            retire([old] { delete old; });
+          }
+          return inv;
+        }
         const int64_t dur = clip->getIntrinsicDuration();
         const int64_t ls = clip->getLoopStart();
         const int64_t le = std::min(clip->getLoopEnd(), dur);
@@ -456,6 +529,22 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         inv.b1 = true;  // inverse = uncollapse, carrying what it needs
         inv.iq = ls;
         inv.iepoch = dur;
+      } else if (e.setsMap) {
+        // Un-splice: reinstall the pre-splice buffer + facts, retire
+        // the displaced spliced buffer, and put the map back.
+        auto displaced = clip->unspliceFromMap(
+            std::move(e.buffer), e.iq, e.iepoch, (int64_t)e.d1,
+            (int64_t)e.d2);
+        if (displaced) {
+          juce::AudioBuffer<float> *raw = displaced.release();
+          retire([raw] { delete raw; });
+        }
+        const auto *fresh = new celestrian::timing::TimeMap(e.tmap);
+        if (const auto *prev = clip->exchangeMapOverride(fresh)) {
+          retire([prev] { delete prev; });
+        }
+        // Inverse of the inverse: the parameterless forward re-derives
+        // (the override is present again).
       } else {
         clip->uncollapseFromWindow(e.iq, e.iepoch);
         // inverse of the inverse: the parameterless forward re-derives.
@@ -469,6 +558,56 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       inv.uuid = e.uuid;
       inv.b1 = node->isLoopWindowBypassed();
       node->setLoopWindowBypassed(e.b1);
+      return inv;
+    }
+    case K::Segments: {
+      // Multi-segment map (time_maps.md phase 3). Applied by
+      // NORMALIZATION so undo round-trips through every state pair:
+      // n≥2 installs an immutable override; n==1 writes the
+      // single-window atomics (clearing the override); n==0 clears
+      // both. The inverse captures the RAW old storage — never
+      // activeTimeMap(), which reads empty under bypass and would
+      // lose a bypassed node's geometry on undo.
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::Segments);
+      inv.uuid = e.uuid;
+      inv.setsMap = true;
+      if (const auto *old = node->mapOverride()) {
+        inv.tmap = *old;
+      } else {
+        inv.tmap = celestrian::timing::TimeMap::single(node->getLoopStart(),
+                                                       node->getLoopEnd());
+      }
+      if (e.tmap.n >= 2) {
+        const auto *fresh = new celestrian::timing::TimeMap(e.tmap);
+        if (const auto *old = node->exchangeMapOverride(fresh)) {
+          retire([old] { delete old; });
+        }
+      } else {
+        if (const auto *old = node->exchangeMapOverride(nullptr)) {
+          retire([old] { delete old; });
+        }
+        if (e.tmap.n == 1) {
+          node->setLoopPoints(e.tmap.segs[0].start, e.tmap.segs[0].end);
+        } else {
+          node->setLoopPoints(0, 0);
+        }
+      }
+      // Q13 riders (multi-segment definer re-trim): identical shape to
+      // LoopPoints — the grid and the phase re-anchor undo atomically
+      // with the map.
+      if (e.setsIsland) {
+        inv.setsIsland = true;
+        inv.iq = root_node->getQuantum();
+        inv.iepoch = root_node->getEpoch();
+        root_node->setQuantum(e.iq, e.iepoch);
+      }
+      if (e.setsOrigin) {
+        inv.setsOrigin = true;
+        inv.iorg = node->origin_samples.load();
+        node->origin_samples.store(e.iorg);
+      }
       return inv;
     }
     case K::Input: {
@@ -501,6 +640,10 @@ void AudioEngine::retireEdit(celestrian::Edit &&e) {
   // Never free a detached subtree inline — an in-flight callback may read
   // it for ≤2 more callbacks. Hand it to the same graveyard the graph
   // mutations use.
+  if (e.buffer) {
+    juce::AudioBuffer<float> *b = e.buffer.release();
+    retire([b] { delete b; });
+  }
   if (e.node) {
     celestrian::AudioNode *n = e.node.release();
     retire([n] { delete n; });
@@ -727,12 +870,18 @@ juce::var AudioEngine::getGraphState() const {
     const int64_t rel = t - islandEpoch();
     master_view = (double)(cycle > 0 ? ((rel % cycle) + cycle) % cycle : rel);
   }
+  // The RAW island clock (epoch-relative, unwrapped): masterPos above is
+  // folded on the CURRENT audible cycle, so its fold point jumps when a
+  // live map edit changes that cycle mid-gesture. The UI folds this
+  // invariant clock on its own (pinned) frame for a continuous cursor.
+  const double island_view = (double)(t - islandEpoch());
 
   if (focused_node) {
     auto metadata = focused_node->getMetadata();
     auto *obj = metadata.getDynamicObject();
     obj->setProperty("isPlaying", (bool)is_playing_global.load());
     obj->setProperty("masterPos", master_view);
+    obj->setProperty("islandPos", island_view);
     // The island epoch is the UI's frame origin for every cycle-relative
     // projection (kernel.md one-frame rule). It is NOT the root node's
     // `origin` metadata — commit re-bases the epoch (see processBlock),
@@ -752,6 +901,7 @@ juce::var AudioEngine::getGraphState() const {
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
   state->setProperty("isPlaying", (bool)is_playing_global.load());
   state->setProperty("masterPos", master_view);
+  state->setProperty("islandPos", island_view);
   state->setProperty("islandEpoch", (double)islandEpoch());
   state->setProperty("quantum",
                      (double)(root_node ? root_node->getQuantum() : 0));
@@ -1017,8 +1167,114 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
       e.setsIsland = true;
       e.iq = len;
       e.iepoch = e.iorg + start;
+    } else if (clip->getIntrinsicDuration() > 0 &&
+               !root_node->hasActiveTake() && is_playing_global.load()) {
+      // GENERAL PHASE CONTINUITY (see continuityOrigin): a window edit
+      // on any playing committed clip re-anchors origin so the sound
+      // does not jump — the island (Q, epoch) is untouched. Idle edits
+      // keep the deterministic fixed-origin layout.
+      e.setsOrigin = true;
+      e.iorg = continuityOrigin(
+          *clip, celestrian::timing::TimeMap::single(start, end),
+          global_transport_pos.load());
     }
   }
+  record(std::move(e));
+}
+
+void AudioEngine::setSegments(const juce::String &uuid,
+                              const celestrian::timing::TimeMap &map) {
+  using TimeMap = celestrian::timing::TimeMap;
+  auto *target = findNodeByUuid(root_node.get(), uuid);
+  if (target == nullptr) return;
+
+  // MID-TAKE MAP-EDIT GATE (owner-ruled, phase 2): a take recording
+  // through this map froze its geometry at arm. Any armed/recording
+  // target refuses (a stack answers for its subtree).
+  if (target->isArmedOrRecording()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setSegments refused — a take is armed/recording "
+        "here (finish or cancel it first)");
+    return;
+  }
+
+  // Structural sanity only (time_maps.md §4: the EDITOR owns coherence
+  // — seam theorem; the engine owns well-formedness): ordered,
+  // disjoint, each non-empty, within the node's inner cycle.
+  const int64_t intrinsic = target->getIntrinsicDuration();
+  int64_t prev_end = 0;
+  for (int i = 0; i < map.n; ++i) {
+    const auto &s = map.segs[i];
+    if (s.end <= s.start || s.start < prev_end ||
+        (intrinsic > 0 && s.end > intrinsic)) {
+      juce::Logger::writeToLog(
+          "AudioEngine::setSegments refused — malformed segment list");
+      return;
+    }
+    prev_end = s.end;
+  }
+
+  // n ≤ 1 is the single-window form: ONE code path — setLoopPoints
+  // owns the Q13 machinery and clears any override.
+  if (map.n == 0) {
+    setLoopPoints(uuid, 0, 0);
+    return;
+  }
+  if (map.n == 1) {
+    setLoopPoints(uuid, map.segs[0].start, map.segs[0].end);
+    return;
+  }
+
+  celestrian::Edit e(celestrian::Edit::Kind::Segments);
+  e.uuid = uuid;
+  e.setsMap = true;
+  e.tmap = map;
+
+  // Q13 — multi-segment re-trim before lock (the punch/cell twin of
+  // the provisional window trim): while the island's ONLY committed
+  // content is this clip, the map re-establishes (Q := period,
+  // epoch := origin' + mapOffset(0)), with the phase-preserving origin
+  // re-anchor generalized through the map: the buffer position
+  // sounding RIGHT NOW keeps sounding (inverse-mapped when still
+  // covered; the old heard phase folds into the new period when the
+  // cut removed it).
+  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
+      clip != nullptr && intrinsic > 0 && islandCommittedClipCount() == 1 &&
+      !root_node->hasActiveTake()) {
+    const int64_t t0 = global_transport_pos.load();
+    const TimeMap old_map = clip->activeTimeMap();
+    const int64_t period = map.period();
+    const int64_t a0 = map.mapOffset(0);
+    int64_t h_new = 0;
+    if (old_map.active() && old_map.period() > 0) {
+      const int64_t old_org = clip->origin_samples.load();
+      const int64_t p0 =
+          old_map.mapOffset(t0 - old_org - old_map.mapOffset(0));
+      const int64_t inv_h = map.heardOffsetOf(p0);
+      if (inv_h >= 0) {
+        h_new = inv_h;
+      } else {
+        const int64_t h0 = old_map.heardOffsetOf(p0);  // ≥ 0 by constr.
+        h_new = ((h0 % period) + period) % period;
+      }
+    }
+    const int64_t origin_new = t0 - a0 - h_new;
+    e.setsOrigin = true;
+    e.iorg = origin_new;
+    e.setsIsland = true;
+    e.iq = period;
+    e.iepoch = origin_new + a0;
+  } else if (auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
+             clip != nullptr && intrinsic > 0 &&
+             !root_node->hasActiveTake() && is_playing_global.load()) {
+    // GENERAL PHASE CONTINUITY (see continuityOrigin): a map edit on
+    // any playing committed clip re-anchors origin so the sound does
+    // not jump at the commit — the discontinuity the owner heard on
+    // dblclick cut/heal (field 2026-07-25h). Island (Q, epoch) stays.
+    e.setsOrigin = true;
+    e.iorg = continuityOrigin(*clip, map, global_transport_pos.load());
+  }
+
   record(std::move(e));
 }
 

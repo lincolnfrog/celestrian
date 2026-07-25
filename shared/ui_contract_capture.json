@@ -6,7 +6,7 @@
   },
   "polls": [
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -76,7 +76,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -146,7 +146,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -222,9 +222,10 @@
       ],
       "isPlaying": false,
       "masterPos": 0.0,
+      "islandPos": 0.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
@@ -238,7 +239,7 @@
       "_tag": "pre-rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -308,7 +309,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -378,7 +379,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -454,14 +455,15 @@
       ],
       "isPlaying": true,
       "masterPos": 100.0,
+      "islandPos": 100.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.013965,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.01194375,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -470,7 +472,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -540,7 +542,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -610,7 +612,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -686,14 +688,15 @@
       ],
       "isPlaying": true,
       "masterPos": 200.0,
+      "islandPos": 200.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.02193975,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.020120625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -702,7 +705,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -772,7 +775,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -842,7 +845,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -918,14 +921,15 @@
       ],
       "isPlaying": true,
       "masterPos": 300.0,
+      "islandPos": 300.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.028198275,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.0276635625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -934,7 +938,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -1004,7 +1008,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -1074,7 +1078,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -1150,14 +1154,15 @@
       ],
       "isPlaying": true,
       "masterPos": 400.0,
+      "islandPos": 400.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.0338309475,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.03426845625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -1166,7 +1171,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -1236,7 +1241,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -1306,7 +1311,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -1382,14 +1387,15 @@
       ],
       "isPlaying": true,
       "masterPos": 500.0,
+      "islandPos": 500.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.03871660275,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.040029110625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -1398,7 +1404,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -1468,7 +1474,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -1538,7 +1544,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -1614,14 +1620,15 @@
       ],
       "isPlaying": true,
       "masterPos": 600.0,
+      "islandPos": 600.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.043113692475,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.0453974495625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -1630,7 +1637,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -1700,7 +1707,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -1770,7 +1777,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -1846,14 +1853,15 @@
       ],
       "isPlaying": true,
       "masterPos": 700.0,
+      "islandPos": 700.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.0468873232275,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.05022895460625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -1862,7 +1870,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -1932,7 +1940,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -2002,7 +2010,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -2078,14 +2086,15 @@
       ],
       "isPlaying": true,
       "masterPos": 800.0,
+      "islandPos": 800.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.05009984090475,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.054577309145625,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -2094,7 +2103,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -2164,7 +2173,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -2234,7 +2243,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -2310,14 +2319,15 @@
       ],
       "isPlaying": true,
       "masterPos": 900.0,
+      "islandPos": 900.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.053358606814275,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.058307078231063,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -2326,7 +2336,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -2396,7 +2406,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -2466,7 +2476,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -2542,14 +2552,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1000.0,
+      "islandPos": 1000.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.056291496132848,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.061663870407956,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -2558,7 +2569,7 @@
       "_tag": "rec-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -2628,7 +2639,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -2698,7 +2709,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -2774,14 +2785,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1000.0,
+      "islandPos": 1000.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.056291496132848,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.061663870407956,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -2790,7 +2802,7 @@
       "_tag": "commit-1"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -2860,7 +2872,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -2930,7 +2942,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -3006,14 +3018,15 @@
       ],
       "isPlaying": true,
       "masterPos": 100.0,
+      "islandPos": 1100.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.059482346519563,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.063582483367161,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -3022,7 +3035,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -3092,7 +3105,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -3162,7 +3175,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -3238,14 +3251,15 @@
       ],
       "isPlaying": true,
       "masterPos": 200.0,
+      "islandPos": 1200.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.062170361867606,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.065125485030445,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -3254,7 +3268,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -3324,7 +3338,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -3394,7 +3408,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -3470,14 +3484,15 @@
       ],
       "isPlaying": true,
       "masterPos": 300.0,
+      "islandPos": 1300.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.064405825680846,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.0666979365274,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -3486,7 +3501,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -3556,7 +3571,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -3626,7 +3641,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -3702,14 +3717,15 @@
       ],
       "isPlaying": true,
       "masterPos": 400.0,
+      "islandPos": 1400.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.066417743112761,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.06756189287466,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -3718,7 +3734,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -3788,7 +3804,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -3858,7 +3874,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -3934,14 +3950,15 @@
       ],
       "isPlaying": true,
       "masterPos": 500.0,
+      "islandPos": 1500.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.068044718801485,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.068706953587194,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -3950,7 +3967,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -4020,7 +4037,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -4090,7 +4107,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -4166,14 +4183,15 @@
       ],
       "isPlaying": true,
       "masterPos": 600.0,
+      "islandPos": 1600.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.069876496921337,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.068818758228475,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -4182,7 +4200,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -4252,7 +4270,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -4322,7 +4340,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -4398,14 +4416,15 @@
       ],
       "isPlaying": true,
       "masterPos": 700.0,
+      "islandPos": 1700.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.071157597229203,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.070205632405627,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -4414,7 +4433,7 @@
       "_tag": "looping"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -4484,7 +4503,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -4554,7 +4573,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -4626,7 +4645,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -4702,14 +4721,15 @@
       ],
       "isPlaying": true,
       "masterPos": 700.0,
+      "islandPos": 1700.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 3.0,
-        "avgLoadPct": 0.071157597229203,
+        "maxBlockUs": 2.0,
+        "avgLoadPct": 0.070205632405627,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -4718,7 +4738,7 @@
       "_tag": "armed-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -4788,7 +4808,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -4858,7 +4878,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -4930,7 +4950,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5006,14 +5026,15 @@
       ],
       "isPlaying": true,
       "masterPos": 800.0,
+      "islandPos": 1800.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.077455587506283,
+        "avgLoadPct": 0.076598819165065,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -5022,7 +5043,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -5092,7 +5113,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -5162,7 +5183,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5234,7 +5255,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5310,14 +5331,15 @@
       ],
       "isPlaying": true,
       "masterPos": 900.0,
+      "islandPos": 1900.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.080735028755654,
+        "avgLoadPct": 0.079045187248558,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -5326,7 +5348,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -5396,7 +5418,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -5466,7 +5488,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5538,7 +5560,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5614,14 +5636,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1000.0,
+      "islandPos": 2000.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.083502775880089,
+        "avgLoadPct": 0.081246918523702,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -5630,7 +5653,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -5700,7 +5723,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -5770,7 +5793,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5842,7 +5865,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -5918,14 +5941,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1100.0,
+      "islandPos": 2100.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.08764749829208,
+        "avgLoadPct": 0.086352226671332,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -5934,7 +5958,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -6004,7 +6028,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -6074,7 +6098,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -6146,7 +6170,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -6222,14 +6246,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1200.0,
+      "islandPos": 2200.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.091928998462872,
+        "avgLoadPct": 0.091498254004199,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -6238,7 +6263,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -6308,7 +6333,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -6378,7 +6403,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -6450,7 +6475,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -6526,14 +6551,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1300.0,
+      "islandPos": 2300.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.096149848616585,
+        "avgLoadPct": 0.094843428603779,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -6542,7 +6568,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -6612,7 +6638,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -6682,7 +6708,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -6754,7 +6780,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -6830,14 +6856,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1400.0,
+      "islandPos": 2400.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
         "maxBlockUs": 3.0,
-        "avgLoadPct": 0.099029863754926,
+        "avgLoadPct": 0.097854085743401,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -6846,7 +6873,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -6916,7 +6943,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -6986,7 +7013,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7058,7 +7085,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7134,14 +7161,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1500.0,
+      "islandPos": 2500.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.108971877379434,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.100196177169061,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -7150,7 +7178,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -7220,7 +7248,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -7290,7 +7318,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7362,7 +7390,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7438,14 +7466,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1600.0,
+      "islandPos": 2600.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.11700093964149,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.101936559452155,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -7454,7 +7483,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -7524,7 +7553,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -7594,7 +7623,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7666,7 +7695,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7742,14 +7771,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1700.0,
+      "islandPos": 2700.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.119449595677341,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.103870403506939,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -7758,7 +7788,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -7828,7 +7858,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -7898,7 +7928,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -7970,7 +8000,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8046,14 +8076,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1800.0,
+      "islandPos": 2800.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.121285886109607,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.105059613156245,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -8062,7 +8093,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -8132,7 +8163,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -8202,7 +8233,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8274,7 +8305,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8350,14 +8381,15 @@
       ],
       "isPlaying": true,
       "masterPos": 1900.0,
+      "islandPos": 2900.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.122571047498646,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.106681151840621,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -8366,7 +8398,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -8436,7 +8468,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -8506,7 +8538,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8578,7 +8610,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8654,14 +8686,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2000.0,
+      "islandPos": 3000.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.124278942748782,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.107773036656559,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -8670,7 +8703,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -8740,7 +8773,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -8810,7 +8843,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8882,7 +8915,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -8958,14 +8991,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2100.0,
+      "islandPos": 3100.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.126367298473904,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.108755732990903,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -8974,7 +9008,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -9044,7 +9078,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -9114,7 +9148,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -9186,7 +9220,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -9262,14 +9296,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2200.0,
+      "islandPos": 3200.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.127695568626513,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.109640159691813,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -9278,7 +9313,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -9348,7 +9383,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -9418,7 +9453,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -9490,7 +9525,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -9566,14 +9601,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2300.0,
+      "islandPos": 3300.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.127972261763862,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.110436143722631,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -9582,7 +9618,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -9652,7 +9688,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -9722,7 +9758,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -9794,7 +9830,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -9870,14 +9906,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2400.0,
+      "islandPos": 3400.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.128405035587476,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.111336279350368,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -9886,7 +9923,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -9956,7 +9993,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -10026,7 +10063,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -10098,7 +10135,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -10174,14 +10211,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2500.0,
+      "islandPos": 3500.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.128610782028728,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.112146401415331,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -10190,7 +10228,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -10260,7 +10298,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -10330,7 +10368,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -10402,7 +10440,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -10478,14 +10516,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2600.0,
+      "islandPos": 3600.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.128979703825855,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.112875511273798,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -10494,7 +10533,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -10564,7 +10603,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -10634,7 +10673,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -10706,7 +10745,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -10782,14 +10821,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2700.0,
+      "islandPos": 3700.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.12912798344327,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.113899210146418,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -10798,7 +10838,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -10868,7 +10908,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -10938,7 +10978,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11010,7 +11050,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11086,14 +11126,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2800.0,
+      "islandPos": 3800.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.128893935098943,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.115004289131777,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -11102,7 +11143,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -11172,7 +11213,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -11242,7 +11283,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11314,7 +11355,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11390,14 +11431,15 @@
       ],
       "isPlaying": true,
       "masterPos": 2900.0,
+      "islandPos": 3900.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.129050791589049,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.115998860218599,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -11406,7 +11448,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -11476,7 +11518,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -11546,7 +11588,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11618,7 +11660,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11694,14 +11736,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3000.0,
+      "islandPos": 4000.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.130110712430144,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.116526474196739,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -11710,7 +11753,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -11780,7 +11823,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -11850,7 +11893,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11922,7 +11965,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -11998,14 +12041,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3100.0,
+      "islandPos": 4100.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.130697141187129,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.117368826777065,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -12014,7 +12058,7 @@
       "_tag": "rec-2"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -12084,7 +12128,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -12154,7 +12198,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -12226,7 +12270,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -12302,14 +12346,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3100.0,
+      "islandPos": 4100.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.130697141187129,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.117368826777065,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -12318,7 +12363,7 @@
       "_tag": "stop-requested"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -12388,7 +12433,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -12458,7 +12503,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -12530,7 +12575,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -12606,14 +12651,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3200.0,
+      "islandPos": 4200.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.136737427068416,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.120515694099359,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -12622,7 +12668,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -12692,7 +12738,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -12762,7 +12808,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -12834,7 +12880,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -12910,14 +12956,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3300.0,
+      "islandPos": 4300.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.136293684361575,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.119489124689423,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -12926,7 +12973,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -12996,7 +13043,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -13066,7 +13113,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -13138,7 +13185,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -13214,14 +13261,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3400.0,
+      "islandPos": 4400.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.135710565925417,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.11911646222048,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -13230,7 +13278,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -13300,7 +13348,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -13370,7 +13418,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -13442,7 +13490,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -13518,14 +13566,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3500.0,
+      "islandPos": 4500.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.135737009332876,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.119148565998432,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -13534,7 +13583,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -13604,7 +13653,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -13674,7 +13723,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -13746,7 +13795,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -13822,14 +13871,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3600.0,
+      "islandPos": 4600.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.135577058399588,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.119177459398589,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -13838,7 +13888,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -13908,7 +13958,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -13978,7 +14028,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14050,7 +14100,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14126,14 +14176,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3700.0,
+      "islandPos": 4700.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.135433102559629,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.11883596345873,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -14142,7 +14193,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -14212,7 +14263,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -14282,7 +14333,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14354,7 +14405,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14430,14 +14481,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3800.0,
+      "islandPos": 4800.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.135487292303666,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.118896117112857,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -14446,7 +14498,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -14516,7 +14568,7 @@
       "epoch": 0.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -14586,7 +14638,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14658,7 +14710,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14734,14 +14786,15 @@
       ],
       "isPlaying": true,
       "masterPos": 3900.0,
+      "islandPos": 4900.0,
       "islandEpoch": 0.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.1357198130733,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.118582755401572,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -14750,7 +14803,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -14820,7 +14873,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -14890,7 +14943,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -14962,7 +15015,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15038,14 +15091,15 @@
       ],
       "isPlaying": true,
       "masterPos": 0.0,
+      "islandPos": 3000.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.13997158176597,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.121791979861414,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -15054,7 +15108,7 @@
       "_tag": "awaiting-stop"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -15124,7 +15178,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -15194,7 +15248,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15266,7 +15320,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15342,14 +15396,15 @@
       ],
       "isPlaying": true,
       "masterPos": 0.0,
+      "islandPos": 3000.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.13997158176597,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.121791979861414,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -15358,7 +15413,7 @@
       "_tag": "committed"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -15428,7 +15483,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -15498,7 +15553,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15570,7 +15625,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15646,14 +15701,15 @@
       ],
       "isPlaying": true,
       "masterPos": 100.0,
+      "islandPos": 3100.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.140858173589373,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.121372781875273,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -15662,7 +15718,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -15732,7 +15788,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -15802,7 +15858,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15874,7 +15930,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -15950,14 +16006,15 @@
       ],
       "isPlaying": true,
       "masterPos": 200.0,
+      "islandPos": 3200.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.141839856230435,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.119893003687746,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -15966,7 +16023,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -16036,7 +16093,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -16106,7 +16163,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -16178,7 +16235,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -16254,14 +16311,15 @@
       ],
       "isPlaying": true,
       "masterPos": 300.0,
+      "islandPos": 3300.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.141253370607392,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.119112453318971,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -16270,7 +16328,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -16340,7 +16398,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -16410,7 +16468,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -16482,7 +16540,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -16558,14 +16616,15 @@
       ],
       "isPlaying": true,
       "masterPos": 400.0,
+      "islandPos": 3400.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.140174283546653,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.118409957987074,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -16574,7 +16633,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -16644,7 +16703,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -16714,7 +16773,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -16786,7 +16845,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -16862,14 +16921,15 @@
       ],
       "isPlaying": true,
       "masterPos": 500.0,
+      "islandPos": 3500.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.139754355191987,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.117226462188367,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -16878,7 +16938,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -16948,7 +17008,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -17018,7 +17078,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -17090,7 +17150,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -17166,14 +17226,15 @@
       ],
       "isPlaying": true,
       "masterPos": 600.0,
+      "islandPos": 3600.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.138825169672789,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.11634506596953,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -17182,7 +17243,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -17252,7 +17313,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -17322,7 +17383,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -17394,7 +17455,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -17470,14 +17531,15 @@
       ],
       "isPlaying": true,
       "masterPos": 700.0,
+      "islandPos": 3700.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.13909140270551,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.116103059372577,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,
@@ -17486,7 +17548,7 @@
       "_tag": "post-commit"
     },
     {
-      "id": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "id": "509247a54d50420585542e503a717247",
       "name": "SessionRoot",
       "type": "stack",
       "x": 0.0,
@@ -17556,7 +17618,7 @@
       "epoch": 2000.0,
       "nodes": [
         {
-          "id": "b5f86e8c94a84b5bbe8c7f8d371cc338",
+          "id": "77d19e6dc91c4f3f883c05157f43259d",
           "name": "New Stack",
           "type": "stack",
           "x": 0.0,
@@ -17626,7 +17688,7 @@
           "epoch": 0.0,
           "nodes": [
             {
-              "id": "2c19e476843c4623b75725caafbf7093",
+              "id": "92e622de373b40d0aa9a6e7a34420a8b",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -17698,7 +17760,7 @@
               "isPlaying": true
             },
             {
-              "id": "1583e6f454ba4f1b89e8d1322c5f0ba8",
+              "id": "50a54e4c9cfe4e8c90a22003b2e7b9ce",
               "name": "New Clip",
               "type": "clip",
               "x": 0.0,
@@ -17774,14 +17836,15 @@
       ],
       "isPlaying": true,
       "masterPos": 800.0,
+      "islandPos": 3800.0,
       "islandEpoch": 2000.0,
       "soloedId": "",
-      "focusedId": "2ac71fd7883e43bd9c841ec27e87ec95",
+      "focusedId": "509247a54d50420585542e503a717247",
       "canUndo": true,
       "canRedo": false,
       "perf": {
-        "maxBlockUs": 4.0,
-        "avgLoadPct": 0.139514762434959,
+        "maxBlockUs": 3.0,
+        "avgLoadPct": 0.116252753435319,
         "xruns": 0.0,
         "latencyCompensationSamples": 0.0,
         "calibrated": false,

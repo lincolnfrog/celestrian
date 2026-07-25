@@ -213,6 +213,67 @@ class ClipNode : public AudioNode {
     setLoopPoints(shift, shift + len);
   }
 
+  // --- Multi-segment lock-collapse (time_maps.md phase 3) ---
+  /** The multi-segment twin of collapseToWindow: the map's kept
+   * material BECOMES the take — a SPLICE COPY concatenates the
+   * segments into an exact-size buffer (a content_base_ shift cannot
+   * express a discontiguous keep). New facts: duration := period,
+   * origin += mapOffset(0) (the anchoring law — playback is
+   * sample-identical to the mapped playback it replaces), window
+   * full-span, content_base 0. Returns the OLD buffer — the caller
+   * (the edit inverse) OWNS it for undo; it must not be freed inline
+   * (in-flight renders may read it for ≤2 callbacks). Message thread,
+   * committed clip only. The caller clears/retires the map override.
+   */
+  std::unique_ptr<juce::AudioBuffer<float>> spliceToMap(
+      const timing::TimeMap &m) {
+    const int64_t period = m.period();
+    auto spliced =
+        std::make_unique<juce::AudioBuffer<float>>(1, (int)period);
+    spliced->clear();
+    const auto &src = *content_.load();
+    const int64_t base = content_base_.load();
+    int64_t w = 0;
+    for (int i = 0; i < m.n; ++i) {
+      const int64_t s = m.segs[i].start;
+      const int64_t len = m.segs[i].end - s;
+      const int64_t from = base + s;
+      const int64_t avail = std::max<int64_t>(
+          0, std::min<int64_t>(len, src.getNumSamples() - from));
+      if (avail > 0) spliced->copyFrom(0, (int)w, src, 0, (int)from, (int)avail);
+      w += len;
+    }
+    origin_samples.store(origin_samples.load() + m.mapOffset(0));
+    duration_samples.store(period);
+    setLoopPoints(0, period);
+    content_base_.store(0);
+    write_position.store((int)period);
+    std::unique_ptr<juce::AudioBuffer<float>> old = std::move(content_owned_);
+    content_owned_ = std::move(spliced);
+    content_.store(content_owned_.get());
+    return old;
+  }
+  /** Inverse of spliceToMap: reinstall the pre-splice buffer + facts.
+   * Returns the DISPLACED spliced buffer — the caller retires it (an
+   * in-flight render may still read it). Loop points restore to
+   * full-span: the reinstalled map override shadows them (the same
+   * documented looseness as LoopPoints-under-override). */
+  std::unique_ptr<juce::AudioBuffer<float>> unspliceFromMap(
+      std::unique_ptr<juce::AudioBuffer<float>> old_buffer,
+      int64_t old_origin, int64_t old_duration, int64_t old_base,
+      int64_t old_recorded) {
+    std::unique_ptr<juce::AudioBuffer<float>> displaced =
+        std::move(content_owned_);
+    content_owned_ = std::move(old_buffer);
+    content_.store(content_owned_.get());
+    origin_samples.store(old_origin);
+    duration_samples.store(old_duration);
+    setLoopPoints(0, old_duration);
+    content_base_.store(old_base);
+    write_position.store((int)old_recorded);
+    return displaced;
+  }
+
   /**
    * Restore a committed take on session load (session_io): copies `audio`
    * into the buffer, marks it playable, and sets the recorded facts that

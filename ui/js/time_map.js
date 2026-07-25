@@ -53,6 +53,20 @@ export function mapOffset(map, heardOff) {
 }
 
 /**
+ * Inverse of mapOffset: the heard offset (within [0, period)) at which
+ * the map visits inner position `inner`, or -1 when unvisited.
+ */
+export function heardOffsetOf(map, inner) {
+    if (!mapActive(map)) return -1;
+    let heard = 0;
+    for (const [s, e] of map.segs) {
+        if (inner >= s && inner < e) return heard + (inner - s);
+        heard += e - s;
+    }
+    return -1;
+}
+
+/**
  * Samples from heardOff for which the map advances CONTINUOUSLY: the
  * distance to the end of the containing segment. Segment boundaries
  * always count as seams. Returns 0 when the map is inactive.

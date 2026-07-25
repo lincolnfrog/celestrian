@@ -6,7 +6,8 @@
 
 import { callNative, log, getState } from './backend.js';
 import { deriveViewModel } from './view_model.js';
-import { initSessionView, patchSessionView } from './session_view.js';
+import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ }
+    from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 
 const DEBUG = new URLSearchParams(window.location.search).get('debug') === 'true';
@@ -217,7 +218,9 @@ async function startPolling() {
                         pendingFetch.add(n.id);
                     }
                 }
-                const vm = deriveViewModel(state, { fxOpen, windowEdit });
+                const vm = deriveViewModel(state,
+                    { fxOpen, windowEdit, pinFrameQ: mapDragPinQ(),
+                      pinFoldQ: mapDragPinFoldQ() });
                 patchSessionView(vm, {
                     livePeaks,
                     pendingFetch,
@@ -491,6 +494,19 @@ export function initApp() {
             setLogLine('Loop window set');
         },
         onToggleWindow: id => callNative('toggleLoopWindow', id),
+        // Multi-segment maps (phase 3, the sequencer): one commit per
+        // editor gesture — flat [s0,e0,...] in samples.
+        onSetSegments: async (id, flatSegments) => {
+            await callNative('setSegments', id, flatSegments);
+            setLogLine('Map updated');
+        },
+        // Move the OS cursor (viewport CSS px). True when the backend
+        // actually warped; the mock returns false and the drag keeps
+        // its eased-capture fallback.
+        onWarpPointer: async (x, y) => {
+            try { return (await callNative('warpPointer', x, y)) === true; }
+            catch (_) { return false; }
+        },
         // Recording input (clips only — Q7: each child records from its
         // own input). The list is fetched per menu-open: hot-plugged
         // devices appear without a reload.

@@ -327,10 +327,325 @@ Recording through an active map works end to end:
   trip, multi-segment node-level fold, bypassed==plain, engine gates)
   and `ui/js/tests/map_record.test.mjs` (mock + VM parity).
 
-**Phase 3 (cell/punch editor) pending.** Its engine remainder is only
-multi-segment STORAGE + `setSegments` bridge (3-place) + session_io
-segments serialization + the editor UI ("sequencer" cell mode, punch
-mode with linked kQ edges): recording, playback, fold, cap, and arm
-math are already segment-general and golden-pinned. The
-windowed-group-children heard-frame unroll (view_model.js phase-3
-TODO) also lands there.
+**Phase 3 ✅ implemented (2026-07-22), FULLY FRACTAL (owner-ruled:
+"clips too, now" — the stacks-only scope cut and the invisible-wrapper
+indirection were both considered and rejected):**
+
+- **Storage**: multi-segment maps live behind ONE atomic pointer per
+  node (`AudioNode::map_override_`, message-thread swap + reclaimer
+  retire — the D4 content-buffer discipline); the loop atomics remain
+  the single-segment form; the bypass flag gates both.
+  `activeTimeMap()` prefers the override, so every phase-2 consumer
+  (childContext, seam splitting, effective periods, the record path)
+  went multi-segment with zero changes.
+- **The verb**: `setSegments(uuid, map)` — engine validates
+  WELL-FORMEDNESS only (ordered, disjoint, non-empty, within the inner
+  cycle, ≤ 8; the editor owns coherence per §4); n ≤ 1 delegates to
+  `setLoopPoints` (one single-segment path, Q13 for free); undoable
+  (`Edit::Segments`, inverse captures the RAW old storage — bypassed
+  geometry survives undo; `setLoopPoints` clears an override and its
+  inverse restores it). Mid-take gate applies. Bridge in all 3 places;
+  `segments` (flat samples) in metadata; `segmentsQ` (QTime pairs) in
+  the save format (additive; templates strip it).
+- **THE ANCHORING LAW (clips)**: clip map playback ≡ the stack map
+  with epoch := origin + mapOffset(0) —
+  p(t) = mapOffset((t − origin − mapOffset(0)) mod period). Its
+  single-segment case IS the 2026-07-19 `origin + loopStart` anchor.
+  `ClipNode::render` is now a run-split read through `activeTimeMap()`
+  (seam-exact, purity preserved); the whole legacy suite passes
+  byte-identically.
+- **Q13, multi-segment definer**: a segments re-trim of the sole
+  committed clip re-establishes (Q := period, epoch := origin' +
+  mapOffset(0)) with the phase-preserving origin re-anchor generalized
+  through the map inverse (`heardOffsetOf`). LOCK-COLLAPSE of a
+  multi-segment definer is a SPLICE COPY (kept cells → exact-size
+  buffer; the edit inverse OWNS the pre-splice buffer + map, so undo
+  un-splices — the owned-subtree precedent).
+- **The SEQUENCER — CUT BANDS (§4 via the 2026-07-22 mock round; the
+  first modal cell/punch editor shipped briefly and was replaced after
+  one field session: its full-lane punch surface intercepted the
+  bracket drags — modes are where it went wrong)**: a cut is a
+  first-class object in the bracket vocabulary — a dim band with two
+  bracket-style handles and a length chip, living DIRECTLY on the lane
+  (groups at rest; clips in their raw-take view beside the trim
+  brackets; windowless resting clips in place). Double-click the take
+  → a 1Q cut on that Q cell (cell mode as a gesture); double-click a
+  cut → it heals; drag the chip → the cut SLIDES freely, length held
+  (the "exclude 1Q off the boundary" move); drag a handle → resize,
+  length snapping to whole Qs on release (⌥ free, badged "N.NNQ ⚠" —
+  the seam theorem visible). ONE `setSegments` per finished gesture =
+  one undo step. The vocabulary split: leading/trailing exclusions are
+  the WINDOW brackets' domain; bands are only the INNER gaps — the two
+  gestures never overlap. `ui/js/map_edit.js` holds the pure algebra
+  (innerCuts/applyCut/healCut/cellCutAt/resizeCutTarget/
+  slideCutTarget). Resting display: dims over uncovered regions per
+  tile, seam ticks, one `map · NQ` chip (bypass toggle); heard-view
+  clip lanes tile the CONCATENATED segment content (`srcSegs`);
+  composite cache keys include segments.
+- **HEARD-LANE LIVE EDITING (field 2026-07-23, second iteration —
+  "no modes, let me manipulate the handles live")**: on a heard-view
+  lane a cut has ZERO width (it IS the splice), so it renders as a
+  grabbable SEAM HANDLE with its length chip — drag slides the cut
+  freely through the underlying take (length held), ⌥-drag resizes
+  (whole-Q snap), double-click heals; double-click on content still
+  creates a cell cut (the pointer hops heard→raw through mapOffset).
+  The edge grips are LIVE TRIM handles (inward consumes kept time,
+  outward reveals more take, whole-Q snap, one setSegments on release)
+  — they no longer open the inspector on pointerdown (that ate the
+  drag); the chip CLICK opens it, for inspection only. Two frame-math
+  bugs fixed in the same pass: `clipCycleContribution` and the VM's
+  audible-cycle `effPeriod` read raw loop atomics and missed segment
+  overrides — the frame stayed intrinsic (4Q ruler) while the engine
+  wrapped at the map period (3Q), and the next rep leaked into the
+  phantom quarter ("my removed segment shows at the end"). Both now go
+  through the segments-aware `nodeMapPeriod`. *Third iteration (same
+  day):* the real can't-drag bug was HIT-TESTING — the overlay layer is
+  pointer-events:none and the new cut chrome never opted in (and
+  synthetic-event tests bypass hit-testing, so they never caught it —
+  real-input verification is now the law for interactive elements).
+  *Fourth iteration:* heard tiles sit on the FRAME grid with the
+  loop's phase BAKED IN AS CONTENT ROTATION (`srcTopFrac`) — no wrap
+  slivers, no false ghosts (a loop that fills the frame is ALL
+  material; the old display dimmed its own wrap as if it were a
+  repeat), correct waveform slicing everywhere, cross-lane phase
+  alignment (I2) preserved. The loop top is a marked ↺ point with the
+  paired trim grips slightly separated and drag badges labeled "loop
+  start/end". LIVE SPLICE: seam/band/grip drags stream throttled
+  `setSegments` commits — the new loop is AUDIBLE (and its waveform
+  visible) while dragging; `Edit::Segments` coalesces in the undo log
+  (the Position precedent) so one gesture stays one undo step.
+  Seam handles/ticks wrap mod the frame with the content (a loop
+  resting mid-phase per Q14 keeps its chrome ON the bright tile, never
+  clipped at the frame edge); trim grips hug the content's heard
+  bounds and follow the pointer with the snap-ghost + period badge
+  (the two-layer bracket feedback restored).
+- **THE EXPANDED MAP DRAG (owner-ruled, field 2026-07-23e — the
+  design that finally landed)**: grabbing ANY map handle on a heard
+  lane EXPANDS the lane to its full raw take for the duration of the
+  drag — excluded material visible as dims, the cut a real band, the
+  trim bracket riding an ABSOLUTE raw bound over visible content
+  (dragging back over dimmed material RESTORES it; nothing is ever off
+  an edge) — then release commits and the lane relaxes back to the
+  heard view. Live audio streaming continues through the drag (in the
+  raw frame exclusion reads as dimming, not destruction, so live
+  commits stop feeling like losses). The lesson that took four
+  iterations: CUT/TRIM GEOMETRY IS RAW-FRAME DATA — the heard view is
+  the right RESTING view and the wrong EDITING surface; every heard-
+  space editing scheme (zero-width seams, wrapping grips) fought that
+  fact. Implementation notes: the drag preview renders into a
+  dedicated `.drag-preview-layer` (wiping the overlay mid-gesture
+  destroys the captured handle — found by real-input verification);
+  drag baselines are taken at POINTERDOWN (first-move baselining ate
+  single-move drags); the raw-frame pointer mapping is purely
+  geometric, valid before the visuals swap.
+  *UX pass (2026-07-23f):* TWO-LAYER FEEDBACK restored inside the
+  expanded frame — a pointer-attached FOLLOW element (the bracket
+  you're trimming, or the full band + handles of the cut you're
+  sliding) moves continuously with the mouse while the dashed snap
+  ghost + a live badge ("loop start · 3Q" / "1.37Q cut ⚠") mark the
+  whole-Q landing; the preview appears AT pointerdown, not on the
+  first move. The expansion eases open (200ms, reduced-motion aware).
+  Double-click create/heal on a heard lane FLASH-EXPANDS (~0.9s) so
+  the new cut is seen landing in raw context — one principle
+  everywhere: every manipulation shows the whole clip and its map
+  structure, then relaxes to the heard view.
+  *Video round (2026-07-23g):* THE FRAME PIN — while any map gesture
+  is live, the SHARED display frame holds at its drag-start value
+  (`dragPinQ` → `pinFrameQ` into the VM): live commits keep streaming
+  audibly, but the ruler and the OTHER lanes no longer rescale under
+  the pointer; the frame settles once, on release ("the world must
+  not squirm while you hold it"). Two chrome fixes rode along: the
+  coincident ↺ loop-top chip is hover-revealed (it read as mid-lane
+  clutter at rest), and the drag badge is edge-clamped so its text
+  never clips off the lane. The round also surfaced a REAL frame bug:
+  `commensuratePeriod` (timeline_model.js) predated law-13-amended —
+  a whole-Q clip with an active map contributed its full DURATION to
+  the stack LCM (`d % q === 0` early-out), and segments were
+  invisible to it entirely, so a multi-segment clip inside a track
+  stack (the owner's actual topology — top-level clips had been fixed
+  in 2026-07-23b) showed a duration-sized frame. Now an active map's
+  period (summed segments, or the window as its single-segment form)
+  wins whenever it is a real whole-Q shortening; incommensurate
+  free-cut maps still fall to the finite ceil fallback.
+  *Field round (2026-07-25):* three fixes. (1) EXACT Q LABELS — a slid
+  cut with fractional bounds whose sample lengths summed to exactly 1Q
+  displayed "0.9999…Q": `mapOf.periodQ` is now ONE division of the
+  sample sum (never a sum of per-segment divisions; pinned in
+  segments.test.mjs), and user-facing Q labels go through `fmtQ`
+  (snaps < 1e-6 fp residue to the whole Q, honest fractions keep two
+  decimals). (2) ABSOLUTE DRAG TRACKING — runExpandedDrag's delta
+  baseline carried the heard↔raw pixel mismatch through the whole
+  gesture: the handle rode ~a-cut-width away from the mouse and bounds
+  near a lane edge were unreachable (the mouse ran out of lane first).
+  `onMove` now receives the pointer's ABSOLUTE raw-take Q; once the
+  pointer moves > 4px the handle is GLUED to it (trim bracket = the
+  bound, seam slide = the cut's start, ⌥-resize = the end edge). A
+  grab that never moves renders the at-rest geometry, snaps nothing,
+  and commits nothing. (3) THE RAW SOUND CURSOR — the expanded editing
+  view now carries the amber cursor: runExpandedDrag seeds a
+  `.win-cursor` in the overlay, `patchWinCursor` runs BEFORE the
+  `_winDrag` gates (the reconcile stays frozen; the ear doesn't), and
+  the cursor maps the live-committed segments — sweeping kept
+  material, JUMPING the dimmed cuts. The main white playhead stays
+  suppressed over the inspecting lane (nonsensical there); the amber
+  line is the lane's one honest cursor, mid-gesture included.
+  *Video round 2 (2026-07-25b):* the flicker and the grab-jump.
+  FLICKER had three legs: (a) the lane-open keyframes dipped the reps
+  to 25% opacity for 200ms on EVERY grab — the greys pulsed and the
+  z-6 playhead bled through the translucent body (the animation is now
+  transform-only); (b) the drag preview rendered raw-frame dims over
+  the still-heard lane for the ~1-poll gap before the expansion landed
+  (a wrong-space flash at each grab — the preview layer is now hidden
+  until `.inspecting` is real and reveals with the open); (c) the
+  z-index suppression of the white playhead depended on the lane
+  painting opaquely over it, and the webview compositor let stray
+  frames bleed — the playhead now carries a vertical MASK carving out
+  the inspecting lanes' bands (`maskPlayheadOverInspectors`, patched
+  per poll; paint-order-independent). GRAB-JUMP: the owner asked how
+  to reconcile "handle under the mouse" with the geometric fact that
+  expansion moves the grabbed content out from under the pointer.
+  Answer: EASED CAPTURE — the heard↔raw grab offset measured at
+  pointerdown decays with pointer travel (gone within ~15% of the
+  take's width), so the first pixels behave like a delta drag (no
+  teleport) and the handle then catches up and glues to the pointer:
+  reachable everywhere, discontinuous nowhere. (Alternatives ruled
+  out: pure delta = permanent offset + unreachable edges; pure
+  absolute = teleport on first move; pointer-lock warping = fragile in
+  the webview; anchoring the expansion around the grip = breaks
+  "whole clip visible, raw 0 at left".)
+  *The Gordian cut (2026-07-25d, owner-proposed):* rather than easing
+  the geometry to the pointer, the NATIVE side moves the POINTER to
+  the geometry. A `warpPointer(x, y)` bridge verb
+  (juce::Desktop::setMousePosition ← CGWarpMouseCursorPosition;
+  viewport CSS px ≡ JUCE points at default zoom) teleports the OS
+  cursor onto the followed handle once the drag is real (> 4px — a
+  sloppy grab must not move the cursor) and the raw view has landed;
+  the grab offset is then zeroed and the drag is pure 1:1 absolute.
+  Backends that cannot warp (the mock harness — and any future
+  platform without cursor control) return false and keep the
+  eased-capture fallback, which remains below.
+  *Simplification (2026-07-25f, owner-ruled):* the bound is RELATIVE
+  for the WHOLE gesture — anchorQ plus accumulated pointer deltas —
+  and the warp is pure COSMETICS: since the cursor's absolute position
+  never feeds the bound, the warp can land early, late, or mid-flight
+  without resetting anything (a user who grabs and immediately drags
+  fast loses nothing; there is also no intermediate to "animate along"
+  — the lane-open ease is vertical, the horizontal mapping flips in
+  one patch). Where warping is unsupported the mode flips to ABSOLUTE:
+  the handle snaps to the pointer and stays glued — one visible jump,
+  but every bound reachable and zero easing machinery. The eased
+  capture (offset decay, glide timer) is DELETED.
+  *Video round 7 (2026-07-25i):* the continuity re-anchor's FOLD
+  branch retired. Cutting the region that was PLAYING re-anchored
+  origin to a folded heard phase — sound "continuity" into an
+  arbitrary cell, and the honest display rotated the whole heard lane
+  so the new seam rendered at the playhead instead of the click ("the
+  cut appears to the far left"). Rule now: continuity re-anchor ONLY
+  while the new map still covers the sounding position; when the edit
+  deletes what you are hearing, origin stays FIXED — the audible jump
+  is expected (you removed that sound), and the lane stays anchored at
+  the click. Net behavior: cut AFTER the playing point = no rotation,
+  no jump; cut BEFORE it = whole-Q rotation, no jump; cut AT it = no
+  rotation, one expected jump.
+  *Video round 6 (2026-07-25h):* THE CONTINUITY RE-ANCHOR (a law
+  amendment). The owner's "main playback is discontinuous when I
+  double click to add/remove a Q — sometimes it works" decomposed into
+  two facts (frame-forensics on the cursor trace): the white cursor's
+  jump is the audible-cycle FOLD moving by whole Qs (honest, display
+  only, "works" when the position lands in the shared region) — but
+  the MUSICAL discontinuity was real: with a fixed origin, the
+  anchoring law re-derives the clip's phase when its period changes,
+  so WHICH cell is sounding jumps arbitrarily at the commit. Fix: the
+  sole-definer Q13 phase-preserving re-anchor is now GENERALIZED to
+  every clip map edit while playing (`continuityOrigin`, engine + mock
+  in lockstep): origin' keeps the sounding sample sounding
+  (inverse-mapped when covered; heard phase folds into the new period
+  when the cut removed it). I4 AS AMENDED: for whole-Q maps origin
+  moves by whole Qs only — the anchor's grid phase (mod Q) is exactly
+  preserved; WHICH cell aligns re-derives from the edit instant (the
+  looper's launch-quantized feel). Idle edits keep the deterministic
+  fixed-origin layout (gated on isPlaying). Engine-level continuity
+  test in time_map_record_tests.cc; the I4 regression pin updated to
+  the mod-Q invariant. Also: the post-warp echo filter is TIME-BOXED
+  (armed only ~400ms after the warp — armed forever it ate genuine
+  fast-flick deltas and the handle fell ~1Q behind the pointer with no
+  resync; owner video "drag quickly → cursor disconnected").
+  *Video round 5 (2026-07-25g):* the doubled split + the engage gate.
+  Dblclick-to-heal was geometrically broken on heard lanes: a cut has
+  ZERO width there (it IS the splice), so the pointer is never
+  "inside" it — the heal path could not match and the dblclick cut an
+  ADJACENT Q instead, which merged into a doubled cut ("‖ 2Q cut").
+  Fixes: (1) on heard lanes a dblclick within ±12px of a seam HEALS
+  that cut; (2) RIGHT-CLICK on any seam handle, chip, or cut band
+  heals — the explicit, timing-proof path; (3) THE ENGAGE GATE:
+  expansion AND warp start only once a press is a real drag (> 4px or
+  a 160ms hold) — a quick click(-click) leaves heard geometry
+  completely untouched, so both clicks of a double-click land on the
+  same world (the immediate warp used to teleport the cursor between
+  them, and the expansion moved the seam out from under click two).
+  Release before engagement = pure click, no commit, no visual churn.
+  Also: the drag badge rides at 22% lane height (it sat on the follow
+  bracket, unreadable), and a FLIGHT RECORDER (`window.__mapDbg`, last
+  400 gesture events + a console warning when renders disagree under a
+  still pointer) ships for the one flicker the mock cannot reproduce.
+  *Video round 4 (2026-07-25e):* the warp echo. CGWarp during a held
+  button can interleave pointer events from the warped cursor and the
+  un-warped hardware position (the macOS local-event-suppression
+  gotcha) — the absolute stream flip-flopped ~1.5Q with a stationary
+  hand, blinking the preview dims ("flickering") AND streaming
+  alternating setSegments maps (the "playback discontinuity" was the
+  audio honestly following that flip-flop). Post-warp the gesture goes
+  RELATIVE: deltas accumulate on the warped bound, and any single
+  event jumping ≥150px is a warp echo that only rebases. Two more in
+  the same round: the ANIMATOR wraps on vm.loopCycleQ, which the pin
+  now also freezes (the readout was continuous while the 60fps line
+  still folded at every live commit), and the warp fires at GRAB
+  (owner-ruled; waiting for the first move felt late). BUILD GOTCHA:
+  the app bundle's ui/ copy runs only on relink — JS-only changes need
+  a manual sync or the field build runs stale UI.
+  *Video round 3 (2026-07-25c):* two field failures fixed. (1) EASED
+  CAPTURE now decays on TIME as well as travel (~350ms, a setTimeout
+  glide while the pointer is still — NOT rAF, which webviews throttle
+  when unfocused): travel-only decay never paid off
+  against a lane edge — the trailing bound's grip rests AT the heard
+  right edge, so there was no room to move and the handle sat ~1Q
+  short of the pointer forever. (2) CURSOR CONTINUITY through live
+  commits: the engine's published masterPos is folded on the CURRENT
+  audible cycle, so every live setSegments commit moved the fold point
+  and the white cursor jumped mid-gesture. getGraphState now also
+  publishes `islandPos` — the RAW epoch-relative island clock, the
+  invariant the canon already names — and while the frame is pinned
+  the VM folds THAT on the FOLD CYCLE pinned at drag start (the
+  audible cycle of that moment, ≤ the pinned frame — folding on the
+  frame itself would have jumped at the grab whenever windows had
+  shortened the audible cycle below the display frame): the cursor
+  sweeps continuously through any number of live commits, and takes
+  exactly one honest snap when the frame settles at release. (Mock
+  publishes the same field; engine + mock + VM stay in lockstep.)
+- **CURSOR HONESTY (field 2026-07-22)**: raw-take INSPECTOR lanes
+  (edit view) stack above the global playhead — the white cursor is
+  suppressed over a lane running its own horizontal scale; the amber
+  heard cursor is its one honest cursor. The amber cursor is
+  SEAM-AWARE everywhere (`patchWinCursor`): heard phase maps through
+  the segments, jumping across cuts (snap, never a sweep through
+  removed time); multi-segment maps skip the linear animator. Mapped
+  group lanes carry the amber cursor too.
+- **Children of a mapped group** project the map's excluded regions as
+  dims (`parentMapSegs`) — the conservative step; the true re-based
+  heard-frame child unroll stays deferred (it breaks the shared
+  vertical time grid; needs its own ruling).
+- Pinned by: `map_inverse_cases` goldens, storage/undo/gate tests +
+  the ENGINE-LEVEL record-through-a-setSegments-cell-map test
+  (tests/time_map_record_tests.cc), the multi-segment clip kernel +
+  splice round-trip tests, the multi-segment definer + splice-collapse
+  flow (tests/qtime_lock_tests.cc), session round trips
+  (tests/session_io_tests.cc), and ui/js/tests/{segments,map_edit}
+  .test.mjs; verified end-to-end in the mock preview (cells, punch,
+  undo, record-through-cells).
+
+**Deferred from phase 3** (post-field-test refinements): zero-crossing
+micro-snap, seam audition, and the true heard-frame unroll of
+mapped-group children. (Per-segment edge dragging shipped with cut
+bands; the multi-segment heard cursor shipped seam-aware on the amber
+line — the WHITE cursor still sweeps the audible cycle linearly over
+intrinsic-frame group lanes, with the amber line as the honest one.)

@@ -14,7 +14,8 @@
  */
 
 import { launchPointFor, nextStopBoundary, armTarget } from './timeline_model.js';
-import { singleSegment, mapPeriod, mapOffset } from './time_map.js';
+import { singleSegment, mapPeriod, mapOffset, mapActive, heardOffsetOf }
+    from './time_map.js';
 
 // In-memory state
 let state = {
@@ -33,7 +34,7 @@ let redoStack = [];
 const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
     'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
-    'setNodeInput',
+    'setSegments', 'setNodeInput',
 ]);
 
 function undoSnapshot() {
@@ -46,6 +47,8 @@ function undoRestore(snap) {
     state.islandEpoch = o.islandEpoch;
     state.islandQ = o.islandQ || 0;
 }
+let lastUndoable = { method: null, arg0: null };
+let undoPushedForCall = false;
 function pushUndo() {
     undoStack.push(undoSnapshot());
     if (undoStack.length > 128) undoStack.shift();
@@ -53,6 +56,7 @@ function pushUndo() {
 }
 function mockUndo() {
     if (!undoStack.length) return false;
+    lastUndoable = { method: null, arg0: null };  // break coalescing
     redoStack.push(undoSnapshot());
     undoRestore(undoStack.pop());
     return true;
@@ -222,6 +226,10 @@ export const handlers = {
     startLatencyCalibration: () => startLatencyCalibration(),
     getLatencyCalibration: () => getLatencyCalibration(),
     setLoopPoints: (id, start, end) => setLoopPoints(id, start, end),
+    setSegments: (id, flat) => setSegments(id, flat),
+    // The mock cannot move the OS cursor — returning false makes the
+    // expanded drag fall back to its eased-capture path.
+    warpPointer: () => false,
     toggleLoopWindow: (id) => toggleLoopWindow(id),
     togglePlay: (id) => togglePlay(id),
     toggleSolo: (id) => toggleSolo(id),
@@ -241,7 +249,20 @@ export async function callNative(method, ...args) {
     }
     // Snapshot BEFORE any undoable mutation so undo restores the pre-edit
     // graph (single interception point, mirrors AudioEngine::record).
-    if (UNDOABLE.has(method)) pushUndo();
+    // LIVE map-edit drags stream setSegments (audible splice preview):
+    // consecutive commits on the same node COALESCE to one undo step
+    // (mirrors editsCoalesce; the oldest snapshot restores furthest).
+    undoPushedForCall = false;
+    if (UNDOABLE.has(method)) {
+        const coalesce = method === 'setSegments' &&
+            lastUndoable.method === 'setSegments' &&
+            lastUndoable.arg0 === args[0];
+        if (!coalesce) {
+            pushUndo();
+            undoPushedForCall = true;
+        }
+    }
+    lastUndoable = { method, arg0: args[0] };
     return handler(...args);
 }
 
@@ -552,12 +573,52 @@ function committedClipCount() {
     return n;
 }
 
+// A node's RAW map geometry (phase 3): the multi-segment override when
+// installed, else the single window. Callers gate on loopBypassed
+// themselves (parity with activeTimeMap's split responsibilities).
+function nodeMap(n) {
+    if (n.segments && n.segments.length >= 2) return { segs: n.segments };
+    return singleSegment(n.loopStart || 0, n.loopEnd || 0);
+}
+
+// Intrinsic composite duration (clip: duration; stack: LCM of children).
+function intrinsicOfNode(n) {
+    if (n.type !== 'stack') return n.isRecording ? 0 : (n.duration || 0);
+    let comp = 0;
+    (n.nodes || []).forEach(c => {
+        const d = intrinsicOfNode(c);
+        if (d > 0) comp = comp > 0 ? lcmInt(comp, d) : d;
+    });
+    return comp;
+}
+
 // A live take anywhere in this subtree (parity with the engine's
 // per-node isArmedOrRecording) — gates mid-take map edits.
 function subtreeRecording(node) {
     if (!node) return false;
     if (node.isRecording) return true;
     return (node.nodes || []).some(subtreeRecording);
+}
+
+/** PHASE-PRESERVING RE-ANCHOR (engine parity, 2026-07-25h/i): origin'
+ * such that the buffer position sounding right now keeps sounding when
+ * the clip's map becomes `newMap` — only while the new map still
+ * COVERS it. When the edit removed the sounding region the origin
+ * stays FIXED (an audible jump is expected, and the display stays
+ * anchored at the click). Inactive maps = their full-span form. */
+function continuityOrigin(node, oldMap, newMap) {
+    const dur = node.duration || 0;
+    const eff = m => (m && mapActive(m) && mapPeriod(m) > 0)
+        ? m : { segs: [[0, dur]] };
+    if (!(dur > 0)) return node.origin || 0;
+    const o = eff(oldMap), nm = eff(newMap);
+    const period = mapPeriod(nm);
+    if (!(period > 0) || !(mapPeriod(o) > 0)) return node.origin || 0;
+    const t0 = state.masterPos || 0;
+    const p0 = mapOffset(o, t0 - (node.origin || 0) - mapOffset(o, 0));
+    const hNew = heardOffsetOf(nm, p0);
+    if (hNew < 0) return node.origin || 0;  // sounding region removed
+    return t0 - mapOffset(nm, 0) - hNew;
 }
 
 function setLoopPoints(id, loopStart, loopEnd) {
@@ -570,6 +631,12 @@ function setLoopPoints(id, loopStart, loopEnd) {
         console.log('[MockBackend] setLoopPoints refused — take recording in subtree');
         return;
     }
+    // The pre-edit MAP (window or override) — the continuity re-anchor
+    // below needs it before any mutation.
+    const oldMapForContinuity = node.loopBypassed ? { segs: [] } : nodeMap(node);
+    // Phase 3 (engine parity): an explicit single-window edit
+    // supersedes a multi-segment override.
+    delete node.segments;
     // Pre-edit window (the phase-preserve math below needs it).
     const oldLs = node.loopStart || 0;
     const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
@@ -604,8 +671,93 @@ function setLoopPoints(id, loopStart, loopEnd) {
         state.islandQ = len;
         state.islandEpoch = node.origin + loopStart;
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
+    } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
+               state.isPlaying && !anyNodeRecording()) {
+        // GENERAL PHASE CONTINUITY (engine parity, 2026-07-25h): a
+        // window edit on any playing committed clip re-anchors origin
+        // so the sound does not jump. Island (Q, epoch) untouched.
+        node.origin = continuityOrigin(node, oldMapForContinuity,
+            loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
+                                : { segs: [] });
     }
     console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
+}
+
+function setSegments(id, flat) {
+    // Engine parity: a REFUSED edit records nothing — the dispatch
+    // snapshotted before we could refuse, so drop that snapshot on
+    // every refusal path.
+    const refuse = (why) => {
+        console.log('[MockBackend] setSegments refused —', why);
+        // A refused edit records nothing: drop the snapshot only if the
+        // dispatch pushed one for THIS call (coalesced calls didn't),
+        // and break the coalescing chain (nothing mutated).
+        if (undoPushedForCall) undoStack.pop();
+        lastUndoable = { method: null, arg0: null };
+    };
+    const node = findNode(id);
+    if (!node) { refuse('no such node'); return; }
+    // Mid-take gate (engine parity): any armed/recording target refuses
+    // (a stack answers for its subtree).
+    if (node.isRecording || subtreeRecording(node)) {
+        refuse('take armed/recording');
+        return;
+    }
+    const segs = [];
+    for (let i = 0; i + 1 < (flat || []).length; i += 2) {
+        segs.push([flat[i], flat[i + 1]]);
+    }
+    // Structural sanity (engine parity): ordered, disjoint, non-empty,
+    // within the inner cycle.
+    const intrinsic = intrinsicOfNode(node);
+    let prev = 0;
+    for (const [s, e] of segs) {
+        if (e <= s || s < prev || (intrinsic > 0 && e > intrinsic)) {
+            refuse('malformed list');
+            return;
+        }
+        prev = e;
+    }
+    // n ≤ 1 delegates to the single-window path (owns Q13). Direct
+    // call: the callNative dispatch already snapshotted for undo.
+    if (segs.length <= 1) {
+        delete node.segments;
+        if (segs.length === 1) setLoopPoints(id, segs[0][0], segs[0][1]);
+        else setLoopPoints(id, 0, 0);
+        return;
+    }
+    // Q13 multi-segment definer rider (engine parity): capture the OLD
+    // map before mutating for the phase-preserving re-anchor.
+    const oldMap = node.loopBypassed ? { segs: [] } : nodeMap(node);
+    node.segments = segs;
+    if (node.type === 'clip' && (node.duration || 0) > 0 &&
+        committedClipCount() === 1 && !anyNodeRecording()) {
+        const map = { segs };
+        const period = mapPeriod(map);
+        const a0 = mapOffset(map, 0);
+        const t0 = state.masterPos || 0;
+        let hNew = 0;
+        if (mapActive(oldMap) && mapPeriod(oldMap) > 0) {
+            const oldOrg = node.origin || 0;
+            const p0 = mapOffset(oldMap,
+                t0 - oldOrg - mapOffset(oldMap, 0));
+            const invH = heardOffsetOf(map, p0);
+            if (invH >= 0) hNew = invH;
+            else {
+                const h0 = heardOffsetOf(oldMap, p0);
+                hNew = ((h0 % period) + period) % period;
+            }
+        }
+        node.origin = t0 - a0 - hNew;
+        state.islandQ = period;
+        state.islandEpoch = node.origin + a0;
+        console.log('[MockBackend] Q13 segments re-trim → Q =', period);
+    } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
+               state.isPlaying && !anyNodeRecording()) {
+        // GENERAL PHASE CONTINUITY (engine parity, 2026-07-25h).
+        node.origin = continuityOrigin(node, oldMap, { segs });
+    }
+    console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));
 }
 
 function toggleLoopWindow(id) {
@@ -704,7 +856,7 @@ function startRecordingInNode(id) {
     {
         const activeAncestors = [];
         for (let p = findParent(id); p; p = findParent(p.id)) {
-            if (!p.loopBypassed && (p.loopEnd || 0) > (p.loopStart || 0)) {
+            if (!p.loopBypassed && mapActive(nodeMap(p))) {
                 activeAncestors.push(p);
             }
         }
@@ -715,18 +867,9 @@ function startRecordingInNode(id) {
         const Qnow = effectiveQuantumForState();
         if (activeAncestors.length === 1 && Qnow > 0) {
             const g = activeAncestors[0];
-            const map = singleSegment(g.loopStart || 0, g.loopEnd || 0);
-            const intrinsicOf = (n) => {
-                if (n.type !== 'stack') return n.isRecording ? 0 : (n.duration || 0);
-                let comp = 0;
-                (n.nodes || []).forEach(c => {
-                    const d = intrinsicOf(c);
-                    if (d > 0) comp = comp > 0 ? lcmInt(comp, d) : d;
-                });
-                return comp;
-            };
+            const map = nodeMap(g);  // segment-general (phase 3)
             const period = mapPeriod(map);
-            const C = Math.max(intrinsicOf(g), period);
+            const C = Math.max(intrinsicOfNode(g), period);
             // Single-level mock: the mapping group's received frame is
             // the island frame, so its heard grid anchor is the epoch.
             mapArm = { map, period, C, heardEpoch: state.islandEpoch || 0 };
@@ -991,7 +1134,12 @@ function enrichNodes(nodes) {
         // stacks alike; `playhead` carries the window phase while
         // active: (masterPos − epoch) mod len.
         const bypassed = !!node.loopBypassed;
-        const windowActive = !bypassed && node.loopEnd > node.loopStart;
+        const windowActive = !bypassed && mapActive(nodeMap(node));
+        // Multi-segment map publish (engine parity: flat samples array,
+        // present only with an override).
+        if (node.segments && node.segments.length >= 2) {
+            updatedNode.segments = node.segments.flat();
+        }
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
         // Effect rack state publishes on EVERY node (engine parity:
@@ -1029,14 +1177,15 @@ function enrichNodes(nodes) {
             };
         }
         if (windowActive) {
-            const loopLen = node.loopEnd - node.loopStart;
-            // Engine parity: a STACK's window phase is island-aligned
-            // ((t − epoch) mod len); a CLIP's anchors at the window
-            // top's own performance moment, origin + loopStart (the
-            // kernel playback equation applied to the surviving
-            // material — clip_node.cc, 2026-07-19).
+            const m = nodeMap(node);
+            const loopLen = mapPeriod(m);
+            // Engine parity: a STACK's map phase is island-aligned
+            // ((t − epoch) mod period); a CLIP's anchors at
+            // origin + mapOffset(0) — the ANCHORING LAW (phase 3),
+            // whose single-segment case is origin + loopStart
+            // (clip_node.cc, 2026-07-19).
             const anchor = node.type === 'clip'
-                ? (node.origin || 0) + node.loopStart
+                ? (node.origin || 0) + mapOffset(m, 0)
                 : (state.islandEpoch || 0);
             const rel = (state.masterPos || 0) - anchor;
             updatedNode.playhead = (((rel % loopLen) + loopLen) % loopLen) / loopLen;
@@ -1089,8 +1238,8 @@ function committedCycle(Q) {
  */
 function effectivePeriodOf(node) {
     if (node.isRecording) return 0;
-    if (!node.loopBypassed && node.loopEnd > node.loopStart) {
-        return Math.round(node.loopEnd - node.loopStart);
+    if (!node.loopBypassed && mapActive(nodeMap(node))) {
+        return Math.round(mapPeriod(nodeMap(node)));
     }
     if (node.type !== 'stack') return node.duration > 0 ? Math.round(node.duration) : 0;
     let composite = 0;
@@ -1125,6 +1274,10 @@ export function getState() {
         id: 'mock-root',
         isPlaying: state.isPlaying,
         masterPos: viewMasterPos(),
+        // The raw island clock (engine parity): epoch-relative,
+        // unwrapped — the UI folds it on its own pinned frame during
+        // map gestures for a continuous cursor.
+        islandPos: (state.masterPos || 0) - (state.islandEpoch || 0),
         // Island epoch (mirrors getGraphState): the UI's frame origin.
         // Commit re-bases it to the newest origin on simple extensions.
         islandEpoch: state.islandEpoch || 0,
@@ -1242,6 +1395,7 @@ export function loadScenario(name) {
     recView.active = false;
     state.islandEpoch = 0;
     state.islandQ = 0;  // fresh session: Q re-establishes per scenario
+    lastUndoable = { method: null, arg0: null };
     // Loading a scenario is a fresh session — undo history does not carry
     // across it (test isolation + mirrors constructing a fresh engine).
     undoStack = [];

@@ -52,6 +52,41 @@ function windowOf(node, quantum) {
 }
 
 /**
+ * The node's MAP descriptor (phase 3) — a superset of windowOf's shape:
+ * a multi-segment override (metadata `segments`, flat samples) yields
+ * { segs: [[sQ,eQ],...], periodQ, multi: true, startQ/endQ = outer
+ * bounds }; else the single window with segs/periodQ derived. Null when
+ * nothing worth showing.
+ */
+function mapOf(node, quantum) {
+    if (node.segments && node.segments.length >= 4) {
+        const segs = [];
+        let periodSamples = 0;
+        for (let i = 0; i + 1 < node.segments.length; i += 2) {
+            segs.push([node.segments[i] / quantum, node.segments[i + 1] / quantum]);
+            periodSamples += node.segments[i + 1] - node.segments[i];
+        }
+        return {
+            segs,
+            // ONE division of the SAMPLE sum — summing per-segment Q
+            // fractions leaked fp noise into labels ("0.9999…Q" for an
+            // exactly-1Q map; field 2026-07-25).
+            periodQ: periodSamples / quantum,
+            multi: true,
+            startQ: segs[0][0],
+            endQ: segs[segs.length - 1][1],
+            bypassed: !!node.loopBypassed,
+            active: !!node.windowActive,
+        };
+    }
+    const win = windowOf(node, quantum);
+    return win
+        ? Object.assign({ segs: [[win.startQ, win.endQ]],
+                          periodQ: win.endQ - win.startQ, multi: false }, win)
+        : null;
+}
+
+/**
  * A lane's DISPLAY period in Q: always the intrinsic period. E-C ("a
  * windowed composite behaves as a 2Q clip in its parent's LCM") is an
  * AUDIO fact owned by the engine — the display frame must NOT follow it
@@ -353,18 +388,39 @@ export function deriveViewModel(state, opts = {}) {
     // behind the maxTiles guards; field 2026-07-19b). The lane still
     // RENDERS its true fractional extent (intrinsicQ) — only the shared
     // frame math sees the whole-Q contribution.
+    // A node's ACTIVE map period in SAMPLES (segments override first,
+    // then the single window; 0 = no map). The frame/audible math must
+    // read THIS, not the raw loop atomics — a multi-segment override
+    // leaves the atomics stale (field 2026-07-23: the frame stayed 4Q
+    // while the engine wrapped at the 3Q cell period, so the cursor
+    // swept 3Q of a 4Q ruler and the next rep leaked into the phantom
+    // quarter).
+    const nodeMapPeriod = n => {
+        if (n.loopBypassed) return 0;
+        if (n.segments && n.segments.length >= 4) {
+            let p = 0;
+            for (let i = 0; i + 1 < n.segments.length; i += 2) {
+                p += n.segments[i + 1] - n.segments[i];
+            }
+            return p;
+        }
+        const d = n.duration || 0;
+        const ls = n.loopStart || 0;
+        const le = n.type === 'stack' ? (n.loopEnd || 0)
+                                      : Math.min(n.loopEnd || 0, d);
+        return le > ls ? le - ls : 0;
+    };
+
     let cycleSamples = quantum;
     const clipCycleContribution = n => {
-        // LAW 13 AMENDED (2026-07-19k): a clip's ACTIVE window IS its
-        // displayed material (heard view), so it contributes the window
-        // length — the display frame equals the audible loop and the
+        // LAW 13 AMENDED (2026-07-19k): a clip's ACTIVE map IS its
+        // displayed material (heard view), so it contributes the map
+        // period — the display frame equals the audible loop and the
         // one cursor is honest everywhere. (Law 13's original concern —
         // hidden content — is answered by the expand-to-edit view.)
         const d = n.duration || 0;
-        const ls = n.loopStart || 0, le = Math.min(n.loopEnd || 0, d);
-        if (!n.loopBypassed && le > ls && !(ls <= 0 && le >= d)) {
-            return Math.round(le - ls);
-        }
+        const p = nodeMapPeriod(n);
+        if (p > 0 && p < d) return Math.round(p);
         return commensuratePeriod(n, quantum);
     };
     nodes.forEach(n => {
@@ -381,9 +437,8 @@ export function deriveViewModel(state, opts = {}) {
     // loopCycleQ so the readout can say why.
     const effPeriod = node => {
         if (node.isRecording) return 0;
-        if (node.windowActive && node.loopEnd > node.loopStart) {
-            return node.loopEnd - node.loopStart;
-        }
+        const p = node.windowActive ? nodeMapPeriod(node) : 0;
+        if (p > 0) return p;
         if (node.type !== 'stack') return node.duration || 0;
         let composite = 0;
         (node.nodes || []).forEach(c => {
@@ -497,7 +552,35 @@ export function deriveViewModel(state, opts = {}) {
             playheadQ = playheadQ % frameQ;
         }
     }
-    const frameExtended = frameQ > lcmQ;
+    // FRAME PIN (field 2026-07-23g): while a map gesture is live, the
+    // shared frame holds at its drag-start value — live commits change
+    // the audible cycle, and letting the frame follow re-scaled the
+    // whole timeline under the pointer. Settles on release.
+    const framePinned = opts.pinFrameQ > 0 && qEstablished && !anyRecording;
+    if (framePinned) {
+        frameQ = opts.pinFrameQ;
+        // CURSOR CONTINUITY THROUGH LIVE COMMITS (field 2026-07-25c):
+        // the published masterPos is folded on the CURRENT audible
+        // cycle, and every live map commit moves that fold point — the
+        // white cursor jumped at each commit. The raw island clock is
+        // the invariant; fold it on the fold cycle PINNED at drag start
+        // (the audible cycle of that moment — matching the cursor's
+        // pre-grab sweep exactly, jumpless at the grab too).
+        const foldQ = opts.pinFoldQ > 0
+            ? Math.min(opts.pinFoldQ, frameQ) : frameQ;
+        if (Number.isFinite(state.islandPos)) {
+            const posQ = state.islandPos / quantum;
+            playheadQ = ((posQ % foldQ) + foldQ) % foldQ;
+        }
+        // The ANIMATOR wraps on loopCycleQ — pin it with the frame or
+        // the 60fps line still folds at every live commit (the readout
+        // was continuous while the LINE jumped; owner video
+        // 2026-07-25d).
+        loopSamples = foldQ * quantum;
+    }
+    // A pinned frame is settled, not provisional — no "…" cue just
+    // because live commits shrank the lcm under it.
+    const frameExtended = !framePinned && frameQ > lcmQ;
     const cycleQ = frameQ; // the frame every consumer tiles and fits
 
     // Defensive wrap when idle: the contract says idle masterPos arrives
@@ -529,8 +612,12 @@ export function deriveViewModel(state, opts = {}) {
     // (heard position = window start + island phase). Display-only;
     // recording keeps the growing-frame math above.
     if (!provisionalDefiner && !anyRecording && qEstablished) {
+        // Single-segment windows only: a multi-segment map's heard
+        // cursor would jump at seams — the linear glide mapping below
+        // (and the animator) assume a contiguous span.
         const winGroups = nodes.filter(n => n.type === 'stack' &&
-            n.windowActive && (n.loopEnd || 0) > (n.loopStart || 0));
+            n.windowActive && (n.loopEnd || 0) > (n.loopStart || 0) &&
+            !(n.segments && n.segments.length >= 4));
         if (winGroups.length === 1) {
             const g = winGroups[0];
             const winLen = g.loopEnd - g.loopStart;
@@ -572,6 +659,7 @@ export function deriveViewModel(state, opts = {}) {
 
         if (node.type === 'stack') {
             const periodQ = displayPeriodQ(node, quantum);
+            const gwin = mapOf(node, quantum);
             const lane = Object.assign(laneCommon(node, state), {
                 kind: 'group',
                 depth,
@@ -588,7 +676,13 @@ export function deriveViewModel(state, opts = {}) {
                 reps: qEstablished
                     ? unrollReps({ periodQ, offsetQ: 0, cycleQ })
                     : [],
-                window: windowOf(node, quantum),
+                // Multi-segment maps draw dims + one chip, never
+                // brackets (geometry edits live in the editor); single
+                // windows keep the bracket overlay.
+                window: gwin && gwin.multi ? null : gwin,
+                mapSegs: gwin && gwin.multi ? gwin.segs : null,
+                mapBypassed: !!(gwin && gwin.bypassed),
+                mapChipQ: gwin && gwin.multi ? gwin.periodQ : 0,
                 // Heard-time cursor inside an active window (engine
                 // publishes the window phase on `playhead`). Kept OUT of
                 // the window object: it changes every poll and must not
@@ -598,17 +692,30 @@ export function deriveViewModel(state, opts = {}) {
                 groupArm: groupArmState(node),
                 // The map cue on the MAPPING group itself: a take is
                 // recording through this window right now.
-                mapRecording: !!(node.windowActive &&
-                    (node.loopEnd || 0) > (node.loopStart || 0) &&
-                    subtreeRec(node)),
+                mapRecording: !!(gwin && gwin.active && subtreeRec(node)),
             });
+            // CUT BANDS (phase 3, owner-chosen design A): groups edit
+            // IN PLACE — inner cuts render as draggable bands over the
+            // intrinsic frame; leading/trailing exclusions stay the
+            // window brackets' domain. Bypassed maps keep their bands
+            // visible (geometry survives bypass; the chip says so).
+            {
+                const totalQ = intrinsicPeriod(node, quantum) / quantum;
+                lane.bandSegs = gwin ? gwin.segs : null;
+                lane.bandTotalQ = totalQ;
+                lane.bandEditable = qEstablished && totalQ >= 2 &&
+                    !subtreeRec(node);
+            }
             lanes.push(lane);
             if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
             // The nearest enclosing active map wins (engine parity).
-            const ownMap = node.windowActive &&
-                (node.loopEnd || 0) > (node.loopStart || 0)
-                ? { periodQ: (node.loopEnd - node.loopStart) / quantum,
-                    startQ: (node.loopStart || 0) / quantum }
+            // segs + the group's cycle ride along so child lanes can
+            // project the excluded regions as dims (phase-3 conservative
+            // step toward the heard-frame child unroll).
+            const ownMap = gwin && gwin.active
+                ? { periodQ: gwin.periodQ, startQ: gwin.segs[0][0],
+                    segs: gwin.segs,
+                    groupCycleQ: intrinsicPeriod(node, quantum) / quantum }
                 : null;
             // TODO(phase 3): children of a group with an ACTIVE window
             // live in the window's re-based inner frame (time_maps.md §2
@@ -687,14 +794,15 @@ export function deriveViewModel(state, opts = {}) {
 
         const periodQ = displayPeriodQ(node, quantum);
         const intrinsicQ = intrinsicPeriod(node, quantum) / quantum;
-        const win = windowOf(node, quantum);
+        const win = mapOf(node, quantum);
 
         // WINDOW EDIT VIEW (law 13 amendment): the lane expands to its
         // FULL raw duration on its OWN horizontal scale — the seed
         // track's trim view, per lane. Brackets select over the whole
         // take; the amber cursor carries heard time; the rest of the
         // timeline (and the white cursor) stay in the audible frame.
-        if (win && windowEdit && windowEdit.has(node.id)) {
+        if (windowEdit && windowEdit.has(node.id) &&
+            (win || intrinsicQ >= 2)) {
             lanes.push(Object.assign(laneCommon(node, state), {
                 kind: 'clip',
                 depth,
@@ -706,6 +814,12 @@ export function deriveViewModel(state, opts = {}) {
                 window: win,
                 windowPhase: node.windowActive ? (node.playhead || 0) : 0,
                 windowEditing: true,
+                // Cut bands over the raw take (fully fractal): inner
+                // cuts are draggable bands; the trim brackets keep the
+                // leading/trailing exclusions.
+                bandSegs: win ? win.segs : null,
+                bandTotalQ: intrinsicQ,
+                bandEditable: intrinsicQ >= 2,
                 armable: false,
                 inputChannel: node.inputChannel ?? -1,
             }));
@@ -720,8 +834,16 @@ export function deriveViewModel(state, opts = {}) {
         // tile — the whole lane is audible truth, and the one white
         // cursor is honest on it. The raw take lives one grab away.
         const heard = !!(win && win.active);
-        const lanePeriodQ = heard ? win.endQ - win.startQ : periodQ;
-        const laneOffsetQ = heard ? offsetQ + win.startQ : offsetQ;
+        const lanePeriodQ = heard ? win.periodQ : periodQ;
+        // The ANCHORING LAW (phase 3): map playback anchors at
+        // origin + mapOffset(0) — the first segment's start (its
+        // single-segment case is the 2026-07-19 origin + loopStart).
+        const laneOffsetQ = heard ? offsetQ + win.segs[0][0] : offsetQ;
+        // The loop's heard TOP within its own period — the lane anchor
+        // for heard chrome (seams, trim grips) and the rotation.
+        const heardTopQ = heard && lanePeriodQ > 0
+            ? ((laneOffsetQ % lanePeriodQ) + lanePeriodQ) % lanePeriodQ
+            : 0;
         // Take marking (Q14): the bright tile is the one at the take's
         // HEARD PHASE — its position mod the cycle it was performed
         // against (`contextCycle`, the engine's per-take heard frame),
@@ -747,12 +869,32 @@ export function deriveViewModel(state, opts = {}) {
             takeQ = ((laneOffsetQ % lcmQ) + lcmQ) % lcmQ;
         }
         let reps = qEstablished
-            ? unrollReps({ periodQ: lanePeriodQ, offsetQ: laneOffsetQ,
-                           cycleQ, takeQ })
+            ? unrollReps({ periodQ: lanePeriodQ,
+                           offsetQ: heard ? 0 : laneOffsetQ,
+                           cycleQ, takeQ: heard ? 0 : takeQ })
             : [];
         if (heard) {
-            const src = [win.startQ / intrinsicQ, win.endQ / intrinsicQ];
-            reps = reps.map(r => Object.assign({}, r, { src }));
+            // HEARD tiles sit on the FRAME grid with the loop's phase
+            // BAKED IN as content ROTATION (field 2026-07-23c): a loop
+            // resting mid-phase used to tile from its anchor, splitting
+            // into a bright tile + a "wrap sliver" that drew squeezed
+            // and dimmed as if it were a repeat — but when the loop
+            // fills the frame every pixel is UNIQUE audible content.
+            // Rotation keeps each sample at its true island phase
+            // (cross-lane alignment, I2) with no sliver. Every rep
+            // carries the map's content slices (`srcSegs`) plus
+            // `srcTopFrac` — where the loop's heard TOP sits within the
+            // tile.
+            const srcSegs = win.segs.map(([s, e]) =>
+                [s / intrinsicQ, e / intrinsicQ]);
+            const extra = { srcSegs, srcTopFrac: heardTopQ / lanePeriodQ };
+            reps = reps.map(r => Object.assign({}, r, extra));
+            // A loop that FILLS the frame has no repeats: everything is
+            // material, nothing dims. (True repeats — period < frame —
+            // keep the echo treatment per "ghosts show what sounds".)
+            if (lanePeriodQ >= cycleQ - 1e-9) {
+                reps = reps.map(r => Object.assign({}, r, { ghost: false }));
+            }
         }
         lanes.push(Object.assign(laneCommon(node, state), {
             kind: 'clip',
@@ -768,14 +910,34 @@ export function deriveViewModel(state, opts = {}) {
             // drew them a whole phase off for takes not at the top
             // (field 2026-07-16c). The take rep's startQ is the unclipped
             // tile start by construction (only tile ENDS get clipped).
-            takeStartQ: (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
+            takeStartQ: heard ? heardTopQ
+                : (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
             // Heard view: no brackets on the lane (the whole tile IS the
             // window); the chip + latent edge grips open the edit view.
             window: heard ? null : win,
             windowChipQ: heard ? lanePeriodQ : 0,
+            mapMulti: !!(win && win.multi),
+            // Cut geometry, editable IN PLACE on every resting lane
+            // (field 2026-07-23: no modes). Raw-framed lanes render
+            // cuts as BANDS; heard-view lanes render them as SEAM
+            // HANDLES (a cut has zero width in heard time — it IS the
+            // splice), with the edge grips as live trim handles.
+            bandSegs: win ? win.segs : null,
+            bandTotalQ: intrinsicQ,
+            bandHeard: heard,
+            bandPeriodQ: heard ? win.periodQ : 0,
+            bandEditable: qEstablished && intrinsicQ >= 2 &&
+                !node.isRecording,
             windowPhase: heard ? 0
                 : node.windowActive ? (node.playhead || 0) : 0,
             armable: isArmable(node),
+            // Under an enclosing ACTIVE map: the map's excluded regions
+            // project onto this lane as dims — what the group's map
+            // silences, the child shows silenced (the full heard-frame
+            // child unroll stays a phase-3+ item; it would break the
+            // shared vertical time grid and needs its own ruling).
+            parentMapSegs: mapCtx ? mapCtx.segs : null,
+            parentMapPeriodQ: mapCtx ? mapCtx.groupCycleQ : 0,
             // NOT isQDefiner here: the definer renders through the
             // provisional branch above. This branch gets the sole clip
             // only while a take is in flight — and then a bracket drag

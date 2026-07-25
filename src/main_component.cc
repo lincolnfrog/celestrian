@@ -346,6 +346,50 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "setSegments",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    // args[1] = flat [s0, e0, s1, e1, ...] in samples
+                    // (time_maps.md phase 3).
+                    if (args.size() > 1) {
+                      celestrian::timing::TimeMap m;
+                      if (auto *flat = args[1].getArray()) {
+                        for (int i = 0; i + 1 < flat->size() &&
+                                        m.n < celestrian::timing::TimeMap::
+                                                  kMaxSegments;
+                             i += 2) {
+                          m.segs[m.n++] = {(int64_t)(double)(*flat)[i],
+                                           (int64_t)(double)(*flat)[i + 1]};
+                        }
+                      }
+                      audio_engine.setSegments(args[0].toString(), m);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "warpPointer",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    // Move the OS cursor to a webview-viewport position
+                    // (CSS px == JUCE points at default zoom). The
+                    // expanded map drag warps the pointer ONTO the
+                    // handle it grabbed once the raw view has opened —
+                    // pointer and geometry stay 1:1, no easing (the
+                    // heard→raw reflow otherwise strands the handle
+                    // away from the mouse; field 2026-07-25d).
+                    if (args.size() > 1) {
+                      const auto global = web_browser.localPointToGlobal(
+                          juce::Point<float>((float)(double)args[0],
+                                             (float)(double)args[1]));
+                      juce::Desktop::setMousePosition(global.roundToInt());
+                      completion(true);
+                    } else {
+                      completion(false);
+                    }
+                  })
+              .withNativeFunction(
                   "togglePlay",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

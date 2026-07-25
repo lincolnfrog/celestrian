@@ -377,13 +377,16 @@ void StackNode::renderChildren(float *const *output_channels,
   ProcessContext child_context = childContext(context);
 
   // Window-phase telemetry for the UI (render output, not state —
-  // playhead_pos is the sanctioned mutable).
+  // playhead_pos is the sanctioned mutable). Heard phase comes from the
+  // RECEIVED clock (the child-frame difference only equals it in the
+  // single-segment case; under a multi-segment override it doesn't).
   {
-    const int64_t ws = loop_start_samples.load();
-    const int64_t we = loop_end_samples.load();
-    if (!loop_window_bypassed_.load() && we > ws) {
-      const int64_t rel = child_context.master_pos - child_context.cycle_epoch;
-      playhead_pos.store((double)rel / (double)(we - ws));
+    const timing::TimeMap map = activeTimeMap();
+    const int64_t p = map.period();
+    if (map.active() && p > 0) {
+      int64_t rel = context.master_pos - context.cycle_epoch;
+      rel = ((rel % p) + p) % p;
+      playhead_pos.store((double)rel / (double)p);
     } else {
       playhead_pos.store(0.0);
     }

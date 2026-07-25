@@ -119,6 +119,85 @@ class SessionIoTests : public juce::UnitTest {
                    "nested stack owns no island quantum");
     }
 
+    beginTest("multi-segment maps round-trip (segmentsQ) and templates "
+              "strip them");
+    {
+      StackNode root("SegRoot");
+      root.setQuantum(Q, epoch);
+
+      // A committed clip carrying a cell map, and a mapped nested stack.
+      auto clip = std::make_unique<ClipNode>("Cells", (double)Q);
+      clip->origin_samples.store(epoch);
+      clip->duration_samples.store(4 * Q);
+      juce::AudioBuffer<float> audio(1, (int)(4 * Q));
+      audio.clear();
+      clip->loadCommitted(audio, 4 * Q);
+      timing::TimeMap cm;
+      cm.n = 2;
+      cm.segs[0] = {0, Q};
+      cm.segs[1] = {2 * Q, 3 * Q};
+      delete clip->exchangeMapOverride(new timing::TimeMap(cm));
+      const juce::String clipUuid = clip->getUuid();
+      root.addChild(std::move(clip));
+
+      auto nested = std::make_unique<StackNode>("MappedDrums");
+      timing::TimeMap sm;
+      sm.n = 2;
+      sm.segs[0] = {Q / 2, Q};       // sub-Q punch shapes survive too
+      sm.segs[1] = {2 * Q, 4 * Q};
+      delete nested->exchangeMapOverride(new timing::TimeMap(sm));
+      const juce::String nestedUuid = nested->getUuid();
+      root.addChild(std::move(nested));
+
+      auto dir = freshBundle("segments");
+      expect(session_io::save(root, (double)Q, dir), "save");
+      auto loaded = session_io::load(dir, (double)Q);
+      expect(loaded.ok, "load ok");
+
+      auto *c = dynamic_cast<ClipNode *>(loaded.children[0].get());
+      expect(c != nullptr && c->getUuid() == clipUuid, "clip restored");
+      {
+        const auto *m = c->mapOverride();
+        expect(m != nullptr && m->n == 2, "clip map override restored");
+        expectEquals((juce::int64)m->segs[0].end, (juce::int64)Q,
+                     "clip segment 0");
+        expectEquals((juce::int64)m->segs[1].start, (juce::int64)(2 * Q),
+                     "clip segment 1");
+        expectEquals((juce::int64)c->getEffectivePeriod(), (juce::int64)(2 * Q),
+                     "clip effective period from the map");
+      }
+      auto *ns = dynamic_cast<StackNode *>(loaded.children[1].get());
+      expect(ns != nullptr && ns->getUuid() == nestedUuid, "stack restored");
+      {
+        const auto *m = ns->mapOverride();
+        expect(m != nullptr && m->n == 2, "stack map override restored");
+        expectEquals((juce::int64)m->segs[0].start, (juce::int64)(Q / 2),
+                     "sub-Q punch boundary exact (QTime)");
+      }
+
+      // Save→load→save stability: the re-saved bundle loads identically.
+      auto dir2 = freshBundle("segments2");
+      StackNode root2("SegRoot2");
+      root2.setQuantum(Q, epoch);
+      for (auto &ch : loaded.children) root2.addChild(std::move(ch));
+      expect(session_io::save(root2, (double)Q, dir2), "re-save");
+      auto loaded2 = session_io::load(dir2, (double)Q);
+      expect(loaded2.ok &&
+                 loaded2.children[0]->mapOverride() != nullptr &&
+                 loaded2.children[0]->mapOverride()->n == 2,
+             "stable across a second round trip");
+
+      // Templates strip the map with the window.
+      auto dir3 = freshBundle("segments-template");
+      session_io::SaveOptions strip;
+      strip.strip_performances = true;
+      expect(session_io::save(root2, (double)Q, dir3, strip),
+             "template save");
+      auto loaded3 = session_io::load(dir3, (double)Q);
+      expect(loaded3.ok && loaded3.children[0]->mapOverride() == nullptr,
+             "template strips the map");
+    }
+
     beginTest("format is device-independent: musical position survives a "
               "different-rate load");
     {

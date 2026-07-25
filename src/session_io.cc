@@ -97,6 +97,21 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
   const int64_t we = opts.strip_performances ? 0 : node.getLoopEnd();
   o->setProperty("windowStartQ", qvar(timing::fromSamples(ws, q)));
   o->setProperty("windowEndQ", qvar(timing::fromSamples(we, q)));
+  // Multi-segment map (phase 3): a list of {startQ, endQ} pairs,
+  // additive to the format (absent = single-window fallback). Stripped
+  // with the window — a map is a fact about a performance.
+  if (!opts.strip_performances) {
+    if (const auto *m = node.mapOverride()) {
+      juce::Array<juce::var> segs;
+      for (int i = 0; i < m->n; ++i) {
+        auto *so = new juce::DynamicObject();
+        so->setProperty("startQ", qvar(timing::fromSamples(m->segs[i].start, q)));
+        so->setProperty("endQ", qvar(timing::fromSamples(m->segs[i].end, q)));
+        segs.add(juce::var(so));
+      }
+      o->setProperty("segmentsQ", segs);
+    }
+  }
   o->setProperty("effects", effectsBlob(node));
 
   if (node.getNodeType() == NodeType::Clip) {
@@ -173,6 +188,20 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
   node->is_muted.store((bool)o->getProperty("muted"));
   node->setLoopPoints(timing::toSamples(qread(o->getProperty("windowStartQ")), q),
                       timing::toSamples(qread(o->getProperty("windowEndQ")), q));
+  // Multi-segment map (phase 3): ≥2 entries install an override
+  // (pre-graph node: no old pointer, no retire needed); absent/short
+  // lists keep the single-window fallback above.
+  if (auto *segs = o->getProperty("segmentsQ").getArray();
+      segs != nullptr && segs->size() >= 2) {
+    timing::TimeMap m;
+    for (const auto &sv : *segs) {
+      if (m.n >= timing::TimeMap::kMaxSegments) break;
+      m.segs[m.n++] = {
+          timing::toSamples(qread(sv.getProperty("startQ", {})), q),
+          timing::toSamples(qread(sv.getProperty("endQ", {})), q)};
+    }
+    delete node->exchangeMapOverride(new timing::TimeMap(m));
+  }
   node->setLoopWindowBypassed((bool)o->getProperty("loopBypassed"));
   applyEffects(*node, o->getProperty("effects"), sr);
   return node;

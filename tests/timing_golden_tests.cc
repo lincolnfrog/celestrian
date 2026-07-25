@@ -193,6 +193,23 @@ class TimingGoldenTests : public juce::UnitTest {
       }
     }
 
+    beginTest("TimeMap inverse (heardOffsetOf)");
+    if (auto *cases = root.getProperty("map_inverse_cases", {}).getArray()) {
+      for (auto &c : *cases) {
+        const auto name = c.getProperty("name", "?").toString();
+        const TimeMap m = mapFrom(c, name);
+        if (auto *probes = c.getProperty("probes", {}).getArray()) {
+          for (auto &p : *probes) {
+            expectEquals(
+                (juce::int64)m.heardOffsetOf(asInt64(p, "inner")),
+                (juce::int64)asInt64(p, "heard"),
+                name + " heardOffsetOf(" +
+                    juce::String(asInt64(p, "inner")) + ")");
+          }
+        }
+      }
+    }
+
     beginTest("TimeMap (reified map: period / mapOffset / seamDistance)");
     if (auto *cases = root.getProperty("time_map_cases", {}).getArray()) {
       for (auto &c : *cases) {

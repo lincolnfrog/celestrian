@@ -16,7 +16,7 @@ import {
     armTarget, originQ, throughMapDest
 } from '../timeline_model.js';
 import { toSamples } from '../qtime.js';
-import { mapPeriod, mapOffset, seamDistance } from '../time_map.js';
+import { mapPeriod, mapOffset, seamDistance, heardOffsetOf } from '../time_map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const golden = JSON.parse(readFileSync(path.resolve(__dirname, '../../../shared/timing_golden.json'), 'utf8'));
@@ -92,6 +92,14 @@ for (const c of golden.through_map_dest_cases) {
     for (const p of c.probes) {
         check(throughMapDest(p.i, c.anchorOff, map, c.commitCycle), p.dest,
             `${c.name} dest(i=${p.i})`);
+    }
+}
+
+console.log('Golden: TimeMap inverse (heardOffsetOf)');
+for (const c of golden.map_inverse_cases) {
+    const map = { segs: c.segments };
+    for (const p of c.probes) {
+        check(heardOffsetOf(map, p.inner), p.heard, `${c.name} heardOffsetOf(${p.inner})`);
     }
 }
 

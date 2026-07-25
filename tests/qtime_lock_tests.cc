@@ -364,6 +364,62 @@ class QTimeLockTests : public juce::UnitTest {
       expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
                                 "…and playback is unchanged");
     }
+
+    beginTest("multi-segment re-trim of the sole definer re-establishes "
+              "(Q := period, epoch := origin' + mapOffset(0)); undo restores");
+    {
+      // Phase 3 (owner-ruled fully fractal): punching a cell out of the
+      // scratch loop before locking is the multi-segment twin of the
+      // Q13 window trim — the island grid follows the map's PERIOD.
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      auto c1 = recordClip(engine, process, Q);  // ~1Q take, Q established
+      const int64_t q0 = islandQ(engine), ep0 = islandEp(engine);
+      expect(q0 > 0, "Q established by the sole take");
+
+      // Cells {[0, q0/4), [q0/2, 3q0/4)} → period q0/2.
+      timing::TimeMap cells;
+      cells.n = 2;
+      cells.segs[0] = {0, q0 / 4};
+      cells.segs[1] = {q0 / 2, (3 * q0) / 4};
+      engine.setSegments(c1, cells);
+
+      expectEquals(islandQ(engine), q0 / 2,
+                   "Q := the map period (Σ cells)");
+      expectEquals(islandEp(engine), clipOrigin(engine, c1),
+                   "epoch = origin' + mapOffset(0) (first cell at 0)");
+
+      engine.undo();
+      expectEquals(islandQ(engine), q0, "undo restores the grid");
+      expectEquals(islandEp(engine), ep0, "…and the epoch");
+      engine.redo();
+      expectEquals(islandQ(engine), q0 / 2, "redo re-establishes");
+
+      // LOCK-COLLAPSE, multi-segment: arming take 2 SPLICES the kept
+      // cells into THE take (duration = period, origin = the epoch, map
+      // consumed); undo un-splices (full material + map return).
+      auto segsOf = [&](const juce::String& id) {
+        const juce::var s = engine.getGraphState();  // hold the var
+        if (auto* n = nodesOf(s))
+          for (auto& x : *n)
+            if (x.getProperty("id", "").toString() == id)
+              return x.getProperty("segments", juce::var());
+        return juce::var();
+      };
+      expect(segsOf(c1).isArray(), "definer carries the cell map");
+      const int64_t epBefore = islandEp(engine);
+      recordClip(engine, process, (int)(q0 / 2));  // take 2 arms + commits
+      expectEquals(clipProp(engine, c1, "duration"), q0 / 2,
+                   "splice: definer duration = the map period");
+      expectEquals(clipOrigin(engine, c1), epBefore,
+                   "splice: origin = the epoch (anchoring law)");
+      expect(!segsOf(c1).isArray(), "splice: map consumed");
+
+      engine.undo();
+      expectEquals(clipProp(engine, c1, "duration"), q0,
+                   "un-splice: full material returns");
+      expect(segsOf(c1).isArray(), "un-splice: the cell map returns");
+    }
   }
 };
 

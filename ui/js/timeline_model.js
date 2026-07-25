@@ -131,6 +131,23 @@ export function commensuratePeriod(node, effectiveQ) {
     const d = Math.round(node.duration || 0);
     const q = Math.round(effectiveQ || 0);
     if (!(d > 0) || !(q > 1)) return d;
+    // LAW 13 AMENDED (2026-07-19k): an ACTIVE map IS the displayed
+    // material, so the clip contributes the map period — the summed
+    // segment lengths, or the loop window as the map's single-segment
+    // form — whenever it is a real whole-Q shortening. Incommensurate
+    // (free-cut ⚠) maps fall through to the finite fallbacks below.
+    if (!node.loopBypassed) {
+        let p = 0;
+        if (node.segments && node.segments.length >= 4) {
+            for (let i = 0; i + 1 < node.segments.length; i += 2) {
+                p += node.segments[i + 1] - node.segments[i];
+            }
+        } else {
+            p = (node.loopEnd || 0) - (node.loopStart || 0);
+        }
+        p = Math.round(p);
+        if (p > 0 && p < d && p % q === 0) return p;
+    }
     if (d % q === 0) return d;
     const winLen = Math.round((node.loopEnd || 0) - (node.loopStart || 0));
     if (!node.loopBypassed && winLen > 0 && winLen % q === 0) return winLen;

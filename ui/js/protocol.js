@@ -70,6 +70,8 @@ export const BRIDGE_METHODS = [
     { name: 'toggleSolo', params: ['uuid'] },
     { name: 'toggleMute', params: ['uuid'] },
     { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples'] },
+    { name: 'setSegments', params: ['uuid', 'flatSegments'] },
+    { name: 'warpPointer', params: ['x', 'y'] },
     // Loop window activation is data, not view state (docs/time_maps.md):
     // toggles a stack's window between active and bypassed.
     { name: 'toggleLoopWindow', params: ['uuid'] },

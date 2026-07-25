@@ -140,6 +140,25 @@
       ] }
   ],
 
+  "map_inverse_cases": [
+    { "name": "single window [1000,2000): inverse inside, -1 outside", "segments": [[1000, 2000]],
+      "probes": [
+        { "inner": 1000, "heard": 0 },
+        { "inner": 1500, "heard": 500 },
+        { "inner": 1999, "heard": 999 },
+        { "inner": 999, "heard": -1 },
+        { "inner": 2000, "heard": -1 }
+      ] },
+    { "name": "cells {Q1,Q3-Q5}: inverse walks the concatenation", "segments": [[0, 1000], [2000, 5000]],
+      "probes": [
+        { "inner": 500, "heard": 500 },
+        { "inner": 2000, "heard": 1000 },
+        { "inner": 3500, "heard": 2500 },
+        { "inner": 4999, "heard": 3999 },
+        { "inner": 1500, "heard": -1 }
+      ] }
+  ],
+
   "time_map_cases": [
     { "name": "single window [1000,2000) — today's loop window", "segments": [[1000, 2000]], "expectedPeriod": 1000,
       "probes": [

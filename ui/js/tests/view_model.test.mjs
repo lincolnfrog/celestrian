@@ -169,8 +169,14 @@ test('HEARD VIEW (law 13 amended): a windowed lane shows what sounds', () => {
     const lane = vm.lanes[1];
     assert.equal(lane.periodQ, 1, 'displayed period = window length');
     assert.equal(lane.reps.length, 4, 'window content tiles the frame');
-    assert.ok(lane.reps.every(r => r.src && r.src[0] === 0.5 && r.src[1] === 1),
+    // Phase 3 (2026-07-23c): reps carry the content SLICES (srcSegs)
+    // plus the phase rotation (srcTopFrac) — tiles sit on the frame
+    // grid, phase baked as rotation, no wrap slivers.
+    assert.ok(lane.reps.every(r => r.srcSegs && r.srcSegs.length === 1 &&
+        r.srcSegs[0][0] === 0.5 && r.srcSegs[0][1] === 1),
         'every tile draws the window SEGMENT (second half of the take)');
+    assert.ok(lane.reps.every(r => r.srcTopFrac === 0),
+        'window at a period-aligned phase: no rotation');
     assert.equal(lane.window, null, 'no brackets at rest');
     assert.equal(lane.windowChipQ, 1, 'the chip advertises the edit view');
     assertTilesCycle(lane, vm.cycleQ);
@@ -591,7 +597,12 @@ test('a BYPASSED window changes nothing about the cycle', () => {
     assert.equal(vm.cycleQ, 12);
     const k = vm.lanes[1];
     assert.equal(k.periodQ, 3);
-    assert.deepEqual(k.window, { startQ: 1, endQ: 2, bypassed: true, active: false });
+    // Phase 3: the window descriptor is the map superset (segs/periodQ/
+    // multi ride along; single windows carry their one segment).
+    assert.deepEqual(k.window, {
+        startQ: 1, endQ: 2, bypassed: true, active: false,
+        segs: [[1, 2]], periodQ: 1, multi: false,
+    });
 });
 
 test('group arm aggregates ARMABLE (empty) descendants: none/some/all (Q7)', () => {

@@ -439,6 +439,33 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     overflow: hidden;
     min-height: 64px;
 }
+/* INSPECTOR lanes (the raw-take edit view) run on their OWN horizontal
+   scale — the global playhead's position is meaningless over them
+   (field: "cursor decoupling", 2026-07-22). Stack the opaque body
+   ABOVE the playhead (z 6) so the one honest cursor there is the
+   lane's amber heard cursor; the white cursor stays visible over every
+   in-frame lane. */
+.lane-body.inspecting {
+    z-index: 7;
+    box-shadow: inset 0 0 0 1px rgba(228, 180, 90, 0.35);
+}
+/* SMOOTH OPEN (field 2026-07-23f): entering the raw take view eases in
+   instead of snapping — the content swap reads as the lane "opening"
+   to show the whole clip and its map structure. */
+@media (prefers-reduced-motion: no-preference) {
+    .lane-body.inspecting .reps-layer,
+    .lane-body.inspecting .grid-layer {
+        animation: lane-open 200ms ease-out;
+    }
+}
+/* Transform ONLY — the old 0.25-opacity dip made the lane translucent
+   for 200ms on EVERY grab: the greys pulsed and the z-6 playhead bled
+   through the see-through body (owner video 2026-07-25b, "flickering
+   of greyed out sections"). The open still eases; nothing fades. */
+@keyframes lane-open {
+    from { transform: scaleY(0.94); }
+    to   { transform: scaleY(1); }
+}
 .lane[data-depth="1"] .lane-body, .lane[data-depth="2"] .lane-body { min-height: 56px; }
 .lane-body .gridline {
     position: absolute; top: 0; bottom: 0;
@@ -491,6 +518,168 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-radius: 6px;
     animation: recpulse 1.6s ease-in-out infinite;
 }
+/* === CUT BANDS (phase 3 map editor, owner-chosen design A) === */
+/* A cut is a first-class object in the bracket vocabulary: dim band,
+   two bracket-style handles, a sliding length chip. */
+.cut-band {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(12, 8, 5, 0.55);
+    border-left: 1px solid rgba(228, 180, 90, 0.4);
+    border-right: 1px solid rgba(228, 180, 90, 0.4);
+    pointer-events: none;
+    z-index: 4;
+}
+.cut-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 14px;
+    cursor: ew-resize;
+    touch-action: none;
+    /* The overlay layer is pointer-events:none — every interactive
+       child must OPT IN (the win-bracket rule; field 2026-07-23b:
+       without this no real mouse could grab a cut at all, and the
+       synthetic-event tests bypassed hit-testing and never noticed). */
+    pointer-events: auto;
+    z-index: 6;
+}
+.cut-handle::before {
+    content: "";
+    position: absolute;
+    top: 8px;
+    bottom: 8px;
+    width: 4px;
+    background: #e4b45a;
+    border-radius: 2px;
+}
+.cut-handle.start::before { left: 3px; }
+.cut-handle.end::before { right: 3px; }
+.cut-handle::after {
+    content: "";
+    position: absolute;
+    width: 8px;
+    height: 4px;
+    background: #e4b45a;
+}
+.cut-handle.start::after { left: 3px; top: 8px; }
+.cut-handle.end::after { right: 3px; bottom: 8px; }
+.cut-chip {
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 10px;
+    background: rgba(228, 180, 90, 0.92);
+    color: #241a10;
+    border-radius: 999px;
+    padding: 1px 8px;
+    cursor: grab;
+    touch-action: none;
+    pointer-events: auto;  /* overlay children opt in */
+    white-space: nowrap;
+    z-index: 7;
+}
+.cut-chip.incoherent { background: #d0763c; color: #fff; }
+.cut-ghost {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 2px dashed #e4b45a;
+    opacity: 0.8;
+    pointer-events: none;
+    z-index: 8;
+}
+
+/* Multi-segment map seam ticks (phase 3): thin boundary marks where
+   heard time jumps — non-interactive, quieter than brackets. */
+.map-seam-tick {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: rgba(228, 180, 90, 0.45);
+    pointer-events: none;
+}
+/* EXPANDED MAP DRAG: while a handle drag has the lane opened to its
+   raw take, the stale heard chrome fades and the preview layer is the
+   ground truth. Opacity (never display): the grabbed handle must keep
+   its pointer capture. */
+.overlay-layer.drag-live > * { opacity: 0; }
+.overlay-layer.drag-live > .drag-preview-layer { opacity: 1; }
+/* …but the sound cursor lives through the gesture: you hear the live
+   splice, so you see where it is sounding (field 2026-07-25). Above
+   the preview layer's dims. */
+.overlay-layer.drag-live > .win-cursor { opacity: 1; z-index: 3; }
+/* The preview draws RAW-frame geometry; until the lane has actually
+   swapped to its raw view (.inspecting lands on the next poll) those
+   dims sit over HEARD content — a wrong-space flash at every grab
+   (field 2026-07-25b "flickering of greyed out sections"). Hidden
+   until the expansion is real; reveals with the lane-open ease. */
+.lane-body:not(.inspecting) .drag-preview-layer { opacity: 0; }
+.drag-preview-layer {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+/* The loop-top mark: where a mid-phase loop's end wraps to its start —
+   names the ][ grip pair so it reads as intentional. */
+.loop-top-chip {
+    position: absolute;
+    top: -2px;
+    transform: translateX(-50%);
+    font-size: 10px;
+    color: #e4b45a;
+    background: rgba(36, 26, 16, 0.85);
+    border: 1px solid rgba(228, 180, 90, 0.4);
+    border-radius: 999px;
+    padding: 0 5px;
+    pointer-events: none;
+    z-index: 7;
+    /* Hover-revealed like the latent grips it labels — at rest the
+       lane stays quiet (the ↺+][ totem read as clutter in the field
+       video, 2026-07-23g). */
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+.lane-body:hover .loop-top-chip { opacity: 1; }
+
+/* SEAM HANDLE (heard-view lanes): the grabbable splice — a cut has no
+   width in heard time, so this zigzag mark + its chip ARE the cut. */
+.seam-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 14px;
+    cursor: ew-resize;
+    touch-action: none;
+    pointer-events: auto;  /* overlay children opt in */
+    z-index: 6;
+}
+.seam-handle::before {
+    content: "";
+    position: absolute;
+    left: 6px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: repeating-linear-gradient(
+        180deg, #e4b45a 0 5px, transparent 5px 9px);
+}
+.seam-handle::after {
+    content: "";
+    position: absolute;
+    left: 3px;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    transform: translateY(-50%) rotate(45deg);
+    background: #e4b45a;
+    border-radius: 1px;
+}
+
 /* Through-map take (time_maps.md phase 2): the map's amber window tone
    rides the record red — the visual cue that a map is shaping time
    (ruling 5). Same box metrics (STATE-METRICS LAW). */

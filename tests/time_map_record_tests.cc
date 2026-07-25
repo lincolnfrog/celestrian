@@ -598,6 +598,481 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals((juce::int64)windowOf(outerId).second, (juce::int64)700,
                    "gate lifts when the take ends");
     }
+
+    // === Phase 3, Stage 1: multi-segment storage + the Segments edit ===
+
+    beginTest("Map override: storage semantics on the node");
+    {
+      StackNode s("S");
+      timing::TimeMap m;
+      m.n = 2;
+      m.segs[0] = {0, 1000};
+      m.segs[1] = {2000, 3000};
+      // Install (single-threaded test: inline delete of the old pointer
+      // is fine — no audio thread).
+      delete s.exchangeMapOverride(new timing::TimeMap(m));
+      expect(s.isLoopWindowActive(), "override alone activates the map");
+      expectEquals((juce::int64)s.getEffectivePeriod(), (juce::int64)2000,
+                   "effective period = Σ segment lengths");
+      expectEquals(s.activeTimeMap().n, 2, "activeTimeMap returns it");
+      // Bypass gates BOTH forms; the geometry survives underneath.
+      s.setLoopWindowBypassed(true);
+      expect(!s.activeTimeMap().active(), "bypass empties the map");
+      expect(s.mapOverride() != nullptr, "geometry survives bypass");
+      s.setLoopWindowBypassed(false);
+      expectEquals(s.activeTimeMap().n, 2, "un-bypass restores");
+    }
+
+    beginTest("setSegments: install/publish, delegation, validation, "
+              "undo/redo round trips");
+    {
+      AudioEngine engine;
+      engine.createNode("stack");
+      juce::String sId;
+      {
+        const juce::var st = engine.getGraphState();
+        sId = (*st.getProperty("nodes", {}).getArray())[0]
+                  .getDynamicObject()
+                  ->getProperty("id")
+                  .toString();
+      }
+      auto segsOf = [&](const juce::String &id) {
+        const juce::var st = engine.getGraphState();  // hold the var
+        juce::String flat;
+        if (auto *a = st.getProperty("nodes", {}).getArray()) {
+          for (auto &n : *a) {
+            auto *o = n.getDynamicObject();
+            if (o && o->getProperty("id").toString() == id) {
+              const juce::var sv = o->getProperty("segments");
+              if (auto *sa = sv.getArray()) {
+                for (auto &v : *sa) {
+                  flat += juce::String((int64_t)(double)v) + ",";
+                }
+              }
+            }
+          }
+        }
+        return flat;
+      };
+      auto makeMap = [](std::initializer_list<std::pair<int64_t, int64_t>>
+                            segs) {
+        timing::TimeMap m;
+        for (auto &s : segs) m.segs[m.n++] = {s.first, s.second};
+        return m;
+      };
+
+      // Install a 2-segment map (empty stack: intrinsic 0 → no clamp).
+      engine.setSegments(sId, makeMap({{0, 1000}, {2000, 3000}}));
+      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
+                   "segments published in metadata");
+
+      // Malformed lists refuse (metadata unchanged).
+      engine.setSegments(sId, makeMap({{0, 1000}, {500, 1500}}));
+      engine.setSegments(sId, makeMap({{2000, 3000}, {0, 1000}}));
+      engine.setSegments(sId, makeMap({{0, 0}, {2000, 3000}}));
+      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
+                   "overlap/unsorted/empty all refused");
+
+      // n==1 delegates to the single-window path and clears the map.
+      engine.setSegments(sId, makeMap({{500, 1500}}));
+      expectEquals(segsOf(sId), juce::String(), "override cleared");
+      const juce::var st2 = engine.getGraphState();
+      auto *o2 = (*st2.getProperty("nodes", {}).getArray())[0]
+                     .getDynamicObject();
+      expectEquals((juce::int64)(double)o2->getProperty("loopStart"),
+                   (juce::int64)500, "delegated to loop points (start)");
+      expectEquals((juce::int64)(double)o2->getProperty("loopEnd"),
+                   (juce::int64)1500, "delegated to loop points (end)");
+
+      // Undo: the single-window edit restores the override (setsMap).
+      engine.undo();
+      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
+                   "undo restores the multi-segment map");
+      // Undo again: back to no map at all.
+      engine.undo();
+      expectEquals(segsOf(sId), juce::String(), "undo to pristine");
+      // Redo both.
+      engine.redo();
+      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
+                   "redo reinstalls");
+      engine.redo();
+      expectEquals(segsOf(sId), juce::String(), "redo re-delegates");
+
+      // Mid-take gate: an armed take in the subtree refuses the edit.
+      engine.setSegments(sId, makeMap({{0, 1000}, {2000, 3000}}));
+      engine.createNode("clip", sId);
+      juce::String cId;
+      {
+        const juce::var st = engine.getGraphState();
+        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
+                       .getDynamicObject();
+        auto kids = so->getProperty("nodes");
+        cId = (*kids.getArray())[0]
+                  .getDynamicObject()
+                  ->getProperty("id")
+                  .toString();
+      }
+      engine.startRecordingInNode(cId);
+      engine.setSegments(sId, makeMap({{0, 500}, {600, 900}}));
+      expectEquals(segsOf(sId), juce::String("0,1000,2000,3000,"),
+                   "gate: refused while a take is live");
+      engine.stopRecordingInNode(cId);  // cancel
+      engine.setSegments(sId, makeMap({{0, 500}, {600, 900}}));
+      expectEquals(segsOf(sId), juce::String("0,500,600,900,"),
+                   "gate lifts after cancel");
+    }
+
+    beginTest("ENGINE: record through a setSegments cell map (the full "
+              "callback path)");
+    {
+      AudioEngine engine;
+      const int BLOCK = 512;
+      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
+      auto process = [&](int total) {
+        float *ins[] = {inBuf.data()};
+        float outL[512], outR[512];
+        float *outs[] = {outL, outR};
+        int remaining = total;
+        while (remaining > 0) {
+          const int n = std::min(remaining, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          remaining -= n;
+        }
+      };
+      auto nodeProp = [&](const juce::String &id, const char *prop) {
+        const juce::var s = engine.getGraphState();  // hold the var
+        std::function<double(const juce::var &)> scan =
+            [&](const juce::var &arr) -> double {
+          if (auto *a = arr.getArray()) {
+            for (auto &n : *a) {
+              auto *o = n.getDynamicObject();
+              if (o == nullptr) continue;
+              if (o->getProperty("id").toString() == id) {
+                return (double)o->getProperty(prop);
+              }
+              const double f = scan(o->getProperty("nodes"));
+              if (f == f && f != -1e18) return f;
+            }
+          }
+          return -1e18;
+        };
+        return (int64_t)scan(s.getProperty("nodes", {}).getArray()
+                                 ? s.getProperty("nodes", {})
+                                 : juce::var());
+      };
+
+      engine.createNode("stack");
+      juce::String sId;
+      {
+        const juce::var st = engine.getGraphState();
+        sId = (*st.getProperty("nodes", {}).getArray())[0]
+                  .getDynamicObject()
+                  ->getProperty("id")
+                  .toString();
+      }
+      engine.createNode("clip", sId);
+      juce::String aId;
+      {
+        const juce::var st = engine.getGraphState();
+        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
+                       .getDynamicObject();
+        aId = (*so->getProperty("nodes").getArray())[0]
+                  .getDynamicObject()
+                  ->getProperty("id")
+                  .toString();
+      }
+      // Take A establishes Q (~1 s at 44100).
+      engine.startRecordingInNode(aId);
+      process(100);
+      process(44100);
+      engine.stopRecordingInNode(aId);
+      for (int i = 0; i < 200 && nodeProp(aId, "isRecording") != 0; ++i) {
+        process(512);
+      }
+      const int64_t dA = nodeProp(aId, "duration");
+      expect(dA > 0, "take A committed");
+
+      // Cells {[0, dA/4), [dA/2, 3dA/4)} on the GROUP → period dA/2.
+      timing::TimeMap cells;
+      cells.n = 2;
+      cells.segs[0] = {0, dA / 4};
+      cells.segs[1] = {dA / 2, (3 * dA) / 4};
+      engine.setSegments(sId, cells);
+
+      // Record B through the cell map: capped at one period, committed
+      // dense at C = the group's inner cycle.
+      engine.createNode("clip", sId);
+      juce::String bId;
+      {
+        const juce::var st = engine.getGraphState();
+        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
+                       .getDynamicObject();
+        auto kids = so->getProperty("nodes");
+        bId = (*kids.getArray())[kids.getArray()->size() - 1]
+                  .getDynamicObject()
+                  ->getProperty("id")
+                  .toString();
+      }
+      engine.startRecordingInNode(bId);
+      // Never stop: the arm waits ≤1 heard pass for its boundary, then
+      // one full pass (period = dA/2) auto-commits. Drive past both,
+      // then pump until the commit lands.
+      process((int)(2 * dA));
+      for (int i = 0;
+           i < 400 && (nodeProp(bId, "isRecording") != 0 ||
+                       nodeProp(bId, "isPendingStart") != 0);
+           ++i) {
+        process(512);
+      }
+      expectEquals(nodeProp(bId, "isRecording"), (int64_t)0,
+                   "one-period cap auto-committed through the cells");
+      expectEquals(nodeProp(bId, "duration"), dA,
+                   "commit duration = C (the group inner cycle)");
+      // The anchor lands inside a VISITED cell (§3 arm semantics).
+      const int64_t orgRel =
+          nodeProp(bId, "origin") - nodeProp(aId, "origin");
+      const int64_t phase = ((orgRel % dA) + dA) % dA;
+      expect((phase >= 0 && phase < dA / 4) ||
+                 (phase >= dA / 2 && phase < (3 * dA) / 4),
+             "origin phase lands inside a visited cell (got " +
+                 juce::String(phase) + " of " + juce::String(dA) + ")");
+    }
+
+    beginTest("ENGINE: map edits on a playing clip preserve the sounding "
+              "phase (continuity re-anchor, 2026-07-25h)");
+    {
+      AudioEngine engine;
+      const int BLOCK = 512;
+      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
+      int64_t pumped = 0;  // exact transport position (advances only here)
+      auto process = [&](int total) {
+        float *ins[] = {inBuf.data()};
+        float outL[512], outR[512];
+        float *outs[] = {outL, outR};
+        int remaining = total;
+        while (remaining > 0) {
+          const int n = std::min(remaining, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          pumped += n;
+          remaining -= n;
+        }
+      };
+      auto nodeProp = [&](const juce::String &id, const char *prop) {
+        const juce::var s = engine.getGraphState();
+        std::function<double(const juce::var &)> scan =
+            [&](const juce::var &arr) -> double {
+          if (auto *a = arr.getArray()) {
+            for (auto &n : *a) {
+              auto *o = n.getDynamicObject();
+              if (o == nullptr) continue;
+              if (o->getProperty("id").toString() == id) {
+                return (double)o->getProperty(prop);
+              }
+              const double f = scan(o->getProperty("nodes"));
+              if (f == f && f != -1e18) return f;
+            }
+          }
+          return -1e18;
+        };
+        return (int64_t)scan(s.getProperty("nodes", {}));
+      };
+      auto childId = [&](const juce::String &sId, int idx) {
+        const juce::var st = engine.getGraphState();
+        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
+                       .getDynamicObject();
+        auto kids = so->getProperty("nodes");
+        if (idx < 0) idx = kids.getArray()->size() - 1;
+        return (*kids.getArray())[idx]
+            .getDynamicObject()
+            ->getProperty("id")
+            .toString();
+      };
+
+      engine.createNode("stack");
+      juce::String sId;
+      {
+        const juce::var st = engine.getGraphState();
+        sId = (*st.getProperty("nodes", {}).getArray())[0]
+                  .getDynamicObject()
+                  ->getProperty("id")
+                  .toString();
+      }
+      // Take A defines Q (~1s); take B is a plain 2Q clip.
+      engine.createNode("clip", sId);
+      const juce::String aId = childId(sId, 0);
+      engine.startRecordingInNode(aId);
+      process(100);
+      process(44100);
+      engine.stopRecordingInNode(aId);
+      for (int i = 0; i < 200 && nodeProp(aId, "isRecording") != 0; ++i) {
+        process(512);
+      }
+      const int64_t dA = nodeProp(aId, "duration");
+      expect(dA > 0, "take A committed");
+      engine.createNode("clip", sId);
+      const juce::String bId = childId(sId, -1);
+      engine.startRecordingInNode(bId);
+      process((int)(2 * dA + dA / 2));
+      engine.stopRecordingInNode(bId);
+      for (int i = 0; i < 400 && (nodeProp(bId, "isRecording") != 0 ||
+                                  nodeProp(bId, "isPendingStart") != 0);
+           ++i) {
+        process(512);
+      }
+      const int64_t dB = nodeProp(bId, "duration");
+      expect(dB >= 2 * dA, "take B committed at >= 2Q");
+
+      // Two committed clips: B is NOT the sole definer — the general
+      // continuity branch (not Q13) must carry the phase.
+      // Park the playing position inside [0, dB/4).
+      auto p0Of = [&](int64_t org, const timing::TimeMap &m) {
+        const timing::TimeMap eff =
+            m.active() ? m : timing::TimeMap::single(0, dB);
+        return eff.mapOffset(pumped - org - eff.mapOffset(0));
+      };
+      int guard = 0;
+      while (guard++ < 400 &&
+             p0Of(nodeProp(bId, "origin"), timing::TimeMap::none()) >=
+                 dB / 4) {
+        process(512);
+      }
+      const int64_t orgB = nodeProp(bId, "origin");
+      const int64_t p0 = p0Of(orgB, timing::TimeMap::none());
+      expect(p0 < dB / 4, "parked inside the first quarter");
+
+      // Cut that KEEPS p0's region: {[0, dB/4), [dB/2, 3dB/4)}.
+      timing::TimeMap m1;
+      m1.n = 2;
+      m1.segs[0] = {0, dB / 4};
+      m1.segs[1] = {dB / 2, (3 * dB) / 4};
+      engine.setSegments(bId, m1);
+      const int64_t orgB1 = nodeProp(bId, "origin");
+      expect(orgB1 != orgB, "origin re-anchored by the map edit");
+      expectEquals((juce::int64)p0Of(orgB1, m1), (juce::int64)p0,
+                   "covered position keeps sounding across the edit");
+
+      // Now a map that REMOVES p0's region: {[dB/4, dB/2)} would be
+      // n==1 (delegates) — use {[dB/4, dB/2), [3*dB/4, dB)}. The
+      // origin stays FIXED (2026-07-25i): deleting the sounding region
+      // makes an audible jump expected, and a folded re-anchor rotated
+      // the heard lane away from the click.
+      timing::TimeMap m2;
+      m2.n = 2;
+      m2.segs[0] = {dB / 4, dB / 2};
+      m2.segs[1] = {(3 * dB) / 4, dB};
+      engine.setSegments(bId, m2);
+      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
+                   "removed sounding region: origin stays put");
+
+      // ONE undo restores the original origin: consecutive Segments
+      // edits coalesce (one gesture, one undo step), and the setsOrigin
+      // inverse rides it.
+      engine.undo();
+      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
+                   "undo restores the pre-edit origin");
+    }
+
+    // === Phase 3, Stage 2: the fully-fractal clip kernel ===
+
+    beginTest("Multi-segment CLIP playback: the anchoring law, "
+              "seam-exact (owner-ruled fully fractal)");
+    {
+      // A 1000-sample ramp take, origin 100, cells {[250,450),[650,850)}
+      // → period 400, anchored at origin + mapOffset(0) = 350.
+      ClipNode clip("cells", 44100.0);
+      const int N = 1000;
+      std::vector<float> content((size_t)N);
+      for (int i = 0; i < N; ++i) content[(size_t)i] = (float)(i + 1) * 1e-5f;
+      juce::AudioBuffer<float> buf(1, N);
+      buf.copyFrom(0, 0, content.data(), N);
+      clip.loadCommitted(buf, 0);
+      clip.duration_samples.store(N);
+      clip.origin_samples.store(100);
+      clip.setLoopPoints(0, N);
+      timing::TimeMap cells;
+      cells.n = 2;
+      cells.segs[0] = {250, 450};
+      cells.segs[1] = {650, 850};
+      delete clip.exchangeMapOverride(new timing::TimeMap(cells));
+      clip.startPlayback();
+
+      auto sampleAt = [&](int64_t t) {
+        float out[1] = {0.0f};
+        float *const outs[] = {out};
+        ProcessContext ctx;
+        ctx.num_samples = 1;
+        ctx.is_playing = true;
+        ctx.master_pos = t;
+        clip.process(nullptr, outs, 0, 1, ctx);
+        return out[0];
+      };
+      const int64_t A = 100 + 250;  // origin + mapOffset(0)
+      expectWithinAbsoluteError(sampleAt(A), content[250], 1e-7f,
+                                "heard 0 = first segment's start");
+      expectWithinAbsoluteError(sampleAt(A + 199), content[449], 1e-7f,
+                                "end of segment 0");
+      expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,
+                                "SEAM: heard 200 jumps to segment 1");
+      expectWithinAbsoluteError(sampleAt(A + 399), content[849], 1e-7f,
+                                "end of the pass");
+      expectWithinAbsoluteError(sampleAt(A + 400), content[250], 1e-7f,
+                                "pass wraps to the top");
+
+      // Block render crossing the seam mid-block must be sample-exact
+      // (the run splitting inside the clip loop).
+      {
+        const int B = 128;
+        std::vector<float> out((size_t)B, 0.0f);
+        float *outPtr = out.data();
+        float *const outs[] = {outPtr};
+        ProcessContext ctx;
+        ctx.num_samples = B;
+        ctx.is_playing = true;
+        ctx.master_pos = A + 150;  // crosses the seam at heard 200
+        clip.process(nullptr, outs, 0, 1, ctx);
+        bool ok = true;
+        for (int i = 0; i < B && ok; ++i) {
+          const int64_t h = 150 + i;
+          const int64_t p = h < 200 ? 250 + h : 650 + (h - 200);
+          ok = std::abs(out[(size_t)i] - content[(size_t)p]) < 1e-7f;
+        }
+        expect(ok, "mid-block seam is sample-exact");
+      }
+
+      // Bypass → honest full take (Degradation Contract on clips).
+      clip.setLoopWindowBypassed(true);
+      expectWithinAbsoluteError(sampleAt(100 + 500), content[500], 1e-7f,
+                                "bypassed: content at its inner moment");
+      clip.setLoopWindowBypassed(false);
+      expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,
+                                "re-activation restores the map");
+
+      // SPLICE COLLAPSE: the kept cells become the take; playback at
+      // the same island moments is sample-identical.
+      auto old = clip.spliceToMap(cells);
+      delete clip.exchangeMapOverride(nullptr);
+      expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)400,
+                   "spliced duration = period");
+      expectEquals((juce::int64)clip.origin_samples.load(), (juce::int64)350,
+                   "spliced origin = old origin + mapOffset(0)");
+      expectWithinAbsoluteError(sampleAt(A), content[250], 1e-7f,
+                                "spliced: heard 0 unchanged");
+      expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,
+                                "spliced: seam content unchanged");
+      expectWithinAbsoluteError(sampleAt(A + 399), content[849], 1e-7f,
+                                "spliced: pass end unchanged");
+
+      // UN-SPLICE: full material + map return; playback unchanged.
+      auto displaced = clip.unspliceFromMap(std::move(old), 100, N, 0, N);
+      delete clip.exchangeMapOverride(new timing::TimeMap(cells));
+      expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)N,
+                   "unspliced duration restored");
+      expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,
+                                "unspliced: mapped playback unchanged");
+      clip.setLoopWindowBypassed(true);
+      expectWithinAbsoluteError(sampleAt(100 + 999), content[999], 1e-7f,
+                                "unspliced: full material intact");
+    }
   }
 };
 

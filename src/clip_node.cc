@@ -287,18 +287,16 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
   // (committed_this_block_) — identical to the historical process(),
   // which returned right after commit.
   if (context.is_playing && is_playing && !committed_this_block_.load()) {
-    int64_t start = loop_start_samples.load();
-    int64_t end = loop_end_samples.load();
-    // Loop window, fractal (I5): the clip's loop region is the
-    // single-segment case of the stack's time-map. BYPASSED (or
-    // invalid) windows fall back to the full take — commit sets
-    // [0, duration) on every clip, so the un-windowed path is identical
-    // to the historical behavior.
-    if (loop_window_bypassed_.load() || end <= start) {
-      start = 0;
-      end = duration_samples.load();
+    // The clip's map, fractal (I5): a multi-segment override, or the
+    // loop region as the single-segment case. BYPASSED (or invalid)
+    // maps fall back to the full take — commit sets [0, duration) on
+    // every clip, so the un-mapped path is identical to the historical
+    // behavior.
+    timing::TimeMap map = activeTimeMap();
+    if (!map.active()) {
+      map = timing::TimeMap::single(0, duration_samples.load());
     }
-    int64_t dur = end - start;
+    const int64_t dur = map.period();
 
     if (dur > 0) {
       bool isSilenced = is_muted.load() || (context.solo_node != nullptr);
@@ -323,25 +321,21 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
       }
 
       // Audio Memory Principle — the kernel playback equation
-      // (docs/kernel.md §2): play content[(t − origin) mod dur], i.e.
-      // content sounds at the cycle moment it was performed. Expressed
-      // through the launch-point form ((t + launch) mod dur with
-      // launch = (−origin) mod dur) so the shared timing.h math — pinned
-      // by the golden vectors — stays the single implementation.
+      // (docs/kernel.md §2), generalized through the map (phase 3, the
+      // ANCHORING LAW): clip map playback ≡ the stack map with
+      // epoch := origin + mapOffset(0):
       //
-      // WINDOWED: the surviving content starts at buffer[start], whose
-      // performance moment is origin + start — so the launch anchors
-      // there, and buffer[start + x] sounds at (origin + start + x)
-      // mod dur, its performed moment. The un-windowed case (start = 0)
-      // reduces to the historical equation. Anchoring at bare `origin`
-      // shifted window content by (start mod dur) — a whole-Q rotation
-      // for Q-snapped windows, and for the Q13 provisional definer it
-      // broke the epoch contract (epoch = origin + loopStart names the
-      // trimmed loop's top as island phase 0; time_maps.md asymmetry,
-      // resolved 2026-07-19). This also matches the stack time-map,
-      // which re-bases the child clock to its window start (I5).
-      const int64_t offset =
-          timing::launchPointFor(origin_samples.load() + start, dur);
+      //   p(t) = mapOffset((t − origin − mapOffset(0)) mod period)
+      //
+      // The single-segment case p(t) = start + ((t − origin − start)
+      // mod len) IS the 2026-07-19 `origin + loopStart` anchoring
+      // (window content sounds at its OWN performed moment); the
+      // un-mapped case reduces to (t − origin) mod dur, the historical
+      // equation. Later segments shift earlier by the removed time —
+      // punch semantics; groove-transparent when cuts are kQ (seam
+      // theorem).
+      const int64_t org = origin_samples.load();
+      const int64_t a0 = map.mapOffset(0);
 
       if (!isSilenced) {
         // Render into the mono fx scratch, run the rack, then sum to
@@ -354,13 +348,22 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         // Content base (Q13 lock-collapse): the committed content may
         // start mid-buffer; content coordinates stay 0-based.
         const int64_t base = content_base_.load();
-        for (int i = 0; i < context.num_samples; ++i) {
-          int64_t current_master_pos = context.master_pos + i;
-          int64_t effective_pos = (current_master_pos + offset) % dur;
-          int current_read_position =
-              (int)((base + start + effective_pos) % buffer.getNumSamples());
-          fx_scratch_[(size_t)i] =
-              buffer.getReadPointer(0)[current_read_position];
+        const int64_t cap = buffer.getNumSamples();
+        const float *data = buffer.getReadPointer(0);
+        // Run-split at map seams (bounded, allocation-free — the stack
+        // splitter's discipline inside the clip loop): each run is a
+        // contiguous read.
+        int i = 0;
+        while (i < context.num_samples) {
+          int64_t h = (context.master_pos + i - org - a0) % dur;
+          h = (h + dur) % dur;
+          const int run = (int)std::min<int64_t>(context.num_samples - i,
+                                                 map.seamDistance(h));
+          const int64_t p0 = map.mapOffset(h);
+          for (int k = 0; k < run; ++k) {
+            fx_scratch_[(size_t)(i + k)] = data[(base + p0 + k) % cap];
+          }
+          i += run;
         }
         // isLive: enabled slots OR an open panel watching the scope
         // (capture-only pass costs one copy; effects all no-op)
@@ -375,9 +378,14 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         }
       }
 
-      // Update playhead position for UI (0..1 within this clip)
-      playhead_pos.store(
-          timing::playheadPercent(context.master_pos, offset, dur));
+      // Update playhead position for UI (0..1): the heard phase of the
+      // map pass — identical to the launch-point form for single
+      // segments.
+      {
+        int64_t h = (context.master_pos - org - a0) % dur;
+        h = (h + dur) % dur;
+        playhead_pos.store((double)h / (double)dur);
+      }
     } else {
       playhead_pos.store(0.0);
     }

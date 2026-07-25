@@ -193,6 +193,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void setLoopPoints(const juce::String &uuid, int64_t start, int64_t end);
 
+  /**
+   * Installs a multi-segment time-map on a node (time_maps.md phase 3).
+   * Validates well-formedness only (the editor owns coherence);
+   * n ≤ 1 delegates to setLoopPoints (the single-window path, which
+   * owns Q13); undoable (Edit::Segments). Message thread.
+   */
+  void setSegments(const juce::String &uuid,
+                   const celestrian::timing::TimeMap &map);
+
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
       const float *const *input_channel_data, int num_input_channels,

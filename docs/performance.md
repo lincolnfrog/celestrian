@@ -54,6 +54,13 @@ the message thread and retires the old buffer via the reclaimer — legal
 under an actively rendering clip because render loads the pointer once
 per block. Never resize or swap a buffer the audio thread might be
 CAPTURING into (compaction skips armed/recording clips).
+*Phase 3 (2026-07-22):* a node's multi-segment map override follows
+the same discipline — ONE atomic pointer (`AudioNode::map_override_`),
+message-thread swaps, superseded maps retired through the reclaimer,
+audio thread loads at most once per call. A multi-segment
+lock-collapse SPLICES a new content buffer in; the displaced buffer is
+owned by the undo entry (never freed inline) and the un-splice retires
+the spliced one.
 *Documented deviation (time_maps.md phase 2, 2026-07-21):* a
 THROUGH-MAP arm zeroes exactly `[0, C)` at arm time on the message
 thread — the commit is a dense buffer with literal silence in

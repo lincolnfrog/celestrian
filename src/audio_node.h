@@ -117,7 +117,11 @@ class AudioNode {
  public:
   AudioNode(juce::String node_name)
       : node_name(std::move(node_name)), node_uuid(juce::Uuid().toString()) {}
-  virtual ~AudioNode() = default;
+  virtual ~AudioNode() {
+    // Nodes only die via the reclaimer (2-callback grace), so no
+    // in-flight audio can still be reading the override here.
+    delete map_override_.load();
+  }
 
   /**
    * CONTROL/INGEST phase (unification_audit.md §2.3 — the control
@@ -185,6 +189,16 @@ class AudioNode {
     // alike; `playhead` carries the window phase while active.
     obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
     obj->setProperty("windowActive", isLoopWindowActive());
+    // Multi-segment map (phase 3): flat [s0,e0,s1,e1,...] in samples,
+    // present only when an override is installed.
+    if (const timing::TimeMap *m = map_override_.load()) {
+      juce::Array<juce::var> segs;
+      for (int i = 0; i < m->n; ++i) {
+        segs.add((double)m->segs[i].start);
+        segs.add((double)m->segs[i].end);
+      }
+      obj->setProperty("segments", segs);
+    }
     // Built-in effect rack state (fractal like windows)
     obj->setProperty("effects", fx_.getMetadata());
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
@@ -353,21 +367,38 @@ class AudioNode {
   }
   bool isLoopWindowActive() const {
     return !loop_window_bypassed_.load() &&
-           loop_end_samples.load() > loop_start_samples.load();
+           (map_override_.load() != nullptr ||
+            loop_end_samples.load() > loop_start_samples.load());
   }
 
   /**
    * The node's ACTIVE time-map as the reified value type (time_maps.md
-   * §2): today a single segment built from the phase-1 window atomics
-   * (empty when bypassed/invalid); multi-segment storage arrives with
-   * the phase-3 editor. Consumers must be segment-general — use
-   * period()/mapOffset()/seamDistance(), never the raw loop atomics.
-   * Audio-thread safe (atomic loads into a POD value).
+   * §2): the multi-segment override when one is installed (phase 3),
+   * else a single segment from the phase-1 window atomics; empty when
+   * bypassed/invalid (the bypass flag gates BOTH forms). Consumers must
+   * be segment-general — use period()/mapOffset()/seamDistance(), never
+   * the raw loop atomics. Audio-thread safe: one atomic pointer load /
+   * atomic scalar loads into a POD value.
    */
   timing::TimeMap activeTimeMap() const {
     if (loop_window_bypassed_.load()) return timing::TimeMap::none();
+    if (const timing::TimeMap *m = map_override_.load()) return *m;
     return timing::TimeMap::single(loop_start_samples.load(),
                                    loop_end_samples.load());
+  }
+
+  // --- Multi-segment map storage (time_maps.md phase 3) ---
+  // The override is reached through ONE atomic pointer (the D4
+  // content-buffer discipline): null = the single-segment window in the
+  // loop atomics; non-null = an immutable multi-segment TimeMap. The
+  // MESSAGE thread swaps it and retires the old pointer through the
+  // engine reclaimer (an in-flight callback may read it for ≤2 more
+  // callbacks); the audio thread only loads it.
+  const timing::TimeMap *mapOverride() const { return map_override_.load(); }
+  /** Swap in `fresh` (heap-owned, or null to clear); returns the OLD
+   * pointer, which the caller must retire — never delete inline. */
+  const timing::TimeMap *exchangeMapOverride(const timing::TimeMap *fresh) {
+    return map_override_.exchange(fresh);
   }
 
   // --- Built-in effects (docs/ui_overhaul.md effects bar) ---
@@ -433,6 +464,9 @@ class AudioNode {
   // Loop window bypass flag (time_maps.md). Window phase is pure
   // arithmetic on the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};
+  // Multi-segment map override (phase 3; see mapOverride above): owned
+  // here, swapped on the message thread, retired via the reclaimer.
+  std::atomic<const timing::TimeMap *> map_override_{nullptr};
 
   // Built-in effect rack (dsp/effects.h): fixed slots, all-atomic
   // parameters — safe for the audio thread to read while the message
