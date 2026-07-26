@@ -17,6 +17,7 @@
 # Debugger Files
 *.pdb
 celestrian_debug.log
+shared/ui_contract_capture.json
 
 # Compiled Dynamic libraries
 *.so
