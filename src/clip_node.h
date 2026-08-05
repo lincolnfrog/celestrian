@@ -335,6 +335,10 @@ class ClipNode : public AudioNode {
   // Audio-thread only.
   int64_t capture_next_clock_ = 0;
   bool capture_uses_ring_ = false;
+  // Underrun log latch (audio-thread only): one line per capture, reset
+  // at beginCapture — a persistent underrun otherwise posts every block
+  // and overwhelms the drain FIFO (the field-hang log storm).
+  bool underrun_logged_ = false;
 
   /** Armed-state evaluation (audio thread, once per block). */
   void armEvaluate(const ProcessContext &context);

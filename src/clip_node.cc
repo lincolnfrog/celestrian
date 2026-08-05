@@ -2,6 +2,8 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <algorithm>
+
 #include "graph_snapshot.h"
 #include "rt_log.h"
 #include "timing.h"
@@ -13,8 +15,10 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
   // Baseline: one second. The real capacity arrives at ARM as a huge
   // virtual reservation (see the D4 block in the header) and returns
   // to exact size at post-commit compaction — idle clips cost nothing.
-  content_owned_ =
-      std::make_unique<juce::AudioBuffer<float>>(1, (int)sample_rate);
+  // Floor of 1: a zero-size buffer would make render's `% cap` a SIGFPE
+  // (the engine can construct clips before a device reports its rate).
+  content_owned_ = std::make_unique<juce::AudioBuffer<float>>(
+      1, std::max(1, (int)sample_rate));
   content_owned_->clear();
   content_.store(content_owned_.get());
   fx_scratch_.resize(4096, 0.0f);  // typical max device block
@@ -129,9 +133,16 @@ void ClipNode::control(const float *const *input_channels,
       const int ring_len = context.prerecord_ring_len;
       const int64_t oldest = std::max<int64_t>(0, available_end - ring_len);
       if (src < oldest) {
-        RtLog::instance().post(
-            "ClipNode: pre-record ring underrun, %lld samples lost",
-            (long long)(oldest - src));
+        // Latched to ONE line per capture: a persistent underrun fires
+        // every block, and per-block posts kept the drain FIFO
+        // permanently full (the field hang's log storm — 860 posts/sec
+        // across five armed clips).
+        if (!underrun_logged_) {
+          underrun_logged_ = true;
+          RtLog::instance().post(
+              "ClipNode: pre-record ring underrun, %lld samples lost",
+              (long long)(oldest - src));
+        }
         src = oldest;
       }
 
@@ -145,8 +156,10 @@ void ClipNode::control(const float *const *input_channels,
         }
         const int n = (int)std::min<int64_t>(available_end - src, space);
         if (n > 0) {
-          const int ch = std::min(preferred_input_channel,
-                                  context.prerecord_ring_channels - 1);
+          // Clamp both ways: −1 is a first-class "no assignment" value
+          // in the UI/session layer and must not index ring[−1].
+          const int ch = std::clamp(preferred_input_channel, 0,
+                                    context.prerecord_ring_channels - 1);
           const float *ring = context.prerecord_ring[ch];
           const int idx = (int)(src % ring_len);
           const int first = std::min(n, ring_len - idx);
@@ -195,8 +208,8 @@ void ClipNode::control(const float *const *input_channels,
       }
     } else if (context.is_recording && input_channels != nullptr &&
                num_input_channels > 0) {
-      const float *in = input_channels[std::min(preferred_input_channel,
-                                                num_input_channels - 1)];
+      const float *in = input_channels[std::clamp(
+          preferred_input_channel, 0, num_input_channels - 1)];
       int64_t space = buffer.getNumSamples() - write_position.load();
       // One-period cap (through-map, ruling 2) — see the ring path.
       if (through_map_capture_) {
@@ -349,6 +362,7 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         // start mid-buffer; content coordinates stay 0-based.
         const int64_t base = content_base_.load();
         const int64_t cap = buffer.getNumSamples();
+        if (cap <= 0) return;  // degenerate buffer: `% cap` would SIGFPE
         const float *data = buffer.getReadPointer(0);
         // Run-split at map seams (bounded, allocation-free — the stack
         // splitter's discipline inside the clip loop): each run is a
@@ -564,6 +578,7 @@ void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
   // delta (boundary just passed) reaches back into the pre-record ring.
   capture_uses_ring_ = (context.prerecord_ring != nullptr);
   capture_next_clock_ = context.input_clock + (target - compensated_pos);
+  underrun_logged_ = false;
 }
 
 void ClipNode::startRecording(int64_t through_map_commit_cycle) {

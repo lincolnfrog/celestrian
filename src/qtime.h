@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 
 #if !defined(__SIZEOF_INT128__)
 #include <intrin.h>  // MSVC: _umul128 / _div128 for the Int128 fallback below
@@ -130,10 +131,18 @@ inline int64_t gcd(int64_t a, int64_t b) {
   return a;
 }
 
-/** Least common multiple. Returns the larger value if either is zero. */
+/** Least common multiple. Returns the larger value if either is zero.
+ * Saturates at int64 max instead of overflowing: composite-duration
+ * folds treat 0 as "empty accumulator", so a wrapped-to-0 (or negative)
+ * LCM would silently discard every prior child; several coprime
+ * unsnapped takes can push the true LCM past 2^63. */
 inline int64_t lcm(int64_t a, int64_t b) {
   if (a == 0 || b == 0) return std::max(a, b);
-  return (a / gcd(a, b)) * b;
+  const int128_t wide = int128_t(a / gcd(a, b)) * int128_t(b);
+  if (wide > int128_t(std::numeric_limits<int64_t>::max())) {
+    return std::numeric_limits<int64_t>::max();
+  }
+  return (int64_t)wide;
 }
 
 namespace detail {
