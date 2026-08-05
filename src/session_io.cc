@@ -62,9 +62,11 @@ void writeClipWav(const ClipNode &clip, int64_t duration,
   juce::WavAudioFormat fmt;
   std::unique_ptr<juce::FileOutputStream> stream(file.createOutputStream());
   if (!stream) return;
-  // 32-bit float: lossless round-trip of the recorded buffer.
+  // 32-bit float: lossless round-trip of the recorded buffer. Channel
+  // count follows the content (stereo takes save as stereo WAVs).
   std::unique_ptr<juce::AudioFormatWriter> writer(fmt.createWriterFor(
-      stream.get(), clip.getSampleRate(), 1, 32, {}, 0));
+      stream.get(), clip.getSampleRate(),
+      (unsigned int)std::max(1, buf.getNumChannels()), 32, {}, 0));
   if (!writer) return;
   stream.release();  // the writer owns the stream now
   writer->writeFromAudioSampleBuffer(buf, (int)base, n);
@@ -77,8 +79,9 @@ bool readClipWav(const juce::File &file, juce::AudioBuffer<float> &out) {
       fmt.createReaderFor(file.createInputStream().release(), true));
   if (!reader) return false;
   const int len = (int)reader->lengthInSamples;
-  out.setSize(1, len);
-  reader->read(&out, 0, len, 0, true, false);
+  const int chans = std::max(1, (int)reader->numChannels);
+  out.setSize(chans, len);
+  reader->read(&out, 0, len, 0, true, chans >= 2);
   return true;
 }
 
@@ -89,6 +92,7 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
   o->setProperty("name", node.getName());
   o->setProperty("type", node.getNodeTypeString());
   o->setProperty("muted", (bool)node.is_muted.load());
+  o->setProperty("pan", (double)node.pan.load());
   o->setProperty("loopBypassed",
                  opts.strip_performances ? false : node.isLoopWindowBypassed());
   // Window segments are musical (QTime): stored device-independently.
@@ -119,6 +123,7 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
     const int64_t origin = node.origin_samples.load();
     const int64_t duration = node.duration_samples.load();
     o->setProperty("inputChannel", clip.getInputChannel());
+    o->setProperty("inputChannelR", clip.getInputChannelRight());
     // origin as an OFFSET FROM EPOCH, period, contextCycle — all musical.
     // Templates strip performances: the clip persists as a named, wired,
     // EMPTY track (docs/projects.md).
@@ -174,6 +179,11 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
     const int64_t duration = timing::toSamples(qread(o->getProperty("periodQ")), q);
     const int64_t ctx = timing::toSamples(qread(o->getProperty("contextCycleQ")), q);
     clip->setInputChannel((int)o->getProperty("inputChannel"));
+    // Absent in pre-stereo sessions: juce::var() → 0 would silently arm
+    // a stereo pair, so default explicitly to −1 (mono).
+    clip->setInputChannelRight(o->hasProperty("inputChannelR")
+                                   ? (int)o->getProperty("inputChannelR")
+                                   : -1);
     clip->origin_samples.store(origin);
     clip->duration_samples.store(duration);
     if ((bool)o->getProperty("hasAudio")) {
@@ -186,6 +196,7 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
 
   node->setUuid(uuid);
   node->is_muted.store((bool)o->getProperty("muted"));
+  node->pan.store((float)(double)o->getProperty("pan"));
   node->setLoopPoints(timing::toSamples(qread(o->getProperty("windowStartQ")), q),
                       timing::toSamples(qread(o->getProperty("windowEndQ")), q));
   // Multi-segment map (phase 3): ≥2 entries install an override

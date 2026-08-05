@@ -22,6 +22,7 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
   content_owned_->clear();
   content_.store(content_owned_.get());
   fx_scratch_.resize(4096, 0.0f);  // typical max device block
+  fx_scratch2_.resize(4096, 0.0f);
 }
 
 juce::var ClipNode::getMetadata() const {
@@ -29,6 +30,11 @@ juce::var ClipNode::getMetadata() const {
   auto *obj = base.getDynamicObject();
   obj->setProperty("sampleRate", sample_rate);
   obj->setProperty("inputChannel", preferred_input_channel);
+  obj->setProperty("inputChannelR", preferred_input_channel_right);
+  // 2 when the content is stereo, or the next take will be (stereo
+  // inputs assigned): the UI badges the lane either way.
+  obj->setProperty("channels",
+                   contentChannels() >= 2 || isStereoInput() ? 2 : 1);
   obj->setProperty("isPendingStart", isPendingStart());
   obj->setProperty("isAwaitingStop", isAwaitingStop());
   // The take's heard frame (Q14 take-marking modulus); 0 = first take.
@@ -156,26 +162,33 @@ void ClipNode::control(const float *const *input_channels,
         }
         const int n = (int)std::min<int64_t>(available_end - src, space);
         if (n > 0) {
-          // Clamp both ways: −1 is a first-class "no assignment" value
-          // in the UI/session layer and must not index ring[−1].
-          const int ch = std::clamp(preferred_input_channel, 0,
-                                    context.prerecord_ring_channels - 1);
-          const float *ring = context.prerecord_ring[ch];
           const int idx = (int)(src % ring_len);
           const int first = std::min(n, ring_len - idx);
-          captureWrite(buffer, wp, ring + idx, first);
-          if (n > first) captureWrite(buffer, wp + first, ring, n - first);
-          capture_next_clock_ = src + n;
-
-          // Peak tracking over the captured region — iterate the SOURCE
-          // (the through-map fold scatters destinations).
+          // One content channel per assigned input (stereo pairs write
+          // channel 0 ← L, channel 1 ← R; capture_channels_ was fixed
+          // at arm alongside the buffer's channel count).
+          const int ncap = std::min(capture_channels_, buffer.getNumChannels());
           float blockPeak = 0.0f;
-          for (int i = 0; i < first; ++i) {
-            blockPeak = std::max(blockPeak, std::abs(ring[idx + i]));
+          for (int c = 0; c < ncap; ++c) {
+            // Clamp both ways: −1 is a first-class "no assignment"
+            // value in the UI/session layer and must not index ring[−1].
+            const int ch = std::clamp(
+                c == 0 ? preferred_input_channel : preferred_input_channel_right,
+                0, context.prerecord_ring_channels - 1);
+            const float *ring = context.prerecord_ring[ch];
+            captureWrite(buffer, c, wp, ring + idx, first);
+            if (n > first) captureWrite(buffer, c, wp + first, ring, n - first);
+
+            // Peak tracking over the captured region — iterate the
+            // SOURCE (the through-map fold scatters destinations).
+            for (int i = 0; i < first; ++i) {
+              blockPeak = std::max(blockPeak, std::abs(ring[idx + i]));
+            }
+            for (int i = first; i < n; ++i) {
+              blockPeak = std::max(blockPeak, std::abs(ring[i - first]));
+            }
           }
-          for (int i = first; i < n; ++i) {
-            blockPeak = std::max(blockPeak, std::abs(ring[i - first]));
-          }
+          capture_next_clock_ = src + n;
           last_block_peak.store(blockPeak);
           if (blockPeak > current_max_peak.load()) {
             current_max_peak.store(blockPeak);
@@ -208,8 +221,6 @@ void ClipNode::control(const float *const *input_channels,
       }
     } else if (context.is_recording && input_channels != nullptr &&
                num_input_channels > 0) {
-      const float *in = input_channels[std::clamp(
-          preferred_input_channel, 0, num_input_channels - 1)];
       int64_t space = buffer.getNumSamples() - write_position.load();
       // One-period cap (through-map, ruling 2) — see the ring path.
       if (through_map_capture_) {
@@ -219,7 +230,14 @@ void ClipNode::control(const float *const *input_channels,
           (int)std::min<int64_t>(context.num_samples, space);
 
       if (samples_to_write > 0) {
-        captureWrite(buffer, write_position.load(), in, samples_to_write);
+        const int ncap = std::min(capture_channels_, buffer.getNumChannels());
+        for (int c = 0; c < ncap; ++c) {
+          const float *in = input_channels[std::clamp(
+              c == 0 ? preferred_input_channel : preferred_input_channel_right,
+              0, num_input_channels - 1)];
+          captureWrite(buffer, c, write_position.load(), in,
+                       samples_to_write);
+        }
 
         // Peak tracking
         float blockPeak = 0.0f;
@@ -265,10 +283,10 @@ void ClipNode::control(const float *const *input_channels,
   }
 }
 
-void ClipNode::captureWrite(juce::AudioBuffer<float> &buffer,
+void ClipNode::captureWrite(juce::AudioBuffer<float> &buffer, int dest_ch,
                             int64_t heard_pos, const float *src, int n) {
   if (!through_map_capture_) {
-    buffer.copyFrom(0, (int)heard_pos, src, n);
+    buffer.copyFrom(dest_ch, (int)heard_pos, src, n);
     return;
   }
   // THROUGH-MAP FOLD (time_maps.md §3): destinations follow the mapped
@@ -283,7 +301,7 @@ void ClipNode::captureWrite(juce::AudioBuffer<float> &buffer,
     const int run = (int)std::min<int64_t>(n, seam > 0 ? seam : n);
     const int64_t dest =
         timing::throughMapDest(pos, map_anchor_off_, take_map_, C);
-    buffer.copyFrom(0, (int)dest, src, run);
+    buffer.copyFrom(dest_ch, (int)dest, src, run);
     pos += run;
     src += run;
     n -= run;
@@ -351,10 +369,12 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
       const int64_t a0 = map.mapOffset(0);
 
       if (!isSilenced) {
-        // Render into the mono fx scratch, run the rack, then sum to
-        // the parent — effects shape THIS clip's signal in isolation.
-        // Resize is a rare growth (same pattern as StackNode's
-        // mix_buffer); constructor pre-reserves a typical block.
+        // Render into the fx scratches (channel 0 → fx_scratch_,
+        // channel 1 of stereo content → fx_scratch2_), run the rack,
+        // then sum PANNED into the parent — effects shape THIS clip's
+        // signal in isolation. Resize is a rare growth (same pattern as
+        // StackNode's mix_buffer); constructor pre-reserves a typical
+        // block.
         if ((int)fx_scratch_.size() < context.num_samples) {
           fx_scratch_.resize((size_t)context.num_samples);
         }
@@ -363,31 +383,70 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         const int64_t base = content_base_.load();
         const int64_t cap = buffer.getNumSamples();
         if (cap <= 0) return;  // degenerate buffer: `% cap` would SIGFPE
-        const float *data = buffer.getReadPointer(0);
+        const bool stereo = buffer.getNumChannels() >= 2;
+        if (stereo && (int)fx_scratch2_.size() < context.num_samples) {
+          fx_scratch2_.resize((size_t)context.num_samples);
+        }
         // Run-split at map seams (bounded, allocation-free — the stack
         // splitter's discipline inside the clip loop): each run is a
         // contiguous read.
-        int i = 0;
-        while (i < context.num_samples) {
-          int64_t h = (context.master_pos + i - org - a0) % dur;
-          h = (h + dur) % dur;
-          const int run = (int)std::min<int64_t>(context.num_samples - i,
-                                                 map.seamDistance(h));
-          const int64_t p0 = map.mapOffset(h);
-          for (int k = 0; k < run; ++k) {
-            fx_scratch_[(size_t)(i + k)] = data[(base + p0 + k) % cap];
+        for (int c = 0; c < (stereo ? 2 : 1); ++c) {
+          const float *data = buffer.getReadPointer(c);
+          float *scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
+          int i = 0;
+          while (i < context.num_samples) {
+            int64_t h = (context.master_pos + i - org - a0) % dur;
+            h = (h + dur) % dur;
+            const int run = (int)std::min<int64_t>(context.num_samples - i,
+                                                   map.seamDistance(h));
+            const int64_t p0 = map.mapOffset(h);
+            for (int k = 0; k < run; ++k) {
+              scratch[(size_t)(i + k)] = data[(base + p0 + k) % cap];
+            }
+            i += run;
           }
-          i += run;
         }
         // isLive: enabled slots OR an open panel watching the scope
         // (capture-only pass costs one copy; effects all no-op)
         if (fx_.isLive()) {
-          fx_.process(fx_scratch_.data(), context.num_samples);
+          if (stereo) {
+            fx_.processStereo(fx_scratch_.data(), fx_scratch2_.data(),
+                              context.num_samples);
+          } else {
+            fx_.process(fx_scratch_.data(), context.num_samples);
+          }
         }
+        // Pan (balance law, audio_node.h): output channel 0 is L,
+        // channel 1 is R. Mono content pans between them (center is
+        // unity on both — the historical behavior); stereo content
+        // treats pan as balance (attenuate the far side). A mono
+        // OUTPUT hears the unpanned center (channels ≥ 2, if any, get
+        // the historical unpanned mono sum).
+        float gl = 1.0f, gr = 1.0f;
+        panGains(pan.load(), gl, gr);
         for (int ch = 0; ch < num_output_channels; ++ch) {
-          if (output_channels[ch] != nullptr) {
-            juce::FloatVectorOperations::add(
-                output_channels[ch], fx_scratch_.data(), context.num_samples);
+          if (output_channels[ch] == nullptr) continue;
+          const bool right = ch == 1 && num_output_channels >= 2;
+          const float *src = stereo && right ? fx_scratch2_.data()
+                                             : fx_scratch_.data();
+          float g = 1.0f;
+          if (num_output_channels >= 2 && ch < 2) g = right ? gr : gl;
+          if (stereo && num_output_channels < 2) {
+            // Fold stereo content to a mono device: equal halves.
+            juce::FloatVectorOperations::addWithMultiply(
+                output_channels[ch], fx_scratch_.data(), 0.5f,
+                context.num_samples);
+            juce::FloatVectorOperations::addWithMultiply(
+                output_channels[ch], fx_scratch2_.data(), 0.5f,
+                context.num_samples);
+            continue;
+          }
+          if (g == 1.0f) {
+            juce::FloatVectorOperations::add(output_channels[ch], src,
+                                             context.num_samples);
+          } else if (g > 0.0f) {
+            juce::FloatVectorOperations::addWithMultiply(
+                output_channels[ch], src, g, context.num_samples);
           }
         }
       }
@@ -591,10 +650,15 @@ void ClipNode::startRecording(int64_t through_map_commit_cycle) {
   // write_position, so the uninitialized tail is unreachable.
   {
     auto &buffer = *content_.load();
+    // The take's channel count is fixed HERE (a stereo pair of inputs
+    // captures two channels): the audio thread reads capture_channels_
+    // only after observing the Armed state stored below.
+    capture_channels_ = isStereoInput() ? 2 : 1;
     const int want = (int)std::min<int64_t>(
         kMaxTakeSamples, std::numeric_limits<int>::max() - 64);
-    if (buffer.getNumSamples() < want) {
-      buffer.setSize(1, want, false, false, false);
+    if (buffer.getNumSamples() < want ||
+        buffer.getNumChannels() != capture_channels_) {
+      buffer.setSize(capture_channels_, want, false, false, false);
     }
     // THROUGH-MAP take (time_maps.md phase 2, ruling 2): the commit is
     // a dense [0, C) buffer with LITERAL SILENCE in unvisited regions —
@@ -602,9 +666,11 @@ void ClipNode::startRecording(int64_t through_map_commit_cycle) {
     // audio-thread memset at commit would violate the RT contract).
     // The reservation tail past C stays uncleared per D4.
     if (through_map_commit_cycle > 0) {
-      buffer.clear(0, 0,
-                   (int)std::min<int64_t>(through_map_commit_cycle,
-                                          buffer.getNumSamples()));
+      for (int c = 0; c < buffer.getNumChannels(); ++c) {
+        buffer.clear(c, 0,
+                     (int)std::min<int64_t>(through_map_commit_cycle,
+                                            buffer.getNumSamples()));
+      }
     }
   }
   map_commit_cycle_.store(through_map_commit_cycle);
@@ -784,23 +850,27 @@ juce::var ClipNode::getWaveform(int num_peaks) const {
   if (total_samples <= 0) return peaks;
 
   int window_size = std::max(1, total_samples / num_peaks);
-  const float *data = buffer.getReadPointer(0);
   // Content base (Q13 lock-collapse): peaks cover the COMMITTED content
   // [base, base + duration) — the cut material never renders.
   const int64_t base = content_base_.load();
   const int64_t cap = buffer.getNumSamples();
+  const int chans = buffer.getNumChannels();
 
   // Base-relative reads: the content IS the origin frame; the UI
   // positions it via the clip's origin (x), so no other remapping is
-  // needed anywhere.
+  // needed anywhere. Stereo content draws the per-window max of BOTH
+  // channels (one waveform per lane).
   for (int i = 0; i < num_peaks; ++i) {
     int start = i * window_size;
     int end = std::max(start + 1, std::min(start + window_size, total_samples));
     float peak = 0.0f;
     if (start < total_samples) {
-      for (int s = start; s < end; ++s) {
-        const int64_t idx = base + s;
-        if (idx < cap) peak = std::max(peak, std::abs(data[idx]));
+      for (int c = 0; c < chans; ++c) {
+        const float *data = buffer.getReadPointer(c);
+        for (int s = start; s < end; ++s) {
+          const int64_t idx = base + s;
+          if (idx < cap) peak = std::max(peak, std::abs(data[idx]));
+        }
       }
     }
     peaks.add(peak);

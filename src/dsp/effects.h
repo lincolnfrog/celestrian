@@ -19,11 +19,18 @@ namespace celestrian::dsp {
  * thread beforehand. The dynamic-chain complexity arrives with VST3,
  * which will replace the rack's internals, not its bridge surface.
  *
- * All effects are MONO (the engine records mono; the Mono→Stereo
- * roadmap item upgrades the rack alongside). process() runs on the
- * audio thread: no allocation, no locks. prepare() runs on the MESSAGE
- * thread (allocates the echo line, resets reverb) and MUST be called
- * before the first enable at a given sample rate.
+ * Every effect has a mono path (process — the historical rack surface)
+ * and a stereo path (processStereo, the Mono→Stereo roadmap item):
+ * stereo clips and panned groups carry two channels through the rack.
+ * The two paths share the same atomic parameters but keep SEPARATE DSP
+ * state per channel (biquads, echo lines) — interleaving one mono state
+ * across channels would garble both. The compressor is stereo-LINKED:
+ * one envelope from the channel maximum, the same gain applied to both
+ * (per-channel envelopes would smear the stereo image). process() /
+ * processStereo() run on the audio thread: no allocation, no locks.
+ * prepare() runs on the MESSAGE thread (allocates the echo lines,
+ * resets reverb) and MUST be called before the first enable at a given
+ * sample rate.
  */
 
 /** RBJ biquad (Audio EQ Cookbook), transposed direct form II. */
@@ -54,6 +61,7 @@ class FxEQ {
 
   void prepare(double sampleRate);
   void process(float* x, int n);
+  void processStereo(float* l, float* r, int n);
   void markDirty() { dirty_.store(true); }
 
  private:
@@ -61,6 +69,7 @@ class FxEQ {
   double sr_ = 44100.0;
   std::atomic<bool> dirty_{true};
   Biquad low_, mid_, high_;
+  Biquad low_r_, mid_r_, high_r_;  // right-channel twin state
 };
 
 /** Feed-forward peak compressor: threshold/ratio/attack/release/makeup. */
@@ -77,6 +86,8 @@ class FxCompressor {
 
   void prepare(double sampleRate);
   void process(float* x, int n);
+  /** Stereo-linked: one envelope from max(|l|,|r|), same gain to both. */
+  void processStereo(float* l, float* r, int n);
 
   /** Live gain reduction in dB (≥ 0), for the UI's GR meter. */
   float currentGainReductionDb() const { return gr_db_.load(); }
@@ -95,12 +106,14 @@ class FxEcho {
   std::atomic<float> feedback{0.35f};  // 0..0.9
   std::atomic<float> mix{0.35f};       // 0..1
 
-  void prepare(double sampleRate);  // message thread: allocates 2s line
+  void prepare(double sampleRate);  // message thread: allocates 2s lines
   void process(float* x, int n);
+  void processStereo(float* l, float* r, int n);
 
  private:
   double sr_ = 44100.0;
-  std::vector<float> line_;  // sized in prepare; empty = not ready
+  std::vector<float> line_;    // sized in prepare; empty = not ready
+  std::vector<float> line_r_;  // right-channel twin line
   int write_ = 0;
 };
 
@@ -114,9 +127,11 @@ class FxReverb {
 
   void prepare(double sampleRate);
   void process(float* x, int n);
+  void processStereo(float* l, float* r, int n);
   void markDirty() { dirty_.store(true); }
 
  private:
+  void applyParams();
   std::atomic<bool> dirty_{true};
   juce::Reverb reverb_;
 };
@@ -134,6 +149,9 @@ class EffectRack {
 
   /** Audio thread: in-place, mono. No-op when nothing is enabled. */
   void process(float* x, int n);
+  /** Audio thread: in-place, stereo (separate per-channel DSP state,
+   * linked compressor). The scope captures the L/R mean. */
+  void processStereo(float* l, float* r, int n);
 
   bool anyEnabled() const {
     return eq.enabled.load() || compressor.enabled.load() ||

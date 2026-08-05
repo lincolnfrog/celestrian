@@ -34,7 +34,7 @@ let redoStack = [];
 const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
     'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
-    'setSegments', 'setNodeInput',
+    'setSegments', 'setNodeInput', 'setNodeInputRight',
 ]);
 
 function undoSnapshot() {
@@ -220,6 +220,8 @@ export const handlers = {
     combineNodes: (draggedId, targetId) => combineNodes(draggedId, targetId),
     getInputList: () => getInputList(),
     setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
+    setNodeInputRight: (id, channelIndex) => setNodeInputRight(id, channelIndex),
+    setNodePan: (id, pan) => setNodePan(id, pan),
     setEffectEnabled: (id, fx, enabled) => setEffectEnabled(id, fx, enabled),
     setEffectParam: (id, fx, param, value) => setEffectParam(id, fx, param, value),
     setEffectScope: (id, active) => setEffectScope(id, active),
@@ -327,7 +329,10 @@ function createNode(type, parentId = null) {
         isMuted: false,
         isSoloed: false,
         effectiveQuantum: 0,
-        inputChannel: -1
+        inputChannel: -1,
+        inputChannelR: -1,
+        channels: 1,
+        pan: 0
     };
 
     if (type === 'stack') {
@@ -482,6 +487,21 @@ function setNodeInput(id, channelIndex) {
         node.inputChannel = channelIndex;
         console.log('[MockBackend] Set input:', id, '→ channel', channelIndex);
     }
+}
+
+function setNodeInputRight(id, channelIndex) {
+    const node = findNode(id);
+    if (node) {
+        node.inputChannelR = channelIndex;
+        node.channels = channelIndex >= 0 ? 2 : 1;
+        console.log('[MockBackend] Set right input:', id, '→', channelIndex);
+    }
+}
+
+// Mixer knob — like effect params, NOT undoable (engine parity).
+function setNodePan(id, pan) {
+    const node = findNode(id);
+    if (node) node.pan = Math.max(-1, Math.min(1, pan));
 }
 
 // Built-in effects (engine parity: dsp::EffectRack defaults — the same

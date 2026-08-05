@@ -71,10 +71,25 @@ class ClipNode : public AudioNode {
   juce::var getMetadata() const override;
 
   /**
-   * Assigns the preferred hardware input channel for this clip.
+   * Assigns the preferred hardware input channel for this clip (the
+   * LEFT channel of a stereo pair when a right input is also set).
    */
   void setInputChannel(int index) { preferred_input_channel = index; }
   int getInputChannel() const { return preferred_input_channel; }
+  /**
+   * Assigns the RIGHT hardware input of a stereo pair; −1 (default)
+   * keeps the clip mono. The channel COUNT of a take is fixed at arm
+   * (startRecording sizes the content buffer from this), so flipping it
+   * mid-take does nothing until the next arm.
+   */
+  void setInputChannelRight(int index) {
+    preferred_input_channel_right = index;
+  }
+  int getInputChannelRight() const { return preferred_input_channel_right; }
+  /** Two device inputs assigned → the next take captures stereo. */
+  bool isStereoInput() const { return preferred_input_channel_right >= 0; }
+  /** Channel count of the clip's CONTENT (committed or capturing). */
+  int contentChannels() const { return content_.load()->getNumChannels(); }
   double getSampleRate() const { return sample_rate; }
   /** The take's heard frame (contextCycle) — a recorded fact that must
    * persist (session_io); 0 for the first take. */
@@ -228,10 +243,11 @@ class ClipNode : public AudioNode {
   std::unique_ptr<juce::AudioBuffer<float>> spliceToMap(
       const timing::TimeMap &m) {
     const int64_t period = m.period();
-    auto spliced =
-        std::make_unique<juce::AudioBuffer<float>>(1, (int)period);
-    spliced->clear();
     const auto &src = *content_.load();
+    const int chans = std::max(1, src.getNumChannels());
+    auto spliced =
+        std::make_unique<juce::AudioBuffer<float>>(chans, (int)period);
+    spliced->clear();
     const int64_t base = content_base_.load();
     int64_t w = 0;
     for (int i = 0; i < m.n; ++i) {
@@ -240,7 +256,11 @@ class ClipNode : public AudioNode {
       const int64_t from = base + s;
       const int64_t avail = std::max<int64_t>(
           0, std::min<int64_t>(len, src.getNumSamples() - from));
-      if (avail > 0) spliced->copyFrom(0, (int)w, src, 0, (int)from, (int)avail);
+      if (avail > 0) {
+        for (int c = 0; c < chans; ++c) {
+          spliced->copyFrom(c, (int)w, src, c, (int)from, (int)avail);
+        }
+      }
       w += len;
     }
     origin_samples.store(origin_samples.load() + m.mapOffset(0));
@@ -285,12 +305,14 @@ class ClipNode : public AudioNode {
                      int64_t context_cycle) {
     // Exact-size: a saved take is never truncated to some prior
     // capacity (the old fixed 60 s buffer clipped long takes on load).
+    // Channel count follows the audio (stereo takes reload as stereo).
     auto &buffer = *content_.load();
     const int n = audio.getNumSamples();
-    if (n > 0) buffer.setSize(1, n, false, false, false);
+    const int chans = std::max(1, audio.getNumChannels());
+    if (n > 0) buffer.setSize(chans, n, false, false, false);
     buffer.clear();
-    if (n > 0 && audio.getNumChannels() > 0)
-      buffer.copyFrom(0, 0, audio, 0, 0, n);
+    for (int c = 0; c < chans && n > 0; ++c)
+      buffer.copyFrom(c, 0, audio, c, 0, n);
     write_position.store(n);
     take_context_cycle_.store(context_cycle);
     rec_state_.store((int)RecState::Idle);
@@ -305,12 +327,15 @@ class ClipNode : public AudioNode {
   // Set when the take auto-finished at the reservation bound.
   std::atomic<bool> cap_hit_{false};
 
-  // Mono scratch for the effect rack: playback renders here, the rack
-  // processes in place, then the result sums into the parent. Sized in
-  // the constructor; grows only if the device block exceeds it (rare —
-  // the StackNode::mix_buffer precedent). Audio-thread only. `mutable`:
-  // DSP scratch written by the CONST render phase (§2.3).
+  // Playback scratch for the effect rack: playback renders here, the
+  // rack processes in place, then the result sums into the parent
+  // (panned). fx_scratch_ carries channel 0; fx_scratch2_ carries
+  // channel 1 of stereo content. Sized in the constructor; grow only if
+  // the device block exceeds them (rare — the StackNode::mix_buffer
+  // precedent). Audio-thread only. `mutable`: DSP scratch written by
+  // the CONST render phase (§2.3).
   mutable std::vector<float> fx_scratch_;
+  mutable std::vector<float> fx_scratch2_;
 
   // §2.3 phase split: set when commitRecording fires, cleared at the
   // top of the next control pass. render() gates on it so the commit
@@ -339,6 +364,10 @@ class ClipNode : public AudioNode {
   // at beginCapture — a persistent underrun otherwise posts every block
   // and overwhelms the drain FIFO (the field-hang log storm).
   bool underrun_logged_ = false;
+  // Channel count of the CURRENT take, fixed at arm (startRecording
+  // sizes the buffer and stores this before the state flips to Armed —
+  // the seq-cst state store publishes it to the audio thread).
+  int capture_channels_ = 1;
 
   /** Armed-state evaluation (audio thread, once per block). */
   void armEvaluate(const ProcessContext &context);
@@ -346,10 +375,11 @@ class ClipNode : public AudioNode {
   void beginCapture(const ProcessContext &context, int64_t target,
                     int64_t compensated_pos);
   /** Write `n` captured samples whose heard-elapsed index starts at
-   * `heard_pos` — plain takes write linearly; through-map takes fold
-   * destinations through the frozen map (bounded seam runs). */
-  void captureWrite(juce::AudioBuffer<float> &buffer, int64_t heard_pos,
-                    const float *src, int n);
+   * `heard_pos` into content channel `dest_ch` — plain takes write
+   * linearly; through-map takes fold destinations through the frozen
+   * map (bounded seam runs). */
+  void captureWrite(juce::AudioBuffer<float> &buffer, int dest_ch,
+                    int64_t heard_pos, const float *src, int n);
 
   // --- Through-map take state (time_maps.md phase 2) ---
   // The commit cycle C, set at arm on the message thread (atomic: the
@@ -382,6 +412,10 @@ class ClipNode : public AudioNode {
   std::atomic<float> current_max_peak{0.0f};
 
   int preferred_input_channel = 0;
+  // Right input of a stereo pair; −1 = mono clip (the default). Like
+  // preferred_input_channel this is a message-thread wiring fact the
+  // audio thread only reads.
+  int preferred_input_channel_right = -1;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ClipNode)
 };

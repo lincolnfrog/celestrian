@@ -50,7 +50,8 @@ struct Edit {
                  // by NORMALIZATION: n≥2 installs an immutable override,
                  // n==1 writes the single-window atomics, n==0 clears
                  // both. The inverse captures the RAW old storage.
-    Input,       // d1 = channel index
+    Input,       // d1 = channel index (left / mono)
+    InputR,      // d1 = right channel index of a stereo pair (−1 = mono)
     Position,    // d1 = x, d2 = y
     CollapseTake,  // Q13 lock-collapse: the clip's window BECOMES the
                    // take (duration = window len, origin += start,

@@ -247,7 +247,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     min-height: 64px;
 }
 .rail-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.rail-foot { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rail-foot { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .rail-foot .rail-sub {
     flex: 1;
     min-width: 0;
@@ -352,6 +352,34 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 .rail-btn.on { color: var(--ground); background: var(--tape); border-color: var(--tape); }
+
+/* Pan dial: a small rotary whose tick sweeps ±90° — hard left points
+   at L, hard right at R. Amber when off-center so a panned lane is
+   glanceable at rest. */
+.pan-dial {
+    width: 22px; height: 22px;
+    flex: none;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    position: relative;
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+}
+.pan-dial .pan-tick {
+    position: absolute;
+    left: 50%; bottom: 50%;
+    width: 2px; height: 8px;
+    border-radius: 1px;
+    background: var(--text-dim);
+    transform: translateX(-50%);
+    transform-origin: 50% 100%;
+    pointer-events: none;
+}
+.pan-dial:hover { border-color: var(--tape); }
+.pan-dial.off-center { border-color: var(--tape); }
+.pan-dial.off-center .pan-tick { background: var(--tape); }
 /* Arm: a small RING (state), never a big red dot (verb). Hierarchy —
    the transport record is the only record button on screen; these fill
    red when armed so "what will record" is glanceable. */
@@ -385,11 +413,14 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .rail-btn.delete-btn:hover { opacity: 1; color: #fff; background: var(--rec); border-radius: 6px; }
 .rail-btn.delete-btn:disabled { opacity: 0.12; background: none; color: var(--text-dim); }
 
-/* Input picker: chip reads at rest ("in 2"); menu opens below the rail */
+/* Input picker: chip reads at rest ("in 2", "in 3/4" for a stereo
+   pair); menu opens below the rail. Tighter padding than the fx chip:
+   the foot row runs at the rail's full width, and the stereo label is
+   the widest thing on it. */
 .rail-btn.input-btn {
     width: auto;
-    min-width: 40px;
-    padding: 0 8px;
+    min-width: 34px;
+    padding: 0 5px;
     font-size: 0.65rem;
     font-weight: 600;
     letter-spacing: 0.02em;
@@ -721,8 +752,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* ===== Effects panel (fx rail chip + expandable rack row) ===== */
 .rail-btn.fx-btn {
     width: auto;
-    min-width: 34px;
-    padding: 0 8px;
+    min-width: 30px;
+    padding: 0 6px;
     font-size: 0.65rem;
     font-weight: 600;
 }

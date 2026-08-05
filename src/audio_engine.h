@@ -174,9 +174,21 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   juce::var getInputList() const;
 
   /**
-   * Sets the input channel index for a specific node.
+   * Sets the input channel index for a specific node (left / mono).
    */
   void setNodeInput(const juce::String &uuid, int channel_index);
+
+  /**
+   * Sets the RIGHT input of a stereo pair (−1 reverts the clip to
+   * mono). The channel count of a take is fixed at arm.
+   */
+  void setNodeInputRight(const juce::String &uuid, int channel_index);
+
+  /**
+   * Sets a node's stereo pan/balance, −1 (hard left) .. +1 (hard
+   * right). Non-undoable (mixer knob — the effect-param ruling).
+   */
+  void setNodePan(const juce::String &uuid, double pan);
 
   // Built-in effects (dsp/effects.h): enable/param edits from the UI.
   // Message thread; prepare() runs before the enable flag flips so the

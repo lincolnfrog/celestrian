@@ -14,7 +14,7 @@ constexpr int kMaxExpectedBlockSize = 8192;
 
 StackNode::StackNode(juce::String node_name) : AudioNode(std::move(node_name)) {
   mix_buffer.setSize(kMaxExpectedChannels, kMaxExpectedBlockSize);
-  fx_accum_.setSize(1, kMaxExpectedBlockSize);
+  fx_accum_.setSize(kMaxExpectedChannels, kMaxExpectedBlockSize);
 }
 
 StackNode::~StackNode() = default;
@@ -404,16 +404,20 @@ void StackNode::renderChildren(float *const *output_channels,
                 : children[(size_t)k].get();
   };
 
-  // With the effect rack ON, children sum into the mono fx accumulator
-  // first — the rack shapes the GROUP's summed signal (a stack reverb
-  // wets the whole kit), then the result adds to the parent. Children
-  // render identical mono to every channel, so folding channel 0 is
-  // lossless (the rack goes stereo with the Mono→Stereo roadmap item).
+  // With the effect rack ON (or the group panned off-center), children
+  // sum into the fx accumulator first — the rack shapes the GROUP's
+  // summed signal (a stack reverb wets the whole kit), and the pan
+  // gains scale the group as one. The accumulator is STEREO: children
+  // may render panned/stereo signals, so folding channel 0 alone would
+  // collapse their image (the pre-stereo rack's documented limitation).
+  const float group_pan = pan.load();
   const bool use_fx = fx_.isLive();
-  if (use_fx) {
+  const bool use_accum = use_fx || group_pan != 0.0f;
+  const int accum_ch = std::min(2, std::max(1, num_output_channels));
+  if (use_accum) {
     if (fx_accum_.getNumSamples() < context.num_samples ||
-        fx_accum_.getNumChannels() < 1) {
-      fx_accum_.setSize(1, context.num_samples, false, true, true);
+        fx_accum_.getNumChannels() < accum_ch) {
+      fx_accum_.setSize(accum_ch, context.num_samples, false, true, true);
     }
     fx_accum_.clear();
   }
@@ -428,9 +432,11 @@ void StackNode::renderChildren(float *const *output_channels,
     child->render(mix_buffer.getArrayOfWritePointers(), num_output_channels,
                   child_context);
 
-    if (use_fx) {
-      fx_accum_.addFrom(0, 0, mix_buffer.getReadPointer(0),
-                        context.num_samples);
+    if (use_accum) {
+      for (int ch = 0; ch < accum_ch; ++ch) {
+        fx_accum_.addFrom(ch, 0, mix_buffer.getReadPointer(ch),
+                          context.num_samples);
+      }
       continue;
     }
 
@@ -444,13 +450,34 @@ void StackNode::renderChildren(float *const *output_channels,
     }
   }
 
-  if (use_fx) {
-    fx_.process(fx_accum_.getWritePointer(0), context.num_samples);
+  if (use_accum) {
+    if (use_fx) {
+      if (accum_ch >= 2) {
+        fx_.processStereo(fx_accum_.getWritePointer(0),
+                          fx_accum_.getWritePointer(1), context.num_samples);
+      } else {
+        fx_.process(fx_accum_.getWritePointer(0), context.num_samples);
+      }
+    }
+    // Group pan (balance law): channel 0 is L, channel 1 is R; any
+    // channels past the stereo pair get the unpanned channel-0 signal
+    // (the historical duplicate-mono behavior).
+    float gl = 1.0f, gr = 1.0f;
+    panGains(group_pan, gl, gr);
     for (int ch = 0; ch < num_output_channels; ++ch) {
-      if (output_channels[ch] != nullptr) {
+      if (output_channels[ch] == nullptr) continue;
+      const int src = std::min(ch, accum_ch - 1);
+      const float g =
+          num_output_channels >= 2 && ch < 2 ? (ch == 0 ? gl : gr) : 1.0f;
+      if (g <= 0.0f) continue;
+      if (g == 1.0f) {
         juce::FloatVectorOperations::add(output_channels[ch],
-                                         fx_accum_.getReadPointer(0),
+                                         fx_accum_.getReadPointer(src),
                                          context.num_samples);
+      } else {
+        juce::FloatVectorOperations::addWithMultiply(
+            output_channels[ch], fx_accum_.getReadPointer(src), g,
+            context.num_samples);
       }
     }
   }

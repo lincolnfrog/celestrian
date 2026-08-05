@@ -121,6 +121,7 @@ target_sources(CelestrianTests PRIVATE
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
     tests/effects_tests.cc
+    tests/stereo_pan_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc

@@ -198,9 +198,11 @@ function buildLane(lane) {
     // moves inside. Nested groups fall out (drop onto a track that
     // lives in a group combines in place).
     rail.draggable = true;
-    // Click = select (buttons and inputs keep their own verbs).
+    // Click = select (buttons, inputs, and the pan dial keep their own
+    // verbs — a dial drag ends in a click on the rail, which would
+    // otherwise select the lane on every pan tweak).
     rail.addEventListener('click', e => {
-        if (e.target.closest('button, input')) return;
+        if (e.target.closest('button, input, .pan-dial')) return;
         toggleSelect(row, e.metaKey || e.ctrlKey || e.shiftKey);
     });
     rail.addEventListener('dragstart', e => {
@@ -281,6 +283,12 @@ function buildLane(lane) {
     del.textContent = '✕';
     del.title = 'Delete (⌘Z to undo)';
     del.addEventListener('click', () => cb.onDelete && cb.onDelete(lane.id));
+    // Pan dial — every lane, in the HEAD row (the flexing name yields
+    // the room; the foot's button row is already at the rail's width).
+    // Fractal like fx: a group's pan scales the summed group. The
+    // engine value streams while dragging; `_hot` keeps the 50ms tick
+    // from fighting the gesture (the fx-slider lesson).
+    head.appendChild(buildPanDial(row));
     head.appendChild(del);
     rail.appendChild(head);
 
@@ -352,6 +360,67 @@ function buildLane(lane) {
     return row;
 }
 
+/* ---------- pan dial ----------
+ *
+ * A small rotary: the tick sweeps −90° (hard left, pointing at the L
+ * channel) .. +90° (hard right). The full quarter-turn each way is the
+ * point — a 45° stop reads as "half way" when the signal is already
+ * fully panned. Horizontal drag edits (right = right, matching the axis
+ * the control represents: 150px for the full sweep); double-click
+ * recenters. Engine semantics are the balance law — center is unity,
+ * panning attenuates the far channel only.
+ */
+function buildPanDial(row) {
+    const dial = document.createElement('div');
+    dial.className = 'pan-dial';
+    dial.title = 'Pan (drag; double-click to center)';
+    // The rail is an HTML5 drag source (lane reorder) and children
+    // inherit that; a HORIZONTAL dial drag looks exactly like the start
+    // of a rail drag, so opt this element out explicitly rather than
+    // relying on the pointerdown preventDefault alone.
+    dial.draggable = false;
+    const tick = document.createElement('div');
+    tick.className = 'pan-tick';
+    dial.appendChild(tick);
+    dial._tick = tick;
+
+    const send = v => {
+        const lane = row._lane;
+        if (lane) cb.onSetPan(lane.id, v);
+    };
+    dial.addEventListener('pointerdown', ev => {
+        ev.preventDefault();
+        try { dial.setPointerCapture(ev.pointerId); } catch (_) {}
+        dial._hot = true;
+        dial._startX = ev.clientX;
+        dial._startPan = (row._lane && row._lane.pan) || 0;
+    });
+    dial.addEventListener('pointermove', ev => {
+        if (!dial._hot) return;
+        const v = Math.max(-1, Math.min(1,
+            dial._startPan + (ev.clientX - dial._startX) / 75));
+        setPanDial(dial, v);
+        send(v);
+    });
+    const end = () => { dial._hot = false; };
+    dial.addEventListener('pointerup', end);
+    dial.addEventListener('pointercancel', end);
+    dial.addEventListener('dblclick', () => {
+        setPanDial(dial, 0);
+        send(0);
+    });
+    return dial;
+}
+
+function setPanDial(dial, pan) {
+    dial._tick.style.transform =
+        `translateX(-50%) rotate(${(pan * 90).toFixed(1)}deg)`;
+    dial.classList.toggle('off-center', Math.abs(pan) > 0.01);
+    const pc = Math.round(Math.abs(pan) * 100);
+    dial.title = pan === 0 ? 'Pan: center (drag; double-click to center)'
+        : `Pan: ${pc}% ${pan < 0 ? 'left' : 'right'}`;
+}
+
 /* ---------- input picker ----------
  *
  * The chip shows the channel at rest (glanceability first — Tape Room
@@ -389,6 +458,14 @@ async function toggleInputMenu(row) {
         menu.appendChild(none);
         return;
     }
+    // Two columns: the INPUT (left/mono) list, and the RIGHT list that
+    // makes the track a stereo pair (docs: stereo overheads). "mono"
+    // clears the right assignment; the channel count of a take is fixed
+    // at arm, so mid-take flips take effect on the next arm.
+    const head = document.createElement('div');
+    head.className = 'input-menu-note';
+    head.textContent = lane.inputChannelR >= 0 ? 'input · L' : 'input';
+    menu.appendChild(head);
     inputs.forEach((name, i) => {
         const item = document.createElement('button');
         item.className = 'input-item' + (i === lane.inputChannel ? ' current' : '');
@@ -396,6 +473,29 @@ async function toggleInputMenu(row) {
         item.addEventListener('click', () => {
             closeInputMenus();
             cb.onSetInput(lane.id, i);
+        });
+        menu.appendChild(item);
+    });
+    const rHead = document.createElement('div');
+    rHead.className = 'input-menu-note';
+    rHead.textContent = 'right (stereo pair)';
+    menu.appendChild(rHead);
+    const monoItem = document.createElement('button');
+    monoItem.className = 'input-item' + (lane.inputChannelR < 0 ? ' current' : '');
+    monoItem.textContent = '· mono';
+    monoItem.addEventListener('click', () => {
+        closeInputMenus();
+        cb.onSetInputRight(lane.id, -1);
+    });
+    menu.appendChild(monoItem);
+    inputs.forEach((name, i) => {
+        const item = document.createElement('button');
+        item.className = 'input-item' +
+            (i === lane.inputChannelR ? ' current' : '');
+        item.textContent = `${i + 1} · ${name}`;
+        item.addEventListener('click', () => {
+            closeInputMenus();
+            cb.onSetInputRight(lane.id, i);
         });
         menu.appendChild(item);
     });
@@ -2227,12 +2327,25 @@ function patchRail(row, lane, vm) {
 
     const input = row.querySelector('.input-btn');
     if (input) {
-        // −1 = device default (no explicit assignment yet)
-        setText(input, lane.inputChannel >= 0 ? 'in ' + (lane.inputChannel + 1) : 'in ·');
+        // −1 = device default (no explicit assignment yet). A stereo
+        // pair shows both channels, compact ("3/4" — the rail foot runs
+        // at the rail's full width, no room for a prefix).
+        const stereo = lane.inputChannelR >= 0;
+        setText(input, stereo
+            ? ((lane.inputChannel >= 0 ? lane.inputChannel : 0) + 1) +
+              '/' + (lane.inputChannelR + 1)
+            : lane.inputChannel >= 0 ? 'in ' + (lane.inputChannel + 1) : 'in ·');
+        input.title = stereo
+            ? 'Recording inputs (stereo pair) — click to choose'
+            : 'Recording input — click to choose';
         // The take is being written from its input NOW — switching
         // mid-take is not a thing (the engine reads the channel per block)
         if (input.disabled !== !!lane.recording) input.disabled = !!lane.recording;
     }
+
+    // Pan dial: reflect the engine value unless the user is mid-drag.
+    const dial = row.querySelector('.pan-dial');
+    if (dial && !dial._hot) setPanDial(dial, lane.pan || 0);
 }
 
 /* ---------- playhead animator (idle/playing only) ----------

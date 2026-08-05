@@ -57,6 +57,9 @@ void FxEQ::prepare(double sampleRate) {
   low_.reset();
   mid_.reset();
   high_.reset();
+  low_r_.reset();
+  mid_r_.reset();
+  high_r_.reset();
   dirty_.store(true);
 }
 
@@ -64,12 +67,24 @@ void FxEQ::updateCoeffs() {
   low_.setLowShelf(sr_, 120.0, low_db.load());
   mid_.setPeaking(sr_, 1000.0, 0.7, mid_db.load());
   high_.setHighShelf(sr_, 6000.0, high_db.load());
+  low_r_.setLowShelf(sr_, 120.0, low_db.load());
+  mid_r_.setPeaking(sr_, 1000.0, 0.7, mid_db.load());
+  high_r_.setHighShelf(sr_, 6000.0, high_db.load());
 }
 
 void FxEQ::process(float* x, int n) {
   if (dirty_.exchange(false)) updateCoeffs();  // cheap, allocation-free
   for (int i = 0; i < n; ++i) {
     x[i] = high_.processSample(mid_.processSample(low_.processSample(x[i])));
+  }
+}
+
+void FxEQ::processStereo(float* l, float* r, int n) {
+  if (dirty_.exchange(false)) updateCoeffs();
+  for (int i = 0; i < n; ++i) {
+    l[i] = high_.processSample(mid_.processSample(low_.processSample(l[i])));
+    r[i] = high_r_.processSample(
+        mid_r_.processSample(low_r_.processSample(r[i])));
   }
 }
 
@@ -109,12 +124,45 @@ void FxCompressor::process(float* x, int n) {
   gr_db_.store(min_gain < 1.0f ? -20.0f * std::log10(min_gain) : 0.0f);
 }
 
+void FxCompressor::processStereo(float* l, float* r, int n) {
+  const float thr = threshold_db.load();
+  const float rat = juce::jmax(1.0f, ratio.load());
+  const float atk =
+      std::exp(-1.0f / (juce::jmax(0.1f, attack_ms.load()) * 0.001f * (float)sr_));
+  const float rel =
+      std::exp(-1.0f / (juce::jmax(1.0f, release_ms.load()) * 0.001f * (float)sr_));
+  const float makeup = std::pow(10.0f, makeup_db.load() / 20.0f);
+
+  float min_gain = 1.0f;
+  for (int i = 0; i < n; ++i) {
+    // Stereo-linked: one envelope from the louder channel, one gain to
+    // both — per-channel envelopes would pull the image toward the
+    // quieter side on every transient.
+    const float a = juce::jmax(std::abs(l[i]), std::abs(r[i]));
+    env_ = a > env_ ? atk * env_ + (1.0f - atk) * a
+                    : rel * env_ + (1.0f - rel) * a;
+    float gain = 1.0f;
+    if (env_ > 1.0e-6f) {
+      const float envDb = 20.0f * std::log10(env_);
+      if (envDb > thr) {
+        const float outDb = thr + (envDb - thr) / rat;
+        gain = std::pow(10.0f, (outDb - envDb) / 20.0f);
+      }
+    }
+    if (gain < min_gain) min_gain = gain;
+    l[i] *= gain * makeup;
+    r[i] *= gain * makeup;
+  }
+  gr_db_.store(min_gain < 1.0f ? -20.0f * std::log10(min_gain) : 0.0f);
+}
+
 // ===== Echo =====
 
 void FxEcho::prepare(double sampleRate) {
   sr_ = sampleRate;
   const int len = (int)(2.0 * sampleRate) + 64;  // max time_s = 2.0
   line_.assign((size_t)len, 0.0f);               // message thread only
+  line_r_.assign((size_t)len, 0.0f);
   write_ = 0;
 }
 
@@ -136,6 +184,27 @@ void FxEcho::process(float* x, int n) {
   }
 }
 
+void FxEcho::processStereo(float* l, float* r, int n) {
+  const int len = (int)line_.size();
+  if (len == 0 || (int)line_r_.size() != len) return;
+  const int delay =
+      juce::jlimit(1, len - 1, (int)(time_s.load() * (float)sr_));
+  const float fb = juce::jlimit(0.0f, 0.9f, feedback.load());
+  const float wet = juce::jlimit(0.0f, 1.0f, mix.load());
+
+  for (int i = 0; i < n; ++i) {
+    int read = write_ - delay;
+    if (read < 0) read += len;
+    const float dl = line_[(size_t)read];
+    const float dr = line_r_[(size_t)read];
+    line_[(size_t)write_] = l[i] + dl * fb;
+    line_r_[(size_t)write_] = r[i] + dr * fb;
+    l[i] += dl * wet;
+    r[i] += dr * wet;
+    if (++write_ >= len) write_ = 0;
+  }
+}
+
 // ===== Reverb =====
 
 void FxReverb::prepare(double sampleRate) {
@@ -144,17 +213,24 @@ void FxReverb::prepare(double sampleRate) {
   dirty_.store(true);
 }
 
+void FxReverb::applyParams() {
+  juce::Reverb::Parameters p;
+  p.roomSize = juce::jlimit(0.0f, 1.0f, size.load());
+  p.damping = juce::jlimit(0.0f, 1.0f, damp.load());
+  p.wetLevel = juce::jlimit(0.0f, 1.0f, mix.load());
+  p.dryLevel = 1.0f;
+  p.width = 1.0f;
+  reverb_.setParameters(p);
+}
+
 void FxReverb::process(float* x, int n) {
-  if (dirty_.exchange(false)) {
-    juce::Reverb::Parameters p;
-    p.roomSize = juce::jlimit(0.0f, 1.0f, size.load());
-    p.damping = juce::jlimit(0.0f, 1.0f, damp.load());
-    p.wetLevel = juce::jlimit(0.0f, 1.0f, mix.load());
-    p.dryLevel = 1.0f;
-    p.width = 1.0f;
-    reverb_.setParameters(p);
-  }
+  if (dirty_.exchange(false)) applyParams();
   reverb_.processMono(x, n);
+}
+
+void FxReverb::processStereo(float* l, float* r, int n) {
+  if (dirty_.exchange(false)) applyParams();
+  reverb_.processStereo(l, r, n);
 }
 
 // ===== Rack =====
@@ -192,6 +268,29 @@ void EffectRack::process(float* x, int n) {
   if (compressor.enabled.load()) compressor.process(x, n);
   if (echo.enabled.load()) echo.process(x, n);
   if (reverb.enabled.load()) reverb.process(x, n);
+}
+
+void EffectRack::processStereo(float* l, float* r, int n) {
+  // Scope capture: the L/R mean — the spectrum/peak displays are mono
+  // by design and the mean is what a listener centers on.
+  if (scope_on_.load() && !scope_.empty()) {
+    float pk = 0.0f;
+    int w = scope_write_.load();
+    for (int i = 0; i < n; ++i) {
+      const float m = 0.5f * (l[i] + r[i]);
+      scope_[(size_t)w] = m;
+      w = (w + 1) & (kScopeSize - 1);
+      const float a = std::abs(m);
+      if (a > pk) pk = a;
+    }
+    scope_write_.store(w);
+    in_peak_.store(pk);
+  }
+
+  if (eq.enabled.load()) eq.processStereo(l, r, n);
+  if (compressor.enabled.load()) compressor.processStereo(l, r, n);
+  if (echo.enabled.load()) echo.processStereo(l, r, n);
+  if (reverb.enabled.load()) reverb.processStereo(l, r, n);
 }
 
 bool EffectRack::setEnabled(const juce::String& fx, bool on) {

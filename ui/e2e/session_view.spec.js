@@ -515,15 +515,44 @@ test.describe('Input picker (phase 3)', () => {
 
         await chip.click();
         const menu = page.locator('.input-menu');
-        await expect(menu.locator('.input-item')).toHaveCount(2); // mock device
-        await expect(menu.locator('.input-item.current')).toHaveText(/Built-in Microphone/);
+        // Two mock channels in the LEFT list + "· mono" + two in the
+        // RIGHT (stereo pair) list.
+        await expect(menu.locator('.input-item')).toHaveCount(5);
+        await expect(menu.locator('.input-item.current').first())
+            .toHaveText(/Built-in Microphone/);
 
-        await menu.locator('.input-item', { hasText: 'External Audio' }).click();
+        await menu.locator('.input-item', { hasText: 'External Audio' })
+            .first().click();
         await expect(menu).toHaveCount(0); // picking closes the menu
         await expect(chip).toHaveText('in 2', { timeout: 3000 });
         const ch = await page.evaluate(() =>
             window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].inputChannel);
         expect(ch).toBe(1);
+    });
+
+    test('stereo pair: picking a right input round-trips setNodeInputRight', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const firstClip = page.locator('.lane[data-kind="clip"]').first();
+        const chip = firstClip.locator('.input-btn');
+
+        await chip.click();
+        const menu = page.locator('.input-menu');
+        // The RIGHT list is everything after "· mono": pick channel 1.
+        await menu.locator('.input-item', { hasText: 'Built-in Microphone' })
+            .nth(1).click();
+        await expect(menu).toHaveCount(0);
+        await expect(chip).toHaveText('1/1', { timeout: 3000 }); // L=ch1, R=ch1
+        const node = await page.evaluate(() =>
+            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0]);
+        expect(node.inputChannelR).toBe(0);
+
+        // "· mono" clears the pair
+        await chip.click();
+        await page.locator('.input-menu .input-item', { hasText: 'mono' }).click();
+        await expect(chip).toHaveText('in 1', { timeout: 3000 });
+        const r = await page.evaluate(() =>
+            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].inputChannelR);
+        expect(r).toBe(-1);
     });
 
     test('menu dismisses on Escape and outside press, changing nothing', async ({ page }) => {

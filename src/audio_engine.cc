@@ -49,11 +49,15 @@ void AudioEngine::compactIdleTakes() {
                (int64_t)clip.getSampleRate()});
           // Compact only when the win is real (≥ ~4 MB of samples).
           if (clip.contentCapacity() - keep < (int64_t{1} << 20)) continue;
+          const int chans =
+              std::max(1, clip.getAudioBuffer().getNumChannels());
           auto fresh =
-              std::make_unique<juce::AudioBuffer<float>>(1, (int)keep);
-          fresh->copyFrom(0, 0, clip.getAudioBuffer(), 0, 0,
-                          (int)std::min<int64_t>(
-                              keep, clip.getAudioBuffer().getNumSamples()));
+              std::make_unique<juce::AudioBuffer<float>>(chans, (int)keep);
+          for (int c = 0; c < chans; ++c) {
+            fresh->copyFrom(c, 0, clip.getAudioBuffer(), c, 0,
+                            (int)std::min<int64_t>(
+                                keep, clip.getAudioBuffer().getNumSamples()));
+          }
           juce::AudioBuffer<float> *old = clip.swapContent(std::move(fresh));
           retire([old] { delete old; });
         }
@@ -619,6 +623,15 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       clip->setInputChannel((int)e.d1);
       return inv;
     }
+    case K::InputR: {
+      auto *clip = dynamic_cast<celestrian::ClipNode *>(find(e.uuid));
+      if (!clip) return {};
+      Edit inv(K::InputR);
+      inv.uuid = e.uuid;
+      inv.d1 = (double)clip->getInputChannelRight();
+      clip->setInputChannelRight((int)e.d1);
+      return inv;
+    }
     case K::Position: {
       auto *node = find(e.uuid);
       if (!node) return {};
@@ -1055,6 +1068,22 @@ void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
   e.uuid = uuid;
   e.d1 = (double)channel_index;
   record(std::move(e));
+}
+
+void AudioEngine::setNodeInputRight(const juce::String &uuid,
+                                    int channel_index) {
+  celestrian::Edit e(celestrian::Edit::Kind::InputR);
+  e.uuid = uuid;
+  e.d1 = (double)channel_index;
+  record(std::move(e));
+}
+
+void AudioEngine::setNodePan(const juce::String &uuid, double pan) {
+  // A mixer knob, not an edit event: non-undoable by the same ruling as
+  // effect params (dial drags would flood the undo log).
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    node->pan.store((float)juce::jlimit(-1.0, 1.0, pan));
+  }
 }
 
 void AudioEngine::setEffectEnabled(const juce::String &uuid,

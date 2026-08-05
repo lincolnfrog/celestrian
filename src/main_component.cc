@@ -306,6 +306,28 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "setNodeInputRight",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 1) {
+                      audio_engine.setNodeInputRight(args[0].toString(),
+                                                     (int)args[1]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
+                  "setNodePan",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 1) {
+                      audio_engine.setNodePan(args[0].toString(),
+                                              (double)args[1]);
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "setEffectEnabled",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

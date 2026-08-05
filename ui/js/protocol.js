@@ -79,6 +79,14 @@ export const BRIDGE_METHODS = [
     // Hardware
     { name: 'getInputList', params: [], returns: '{ inputs: string[] }' },
     { name: 'setNodeInput', params: ['uuid', 'channelIndex'] },
+    // Right input of a stereo pair (−1 = mono). Channel count of a take
+    // is fixed at arm; committed takes keep their recorded channels.
+    { name: 'setNodeInputRight', params: ['uuid', 'channelIndex'] },
+
+    // Mixer: pan/balance −1 (L) .. +1 (R). Balance law (center unity),
+    // applied at render on clips and groups; NOT undoable (mixer knob —
+    // the effect-param ruling). State publishes as `pan` per node.
+    { name: 'setNodePan', params: ['uuid', 'pan'] },
 
     // Built-in effects (src/dsp/effects.h): a FIXED per-node rack in
     // canonical order eq → compressor → echo → reverb. State publishes

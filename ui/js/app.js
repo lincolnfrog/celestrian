@@ -523,6 +523,17 @@ export function initApp() {
             await callNative('setNodeInput', id, channelIndex);
             setLogLine(`Input set to channel ${channelIndex + 1}`);
         },
+        // Right input of a stereo pair; −1 reverts the clip to mono.
+        // The channel count of a take is fixed at arm (engine rule).
+        onSetInputRight: async (id, channelIndex) => {
+            await callNative('setNodeInputRight', id, channelIndex);
+            setLogLine(channelIndex >= 0
+                ? `Stereo pair: right = channel ${channelIndex + 1}`
+                : 'Track set to mono');
+        },
+        // Pan/balance dial, −1..+1. Streams while dragging (cheap atomic
+        // store engine-side; not undoable — the effect-param ruling).
+        onSetPan: (id, pan) => callNative('setNodePan', id, pan),
         // Built-in effects: panel-open is pure view state; enable and
         // params go straight to the engine's fixed rack
         onToggleFx: id => {

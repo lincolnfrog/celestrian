@@ -110,6 +110,18 @@ struct ProcessContext {
 enum class NodeType { Clip, Stack, Unknown };
 
 /**
+ * Pan gains, BALANCE law: center is unity on both channels (existing
+ * sessions keep their exact loudness), panning attenuates the far
+ * channel only — no boost anywhere, so a full-scale take hard-panned
+ * cannot clip the device. pan ∈ [−1 (L) .. +1 (R)].
+ */
+inline void panGains(float pan, float &gain_l, float &gain_r) {
+  const float p = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
+  gain_l = p > 0.0f ? 1.0f - p : 1.0f;
+  gain_r = p < 0.0f ? 1.0f + p : 1.0f;
+}
+
+/**
  * Interface for all audio-producing or processing nodes in the Celestrian
  * graph.
  */
@@ -205,6 +217,7 @@ class AudioNode {
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
     obj->setProperty("isMuted", (bool)is_muted.load());
+    obj->setProperty("pan", (double)pan.load());
     // launchPoint is a PROJECTION of origin (kernel.md §2 table):
     // derived at read time, never stored. anchorPhase was deleted
     // outright (no consumer; the UI derives lane position from origin).
@@ -475,6 +488,11 @@ class AudioNode {
   // state (§2.3 sanctioned exception).
   mutable dsp::EffectRack fx_;
   std::atomic<bool> is_muted{false};
+  // Stereo mix position (balance law — see panGains). A MIXER fact like
+  // mute, not a musical fact: read by render, edited on the message
+  // thread, deliberately not undoable (dial drags would flood the undo
+  // log; same ruling as effect params).
+  std::atomic<float> pan{0.0f};
   std::atomic<bool> is_expanded{
       true};  // UI state: expanded (true) or collapsed (false)
   std::atomic<float> last_block_peak{0.0f};
