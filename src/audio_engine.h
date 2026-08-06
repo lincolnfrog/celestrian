@@ -190,6 +190,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void setNodePan(const juce::String &uuid, double pan);
 
+  /**
+   * Sets a node's volume fader, 0 (silent) .. 1 (unity — the default;
+   * attenuate-only per the pan no-boost law). Applied at the node's
+   * output stage after fx. Non-undoable (mixer knob).
+   */
+  void setNodeGain(const juce::String &uuid, double gain);
+
   // Built-in effects (dsp/effects.h): enable/param edits from the UI.
   // Message thread; prepare() runs before the enable flag flips so the
   // audio thread never sees an unprepared effect.

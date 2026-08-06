@@ -222,6 +222,7 @@ export const handlers = {
     setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
     setNodeInputRight: (id, channelIndex) => setNodeInputRight(id, channelIndex),
     setNodePan: (id, pan) => setNodePan(id, pan),
+    setNodeGain: (id, gain) => setNodeGain(id, gain),
     getAudioDeviceState: () => getAudioDeviceState(),
     setAudioDevice: (type, device, sampleRate, bufferSize) =>
         setAudioDevice(type, device, sampleRate, bufferSize),
@@ -335,7 +336,8 @@ function createNode(type, parentId = null) {
         inputChannel: -1,
         inputChannelR: -1,
         channels: 1,
-        pan: 0
+        pan: 0,
+        gain: 1
     };
 
     if (type === 'stack') {
@@ -579,6 +581,13 @@ function setNodeInputRight(id, channelIndex) {
 function setNodePan(id, pan) {
     const node = findNode(id);
     if (node) node.pan = Math.max(-1, Math.min(1, pan));
+}
+
+// Volume fader, clamped [0, 1] — unity ceiling, the no-boost law
+// (engine parity: AudioEngine::setNodeGain).
+function setNodeGain(id, gain) {
+    const node = findNode(id);
+    if (node) node.gain = Math.max(0, Math.min(1, gain));
 }
 
 // Built-in effects (engine parity: dsp::EffectRack defaults — the same

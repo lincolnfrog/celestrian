@@ -122,6 +122,23 @@ inline void panGains(float pan, float &gain_l, float &gain_r) {
 }
 
 /**
+ * THE OUTPUT STAGE scalars (unification_audit.md §2.4): every node's
+ * signal reaches its parent through one resolution — render/sum →
+ * time-map → fx → gain·pan → parent. `gl`/`gr` are that stage's
+ * channel gains: the balance-law pan gains scaled by the fader, and 0
+ * when muted — mute IS gain 0 at the output stage, not a separate
+ * audibility mechanism (fixes D1: containers silence like leaves).
+ * `fader` is the mono/extra-channel scalar (pan does not apply there).
+ */
+inline void outputStageGains(float pan, float gain, bool muted, float &gl,
+                             float &gr, float &fader) {
+  panGains(pan, gl, gr);
+  fader = muted ? 0.0f : gain;
+  gl *= fader;
+  gr *= fader;
+}
+
+/**
  * Interface for all audio-producing or processing nodes in the Celestrian
  * graph.
  */
@@ -218,6 +235,7 @@ class AudioNode {
     obj->setProperty("isRecording", (bool)isRecording());
     obj->setProperty("isMuted", (bool)is_muted.load());
     obj->setProperty("pan", (double)pan.load());
+    obj->setProperty("gain", (double)gain.load());
     // launchPoint is a PROJECTION of origin (kernel.md §2 table):
     // derived at read time, never stored. anchorPhase was deleted
     // outright (no consumer; the UI derives lane position from origin).
@@ -493,6 +511,12 @@ class AudioNode {
   // thread, deliberately not undoable (dial drags would flood the undo
   // log; same ruling as effect params).
   std::atomic<float> pan{0.0f};
+  // The volume fader (unification_audit §2.4 — the missing gain
+  // primitive), applied at the node's output stage after fx. Range
+  // [0, 1]: unity default, attenuate-only per the pan no-boost law (a
+  // full mix of full-scale takes cannot clip the device; boost lives in
+  // the compressor's makeup). A MIXER fact like pan: not undoable.
+  std::atomic<float> gain{1.0f};
   std::atomic<bool> is_expanded{
       true};  // UI state: expanded (true) or collapsed (false)
   std::atomic<float> last_block_peak{0.0f};

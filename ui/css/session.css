@@ -370,9 +370,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 
 /* Pan dial: a small rotary whose tick sweeps ±90° — hard left points
    at L, hard right at R. Amber when off-center so a panned lane is
-   glanceable at rest. */
-.pan-dial {
-    width: 22px; height: 22px;
+   glanceable at rest. The gain dial is the same family (volume fader,
+   0..unity over the same sweep) with a VERTICAL drag axis. */
+.pan-dial, .gain-dial {
+    /* 18px (was 22 when pan stood alone): two dials share the head row
+       now, and the flexing name pays for every pixel — group rails
+       (fold + ungroup) truncate first. */
+    width: 18px; height: 18px;
     flex: none;
     border-radius: 50%;
     border: 1px solid var(--line);
@@ -382,19 +386,21 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     touch-action: none;
     user-select: none;
 }
-.pan-dial .pan-tick {
+.gain-dial { cursor: ns-resize; }
+.pan-dial .pan-tick, .gain-dial .pan-tick {
     position: absolute;
     left: 50%; bottom: 50%;
-    width: 2px; height: 8px;
+    width: 2px; height: 7px;
     border-radius: 1px;
     background: var(--text-dim);
     transform: translateX(-50%);
     transform-origin: 50% 100%;
     pointer-events: none;
 }
-.pan-dial:hover { border-color: var(--tape); }
-.pan-dial.off-center { border-color: var(--tape); }
-.pan-dial.off-center .pan-tick { background: var(--tape); }
+.pan-dial:hover, .gain-dial:hover { border-color: var(--tape); }
+.pan-dial.off-center, .gain-dial.off-center { border-color: var(--tape); }
+.pan-dial.off-center .pan-tick,
+.gain-dial.off-center .pan-tick { background: var(--tape); }
 /* Arm: a small RING (state), never a big red dot (verb). Hierarchy —
    the transport record is the only record button on screen; these fill
    red when armed so "what will record" is glanceable. */

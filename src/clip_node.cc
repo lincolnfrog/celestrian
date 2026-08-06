@@ -416,28 +416,32 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
             fx_.process(fx_scratch_.data(), context.num_samples);
           }
         }
-        // Pan (balance law, audio_node.h): output channel 0 is L,
-        // channel 1 is R. Mono content pans between them (center is
-        // unity on both — the historical behavior); stereo content
-        // treats pan as balance (attenuate the far side). A mono
-        // OUTPUT hears the unpanned center (channels ≥ 2, if any, get
-        // the historical unpanned mono sum).
-        float gl = 1.0f, gr = 1.0f;
-        panGains(pan.load(), gl, gr);
+        // The output stage (unification_audit §2.4): gain·pan resolved
+        // together, post-fx. Pan (balance law, audio_node.h): output
+        // channel 0 is L, channel 1 is R. Mono content pans between
+        // them (center is unity on both — the historical behavior);
+        // stereo content treats pan as balance (attenuate the far
+        // side). A mono OUTPUT hears the unpanned center at the fader
+        // (channels ≥ 2, if any, likewise get the fader-scaled
+        // unpanned mono sum). Mute short-circuited above (isSilenced),
+        // so the fader here is just `gain`.
+        float gl = 1.0f, gr = 1.0f, fader = 1.0f;
+        outputStageGains(pan.load(), gain.load(), false, gl, gr, fader);
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] == nullptr) continue;
           const bool right = ch == 1 && num_output_channels >= 2;
           const float *src = stereo && right ? fx_scratch2_.data()
                                              : fx_scratch_.data();
-          float g = 1.0f;
+          float g = fader;
           if (num_output_channels >= 2 && ch < 2) g = right ? gr : gl;
           if (stereo && num_output_channels < 2) {
             // Fold stereo content to a mono device: equal halves.
+            if (fader <= 0.0f) continue;
             juce::FloatVectorOperations::addWithMultiply(
-                output_channels[ch], fx_scratch_.data(), 0.5f,
+                output_channels[ch], fx_scratch_.data(), 0.5f * fader,
                 context.num_samples);
             juce::FloatVectorOperations::addWithMultiply(
-                output_channels[ch], fx_scratch2_.data(), 0.5f,
+                output_channels[ch], fx_scratch2_.data(), 0.5f * fader,
                 context.num_samples);
             continue;
           }

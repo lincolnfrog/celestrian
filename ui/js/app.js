@@ -539,6 +539,9 @@ export function initApp() {
         // Pan/balance dial, −1..+1. Streams while dragging (cheap atomic
         // store engine-side; not undoable — the effect-param ruling).
         onSetPan: (id, pan) => callNative('setNodePan', id, pan),
+        // Volume fader dial, 0..1 (unity default). Same streaming/
+        // non-undoable contract as pan.
+        onSetGain: (id, gain) => callNative('setNodeGain', id, gain),
         // Built-in effects: panel-open is pure view state; enable and
         // params go straight to the engine's fixed rack
         onToggleFx: id => {

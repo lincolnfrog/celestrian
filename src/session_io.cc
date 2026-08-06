@@ -93,6 +93,7 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
   o->setProperty("type", node.getNodeTypeString());
   o->setProperty("muted", (bool)node.is_muted.load());
   o->setProperty("pan", (double)node.pan.load());
+  o->setProperty("gain", (double)node.gain.load());
   o->setProperty("loopBypassed",
                  opts.strip_performances ? false : node.isLoopWindowBypassed());
   // Window segments are musical (QTime): stored device-independently.
@@ -197,6 +198,11 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
   node->setUuid(uuid);
   node->is_muted.store((bool)o->getProperty("muted"));
   node->pan.store((float)(double)o->getProperty("pan"));
+  // Absent key (pre-gain session) MUST default to unity — the missing-
+  // property var reads as 0.0, which would load every legacy node silent.
+  node->gain.store(o->hasProperty("gain")
+                       ? (float)(double)o->getProperty("gain")
+                       : 1.0f);
   node->setLoopPoints(timing::toSamples(qread(o->getProperty("windowStartQ")), q),
                       timing::toSamples(qread(o->getProperty("windowEndQ")), q));
   // Multi-segment map (phase 3): ≥2 entries install an override

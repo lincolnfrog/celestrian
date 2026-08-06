@@ -89,6 +89,10 @@ export const BRIDGE_METHODS = [
     // applied at render on clips and groups; NOT undoable (mixer knob —
     // the effect-param ruling). State publishes as `pan` per node.
     { name: 'setNodePan', params: ['uuid', 'pan'] },
+    // Mixer: volume fader 0 (silent) .. 1 (unity default — attenuate
+    // only, the pan no-boost law), applied at the node's output stage
+    // after fx; NOT undoable. State publishes as `gain` per node.
+    { name: 'setNodeGain', params: ['uuid', 'gain'] },
 
     // Audio device selection. On Windows a multi-channel interface only
     // appears whole under ASIO — its WDM driver splits the box into stereo

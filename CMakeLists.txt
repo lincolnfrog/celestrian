@@ -193,6 +193,7 @@ target_sources(CelestrianTests PRIVATE
     tests/ui_contract_tests.cc
     tests/effects_tests.cc
     tests/stereo_pan_tests.cc
+    tests/output_stage_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc

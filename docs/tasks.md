@@ -101,9 +101,13 @@ with kernel.md:
 
 ## Tier 2: Defects (audit §3 — fix inside Tier 1/3 rewrites)
 
-- [ ] **D1: Stack mute is a no-op** — `StackNode::process` ignores
-  `is_muted`; only clips silence themselves. Fixed structurally by the
-  Tier 3 output stage; fix ad-hoc sooner if it bites.
+- [x] **D1: Stack mute is a no-op** — ✅ fixed 2026-08-06 by the Tier 3
+  output stage: the group's final sum applies `outputStageGains`
+  (gain·pan, mute = gain 0), so containers silence like leaves. Children
+  still render while muted (playhead telemetry keeps flowing) and the
+  rack is skipped (tails freeze — the same semantics as a muted clip).
+  Pinned by `tests/output_stage_tests.cc` (incl. nested-group scope and
+  mute-beats-soloed-child).
 - [x] **D2: Stop-boundary race** — ✅ fixed 2026-07-16 by the state
   machine: `stopRecording` only sets a request flag; the AUDIO thread
   computes the boundary from its own write position at the next block
@@ -241,12 +245,26 @@ with kernel.md:
   (post-field): zero-crossing micro-snap, seam audition, per-segment
   edge drag, true heard-frame child unroll, multi-segment top-level
   cursor mapping.
-- [ ] **Fractal output stage** — per-node `sum/render → time-map →
-  gain/pan → fx → mute/solo`, applied identically at every level (I5).
-  Adds the missing **gain** primitive (no volume fader exists!),
-  makes mute = gain 0, fixes D1, collapses the three audibility
-  mechanisms (global transport / per-clip `is_playing` / mute-solo)
-  into one resolution, and gives Mono→Stereo one bus to upgrade.
+- [x] **Fractal output stage** — ✅ done 2026-08-06 (order follows the
+  SHIPPED stereo/pan chain, fx before the scalars): per-node
+  `sum/render → time-map → fx → gain·pan → parent`, identical at every
+  level (I5) via `outputStageGains` (audio_node.h). Adds the missing
+  **gain** primitive: `AudioNode::gain` atomic, [0, 1] — unity default,
+  attenuate-only per the pan no-boost law (boost lives in comp makeup);
+  a mixer fact like pan (not undoable). Mute = gain 0 AT THE STAGE
+  (fixes D1; container mute beats a soloed child); solo stays
+  leaf-resolved (a container applying the ancestor rule would silence
+  its own soloed descendants). Transport /`is_playing` gating is
+  UNCHANGED at the top of clip render — the full three-mechanism
+  collapse was deliberately not forced (no behavior to gain from it
+  yet). Bridge `setNodeGain` (3-place), `gain` in metadata +
+  session_io (ABSENT KEY LOADS UNITY — legacy sessions), UI gain dial
+  in the rail head (vertical drag = the axis it represents, dblclick
+  = unity, amber below unity; dial family shrunk 22→18px — two dials
+  now share the head row and group-rail names pay for every pixel).
+  Pinned: tests/output_stage_tests.cc, ui/js/tests/gain.test.mjs, two
+  real-input e2e specs. Mono→Stereo's "one bus" was largely delivered
+  by the 2026-07-27 stereo work; the stage is now that bus's one exit.
 - [ ] **One-shots as a period-source knob** (Q5 ruling) — store the
   kernel triple's `period_source: own_length | context`; deletes the
   last reason `duration` doubles as period.
@@ -425,9 +443,10 @@ with kernel.md:
 - [ ] Audit JS unit/E2E test health.
 - [ ] E2E: recording inside expanded stack; collapse → playhead
   constrained; drag visual feedback + grid lines for collapsed stacks.
-- [ ] **New invariant tests the audit motivates:** stack-mute
-  audibility (D1), I2 simultaneity test (still missing), stop-boundary
-  race regression (D2).
+- [ ] **New invariant tests the audit motivates:** ~~stack-mute
+  audibility (D1)~~ ✅ (output_stage_tests.cc, 2026-08-06), I2
+  simultaneity test (still missing), stop-boundary race regression
+  (D2).
 
 ## Tier 5: Advanced Engine & Vision (unchanged)
 

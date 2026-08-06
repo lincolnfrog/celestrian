@@ -613,6 +613,55 @@ test.describe('Input picker (phase 3)', () => {
     });
 });
 
+test.describe('Gain dial (volume fader)', () => {
+
+    const clipGain = page => page.evaluate(() =>
+        window.celestrian.getState().nodes.find(n => n.type === 'stack')
+            .nodes[0].gain);
+
+    test('vertical drag lowers the fader; double-click restores unity', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const dial = page.locator('.lane[data-kind="clip"]').first()
+            .locator('.gain-dial');
+        await expect(dial).toBeVisible();
+
+        // REAL-input drag (hit-tested, the 2026-07-23c law — synthetic
+        // dispatch bypasses hit-testing): 75px is the full sweep, so
+        // ~38px down lands near half volume.
+        const box = await dial.boundingBox();
+        const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+        await page.mouse.move(cx, cy);
+        await page.mouse.down();
+        await page.mouse.move(cx, cy + 38, { steps: 5 });
+        await page.mouse.up();
+        const dragged = await clipGain(page);
+        expect(dragged).toBeLessThan(0.75);
+        expect(dragged).toBeGreaterThan(0.2);
+        await expect(dial).toHaveClass(/off-center/);
+
+        // Double-click restores unity (the resting state — no boost).
+        await dial.dblclick();
+        await expect.poll(() => clipGain(page), { timeout: 3000 }).toBe(1);
+        await expect(dial).not.toHaveClass(/off-center/);
+    });
+
+    test('groups have faders too (fractal)', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const dial = page.locator('.lane[data-kind="group"]').first()
+            .locator('.gain-dial');
+        await expect(dial).toBeVisible();
+        const box = await dial.boundingBox();
+        const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+        await page.mouse.move(cx, cy);
+        await page.mouse.down();
+        await page.mouse.move(cx, cy + 75, { steps: 5 });
+        await page.mouse.up();
+        const g = await page.evaluate(() =>
+            window.celestrian.getState().nodes.find(n => n.type === 'stack').gain);
+        expect(g).toBe(0);
+    });
+});
+
 test.describe('Effects rack (built-ins)', () => {
 
     const clipFx = page => page.evaluate(() =>

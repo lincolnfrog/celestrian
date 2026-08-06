@@ -1283,6 +1283,14 @@ void AudioEngine::setNodePan(const juce::String &uuid, double pan) {
   }
 }
 
+void AudioEngine::setNodeGain(const juce::String &uuid, double gain) {
+  // A mixer knob like pan: non-undoable, clamped to [0, 1] (unity is
+  // the ceiling — the no-boost law).
+  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+    node->gain.store((float)juce::jlimit(0.0, 1.0, gain));
+  }
+}
+
 void AudioEngine::setEffectEnabled(const juce::String &uuid,
                                    const juce::String &fx, bool enabled) {
   if (auto *node = findNodeByUuid(root_node.get(), uuid)) {

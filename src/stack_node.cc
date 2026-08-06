@@ -404,15 +404,25 @@ void StackNode::renderChildren(float *const *output_channels,
                 : children[(size_t)k].get();
   };
 
-  // With the effect rack ON (or the group panned off-center), children
-  // sum into the fx accumulator first — the rack shapes the GROUP's
-  // summed signal (a stack reverb wets the whole kit), and the pan
-  // gains scale the group as one. The accumulator is STEREO: children
-  // may render panned/stereo signals, so folding channel 0 alone would
-  // collapse their image (the pre-stereo rack's documented limitation).
+  // With the effect rack ON — or the group's OUTPUT STAGE not at unity
+  // (panned, fader below 1, or muted) — children sum into the fx
+  // accumulator first: the rack shapes the GROUP's summed signal (a
+  // stack reverb wets the whole kit), and the output-stage gains scale
+  // the group as one. The accumulator is STEREO: children may render
+  // panned/stereo signals, so folding channel 0 alone would collapse
+  // their image (the pre-stereo rack's documented limitation).
+  //
+  // MUTE (D1 fixed, unification_audit §2.4/§3): resolved by the output
+  // stage as gain 0 — children still render (playhead telemetry keeps
+  // flowing), the group just contributes nothing. The rack is skipped
+  // while muted so echo/reverb tails FREEZE rather than ring out — the
+  // same semantics a muted clip has (its rack sees no signal).
   const float group_pan = pan.load();
-  const bool use_fx = fx_.isLive();
-  const bool use_accum = use_fx || group_pan != 0.0f;
+  const bool muted = is_muted.load();
+  const float group_gain = muted ? 0.0f : gain.load();
+  const bool use_fx = fx_.isLive() && !muted;
+  const bool use_accum =
+      use_fx || muted || group_pan != 0.0f || group_gain != 1.0f;
   const int accum_ch = std::min(2, std::max(1, num_output_channels));
   if (use_accum) {
     if (fx_accum_.getNumSamples() < context.num_samples ||
@@ -459,16 +469,17 @@ void StackNode::renderChildren(float *const *output_channels,
         fx_.process(fx_accum_.getWritePointer(0), context.num_samples);
       }
     }
-    // Group pan (balance law): channel 0 is L, channel 1 is R; any
-    // channels past the stereo pair get the unpanned channel-0 signal
-    // (the historical duplicate-mono behavior).
-    float gl = 1.0f, gr = 1.0f;
-    panGains(group_pan, gl, gr);
+    // The group's output stage: gain·pan (balance law), mute = gain 0.
+    // Channel 0 is L, channel 1 is R; any channels past the stereo pair
+    // get the fader-scaled unpanned channel-0 signal (the historical
+    // duplicate-mono behavior).
+    float gl = 1.0f, gr = 1.0f, fader = 1.0f;
+    outputStageGains(group_pan, gain.load(), muted, gl, gr, fader);
     for (int ch = 0; ch < num_output_channels; ++ch) {
       if (output_channels[ch] == nullptr) continue;
       const int src = std::min(ch, accum_ch - 1);
       const float g =
-          num_output_channels >= 2 && ch < 2 ? (ch == 0 ? gl : gr) : 1.0f;
+          num_output_channels >= 2 && ch < 2 ? (ch == 0 ? gl : gr) : fader;
       if (g <= 0.0f) continue;
       if (g == 1.0f) {
         juce::FloatVectorOperations::add(output_channels[ch],

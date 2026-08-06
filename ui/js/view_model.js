@@ -262,10 +262,12 @@ function laneCommon(node, state) {
             ? ['eq', 'compressor', 'echo', 'reverb']
                 .filter(k => node.effects[k] && node.effects[k].enabled).length
             : 0,
-        // Mixer facts (published on every node): pan/balance −1..+1;
+        // Mixer facts (published on every node): pan/balance −1..+1 and
+        // the volume fader 0..1 (absent = unity — pre-gain states);
         // clips also carry their stereo wiring (right input of a pair,
         // −1 = mono) and content channel count for the lane badge.
         pan: typeof node.pan === 'number' ? node.pan : 0,
+        gain: typeof node.gain === 'number' ? node.gain : 1,
         inputChannelR: node.inputChannelR ?? -1,
         channels: node.channels ?? 1,
     };

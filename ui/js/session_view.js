@@ -265,7 +265,7 @@ function buildLane(lane) {
     // verbs — a dial drag ends in a click on the rail, which would
     // otherwise select the lane on every pan tweak).
     rail.addEventListener('click', e => {
-        if (e.target.closest('button, input, .pan-dial')) return;
+        if (e.target.closest('button, input, .pan-dial, .gain-dial')) return;
         toggleSelect(row, e.metaKey || e.ctrlKey || e.shiftKey);
     });
     rail.addEventListener('dragstart', e => {
@@ -346,11 +346,13 @@ function buildLane(lane) {
     del.textContent = '✕';
     del.title = 'Delete (⌘Z to undo)';
     del.addEventListener('click', () => cb.onDelete && cb.onDelete(lane.id));
-    // Pan dial — every lane, in the HEAD row (the flexing name yields
-    // the room; the foot's button row is already at the rail's width).
-    // Fractal like fx: a group's pan scales the summed group. The
-    // engine value streams while dragging; `_hot` keeps the 50ms tick
-    // from fighting the gesture (the fx-slider lesson).
+    // Gain + pan dials — every lane, in the HEAD row (the flexing name
+    // yields the room; the foot's button row is already at the rail's
+    // width). Fractal like fx: a group's fader/pan scales the summed
+    // group at its output stage. The engine value streams while
+    // dragging; `_hot` keeps the 50ms tick from fighting the gesture
+    // (the fx-slider lesson).
+    head.appendChild(buildGainDial(row));
     head.appendChild(buildPanDial(row));
     head.appendChild(del);
     rail.appendChild(head);
@@ -421,6 +423,67 @@ function buildLane(lane) {
 
     row.append(rail, body);
     return row;
+}
+
+/* ---------- gain dial ----------
+ *
+ * The volume fader (output stage, engine setNodeGain): 0..1, unity
+ * default — attenuate-only per the no-boost law, so the resting tick
+ * points fully clockwise (+90°) and turning it DOWN is the whole
+ * gesture. Drag is VERTICAL (up = louder — the axis a level control
+ * represents, the same ruling that made pan horizontal); 75px for the
+ * full sweep; double-click restores unity. Amber whenever below unity.
+ */
+function buildGainDial(row) {
+    const dial = document.createElement('div');
+    dial.className = 'gain-dial';
+    dial.title = 'Volume (drag up/down; double-click for full)';
+    // Same opt-out as the pan dial: the rail is an HTML5 drag source
+    // (lane reorder) and children inherit draggable.
+    dial.draggable = false;
+    const tick = document.createElement('div');
+    tick.className = 'pan-tick';
+    dial.appendChild(tick);
+    dial._tick = tick;
+
+    const send = v => {
+        const lane = row._lane;
+        if (lane) cb.onSetGain(lane.id, v);
+    };
+    dial.addEventListener('pointerdown', ev => {
+        ev.preventDefault();
+        try { dial.setPointerCapture(ev.pointerId); } catch (_) {}
+        dial._hot = true;
+        dial._startY = ev.clientY;
+        const lane = row._lane;
+        dial._startGain = lane && typeof lane.gain === 'number' ? lane.gain : 1;
+    });
+    dial.addEventListener('pointermove', ev => {
+        if (!dial._hot) return;
+        const v = Math.max(0, Math.min(1,
+            dial._startGain + (dial._startY - ev.clientY) / 75));
+        setGainDial(dial, v);
+        send(v);
+    });
+    const end = () => { dial._hot = false; };
+    dial.addEventListener('pointerup', end);
+    dial.addEventListener('pointercancel', end);
+    dial.addEventListener('dblclick', () => {
+        setGainDial(dial, 1);
+        send(1);
+    });
+    return dial;
+}
+
+function setGainDial(dial, gain) {
+    // 0 → −90° (silent), 1 → +90° (unity): the same sweep the pan tick
+    // uses, so the two dials read as one family.
+    dial._tick.style.transform =
+        `translateX(-50%) rotate(${(gain * 180 - 90).toFixed(1)}deg)`;
+    dial.classList.toggle('off-center', gain < 0.99);
+    dial.title = gain >= 0.99
+        ? 'Volume: full (drag up/down)'
+        : `Volume: ${Math.round(gain * 100)}%`;
 }
 
 /* ---------- pan dial ----------
@@ -2406,9 +2469,14 @@ function patchRail(row, lane, vm) {
         if (input.disabled !== !!lane.recording) input.disabled = !!lane.recording;
     }
 
-    // Pan dial: reflect the engine value unless the user is mid-drag.
+    // Pan/gain dials: reflect the engine value unless the user is
+    // mid-drag (_hot — the held-control guard vs the 50ms tick).
     const dial = row.querySelector('.pan-dial');
     if (dial && !dial._hot) setPanDial(dial, lane.pan || 0);
+    const gdial = row.querySelector('.gain-dial');
+    if (gdial && !gdial._hot) {
+        setGainDial(gdial, typeof lane.gain === 'number' ? lane.gain : 1);
+    }
 }
 
 /* ---------- playhead animator (idle/playing only) ----------
