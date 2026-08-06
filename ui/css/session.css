@@ -110,6 +110,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: nowrap;
 }
 #transport .spacer { flex: 1; }
+/* Zoom cluster: the buttons make Q/E discoverable; the % is the reset */
+#zoom-level {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    min-width: 4ch;
+    text-align: center;
+    cursor: pointer;
+    white-space: nowrap;
+}
+#zoom-level:hover { color: var(--text); }
+#zoom-in-btn, #zoom-out-btn { padding: 0 10px; font-size: 1rem; }
+#zoom-in-btn:disabled, #zoom-out-btn:disabled { opacity: 0.35; cursor: default; }
 /* Right-cluster bar buttons: one height, one voice, never wrap. */
 #transport .bar-btn {
     flex: none;
@@ -133,7 +146,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* ===== Session grid ===== */
 #session {
     overflow-y: auto;
-    overflow-x: hidden;
+    /* Horizontal zoom widens #grid-area past the viewport; the wheel
+       stays vertical — you reach the overflow by scrollbar or drag. */
+    overflow-x: auto;
     padding: 14px 18px 24px;
 }
 #grid-area { position: relative; }

@@ -124,6 +124,8 @@ export function initSessionView(callbacks) {
         if (ids.length) { clearSelection(); cb.onMoveToTop(ids); }
     });
 
+    wireZoom();
+
     // Input menus dismiss on outside press or Escape
     document.addEventListener('pointerdown', e => {
         if (!e.target.closest('.input-menu') && !e.target.closest('.input-btn')) {
@@ -133,6 +135,67 @@ export function initSessionView(callbacks) {
     document.addEventListener('keydown', e => {
         if (e.key === 'Escape') closeInputMenus();
     });
+}
+
+/* ---------- horizontal zoom (design.md: mouse wheel or Q/E) ----------
+ * Everything on the timeline is positioned in PERCENT of the ruler, so
+ * zoom is just #grid-area growing past the viewport — no renderer
+ * changes, the browser owns the scroll. The plain wheel is left alone
+ * (it scrolls the tracks vertically); Ctrl+wheel zooms about the
+ * cursor like every DAW. */
+let zoomZ = 1;
+const ZOOM_MIN = 1, ZOOM_MAX = 16, ZOOM_STEP = 1.25;
+
+function setZoom(z, anchorClientX) {
+    z = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z));
+    if (z === zoomZ) { updateZoomUI(); return; }
+    const session = document.getElementById('session');
+    // Hold the timeline instant under the anchor (cursor or viewport
+    // center) still: the rail column is fixed width, so the anchor is
+    // measured against the RULER, which scales linearly.
+    const wBefore = els.ruler.offsetWidth;
+    const rulerLeft = els.ruler.getBoundingClientRect().left;
+    const box = session.getBoundingClientRect();
+    const ax = anchorClientX ?? (box.left + box.width / 2);
+    const frac = (ax - rulerLeft) / wBefore;
+    zoomZ = z;
+    els.gridArea.style.width = z === 1 ? '' : (z * 100) + '%';
+    session.scrollLeft += frac * (els.ruler.offsetWidth - wBefore);
+    // The animator caches the ruler width between polls — refresh it
+    // now or the playhead runs on the old scale for up to 50ms.
+    anim.timelineW = els.ruler.offsetWidth;
+    updateZoomUI();
+}
+
+function updateZoomUI() {
+    const label = document.getElementById('zoom-level');
+    const zin = document.getElementById('zoom-in-btn');
+    const zout = document.getElementById('zoom-out-btn');
+    if (label) label.textContent = Math.round(zoomZ * 100) + '%';
+    if (zin) zin.disabled = zoomZ >= ZOOM_MAX;
+    if (zout) zout.disabled = zoomZ <= ZOOM_MIN;
+}
+
+function wireZoom() {
+    const zin = document.getElementById('zoom-in-btn');
+    const zout = document.getElementById('zoom-out-btn');
+    const label = document.getElementById('zoom-level');
+    if (zin) zin.addEventListener('click', () => setZoom(zoomZ * ZOOM_STEP));
+    if (zout) zout.addEventListener('click', () => setZoom(zoomZ / ZOOM_STEP));
+    if (label) label.addEventListener('click', () => setZoom(1));
+    document.addEventListener('keydown', e => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const tag = e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.key === 'q' || e.key === 'Q') setZoom(zoomZ * ZOOM_STEP);
+        else if (e.key === 'e' || e.key === 'E') setZoom(zoomZ / ZOOM_STEP);
+    });
+    document.getElementById('session').addEventListener('wheel', e => {
+        if (!e.ctrlKey) return; // plain wheel keeps native vertical scroll
+        e.preventDefault();
+        setZoom(zoomZ * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX);
+    }, { passive: false });
+    updateZoomUI();
 }
 
 /* ---------- ruler ---------- */
