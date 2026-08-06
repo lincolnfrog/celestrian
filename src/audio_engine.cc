@@ -130,19 +130,79 @@ void AudioEngine::flushGraveyard() {
 }
 
 void AudioEngine::init(int inputs, int outputs) {
-  // Try for 8 inputs, but default to whatever the hardware provides
-  device_manager.initialiseWithDefaultDevices(8, outputs);
-  auto *device = device_manager.getCurrentAudioDevice();
-  if (device) {
+  // Restore the last chosen device before falling back to the OS default.
+  // The default is the wrong answer on a music machine: on Windows it is a
+  // 2-channel WASAPI endpoint, and a multi-channel interface's own driver
+  // splits the box into stereo endpoints — the interface only appears
+  // whole under ASIO, which is never the default type.
+  std::unique_ptr<juce::XmlElement> saved;
+  auto file = audioDeviceFile();
+  if (file.existsAsFile()) {
+    saved = juce::parseXML(file);
+    if (saved == nullptr) {
+      juce::Logger::writeToLog("AudioEngine: stored device setup at " +
+                               file.getFullPathName() +
+                               " is unreadable — ignoring it.");
+    }
+  }
+
+  // Ask for the ring's full width, not 8: `initialise` negotiates DOWN to
+  // what the hardware has, so the request is a ceiling, not a demand.
+  device_error_ = device_manager.initialise(kPreRecordRingChannels, outputs,
+                                            saved.get(), true);
+
+  if (device_error_.isNotEmpty() && saved != nullptr) {
+    // The stored device is gone (interface unplugged, driver uninstalled).
+    // Don't strand the user with no audio — fall back to the default and
+    // keep the stored setup on disk so plugging the box back in restores it.
+    juce::Logger::writeToLog("AudioEngine: stored device failed to open (" +
+                             device_error_ +
+                             ") — falling back to the default device.");
+    device_error_ = device_manager.initialise(kPreRecordRingChannels, outputs,
+                                              nullptr, true);
+  }
+
+  if (device_error_.isNotEmpty()) {
+    juce::Logger::writeToLog("AudioEngine: device open FAILED: " +
+                             device_error_);
+  }
+
+  enableAllInputChannels();
+
+  if (auto *device = device_manager.getCurrentAudioDevice()) {
     juce::Logger::writeToLog(
-        "AudioEngine: Initialized with " +
+        "AudioEngine: Initialized on '" + device->getName() + "' (" +
+        device_manager.getCurrentAudioDeviceType() + ") with " +
         juce::String(device->getActiveInputChannels().countNumberOfSetBits()) +
+        " of " + juce::String(device->getInputChannelNames().size()) +
         " input channels.");
   } else {
     juce::Logger::writeToLog(
         "AudioEngine: FAILED to get current audio device.");
   }
   device_manager.addAudioCallback(this);
+}
+
+void AudioEngine::enableAllInputChannels() {
+  auto *device = device_manager.getCurrentAudioDevice();
+  if (device == nullptr) return;
+
+  const int available = device->getInputChannelNames().size();
+  if (available <= 0) return;
+
+  auto setup = device_manager.getAudioDeviceSetup();
+  juce::BigInteger wanted;
+  wanted.setRange(0, available, true);
+  if (setup.inputChannels == wanted && !setup.useDefaultInputChannels) return;
+
+  setup.inputChannels = wanted;
+  setup.useDefaultInputChannels = false;  // else the mask is ignored
+  auto err = device_manager.setAudioDeviceSetup(setup, true);
+  if (err.isNotEmpty()) {
+    juce::Logger::writeToLog(
+        "AudioEngine: could not enable all " + juce::String(available) +
+        " input channels: " + err);
+  }
 }
 
 celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
@@ -1051,16 +1111,153 @@ juce::var AudioEngine::getInputList() const {
   juce::Array<juce::var> names;
   if (auto *device = device_manager.getCurrentAudioDevice()) {
     auto inputNames = device->getInputChannelNames();
-    juce::Logger::writeToLog("AudioEngine: Found " +
-                             juce::String(inputNames.size()) +
-                             " input channel names.");
-    for (const auto &name : inputNames) {
-      names.add(name);
+    const auto active = device->getActiveInputChannels();
+    // Only ACTIVE channels, in active order: the callback's
+    // input_channel_data is indexed by active channel, so listing an
+    // inactive one would hand the UI an index that addresses a different
+    // channel (or none). enableAllInputChannels normally makes these the
+    // same list — this stays correct when it can't.
+    for (int i = 0; i < inputNames.size(); ++i) {
+      if (active[i]) names.add(inputNames[i]);
     }
+    juce::Logger::writeToLog(
+        "AudioEngine: Found " + juce::String(names.size()) + " active of " +
+        juce::String(inputNames.size()) + " input channels on '" +
+        device->getName() + "'.");
   }
   juce::DynamicObject::Ptr obj = new juce::DynamicObject();
   obj->setProperty("inputs", names);
   return juce::var(obj.get());
+}
+
+// --- Device selection (docs/performance.md §4) ---
+
+juce::var AudioEngine::getAudioDeviceState() const {
+  juce::DynamicObject::Ptr obj = new juce::DynamicObject();
+
+  // const_cast: every accessor used here is logically const, but
+  // AudioDeviceManager does not mark them so.
+  auto &mgr = const_cast<juce::AudioDeviceManager &>(device_manager);
+
+  juce::Array<juce::var> types;
+  bool asio_available = false;
+  for (auto *type : mgr.getAvailableDeviceTypes()) {
+    types.add(type->getTypeName());
+    if (type->getTypeName().containsIgnoreCase("ASIO")) asio_available = true;
+  }
+  obj->setProperty("types", types);
+  obj->setProperty("currentType", mgr.getCurrentAudioDeviceType());
+  obj->setProperty("asioAvailable", asio_available);
+
+  juce::Array<juce::var> devices;
+  if (auto *type = mgr.getCurrentDeviceTypeObject()) {
+    type->scanForDevices();  // hot-plug: the picker is opened on demand
+    for (const auto &name : type->getDeviceNames(false)) devices.add(name);
+  }
+  obj->setProperty("devices", devices);
+
+  juce::Array<juce::var> rates, buffers;
+  auto *device = mgr.getCurrentAudioDevice();
+  if (device != nullptr) {
+    obj->setProperty("currentDevice", device->getName());
+    for (double r : device->getAvailableSampleRates()) rates.add(r);
+    for (int b : device->getAvailableBufferSizes()) buffers.add(b);
+    obj->setProperty("currentSampleRate", device->getCurrentSampleRate());
+    obj->setProperty("currentBufferSize", device->getCurrentBufferSizeSamples());
+    obj->setProperty("inputChannels",
+                     device->getActiveInputChannels().countNumberOfSetBits());
+    obj->setProperty("outputChannels",
+                     device->getActiveOutputChannels().countNumberOfSetBits());
+    // What the picker shows as the payoff of switching drivers.
+    obj->setProperty("availableInputChannels",
+                     device->getInputChannelNames().size());
+  } else {
+    obj->setProperty("currentDevice", juce::String());
+    obj->setProperty("currentSampleRate", 0.0);
+    obj->setProperty("currentBufferSize", 0);
+    obj->setProperty("inputChannels", 0);
+    obj->setProperty("outputChannels", 0);
+    obj->setProperty("availableInputChannels", 0);
+  }
+  obj->setProperty("sampleRates", rates);
+  obj->setProperty("bufferSizes", buffers);
+  obj->setProperty("error", device_error_);
+
+  return juce::var(obj.get());
+}
+
+juce::String AudioEngine::setAudioDevice(const juce::String &type,
+                                         const juce::String &device,
+                                         double sample_rate, int buffer_size) {
+  // Switching driver type first: the device list is scoped to the type, so
+  // a name from the new type is meaningless until the type is current.
+  if (type.isNotEmpty() && type != device_manager.getCurrentAudioDeviceType()) {
+    device_manager.setCurrentAudioDeviceType(type, true);
+  }
+
+  auto setup = device_manager.getAudioDeviceSetup();
+  if (device.isNotEmpty()) {
+    setup.inputDeviceName = device;
+    setup.outputDeviceName = device;
+  }
+  // 0 = "whatever the device prefers" — which is what a type switch leaves
+  // behind, and forcing a stale rate onto new hardware just fails the open.
+  if (sample_rate > 0) setup.sampleRate = sample_rate;
+  if (buffer_size > 0) setup.bufferSize = buffer_size;
+  setup.useDefaultInputChannels = true;   // negotiate first…
+  setup.useDefaultOutputChannels = true;
+
+  device_error_ = device_manager.setAudioDeviceSetup(setup, true);
+  if (device_error_.isNotEmpty()) {
+    juce::Logger::writeToLog("AudioEngine: setAudioDevice('" + type + "', '" +
+                             device + "') FAILED: " + device_error_);
+    return device_error_;
+  }
+
+  enableAllInputChannels();  // …then widen to every channel it has
+  persistAudioDevice();
+
+  if (auto *opened = device_manager.getCurrentAudioDevice()) {
+    juce::Logger::writeToLog(
+        "AudioEngine: device set to '" + opened->getName() + "' (" +
+        device_manager.getCurrentAudioDeviceType() + ") sr=" +
+        juce::String(opened->getCurrentSampleRate()) + " block=" +
+        juce::String(opened->getCurrentBufferSizeSamples()) + " inputs=" +
+        juce::String(opened->getActiveInputChannels().countNumberOfSetBits()));
+  }
+  return {};
+}
+
+juce::File AudioEngine::audioDeviceFile() const {
+  if (audio_device_file_override_ != juce::File()) {
+    return audio_device_file_override_;
+  }
+  return juce::File::getSpecialLocation(
+             juce::File::userApplicationDataDirectory)
+      .getChildFile("Celestrian")
+      .getChildFile("audio_device.xml");
+}
+
+void AudioEngine::setAudioDeviceFile(const juce::File &file) {
+  audio_device_file_override_ = file;
+}
+
+void AudioEngine::persistAudioDevice() {
+  auto state = device_manager.createStateXml();
+  if (state == nullptr) {
+    // Null means "nothing but defaults" — there is no selection worth
+    // storing, and writing an empty file would just shadow a later one.
+    return;
+  }
+  auto file = audioDeviceFile();
+  file.getParentDirectory().createDirectory();
+  if (state->writeTo(file)) {
+    juce::Logger::writeToLog("AudioEngine: device setup persisted -> " +
+                             file.getFullPathName());
+  } else {
+    juce::Logger::writeToLog("AudioEngine: FAILED to persist device setup to " +
+                             file.getFullPathName());
+  }
 }
 
 void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {

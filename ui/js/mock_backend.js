@@ -222,6 +222,9 @@ export const handlers = {
     setNodeInput: (id, channelIndex) => setNodeInput(id, channelIndex),
     setNodeInputRight: (id, channelIndex) => setNodeInputRight(id, channelIndex),
     setNodePan: (id, pan) => setNodePan(id, pan),
+    getAudioDeviceState: () => getAudioDeviceState(),
+    setAudioDevice: (type, device, sampleRate, bufferSize) =>
+        setAudioDevice(type, device, sampleRate, bufferSize),
     setEffectEnabled: (id, fx, enabled) => setEffectEnabled(id, fx, enabled),
     setEffectParam: (id, fx, param, value) => setEffectParam(id, fx, param, value),
     setEffectScope: (id, active) => setEffectScope(id, active),
@@ -476,9 +479,83 @@ function toggleStackExpand(id) {
     }
 }
 
+/* ---------- audio devices ----------
+ *
+ * Models the real Windows shape so the picker can be exercised in the
+ * browser: a WASAPI type whose multi-channel interface is split into
+ * stereo endpoints, and an ASIO type where the same box appears whole.
+ * Switching type is what unlocks the extra inputs — that is the whole
+ * point of the panel.
+ */
+const mockDevices = {
+    'Windows Audio': [
+        { name: 'MOTU Analog 1-2', inputs: 2 },
+        { name: 'MOTU Analog 3-4', inputs: 2 },
+        { name: 'MOTU Mic/Instrument 1-2', inputs: 2 },
+        { name: 'Microphone (USB Audio Device)', inputs: 2 },
+    ],
+    'ASIO': [
+        { name: 'MOTU Audio ASIO', inputs: 10 },
+        { name: 'ASIO4ALL v2', inputs: 2 },
+    ],
+};
+
+const mockAudio = {
+    type: 'Windows Audio',
+    device: 'Microphone (USB Audio Device)',
+    sampleRate: 48000,
+    bufferSize: 256,
+    error: '',
+};
+
+function currentMockDevice() {
+    return (mockDevices[mockAudio.type] || []).find(d => d.name === mockAudio.device);
+}
+
+function getAudioDeviceState() {
+    const dev = currentMockDevice();
+    const list = mockDevices[mockAudio.type] || [];
+    return {
+        types: Object.keys(mockDevices),
+        currentType: mockAudio.type,
+        devices: list.map(d => d.name),
+        currentDevice: dev ? dev.name : '',
+        sampleRates: [44100, 48000, 88200, 96000],
+        currentSampleRate: mockAudio.sampleRate,
+        bufferSizes: [64, 128, 256, 512, 1024],
+        currentBufferSize: mockAudio.bufferSize,
+        inputChannels: dev ? dev.inputs : 0,
+        outputChannels: 2,
+        availableInputChannels: dev ? dev.inputs : 0,
+        asioAvailable: true,
+        error: mockAudio.error,
+    };
+}
+
+function setAudioDevice(type, device, sampleRate, bufferSize) {
+    if (type && mockDevices[type]) mockAudio.type = type;
+    const list = mockDevices[mockAudio.type] || [];
+    // A type switch invalidates the device name — fall to that type's first.
+    if (device && list.some(d => d.name === device)) mockAudio.device = device;
+    else if (!list.some(d => d.name === mockAudio.device)) {
+        mockAudio.device = list.length ? list[0].name : '';
+    }
+    if (sampleRate > 0) mockAudio.sampleRate = sampleRate;
+    if (bufferSize > 0) mockAudio.bufferSize = bufferSize;
+    mockAudio.error = '';
+    console.log('[MockBackend] Audio device:', mockAudio);
+    return '';
+}
+
 function getInputList() {
-    // Shape matches AudioEngine::getInputList: { inputs: [...] }
-    return { inputs: ['Built-in Microphone', 'External Audio'] };
+    // Shape matches AudioEngine::getInputList: { inputs: [...] } — ACTIVE
+    // channels only, so the index IS the audio callback's channel index.
+    const dev = currentMockDevice();
+    const n = dev ? dev.inputs : 0;
+    return {
+        inputs: Array.from({ length: n },
+            (_, i) => `${mockAudio.device} ${i + 1}`),
+    };
 }
 
 function setNodeInput(id, channelIndex) {

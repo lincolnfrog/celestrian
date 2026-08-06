@@ -295,6 +295,29 @@ MainComponent::MainComponent()
                     completion(audio_engine.getInputList());
                   })
               .withNativeFunction(
+                  "getAudioDeviceState",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    completion(audio_engine.getAudioDeviceState());
+                  })
+              .withNativeFunction(
+                  "setAudioDevice",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    // (type, device, sampleRate, bufferSize); trailing args
+                    // are optional — 0 means "keep the device's preference".
+                    const auto type = args.size() > 0 ? args[0].toString()
+                                                      : juce::String();
+                    const auto device = args.size() > 1 ? args[1].toString()
+                                                        : juce::String();
+                    const double sr = args.size() > 2 ? (double)args[2] : 0.0;
+                    const int block = args.size() > 3 ? (int)args[3] : 0;
+                    completion(
+                        audio_engine.setAudioDevice(type, device, sr, block));
+                  })
+              .withNativeFunction(
                   "setNodeInput",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

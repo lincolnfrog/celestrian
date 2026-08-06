@@ -240,26 +240,72 @@ put it ~137 late), and nowhere else.
 
 ---
 
-## 4. Device configuration
+## 4. Device configuration — ✅ selectable + persisted (2026-07-25)
 
-Current init (`AudioEngine::init`):
+`AudioEngine::init` restores the last chosen device before falling back to
+the OS default:
 
 ```cpp
-device_manager.initialiseWithDefaultDevices(8, outputs);
+device_manager.initialise(kPreRecordRingChannels, outputs, saved.get(), true);
+enableAllInputChannels();
 ```
 
-Issues, in priority order:
+### Why the default device is the wrong answer on Windows
 
-1. **Buffer size is whatever the OS defaults to** (often 512). For a live
-   looper, 128–256 is the right target on macOS/CoreAudio. Set an explicit
-   preferred buffer size via `AudioDeviceSetup`; expose it in settings
-   eventually. Every block halved removes ~5.8 ms from §2.2 and from the
-   monitoring reference error.
-2. **Requesting 8 inputs** can force channel-count negotiation or an
-   aggregate-device config on some interfaces (aggregates add latency and
-   clock-drift resampling). Request what the session needs (1–2), grow on
-   demand.
-3. ~~Sample rate is assumed 44100 everywhere~~ — ✅ *P0-5 implemented
+Field report (2026-07-25, Windows music machine): a MOTU interface showed
+only "input 1" and "input 2". Three compounding causes, all fixed:
+
+1. **`initialiseWithDefaultDevices` opens the OS default endpoint**, which
+   on Windows is a 2-channel WASAPI device — never the user's interface.
+2. **A multi-channel interface's WDM driver splits the box into stereo
+   endpoints.** The MOTU publishes `MOTU Analog 1-2`, `Analog 3-4`,
+   `Analog 5-6`, `Analog 7-8`, `Mic/Instrument 1-2`, `ADAT 1-2…7-8`,
+   `S/PDIF 1-2` as *separate* capture devices, and Windows opens one at a
+   time. On WASAPI there is therefore **no device that yields 8 inputs** —
+   picking a better device cannot fix this. Only the ASIO driver type
+   presents the interface whole (measured: 22 of 22 channels).
+3. **Channel masks default to the requested count.** The callback's
+   `input_channel_data` is indexed by *active* channel, so a channel the
+   setup left inactive is not addressable at all. `enableAllInputChannels`
+   turns on every channel the open device exposes, and `getInputList`
+   reports active channels in active order so the index the UI sends *is*
+   the callback index.
+
+Consequences elsewhere: `kPreRecordRingChannels` went 8 → 32, because a
+channel the pre-record ring cannot reach is a channel that cannot be armed
+(the reference MOTU alone is 22 in). The per-block copy is still bounded by
+the device's actual channel count, not the cap.
+
+### ASIO in the build
+
+Steinberg dual-licensed the ASIO SDK (proprietary **or** GPLv3). This
+project is AGPLv3; GPLv3 §13 and AGPLv3 §13 grant mutual permission to
+combine, so an ASIO-enabled binary is distributable under AGPLv3. CMake
+fetches the SDK via CPM pinned to an immutable commit; override with
+`-DCELESTRIAN_ASIO_SDK_DIR=<unzipped official SDK>`. Without either the
+app still builds — ASIO simply does not appear as a driver type, and the
+picker says so. JUCE compiles exactly one SDK header (`<iasiodrv.h>`,
+closure `{iasiodrv.h, asiosys.h, asio.h}`); the SDK's Microsoft-copyright
+driver-side files are never compiled.
+
+### Persistence
+
+The whole setup (type, device, rate, buffer, channel masks) round-trips
+through `AudioDeviceManager::createStateXml` / `initialise` into
+`<app data>/Celestrian/audio_device.xml` — the same format JUCE's own
+selector writes, so nothing here knows the field layout. A stored device
+that fails to open (interface unplugged) falls back to the default *and
+keeps the file*, so plugging the box back in restores the choice.
+
+Buffer size is now user-selectable in the picker (Audio button, status
+strip) rather than "whatever the OS defaults to". For a live looper
+128–256 is the right target; every block halved removes ~5.8 ms from §2.2
+and from the monitoring reference error. Note that calibration is keyed on
+`device|rate|buffer`, so changing any of them correctly invalidates it.
+
+Remaining:
+
+1. ~~Sample rate is assumed 44100 everywhere~~ — ✅ *P0-5 implemented
    (2026-07-07)*. The device rate captured in `audioDeviceAboutToStart`
    now feeds `ProcessContext.sample_rate`, clip creation (buffer sizing +
    honest metadata), the timeline fallback, and every samples→ms display

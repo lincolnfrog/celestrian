@@ -25,6 +25,75 @@ else()
     message(FATAL_ERROR "Failed to add JUCE")
 endif()
 
+# --- ASIO (Windows) ---------------------------------------------------
+# On Windows the WDM/WASAPI driver of a multi-channel interface presents
+# each pair as its OWN stereo endpoint ("MOTU Analog 1-2", "Analog 3-4",
+# …), and Windows opens one endpoint at a time — so WASAPI caps you at 2
+# simultaneous inputs no matter which device you select. ASIO is the only
+# driver type that exposes all channels of the interface at once.
+#
+# Steinberg dual-licensed the ASIO SDK: the proprietary Steinberg ASIO
+# License, OR GPLv3 (see LICENSE.txt in the SDK, (c) 2025 Steinberg Media
+# Technologies GmbH). We take the GPLv3 option — GPLv3 §13 and AGPLv3 §13
+# grant mutual permission to combine, so an ASIO-enabled Celestrian binary
+# is distributable under this project's AGPLv3.
+#
+# JUCE compiles exactly one SDK header, <iasiodrv.h>, whose include closure
+# is {iasiodrv.h, asiosys.h, asio.h} — all three carry the Steinberg dual
+# license. The SDK's Microsoft-copyright driver-side files (common/combase.*)
+# are never compiled, so they impose nothing on this build.
+#
+# Source: pinned to an immutable commit of a public mirror, so a force-push
+# or a deleted repo cannot silently change what we build. To use Steinberg's
+# official zip (https://www.steinberg.net/asiosdk) instead, configure with
+#   -DCELESTRIAN_ASIO_SDK_DIR=<path to the unzipped SDK>
+# Without either, the app still builds — you just get WASAPI's stereo pairs.
+set(CELESTRIAN_ASIO_INCLUDE_DIR "" CACHE INTERNAL "")
+if (WIN32)
+    if (DEFINED CELESTRIAN_ASIO_SDK_DIR)
+        # Accept either the SDK root or the common/ dir itself.
+        find_path(CELESTRIAN_ASIO_INCLUDE_DIR
+            NAMES iasiodrv.h
+            PATHS "${CELESTRIAN_ASIO_SDK_DIR}"
+            PATH_SUFFIXES common
+            NO_DEFAULT_PATH)
+        if (NOT CELESTRIAN_ASIO_INCLUDE_DIR)
+            message(FATAL_ERROR
+                "CELESTRIAN_ASIO_SDK_DIR=${CELESTRIAN_ASIO_SDK_DIR} but no "
+                "iasiodrv.h under it (expected <dir>/common/iasiodrv.h).")
+        endif()
+    else()
+        CPMAddPackage(
+            NAME asiosdk
+            GITHUB_REPOSITORY audiosdk/asio
+            GIT_TAG 496a0765b8bb9c26f764f22f9a9712a937177db2 # main @ 2025-10-16
+            DOWNLOAD_ONLY YES # headers only; the SDK ships no CMake project
+        )
+        if (asiosdk_ADDED AND EXISTS "${asiosdk_SOURCE_DIR}/common/iasiodrv.h")
+            set(CELESTRIAN_ASIO_INCLUDE_DIR "${asiosdk_SOURCE_DIR}/common"
+                CACHE INTERNAL "")
+        endif()
+    endif()
+
+    if (CELESTRIAN_ASIO_INCLUDE_DIR)
+        message(STATUS "ASIO enabled: ${CELESTRIAN_ASIO_INCLUDE_DIR}")
+    else()
+        message(WARNING
+            "ASIO SDK unavailable — building WITHOUT ASIO. Multi-channel "
+            "interfaces will only expose 2 inputs at a time.")
+    endif()
+endif()
+
+# Applies the ASIO module flag + SDK include path to a target, if we have
+# the SDK. JUCE module config is per-target, so every target that compiles
+# juce_audio_devices needs this.
+function(celestrian_enable_asio target)
+    if (CELESTRIAN_ASIO_INCLUDE_DIR)
+        target_compile_definitions(${target} PRIVATE JUCE_ASIO=1)
+        target_include_directories(${target} PRIVATE ${CELESTRIAN_ASIO_INCLUDE_DIR})
+    endif()
+endfunction()
+
 # Create the GUI app
 juce_add_gui_app(Celestrian
     PRODUCT_NAME "Celestrian"
@@ -75,6 +144,8 @@ target_compile_definitions(Celestrian PRIVATE
     # ignores the resource provider and shows "Can't reach this page".
     JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1
 )
+
+celestrian_enable_asio(Celestrian)
 
 # Copy UI files to the build directory (for development)
 if (APPLE)
@@ -138,3 +209,5 @@ target_link_libraries(CelestrianTests PRIVATE
     juce::juce_gui_basics
     juce::juce_core
 )
+
+celestrian_enable_asio(CelestrianTests)

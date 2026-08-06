@@ -77,6 +77,8 @@ export const BRIDGE_METHODS = [
     { name: 'toggleLoopWindow', params: ['uuid'] },
 
     // Hardware
+    // getInputList returns only ACTIVE input channels, in callback order —
+    // the index handed to setNodeInput IS the audio callback's channel index.
     { name: 'getInputList', params: [], returns: '{ inputs: string[] }' },
     { name: 'setNodeInput', params: ['uuid', 'channelIndex'] },
     // Right input of a stereo pair (−1 = mono). Channel count of a take
@@ -87,6 +89,22 @@ export const BRIDGE_METHODS = [
     // applied at render on clips and groups; NOT undoable (mixer knob —
     // the effect-param ruling). State publishes as `pan` per node.
     { name: 'setNodePan', params: ['uuid', 'pan'] },
+
+    // Audio device selection. On Windows a multi-channel interface only
+    // appears whole under ASIO — its WDM driver splits the box into stereo
+    // endpoints — so picking the driver TYPE matters as much as the device.
+    // The choice persists to <app data>/Celestrian/audio_device.xml and is
+    // restored at launch. Rate/buffer of 0 mean "the device's preference".
+    {
+        name: 'getAudioDeviceState', params: [],
+        returns: '{ types, currentType, devices, currentDevice, sampleRates, ' +
+            'currentSampleRate, bufferSizes, currentBufferSize, inputChannels, ' +
+            'outputChannels, availableInputChannels, asioAvailable, error }'
+    },
+    {
+        name: 'setAudioDevice', params: ['type', 'device', 'sampleRate', 'bufferSize'],
+        returns: '"" on success, else an error string'
+    },
 
     // Built-in effects (src/dsp/effects.h): a FIXED per-node rack in
     // canonical order eq → compressor → echo → reverb. State publishes

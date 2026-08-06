@@ -249,6 +249,41 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void setCalibrationFile(const juce::File &file);
 
+  // --- Audio device selection (docs/performance.md §4) ---
+  /**
+   * The full picker payload: available driver types, the devices under the
+   * current type, and the rate/buffer choices the open device supports —
+   * plus what is selected right now. Shape:
+   *
+   *   { types: string[], currentType: string,
+   *     devices: string[], currentDevice: string,
+   *     sampleRates: number[], currentSampleRate: number,
+   *     bufferSizes: number[], currentBufferSize: number,
+   *     inputChannels: number, outputChannels: number,
+   *     asioAvailable: bool, error: string }
+   *
+   * `error` is non-empty when the last open failed (device unplugged,
+   * ASIO channel already owned by another app). Message thread only.
+   */
+  juce::var getAudioDeviceState() const;
+
+  /**
+   * Opens `device` under driver `type` at the given rate/buffer, enables
+   * every input channel it exposes, and persists the whole setup so the
+   * next launch comes back on the same hardware. A zero/absent rate or
+   * buffer means "keep whatever the device prefers". Returns "" on
+   * success, else a human-readable error. Message thread only.
+   */
+  juce::String setAudioDevice(const juce::String &type,
+                              const juce::String &device, double sample_rate,
+                              int buffer_size);
+
+  /**
+   * Overrides where the device selection is persisted (tests). Defaults to
+   * <user app data>/Celestrian/audio_device.xml.
+   */
+  void setAudioDeviceFile(const juce::File &file);
+
   /**
    * GraphReclaimer: defers destruction of graph objects (child snapshots,
    * removed nodes) until the audio thread can no longer be reading them.
@@ -369,7 +404,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // instead of "whatever arrived after capture started". Preallocated in
   // the constructor; written at the top of every callback; indexed by
   // input_clock_ (monotonic, never wraps/resets — unlike the transport).
-  static constexpr int kPreRecordRingChannels = 8;
+  // Sized for a real multi-channel interface, not the built-in stereo
+  // endpoint: an 8-analog + 8-ADAT MOTU is 16 in, and every input the
+  // device exposes is enabled (enableAllInputChannels), so a channel the
+  // ring cannot reach is a channel the user cannot arm. 32 ch × 96000 ×
+  // 4 B = 12 MB of preallocation, and the per-block copy is bounded by
+  // the device's ACTUAL channel count, not this cap.
+  static constexpr int kPreRecordRingChannels = 32;
   static constexpr int kPreRecordRingLen = 96000;  // 2 s @ 48 kHz per channel
 
   juce::AudioBuffer<float> prerecord_ring_;
@@ -396,6 +437,25 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
   juce::String current_device_key_;  // empty when no device has started
   juce::File calibration_file_override_;
+
+  // --- Device selection persistence ---
+  // AudioDeviceManager's own XML (type, device name, rate, buffer, channel
+  // masks) round-tripped through createStateXml/initialise — the same
+  // format JUCE's AudioDeviceSelectorComponent writes, so nothing here has
+  // to know the field layout.
+  juce::File audioDeviceFile() const;
+  void persistAudioDevice();
+  /**
+   * Turns ON every input channel the open device exposes. Without this the
+   * device opens with only the channels `initialise` asked for, and a
+   * 16-in interface silently presents 2 — the callback's channel indices
+   * are ACTIVE-channel indices, so an inactive channel is not addressable
+   * at all. Message thread only; may restart the device.
+   */
+  void enableAllInputChannels();
+
+  juce::File audio_device_file_override_;
+  juce::String device_error_;  // last open failure, surfaced to the picker
 
   // --- Whole-graph snapshot (unification_audit §2.2, Tier 3 Step 3) ---
   // The one structure the audio thread traverses: rebuilt on the message

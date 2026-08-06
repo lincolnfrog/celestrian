@@ -9,6 +9,7 @@ import { deriveViewModel } from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
+import { initAudioSettings } from './audio_settings.js';
 
 const DEBUG = new URLSearchParams(window.location.search).get('debug') === 'true';
 const dbg = m => { if (DEBUG) log(m); };
@@ -183,6 +184,10 @@ function wireStatusStrip() {
             calibrateBtn.disabled = false;
         }
     });
+
+    // Audio device picker. Calibration is keyed on device|rate|buffer, so
+    // it sits right next to the button that changes all three.
+    initAudioSettings(callNative, setLogLine);
 }
 
 function patchCalibrateButton(state) {
