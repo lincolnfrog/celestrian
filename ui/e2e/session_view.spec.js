@@ -15,7 +15,19 @@ async function loadHarness(page, scenario) {
     await page.goto('/index_test.html');
     await page.waitForSelector('#test-controls', { timeout: 5000 });
     await page.click(`button:has-text("${scenario}")`);
-    await page.waitForSelector('.lane', { timeout: 5000 });
+    // The mock BOOTS a "Track 1" session at module load, and the app's
+    // poll can paint it before (or while) the scenario click lands — so
+    // "a .lane exists" may be the BOOT shell, torn down on the next
+    // tick. Counting or clicking that DOM loses the interaction (the
+    // fold-test flake: `before` read as 1 boot lane, fold click
+    // swallowed by the swap). No scenario names a node "Track 1", so
+    // wait until lanes exist AND the boot lane is gone — one tick
+    // renders the whole scenario VM, so the DOM is then complete.
+    await page.waitForFunction(() => {
+        const lanes = [...document.querySelectorAll('.lane')];
+        return lanes.length > 0 && !lanes.some(l =>
+            l.querySelector('.rail-name')?.textContent === 'Track 1');
+    }, { timeout: 5000 });
 }
 
 test.describe('Session shell', () => {
@@ -382,12 +394,28 @@ test.describe('Loop window brackets (phase 3)', () => {
             { timeout: 3000 }).toBe(88200);
         expect((await clipState()).windowActive).toBe(true);
 
-        // Same chip, same toggle as a group window — on a CLIP
+        // An ACTIVE clip window rests in the HEARD view (law 13, cut
+        // bands 2026-07-23): the chip names the audible loop and opens
+        // the inspector — "window · active" text lives on raw-framed
+        // lanes only.
+        await expect(clip3Q.locator('.win-open-chip'))
+            .toHaveText(/window 2Q/, { timeout: 3000 });
+
+        // Bypass through the SAME engine verb groups use (fractal —
+        // toggleLoopWindow works on any node since 2026-07-11): the raw
+        // frame returns with the toggle chip.
+        await page.evaluate(() =>
+            window.celestrian.callNative('toggleLoopWindow', 'clip-3q'));
         const chip = clip3Q.locator('.win-chip');
-        await expect(chip).toHaveText(/active/, { timeout: 3000 });
-        await chip.click();
         await expect(chip).toHaveText(/bypassed/, { timeout: 3000 });
         expect((await clipState()).loopBypassed).toBe(true);
+
+        // And that chip IS the bypass toggle, exactly like a group's:
+        // clicking it re-activates and the lane rests heard again.
+        await chip.click();
+        await expect(clip3Q.locator('.win-open-chip'))
+            .toHaveText(/window 2Q/, { timeout: 3000 });
+        expect((await clipState()).loopBypassed).toBe(false);
     });
 
     test('window cursor: the heard-time playhead loops inside the brackets', async ({ page }) => {
@@ -715,14 +743,14 @@ test.describe('Session shell (mock mode)', () => {
         await expect(page.locator('#position-readout')).toHaveText(/1\.5Q \/ 4Q ↺/, { timeout: 3000 });
     });
 
-    test('FIRST TAKE: new stack → add track → arm → stop → committed take', async ({ page }) => {
+    test('FIRST TAKE: ＋ Track → arm → stop → committed take', async ({ page }) => {
         await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
         await expect(page.locator('#empty-state')).toBeVisible();
 
-        // Build the session from the chrome alone (the field-reported flow)
-        await page.click('#add-stack-btn');
-        await expect(page.locator('.lane[data-kind="group"]')).toHaveCount(1);
-        await page.locator('.lane-add .add-track-row-btn').click();
+        // Build the session from the chrome alone — the core journey
+        // (owner ruling 2026-07-19h): ＋ Track, then hit ITS ●. There
+        // is no global record button; the track's ● is the record verb.
+        await page.click('#create-track-btn');
         const clipLane = page.locator('.lane[data-kind="clip"]');
         await expect(clipLane).toHaveCount(1);
         await expect(clipLane.locator('.rail-sub')).toHaveText('empty');
@@ -733,7 +761,6 @@ test.describe('Session shell (mock mode)', () => {
         await armBtn.click();
         await expect(clipLane.locator('.rail-status'))
             .toHaveText(/recording|armed/, { timeout: 3000 });
-        await expect(page.locator('#record-btn')).toHaveClass(/recording|armed/);
 
         // Let 2Q of "audio" pass, then stop from the same button
         await page.evaluate(() => window.__celestrianTest.setMasterPos(2 * 44100));
@@ -744,7 +771,7 @@ test.describe('Session shell (mock mode)', () => {
         await expect(armBtn).toBeDisabled(); // arm targets emptiness (Q7)
     });
 
-    test('DRUM FLOW: global ● records all empty tracks, full ones play (Q7)', async ({ page }) => {
+    test('DRUM FLOW: group ● records all empty tracks, full ones play (Q7)', async ({ page }) => {
         // Kit: 3 tracks with takes + 2 empty tracks in one stack
         await page.evaluate(async () => {
             window.__celestrianTest.loadScenario('stack-with-clips');
@@ -755,21 +782,25 @@ test.describe('Session shell (mock mode)', () => {
         });
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(5);
 
-        await page.click('#record-btn');
-
-        // Both empty tracks record; the three full ones are untouched
+        // The GROUP's ● is the drum-mic verb (owner ruling 2026-07-19h:
+        // there is no global record button): both empty tracks record,
+        // the three full ones are untouched.
+        const groupArm = page.locator('.lane[data-kind="group"] .arm-btn').first();
+        await expect(groupArm).toBeEnabled();
+        await groupArm.click();
         await expect.poll(() => page.evaluate(async () => {
             const s = (await window.__celestrianTest.callNative('getGraphState'))
                 .nodes.find(n => n.type === 'stack');
             return s.nodes.map(c => !!c.isRecording).join(',');
         }), { timeout: 3000 }).toBe('false,false,false,true,true');
-        await expect(page.locator('#record-btn')).toHaveClass(/recording/);
+        await expect(page.locator('.lane[data-kind="group"] .rail-status').first())
+            .toHaveText(/armed|recording|map live/, { timeout: 3000 });
 
-        // Global ● again stops both: the stop request enters
+        // Group ● again stops both: the stop request enters
         // awaiting-stop; the takes commit as the transport crosses the
         // next boundary (stops always pad forward — owner ruling)
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.6 * 44100)));
-        await page.click('#record-btn');
+        await groupArm.click();
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100)));
         await expect.poll(() => page.evaluate(async () => {
             const s = (await window.__celestrianTest.callNative('getGraphState'))
@@ -778,17 +809,27 @@ test.describe('Session shell (mock mode)', () => {
         }), { timeout: 3000 }).toBe(false);
     });
 
-    test('global ● on an all-full island records into a fresh track', async ({ page }) => {
+    test('all-full island: group ● disables; a fresh track records (Q7)', async ({ page }) => {
         await page.evaluate(() => window.__celestrianTest.loadScenario('example-1q-4q'));
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(2);
-        await page.click('#record-btn');
-        // A new lane appears, recording (pending start until audio is
-        // written, so it shows the arm marker, not a zero-length bar)
+
+        // Arm targets EMPTINESS: with every track full, the group's ●
+        // has nothing to record and disables. (The old global-● verb
+        // "record into a fresh track" left with the global button —
+        // owner ruling 2026-07-19h; adding the track is now explicit.)
+        const groupArm = page.locator('.lane[data-kind="group"] .arm-btn').first();
+        await expect(groupArm).toBeDisabled();
+
+        // The modern flow: ＋ Add track, then ITS ●.
+        await page.locator('.lane-add .add-track-row-btn').click();
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3, { timeout: 3000 });
-        const recLane = page.locator('.lane', { has: page.locator('.rail-status:text("recording…")') });
-        await expect(recLane.locator('.arm-marker')).toBeVisible();
+        const fresh = page.locator('.lane[data-kind="clip"]').nth(2);
+        await expect(fresh.locator('.arm-btn')).toBeEnabled();
+        await fresh.locator('.arm-btn').click();
+        await expect(fresh.locator('.rail-status'))
+            .toHaveText(/armed|recording/, { timeout: 3000 });
         // Once the transport crosses the Q11 boundary and audio flows,
-        // the bar takes over (scenario sits at 2.5Q: 0.5Q to the arm
+        // the bar takes over (scenario sits at ~0.5Q: 0.5Q to the arm
         // point, then some audio)
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.8 * 44100)));
         await expect(page.locator('.lane .recording-bar')).toHaveCount(1, { timeout: 3000 });
@@ -796,15 +837,16 @@ test.describe('Session shell (mock mode)', () => {
 
     test('NO FLASH: committing a take must not destroy other lanes\' DOM', async ({ page }) => {
         // Build: 1Q committed take, then record a second track past 1Q
+        // — through the current chrome (＋ Track + the per-track ●).
         await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
-        await page.click('#add-stack-btn');
-        await page.locator('.lane-add .add-track-row-btn').click();
+        await page.click('#create-track-btn');
         await page.locator('.lane[data-kind="clip"] .arm-btn').click();
         await page.evaluate(() => window.__celestrianTest.advanceBy(44100));
         await page.locator('.lane[data-kind="clip"] .arm-btn').click();
         await expect(page.locator('.lane[data-kind="clip"] .rep')).toHaveCount(1);
 
-        await page.locator('.lane-add .add-track-row-btn').click();
+        await page.click('#create-track-btn');
+        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(2);
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(1.5 * 44100)));
         await expect(page.locator('.recording-bar')).toBeVisible();
@@ -823,7 +865,8 @@ test.describe('Session shell (mock mode)', () => {
         // re-lays-out — but clip 1's rep div and canvas must SURVIVE
         // (destroy-and-recreate rendered as a global pop in the field)
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
-        await expect(page.locator('.rail-status').nth(2)).toHaveText('finishing…');
+        await expect(page.locator('.lane[data-kind="clip"]').nth(1)
+            .locator('.rail-status')).toHaveText('finishing…');
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100) + 10));
         await expect(page.locator('#position-readout')).toHaveText(/2Q ↺/, { timeout: 3000 });
 
