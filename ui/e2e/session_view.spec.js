@@ -543,13 +543,15 @@ test.describe('Input picker (phase 3)', () => {
 
         await chip.click();
         const menu = page.locator('.input-menu');
-        // Two mock channels in the LEFT list + "· mono" + two in the
-        // RIGHT (stereo pair) list.
+        // Input names derive from the mock's ACTIVE audio device (the
+        // device-panel model): "Microphone (USB Audio Device)" exposes 2
+        // channels → two in the LEFT list + "· mono" + two in the RIGHT
+        // (stereo pair) list.
         await expect(menu.locator('.input-item')).toHaveCount(5);
         await expect(menu.locator('.input-item.current').first())
-            .toHaveText(/Built-in Microphone/);
+            .toHaveText(/USB Audio Device\) 1/);
 
-        await menu.locator('.input-item', { hasText: 'External Audio' })
+        await menu.locator('.input-item', { hasText: '(USB Audio Device) 2' })
             .first().click();
         await expect(menu).toHaveCount(0); // picking closes the menu
         await expect(chip).toHaveText('in 2', { timeout: 3000 });
@@ -565,8 +567,9 @@ test.describe('Input picker (phase 3)', () => {
 
         await chip.click();
         const menu = page.locator('.input-menu');
-        // The RIGHT list is everything after "· mono": pick channel 1.
-        await menu.locator('.input-item', { hasText: 'Built-in Microphone' })
+        // The RIGHT list is everything after "· mono": pick channel 1
+        // (nth(1) — the left list's channel 1 is nth(0)).
+        await menu.locator('.input-item', { hasText: '(USB Audio Device) 1' })
             .nth(1).click();
         await expect(menu).toHaveCount(0);
         await expect(chip).toHaveText('1/1', { timeout: 3000 }); // L=ch1, R=ch1
