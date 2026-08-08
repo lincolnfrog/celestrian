@@ -413,6 +413,14 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int64_t> xrun_count_{0};     // suspicious inter-callback gaps
   int64_t last_entry_ticks_ = 0;           // audio thread only
 
+  // --- Master output monitor (transport VU meters) ---
+  // Block RMS of the summed master output, per channel, smoothed on the
+  // audio thread with VU-ish ballistics (~300 ms integration) so the
+  // UI's 50 ms poll can drive the needles directly. Written only by the
+  // audio callback; read by getGraphState on the message thread.
+  std::atomic<float> master_vu_l_{0.0f};
+  std::atomic<float> master_vu_r_{0.0f};
+
   // --- Pre-record ring (docs/performance.md §3) ---
   // Continuously captures device input so recording clips can map clip
   // positions to input *arrival times* (trigger + latency compensation)

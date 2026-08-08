@@ -1,5 +1,7 @@
 #include "audio_engine.h"
 
+#include <cmath>
+
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "clip_node.h"
@@ -974,6 +976,10 @@ juce::var AudioEngine::getGraphState() const {
     // Q fact instead of re-deriving min-over-nodes (P0-3 completion).
     obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
+    // Master monitor: smoothed output RMS per channel (linear 0..1) —
+    // the transport VU section reads these off the state poll.
+    obj->setProperty("masterVuL", (double)master_vu_l_.load());
+    obj->setProperty("masterVuR", (double)master_vu_r_.load());
     obj->setProperty("canUndo", canUndo());
     obj->setProperty("canRedo", canRedo());
     obj->setProperty("perf", makePerfState());
@@ -988,6 +994,8 @@ juce::var AudioEngine::getGraphState() const {
   state->setProperty("quantum",
                      (double)(root_node ? root_node->getQuantum() : 0));
   state->setProperty("soloedId", soloed_node_uuid);
+  state->setProperty("masterVuL", (double)master_vu_l_.load());
+  state->setProperty("masterVuR", (double)master_vu_r_.load());
   state->setProperty("canUndo", canUndo());
   state->setProperty("canRedo", canRedo());
   state->setProperty("nodes", juce::Array<juce::var>());
@@ -1714,6 +1722,41 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       view_recording_.store(is_recording);
 
       global_transport_pos.store(old_pos + num_samples);
+    }
+  }
+
+  // --- Master output monitor (transport VU meters) ---
+  // The output buffers now hold exactly what reaches the device — the
+  // master bus. ENVELOPE FOLLOWER metering: per-sample rectified
+  // follower with ~15 ms attack and ~400 ms release. The two earlier
+  // ballistics both missed: 300 ms-smoothed RMS buried transients
+  // (snaps metered −44 dB), raw block peak slammed the dial on every
+  // click (a 3 ms snap read like a hot mix — field 2026-08-08c/d). A
+  // 15 ms attack integrates just long enough that sparse clicks read
+  // mid-dial while sustained material reads its true level. A mono
+  // device mirrors channel 0 into the right meter.
+  {
+    const double sr =
+        cached_sample_rate_.load() > 0 ? cached_sample_rate_.load() : 48000.0;
+    const float ka = (float)(1.0 - std::exp(-1.0 / (sr * 0.015)));  // attack
+    const float kr = (float)std::exp(-1.0 / (sr * 0.4));            // release
+    for (int ch = 0; ch < 2; ++ch) {
+      const int src = (ch < num_output_channels &&
+                       output_channel_data[ch] != nullptr)
+                          ? ch
+                          : 0;
+      auto &meter = ch == 0 ? master_vu_l_ : master_vu_r_;
+      float env = meter.load(std::memory_order_relaxed);
+      if (src < num_output_channels && output_channel_data[src] != nullptr) {
+        const float *d = output_channel_data[src];
+        for (int i = 0; i < num_samples; ++i) {
+          const float a = std::abs(d[i]);
+          env = a > env ? env + (a - env) * ka : env * kr;
+        }
+      } else {
+        for (int i = 0; i < num_samples; ++i) env *= kr;
+      }
+      meter.store(env, std::memory_order_relaxed);
     }
   }
 

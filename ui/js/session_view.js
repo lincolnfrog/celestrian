@@ -320,11 +320,16 @@ function buildLane(lane) {
     // The Q-DEFINER badge (owner request 2026-07-19g): while the island's
     // tempo is still provisional, the track that defines it says so.
     // Locked islands own their Q — the badge retires at the 2nd take.
+    // A LAMP, not a word: fixed-size, so it can never truncate — the
+    // text version crushed to "T…" on crowded rails (owner feedback
+    // 2026-08-08e). A lit "Q" indicator in the deck's record-lamp
+    // vocabulary; the tooltip carries the explanation.
     const tempo = document.createElement('span');
     tempo.className = 'tempo-chip mono';
-    tempo.textContent = 'tempo';
-    tempo.title = 'This take defines the loop length (Q) — drag its ' +
-        'handles to trim. Locks when you record another track.';
+    tempo.textContent = 'Q';
+    tempo.title = 'This take defines the loop length (Q — the tempo). ' +
+        'Drag its handles in the lane to trim. Locks when you record ' +
+        'another track.';
     tempo.style.display = 'none';
     head.appendChild(tempo);
     if (lane.kind === 'group') {
@@ -1241,14 +1246,27 @@ function patchLaneBody(row, lane, vm, aux) {
             o.append(b1, b2);
             if (!latent || qDef) {
                 const chip = document.createElement('div');
-                // A window ending AT the display cycle would put the
-                // chip past the lane's overflow clip — align it inward
-                chip.className = 'win-chip' + qCls +
-                    (anchorQ + endQ >= cycleQ ? ' at-end' : '');
-                chip.style.left = pct(anchorQ + endQ, cycleQ);
-                chip.textContent = qDef
-                    ? 'sets tempo · drag to trim'
-                    : bypassed ? 'window · bypassed' : active ? 'window · active' : 'window';
+                if (qDef) {
+                    // The Q-definer chip CENTERS over the take: pinned to
+                    // the window end it sat clipped against the lane's
+                    // right edge, unreadable (owner feedback 2026-08-08d).
+                    chip.className = 'win-chip q-definer centered';
+                    chip.style.left =
+                        pct(anchorQ + (startQ + endQ) / 2, cycleQ);
+                    chip.textContent = 'sets tempo · drag ends to trim';
+                    chip.title = 'This first take defines the loop length '
+                        + '(Q — the tempo everything else locks to). Drag '
+                        + 'its end handles to trim it; the tempo locks '
+                        + 'when you record a second track.';
+                } else {
+                    // A window ending AT the display cycle would put the
+                    // chip past the lane's overflow clip — align it inward
+                    chip.className = 'win-chip' +
+                        (anchorQ + endQ >= cycleQ ? ' at-end' : '');
+                    chip.style.left = pct(anchorQ + endQ, cycleQ);
+                    chip.textContent = bypassed ? 'window · bypassed'
+                        : active ? 'window · active' : 'window';
+                }
                 o.appendChild(chip);
                 if (lane.windowEditing) {
                     const done = document.createElement('div');
@@ -2424,28 +2442,47 @@ function patchRail(row, lane, vm) {
                 : 'Record into this track');
     }
 
-    // Sub-line: the period only. Status is the red word on the name row.
+    // Sub-line: the period at rest; while RECORDING it becomes the live
+    // take length, pulsing record-red — the period slot is the one place
+    // on the rail with reserved room, so nothing else reflows (owner
+    // feedback 2026-08-08: the head-row "recording…" word squeezed the
+    // name to an ellipsis, a weird visual fluctuation).
     const sub = row.querySelector('.rail-sub');
-    if (lane.kind === 'group') {
+    const recLen = lane.recordingLengthQ;
+    const clipArmed = lane.kind === 'clip' && lane.armed && !lane.recording;
+    if (lane.recording) {
+        // Decimal below 10Q; whole Qs above — "12.3Q…" outgrew the slot
+        const len = Number.isFinite(recLen) && recLen > 0
+            ? (recLen < 9.95 ? recLen.toFixed(1) : Math.round(recLen)) + 'Q'
+            : 'rec';
+        setText(sub, len + (lane.awaitingStop ? '…' : ''));
+    } else if (clipArmed) {
+        // Armed lives in the Q slot too (owner feedback 2026-08-08b) —
+        // the same reserved room, the same no-reflow guarantee. It hands
+        // over to the live length when audio starts flowing.
+        setText(sub, 'armed');
+    } else if (lane.kind === 'group') {
         setText(sub, lane.periodQ > 0 ? fmtQ(lane.periodQ) + 'Q' : 'group');
     } else if (lane.periodQ > 0) {
         setText(sub, fmtQ(lane.periodQ) + 'Q');
     } else {
-        setText(sub, lane.recording ? '' : 'empty');
+        setText(sub, 'empty');
     }
+    sub.classList.toggle('recording', !!lane.recording || clipArmed);
 
     const status = row.querySelector('.rail-status');
     // "A map is shaping time" (time_maps.md ruling 5): through-map
     // takes carry the ⟲ cue on the recording lane AND the mapping
-    // group's rail.
-    const mapCue = lane.throughMap ? ' ⟲' + lane.mapPeriodQ + 'Q map' : '';
-    setText(status, lane.recording
-        ? (lane.awaitingStop ? 'finishing…' : 'recording…') + mapCue
+    // group's rail. Clip arm/record state lives ENTIRELY in the sub-line
+    // (the head row never reflows); the status word only carries the
+    // group aggregates and the map cue.
+    setText(status, lane.recording || clipArmed
+        ? (lane.throughMap ? '⟲map' : '')
         : lane.kind === 'group'
             ? (lane.mapRecording ? '⟲ map live'
                 : lane.groupArm.state !== 'none'
                     ? 'armed ' + (lane.groupArm.state === 'all' ? 'all' : 'some') : '')
-            : lane.armed ? 'armed' + mapCue : '');
+            : '');
 
     const fold = row.querySelector('.fold-btn');
     if (fold) setText(fold, lane.folded ? '▸' : '▾');

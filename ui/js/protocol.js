@@ -25,7 +25,7 @@ export const BRIDGE_METHODS = [
     { name: 'stopRecordingInNode', params: ['uuid'] },
 
     // State
-    { name: 'getGraphState', params: [], returns: 'GraphState (focused node metadata tree + isPlaying/masterPos/soloedId)' },
+    { name: 'getGraphState', params: [], returns: 'GraphState (focused node metadata tree + isPlaying/masterPos/soloedId/masterVuL/masterVuR)' },
     { name: 'getWaveform', params: ['uuid', 'numPeaks'], returns: 'float[] peaks' },
     { name: 'dumpStateToFile', params: ['json'] },
 

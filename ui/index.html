@@ -5,14 +5,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Celestrian</title>
+    <link rel="icon" href="assets/celestrian-favicon.svg" type="image/svg+xml">
+    <link rel="alternate icon" href="assets/celestrian-favicon-32.png" type="image/png">
+    <!-- Design fonts (dark tape theme handoff): Archivo for UI, IBM Plex
+         Mono for readouts. Falls back to system stacks offline. -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="css/session.css">
 </head>
 
 <body>
     <!-- LOADING OVERLAY -->
     <div id="loading-overlay"
-        style="position:fixed;top:0;left:0;width:100%;height:100%;background:#171310;display:flex;justify-content:center;align-items:center;color:#e8a13c;z-index:9999;font-family:sans-serif;">
+        style="position:fixed;top:0;left:0;width:100%;height:100%;background:#232529;display:flex;justify-content:center;align-items:center;color:#e8a13c;z-index:9999;font-family:sans-serif;">
         <div style="text-align:center;">
+            <img src="assets/celestrian-mark.svg" alt="" width="64" height="64"
+                style="display:block;margin:0 auto 14px;">
             <div style="font-size:24px;font-weight:900;margin-bottom:10px;letter-spacing:0.2em;">CELESTRIAN</div>
             <div id="loading-status">Loading modules...</div>
         </div>
@@ -21,11 +32,39 @@
     <div id="app">
         <!-- TRANSPORT -->
         <div id="transport">
-            <span class="brand">CELESTRIAN</span>
+            <span class="brand"><img src="assets/celestrian-mark.svg" alt="" width="22"
+                    height="22">CELESTRIAN</span>
             <button id="play-btn" title="Play / stop (space)">▶</button>
-            <span id="position-readout">—</span>
+            <!-- Odometer: position readout over the Q/rate sub-line -->
+            <div id="odometer" title="Position — playhead over the audible cycle">
+                <div class="digits" id="position-readout">—</div>
+                <div class="sub" id="q-info"></div>
+            </div>
+            <!-- Master monitor: VU needles driven by the engine's master
+                 output RMS (masterVuL/R on the state poll) -->
+            <div id="master-monitor" title="Master output — what the speakers hear">
+                <div class="vu-pair">
+                    <div class="vu" id="vu-l">
+                        <div class="label">VU · L</div>
+                        <div class="arc"></div>
+                        <div class="zone"></div>
+                        <span class="peak"></span>
+                        <div class="needle"></div>
+                    </div>
+                    <div class="vu" id="vu-r">
+                        <div class="label">VU · R</div>
+                        <div class="arc"></div>
+                        <div class="zone"></div>
+                        <span class="peak"></span>
+                        <div class="needle"></div>
+                    </div>
+                    <button id="master-fader"
+                        title="Master volume — drag up/down, double-click for unity"><span
+                            class="grip"></span></button>
+                </div>
+                <div class="monitor-label">MASTER MONITOR</div>
+            </div>
             <span class="spacer"></span>
-            <span id="q-info"></span>
             <button id="zoom-out-btn" class="bar-btn" title="Zoom out (E)">−</button>
             <span id="zoom-level" title="Click to reset zoom">100%</span>
             <button id="zoom-in-btn" class="bar-btn" title="Zoom in (Q)">＋</button>
@@ -61,6 +100,7 @@
 
         <!-- STATUS STRIP -->
         <div id="status-strip">
+            <span id="ready-lamp" title="Engine ready"></span>
             <span id="log-line">ready</span>
             <span id="calibration-status"></span>
             <button id="audio-device-btn" class="bar-btn"

@@ -16,15 +16,22 @@
  * is still accepted; `step` is ignored.)
  */
 
+// Dark tape theme (design handoff, theme-dark-tape.css): amber carries
+// MATERIAL. The group composite is a clearly LIGHTER, creamier gold —
+// the handoff's --amber-group read as near-identical to the track amber
+// on real screens (owner feedback 2026-08-08), so the composite pushes
+// further toward cream: same warm family (colorblind-safe: the contrast
+// is lightness, not hue), unmistakably the group's mixdown at a glance.
 const TAPE = { top: '#f0b45a', mid: '#e8a13c', bottom: '#c9871f' };
-const COMPOSITE = { top: '#d98a52', mid: '#c96f3a', bottom: '#a85526' };
+const COMPOSITE = { top: '#f9ecc0', mid: '#f2d78f', bottom: '#dcbb60' };
 // Echo tone ("ghosts show what SOUNDS", 2026-07-16 + owner follow-up):
 // EVERY ghost tile is an audible repetition — of the full take or of a
 // window segment — and draws in this cool tone. Warm tape hues are
 // reserved for MATERIAL (the take tile, the live bar, the composite),
 // so "echo of sound" and "muted original material" can never be
-// confused anywhere in the timeline.
-const ECHO = { top: '#9fc4bb', mid: '#79a89d', bottom: '#578479' };
+// confused anywhere in the timeline. Now the theme's colorblind-safe
+// cyan (--cyan); the tile's CSS opacity supplies the echo transparency.
+const ECHO = { top: '#84d6e2', mid: '#5fc9d8', bottom: '#3f9fb0' };
 
 /**
  * One envelope value per CSS pixel column, max-pooled over the peaks
@@ -135,6 +142,19 @@ export function drawWaveform(canvas, peaks, arg3 = null, arg4 = false) {
         cols[x] = Math.pow(Math.min(1, cols[x] * boost), 0.65);
     }
 
+    // CONNECTED envelope (design handoff rule 6): a 3-point moving
+    // average joins the max-pooled columns into one continuous shape
+    // without losing bar-level detail — "do not oversmooth into blobs".
+    // Runs AFTER pooling/normalization so poolColumns' append-stability
+    // contract (fixed-scale live bars) is untouched: a new column only
+    // re-shades its immediate neighbor, it never remaps old content.
+    const sm = new Float32Array(cssW);
+    for (let x = 0; x < cssW; x++) {
+        const a = x > 0 ? cols[x - 1] : cols[x];
+        const b = x < cssW - 1 ? cols[x + 1] : cols[x];
+        sm[x] = (a + cols[x] + b) / 3;
+    }
+
     // Filled symmetric envelope. A 1px floor keeps silent-but-present
     // audio visible as a hairline spine.
     const amp = cssH * 0.46;
@@ -146,12 +166,12 @@ export function drawWaveform(canvas, peaks, arg3 = null, arg4 = false) {
     ctx.fillStyle = grad;
 
     ctx.beginPath();
-    ctx.moveTo(0, midY - Math.max(floor, cols[0] * amp));
+    ctx.moveTo(0, midY - Math.max(floor, sm[0] * amp));
     for (let x = 1; x < cssW; x++) {
-        ctx.lineTo(x, midY - Math.max(floor, cols[x] * amp));
+        ctx.lineTo(x, midY - Math.max(floor, sm[x] * amp));
     }
     for (let x = cssW - 1; x >= 0; x--) {
-        ctx.lineTo(x, midY + Math.max(floor, cols[x] * amp));
+        ctx.lineTo(x, midY + Math.max(floor, sm[x] * amp));
     }
     ctx.closePath();
     ctx.fill();

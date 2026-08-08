@@ -588,6 +588,12 @@ function setNodePan(id, pan) {
 // Volume fader, clamped [0, 1] — unity ceiling, the no-boost law
 // (engine parity: AudioEngine::setNodeGain).
 function setNodeGain(id, gain) {
+    // The island ROOT is not in state.nodes — its gain is the MASTER
+    // fader (engine parity: the root stack's output stage).
+    if (id === 'mock-root') {
+        state.masterGain = Math.max(0, Math.min(1, gain));
+        return;
+    }
     const node = findNode(id);
     if (node) node.gain = Math.max(0, Math.min(1, gain));
 }
@@ -1395,6 +1401,25 @@ function lcmInt(a, b) {
 
 const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
 
+/** Synthesized master level for mock mode (see getState). Derived from
+ * masterPos (not wall-clock) so deterministic advanceBy() tests get
+ * deterministic levels, and silence when transport is stopped. */
+function mockMasterVu(phase) {
+    if (!state.isPlaying) return 0;
+    const anyAudio = (state.nodes || []).some(function has(n) {
+        return (n.duration > 0 || n.isRecording) ||
+            (n.nodes || []).some(has);
+    });
+    if (!anyAudio) return 0;
+    const t = (state.masterPos || 0) / 44100;
+    const lv = 0.30 + 0.16 * Math.sin(t * 2.1 + phase) +
+        0.10 * Math.sin(t * 5.3 + phase * 2) +
+        0.05 * Math.sin(t * 11.7 + phase);
+    // The master fader attenuates what reaches the meters (engine
+    // parity: the VU taps the summed output AFTER the root's gain).
+    return Math.max(0, Math.min(1, lv)) * (state.masterGain ?? 1);
+}
+
 export function getState() {
     // Auto-advance transport if running (simulates real-time playback/recording)
     advanceTransport();
@@ -1405,6 +1430,15 @@ export function getState() {
         id: 'mock-root',
         isPlaying: state.isPlaying,
         masterPos: viewMasterPos(),
+        // Master monitor (engine parity: smoothed output RMS, linear
+        // 0..1). Synthesized from the transport so the VU needles sweep
+        // believably in mock mode: silent when stopped, a slow musical
+        // undulation with slight L/R decorrelation while playing.
+        masterVuL: mockMasterVu(0),
+        masterVuR: mockMasterVu(1.3),
+        // Root output-stage gain (engine parity: the root stack
+        // publishes `gain` like every node) — the master fader's value.
+        gain: state.masterGain ?? 1,
         // The raw island clock (engine parity): epoch-relative,
         // unwrapped — the UI folds it on its own pinned frame during
         // map gestures for a continuous cursor.
@@ -1526,6 +1560,7 @@ export function loadScenario(name) {
     recView.active = false;
     state.islandEpoch = 0;
     state.islandQ = 0;  // fresh session: Q re-establishes per scenario
+    state.masterGain = 1;  // master fader back to unity (test isolation)
     lastUndoable = { method: null, arg0: null };
     // Loading a scenario is a fresh session — undo history does not carry
     // across it (test isolation + mirrors constructing a fresh engine).

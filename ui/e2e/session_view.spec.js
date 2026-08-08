@@ -157,10 +157,13 @@ test.describe('Session shell', () => {
         await loadHarness(page, '1Q + Recording');
         const rec = page.locator('.lane .recording-bar').first();
         await expect(rec).toBeVisible();
-        // The recording clip's own rail says "recording…"; its group rail
-        // aggregates it as armed (Q7) — assert both
+        // The recording clip's own rail carries the cue in the SUB-LINE:
+        // the live take length, pulsing record-red (owner feedback
+        // 2026-08-08 — the old head-row "recording…" word squeezed the
+        // name). Its group rail aggregates it as armed (Q7).
         const recLane = page.locator('.lane', { has: page.locator('.recording-bar') });
-        await expect(recLane.locator('.rail-status')).toHaveText(/recording/);
+        await expect(recLane.locator('.rail-sub')).toHaveClass(/recording/);
+        await expect(recLane.locator('.rail-sub')).toHaveText(/Q|rec/);
         await expect(page.locator('.lane[data-kind="group"] .rail-status'))
             .toHaveText(/armed/);
 
@@ -848,8 +851,14 @@ test.describe('Session shell (mock mode)', () => {
         const armBtn = clipLane.locator('.arm-btn');
         await expect(armBtn).toBeEnabled();
         await armBtn.click();
-        await expect(clipLane.locator('.rail-status'))
-            .toHaveText(/recording|armed/, { timeout: 3000 });
+        // Armed shows as the head-row word; once audio flows the cue is
+        // the pulsing sub-line length (the head row stays quiet).
+        await expect.poll(() => page.evaluate(() => {
+            const lane = document.querySelector('.lane[data-kind="clip"]');
+            return lane.querySelector('.rail-status').textContent +
+                (lane.querySelector('.rail-sub').classList.contains('recording')
+                    ? ' recording' : '');
+        }), { timeout: 3000 }).toMatch(/armed|recording/);
 
         // Let 2Q of "audio" pass, then stop from the same button
         await page.evaluate(() => window.__celestrianTest.setMasterPos(2 * 44100));
@@ -915,8 +924,12 @@ test.describe('Session shell (mock mode)', () => {
         const fresh = page.locator('.lane[data-kind="clip"]').nth(2);
         await expect(fresh.locator('.arm-btn')).toBeEnabled();
         await fresh.locator('.arm-btn').click();
-        await expect(fresh.locator('.rail-status'))
-            .toHaveText(/armed|recording/, { timeout: 3000 });
+        await expect.poll(() => page.evaluate(() => {
+            const lane = document.querySelectorAll('.lane[data-kind="clip"]')[2];
+            return lane.querySelector('.rail-status').textContent +
+                (lane.querySelector('.rail-sub').classList.contains('recording')
+                    ? ' recording' : '');
+        }), { timeout: 3000 }).toMatch(/armed|recording/);
         // Once the transport crosses the Q11 boundary and audio flows,
         // the bar takes over (scenario sits at ~0.5Q: 0.5Q to the arm
         // point, then some audio)
@@ -954,8 +967,10 @@ test.describe('Session shell (mock mode)', () => {
         // re-lays-out — but clip 1's rep div and canvas must SURVIVE
         // (destroy-and-recreate rendered as a global pop in the field)
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
+        // Awaiting-stop reads on the sub-line: the live length gains a
+        // trailing ellipsis ("1.5Q…") while the take pads to the boundary.
         await expect(page.locator('.lane[data-kind="clip"]').nth(1)
-            .locator('.rail-status')).toHaveText('finishing…');
+            .locator('.rail-sub')).toHaveText(/…$/);
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100) + 10));
         await expect(page.locator('#position-readout')).toHaveText(/2Q ↺/, { timeout: 3000 });
 

@@ -10,6 +10,8 @@ import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initAudioSettings } from './audio_settings.js';
+import { updateMasterVU, initMasterFader, updateMasterFader }
+    from './vu_meter.js';
 
 const DEBUG = new URLSearchParams(window.location.search).get('debug') === 'true';
 const dbg = m => { if (DEBUG) log(m); };
@@ -237,6 +239,36 @@ async function startPolling() {
                     sampleRate: state.perf ? state.perf.sampleRate : 0,
                 });
                 patchCalibrateButton(state);
+                // Master monitor: engine-side smoothed output RMS →
+                // needle sweep (vu_meter.js; CSS transition interpolates
+                // between polls). The fader mirrors the root's gain.
+                // STALE-ENGINE TELL: a binary built before the master VU
+                // publishes no masterVuL at all — dim the meters and say
+                // why, instead of showing dead needles that look broken.
+                const monitor = document.getElementById('master-monitor');
+                if (monitor) {
+                    const stale = typeof state.masterVuL === 'undefined';
+                    monitor.classList.toggle('stale', stale);
+                    if (stale) {
+                        monitor.title = 'No master levels in engine state — '
+                            + 'rebuild the app (the C++ engine predates the '
+                            + 'master VU)';
+                    } else {
+                        // Live dB readout on hover — doubles as the
+                        // diagnostic surface for the meter path.
+                        const db = v => {
+                            const n = Number(v) || 0;
+                            return n <= 0 ? '−∞'
+                                : (20 * Math.log10(n)).toFixed(1);
+                        };
+                        monitor.title = 'Master output — L ' + db(state.masterVuL)
+                            + ' dB · R ' + db(state.masterVuR) + ' dB (raw L='
+                            + state.masterVuL + ')';
+                    }
+                }
+                updateMasterVU(Number(state.masterVuL) || 0,
+                               Number(state.masterVuR) || 0);
+                updateMasterFader(state.gain);
             }
         } catch (err) {
             console.error('Polling error:', err);
@@ -567,6 +599,9 @@ export function initApp() {
         onArm,
     });
     wireStatusStrip();
+    // Master fader → the island root's output-stage gain (stacks apply
+    // gain·pan at their output, so the root's fader IS the master).
+    initMasterFader(v => { if (lastRootId) callNative('setNodeGain', lastRootId, v); });
 
     window.addEventListener('keydown', e => {
         if (e.target.tagName === 'INPUT') return;
