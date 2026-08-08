@@ -509,6 +509,15 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       node->is_muted.store(e.b1);
       return inv;
     }
+    case K::PeriodSource: {
+      auto *node = find(e.uuid);
+      if (!node) return {};
+      Edit inv(K::PeriodSource);
+      inv.uuid = e.uuid;
+      inv.b1 = node->period_from_context_.load();
+      node->period_from_context_.store(e.b1);
+      return inv;
+    }
     case K::LoopPoints: {
       auto *node = find(e.uuid);
       if (!node) return {};
@@ -1653,6 +1662,13 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // The invariant monotonic clock (master_pos twin of island_epoch):
     // mapping stacks fold master_pos on the way down but never this.
     pc.island_pos = global_transport_pos;
+    // Context-cycle seed (Q5 one-shots): the island's audible cycle.
+    // Each stack recomputes it for its own scope in childContext; this
+    // seed is the fallback an all-one-shot ROOT scope inherits.
+    pc.context_cycle = pc.snap
+        ? celestrian::snapEffectiveCycle(*pc.snap, pc.quantum,
+                                         (int64_t)pc.sample_rate)
+        : calculateEffectiveCycleLength();
 
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished
@@ -1954,6 +1970,21 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
     e.b1 = !node->is_muted.load();  // toggle to the opposite state
     record(std::move(e));
   }
+}
+
+void AudioEngine::setPeriodSource(const juce::String &uuid,
+                                  bool from_context) {
+  // The Q5 knob: one-shot ⟺ period := context cycle. A MUSICAL fact
+  // (changes what sounds when), so unlike the mixer knobs it rides the
+  // edit log. CLIPS ONLY for now — a stack has no origin to anchor a
+  // once-per-cycle firing to (fractal one-shot groups are future work).
+  auto *node = findNodeByUuid(root_node.get(), uuid);
+  if (!node || node->getNodeType() != celestrian::NodeType::Clip) return;
+  if (node->period_from_context_.load() == from_context) return;
+  celestrian::Edit e(celestrian::Edit::Kind::PeriodSource);
+  e.uuid = uuid;
+  e.b1 = from_context;
+  record(std::move(e));
 }
 
 // --- LCM Timeline Helpers ---

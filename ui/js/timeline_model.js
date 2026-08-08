@@ -166,6 +166,9 @@ export function calculateStackLCM(stackNodes, effectiveQ) {
 
     (stackNodes || []).forEach(child => {
         if (child.isRecording) return; // Skip recording clips
+        // One-shots excluded (Q5): period := context cycle — they adopt
+        // the scope's cycle, never extend it (engine fold parity).
+        if (child.periodSource === 'context') return;
 
         if (child.type === 'clip' && child.duration > 0) {
             const p = commensuratePeriod(child, effectiveQ);

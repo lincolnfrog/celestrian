@@ -25,7 +25,7 @@ function findClip(nodes) {
 }
 
 test('setNodeGain stores and clamps to [0, 1]', async () => {
-    loadScenario('Stack with 3 Clips');
+    loadScenario('stack-with-clips');
     const clip = findClip(getState().nodes);
     assert.equal(clip.gain, 1, 'nodes are born at unity');
 
@@ -40,7 +40,7 @@ test('setNodeGain stores and clamps to [0, 1]', async () => {
 });
 
 test('gain is not undoable (mixer knob)', async () => {
-    loadScenario('Stack with 3 Clips');
+    loadScenario('stack-with-clips');
     const clip = findClip(getState().nodes);
     const couldUndo = getState().canUndo;
     await callNative('setNodeGain', clip.id, 0.5);
@@ -49,7 +49,7 @@ test('gain is not undoable (mixer knob)', async () => {
 });
 
 test('view model surfaces gain, defaulting absent to unity', () => {
-    loadScenario('Stack with 3 Clips');
+    loadScenario('stack-with-clips');
     const state = getState();
     const clip = findClip(state.nodes);
     clip.gain = 0.25;

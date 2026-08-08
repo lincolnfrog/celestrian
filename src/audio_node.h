@@ -85,6 +85,15 @@ struct ProcessContext {
   int64_t island_epoch = 0;
   AudioNode *island = nullptr;
 
+  // The CONTEXT CYCLE for this scope (the Q5 one-shot period): each
+  // stack sets it for its children — its active map's period when
+  // mapped, else lcm(quantum, its LOOPING children's effective periods)
+  // — falling back to the received value when the scope has no looping
+  // content of its own. A one-shot node's period IS this value; it is
+  // what "sounds once per cycle" means. Like context_loop this is
+  // passed DOWN (P1-6), but unlike it this is a RENDER fact.
+  int64_t context_cycle = 0;
+
   // --- Time-map facts (time_maps.md phase 2) ---
   // The INVARIANT monotonic island clock: the engine's transport
   // position, never folded by a mapping stack on the way down (the
@@ -218,6 +227,10 @@ class AudioNode {
     // alike; `playhead` carries the window phase while active.
     obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
     obj->setProperty("windowActive", isLoopWindowActive());
+    // The period-source knob (Q5): "own" = loops at its own length,
+    // "context" = one-shot (sounds once per context cycle).
+    obj->setProperty("periodSource",
+                     period_from_context_.load() ? "context" : "own");
     // Multi-segment map (phase 3): flat [s0,e0,s1,e1,...] in samples,
     // present only when an override is installed.
     if (const timing::TimeMap *m = map_override_.load()) {
@@ -402,6 +415,10 @@ class AudioNode {
             loop_end_samples.load() > loop_start_samples.load());
   }
 
+  /** The period-source knob (Q5): true = one-shot (period := context
+   * cycle). Audio-thread safe (one atomic load). */
+  bool periodFromContext() const { return period_from_context_.load(); }
+
   /**
    * The node's ACTIVE time-map as the reified value type (time_maps.md
    * §2): the multi-segment override when one is installed (phase 3),
@@ -495,6 +512,16 @@ class AudioNode {
   // Loop window bypass flag (time_maps.md). Window phase is pure
   // arithmetic on the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};
+  // THE PERIOD-SOURCE KNOB (Q5 ruling / kernel.md §2 / audit D7): false
+  // = the node's period is its own length (a loop, the default); true =
+  // its period is the CONTEXT CYCLE (ProcessContext.context_cycle) — a
+  // ONE-SHOT, sounding once per scope cycle at its origin, then
+  // resting. A period choice, not a clip type. One-shots are EXCLUDED
+  // from every period/duration composition fold (stack LCMs, snapshot
+  // twins): they adopt the scope's cycle, never extend it — that is
+  // what keeps a composite honestly periodic in its claimed period
+  // (I1). Undoable (a musical fact, unlike the mixer knobs).
+  std::atomic<bool> period_from_context_{false};
   // Multi-segment map override (phase 3; see mapOverride above): owned
   // here, swapped on the message thread, retired via the reclaimer.
   std::atomic<const timing::TimeMap *> map_override_{nullptr};

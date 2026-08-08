@@ -362,6 +362,18 @@ MainComponent::MainComponent()
                     completion(true);
                   })
               .withNativeFunction(
+                  "setPeriodSource",
+                  [this](const juce::Array<juce::var> &args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    if (args.size() > 1) {
+                      audio_engine.setPeriodSource(
+                          args[0].toString(),
+                          args[1].toString() == "context");
+                    }
+                    completion(true);
+                  })
+              .withNativeFunction(
                   "setEffectEnabled",
                   [this](const juce::Array<juce::var> &args,
                          juce::WebBrowserComponent::NativeFunctionCompletion

@@ -555,6 +555,27 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    different renderings of the same audio (features shift a few px) —
    the residual "squish/stretch" in the 2026-07-10 field video */
 .rep canvas { position: absolute; left: 0; top: 0; height: 100%; }
+/* One-shot lanes (Q5): the lone take tile carries a dashed edge —
+   "plays once, then rests" (recording.md Example 3). An OUTLINE, never
+   a border: lane-body box metrics must not change with state (the
+   state-metrics law). */
+.lane-body.one-shot .rep {
+    outline: 1px dashed var(--text-dim);
+    outline-offset: -1px;
+    border-radius: 3px;
+}
+/* The period-source toggle: compact (it shares the head row with the
+   name — every pixel is the name's), quiet accent like fx·N when on. */
+.rail-btn.oneshot-btn {
+    flex: none;
+    width: 22px; height: 20px;
+    padding: 0;
+    font-size: 0.72rem; line-height: 1;
+    color: var(--text-dim);
+}
+.rail-btn.oneshot-btn.on {
+    color: var(--tape); border-color: var(--tape); background: var(--panel-2);
+}
 /* Ghosts slightly stronger than the old 0.16 now that waveforms are
    display-normalized; the Q gridlines mark boundaries (a per-rep tick
    notch read as "waveform corruption" in the field) */

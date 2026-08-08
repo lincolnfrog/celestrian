@@ -616,6 +616,43 @@ test.describe('Input picker (phase 3)', () => {
     });
 });
 
+test.describe('One-shot toggle (period source, Q5)', () => {
+
+    test('1× drops the ghosts; toggling back restores the loop; undoable', async ({ page }) => {
+        await loadHarness(page, '1Q + 4Q (LCM=4)');
+        // The 1Q lane loops across the 4Q frame: take tile + 3 ghosts.
+        const lane = page.locator('.lane[data-kind="clip"]').first();
+        await expect(lane.locator('.rep.ghost')).toHaveCount(3);
+
+        const ps = lane.locator('.oneshot-btn');
+        await expect(ps).toHaveText('↺');
+        await ps.click();
+
+        // One-shot: only the take tile remains, dashed lane styling on,
+        // the state knob round-trips, and the 4Q frame is untouched.
+        await expect(ps).toHaveText('1×', { timeout: 3000 });
+        await expect(lane.locator('.rep.ghost')).toHaveCount(0);
+        await expect(lane.locator('.lane-body')).toHaveClass(/one-shot/);
+        const src = await page.evaluate(() => window.celestrian.getState()
+            .nodes.find(n => n.type === 'stack').nodes[0].periodSource);
+        expect(src).toBe('context');
+        await expect(page.locator('#ruler .tick-label').last())
+            .toHaveText(/4Q/); // the one-shot never extends the frame
+
+        // A musical fact: ⌘Z takes it back.
+        await page.keyboard.press(process.platform === 'darwin'
+            ? 'Meta+z' : 'Control+z');
+        await expect(ps).toHaveText('↺', { timeout: 3000 });
+        await expect(lane.locator('.rep.ghost')).toHaveCount(3);
+    });
+
+    test('groups have no period-source toggle', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        await expect(page.locator('.lane[data-kind="group"] .oneshot-btn'))
+            .toHaveCount(0);
+    });
+});
+
 test.describe('Gain dial (volume fader)', () => {
 
     const clipGain = page => page.evaluate(() =>

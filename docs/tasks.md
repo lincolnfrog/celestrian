@@ -265,9 +265,29 @@ with kernel.md:
   Pinned: tests/output_stage_tests.cc, ui/js/tests/gain.test.mjs, two
   real-input e2e specs. Mono→Stereo's "one bus" was largely delivered
   by the 2026-07-27 stereo work; the stage is now that bus's one exit.
-- [ ] **One-shots as a period-source knob** (Q5 ruling) — store the
-  kernel triple's `period_source: own_length | context`; deletes the
-  last reason `duration` doubles as period.
+- [x] **One-shots as a period-source knob** (Q5 ruling) — ✅ done
+  2026-08-06: `AudioNode::period_from_context_` stores the kernel
+  triple's period source; a one-shot clip renders
+  content[(t − origin − a0) mod CONTEXT_CYCLE] with honest silence past
+  its length (rest regions feed the fx rack, so echo/reverb tails ring
+  out). The context cycle is a fact PASSED DOWN
+  (`ProcessContext.context_cycle`, the P1-6 pattern): each stack gives
+  its children lcm(Q, its LOOPING children's effective periods) — map
+  period when mapped, the received cycle when the scope has no loops of
+  its own. One-shots are EXCLUDED from every composition fold
+  (stack/snapshot intrinsic + effective, mock, VM, timeline model):
+  they adopt the scope cycle, never extend it, which is what keeps a
+  composite honestly periodic in its claimed period (I1). Clips only
+  (a stack has no origin to anchor a firing to — fractal one-shot
+  groups deferred); UNDOABLE (`Edit::PeriodSource` — a musical fact,
+  unlike the mixer knobs); bridge `setPeriodSource` (3-place),
+  `periodSource` metadata + additive persistence (absent = loop).
+  Display per canon: dashed take tile, NO ghost repetitions
+  (recording.md Example 3); ↺/1× toggle chip in the clip rail HEAD
+  (the foot row is at width). Windowed one-shots fire the window
+  segment once per cycle. Pinned: tests/one_shot_tests.cc,
+  ui/js/tests/one_shot.test.mjs, two e2e specs (incl. undo + the
+  frame-never-extends check).
 - [ ] **Edits-as-events → undo/save-load → (later) immutable root** —
   STAGED (audit verdict 2026-07-16; the full-RT-rewrite framing is the
   wrong entry point):

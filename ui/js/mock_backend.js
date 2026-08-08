@@ -34,7 +34,7 @@ let redoStack = [];
 const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
     'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
-    'setSegments', 'setNodeInput', 'setNodeInputRight',
+    'setSegments', 'setNodeInput', 'setNodeInputRight', 'setPeriodSource',
 ]);
 
 function undoSnapshot() {
@@ -223,6 +223,7 @@ export const handlers = {
     setNodeInputRight: (id, channelIndex) => setNodeInputRight(id, channelIndex),
     setNodePan: (id, pan) => setNodePan(id, pan),
     setNodeGain: (id, gain) => setNodeGain(id, gain),
+    setPeriodSource: (id, source) => setPeriodSource(id, source),
     getAudioDeviceState: () => getAudioDeviceState(),
     setAudioDevice: (type, device, sampleRate, bufferSize) =>
         setAudioDevice(type, device, sampleRate, bufferSize),
@@ -337,7 +338,8 @@ function createNode(type, parentId = null) {
         inputChannelR: -1,
         channels: 1,
         pan: 0,
-        gain: 1
+        gain: 1,
+        periodSource: 'own'
     };
 
     if (type === 'stack') {
@@ -588,6 +590,18 @@ function setNodePan(id, pan) {
 function setNodeGain(id, gain) {
     const node = findNode(id);
     if (node) node.gain = Math.max(0, Math.min(1, gain));
+}
+
+// The Q5 period-source knob — UNDOABLE (a musical fact, unlike the
+// mixer knobs). CLIPS ONLY (engine parity: a stack has no origin to
+// anchor a firing to); refusals pop their pre-pushed undo snapshot.
+function setPeriodSource(id, source) {
+    const node = findNode(id);
+    if (!node || node.type !== 'clip') {
+        if (undoPushedForCall) undoStack.pop();
+        return;
+    }
+    node.periodSource = source === 'context' ? 'context' : 'own';
 }
 
 // Built-in effects (engine parity: dsp::EffectRack defaults — the same
@@ -1251,6 +1265,12 @@ function enrichNodes(nodes) {
         // Effect rack state publishes on EVERY node (engine parity:
         // AudioNode::getMetadata always carries `effects`)
         updatedNode.effects = node.effects || defaultEffects();
+        // Mixer + period-source facts publish on EVERY node (engine
+        // parity: metadata always carries them; hand-written scenario
+        // fixtures predate the fields, so normalize at the boundary).
+        if (typeof updatedNode.gain !== 'number') updatedNode.gain = 1;
+        if (typeof updatedNode.pan !== 'number') updatedNode.pan = 0;
+        if (!updatedNode.periodSource) updatedNode.periodSource = 'own';
         // Scope telemetry (engine parity: published only while a panel
         // WATCHES — setEffectScope). Synthesized: a pink-ish spectrum
         // that breathes with the transport, a peak, and the
@@ -1326,6 +1346,8 @@ function viewMasterPos() {
 function committedCycle(Q) {
     let cycle = Q > 0 ? Q : 0;
     const visit = ns => (ns || []).forEach(n => {
+        // One-shots excluded (Q5): they adopt the cycle, never extend it.
+        if (n.periodSource === 'context') return;
         if (n.type === 'clip' && !n.isRecording && n.duration > 0) {
             cycle = cycle > 0 ? lcmInt(cycle, Math.round(n.duration)) : Math.round(n.duration);
         }
@@ -1344,6 +1366,9 @@ function committedCycle(Q) {
  */
 function effectivePeriodOf(node) {
     if (node.isRecording) return 0;
+    // One-shots contribute nothing to the fold (Q5 exclusion — engine
+    // parity: snapEffectivePeriod skips periodFromContext children).
+    if (node.periodSource === 'context') return 0;
     if (!node.loopBypassed && mapActive(nodeMap(node))) {
         return Math.round(mapPeriod(nodeMap(node)));
     }

@@ -268,6 +268,9 @@ function laneCommon(node, state) {
         // −1 = mono) and content channel count for the lane badge.
         pan: typeof node.pan === 'number' ? node.pan : 0,
         gain: typeof node.gain === 'number' ? node.gain : 1,
+        // The Q5 period-source knob: true = one-shot (sounds once per
+        // context cycle; dashed tile, no ghost repetitions).
+        oneShot: node.periodSource === 'context',
         inputChannelR: node.inputChannelR ?? -1,
         channels: node.channels ?? 1,
     };
@@ -433,6 +436,7 @@ export function deriveViewModel(state, opts = {}) {
     };
     nodes.forEach(n => {
         if (n.isRecording) return;
+        if (n.periodSource === 'context') return;  // Q5: one-shots excluded
         const p = n.type === 'stack'
             ? calculateStackLCM(n.nodes, quantum)  // commensurate inside
             : clipCycleContribution(n);
@@ -445,6 +449,7 @@ export function deriveViewModel(state, opts = {}) {
     // loopCycleQ so the readout can say why.
     const effPeriod = node => {
         if (node.isRecording) return 0;
+        if (node.periodSource === 'context') return 0;  // Q5 exclusion
         const p = node.windowActive ? nodeMapPeriod(node) : 0;
         if (p > 0) return p;
         if (node.type !== 'stack') return node.duration || 0;
@@ -903,6 +908,13 @@ export function deriveViewModel(state, opts = {}) {
             if (lanePeriodQ >= cycleQ - 1e-9) {
                 reps = reps.map(r => Object.assign({}, r, { ghost: false }));
             }
+        }
+        // ONE-SHOT display (Q5 / recording.md Example 3): NO ghost
+        // repetitions — the take tile alone marks the one firing per
+        // cycle; the rest of the lane is honest silence. The dashed
+        // styling rides lane.oneShot in the patch layer.
+        if (node.periodSource === 'context') {
+            reps = reps.filter(r => !r.ghost);
         }
         lanes.push(Object.assign(laneCommon(node, state), {
             kind: 'clip',

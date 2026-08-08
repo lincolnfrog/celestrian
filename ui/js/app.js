@@ -542,6 +542,13 @@ export function initApp() {
         // Volume fader dial, 0..1 (unity default). Same streaming/
         // non-undoable contract as pan.
         onSetGain: (id, gain) => callNative('setNodeGain', id, gain),
+        // Period-source knob (Q5): 'own' = loop, 'context' = one-shot.
+        onSetPeriodSource: (id, source) => {
+            callNative('setPeriodSource', id, source);
+            setLogLine(source === 'context'
+                ? 'One-shot: sounds once per cycle (⌘Z to undo)'
+                : 'Looping again (⌘Z to undo)');
+        },
         // Built-in effects: panel-open is pure view state; enable and
         // params go straight to the engine's fixed rack
         onToggleFx: id => {

@@ -94,6 +94,12 @@ export const BRIDGE_METHODS = [
     // after fx; NOT undoable. State publishes as `gain` per node.
     { name: 'setNodeGain', params: ['uuid', 'gain'] },
 
+    // The period-source knob (Q5): 'context' makes the clip a ONE-SHOT
+    // (period := context cycle — sounds once per scope cycle at its
+    // origin, then rests); 'own' restores the loop. Clips only;
+    // UNDOABLE (a musical fact). State publishes as `periodSource`.
+    { name: 'setPeriodSource', params: ['uuid', 'source'] },
+
     // Audio device selection. On Windows a multi-channel interface only
     // appears whole under ASIO — its WDM driver splits the box into stereo
     // endpoints — so picking the driver TYPE matters as much as the device.

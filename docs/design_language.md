@@ -366,9 +366,13 @@ continuously; it plays once when the larger LCM playhead crosses its
 anchored location." Canonical definition: **a one-shot is a clip whose
 period is the context cycle rather than its own length** — it sounds
 once per cycle at its origin, then rests. The garbled inequality in
-design.md/recording.md is superseded (both docs updated). Implementation
-as a first-class `period source: own length | context` knob is future
-work.
+design.md/recording.md is superseded (both docs updated).
+✅ **Implemented 2026-08-06** as the first-class knob
+(`period_from_context_` / `setPeriodSource`, tasks.md Tier 3): the
+context cycle is passed down per scope (lcm of the LOOPING siblings'
+periods — one-shots are excluded from every composition fold, so they
+adopt the cycle and never extend it), the ↺/1× rail chip toggles it
+(undoable), and the display is the ratified dashed-tile-no-ghosts form.
 
 **Q6. Serial composition semantics.**
 **RESOLVED (provisionally).** Owner: chaining a 4Q box into a 6Q box

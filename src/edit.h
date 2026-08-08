@@ -50,6 +50,7 @@ struct Edit {
                  // by NORMALIZATION: n≥2 installs an immutable override,
                  // n==1 writes the single-window atomics, n==0 clears
                  // both. The inverse captures the RAW old storage.
+    PeriodSource,  // b1 = period from context (Q5 one-shot knob)
     Input,       // d1 = channel index (left / mono)
     InputR,      // d1 = right channel index of a stereo pair (−1 = mono)
     Position,    // d1 = x, d2 = y

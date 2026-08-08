@@ -58,6 +58,9 @@ int64_t StackNode::getIntrinsicDuration() const {
 
   int64_t composite = 0;
   for (const auto &child : kids) {
+    // One-shots excluded (Q5): period := context cycle — they adopt the
+    // scope's cycle, never extend it (snapshot twin agrees).
+    if (child->periodFromContext()) continue;
     int64_t d = child->getIntrinsicDuration();
     if (d > 0) {
       composite = (composite == 0) ? d : timing::lcm(composite, d);
@@ -80,6 +83,7 @@ int64_t StackNode::getEffectivePeriod() const {
 
   int64_t composite = 0;
   for (const auto &child : kids) {
+    if (child->periodFromContext()) continue;  // Q5: one-shots excluded
     int64_t p = child->getEffectivePeriod();
     if (p > 0) {
       composite = (composite == 0) ? p : timing::lcm(composite, p);
@@ -231,6 +235,44 @@ ProcessContext StackNode::childContext(const ProcessContext &context) const {
     // For nested maps: the child frame's cycle top is where the map
     // lands at heard phase 0 (the first segment's start).
     child_context.cycle_epoch = context.cycle_epoch + map.mapOffset(0);
+  }
+
+  // === THE CONTEXT CYCLE (Q5 one-shot period) ===
+  // Under an active map the heard loop IS the map period (the
+  // context_loop rule); otherwise the scope cycle is lcm(quantum, the
+  // LOOPING children's effective periods) — one-shots are excluded from
+  // the fold (they adopt this very value; including them would be
+  // circular). A scope with no looping content falls back to the
+  // RECEIVED context cycle so a one-shot inside an all-one-shot group
+  // still sounds once per the enclosing cycle.
+  if (map.active()) {
+    child_context.context_cycle = map.period();
+  } else {
+    int64_t fold = 0;
+    const GraphSnapshot *snap = context.snap;
+    const int n = snap ? snap->entries[(size_t)context.self].childCount
+                       : (int)children.size();
+    for (int k = 0; k < n; ++k) {
+      int64_t p = 0;
+      if (snap) {
+        const int child = snap->childAt(context.self, k);
+        if (snap->entries[(size_t)child].node->periodFromContext()) continue;
+        p = snapEffectivePeriod(*snap, child);
+      } else {
+        const AudioNode *child = children[(size_t)k].get();
+        if (child->periodFromContext()) continue;
+        p = child->getEffectivePeriod();
+      }
+      if (p > 0) fold = fold > 0 ? timing::lcm(fold, p) : p;
+    }
+    if (fold > 0) {
+      child_context.context_cycle =
+          context.quantum > 0 ? timing::lcm(context.quantum, fold) : fold;
+    } else {
+      // No looping content in this scope: inherit the enclosing cycle
+      // (an all-one-shot GROUP still fires once per the outer cycle).
+      child_context.context_cycle = context.context_cycle;
+    }
   }
   return child_context;
 }

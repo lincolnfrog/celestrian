@@ -94,6 +94,9 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
   o->setProperty("muted", (bool)node.is_muted.load());
   o->setProperty("pan", (double)node.pan.load());
   o->setProperty("gain", (double)node.gain.load());
+  // The Q5 period-source knob — additive: absent key = "own" (a loop).
+  if (node.period_from_context_.load())
+    o->setProperty("periodSource", "context");
   o->setProperty("loopBypassed",
                  opts.strip_performances ? false : node.isLoopWindowBypassed());
   // Window segments are musical (QTime): stored device-independently.
@@ -203,6 +206,8 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
   node->gain.store(o->hasProperty("gain")
                        ? (float)(double)o->getProperty("gain")
                        : 1.0f);
+  node->period_from_context_.store(
+      o->getProperty("periodSource").toString() == "context");
   node->setLoopPoints(timing::toSamples(qread(o->getProperty("windowStartQ")), q),
                       timing::toSamples(qread(o->getProperty("windowEndQ")), q));
   // Multi-segment map (phase 3): ≥2 entries install an override

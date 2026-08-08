@@ -387,6 +387,18 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         if (stereo && (int)fx_scratch2_.size() < context.num_samples) {
           fx_scratch2_.resize((size_t)context.num_samples);
         }
+        // THE PERIOD-SOURCE KNOB (Q5): a one-shot's period is the
+        // context cycle, so the phase folds on P = context_cycle and
+        // content sounds only while the phase is inside [0, dur) — the
+        // rest of the cycle renders honest SILENCE through the same
+        // scratch (so the fx rack hears it and echo/reverb tails ring
+        // out naturally after the shot). P == dur (knob off, or a
+        // degenerate context no longer than the content) reduces to the
+        // historical loop equation exactly.
+        const int64_t cyc = period_from_context_.load() &&
+                                    context.context_cycle > dur
+                                ? context.context_cycle
+                                : dur;
         // Run-split at map seams (bounded, allocation-free — the stack
         // splitter's discipline inside the clip loop): each run is a
         // contiguous read.
@@ -395,10 +407,18 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
           float *scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
           int i = 0;
           while (i < context.num_samples) {
-            int64_t h = (context.master_pos + i - org - a0) % dur;
-            h = (h + dur) % dur;
-            const int run = (int)std::min<int64_t>(context.num_samples - i,
-                                                   map.seamDistance(h));
+            int64_t h = (context.master_pos + i - org - a0) % cyc;
+            h = (h + cyc) % cyc;
+            if (h >= dur) {  // one-shot rest region
+              const int run = (int)std::min<int64_t>(
+                  context.num_samples - i, cyc - h);
+              std::fill(scratch + i, scratch + i + run, 0.0f);
+              i += run;
+              continue;
+            }
+            const int run = (int)std::min<int64_t>(
+                std::min<int64_t>(context.num_samples - i, dur - h),
+                map.seamDistance(h));
             const int64_t p0 = map.mapOffset(h);
             for (int k = 0; k < run; ++k) {
               scratch[(size_t)(i + k)] = data[(base + p0 + k) % cap];
@@ -457,11 +477,16 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
 
       // Update playhead position for UI (0..1): the heard phase of the
       // map pass — identical to the launch-point form for single
-      // segments.
+      // segments. One-shots phase over their FULL period (the context
+      // cycle), so the sweep is honest about the rest region.
       {
-        int64_t h = (context.master_pos - org - a0) % dur;
-        h = (h + dur) % dur;
-        playhead_pos.store((double)h / (double)dur);
+        const int64_t pp = period_from_context_.load() &&
+                                   context.context_cycle > dur
+                               ? context.context_cycle
+                               : dur;
+        int64_t h = (context.master_pos - org - a0) % pp;
+        h = (h + pp) % pp;
+        playhead_pos.store((double)h / (double)pp);
       }
     } else {
       playhead_pos.store(0.0);

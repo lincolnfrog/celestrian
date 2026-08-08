@@ -352,6 +352,21 @@ function buildLane(lane) {
     // group at its output stage. The engine value streams while
     // dragging; `_hot` keeps the 50ms tick from fighting the gesture
     // (the fx-slider lesson).
+    // Period-source toggle (Q5) — clips only, in the HEAD next to the
+    // dials (the foot button row is at the rail's full width; a foot
+    // chip overflowed): ↺ = loops at its own length; 1× = one-shot
+    // (sounds once per context cycle at its origin, then rests). A
+    // musical fact — undoable engine-side. Groups never get one (a
+    // stack has no origin to anchor a firing to).
+    if (lane.kind === 'clip') {
+        const ps = document.createElement('button');
+        ps.className = 'rail-btn oneshot-btn mono';
+        ps.addEventListener('click', () => {
+            const l = row._lane;
+            if (l) cb.onSetPeriodSource(l.id, l.oneShot ? 'own' : 'context');
+        });
+        head.appendChild(ps);
+    }
     head.appendChild(buildGainDial(row));
     head.appendChild(buildPanDial(row));
     head.appendChild(del);
@@ -946,6 +961,7 @@ function patchLaneBody(row, lane, vm, aux) {
 
     // State classes (idempotent via classList.toggle)
     body.classList.toggle('win-bypassed', !!(lane.window && lane.window.bypassed));
+    body.classList.toggle('one-shot', !!lane.oneShot);
     body.classList.toggle('is-recording', !!lane.recording);
     body.classList.toggle('armed-empty',
         lane.kind === 'clip' && !lane.recording && lane.reps.length === 0 && lane.armed);
@@ -2448,6 +2464,18 @@ function patchRail(row, lane, vm) {
     if (fxBtn) {
         setText(fxBtn, lane.fxCount > 0 ? 'fx·' + lane.fxCount : 'fx');
         fxBtn.classList.toggle('on', lane.fxCount > 0);
+    }
+
+    // Period-source toggle (Q5): ↺ = loop, 1× = one-shot.
+    const ps = row.querySelector('.oneshot-btn');
+    if (ps) {
+        setText(ps, lane.oneShot ? '1×' : '↺');
+        const t = lane.oneShot
+            ? 'One-shot: sounds once per cycle at its spot — click to loop'
+            : 'Loops at its own length — click for one-shot ' +
+              '(sounds once per cycle)';
+        if (ps.title !== t) ps.title = t;
+        ps.classList.toggle('on', !!lane.oneShot);
     }
 
 

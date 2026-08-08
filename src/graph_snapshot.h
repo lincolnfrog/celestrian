@@ -96,7 +96,13 @@ inline int64_t snapIntrinsicDuration(const GraphSnapshot &s, int idx) {
   if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
   int64_t composite = 0;
   for (int k = 0; k < e.childCount; ++k) {
-    const int64_t d = snapIntrinsicDuration(s, s.childAt(idx, k));
+    const int child = s.childAt(idx, k);
+    // ONE-SHOTS are excluded from composition (Q5): their period is the
+    // context cycle, so they adopt the scope's cycle rather than extend
+    // it — a composite stays honestly periodic in the fold of its
+    // LOOPING content (I1).
+    if (s.entries[(size_t)child].node->periodFromContext()) continue;
+    const int64_t d = snapIntrinsicDuration(s, child);
     if (d > 0) composite = composite == 0 ? d : timing::lcm(composite, d);
   }
   return composite;
@@ -113,7 +119,9 @@ inline int64_t snapEffectivePeriod(const GraphSnapshot &s, int idx) {
   if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
   int64_t composite = 0;
   for (int k = 0; k < e.childCount; ++k) {
-    const int64_t p = snapEffectivePeriod(s, s.childAt(idx, k));
+    const int child = s.childAt(idx, k);
+    if (s.entries[(size_t)child].node->periodFromContext()) continue;  // Q5
+    const int64_t p = snapEffectivePeriod(s, child);
     if (p > 0) composite = composite == 0 ? p : timing::lcm(composite, p);
   }
   return composite;
