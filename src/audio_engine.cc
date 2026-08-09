@@ -277,22 +277,38 @@ celestrian::ClipNode *firstCommittedClip(celestrian::AudioNode *node) {
   return nullptr;
 }
 
-// PHASE-PRESERVING RE-ANCHOR for ANY clip map edit (owner-ruled
-// 2026-07-25h: "playback should remain continuous as much as
-// possible"): when a clip's map changes while playing, choose origin'
-// so the buffer position sounding RIGHT NOW keeps sounding — as long
-// as the new map still COVERS it. Whole-Q cuts shift origin by whole
-// Qs, so island-grid alignment is preserved (the seam theorem); WHICH
-// cell aligns re-derives from the edit instant — the looper's
-// launch-quantized feel. When the edit REMOVED the sounding region,
-// the origin stays FIXED: an audible jump is expected (you deleted
-// what you were hearing), and re-anchoring to a folded phase rotated
-// the whole heard lane so the new seam rendered at the playhead
-// instead of the click (field 2026-07-25i, "cut appears to the far
-// left"). An inactive map on either side is its full-span form. This
-// is the sole-definer Q13 re-anchor generalized; the Q13 rider keeps
-// its own field-hardened algebra (island re-establish included) and
-// wins when it applies.
+// TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09, superseding both
+// the 2026-07-25h origin-only re-anchor AND the brief anchor-stable
+// interlude): "there is no such thing as island 3.5 — that is 0.5Q.
+// The master transport is an implementation detail and should never
+// bleed into the design." Requirements: (1) trims/cuts on a playing
+// clip must not jump unless the edit removes the audio under the
+// cursor; (2) the edited timeline is the source of truth — the seam
+// renders where the cut was made.
+//
+// The old law satisfied (1) by moving the clip's ORIGIN alone, which
+// rotated the clip's picture in the frame — the runaway was actually
+// the FOLD: the monotonic transport folded by the new cycle moved the
+// cursor, and the origin re-anchor chased it (field 2026-08-09,
+// "split handle on the far left"). The fix is that there are TWO
+// anchors — the clip's origin and the island epoch (where the fold
+// starts) — and they move TOGETHER by the same whole-Q delta: audio
+// continuity pins the origin exactly as before, and the epoch rider
+// re-labels the fold so the edited clip's frame position is UNCHANGED.
+// The cursor readout lands on the sounding material's new timeline
+// home; the Q grid and every Q-period sibling are untouched (delta is
+// whole-Q by the coherence guard). Longer-period siblings may show a
+// whole-Q shift — the honest new cyclic alignment continuity implies.
+//
+// continuityOrigin: when a clip's map changes while playing, the
+// origin' at which the buffer position sounding RIGHT NOW keeps
+// sounding — as long as the new map still COVERS it. When the edit
+// REMOVED the sounding region, origin stays FIXED (an audible jump is
+// expected — you deleted what you were hearing; 2026-07-25i) and the
+// epoch stays with it. An inactive map on either side is its
+// full-span form. The Q13 sole-definer riders keep their own
+// field-hardened algebra (island re-establish included) and win when
+// they apply.
 int64_t continuityOrigin(const celestrian::ClipNode &clip,
                          const celestrian::timing::TimeMap &new_map,
                          int64_t t0) {
@@ -1363,6 +1379,38 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
         "through this window (finish or cancel it first)");
     return;
   }
+  // COHERENCE GUARD (owner ruling 2026-08-09): a window length off the
+  // Q grid is refused — categorical, both sides (the UI snaps; the
+  // engine enforces). One incoherent map period LCM'd the effective
+  // cycle to 66187Q (field video 2026-08-08) and blanked the timeline.
+  // The sole exception is the Q13 sole-definer re-trim below, where
+  // the window length *re-establishes* Q rather than fighting it.
+  // Lengths are checked post-clamp (the same clamp the clip branch
+  // applies), so the judged window is the one that would be stored.
+  if (auto *target = findNodeByUuid(root_node.get(), uuid)) {
+    const int64_t c_start = std::max((int64_t)0, start);
+    int64_t c_end = end;
+    auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
+    if (clip != nullptr) c_end = std::min(end, clip->getIntrinsicDuration());
+    const bool q13_retrim =
+        clip != nullptr && c_end > c_start &&
+        clip->getIntrinsicDuration() > 0 &&
+        islandCommittedClipCount() == 1 && !root_node->hasActiveTake();
+    const int64_t q = target->getEffectiveQuantum();
+    const int64_t len = c_end - c_start;
+    // Coherent = a whole multiple of Q, or an exact divisor of it
+    // (sub-Q loops are first-class — SUBDIVISIONS commits at Q/2 etc.
+    // — and lcm(Q, Q/k) = Q, so they can never explode the cycle).
+    const bool coherent = len > 0 && (len % q == 0 || q % len == 0);
+    if (!q13_retrim && q > 0 && len > 0 && !coherent) {
+      juce::Logger::writeToLog(
+          "AudioEngine::setLoopPoints refused — window length " +
+          juce::String(len) + " is neither a whole multiple nor an " +
+          "exact divisor of Q " + juce::String(q) +
+          " (coherence is categorical)");
+      return;
+    }
+  }
   // Window phase is derived from the island clock (time_maps.md); nothing
   // to reset when the region changes. Undoable (LoopPoints).
   celestrian::Edit e(celestrian::Edit::Kind::LoopPoints);
@@ -1420,14 +1468,26 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
       e.iepoch = e.iorg + start;
     } else if (clip->getIntrinsicDuration() > 0 &&
                !root_node->hasActiveTake() && is_playing_global.load()) {
-      // GENERAL PHASE CONTINUITY (see continuityOrigin): a window edit
-      // on any playing committed clip re-anchors origin so the sound
-      // does not jump — the island (Q, epoch) is untouched. Idle edits
-      // keep the deterministic fixed-origin layout.
-      e.setsOrigin = true;
-      e.iorg = continuityOrigin(
+      // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09 — see the note
+      // above the anonymous namespace): origin re-anchors so the
+      // sounding sample keeps sounding; the island epoch rides the
+      // SAME whole-Q delta so the edited clip's frame position — the
+      // timeline the user drew — is unchanged.
+      const int64_t org = clip->origin_samples.load();
+      const int64_t org2 = continuityOrigin(
           *clip, celestrian::timing::TimeMap::single(start, end),
           global_transport_pos.load());
+      if (org2 != org) {
+        e.setsOrigin = true;
+        e.iorg = org2;
+        const int64_t q = root_node->getEffectiveQuantum();
+        const int64_t delta = org2 - org;
+        if (q > 0 && delta % q == 0) {
+          e.setsIsland = true;
+          e.iq = q;  // Q unchanged — only the fold anchor moves
+          e.iepoch = root_node->getIslandEpoch() + delta;
+        }
+      }
     }
   }
   record(std::move(e));
@@ -1476,6 +1536,34 @@ void AudioEngine::setSegments(const juce::String &uuid,
     return;
   }
 
+  // COHERENCE GUARD (owner ruling 2026-08-09): the map's PERIOD must
+  // be a whole multiple of Q — categorical, both sides (the UI snaps;
+  // the engine enforces). One incoherent period LCM'd the effective
+  // cycle to 66187Q (field video 2026-08-08) and blanked the timeline.
+  // The sole exception is the Q13 sole-definer re-trim below, where
+  // the period *re-establishes* Q rather than fighting it. (The n ≤ 1
+  // delegations above are guarded inside setLoopPoints.)
+  {
+    const bool q13_retrim =
+        dynamic_cast<celestrian::ClipNode *>(target) != nullptr &&
+        intrinsic > 0 && islandCommittedClipCount() == 1 &&
+        !root_node->hasActiveTake();
+    const int64_t q = target->getEffectiveQuantum();
+    const int64_t p = map.period();
+    // Coherent = a whole multiple of Q, or an exact divisor of it
+    // (sub-Q loops are first-class; lcm(Q, Q/k) = Q — see
+    // setLoopPoints' twin guard).
+    const bool coherent = p > 0 && (p % q == 0 || q % p == 0);
+    if (!q13_retrim && q > 0 && !coherent) {
+      juce::Logger::writeToLog(
+          "AudioEngine::setSegments refused — period " +
+          juce::String(p) + " is neither a whole multiple nor an " +
+          "exact divisor of Q " + juce::String(q) +
+          " (coherence is categorical)");
+      return;
+    }
+  }
+
   celestrian::Edit e(celestrian::Edit::Kind::Segments);
   e.uuid = uuid;
   e.setsMap = true;
@@ -1518,12 +1606,25 @@ void AudioEngine::setSegments(const juce::String &uuid,
   } else if (auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
              clip != nullptr && intrinsic > 0 &&
              !root_node->hasActiveTake() && is_playing_global.load()) {
-    // GENERAL PHASE CONTINUITY (see continuityOrigin): a map edit on
-    // any playing committed clip re-anchors origin so the sound does
-    // not jump at the commit — the discontinuity the owner heard on
-    // dblclick cut/heal (field 2026-07-25h). Island (Q, epoch) stays.
-    e.setsOrigin = true;
-    e.iorg = continuityOrigin(*clip, map, global_transport_pos.load());
+    // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09 — see the note
+    // above the anonymous namespace): origin re-anchors so the
+    // sounding sample keeps sounding; the island epoch rides the SAME
+    // whole-Q delta so the edited clip's frame position — the seam
+    // where the cut was made — is unchanged.
+    const int64_t org = clip->origin_samples.load();
+    const int64_t org2 =
+        continuityOrigin(*clip, map, global_transport_pos.load());
+    if (org2 != org) {
+      e.setsOrigin = true;
+      e.iorg = org2;
+      const int64_t q = target->getEffectiveQuantum();
+      const int64_t delta = org2 - org;
+      if (q > 0 && delta % q == 0) {
+        e.setsIsland = true;
+        e.iq = q;  // Q unchanged — only the fold anchor moves
+        e.iepoch = root_node->getIslandEpoch() + delta;
+      }
+    }
   }
 
   record(std::move(e));

@@ -5,11 +5,15 @@
  *
  * The vocabulary split: leading/trailing exclusions belong to the
  * WINDOW (the existing bracket gesture); INNER gaps are CUT BANDS —
- * visible objects with their own handles. A cut's length links to
- * whole Qs (the seam theorem: groove-transparent iff removed length
- * ≡ 0 mod Q) unless deliberately freed (⚠, never silent). Cuts slide
- * FREELY — excising exactly 1Q off the grid is the design's reason to
- * exist.
+ * visible objects with their own handles. A cut's length is ALWAYS a
+ * whole number of Qs (the seam theorem: groove-transparent iff removed
+ * length ≡ 0 mod Q; owner ruling 2026-08-09 made this categorical —
+ * the earlier ⌥-free escape hatch is gone, edits can only snap to Q
+ * unless they modify the Q-defining clip itself). Cuts slide FREELY in
+ * POSITION — excising exactly 1Q off the grid is the design's reason
+ * to exist — but only within their kept neighbourhood (cutBounds), so
+ * a cut meets a neighbouring gap at exact adjacency (whole ∪ whole
+ * stays whole), never by fractional overlap.
  *
  * Conventions: segments are [[startQ, endQ), ...] sorted and disjoint
  * — the KEPT (covered) set; `null`/`[]` = no map (the full span
@@ -109,30 +113,109 @@ export function cellCutAt(clickQ, totalQ) {
 }
 
 /**
+ * The kept neighbourhood of a cut: the healed covered segment that
+ * contains it. Slides and resizes are clamped here (owner ruling
+ * 2026-08-09, categorical coherence): a cut may only meet a
+ * neighbouring gap at EXACT adjacency — whole ∪ whole stays whole —
+ * never by fractional overlap, which is how a slide/resize used to
+ * mint a fractional period.
+ */
+export function cutBounds(segs, cut, totalQ) {
+    const healed = coveredSet(healCut(segs, cut[0], cut[1], totalQ), totalQ);
+    for (const [s, e] of healed) {
+        if (cut[0] >= s - EPS && cut[1] <= e + EPS) return [s, e];
+    }
+    return [0, totalQ];
+}
+
+/**
  * Resize one edge of a cut [a, b): the handle follows `rawQ`; the
  * released length snaps to whole Qs ≥ 1 (linked edges — the OTHER edge
- * holds) unless `free`. Returns { inQ, outQ, lenQ, coherent } —
- * coherent ⇔ lenQ ≡ 0 (mod 1), the "2Q" vs "1.37Q ⚠" badge.
+ * holds), capped by the room to the neighbouring gap (loQ/hiQ from
+ * cutBounds). No free mode (owner ruling 2026-08-09). Returns
+ * { inQ, outQ, lenQ, coherent } — coherent stays in the shape for the
+ * defensive ⚠ badge, but every path through here is coherent now.
  */
-export function resizeCutTarget({ cut, edge, rawQ, maxQ, free = false }) {
+export function resizeCutTarget({ cut, edge, rawQ, maxQ,
+                                  loQ = 0, hiQ = maxQ }) {
     let [a, b] = cut;
-    if (edge === 'start') a = Math.max(0, Math.min(rawQ, b - 0.05));
-    else b = Math.min(maxQ, Math.max(rawQ, a + 0.05));
-    if (!free) {
-        const lenQ = Math.max(1, Math.round(b - a));
-        if (edge === 'start') a = Math.max(0, b - lenQ);
-        else b = Math.min(maxQ, a + lenQ);
-    }
-    const lenQ = b - a;
-    return { inQ: a, outQ: b, lenQ,
-             coherent: Math.abs(lenQ - Math.round(lenQ)) < 1e-6 };
+    if (edge === 'start') a = Math.max(loQ, Math.min(rawQ, b - 0.05));
+    else b = Math.min(hiQ, Math.max(rawQ, a + 0.05));
+    const room = edge === 'start' ? (b - loQ) : (hiQ - a);
+    const lenQ = Math.max(1, Math.min(Math.round(b - a),
+                                      Math.floor(room + EPS)));
+    if (edge === 'start') a = b - lenQ;
+    else b = a + lenQ;
+    const got = b - a;
+    return { inQ: a, outQ: b, lenQ: got,
+             coherent: Math.abs(got - Math.round(got)) < 1e-6 };
 }
 
 /** Slide a whole cut to start at `rawStartQ`, length held, clamped to
- * the span. */
-export function slideCutTarget({ cut, rawStartQ, maxQ }) {
+ * its kept neighbourhood (loQ/hiQ from cutBounds — see there). */
+export function slideCutTarget({ cut, rawStartQ, maxQ,
+                                 loQ = 0, hiQ = maxQ }) {
     const lenQ = cut[1] - cut[0];
-    const a = Math.max(0, Math.min(maxQ - lenQ, rawStartQ));
+    const a = Math.max(loQ, Math.min(hiQ - lenQ, rawStartQ));
     return { inQ: a, outQ: a + lenQ, lenQ,
              coherent: Math.abs(lenQ - Math.round(lenQ)) < 1e-6 };
+}
+
+/** Heard-time period of a covered set (null passes through; [] = the
+ * full span sounds). */
+export function segsPeriod(segs, totalQ) {
+    if (segs === null) return null;
+    return segs.length
+        ? segs.reduce((n, [a, b]) => n + (b - a), 0)
+        : totalQ;
+}
+
+/** Trim one outer bound to an absolute raw position (heal reveals,
+ * cut consumes); null = refusal, keep previous. */
+export function trimBoundTo(segs, edge, boundQ, totalQ) {
+    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
+    if (edge === 'start') {
+        const first = cov[0][0];
+        if (boundQ < first - EPS) return healCut(cov, boundQ, first, totalQ);
+        return applyCut(cov, 0, boundQ, totalQ);
+    }
+    const last = cov[cov.length - 1][1];
+    if (boundQ > last + EPS) return healCut(cov, last, boundQ, totalQ);
+    return applyCut(cov, boundQ, totalQ, totalQ);
+}
+
+/** THE SEAM THEOREM'S SNAP (field video 2026-08-08: a whole-Q BOUND
+ * over a free-slid cut committed a 0.65Q PERIOD, and the engine's
+ * cycle LCM exploded to 66187Q — the timeline went blank). Coherence
+ * is period ≡ 0 (mod Q), not bound ≡ 0: with fractional seam positions
+ * inside, the two differ. So trims snap the PERIOD and derive the
+ * bound. The period is piecewise linear in the bound (slope 1 inside
+ * kept material, 0 across cuts) — walk the covered set to the raw
+ * position where the kept total is exactly `targetP` (clamped to
+ * [1Q, the reachable span]). */
+export function trimBoundForPeriod(segs, edge, targetP, totalQ) {
+    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
+    const covP = cov.reduce((n, [a, b]) => n + (b - a), 0);
+    const first = cov[0][0], last = cov[cov.length - 1][1];
+    const maxP = covP + (edge === 'end' ? totalQ - last : first);
+    const P = Math.max(1, Math.min(targetP, Math.floor(maxP + EPS)));
+    if (P > covP - EPS) {  // at/past the current span: heal outward
+        return edge === 'end'
+            ? Math.min(totalQ, last + (P - covP))
+            : Math.max(0, first - (P - covP));
+    }
+    let acc = 0;
+    if (edge === 'end') {
+        for (const [s, e] of cov) {
+            if (acc + (e - s) >= P - EPS) return s + (P - acc);
+            acc += e - s;
+        }
+        return last;
+    }
+    for (let i = cov.length - 1; i >= 0; i--) {
+        const [s, e] = cov[i];
+        if (acc + (e - s) >= P - EPS) return e - (P - acc);
+        acc += e - s;
+    }
+    return first;
 }

@@ -117,7 +117,9 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Escape/Exit Button**: Zooms "out" to the parent container.
 * **Navigation Controls**:
     - **Pan**: Click-and-drag empty space or use **[W, A, S, D]** keys.
-    - **Zoom**: Mouse wheel or **[Q, E]** keys.
+    - **Zoom**: Mouse wheel or **[+, −]** keys (`=`/`-` unshifted).
+    - **Handle teleport**: **[** / **]** walk the viewport left/right through the selected track's handles in order (loop start, each cut edge/seam, loop end); **Shift+[** / **Shift+]** jump straight to the outer loop bounds. Grabbing any handle selects its track. No-op when nothing is selected.
+    - **Handle nav dock**: the mouse face of [ / ] — a slim always-visible footer bar under a mapped track's lane, right-aligned to the viewport. Unmapped tracks have no footer and pay no space. The miniature strip shows every handle as a clickable tick (amber = loop bounds, dim = cut seams) with the current viewport as a cyan box; ‹ › walk handles and ⇤ ⇥ jump to the outer bounds. Clicking anything in the dock selects the track.
 * **Slick Transitions**: Modern CSS/JS animations to maintain spatial orientation during zooms.
 
 ### 5. The "Stack" Architecture

@@ -435,7 +435,80 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .lane {
     display: grid;
     grid-template-columns: var(--rail-w) 1fr;
-    gap: 12px;
+    /* Small row gap: a mapped lane grows a nav footer row (option C) */
+    gap: 6px 12px;
+}
+
+/* ===== Handle nav dock — footer bar (owner pick C, 2026-08-09,
+   superseding both the hover overlay and the sticky gutter — the
+   webview's horizontal sticky landed the gutter inside the lane) =====
+   The mouse face of [ / ]: a slim always-visible bar in its own grid
+   row UNDER a mapped lane's body, right-aligned to the VIEWPORT by
+   updateNavDock in JS (no horizontal sticky — burned once). Unmapped
+   lanes have no footer and pay no space. ⇤ ‹ › ⇥ jump/walk handles;
+   the strip is a per-track minimap: one clickable tick per handle,
+   the cyan box marking the current viewport. */
+.lane-nav {
+    grid-column: 2;
+    position: relative;
+    height: 26px;
+    pointer-events: none;   /* only the dock itself is interactive */
+    z-index: 4;
+}
+.nav-dock {
+    pointer-events: auto;
+    position: absolute;
+    top: 0;
+    left: 0;                /* JS pins the right edge to the viewport */
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    background: var(--lane);
+    border-radius: 6px;
+}
+.nav-btn {
+    all: unset;
+    cursor: pointer;
+    width: 20px;
+    height: 20px;
+    line-height: 20px;
+    text-align: center;
+    border-radius: 5px;
+    color: var(--amber-bright);
+    font-size: 12px;
+}
+.nav-btn:hover { background: rgba(255, 255, 255, 0.1); }
+.nav-strip {
+    position: relative;
+    width: 88px;
+    height: 20px;
+    background: var(--lane-line);
+    border-radius: 4px;
+}
+.nav-tick {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    width: 3px;
+    margin-left: -1.5px;
+    border-radius: 2px;
+    background: var(--tape);
+    cursor: pointer;
+}
+.nav-tick.seam { background: var(--amber-dim); }
+.nav-tick:hover {
+    background: var(--amber-bright);
+    box-shadow: 0 0 0 2px rgba(243, 200, 119, 0.27);
+}
+.nav-view {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(95, 201, 216, 0.12);
+    border: 1px solid rgba(95, 201, 216, 0.33);
+    border-radius: 3px;
+    pointer-events: none;
 }
 /* Selection: quiet identity on the rail; the bar carries the verb */
 .lane-rail.selected {
@@ -1219,6 +1292,22 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .win-bracket.latent { opacity: 0; }
 .lane-body:hover .win-bracket.latent { opacity: 0.35; }
 .win-bracket.latent.dragging { opacity: 1; }
+/* [ / ] teleport landing: blink the found handle so the eye arrives
+   with the viewport. Applies to every walkable handle kind (window
+   brackets, cut handles, seam handles). opacity is forced because
+   latent grips are invisible at rest — the flash is how you find
+   them at all. */
+.teleport-flash {
+    opacity: 1 !important;
+    animation: teleport-flash 0.9s ease-out;
+}
+@keyframes teleport-flash {
+    0%, 100% { box-shadow: none; }
+    20% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tape) 70%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .teleport-flash { animation: none; }
+}
 /* Q-definer (Q13): the sole committed clip's handles RE-ESTABLISH Q.
    Unlike ordinary windows they're a first-class affordance — visible at
    rest (not a hidden hover reveal) and tempo-TEAL (the cyan status

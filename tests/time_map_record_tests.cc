@@ -838,8 +838,8 @@ class TimeMapRecordTests : public juce::UnitTest {
                  juce::String(phase) + " of " + juce::String(dA) + ")");
     }
 
-    beginTest("ENGINE: map edits on a playing clip preserve the sounding "
-              "phase (continuity re-anchor, 2026-07-25h)");
+    beginTest("ENGINE: two-anchor continuity — sounding sample kept, "
+              "frame position invariant (owner ruling 2026-08-09)");
     {
       AudioEngine engine;
       const int BLOCK = 512;
@@ -939,37 +939,61 @@ class TimeMapRecordTests : public juce::UnitTest {
       const int64_t orgB = nodeProp(bId, "origin");
       const int64_t p0 = p0Of(orgB, timing::TimeMap::none());
       expect(p0 < dB / 4, "parked inside the first quarter");
+      // Whole-Q map geometry (the coherence guard refuses anything
+      // else): B committed at a whole number of Qs.
+      expectEquals((juce::int64)(dB % dA), (juce::int64)0,
+                   "take B committed on the Q grid");
 
-      // Cut that KEEPS p0's region: {[0, dB/4), [dB/2, 3dB/4)}.
+      // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09): the sounding
+      // sample keeps sounding (origin re-anchor, exactly the
+      // 2026-07-25h algebra) AND the island epoch rides the SAME
+      // whole-Q delta, so the edited clip's frame position — the
+      // timeline the user drew — never changes. The fold, not the
+      // clip, absorbs the difference ("the master transport is an
+      // implementation detail").
+      auto islandEpoch = [&]() {
+        return (int64_t)(double)engine.getGraphState()
+            .getDynamicObject()
+            ->getProperty("islandEpoch");
+      };
+      const int64_t ep0 = islandEpoch();
+
+      // A cut that KEEPS p0's region: {[0, 1Q), [2Q, 3Q)}.
       timing::TimeMap m1;
       m1.n = 2;
-      m1.segs[0] = {0, dB / 4};
-      m1.segs[1] = {dB / 2, (3 * dB) / 4};
+      m1.segs[0] = {0, dA};
+      m1.segs[1] = {2 * dA, 3 * dA};
       engine.setSegments(bId, m1);
       const int64_t orgB1 = nodeProp(bId, "origin");
-      expect(orgB1 != orgB, "origin re-anchored by the map edit");
+      const int64_t ep1 = islandEpoch();
       expectEquals((juce::int64)p0Of(orgB1, m1), (juce::int64)p0,
                    "covered position keeps sounding across the edit");
+      expectEquals((juce::int64)(orgB1 - ep1), (juce::int64)(orgB - ep0),
+                   "frame position (org − epoch) invariant");
+      expectEquals((juce::int64)(((orgB1 - orgB) % dA + dA) % dA),
+                   (juce::int64)0, "the delta is a whole number of Qs");
 
-      // Now a map that REMOVES p0's region: {[dB/4, dB/2)} would be
-      // n==1 (delegates) — use {[dB/4, dB/2), [3*dB/4, dB)}. The
-      // origin stays FIXED (2026-07-25i): deleting the sounding region
-      // makes an audible jump expected, and a folded re-anchor rotated
-      // the heard lane away from the click.
+      // A map that REMOVES p0's region: {[1Q, 2Q), [2Q, 3Q)} — both
+      // anchors stay put (2026-07-25i: you deleted what you were
+      // hearing; the jump is expected).
       timing::TimeMap m2;
       m2.n = 2;
-      m2.segs[0] = {dB / 4, dB / 2};
-      m2.segs[1] = {(3 * dB) / 4, dB};
+      m2.segs[0] = {dA, 2 * dA};
+      m2.segs[1] = {2 * dA, 3 * dA};
       engine.setSegments(bId, m2);
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
                    "removed sounding region: origin stays put");
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)ep1,
+                   "removed sounding region: epoch stays put");
 
-      // ONE undo restores the original origin: consecutive Segments
-      // edits coalesce (one gesture, one undo step), and the setsOrigin
-      // inverse rides it.
+      // ONE undo restores both anchors: consecutive Segments edits
+      // coalesce (one gesture, one undo step) and the setsOrigin /
+      // setsIsland inverses ride it.
       engine.undo();
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
                    "undo restores the pre-edit origin");
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)ep0,
+                   "undo restores the pre-edit epoch");
     }
 
     // === Phase 3, Stage 2: the fully-fractal clip kernel ===

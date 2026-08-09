@@ -17,7 +17,8 @@ import { calculateStackLCM } from './timeline_model.js';
 import { liveBoost, PEAKS_PER_SECOND } from './live_peaks.js';
 import { windowDragTarget } from './view_model.js';
 import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
-         slideCutTarget } from './map_edit.js';
+         slideCutTarget, segsPeriod, trimBoundTo,
+         trimBoundForPeriod, cutBounds } from './map_edit.js';
 import { mapOffset } from './time_map.js';
 import {
     forwardDelta, estimateVelocity, advancePosition, correctPosition,
@@ -125,6 +126,18 @@ export function initSessionView(callbacks) {
     });
 
     wireZoom();
+    wireLoopTeleport();
+
+    // The nav docks' viewport boxes track horizontal scroll live (the
+    // 50ms patch would lag a flick); rAF-coalesced.
+    let navScrollRaf = 0;
+    document.getElementById('session').addEventListener('scroll', () => {
+        if (navScrollRaf) return;
+        navScrollRaf = requestAnimationFrame(() => {
+            navScrollRaf = 0;
+            laneEls.forEach(row => updateNavDock(row));
+        });
+    }, { passive: true });
 
     // Input menus dismiss on outside press or Escape
     document.addEventListener('pointerdown', e => {
@@ -137,7 +150,7 @@ export function initSessionView(callbacks) {
     });
 }
 
-/* ---------- horizontal zoom (design.md: mouse wheel or Q/E) ----------
+/* ---------- horizontal zoom (design.md: mouse wheel or +/−) ----------
  * Everything on the timeline is positioned in PERCENT of the ruler, so
  * zoom is just #grid-area growing past the viewport — no renderer
  * changes, the browser owns the scroll. The plain wheel is left alone
@@ -187,8 +200,10 @@ function wireZoom() {
         if (e.ctrlKey || e.metaKey || e.altKey) return;
         const tag = e.target.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-        if (e.key === 'q' || e.key === 'Q') setZoom(zoomZ * ZOOM_STEP);
-        else if (e.key === 'e' || e.key === 'E') setZoom(zoomZ / ZOOM_STEP);
+        // '=' is the unshifted '+' on ANSI layouts — accept both so the
+        // hotkey works without holding Shift.
+        if (e.key === '+' || e.key === '=') setZoom(zoomZ * ZOOM_STEP);
+        else if (e.key === '-' || e.key === '_') setZoom(zoomZ / ZOOM_STEP);
     });
     document.getElementById('session').addEventListener('wheel', e => {
         if (!e.ctrlKey) return; // plain wheel keeps native vertical scroll
@@ -196,6 +211,238 @@ function wireZoom() {
         setZoom(zoomZ * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX);
     }, { passive: false });
     updateZoomUI();
+}
+
+/* ---------- [ / ] handle teleport ----------
+ * Field request 2026-08-09: dialing in a drum loop means zooming way in
+ * on one loop marker — and then being "far" from the other one. [ and ]
+ * WALK the viewport left/right through the SELECTED track's handles in
+ * order — loop start, every cut edge/seam, loop end — from wherever the
+ * viewport currently is; on an unsplit clip that degenerates to "jump
+ * to the start/end handle". Shift+[ / Shift+] go straight to the outer
+ * loop bounds. Grabbing any handle selects its track (see selectOnly
+ * callers), so the keys chain naturally with a drag: grab an edge,
+ * trim it, hit the other bracket key, trim that. No selection → no-op.
+ */
+function activeSelectedId() {
+    let last = null;
+    for (const id of selection) last = id; // insertion order → most recent
+    return last;
+}
+
+/** Every grabbable boundary in the lane, sorted by screen x: window
+ * brackets (loop bounds / trim grips), cut-band handles, seam handles.
+ * Preview clones and drag layers are transient — never targets. */
+function laneHandleEls(row) {
+    return [...row.querySelectorAll(
+        '.win-bracket.start, .win-bracket.end, .cut-handle, .seam-handle')]
+        .filter(el => !el.classList.contains('snap-ghost') &&
+                      !el.closest('.drag-preview-layer'))
+        .map(el => {
+            const r = el.getBoundingClientRect();
+            return { el, x: r.left + r.width / 2 };
+        })
+        .sort((a, b) => a.x - b.x);
+}
+
+/** The teleport primitive: center `el` horizontally (instant — this is
+ * a precision-editing move, not a tour), bring the lane into view
+ * vertically if off-screen, and blink the landing handle (latent grips
+ * are invisible at rest — the flash class forces them visible). */
+function teleportToEl(row, el) {
+    const session = document.getElementById('session');
+    const box = session.getBoundingClientRect();
+    const g = el.getBoundingClientRect();
+    session.scrollLeft += (g.left + g.width / 2) - (box.left + box.width / 2);
+    const r = row.getBoundingClientRect();
+    if (r.top < box.top || r.bottom > box.bottom) {
+        session.scrollTop += r.top - box.top - (box.height - r.height) / 2;
+    }
+    el.classList.remove('teleport-flash');
+    void el.offsetWidth; // restart the animation on repeated presses
+    el.classList.add('teleport-flash');
+    setTimeout(() => el.classList.remove('teleport-flash'), 900);
+}
+
+function teleportToHandle(dir, outer) {
+    const id = activeSelectedId();
+    if (id === null) return;
+    const row = laneEls.get(id);
+    if (!row) return;
+    const handles = laneHandleEls(row);
+    if (!handles.length) return;
+    const session = document.getElementById('session');
+    const box = session.getBoundingClientRect();
+    const centerX = box.left + box.width / 2;
+    let target;
+    if (outer) {
+        target = dir < 0 ? handles[0] : handles[handles.length - 1];
+    } else {
+        // The next handle strictly past center (4px slack so the one
+        // you're parked on doesn't swallow the press).
+        const past = dir < 0
+            ? handles.filter(h => h.x < centerX - 4)
+            : handles.filter(h => h.x > centerX + 4);
+        if (!past.length) return;  // nothing further this way
+        target = dir < 0 ? past[past.length - 1] : past[0];
+    }
+    teleportToEl(row, target.el);
+}
+
+/* ---------- handle nav dock (owner pick C, 2026-08-09) --------------
+ * The mouse-viable face of [ / ]: a slim always-visible FOOTER BAR in
+ * its own grid row under a mapped lane's body — unmapped lanes have no
+ * footer and pay no space. Right-aligned to the VIEWPORT by JS in
+ * updateNavDock (horizontal position: sticky misplaced the earlier
+ * gutter inside the lane in the JUCE webview — never again). The
+ * STRIP is a per-track minimap of loop bounds and cuts, one clickable
+ * tick per handle, the cyan box marking the current viewport — the
+ * split-clip answer: you see every handle instead of walking blind.
+ * ⇤ ‹ › ⇥ reuse the same teleport primitive as the keys. Clicking
+ * anything in the dock selects the lane, so dock and hotkeys always
+ * agree on the active track. */
+function buildNavDock(row) {
+    const nav = document.createElement('div');
+    nav.className = 'lane-nav';
+    nav.style.display = 'none';   // shown once it has ticks
+    const dock = document.createElement('div');
+    dock.className = 'nav-dock';
+    row._navDock = dock;
+    // A press in the dock must never fall through to the lane below.
+    dock.addEventListener('pointerdown', e => e.stopPropagation());
+    const btn = (label, title, fn) => {
+        const b = document.createElement('button');
+        b.className = 'nav-btn mono';
+        b.textContent = label;
+        b.title = title;
+        b.addEventListener('click', e => {
+            e.stopPropagation();
+            selectOnly(row._lane.id);
+            fn();
+        });
+        return b;
+    };
+    const strip = document.createElement('div');
+    strip.className = 'nav-strip';
+    strip.title = 'All handles at a glance — click one to teleport';
+    dock.append(
+        btn('⇤', 'Outer: loop start (Shift+[)',
+            () => teleportToHandle(-1, true)),
+        btn('‹', 'Previous handle ([)', () => teleportToHandle(-1, false)),
+        strip,
+        btn('›', 'Next handle (])', () => teleportToHandle(1, false)),
+        btn('⇥', 'Outer: loop end (Shift+])',
+            () => teleportToHandle(1, true)));
+    nav.appendChild(dock);
+    row._navStrip = strip;
+    return nav;
+}
+
+/** A strip tick's target at CLICK time: ticks store the handle's cycle
+ * fraction, not the element (overlays rebuild every reconcile — a held
+ * reference would go stale), and resolve to the nearest live handle. */
+function teleportToFrac(row, f) {
+    const handles = laneHandleEls(row);
+    if (!handles.length) return;
+    const body = row.querySelector('.lane-body');
+    if (!body) return;
+    const br = body.getBoundingClientRect();
+    const targetX = br.left + f * br.width;
+    let best = handles[0];
+    for (const h of handles) {
+        if (Math.abs(h.x - targetX) < Math.abs(best.x - targetX)) best = h;
+    }
+    teleportToEl(row, best.el);
+}
+
+/** Rebuild/patch a lane's dock from its overlay: tick fractions parse
+ * the handles' own `left` styles (the same pct() truth the lane
+ * renders with — no rect reads, zoom-independent); the viewport box is
+ * the one rect-based fact, patched in place every call. */
+function updateNavDock(row) {
+    const strip = row._navStrip;
+    if (!strip) return;
+    const nav = strip.closest('.lane-nav');
+    const fracOf = el => {
+        const m = /(-?[\d.]+)%/.exec(el.style.left || '');
+        return m ? parseFloat(m[1]) / 100 : null;
+    };
+    const ticks = [];
+    row.querySelectorAll(
+        '.win-bracket.start, .win-bracket.end, .cut-handle, .seam-handle')
+        .forEach(el => {
+            if (el.classList.contains('snap-ghost') ||
+                el.closest('.drag-preview-layer')) return;
+            const f = fracOf(el);
+            if (f === null || f < -0.01 || f > 1.01) return;
+            ticks.push({ f,
+                seam: el.classList.contains('cut-handle') ||
+                      el.classList.contains('seam-handle'),
+                title: el.title });
+        });
+    ticks.sort((a, b) => a.f - b.f);
+    if (!ticks.length) { nav.style.display = 'none'; return; }
+    if (nav.style.display !== '') nav.style.display = '';
+    // Keyed rebuild: tick churn only when the handle set actually moved.
+    const key = ticks.map(t => (t.seam ? 's' : 'b') + t.f.toFixed(4))
+        .join(',');
+    if (strip._key !== key) {
+        strip._key = key;
+        strip.textContent = '';
+        const view = document.createElement('div');
+        view.className = 'nav-view';
+        strip.appendChild(view);
+        strip._view = view;
+        ticks.forEach(t => {
+            const tick = document.createElement('div');
+            tick.className = 'nav-tick' + (t.seam ? ' seam' : '');
+            tick.style.left = (t.f * 100) + '%';
+            if (t.title) tick.title = t.title;
+            tick.addEventListener('click', e => {
+                e.stopPropagation();
+                selectOnly(row._lane.id);
+                teleportToFrac(row, t.f);
+            });
+            strip.appendChild(tick);
+        });
+    }
+    const body = row.querySelector('.lane-body');
+    const session = document.getElementById('session');
+    if (body && session && strip._view) {
+        const br = body.getBoundingClientRect();
+        const sr = session.getBoundingClientRect();
+        if (br.width > 0) {
+            const l = Math.max(0, (sr.left - br.left) / br.width);
+            const r = Math.min(1, (sr.right - br.left) / br.width);
+            strip._view.style.left = (l * 100).toFixed(2) + '%';
+            strip._view.style.width =
+                (Math.max(0, r - l) * 100).toFixed(2) + '%';
+        }
+        // Pin the dock's right edge to the viewport (JS, not sticky —
+        // see the section comment): the nav row spans the zoomed grid
+        // width; place the dock at (viewport right − 24px), clamped to
+        // the row's left edge.
+        const dock = row._navDock;
+        if (dock) {
+            const nr = nav.getBoundingClientRect();
+            const left = Math.max(0,
+                (sr.right - 24) - dock.offsetWidth - nr.left);
+            const px = Math.round(left) + 'px';
+            if (dock.style.left !== px) dock.style.left = px;
+        }
+    }
+}
+
+function wireLoopTeleport() {
+    document.addEventListener('keydown', e => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return;
+        const tag = e.target.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.key === '[') teleportToHandle(-1, false);
+        else if (e.key === ']') teleportToHandle(1, false);
+        else if (e.key === '{') teleportToHandle(-1, true);
+        else if (e.key === '}') teleportToHandle(1, true);
+    });
 }
 
 /* ---------- ruler ---------- */
@@ -441,7 +688,7 @@ function buildLane(lane) {
     const body = document.createElement('div');
     body.className = 'lane-body';
 
-    row.append(rail, body);
+    row.append(rail, body, buildNavDock(row));
     return row;
 }
 
@@ -1312,10 +1559,11 @@ function patchLaneBody(row, lane, vm, aux) {
  * A cut is a first-class object in the bracket vocabulary: a dim band
  * with two bracket-style handles and a length chip. Double-click the
  * take → a 1Q cut on that Q cell; double-click a cut → it heals; drag
- * the chip → the cut SLIDES freely, length held (the "exclude 1Q off
- * the boundary" move); drag a handle → resize, length snapping to
- * whole Qs on release (⌥ = free, badged "N.NNQ ⚠" — the seam theorem
- * made visible). One setSegments per finished gesture = one undo step.
+ * the chip → the cut SLIDES freely in position, length held (the
+ * "exclude 1Q off the boundary" move); drag a handle → resize, length
+ * ALWAYS snapping to whole Qs (owner ruling 2026-08-09: the ⌥-free
+ * escape hatch is gone — the seam theorem is categorical). One
+ * setSegments per finished gesture = one undo step.
  * Leading/trailing exclusions stay the WINDOW brackets' domain — bands
  * are only the INNER gaps, so the two gestures never overlap.
  */
@@ -1339,6 +1587,17 @@ function bandState(lane, vm, cycleQ) {
 
 function commitBandSegs(st, segsQ) {
     if (segsQ === null) return;  // refusal: keep the previous map
+    // CATEGORICAL COHERENCE (owner ruling 2026-08-09): no gesture may
+    // commit a fractional-period map — the engine refuses them too
+    // (both sides, defense in depth). Every path above snaps periods
+    // to whole Qs; this guard exists so a future gesture bug degrades
+    // to "the edit didn't take" instead of a 66187Q cycle explosion
+    // (field video 2026-08-08).
+    const p = segsPeriod(segsQ, st.totalQ);
+    if (Math.abs(p - Math.round(p)) > 1e-6) {
+        console.warn('[map] refused incoherent period', p, segsQ);
+        return;
+    }
     const flat = [];
     segsQ.forEach(([s, e]) =>
         flat.push(Math.round(s * st.quantum), Math.round(e * st.quantum)));
@@ -1417,19 +1676,9 @@ function rawQAt(st, body, clientX) {
     return Math.max(0, Math.min(st.totalQ, q));
 }
 
-/** Trim one outer bound to an absolute raw position (heal reveals,
- * cut consumes); null = refusal, keep previous. */
-function trimBoundTo(segs, edge, boundQ, totalQ) {
-    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
-    if (edge === 'start') {
-        const first = cov[0][0];
-        if (boundQ < first - 1e-9) return healCut(cov, boundQ, first, totalQ);
-        return applyCut(cov, 0, boundQ, totalQ);
-    }
-    const last = cov[cov.length - 1][1];
-    if (boundQ > last + 1e-9) return healCut(cov, last, boundQ, totalQ);
-    return applyCut(cov, boundQ, totalQ, totalQ);
-}
+/* trimBoundTo / trimBoundForPeriod / segsPeriod live in map_edit.js
+ * (pure interval algebra, unit-tested there) — the period-snap law
+ * they encode is the fix for the 2026-08-08 LCM-explosion video. */
 
 /** The raw-frame drag preview — TWO-LAYER FEEDBACK (the bracket law):
  * a pointer-attached FOLLOW element moves continuously with the mouse
@@ -1696,6 +1945,7 @@ function wireBandCreate(body, lane, vm, cycleQ) {
     body.addEventListener('dblclick', ev => {
         const st = body._bandState;
         if (!st || !st.editable || st.totalQ < 2) return;
+        selectOnly(st.laneId); // editing a track claims it ([ ] target)
         // HEARD lanes: a cut has ZERO width (it IS the splice), so the
         // pointer can never be "inside" it — a dblclick meant to heal
         // instead landed on adjacent content and cut ANOTHER Q, which
@@ -1768,7 +2018,7 @@ function appendCutBands(o, lane, vm, body, cycleQ) {
         for (const edge of ['start', 'end']) {
             const h = document.createElement('div');
             h.className = 'cut-handle ' + edge;
-            h.title = 'Drag to resize — length snaps to whole Qs, ⌥ for free';
+            h.title = 'Drag to resize — length snaps to whole Qs';
             handles[edge] = h;
         }
         const ghost = document.createElement('div');
@@ -1800,6 +2050,7 @@ function appendCutBands(o, lane, vm, body, cycleQ) {
         const startDrag = (kind, edge) => ev => {
             ev.preventDefault();
             ev.stopPropagation();
+            selectOnly(lane.id); // grabbing a handle claims the track
             // Capture keeps the drag alive off-element; a webview that
             // refuses (or a synthetic pointer) must not kill the
             // gesture wiring below.
@@ -1808,27 +2059,26 @@ function appendCutBands(o, lane, vm, body, cycleQ) {
             dragPinQ = lastFrameQ;  // freeze the shared frame (see above)
             dragPinFoldQ = lastFoldQ;
             const q0 = bandContentQ(st, body, ev.clientX);
+            // Kept-neighbourhood clamp (cutBounds): the gesture may
+            // meet a neighbouring gap only at exact adjacency.
+            const [loQ, hiQ] = cutBounds(st.segs, cut, st.totalQ);
             let target = null;
             const move = mv => {
                 const q = bandContentQ(st, body, mv.clientX);
                 if (kind === 'slide') {
                     target = slideCutTarget({
-                        cut, rawStartQ: cut[0] + (q - q0), maxQ: st.totalQ });
+                        cut, rawStartQ: cut[0] + (q - q0),
+                        maxQ: st.totalQ, loQ, hiQ });
                     layout(target.inQ, target.outQ);
                     ghost.style.display = 'none';
                 } else {
                     target = resizeCutTarget({
-                        cut, edge, rawQ: q, maxQ: st.totalQ,
-                        free: mv.altKey });
+                        cut, edge, rawQ: q, maxQ: st.totalQ, loQ, hiQ });
                     layout(target.inQ, target.outQ, { edge, q });
-                    if (!mv.altKey) {
-                        ghost.style.display = '';
-                        ghost.style.left = pct(st.anchorQ +
-                            (edge === 'start' ? target.inQ : target.outQ),
-                            cycleQ);
-                    } else {
-                        ghost.style.display = 'none';
-                    }
+                    ghost.style.display = '';
+                    ghost.style.left = pct(st.anchorQ +
+                        (edge === 'start' ? target.inQ : target.outQ),
+                        cycleQ);
                 }
                 // LIVE SPLICE (see the seam handles): audible preview
                 // while dragging, coalesced undo.
@@ -1950,6 +2200,7 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
         handle.addEventListener('contextmenu', healMenu);
         chip.addEventListener('contextmenu', healMenu);
         const startDrag = ev => {
+            selectOnly(lane.id); // grabbing a handle claims the track
             // EXPANDED DRAG (owner-ruled): the lane opens to the raw
             // take; the cut is a real band over visible content. Drag
             // slides it freely (length held), ⌥-drag resizes (whole-Q
@@ -1958,6 +2209,10 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
             // Anchor by the mode chosen at the grab: a slide carries
             // the cut's start, ⌥-resize carries its end edge.
             const anchor0 = ev.altKey ? seam.cut[1] : seam.cut[0];
+            // Kept-neighbourhood clamp (cutBounds): exact adjacency
+            // only — a slide/resize can never fractionally overlap a
+            // neighbouring gap.
+            const [loQ, hiQ] = cutBounds(st.segs, seam.cut, st.totalQ);
             runExpandedDrag(ev, o, lane, st, body, anchor0, (rawQ, alt) => {
                 // The seam glyph marks where the cut BEGINS — the cut's
                 // start is what rides the pointer on a slide; ⌥-resize
@@ -1966,10 +2221,11 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
                     ? { inQ: seam.cut[0], outQ: seam.cut[1] } // at rest
                     : alt
                         ? resizeCutTarget({ cut: seam.cut, edge: 'end',
-                                            rawQ, maxQ: st.totalQ })
+                                            rawQ, maxQ: st.totalQ,
+                                            loQ, hiQ })
                         : slideCutTarget({ cut: seam.cut,
                                            rawStartQ: rawQ,
-                                           maxQ: st.totalQ });
+                                           maxQ: st.totalQ, loQ, hiQ });
                 let next = healCut(st.segs, seam.cut[0], seam.cut[1],
                                    st.totalQ);
                 next = applyCut(next, target.inQ, target.outQ, st.totalQ);
@@ -2048,6 +2304,7 @@ function appendTrimGrips(o, lane, vm, body, cycleQ) {
             : 'Loop END — drag left to trim it in, right to reveal ' +
               'later material (whole-Q snap)';
         grip.addEventListener('pointerdown', ev => {
+            selectOnly(lane.id); // grabbing a handle claims the track
             // EXPANDED DRAG (owner-ruled): the lane opens to the raw
             // take, the excluded material stays visible, and the trim
             // bracket rides an ABSOLUTE raw bound — dragging back over
@@ -2061,20 +2318,32 @@ function appendTrimGrips(o, lane, vm, body, cycleQ) {
                 // No snap until the pointer moves — the rest render is
                 // the bound as it IS (a free-trimmed fractional bound
                 // must not preview a rounded landing it never had).
-                const bound = rawQ === null ? rawBound : Math.round(rawBound);
+                let bound = rawBound;
+                if (rawQ !== null) {
+                    // Snap the PERIOD, not the bound (trimBoundForPeriod
+                    // header): what the pointer proposes is a period —
+                    // round THAT to whole Qs and land the bound wherever
+                    // that period lives.
+                    const pFree = segsPeriod(
+                        trimBoundTo(segs, edge, rawBound, st.totalQ),
+                        st.totalQ);
+                    if (pFree === null) return null;  // refusal zone
+                    bound = trimBoundForPeriod(
+                        segs, edge, Math.round(pFree), st.totalQ);
+                }
                 const next = trimBoundTo(segs, edge, bound, st.totalQ);
                 if (next === null) return null;  // refusal: keep previous
-                const p = next.length
-                    ? next.reduce((n, [a, b]) => n + (b - a), 0)
-                    : st.totalQ;
+                const p = segsPeriod(next, st.totalQ);
+                const whole = Math.abs(p - Math.round(p)) < 1e-6;
                 return { segs: next,
                     // The bracket rides the pointer; the dashed ghost
-                    // marks the whole-Q landing.
+                    // marks the whole-Q-period landing.
                     follow: { kind: 'bracket', edge, q: rawBound },
                     active: {
                         q: bound,
-                        text: 'loop ' + edge + ' · ' + p + 'Q',
-                        incoherent: false,
+                        text: 'loop ' + edge + ' · ' + fmtQ(p) + 'Q'
+                            + (whole ? '' : ' ⚠'),
+                        incoherent: !whole,
                         ghost: Math.abs(rawBound - bound) > 0.02,
                     } };
             });
@@ -2278,6 +2547,7 @@ function wireWindow(o, lane, vm, body, win) {
         let ghost = null;
         el.addEventListener('pointerdown', e => {
             e.preventDefault();
+            selectOnly(lane.id); // grabbing a handle claims the track
             el.setPointerCapture(e.pointerId);
             body._winDrag = true;
             el.classList.add('dragging');
@@ -2377,6 +2647,31 @@ function clearSelection() {
     selection.clear();
     document.querySelectorAll('.lane-rail.selected')
         .forEach(el => el.classList.remove('selected'));
+    document.querySelectorAll('.lane.sel')
+        .forEach(el => el.classList.remove('sel'));
+    updateSelectionBar();
+}
+
+/** Sync rail + row selection classes from the selection set (rows
+ * carry .sel so the nav dock can reveal for selected lanes). */
+function paintSelection() {
+    document.querySelectorAll('.lane').forEach(r => {
+        const rail = r.querySelector('.lane-rail');
+        if (rail && r._lane) {
+            const on = selection.has(r._lane.id);
+            rail.classList.toggle('selected', on);
+            r.classList.toggle('sel', on);
+        }
+    });
+}
+
+/** Programmatic single-select: grabbing a loop handle claims the track
+ * (field request 2026-08-09), which is what arms the [ ] teleport. */
+function selectOnly(id) {
+    if (selection.size === 1 && selection.has(id)) return;
+    selection.clear();
+    selection.add(id);
+    paintSelection();
     updateSelectionBar();
 }
 
@@ -2392,12 +2687,7 @@ function toggleSelect(row, additive) {
     } else {
         selection.add(id);
     }
-    document.querySelectorAll('.lane').forEach(r => {
-        const rail = r.querySelector('.lane-rail');
-        if (rail && r._lane) {
-            rail.classList.toggle('selected', selection.has(r._lane.id));
-        }
-    });
+    paintSelection();
     updateSelectionBar();
 }
 
@@ -2409,6 +2699,7 @@ function patchRail(row, lane, vm) {
     {
         const railEl = row.querySelector('.lane-rail');
         if (railEl) railEl.classList.toggle('selected', selection.has(lane.id));
+        row.classList.toggle('sel', selection.has(lane.id));
     }
     row.dataset.depth = String(Math.min(lane.depth, 2));
     // Never patch the name over an open rename editor (or its optimistic
@@ -2684,6 +2975,10 @@ export function patchSessionView(vm, aux) {
             laneEls.delete(id);
         }
     });
+
+    // Handle nav docks mirror the overlays just patched above (ticks
+    // parse the handles' own left styles — same pct() truth, no drift).
+    laneEls.forEach(row => updateNavDock(row));
 
     els.emptyState.style.display = vm.lanes.length ? 'none' : 'block';
 

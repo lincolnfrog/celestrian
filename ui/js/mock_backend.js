@@ -732,6 +732,13 @@ function subtreeRecording(node) {
  * COVERS it. When the edit removed the sounding region the origin
  * stays FIXED (an audible jump is expected, and the display stays
  * anchored at the click). Inactive maps = their full-span form. */
+/* TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09, engine parity —
+ * see AudioEngine's twin note): a map edit on a playing clip keeps
+ * the sounding sample sounding (origin re-anchor, unless the edit
+ * REMOVED that region — then both anchors stay put and the jump is
+ * expected), and the island epoch rides the SAME whole-Q delta so
+ * the edited clip's frame position — the timeline the user drew —
+ * is unchanged. The fold, not the clip, absorbs the difference. */
 function continuityOrigin(node, oldMap, newMap) {
     const dur = node.duration || 0;
     const eff = m => (m && mapActive(m) && mapPeriod(m) > 0)
@@ -747,6 +754,20 @@ function continuityOrigin(node, oldMap, newMap) {
     return t0 - mapOffset(nm, 0) - hNew;
 }
 
+/** The epoch rider: apply continuity to `node` for `newMap`, moving
+ * the island epoch by the same whole-Q delta (two-anchor law). */
+function applyTwoAnchorContinuity(node, oldMap, newMap) {
+    const org = node.origin || 0;
+    const org2 = continuityOrigin(node, oldMap, newMap);
+    if (org2 === org) return;
+    node.origin = org2;
+    const q = state.islandQ || 0;
+    const delta = org2 - org;
+    if (q > 0 && delta % q === 0) {
+        state.islandEpoch = (state.islandEpoch || 0) + delta;
+    }
+}
+
 function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
     if (!node) return;
@@ -757,9 +778,32 @@ function setLoopPoints(id, loopStart, loopEnd) {
         console.log('[MockBackend] setLoopPoints refused — take recording in subtree');
         return;
     }
-    // The pre-edit MAP (window or override) — the continuity re-anchor
-    // below needs it before any mutation.
-    const oldMapForContinuity = node.loopBypassed ? { segs: [] } : nodeMap(node);
+    // COHERENCE GUARD (owner ruling 2026-08-09, engine parity): a
+    // window length off the Q grid is refused — categorical, both
+    // sides — unless this very edit re-establishes Q (the Q13
+    // sole-definer re-trim below) or clears the window.
+    {
+        const cs = Math.max(0, loopStart);
+        const ce = node.type === 'clip' && (node.duration || 0) > 0
+            ? Math.min(loopEnd, node.duration) : loopEnd;
+        const q13 = ce > cs && node.type === 'clip' &&
+            (node.duration || 0) > 0 &&
+            committedClipCount() === 1 && !anyNodeRecording();
+        const q = state.islandQ || 0;
+        const len = ce - cs;
+        // Coherent = whole multiple of Q, or an exact divisor of it
+        // (sub-Q loops are first-class; lcm(Q, Q/k) = Q).
+        const coherent = len > 0 && (len % q === 0 || q % len === 0);
+        if (!q13 && q > 0 && len > 0 && !coherent) {
+            console.log('[MockBackend] setLoopPoints refused — window ' +
+                len + ' is neither a whole multiple nor an exact ' +
+                'divisor of Q ' + q);
+            return;
+        }
+    }
+    // The pre-edit MAP (window or override) — the two-anchor
+    // continuity below needs it before any mutation.
+    const oldMapPre = node.loopBypassed ? { segs: [] } : nodeMap(node);
     // Phase 3 (engine parity): an explicit single-window edit
     // supersedes a multi-segment override.
     delete node.segments;
@@ -799,10 +843,8 @@ function setLoopPoints(id, loopStart, loopEnd) {
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
                state.isPlaying && !anyNodeRecording()) {
-        // GENERAL PHASE CONTINUITY (engine parity, 2026-07-25h): a
-        // window edit on any playing committed clip re-anchors origin
-        // so the sound does not jump. Island (Q, epoch) untouched.
-        node.origin = continuityOrigin(node, oldMapForContinuity,
+        // TWO-ANCHOR CONTINUITY (see the note above continuityOrigin).
+        applyTwoAnchorContinuity(node, oldMapPre,
             loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
                                 : { segs: [] });
     }
@@ -852,6 +894,27 @@ function setSegments(id, flat) {
         else setLoopPoints(id, 0, 0);
         return;
     }
+    // COHERENCE GUARD (owner ruling 2026-08-09): the map's PERIOD must
+    // be a whole multiple of Q — categorical, both sides. One
+    // incoherent period LCM'd the effective cycle to 66187Q (field
+    // video 2026-08-08) and blanked the timeline. The sole exception
+    // is the Q13 sole-definer re-trim below, where the period
+    // *re-establishes* Q rather than fighting it.
+    {
+        const q13 = node.type === 'clip' && (node.duration || 0) > 0 &&
+            committedClipCount() === 1 && !anyNodeRecording();
+        const q = state.islandQ || 0;
+        const p = segs.reduce((n, [s, e]) => n + (e - s), 0);
+        // Coherent = whole multiple of Q, or an exact divisor of it
+        // (sub-Q loops are first-class; lcm(Q, Q/k) = Q).
+        const coherent = p > 0 && (p % q === 0 || q % p === 0);
+        if (!q13 && q > 0 && !coherent) {
+            refuse('period ' + p + ' is neither a whole multiple nor ' +
+                'an exact divisor of Q ' + q +
+                ' (coherence is categorical)');
+            return;
+        }
+    }
     // Q13 multi-segment definer rider (engine parity): capture the OLD
     // map before mutating for the phase-preserving re-anchor.
     const oldMap = node.loopBypassed ? { segs: [] } : nodeMap(node);
@@ -880,8 +943,8 @@ function setSegments(id, flat) {
         console.log('[MockBackend] Q13 segments re-trim → Q =', period);
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
                state.isPlaying && !anyNodeRecording()) {
-        // GENERAL PHASE CONTINUITY (engine parity, 2026-07-25h).
-        node.origin = continuityOrigin(node, oldMap, { segs });
+        // TWO-ANCHOR CONTINUITY (see the note above continuityOrigin).
+        applyTwoAnchorContinuity(node, oldMap, { segs });
     }
     console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));
 }
