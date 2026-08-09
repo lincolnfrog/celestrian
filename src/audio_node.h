@@ -36,7 +36,7 @@ struct ProcessContext {
   // Solo state: resolved once by the engine on the message thread.
   // Null when nothing is soloed. Nodes compare pointers (never strings)
   // and walk their ancestor chain to honor soloed containers.
-  const AudioNode *solo_node = nullptr;
+  const AudioNode* solo_node = nullptr;
 
   // The received frame's cycle top (time_maps.md): the engine sets this
   // to the island epoch; a stack with an ACTIVE loop window re-bases it
@@ -61,7 +61,7 @@ struct ProcessContext {
   // in the current block or slightly in the past.
   // Null when no backend ring exists (unit tests driving nodes directly);
   // clips then fall back to live block capture.
-  const float *const *prerecord_ring = nullptr;
+  const float* const* prerecord_ring = nullptr;
   int prerecord_ring_len = 0;       // samples per channel
   int prerecord_ring_channels = 0;  // valid channels in the ring
   int64_t input_clock = 0;          // arrival index of this block's sample 0
@@ -73,7 +73,7 @@ struct ProcessContext {
   // `snap` — never through per-node pointers. Null only in node-level
   // unit tests driving process() directly (single-threaded, where the
   // ownership-vector fallback is race-free by construction).
-  const GraphSnapshot *snap = nullptr;
+  const GraphSnapshot* snap = nullptr;
   int self = 0;  // this node's entry index in `snap`
 
   // Island facts, passed DOWN so leaves never walk up (the audio-thread
@@ -83,7 +83,7 @@ struct ProcessContext {
   // of take lifecycle events and establishIsland.
   int64_t quantum = 0;
   int64_t island_epoch = 0;
-  AudioNode *island = nullptr;
+  AudioNode* island = nullptr;
 
   // The CONTEXT CYCLE for this scope (the Q5 one-shot period): each
   // stack sets it for its children — its active map's period when
@@ -124,7 +124,7 @@ enum class NodeType { Clip, Stack, Unknown };
  * channel only — no boost anywhere, so a full-scale take hard-panned
  * cannot clip the device. pan ∈ [−1 (L) .. +1 (R)].
  */
-inline void panGains(float pan, float &gain_l, float &gain_r) {
+inline void panGains(float pan, float& gain_l, float& gain_r) {
   const float p = pan < -1.0f ? -1.0f : (pan > 1.0f ? 1.0f : pan);
   gain_l = p > 0.0f ? 1.0f - p : 1.0f;
   gain_r = p < 0.0f ? 1.0f + p : 1.0f;
@@ -139,8 +139,8 @@ inline void panGains(float pan, float &gain_l, float &gain_r) {
  * audibility mechanism (fixes D1: containers silence like leaves).
  * `fader` is the mono/extra-channel scalar (pan does not apply there).
  */
-inline void outputStageGains(float pan, float gain, bool muted, float &gl,
-                             float &gr, float &fader) {
+inline void outputStageGains(float pan, float gain, bool muted, float& gl,
+                             float& gr, float& fader) {
   panGains(pan, gl, gr);
   fader = muted ? 0.0f : gain;
   gl *= fader;
@@ -168,9 +168,9 @@ class AudioNode {
    * consequences: establish, epoch re-base). Mutates node state.
    * Inputs flow in here; nothing is rendered.
    */
-  virtual void control(const float *const *input_channels,
+  virtual void control(const float* const* input_channels,
                        int num_input_channels,
-                       const ProcessContext &context) = 0;
+                       const ProcessContext& context) = 0;
 
   /**
    * RENDER phase (§2.3 — the data plane): the kernel playback equation
@@ -180,8 +180,8 @@ class AudioNode {
    * and view telemetry (playhead phase), both explicitly marked.
    * Outputs flow out of here; inputs are not visible.
    */
-  virtual void render(float *const *output_channels, int num_output_channels,
-                      const ProcessContext &context) const = 0;
+  virtual void render(float* const* output_channels, int num_output_channels,
+                      const ProcessContext& context) const = 0;
 
   /**
    * Phase sequencer: control, then render. NON-virtual — the split is
@@ -191,9 +191,9 @@ class AudioNode {
    * that changes mid-pass (§2.3 "events applied between blocks").
    * Node-level tests call it for the historical single-node behavior.
    */
-  void process(const float *const *input_channels,
-               float *const *output_channels, int num_input_channels,
-               int num_output_channels, const ProcessContext &context) {
+  void process(const float* const* input_channels,
+               float* const* output_channels, int num_input_channels,
+               int num_output_channels, const ProcessContext& context) {
     control(input_channels, num_input_channels, context);
     render(output_channels, num_output_channels, context);
   }
@@ -208,7 +208,7 @@ class AudioNode {
    * Returns a JSON object containing node metadata for UI rendering.
    */
   virtual juce::var getMetadata() const {
-    auto *obj = new juce::DynamicObject();
+    auto* obj = new juce::DynamicObject();
     obj->setProperty("id", node_uuid);
     obj->setProperty("name", node_name);
     obj->setProperty("type", getNodeTypeString());
@@ -233,7 +233,7 @@ class AudioNode {
                      period_from_context_.load() ? "context" : "own");
     // Multi-segment map (phase 3): flat [s0,e0,s1,e1,...] in samples,
     // present only when an override is installed.
-    if (const timing::TimeMap *m = map_override_.load()) {
+    if (const timing::TimeMap* m = map_override_.load()) {
       juce::Array<juce::var> segs;
       for (int i = 0; i < m->n; ++i) {
         segs.add((double)m->segs[i].start);
@@ -265,36 +265,33 @@ class AudioNode {
     const int64_t q_samples = getEffectiveQuantum();
     const int64_t epoch = getIslandEpoch();
     obj->setProperty("qSamples", (double)q_samples);
+    obj->setProperty("originQ", qtimeVar(timing::originQ(origin_samples.load(),
+                                                         epoch, q_samples)));
+    obj->setProperty("periodQ", qtimeVar(timing::periodQ(
+                                    duration_samples.load(), q_samples)));
     obj->setProperty(
-        "originQ",
-        qtimeVar(timing::originQ(origin_samples.load(), epoch, q_samples)));
-    obj->setProperty(
-        "periodQ",
-        qtimeVar(timing::periodQ(duration_samples.load(), q_samples)));
-    obj->setProperty("windowStartQ",
-                     qtimeVar(timing::fromSamples(loop_start_samples.load(),
-                                                  q_samples)));
-    obj->setProperty(
-        "windowEndQ",
-        qtimeVar(timing::fromSamples(loop_end_samples.load(), q_samples)));
+        "windowStartQ",
+        qtimeVar(timing::fromSamples(loop_start_samples.load(), q_samples)));
+    obj->setProperty("windowEndQ", qtimeVar(timing::fromSamples(
+                                       loop_end_samples.load(), q_samples)));
     return juce::var(obj);
   }
 
   /** A QTime as a {num, den} var for the metadata/persistence boundary. */
   static juce::var qtimeVar(timing::QTime q) {
-    auto *o = new juce::DynamicObject();
+    auto* o = new juce::DynamicObject();
     o->setProperty("num", (double)q.num);
     o->setProperty("den", (double)q.den);
     return juce::var(o);
   }
 
-  void setName(const juce::String &new_name) { node_name = new_name; }
+  void setName(const juce::String& new_name) { node_name = new_name; }
   juce::String getName() const { return node_name; }
   juce::String getUuid() const { return node_uuid; }
   /** Restore a persisted uuid on load (session_io) so save→load→save is
    * stable and references survive. Message thread, before the node joins
    * the graph. */
-  void setUuid(const juce::String &u) { node_uuid = u; }
+  void setUuid(const juce::String& u) { node_uuid = u; }
 
   virtual NodeType getNodeType() const = 0;
 
@@ -332,20 +329,20 @@ class AudioNode {
   // whole-graph snapshot (ProcessContext.snap) and receives island
   // facts in the context — it never walks these pointers (Tier 3
   // Step 3).
-  void setParent(AudioNode *p) { parent.store(p); }
-  AudioNode *getParent() const { return parent.load(); }
+  void setParent(AudioNode* p) { parent.store(p); }
+  AudioNode* getParent() const { return parent.load(); }
 
   /** Topmost node of this subtree — the island root under the current
    * one-island model. Message thread / unit-test fallback only; the
    * audio thread uses ProcessContext.island. */
-  AudioNode *rootNode() {
-    AudioNode *n = this;
-    while (auto *p = n->getParent()) n = p;
+  AudioNode* rootNode() {
+    AudioNode* n = this;
+    while (auto* p = n->getParent()) n = p;
     return n;
   }
 
   /** Recursive UUID lookup (self included). */
-  virtual AudioNode *findByUuid(const juce::String &uuid) {
+  virtual AudioNode* findByUuid(const juce::String& uuid) {
     return getUuid() == uuid ? this : nullptr;
   }
 
@@ -430,7 +427,7 @@ class AudioNode {
    */
   timing::TimeMap activeTimeMap() const {
     if (loop_window_bypassed_.load()) return timing::TimeMap::none();
-    if (const timing::TimeMap *m = map_override_.load()) return *m;
+    if (const timing::TimeMap* m = map_override_.load()) return *m;
     return timing::TimeMap::single(loop_start_samples.load(),
                                    loop_end_samples.load());
   }
@@ -442,10 +439,10 @@ class AudioNode {
   // MESSAGE thread swaps it and retires the old pointer through the
   // engine reclaimer (an in-flight callback may read it for ≤2 more
   // callbacks); the audio thread only loads it.
-  const timing::TimeMap *mapOverride() const { return map_override_.load(); }
+  const timing::TimeMap* mapOverride() const { return map_override_.load(); }
   /** Swap in `fresh` (heap-owned, or null to clear); returns the OLD
    * pointer, which the caller must retire — never delete inline. */
-  const timing::TimeMap *exchangeMapOverride(const timing::TimeMap *fresh) {
+  const timing::TimeMap* exchangeMapOverride(const timing::TimeMap* fresh) {
     return map_override_.exchange(fresh);
   }
 
@@ -457,8 +454,8 @@ class AudioNode {
    * (enable/params) happen on the message thread through AudioEngine;
    * the audio thread only reads atomics. prepare() before enable.
    */
-  dsp::EffectRack &effects() { return fx_; }
-  const dsp::EffectRack &effects() const { return fx_; }
+  dsp::EffectRack& effects() { return fx_; }
+  const dsp::EffectRack& effects() const { return fx_; }
 
   /**
    * The node's audible period in its parent's frame (E-C,
@@ -479,7 +476,7 @@ class AudioNode {
   // Quantum Logic
   virtual int64_t getIntrinsicDuration() const = 0;
   virtual int64_t getEffectiveQuantum() const {
-    if (auto *p = parent.load()) return p->getEffectiveQuantum();
+    if (auto* p = parent.load()) return p->getEffectiveQuantum();
     return 0;
   }
 
@@ -490,7 +487,7 @@ class AudioNode {
    * views with absolute-frame math re-splits audio from visuals.
    */
   virtual int64_t getIslandEpoch() const {
-    if (auto *p = parent.load()) return p->getIslandEpoch();
+    if (auto* p = parent.load()) return p->getIslandEpoch();
     return 0;
   }
 
@@ -524,7 +521,7 @@ class AudioNode {
   std::atomic<bool> period_from_context_{false};
   // Multi-segment map override (phase 3; see mapOverride above): owned
   // here, swapped on the message thread, retired via the reclaimer.
-  std::atomic<const timing::TimeMap *> map_override_{nullptr};
+  std::atomic<const timing::TimeMap*> map_override_{nullptr};
 
   // Built-in effect rack (dsp/effects.h): fixed slots, all-atomic
   // parameters — safe for the audio thread to read while the message
@@ -557,7 +554,7 @@ class AudioNode {
   // Atomic because the audio thread walks parent chains (quantum lookup,
   // solo ancestry) while the message thread reparents nodes during
   // reorder/combine operations.
-  std::atomic<AudioNode *> parent{nullptr};
+  std::atomic<AudioNode*> parent{nullptr};
 
  protected:
   juce::String node_name;

@@ -190,7 +190,8 @@ class StackLoopTests : public juce::UnitTest {
                                 "invalid window passes the clock through");
     }
 
-    beginTest("Clip loop window is fractal (I5): subset loops, bypass restores");
+    beginTest(
+        "Clip loop window is fractal (I5): subset loops, bypass restores");
     {
       // A clip's loop region is the single-segment case of the stack's
       // time-map: same active/bypass semantics, same toggle. Commit set
@@ -297,9 +298,8 @@ class StackLoopTests : public juce::UnitTest {
         const double phase = stack.playhead_pos.load();
         if (last_phase >= 0.0 && phase < last_phase) {
           ++wraps;
-          expect(last_phase > 0.99,
-                 "wrap only at the window end (phase=" +
-                     juce::String(last_phase) + ")");
+          expect(last_phase > 0.99, "wrap only at the window end (phase=" +
+                                        juce::String(last_phase) + ")");
         }
         last_phase = phase;
         ctx.master_pos += ctx.num_samples;

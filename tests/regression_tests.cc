@@ -189,10 +189,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       clipPtr->stopRecording();
 
-      expectEquals(celestrian::timing::launchPointFor(
-                       clipPtr->origin_samples.load(),
-                       clipPtr->duration_samples.load()),
-                   (int64_t)0, "Derived launch is 0 even with blocks");
+      expectEquals(
+          celestrian::timing::launchPointFor(clipPtr->origin_samples.load(),
+                                             clipPtr->duration_samples.load()),
+          (int64_t)0, "Derived launch is 0 even with blocks");
 
       // Wait, let's verify Playhead at Commit Time.
       // commitPos = 1024. duration = 1024.
@@ -1068,8 +1068,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       juce::Logger::writeToLog(
           "BUG REPRO: After crossing 1Q, is_recording=" +
           juce::String(clip2Ptr->isRecording() ? 1 : 0) +
-          ", origin_samples=" +
-          juce::String(clip2Ptr->origin_samples.load()));
+          ", origin_samples=" + juce::String(clip2Ptr->origin_samples.load()));
 
       // Record for 4Q total (from 1Q to 5Q = 4000 samples with snap)
       // User stops between 3Q-4Q, snaps to 4Q
@@ -1095,9 +1094,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       int64_t commitPos = clip2Ptr->getCommitMasterPos();
 
       juce::Logger::writeToLog(
-          "BUG REPRO COMMIT: duration=" + juce::String(duration) +
-          ", origin=" + juce::String(startPhase) +
-          ", commitPos=" + juce::String(commitPos));
+          "BUG REPRO COMMIT: duration=" + juce::String(duration) + ", origin=" +
+          juce::String(startPhase) + ", commitPos=" + juce::String(commitPos));
 
       // The origin is stored ABSOLUTE: the clip started at boundary
       // T=1000, so content[0] plays at t ≡ 1000 — seamless with the
@@ -1230,8 +1228,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       const int64_t Q = 44100;
       const int BLOCK = 512;
       std::vector<float> buf((size_t)BLOCK, 0.1f);
-      float *ins[] = {buf.data()};
-      float *outs[] = {buf.data(), buf.data()};
+      float* ins[] = {buf.data()};
+      float* outs[] = {buf.data(), buf.data()};
       auto process = [&](int64_t total) {
         while (total > 0) {
           int n = (int)std::min<int64_t>(total, BLOCK);
@@ -1241,12 +1239,12 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       };
       auto nthClipId = [&](int n) -> juce::String {
         auto state = engine.getGraphState();
-        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
         return (*nodes)[n].getDynamicObject()->getProperty("id");
       };
-      auto clipProp = [&](int n, const char *prop) -> int64_t {
+      auto clipProp = [&](int n, const char* prop) -> int64_t {
         auto state = engine.getGraphState();
-        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
         return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
             prop);
       };
@@ -1326,8 +1324,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
                    "clip 4's heard frame was still the 4Q cycle");
 
       const int64_t origin4 = clipProp(3, "origin");
-      expectEquals(((origin4 - epoch) % (4 * Q) + 4 * Q) % (4 * Q),
-                   (int64_t)0, "clip 4 armed at a heard cycle top");
+      expectEquals(((origin4 - epoch) % (4 * Q) + 4 * Q) % (4 * Q), (int64_t)0,
+                   "clip 4 armed at a heard cycle top");
 
       // THE fix: the epoch moved to clip 4's heard top (a whole number
       // of old 4Q cycles past the previous epoch) — phase-neutral for
@@ -1342,9 +1340,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       // Clip 3's heard phase survives the re-base via its contextCycle:
       // (origin3 − epoch2) mod 4Q is still 2Q.
-      expectEquals(((clipProp(2, "origin") - epoch2) % (4 * Q) + 4 * Q) %
-                       (4 * Q),
-                   2 * Q, "clip 3's heard 2Q anchor survives the re-base");
+      expectEquals(
+          ((clipProp(2, "origin") - epoch2) % (4 * Q) + 4 * Q) % (4 * Q), 2 * Q,
+          "clip 3's heard 2Q anchor survives the re-base");
     }
 
     // FIELD REPRO 2026-07-16e (Q15): recording while a WINDOW shortens
@@ -1363,8 +1361,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       const int64_t Q = 44100;
       const int BLOCK = 512;
       std::vector<float> buf((size_t)BLOCK, 0.1f);
-      float *ins[] = {buf.data()};
-      float *outs[] = {buf.data(), buf.data()};
+      float* ins[] = {buf.data()};
+      float* outs[] = {buf.data(), buf.data()};
       auto process = [&](int64_t total) {
         while (total > 0) {
           int n = (int)std::min<int64_t>(total, BLOCK);
@@ -1374,12 +1372,12 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       };
       auto nthClipId = [&](int n) -> juce::String {
         auto state = engine.getGraphState();
-        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
         return (*nodes)[n].getDynamicObject()->getProperty("id");
       };
-      auto clipProp = [&](int n, const char *prop) -> int64_t {
+      auto clipProp = [&](int n, const char* prop) -> int64_t {
         auto state = engine.getGraphState();
-        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
         return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
             prop);
       };
@@ -1418,8 +1416,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // THE FOLD: origin stored ≡ 0 (mod 4Q) — the audibly-identical
       // representative at the frame top (unfolded it was ≡ 1Q).
       const int64_t origin3 = clipProp(2, "origin");
-      expectEquals(((origin3 - epoch) % (4 * Q) + 4 * Q) % (4 * Q),
-                   (int64_t)0,
+      expectEquals(((origin3 - epoch) % (4 * Q) + 4 * Q) % (4 * Q), (int64_t)0,
                    "take anchors at the heard/frame top, not a die-roll slot");
 
       // Nothing else moved: the window edit above REMOVED the sounding
@@ -1431,8 +1428,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
                        .getDynamicObject()
                        ->getProperty("islandEpoch"),
                    epoch, "no epoch move (cycle did not grow)");
-      expectEquals(((clipProp(1, "origin") - epoch) % Q + Q) % Q,
-                   (int64_t)0, "clip 2's anchor keeps its grid phase");
+      expectEquals(((clipProp(1, "origin") - epoch) % Q + Q) % Q, (int64_t)0,
+                   "clip 2's anchor keeps its grid phase");
     }
   }
 };

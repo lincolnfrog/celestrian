@@ -64,7 +64,9 @@ inline bool operator<(Int128 a, Int128 b) {
   return a.hi != b.hi ? a.hi < b.hi : a.lo < b.lo;
 }
 inline bool operator>(Int128 a, Int128 b) { return b < a; }
-inline bool operator!=(Int128 a, Int128 b) { return a.hi != b.hi || a.lo != b.lo; }
+inline bool operator!=(Int128 a, Int128 b) {
+  return a.hi != b.hi || a.lo != b.lo;
+}
 inline bool operator==(Int128 a, Int128 b) { return !(a != b); }
 
 inline Int128 operator+(Int128 a, Int128 b) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -49,10 +50,10 @@ class StackNode : public AudioNode {
   // stack's map is ACTIVE, both split the block into runs at map seams
   // (time_maps.md §5) — the *Children helpers hold the pre-split
   // bodies.
-  void control(const float *const *input_channels, int num_input_channels,
-               const ProcessContext &context) override;
-  void render(float *const *output_channels, int num_output_channels,
-              const ProcessContext &context) const override;
+  void control(const float* const* input_channels, int num_input_channels,
+               const ProcessContext& context) override;
+  void render(float* const* output_channels, int num_output_channels,
+              const ProcessContext& context) const override;
 
   /**
    * Aggregate waveform visualization for all children.
@@ -104,8 +105,8 @@ class StackNode : public AudioNode {
    * Recursively searches for a node by its UUID within this stack and its
    * sub-stacks. (Message thread only.)
    */
-  AudioNode *findNodeByUuid(const juce::String &uuid);
-  AudioNode *findByUuid(const juce::String &uuid) override {
+  AudioNode* findNodeByUuid(const juce::String& uuid);
+  AudioNode* findByUuid(const juce::String& uuid) override {
     return findNodeByUuid(uuid);
   }
 
@@ -120,7 +121,7 @@ class StackNode : public AudioNode {
   int getNumChildren() const { return (int)children.size(); }
 
   /** Child at index. (Message thread only.) */
-  AudioNode *getChild(int index) { return children[(size_t)index].get(); }
+  AudioNode* getChild(int index) { return children[(size_t)index].get(); }
 
   /**
    * The OWNERSHIP children — message thread only (the vector mutates on
@@ -129,7 +130,7 @@ class StackNode : public AudioNode {
    * graph_snapshot.h); this accessor exists for the snapshot builder
    * and message-side readers (metadata, session_io, engine helpers).
    */
-  const std::vector<std::unique_ptr<AudioNode>> &ownedChildren() const {
+  const std::vector<std::unique_ptr<AudioNode>>& ownedChildren() const {
     return children;
   }
 
@@ -178,7 +179,7 @@ class StackNode : public AudioNode {
 
   int64_t getIslandEpoch() const override {
     if (quantum_samples_.load() > 0) return epoch_samples_.load();
-    if (auto *p = parent.load()) return p->getIslandEpoch();
+    if (auto* p = parent.load()) return p->getIslandEpoch();
     return 0;
   }
 
@@ -218,18 +219,88 @@ class StackNode : public AudioNode {
   /** The window-mapped context handed to children — the time-map
    * primitive, shared by BOTH phases so control and render see the
    * same child clock. `self`/`context_loop` are set by the caller. */
-  ProcessContext childContext(const ProcessContext &context) const;
+  ProcessContext childContext(const ProcessContext& context) const;
+
+  /**
+   * Audio-thread child lookup, shared by both phase bodies: the
+   * whole-graph snapshot when the engine supplied one (Tier 3 Step 3 —
+   * index spans, structural consistency for the whole callback), else
+   * the ownership vector (the single-threaded node-level test path,
+   * race-free by construction). entryAt() is the child's snapshot entry
+   * index for ProcessContext.self (0 in the fallback, where `self` is
+   * unused).
+   */
+  struct ChildView {
+    const GraphSnapshot* snap;
+    int self;
+    const std::vector<std::unique_ptr<AudioNode>>* owned;
+    int count() const;
+    int entryAt(int k) const;
+    AudioNode* nodeAt(int k) const;
+  };
+  ChildView childView(const ProcessContext& context) const {
+    return {context.snap, context.self, &children};
+  }
 
   // Pre-split phase bodies (see control/render): each receives a
   // context whose [master_pos, +num_samples) crosses no map seam.
-  void controlChildren(const float *const *input_channels,
-                       int num_input_channels, const ProcessContext &context);
-  void renderChildren(float *const *output_channels, int num_output_channels,
-                      const ProcessContext &context) const;
+  void controlChildren(const float* const* input_channels,
+                       int num_input_channels, const ProcessContext& context);
+  void renderChildren(float* const* output_channels, int num_output_channels,
+                      const ProcessContext& context) const;
 
   // Channel-pointer bound for the seam split's shifted-pointer arrays
   // (stack storage; devices never approach this).
   static constexpr int kMaxSplitChannels = 64;
+
+  /**
+   * SUB-BLOCK SEAM-SPLIT driver (time_maps.md §5), shared verbatim by
+   * BOTH §2.3 phases: an active map's seam mid-block would hand children
+   * a linearly-advancing clock across a mapped-time JUMP — up to a block
+   * of wrong positions per seam. Splits the block into runs at seam
+   * boundaries (bounded: ≤ segments + 1 per pass crossing,
+   * allocation-free) and calls `body(channels, channel_count, sub)` per
+   * run; with no active map the body runs once with the original
+   * arguments. `Ch` is `const float` on the control side and `float` on
+   * the render side — the only difference between the two call sites,
+   * which is why this is a template rather than two copies (the copies
+   * had already begun to drift when they were unified).
+   */
+  template <typename Ch, typename Body>
+  void forEachSeamRun(Ch* const* channels, int channel_count,
+                      const ProcessContext& context, Body&& body) const {
+    const timing::TimeMap own_map = activeTimeMap();
+    if (!own_map.active() || context.num_samples <= 0) {
+      body(channels, channel_count, context);
+      return;
+    }
+    const int64_t period = own_map.period();
+    int64_t rel = context.master_pos - context.cycle_epoch;
+    rel = ((rel % period) + period) % period;
+    int done = 0;
+    while (done < context.num_samples) {
+      const int run = (int)std::min<int64_t>(context.num_samples - done,
+                                             own_map.seamDistance(rel));
+      Ch* shifted[kMaxSplitChannels];
+      Ch* const* run_channels = channels;
+      int run_channel_count = channel_count;
+      if (channels != nullptr && done > 0) {
+        run_channel_count = std::min(channel_count, kMaxSplitChannels);
+        for (int ch = 0; ch < run_channel_count; ++ch) {
+          shifted[ch] = channels[ch] ? channels[ch] + done : nullptr;
+        }
+        run_channels = shifted;
+      }
+      ProcessContext sub = context;
+      sub.master_pos = context.master_pos + done;
+      sub.island_pos = context.island_pos + done;
+      sub.num_samples = run;
+      sub.input_clock = context.input_clock + done;
+      body(run_channels, run_channel_count, sub);
+      done += run;
+      rel = (rel + run) % period;
+    }
+  }
 
   // Island state (P0-3): explicit, stored once — never derived from
   // child durations (deriving caused the retroactive-Q bug class).
@@ -251,7 +322,7 @@ class StackNode : public AudioNode {
    * committed content, its duration establishes Q (covers pre-recorded
    * clips being added to a fresh island).
    */
-  void maybeEstablishQuantumFrom(const AudioNode &child);
+  void maybeEstablishQuantumFrom(const AudioNode& child);
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StackNode)
 };

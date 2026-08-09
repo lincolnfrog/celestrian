@@ -1,19 +1,20 @@
-#include "main_component.h"
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "main_component.h"
+
 class CelestrianApplication : public juce::JUCEApplication {
-public:
+ public:
   CelestrianApplication() {}
 
   const juce::String getApplicationName() override { return "Celestrian"; }
   const juce::String getApplicationVersion() override { return "0.1.0"; }
   bool moreThanOneInstanceAllowed() override { return true; }
 
-  void initialise(const juce::String &commandLine) override {
+  void initialise(const juce::String& commandLine) override {
     // Set up file logger - overwrites each run
     auto logFile = juce::File::getCurrentWorkingDirectory().getChildFile(
         "celestrian_debug.log");
-    logFile.deleteFile(); // Wipe previous run's logs
+    logFile.deleteFile();  // Wipe previous run's logs
     fileLogger.reset(new juce::FileLogger(logFile, "Celestrian Debug Log"));
     juce::Logger::setCurrentLogger(fileLogger.get());
 
@@ -28,10 +29,10 @@ public:
 
   void systemRequestedQuit() override { quit(); }
 
-  void anotherInstanceStarted(const juce::String &commandLine) override {}
+  void anotherInstanceStarted(const juce::String& commandLine) override {}
 
   class MainWindow : public juce::DocumentWindow {
-  public:
+   public:
     MainWindow(juce::String name)
         : DocumentWindow(
               name,
@@ -55,11 +56,11 @@ public:
       JUCEApplication::getInstance()->systemRequestedQuit();
     }
 
-  private:
+   private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
   };
 
-private:
+ private:
   std::unique_ptr<MainWindow> mainWindow;
   std::unique_ptr<juce::FileLogger> fileLogger;
 };

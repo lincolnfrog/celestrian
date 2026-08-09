@@ -23,6 +23,14 @@
 #include <vector>
 
 #include "../src/audio_engine.h"
+#include "test_utils.h"
+
+using celestrian::test_utils::childDuration;
+using celestrian::test_utils::childId;
+using celestrian::test_utils::childIsRecording;
+using celestrian::test_utils::childVar;
+using celestrian::test_utils::firstNodeId;
+using celestrian::test_utils::runLoopback;
 
 class PreRecordTests : public juce::UnitTest {
  public:
@@ -42,10 +50,9 @@ class PreRecordTests : public juce::UnitTest {
       engine.startLatencyCalibration();
       runLoopback(engine, D, 128, 800);
       auto cal = engine.getLatencyCalibration();
-      expectEquals(
-          (int64_t)(double)cal.getDynamicObject()->getProperty(
-              "roundTripSamples"),
-          (int64_t)D, "calibration must measure the loopback exactly");
+      expectEquals((int64_t)(double)cal.getDynamicObject()->getProperty(
+                       "roundTripSamples"),
+                   (int64_t)D, "calibration must measure the loopback exactly");
 
       // --- 2. Record clip A: 1000 samples -> Q = 1000 ---
       engine.createNode("stack");
@@ -57,7 +64,7 @@ class PreRecordTests : public juce::UnitTest {
       processSilence(engine, BLOCK);
       processSilence(engine, BLOCK);
       engine.stopRecordingInNode(clipA);  // no Q yet -> immediate commit
-      expectEquals(nodeDuration(engine, 0), (int64_t)1000,
+      expectEquals(childDuration(engine, 0), (int64_t)1000,
                    "clip A defines a 1000-sample grid");
 
       // --- 3. Walk the transport to master == 500 (mid-loop) ---
@@ -92,17 +99,17 @@ class PreRecordTests : public juce::UnitTest {
       // --- 6. Stop; capture runs until the 1000-sample window closes ---
       processSilence(engine, BLOCK);
       engine.stopRecordingInNode(clipB);  // L < 1000 -> awaits boundary 1000
-      for (int i = 0; i < 4 && nodeIsRecording(engine, 1); ++i) {
+      for (int i = 0; i < 4 && childIsRecording(engine, 1); ++i) {
         processSilence(engine, BLOCK);
       }
 
-      expectEquals(nodeDuration(engine, 1), (int64_t)1000,
+      expectEquals(childDuration(engine, 1), (int64_t)1000,
                    "clip B snaps to 1Q");
 
       // --- 7. The impulse must be at clip position 0 ---
       auto wf = engine.getWaveform(clipB, 1000);
       expect(wf.isArray());
-      auto *peaks = wf.getArray();
+      auto* peaks = wf.getArray();
       expectWithinAbsoluteError((float)peaks->getReference(0), 0.8f, 0.0001f,
                                 "note played on the heard beat lands at "
                                 "clip position 0");
@@ -138,7 +145,7 @@ class PreRecordTests : public juce::UnitTest {
       processSilence(engine, 500);
       processSilence(engine, 500);
       engine.stopRecordingInNode(clipA);  // Q = 1000
-      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+      expectEquals(childDuration(engine, 0), (int64_t)1000);
 
       // Let the groove run: master sails far past the committed LCM.
       for (int i = 0; i < 601; ++i) processSilence(engine, 500);
@@ -151,29 +158,29 @@ class PreRecordTests : public juce::UnitTest {
       bool capturing = false;
       for (int i = 0; i < 10 && !capturing; ++i) {
         processSilence(engine, 500);
-        capturing = nodeIsRecording(engine, 1) && nodeDuration(engine, 1) > 0;
+        capturing = childIsRecording(engine, 1) && childDuration(engine, 1) > 0;
       }
       expect(capturing, "clip B captures after long playback");
 
       // ...and the recording clip must sit at a CYCLE-RELATIVE x —
       // context is 1Q here, so slot 0 — never an absolute-master slot.
-      double x = (double)childVar(engine, 1).getDynamicObject()->getProperty(
-          "x");
+      double x =
+          (double)childVar(engine, 1).getDynamicObject()->getProperty("x");
       expectEquals(x, 0.0,
                    "recording clip stays on screen (cycle-relative slot)");
 
       // Commit still snaps cleanly to the grid.
       engine.stopRecordingInNode(clipB);
-      for (int i = 0; i < 8 && nodeIsRecording(engine, 1); ++i) {
+      for (int i = 0; i < 8 && childIsRecording(engine, 1); ++i) {
         processSilence(engine, 500);
       }
-      expect(!nodeIsRecording(engine, 1), "clip B commits");
-      const int64_t durB = nodeDuration(engine, 1);
+      expect(!childIsRecording(engine, 1), "clip B commits");
+      const int64_t durB = childDuration(engine, 1);
       expect(durB > 0 && durB % 1000 == 0,
              "committed duration snaps to a Q multiple");
       expectEquals(
-          (double)childVar(engine, 1).getDynamicObject()->getProperty("x"),
-          0.0, "committed x is cycle-relative");
+          (double)childVar(engine, 1).getDynamicObject()->getProperty("x"), 0.0,
+          "committed x is cycle-relative");
     }
 
     beginTest("Long clip over short groove loops at 0Q (field regression)");
@@ -194,7 +201,7 @@ class PreRecordTests : public juce::UnitTest {
       processSilence(engine, 500);
       processSilence(engine, 500);
       engine.stopRecordingInNode(clipA);  // Q = 1000
-      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+      expectEquals(childDuration(engine, 0), (int64_t)1000);
 
       // Sustained playback: master far beyond the 1Q cycle, at a
       // position that is NOT a multiple of the eventual 4Q duration
@@ -208,11 +215,11 @@ class PreRecordTests : public juce::UnitTest {
       // Record ~3.5Q, then stop mid-4th-Q -> anticipatory snap to 4Q.
       for (int i = 0; i < 8; ++i) processSilence(engine, 500);
       engine.stopRecordingInNode(clipB);
-      for (int i = 0; i < 8 && nodeIsRecording(engine, 1); ++i) {
+      for (int i = 0; i < 8 && childIsRecording(engine, 1); ++i) {
         processSilence(engine, 500);
       }
-      expect(!nodeIsRecording(engine, 1), "clip B commits");
-      expectEquals(nodeDuration(engine, 1), (int64_t)4000,
+      expect(!childIsRecording(engine, 1), "clip B commits");
+      expectEquals(childDuration(engine, 1), (int64_t)4000,
                    "anticipatory snap to 4Q");
 
       // One block after commit: clip B must be playing near ITS TOP
@@ -226,9 +233,9 @@ class PreRecordTests : public juce::UnitTest {
              "clip B loops from its own top after commit, not mid-clip "
              "(playhead=" +
                  juce::String(playheadB) + ")");
-      const double masterView = (double)engine.getGraphState()
-                                    .getDynamicObject()
-                                    ->getProperty("masterPos");
+      const double masterView =
+          (double)engine.getGraphState().getDynamicObject()->getProperty(
+              "masterPos");
       expect(masterView < 1500.0,
              "view re-based to the new phrase's top (masterPos=" +
                  juce::String(masterView) + ")");
@@ -251,7 +258,7 @@ class PreRecordTests : public juce::UnitTest {
       processSilence(engine, 500);
       processSilence(engine, 500);
       engine.stopRecordingInNode(clipA);  // Q = 1000, epoch = 0
-      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+      expectEquals(childDuration(engine, 0), (int64_t)1000);
 
       // Idle to master 6500, then record clip B: trigger = 7000.
       for (int i = 0; i < 11; ++i) processSilence(engine, 500);
@@ -260,10 +267,10 @@ class PreRecordTests : public juce::UnitTest {
       engine.startRecordingInNode(clipB);
       for (int i = 0; i < 8; ++i) processSilence(engine, 500);
       engine.stopRecordingInNode(clipB);
-      for (int i = 0; i < 4 && nodeIsRecording(engine, 1); ++i) {
+      for (int i = 0; i < 4 && childIsRecording(engine, 1); ++i) {
         processSilence(engine, 500);
       }
-      expectEquals(nodeDuration(engine, 1), (int64_t)4000,
+      expectEquals(childDuration(engine, 1), (int64_t)4000,
                    "clip B is 4Q; its commit re-bases the epoch to 7000");
 
       // Idle to master 14500 = view 3.5Q, then click record: the PLL
@@ -277,7 +284,7 @@ class PreRecordTests : public juce::UnitTest {
       // Keep the var alive while reading (getDynamicObject() points into
       // the refcounted var — a dangling pointer here read freed memory).
       auto cVar = childVar(engine, 2);
-      auto *c = cVar.getDynamicObject();
+      auto* c = cVar.getDynamicObject();
       expectEquals((double)c->getProperty("x"), 0.0,
                    "clip C anchors at view 0Q, not 3Q (epoch frame)");
       expectEquals((int64_t)(double)c->getProperty("origin"), (int64_t)15000,
@@ -287,20 +294,19 @@ class PreRecordTests : public juce::UnitTest {
       // playback wraps at the clip's own top.
       for (int i = 0; i < 3; ++i) processSilence(engine, 500);
       engine.stopRecordingInNode(clipC);
-      for (int i = 0; i < 4 && nodeIsRecording(engine, 2); ++i) {
+      for (int i = 0; i < 4 && childIsRecording(engine, 2); ++i) {
         processSilence(engine, 500);
       }
-      expectEquals(nodeDuration(engine, 2), (int64_t)2000);
+      expectEquals(childDuration(engine, 2), (int64_t)2000);
       expectEquals(
-          (double)childVar(engine, 2).getDynamicObject()->getProperty("x"),
-          0.0, "committed x remains at view 0Q");
+          (double)childVar(engine, 2).getDynamicObject()->getProperty("x"), 0.0,
+          "committed x remains at view 0Q");
       processSilence(engine, 500);
       const double playheadC =
           (double)childVar(engine, 2).getDynamicObject()->getProperty(
               "playhead");
-      expect(playheadC < 0.3,
-             "clip C plays from its top (playhead=" +
-                 juce::String(playheadC) + ")");
+      expect(playheadC < 0.3, "clip C plays from its top (playhead=" +
+                                  juce::String(playheadC) + ")");
     }
 
     beginTest("Stack window selects view positions (2Q clip loops Q1)");
@@ -320,7 +326,7 @@ class PreRecordTests : public juce::UnitTest {
       processSilence(engine, 500);
       processSilence(engine, 500);
       engine.stopRecordingInNode(clipA);  // Q = 1000, epoch 0
-      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+      expectEquals(childDuration(engine, 0), (int64_t)1000);
 
       // Clip B: trigger at 7000 (7000 mod 2000 = 1000 — the shifted
       // case); records 2Q; commit re-bases the epoch to 7000.
@@ -329,11 +335,11 @@ class PreRecordTests : public juce::UnitTest {
       juce::String clipB = childId(engine, 1);
       engine.startRecordingInNode(clipB);
       for (int i = 0; i < 4; ++i) processSilence(engine, 500);  // L=1500
-      engine.stopRecordingInNode(clipB);  // awaits 2000
-      for (int i = 0; i < 4 && nodeIsRecording(engine, 1); ++i) {
+      engine.stopRecordingInNode(clipB);                        // awaits 2000
+      for (int i = 0; i < 4 && childIsRecording(engine, 1); ++i) {
         processSilence(engine, 500);
       }
-      expectEquals(nodeDuration(engine, 1), (int64_t)2000);
+      expectEquals(childDuration(engine, 1), (int64_t)2000);
 
       // Window: just Q1 of the (re-based) cycle.
       engine.setLoopPoints(stackId, 0, 1000);
@@ -348,9 +354,8 @@ class PreRecordTests : public juce::UnitTest {
                 "playhead");
         minPh = std::min(minPh, ph);
         maxPh = std::max(maxPh, ph);
-        expect(ph < 0.5,
-               "clip B loops its Q1 under the Q1 window (playhead=" +
-                   juce::String(ph) + ")");
+        expect(ph < 0.5, "clip B loops its Q1 under the Q1 window (playhead=" +
+                             juce::String(ph) + ")");
       }
       expect(maxPh > minPh, "playhead advances within the window");
     }
@@ -372,99 +377,30 @@ class PreRecordTests : public juce::UnitTest {
       processSilence(engine, 500);
       engine.stopRecordingInNode(clipA);
 
-      expectEquals(nodeDuration(engine, 0), (int64_t)1000);
+      expectEquals(childDuration(engine, 0), (int64_t)1000);
       auto wf = engine.getWaveform(clipA, 1000);
       expectWithinAbsoluteError((float)wf.getArray()->getReference(0), 0.5f,
-                                0.0001f,
-                                "first arrival lands at position 0");
+                                0.0001f, "first arrival lands at position 0");
     }
   }
 
  private:
-  void processBlock(AudioEngine &engine, const float *in, int n) {
+  void processBlock(AudioEngine& engine, const float* in, int n) {
     std::vector<float> outL((size_t)n, 0.0f), outR((size_t)n, 0.0f);
-    const float *ins[] = {in};
-    float *outs[] = {outL.data(), outR.data()};
+    const float* ins[] = {in};
+    float* outs[] = {outL.data(), outR.data()};
     engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
   }
 
-  void processSilence(AudioEngine &engine, int n) {
+  void processSilence(AudioEngine& engine, int n) {
     std::vector<float> in((size_t)n, 0.0f);
     processBlock(engine, in.data(), n);
   }
 
-  int64_t masterPos(AudioEngine &engine) {
+  int64_t masterPos(AudioEngine& engine) {
     return (int64_t)(double)engine.getGraphState()
         .getDynamicObject()
         ->getProperty("masterPos");
-  }
-
-  juce::String firstNodeId(AudioEngine &engine) {
-    return engine.getGraphState()
-        .getDynamicObject()
-        ->getProperty("nodes")
-        .getArray()
-        ->getReference(0)
-        .getDynamicObject()
-        ->getProperty("id");
-  }
-
-  juce::var childVar(AudioEngine &engine, int index) {
-    return engine.getGraphState()
-        .getDynamicObject()
-        ->getProperty("nodes")
-        .getArray()
-        ->getReference(0)
-        .getDynamicObject()
-        ->getProperty("nodes")
-        .getArray()
-        ->getReference(index);
-  }
-
-  juce::String childId(AudioEngine &engine, int index) {
-    return childVar(engine, index).getDynamicObject()->getProperty("id");
-  }
-
-  int64_t nodeDuration(AudioEngine &engine, int index) {
-    return (int64_t)(double)childVar(engine, index)
-        .getDynamicObject()
-        ->getProperty("duration");
-  }
-
-  bool nodeIsRecording(AudioEngine &engine, int index) {
-    return (bool)childVar(engine, index).getDynamicObject()->getProperty(
-        "isRecording");
-  }
-
-  /** Output→input feedback through a delay of D samples (see
-      latency_calibration_tests.cc). */
-  void runLoopback(AudioEngine &engine, int D, int block, int max_blocks) {
-    std::vector<float> history;
-    history.reserve((size_t)(max_blocks * block));
-
-    std::vector<float> in((size_t)block, 0.0f);
-    std::vector<float> outL((size_t)block, 0.0f), outR((size_t)block, 0.0f);
-    const float *ins[] = {in.data()};
-    float *outs[] = {outL.data(), outR.data()};
-
-    for (int b = 0; b < max_blocks; ++b) {
-      const int64_t block_start = (int64_t)b * block;
-      for (int i = 0; i < block; ++i) {
-        const int64_t src = block_start + i - D;
-        in[(size_t)i] = (src >= 0 && src < (int64_t)history.size())
-                            ? history[(size_t)src]
-                            : 0.0f;
-      }
-      std::fill(outL.begin(), outL.end(), 0.0f);
-      std::fill(outR.begin(), outR.end(), 0.0f);
-      engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, block, {});
-      history.insert(history.end(), outL.begin(), outL.end());
-
-      auto status = engine.getLatencyCalibration();
-      if (status.getDynamicObject()->getProperty("phase").toString() !=
-          "capturing")
-        return;
-    }
   }
 };
 

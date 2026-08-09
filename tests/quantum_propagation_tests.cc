@@ -1,7 +1,7 @@
 #include <juce_core/juce_core.h>
 
-#include "../src/stack_node.h"
 #include "../src/clip_node.h"
+#include "../src/stack_node.h"
 
 namespace celestrian {
 
@@ -12,7 +12,7 @@ class QuantumPropagationTests : public juce::UnitTest {
 
   void runTest() override {
     float dummy[10000] = {0.0f};
-    float *const inputs[] = {dummy};
+    float* const inputs[] = {dummy};
 
     beginTest("Recursive Discovery");
     {
@@ -49,7 +49,7 @@ class QuantumPropagationTests : public juce::UnitTest {
       // not orphan it ("the DNA of the original scratch track remains").
       StackNode root("Root");
       auto clip1 = std::make_unique<ClipNode>("QClip", 44100.0);
-      auto *c1 = clip1.get();
+      auto* c1 = clip1.get();
       root.addChild(std::move(clip1));
 
       ProcessContext ctx;
@@ -66,7 +66,7 @@ class QuantumPropagationTests : public juce::UnitTest {
       // A short overdub snapping to the Q/2 subdivision (480 -> 500)
       // must NOT halve Q (the old min-derivation did exactly that).
       auto clip2 = std::make_unique<ClipNode>("Short", 44100.0);
-      auto *c2 = clip2.get();
+      auto* c2 = clip2.get();
       root.addChild(std::move(clip2));
 
       c2->startRecording();
@@ -98,7 +98,7 @@ class QuantumPropagationTests : public juce::UnitTest {
     {
       StackNode root("Root");
       auto q = std::make_unique<ClipNode>("QClip", 44100.0);
-      auto *qPtr = q.get();
+      auto* qPtr = q.get();
       root.addChild(std::move(q));
 
       ProcessContext ctx;
@@ -121,7 +121,7 @@ class QuantumPropagationTests : public juce::UnitTest {
         return clip;
       };
       auto sub = std::make_unique<StackNode>("Sub");
-      auto *subPtr = sub.get();
+      auto* subPtr = sub.get();
       root.addChild(std::move(sub));  // attach BEFORE filling: shares island
       subPtr->addChild(makeCommitted(1000));
       subPtr->addChild(makeCommitted(1500));

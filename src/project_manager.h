@@ -32,12 +32,12 @@ namespace celestrian {
 
 class ProjectManager {
  public:
-  explicit ProjectManager(AudioEngine &engine) : engine_(engine) {}
+  explicit ProjectManager(AudioEngine& engine) : engine_(engine) {}
 
   // --- roots ---
   juce::File projectsRoot() const;
   juce::File templatesRoot() const;
-  void setRootForTest(const juce::File &base) { base_override_ = base; }
+  void setRootForTest(const juce::File& base) { base_override_ = base; }
 
   // --- state ---
   bool born() const { return folder_ != juce::File(); }
@@ -55,18 +55,18 @@ class ProjectManager {
   bool saveNow();
 
   /** Rename: display name only — the folder never moves. */
-  void rename(const juce::String &name);
+  void rename(const juce::String& name);
 
   /** Open a project folder (anywhere on disk — portability rule: the
    * folder name is irrelevant, identity lives inside). */
-  bool openProject(const juce::File &dir);
+  bool openProject(const juce::File& dir);
 
   /** Load a template as a fresh UNBORN session: the seed take will
    * birth (and name) the project. */
-  bool newFromTemplate(const juce::String &template_name);
+  bool newFromTemplate(const juce::String& template_name);
 
   /** Strip performances from the current session into a template. */
-  bool saveAsTemplate(const juce::String &template_name);
+  bool saveAsTemplate(const juce::String& template_name);
 
   /** Codify the -02 habit: copy the folder to the next free serial and
    * open the copy (fork forward). Returns the new folder (empty on
@@ -101,9 +101,9 @@ class ProjectManager {
   /** First free YYYYMMDD-NN folder for today, NN from 01. */
   juce::File nextSerialFolder() const;
   bool mirror(bool incremental);
-  void rememberLastTemplate(const juce::String &name);
+  void rememberLastTemplate(const juce::String& name);
 
-  AudioEngine &engine_;
+  AudioEngine& engine_;
   juce::File base_override_;
   juce::File folder_;  // empty = unborn
   juce::String display_name_;

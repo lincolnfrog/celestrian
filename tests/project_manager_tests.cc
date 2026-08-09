@@ -6,54 +6,15 @@
 
 #include <juce_core/juce_core.h>
 
-#include <functional>
-#include <set>
-
 #include "../src/audio_engine.h"
 #include "../src/project_manager.h"
 #include "../src/session_io.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
-namespace {
-juce::Array<juce::var>* nodesOf(const juce::var& s) {
-  return s.getProperty("nodes", juce::var()).getArray();
-}
-bool clipCommitted(AudioEngine& e, const juce::String& uuid) {
-  const juce::var s = e.getGraphState();
-  if (auto* n = nodesOf(s))
-    for (auto& x : *n)
-      if (x.getProperty("id", "").toString() == uuid)
-        return !(bool)x.getProperty("isRecording", false) &&
-               (double)x.getProperty("duration", 0) > 0;
-  return false;
-}
-juce::String recordClip(AudioEngine& e, std::function<void(int)> process,
-                        int lengthSamples) {
-  std::set<juce::String> before;
-  {
-    const juce::var s = e.getGraphState();
-    if (auto* n = nodesOf(s))
-      for (auto& x : *n) before.insert(x.getProperty("id", "").toString());
-  }
-  e.createNode("clip");
-  juce::String id;
-  {
-    const juce::var s = e.getGraphState();
-    if (auto* n = nodesOf(s))
-      for (auto& x : *n) {
-        auto i = x.getProperty("id", "").toString();
-        if (!before.count(i)) id = i;
-      }
-  }
-  e.startRecordingInNode(id);
-  process(100);
-  process(lengthSamples);
-  e.stopRecordingInNode(id);
-  for (int i = 0; i < 400 && !clipCommitted(e, id); ++i) process(512);
-  return id;
-}
-}  // namespace
+using test_utils::nodesOf;
+using test_utils::recordClip;
 
 class ProjectManagerTests : public juce::UnitTest {
  public:
@@ -75,10 +36,11 @@ class ProjectManagerTests : public juce::UnitTest {
         }
       };
     };
-    auto tempBase = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                        .getChildFile("celestrian_pm_tests_" +
-                                      juce::String(juce::Random::getSystemRandom()
-                                                       .nextInt(1 << 30)));
+    auto tempBase =
+        juce::File::getSpecialLocation(juce::File::tempDirectory)
+            .getChildFile(
+                "celestrian_pm_tests_" +
+                juce::String(juce::Random::getSystemRandom().nextInt(1 << 30)));
     tempBase.createDirectory();
     const auto date = juce::Time::getCurrentTime().formatted("%Y%m%d");
 
@@ -136,17 +98,21 @@ class ProjectManagerTests : public juce::UnitTest {
                    "name recovered from session.json, not the folder");
     }
 
-    beginTest("template = project with no performances (pre-Q by construction)");
+    beginTest(
+        "template = project with no performances (pre-Q by construction)");
     {
       AudioEngine engine;
       ProjectManager pm(engine);
       pm.setRootForTest(tempBase);
       auto process = makeProcess(engine);
       recordClip(engine, process, Q);
-      engine.renameNode(
-          engine.getGraphState().getProperty("nodes", juce::var())
-              .getArray()->getFirst().getProperty("id", "").toString(),
-          "Kick");
+      engine.renameNode(engine.getGraphState()
+                            .getProperty("nodes", juce::var())
+                            .getArray()
+                            ->getFirst()
+                            .getProperty("id", "")
+                            .toString(),
+                        "Kick");
       pm.tick();
       expect(pm.saveAsTemplate("My Rig"), "template saved");
 
@@ -159,8 +125,8 @@ class ProjectManagerTests : public juce::UnitTest {
                    "names kept");
       expectEquals(loaded.children[0]->getIntrinsicDuration(), (int64_t)0,
                    "performances stripped");
-      expect(!tdir.getChildFile("audio")
-                  .getNumberOfChildFiles(juce::File::findFiles, "*.wav"),
+      expect(!tdir.getChildFile("audio").getNumberOfChildFiles(
+                 juce::File::findFiles, "*.wav"),
              "no audio in a template");
 
       // Fresh session from the template: unborn until its own seed take.

@@ -182,6 +182,7 @@ target_sources(CelestrianTests PRIVATE
     tests/regression_tests.cc
     tests/audio_engine_tests.cc
     tests/undo_tests.cc
+    tests/engine_bridge_tests.cc
     tests/qtime_lock_tests.cc
     tests/graph_snapshot_tests.cc
     tests/render_purity_tests.cc
@@ -189,12 +190,16 @@ target_sources(CelestrianTests PRIVATE
     tests/take_capacity_tests.cc
     tests/time_map_record_tests.cc
     tests/session_io_tests.cc
+    tests/session_negative_tests.cc
+    tests/project_lifecycle_tests.cc
     tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
+    tests/effects_stereo_tests.cc
     tests/effects_tests.cc
     tests/stereo_pan_tests.cc
     tests/output_stage_tests.cc
     tests/one_shot_tests.cc
+    tests/callback_edge_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc
@@ -210,6 +215,15 @@ target_link_libraries(CelestrianTests PRIVATE
     juce::juce_audio_utils
     juce::juce_gui_basics
     juce::juce_core
+)
+
+# The test binary never opens a WebView or fetches URLs; juce_audio_utils
+# drags in juce_gui_extra, whose browser code needs gtk/webkit headers (and
+# juce_core's networking needs libcurl) on Linux. Disabling both keeps the
+# console tests buildable on headless machines.
+target_compile_definitions(CelestrianTests PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
 )
 
 celestrian_enable_asio(CelestrianTests)

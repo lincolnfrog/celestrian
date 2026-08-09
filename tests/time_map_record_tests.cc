@@ -28,12 +28,11 @@ class TimeMapRecordTests : public juce::UnitTest {
     ProbeNode() : AudioNode("Probe") {}
     ProcessContext seen{};
     bool called = false;
-    void control(const float *const *, int,
-                 const ProcessContext &ctx) override {
+    void control(const float* const*, int, const ProcessContext& ctx) override {
       seen = ctx;
       called = true;
     }
-    void render(float *const *, int, const ProcessContext &) const override {}
+    void render(float* const*, int, const ProcessContext&) const override {}
     juce::var getWaveform(int) const override { return {}; }
     float getCurrentPeak() const override { return 0.0f; }
     NodeType getNodeType() const override { return NodeType::Unknown; }
@@ -45,7 +44,7 @@ class TimeMapRecordTests : public juce::UnitTest {
     {
       StackNode stack("Mapped");
       auto probe = std::make_unique<ProbeNode>();
-      auto *p = probe.get();
+      auto* p = probe.get();
       stack.addChild(std::move(probe));
       stack.setLoopPoints(1000, 2000);  // window [1000, 2000), len 1000
 
@@ -77,7 +76,7 @@ class TimeMapRecordTests : public juce::UnitTest {
     {
       StackNode stack("Bypassed");
       auto probe = std::make_unique<ProbeNode>();
-      auto *p = probe.get();
+      auto* p = probe.get();
       stack.addChild(std::move(probe));
       stack.setLoopPoints(1000, 2000);
       stack.setLoopWindowBypassed(true);
@@ -100,9 +99,9 @@ class TimeMapRecordTests : public juce::UnitTest {
     {
       StackNode outer("Outer");
       auto inner = std::make_unique<StackNode>("Inner");
-      auto *innerPtr = inner.get();
+      auto* innerPtr = inner.get();
       auto probe = std::make_unique<ProbeNode>();
-      auto *p = probe.get();
+      auto* p = probe.get();
       innerPtr->addChild(std::move(probe));
       innerPtr->setLoopPoints(0, 300);
       outer.addChild(std::move(inner));
@@ -135,11 +134,11 @@ class TimeMapRecordTests : public juce::UnitTest {
     auto rampAt = [](int64_t i) { return (float)(i + 1) * 1e-5f; };
     std::vector<float> ring(16384);
     for (size_t i = 0; i < ring.size(); ++i) ring[i] = rampAt((int64_t)i);
-    const float *ringPtrs[1] = {ring.data()};
+    const float* ringPtrs[1] = {ring.data()};
 
     // Drive control in fixed blocks over [t, until) with the island
     // facts a mapping-root graph would receive from the engine.
-    auto driveControl = [&](StackNode &root, int64_t &t, int64_t until,
+    auto driveControl = [&](StackNode& root, int64_t& t, int64_t until,
                             int block) {
       while (t < until) {
         ProcessContext ctx;
@@ -184,7 +183,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       root.setLoopPoints(1000, 3000);  // window [1Q, 3Q): period 2000
 
       auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto *take = takeOwned.get();
+      auto* take = takeOwned.get();
       root.addChild(std::move(takeOwned));
 
       // Play up to t = 500, then arm THROUGH the map (C = inner 4Q).
@@ -209,16 +208,16 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "heard frame at arm = effective cycle (window length)");
       expectEquals((juce::int64)root.getIslandEpoch(), (juce::int64)0,
                    "no epoch re-base (C divides the island cycle)");
-      expectEquals((juce::int64)root.getIntrinsicDuration(),
-                   (juce::int64)4000, "island cycle unchanged");
+      expectEquals((juce::int64)root.getIntrinsicDuration(), (juce::int64)4000,
+                   "island cycle unchanged");
 
       // The fold: heard [0, 1000) lands at content [0, 1000) (inner
       // [2000, 3000)); heard [1000, 2000) wraps the pass seam to
       // content [3000, 4000) (inner [1000, 2000)); the never-visited
       // inner [3000, 4000) + [0, 1000) — content [1000, 3000) — is
       // LITERAL SILENCE (ruling 2).
-      const auto &buf = take->getAudioBuffer();
-      const float *data = buf.getReadPointer(0);
+      const auto& buf = take->getAudioBuffer();
+      const float* data = buf.getReadPointer(0);
       for (int k : {0, 1, 500, 999}) {
         expectWithinAbsoluteError(data[k], rampAt(1000 + k), 1e-7f,
                                   "pre-seam run at heard order");
@@ -247,7 +246,7 @@ class TimeMapRecordTests : public juce::UnitTest {
         ctx.island_epoch = 0;
         ctx.island = &root;
         float out[1] = {0.0f};
-        float *const outs[] = {out};
+        float* const outs[] = {out};
         root.process(nullptr, outs, 0, 1, ctx);
         return out[0];
       };
@@ -285,8 +284,8 @@ class TimeMapRecordTests : public juce::UnitTest {
         for (int64_t t = 4000; t < 8000 && allMatch; t += 512) {
           const int n = 512;
           std::vector<float> out((size_t)n, 0.0f);
-          float *outPtr = out.data();
-          float *const outs[] = {outPtr};
+          float* outPtr = out.data();
+          float* const outs[] = {outPtr};
           ProcessContext ctx;
           ctx.num_samples = n;
           ctx.is_playing = true;
@@ -315,8 +314,9 @@ class TimeMapRecordTests : public juce::UnitTest {
       }
     }
 
-    beginTest("Through-map: user stop before one period clamps to the "
-              "heard boundary, still commits dense C");
+    beginTest(
+        "Through-map: user stop before one period clamps to the "
+        "heard boundary, still commits dense C");
     {
       StackNode root("Root");
       root.establishIsland(1000, 0);
@@ -324,7 +324,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       root.setLoopPoints(1000, 3000);
 
       auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto *take = takeOwned.get();
+      auto* take = takeOwned.get();
       root.addChild(std::move(takeOwned));
 
       int64_t t = 0;
@@ -339,7 +339,7 @@ class TimeMapRecordTests : public juce::UnitTest {
                    (juce::int64)4000, "duration = C even for short takes");
       expectEquals((juce::int64)take->recordedLength(), (juce::int64)1000,
                    "stopped at the heard Q boundary");
-      const float *data = take->getAudioBuffer().getReadPointer(0);
+      const float* data = take->getAudioBuffer().getReadPointer(0);
       expectWithinAbsoluteError(data[0], rampAt(1000), 1e-7f,
                                 "content starts at the anchor");
       expectWithinAbsoluteError(data[999], rampAt(1999), 1e-7f,
@@ -350,8 +350,9 @@ class TimeMapRecordTests : public juce::UnitTest {
                                 "pre-anchor window region: silence");
     }
 
-    beginTest("Through-map: multi-segment map folds segment-general "
-              "(cells {Q1, Q3-Q5})");
+    beginTest(
+        "Through-map: multi-segment map folds segment-general "
+        "(cells {Q1, Q3-Q5})");
     {
       // Drive the CLIP directly with a crafted context — the phase-3
       // editor doesn't exist yet, but the record path must already be
@@ -394,8 +395,8 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       expect(take.recState() == ClipNode::RecState::Idle,
              "cap committed after one 4Q-heard pass");
-      expectEquals((juce::int64)take.duration_samples.load(),
-                   (juce::int64)5000, "duration = the 5Q inner cycle");
+      expectEquals((juce::int64)take.duration_samples.load(), (juce::int64)5000,
+                   "duration = the 5Q inner cycle");
       expectEquals((juce::int64)take.origin_samples.load(), (juce::int64)4000,
                    "anchor mapped into the visited segment");
       expectEquals((juce::int64)take.recordedLength(), (juce::int64)4000,
@@ -406,7 +407,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       //  [1000,2000) ← heard [1000,2000) (wrap into segment 0)
       //  [3000,5000) ← heard [2000,4000) (segment 1 head)
       //  [2000,3000) = the skipped Q2 → silence.
-      const float *data = take.getAudioBuffer().getReadPointer(0);
+      const float* data = take.getAudioBuffer().getReadPointer(0);
       for (int k : {0, 999}) {
         expectWithinAbsoluteError(data[k], rampAt(3000 + k), 1e-7f,
                                   "run 1 (segment-1 tail)");
@@ -434,31 +435,31 @@ class TimeMapRecordTests : public juce::UnitTest {
       root.setLoopWindowBypassed(true);  // map inactive
 
       auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
-      auto *take = takeOwned.get();
+      auto* take = takeOwned.get();
       root.addChild(std::move(takeOwned));
 
       int64_t t = 0;
       driveControl(root, t, 500, 250);
-      take->startRecording();  // the engine walk finds no active map
+      take->startRecording();            // the engine walk finds no active map
       driveControl(root, t, 2600, 250);  // capture from 1000, heard 1600
       take->stopRecording();
       driveControl(root, t, 3500, 250);  // boundary 2000
 
       expect(take->recState() == ClipNode::RecState::Idle, "committed");
       expectEquals((juce::int64)take->duration_samples.load(),
-                   (juce::int64)2000,
-                   "mainline commit (stop boundary), NOT C");
+                   (juce::int64)2000, "mainline commit (stop boundary), NOT C");
       expectEquals((juce::int64)take->origin_samples.load(), (juce::int64)1000,
                    "mainline arm target (no map, no fold)");
-      const float *data = take->getAudioBuffer().getReadPointer(0);
+      const float* data = take->getAudioBuffer().getReadPointer(0);
       expectWithinAbsoluteError(data[0], rampAt(1000), 1e-7f,
                                 "linear capture from the target");
       expectWithinAbsoluteError(data[1999], rampAt(2999), 1e-7f,
                                 "linear to the boundary — no fold");
     }
 
-    beginTest("Engine gate: nested ACTIVE maps refuse the arm; one map "
-              "arms through");
+    beginTest(
+        "Engine gate: nested ACTIVE maps refuse the arm; one map "
+        "arms through");
     {
       AudioEngine engine;
       engine.createNode("stack");
@@ -468,18 +469,18 @@ class TimeMapRecordTests : public juce::UnitTest {
           (*nodesVar.getArray())[0].getDynamicObject()->getProperty("id");
       engine.createNode("stack", outerId);
       // Re-read to find the inner stack and create the clip inside it.
-      auto findChildId = [&](const juce::String &parentId) {
+      auto findChildId = [&](const juce::String& parentId) {
         auto st = engine.getGraphState();
         auto nv = st.getDynamicObject()->getProperty("nodes");
-        std::function<juce::String(const juce::var &)> scan =
-            [&](const juce::var &arr) -> juce::String {
-          if (auto *a = arr.getArray()) {
-            for (auto &n : *a) {
-              auto *o = n.getDynamicObject();
+        std::function<juce::String(const juce::var&)> scan =
+            [&](const juce::var& arr) -> juce::String {
+          if (auto* a = arr.getArray()) {
+            for (auto& n : *a) {
+              auto* o = n.getDynamicObject();
               if (o == nullptr) continue;
               if (o->getProperty("id").toString() == parentId) {
                 auto kids = o->getProperty("nodes");
-                if (auto *ka = kids.getArray(); ka && ka->size() > 0) {
+                if (auto* ka = kids.getArray(); ka && ka->size() > 0) {
                   return (*ka)[ka->size() - 1]
                       .getDynamicObject()
                       ->getProperty("id")
@@ -503,13 +504,13 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // Metadata-only observation (the engine-test discipline): a
       // refused arm leaves the clip neither pending nor recording.
-      auto clipArmedOrRecording = [&](const juce::String &id) {
+      auto clipArmedOrRecording = [&](const juce::String& id) {
         const juce::var s = engine.getGraphState();  // hold the var
-        std::function<bool(const juce::var &)> scan =
-            [&](const juce::var &arr) -> bool {
-          if (auto *a = arr.getArray()) {
-            for (auto &n : *a) {
-              auto *o = n.getDynamicObject();
+        std::function<bool(const juce::var&)> scan =
+            [&](const juce::var& arr) -> bool {
+          if (auto* a = arr.getArray()) {
+            for (auto& n : *a) {
+              auto* o = n.getDynamicObject();
               if (o == nullptr) continue;
               if (o->getProperty("id").toString() == id) {
                 return (bool)o->getProperty("isPendingStart") ||
@@ -527,23 +528,21 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.setLoopPoints(outerId, 0, 1000);
       engine.setLoopPoints(innerId, 0, 500);
       engine.startRecordingInNode(clipId);
-      expect(!clipArmedOrRecording(clipId),
-             "nested active maps: arm refused");
+      expect(!clipArmedOrRecording(clipId), "nested active maps: arm refused");
 
       // Bypass one → a single active map → the arm proceeds.
       engine.toggleLoopWindow(innerId);
       engine.startRecordingInNode(clipId);
-      expect(clipArmedOrRecording(clipId),
-             "single active map: arm proceeds");
+      expect(clipArmedOrRecording(clipId), "single active map: arm proceeds");
 
       // === Stage 6: MID-TAKE MAP-EDIT GATE (owner-ruled: refuse) ===
-      auto windowOf = [&](const juce::String &id) {
+      auto windowOf = [&](const juce::String& id) {
         const juce::var s = engine.getGraphState();  // hold the var
-        std::function<std::pair<int64_t, int64_t>(const juce::var &)> scan =
-            [&](const juce::var &arr) -> std::pair<int64_t, int64_t> {
-          if (auto *a = arr.getArray()) {
-            for (auto &n : *a) {
-              auto *o = n.getDynamicObject();
+        std::function<std::pair<int64_t, int64_t>(const juce::var&)> scan =
+            [&](const juce::var& arr) -> std::pair<int64_t, int64_t> {
+          if (auto* a = arr.getArray()) {
+            for (auto& n : *a) {
+              auto* o = n.getDynamicObject();
               if (o == nullptr) continue;
               if (o->getProperty("id").toString() == id) {
                 return {(int64_t)(double)o->getProperty("loopStart"),
@@ -562,13 +561,13 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.setLoopPoints(outerId, 0, 700);
       expectEquals((juce::int64)windowOf(outerId).second, (juce::int64)1000,
                    "gate: window edit refused while a take is live");
-      auto bypassedOf = [&](const juce::String &id) {
+      auto bypassedOf = [&](const juce::String& id) {
         const juce::var s = engine.getGraphState();  // hold the var
-        std::function<int(const juce::var &)> scan =
-            [&](const juce::var &arr) -> int {
-          if (auto *a = arr.getArray()) {
-            for (auto &n : *a) {
-              auto *o = n.getDynamicObject();
+        std::function<int(const juce::var&)> scan =
+            [&](const juce::var& arr) -> int {
+          if (auto* a = arr.getArray()) {
+            for (auto& n : *a) {
+              auto* o = n.getDynamicObject();
               if (o == nullptr) continue;
               if (o->getProperty("id").toString() == id) {
                 return (bool)o->getProperty("loopBypassed") ? 1 : 0;
@@ -623,8 +622,9 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(s.activeTimeMap().n, 2, "un-bypass restores");
     }
 
-    beginTest("setSegments: install/publish, delegation, validation, "
-              "undo/redo round trips");
+    beginTest(
+        "setSegments: install/publish, delegation, validation, "
+        "undo/redo round trips");
     {
       AudioEngine engine;
       engine.createNode("stack");
@@ -636,16 +636,16 @@ class TimeMapRecordTests : public juce::UnitTest {
                   ->getProperty("id")
                   .toString();
       }
-      auto segsOf = [&](const juce::String &id) {
+      auto segsOf = [&](const juce::String& id) {
         const juce::var st = engine.getGraphState();  // hold the var
         juce::String flat;
-        if (auto *a = st.getProperty("nodes", {}).getArray()) {
-          for (auto &n : *a) {
-            auto *o = n.getDynamicObject();
+        if (auto* a = st.getProperty("nodes", {}).getArray()) {
+          for (auto& n : *a) {
+            auto* o = n.getDynamicObject();
             if (o && o->getProperty("id").toString() == id) {
               const juce::var sv = o->getProperty("segments");
-              if (auto *sa = sv.getArray()) {
-                for (auto &v : *sa) {
+              if (auto* sa = sv.getArray()) {
+                for (auto& v : *sa) {
                   flat += juce::String((int64_t)(double)v) + ",";
                 }
               }
@@ -654,12 +654,12 @@ class TimeMapRecordTests : public juce::UnitTest {
         }
         return flat;
       };
-      auto makeMap = [](std::initializer_list<std::pair<int64_t, int64_t>>
-                            segs) {
-        timing::TimeMap m;
-        for (auto &s : segs) m.segs[m.n++] = {s.first, s.second};
-        return m;
-      };
+      auto makeMap =
+          [](std::initializer_list<std::pair<int64_t, int64_t>> segs) {
+            timing::TimeMap m;
+            for (auto& s : segs) m.segs[m.n++] = {s.first, s.second};
+            return m;
+          };
 
       // Install a 2-segment map (empty stack: intrinsic 0 → no clamp).
       engine.setSegments(sId, makeMap({{0, 1000}, {2000, 3000}}));
@@ -677,8 +677,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.setSegments(sId, makeMap({{500, 1500}}));
       expectEquals(segsOf(sId), juce::String(), "override cleared");
       const juce::var st2 = engine.getGraphState();
-      auto *o2 = (*st2.getProperty("nodes", {}).getArray())[0]
-                     .getDynamicObject();
+      auto* o2 =
+          (*st2.getProperty("nodes", {}).getArray())[0].getDynamicObject();
       expectEquals((juce::int64)(double)o2->getProperty("loopStart"),
                    (juce::int64)500, "delegated to loop points (start)");
       expectEquals((juce::int64)(double)o2->getProperty("loopEnd"),
@@ -704,8 +704,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       juce::String cId;
       {
         const juce::var st = engine.getGraphState();
-        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
-                       .getDynamicObject();
+        auto* so =
+            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
         auto kids = so->getProperty("nodes");
         cId = (*kids.getArray())[0]
                   .getDynamicObject()
@@ -722,16 +722,17 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "gate lifts after cancel");
     }
 
-    beginTest("ENGINE: record through a setSegments cell map (the full "
-              "callback path)");
+    beginTest(
+        "ENGINE: record through a setSegments cell map (the full "
+        "callback path)");
     {
       AudioEngine engine;
       const int BLOCK = 512;
       std::vector<float> inBuf((size_t)BLOCK, 0.1f);
       auto process = [&](int total) {
-        float *ins[] = {inBuf.data()};
+        float* ins[] = {inBuf.data()};
         float outL[512], outR[512];
-        float *outs[] = {outL, outR};
+        float* outs[] = {outL, outR};
         int remaining = total;
         while (remaining > 0) {
           const int n = std::min(remaining, BLOCK);
@@ -739,13 +740,13 @@ class TimeMapRecordTests : public juce::UnitTest {
           remaining -= n;
         }
       };
-      auto nodeProp = [&](const juce::String &id, const char *prop) {
+      auto nodeProp = [&](const juce::String& id, const char* prop) {
         const juce::var s = engine.getGraphState();  // hold the var
-        std::function<double(const juce::var &)> scan =
-            [&](const juce::var &arr) -> double {
-          if (auto *a = arr.getArray()) {
-            for (auto &n : *a) {
-              auto *o = n.getDynamicObject();
+        std::function<double(const juce::var&)> scan =
+            [&](const juce::var& arr) -> double {
+          if (auto* a = arr.getArray()) {
+            for (auto& n : *a) {
+              auto* o = n.getDynamicObject();
               if (o == nullptr) continue;
               if (o->getProperty("id").toString() == id) {
                 return (double)o->getProperty(prop);
@@ -774,8 +775,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       juce::String aId;
       {
         const juce::var st = engine.getGraphState();
-        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
-                       .getDynamicObject();
+        auto* so =
+            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
         aId = (*so->getProperty("nodes").getArray())[0]
                   .getDynamicObject()
                   ->getProperty("id")
@@ -805,8 +806,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       juce::String bId;
       {
         const juce::var st = engine.getGraphState();
-        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
-                       .getDynamicObject();
+        auto* so =
+            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
         auto kids = so->getProperty("nodes");
         bId = (*kids.getArray())[kids.getArray()->size() - 1]
                   .getDynamicObject()
@@ -818,9 +819,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       // one full pass (period = dA/2) auto-commits. Drive past both,
       // then pump until the commit lands.
       process((int)(2 * dA));
-      for (int i = 0;
-           i < 400 && (nodeProp(bId, "isRecording") != 0 ||
-                       nodeProp(bId, "isPendingStart") != 0);
+      for (int i = 0; i < 400 && (nodeProp(bId, "isRecording") != 0 ||
+                                  nodeProp(bId, "isPendingStart") != 0);
            ++i) {
         process(512);
       }
@@ -829,8 +829,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(nodeProp(bId, "duration"), dA,
                    "commit duration = C (the group inner cycle)");
       // The anchor lands inside a VISITED cell (§3 arm semantics).
-      const int64_t orgRel =
-          nodeProp(bId, "origin") - nodeProp(aId, "origin");
+      const int64_t orgRel = nodeProp(bId, "origin") - nodeProp(aId, "origin");
       const int64_t phase = ((orgRel % dA) + dA) % dA;
       expect((phase >= 0 && phase < dA / 4) ||
                  (phase >= dA / 2 && phase < (3 * dA) / 4),
@@ -838,17 +837,18 @@ class TimeMapRecordTests : public juce::UnitTest {
                  juce::String(phase) + " of " + juce::String(dA) + ")");
     }
 
-    beginTest("ENGINE: two-anchor continuity — sounding sample kept, "
-              "frame position invariant (owner ruling 2026-08-09)");
+    beginTest(
+        "ENGINE: two-anchor continuity — sounding sample kept, "
+        "frame position invariant (owner ruling 2026-08-09)");
     {
       AudioEngine engine;
       const int BLOCK = 512;
       std::vector<float> inBuf((size_t)BLOCK, 0.1f);
       int64_t pumped = 0;  // exact transport position (advances only here)
       auto process = [&](int total) {
-        float *ins[] = {inBuf.data()};
+        float* ins[] = {inBuf.data()};
         float outL[512], outR[512];
-        float *outs[] = {outL, outR};
+        float* outs[] = {outL, outR};
         int remaining = total;
         while (remaining > 0) {
           const int n = std::min(remaining, BLOCK);
@@ -857,13 +857,13 @@ class TimeMapRecordTests : public juce::UnitTest {
           remaining -= n;
         }
       };
-      auto nodeProp = [&](const juce::String &id, const char *prop) {
+      auto nodeProp = [&](const juce::String& id, const char* prop) {
         const juce::var s = engine.getGraphState();
-        std::function<double(const juce::var &)> scan =
-            [&](const juce::var &arr) -> double {
-          if (auto *a = arr.getArray()) {
-            for (auto &n : *a) {
-              auto *o = n.getDynamicObject();
+        std::function<double(const juce::var&)> scan =
+            [&](const juce::var& arr) -> double {
+          if (auto* a = arr.getArray()) {
+            for (auto& n : *a) {
+              auto* o = n.getDynamicObject();
               if (o == nullptr) continue;
               if (o->getProperty("id").toString() == id) {
                 return (double)o->getProperty(prop);
@@ -876,10 +876,10 @@ class TimeMapRecordTests : public juce::UnitTest {
         };
         return (int64_t)scan(s.getProperty("nodes", {}));
       };
-      auto childId = [&](const juce::String &sId, int idx) {
+      auto childId = [&](const juce::String& sId, int idx) {
         const juce::var st = engine.getGraphState();
-        auto *so = (*st.getProperty("nodes", {}).getArray())[0]
-                       .getDynamicObject();
+        auto* so =
+            (*st.getProperty("nodes", {}).getArray())[0].getDynamicObject();
         auto kids = so->getProperty("nodes");
         if (idx < 0) idx = kids.getArray()->size() - 1;
         return (*kids.getArray())[idx]
@@ -925,15 +925,14 @@ class TimeMapRecordTests : public juce::UnitTest {
       // Two committed clips: B is NOT the sole definer — the general
       // continuity branch (not Q13) must carry the phase.
       // Park the playing position inside [0, dB/4).
-      auto p0Of = [&](int64_t org, const timing::TimeMap &m) {
+      auto p0Of = [&](int64_t org, const timing::TimeMap& m) {
         const timing::TimeMap eff =
             m.active() ? m : timing::TimeMap::single(0, dB);
         return eff.mapOffset(pumped - org - eff.mapOffset(0));
       };
       int guard = 0;
       while (guard++ < 400 &&
-             p0Of(nodeProp(bId, "origin"), timing::TimeMap::none()) >=
-                 dB / 4) {
+             p0Of(nodeProp(bId, "origin"), timing::TimeMap::none()) >= dB / 4) {
         process(512);
       }
       const int64_t orgB = nodeProp(bId, "origin");
@@ -998,8 +997,9 @@ class TimeMapRecordTests : public juce::UnitTest {
 
     // === Phase 3, Stage 2: the fully-fractal clip kernel ===
 
-    beginTest("Multi-segment CLIP playback: the anchoring law, "
-              "seam-exact (owner-ruled fully fractal)");
+    beginTest(
+        "Multi-segment CLIP playback: the anchoring law, "
+        "seam-exact (owner-ruled fully fractal)");
     {
       // A 1000-sample ramp take, origin 100, cells {[250,450),[650,850)}
       // → period 400, anchored at origin + mapOffset(0) = 350.
@@ -1022,7 +1022,7 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       auto sampleAt = [&](int64_t t) {
         float out[1] = {0.0f};
-        float *const outs[] = {out};
+        float* const outs[] = {out};
         ProcessContext ctx;
         ctx.num_samples = 1;
         ctx.is_playing = true;
@@ -1047,8 +1047,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       {
         const int B = 128;
         std::vector<float> out((size_t)B, 0.0f);
-        float *outPtr = out.data();
-        float *const outs[] = {outPtr};
+        float* outPtr = out.data();
+        float* const outs[] = {outPtr};
         ProcessContext ctx;
         ctx.num_samples = B;
         ctx.is_playing = true;

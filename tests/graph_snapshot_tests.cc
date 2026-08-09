@@ -30,9 +30,9 @@ class GraphSnapshotTests : public juce::UnitTest {
       auto clipA = std::make_unique<ClipNode>("A", 1000.0);
       auto inner = std::make_unique<StackNode>("inner");
       auto clipB = std::make_unique<ClipNode>("B", 1000.0);
-      auto *a = clipA.get();
-      auto *in = inner.get();
-      auto *b = clipB.get();
+      auto* a = clipA.get();
+      auto* in = inner.get();
+      auto* b = clipB.get();
       inner->addChild(std::move(clipB));
       root.addChild(std::move(clipA));
       root.addChild(std::move(inner));
@@ -77,7 +77,8 @@ class GraphSnapshotTests : public juce::UnitTest {
       expectEquals(snapEffectivePeriod(*snap, 0), (int64_t)600, "…");
     }
 
-    beginTest("publish discipline: structural edits swap; parameter edits don't");
+    beginTest(
+        "publish discipline: structural edits swap; parameter edits don't");
     {
       AudioEngine engine;
       auto snapOf = [&engine] {
@@ -87,11 +88,11 @@ class GraphSnapshotTests : public juce::UnitTest {
         (void)s;
         return engine.currentGraphSnapshotForTest();
       };
-      const auto *s0 = snapOf();
+      const auto* s0 = snapOf();
       expect(s0 != nullptr, "a snapshot exists from construction");
 
       engine.createNode("clip");  // structural (Insert)
-      const auto *s1 = snapOf();
+      const auto* s1 = snapOf();
       expect(s1 != s0, "Insert published a new snapshot");
       expectEquals((int)s1->entries.size(), 2, "root + clip");
 
@@ -103,7 +104,7 @@ class GraphSnapshotTests : public juce::UnitTest {
       engine.undo();  // undo the rename (Nop for structure)
       expect(snapOf() == s1, "undo of a rename does not republish");
       engine.undo();  // undo the create (Remove — structural)
-      const auto *s2 = snapOf();
+      const auto* s2 = snapOf();
       expect(s2 != s1, "undo of the create republished");
       expectEquals((int)s2->entries.size(), 1, "back to the bare root");
       engine.redo();

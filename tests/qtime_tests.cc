@@ -13,43 +13,25 @@
 #include <juce_core/juce_core.h>
 
 #include "../src/qtime.h"
+#include "test_utils.h"
 
-namespace {
-
-// Mirrors the loader in timing_golden_tests.cc (anonymous namespace
-// there, so shared by convention rather than by header).
-juce::File findGoldenFile() {
-  auto searchUpFrom = [](juce::File dir) -> juce::File {
-    for (int i = 0; i < 8; ++i) {
-      auto candidate = dir.getChildFile("shared/timing_golden.json");
-      if (candidate.existsAsFile()) return candidate;
-      auto parent = dir.getParentDirectory();
-      if (parent == dir) break;
-      dir = parent;
-    }
-    return {};
-  };
-
-  auto fromCwd = searchUpFrom(juce::File::getCurrentWorkingDirectory());
-  if (fromCwd.existsAsFile()) return fromCwd;
-
-  return searchUpFrom(
-      juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-          .getParentDirectory());
-}
-
-int64_t asInt64(const juce::var &v, const juce::Identifier &prop) {
-  return (int64_t)(double)v.getProperty(prop, 0);
-}
-
-}  // namespace
+using celestrian::test_utils::asInt64;
+using celestrian::test_utils::findSharedFile;
 
 class QTimeTests : public juce::UnitTest {
  public:
   QTimeTests() : juce::UnitTest("QTime (rational musical time)") {}
 
   void runTest() override {
-    using namespace celestrian::timing;
+    using celestrian::timing::fromSamples;
+    using celestrian::timing::qadd;
+    using celestrian::timing::qcmp;
+    using celestrian::timing::qeq;
+    using celestrian::timing::qlcm;
+    using celestrian::timing::qsub;
+    using celestrian::timing::qtime;
+    using celestrian::timing::QTime;
+    using celestrian::timing::toSamples;
 
     beginTest("normalization invariants");
     {
@@ -61,13 +43,14 @@ class QTimeTests : public juce::UnitTest {
     }
 
     beginTest("golden vectors");
-    auto file = findGoldenFile();
+    auto file = findSharedFile("shared/timing_golden.json");
     expect(file.existsAsFile(), "shared/timing_golden.json not found");
     if (!file.existsAsFile()) return;
     auto root = juce::JSON::parse(file.loadFileAsString());
 
-    if (auto *cases = root.getProperty("qtime_to_samples_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases =
+            root.getProperty("qtime_to_samples_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         const QTime t = qtime(asInt64(c, "num"), asInt64(c, "den"));
         expectEquals((juce::int64)toSamples(t, asInt64(c, "qSamples")),
                      (juce::int64)asInt64(c, "expected"),
@@ -75,9 +58,9 @@ class QTimeTests : public juce::UnitTest {
       }
     }
 
-    if (auto *cases =
+    if (auto* cases =
             root.getProperty("qtime_from_samples_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+      for (auto& c : *cases) {
         const QTime t =
             fromSamples(asInt64(c, "samples"), asInt64(c, "qSamples"));
         const auto name = c.getProperty("name", "?").toString();
@@ -88,8 +71,8 @@ class QTimeTests : public juce::UnitTest {
       }
     }
 
-    if (auto *cases = root.getProperty("qtime_lcm_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("qtime_lcm_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         const QTime r = qlcm(qtime(asInt64(c, "aNum"), asInt64(c, "aDen")),
                              qtime(asInt64(c, "bNum"), asInt64(c, "bDen")));
         const auto name = c.getProperty("name", "?").toString();
@@ -100,8 +83,8 @@ class QTimeTests : public juce::UnitTest {
       }
     }
 
-    if (auto *cases = root.getProperty("qtime_arith_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("qtime_arith_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         const QTime a = qtime(asInt64(c, "aNum"), asInt64(c, "aDen"));
         const QTime b = qtime(asInt64(c, "bNum"), asInt64(c, "bDen"));
         const bool isAdd = c.getProperty("op", "").toString() == "add";

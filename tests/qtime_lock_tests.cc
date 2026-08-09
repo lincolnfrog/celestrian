@@ -10,18 +10,16 @@
 
 #include <juce_core/juce_core.h>
 
-#include <functional>
-#include <set>
-
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
+using test_utils::nodesOf;
+using test_utils::recordClip;
+
 namespace {
-juce::Array<juce::var>* nodesOf(const juce::var& s) {
-  return s.getProperty("nodes", juce::var()).getArray();
-}
 int64_t islandQ(AudioEngine& e) {
   return (int64_t)(double)e.getGraphState().getProperty("quantum", 0);
 }
@@ -38,48 +36,6 @@ int64_t clipProp(AudioEngine& e, const juce::String& uuid, const char* prop) {
 }
 int64_t clipOrigin(AudioEngine& e, const juce::String& uuid) {
   return clipProp(e, uuid, "origin");
-}
-// Committed ⟺ not recording and has a duration. (getMetadata publishes
-// live_duration as "duration" while recording, so gate on isRecording.)
-bool clipCommitted(AudioEngine& e, const juce::String& uuid) {
-  const juce::var s = e.getGraphState();
-  if (auto* n = nodesOf(s))
-    for (auto& x : *n)
-      if (x.getProperty("id", "").toString() == uuid)
-        return !(bool)x.getProperty("isRecording", false) &&
-               (double)x.getProperty("duration", 0) > 0;
-  return false;
-}
-
-// Create a clip and record `lengthSamples` into it through the real
-// callback path, returning its uuid.
-juce::String recordClip(AudioEngine& e, std::function<void(int)> process,
-                        int lengthSamples) {
-  std::set<juce::String> before;
-  {
-    const juce::var s = e.getGraphState();
-    if (auto* n = nodesOf(s))
-      for (auto& x : *n) before.insert(x.getProperty("id", "").toString());
-  }
-  e.createNode("clip");
-  juce::String id;
-  {
-    const juce::var s = e.getGraphState();
-    if (auto* n = nodesOf(s))
-      for (auto& x : *n) {
-        auto i = x.getProperty("id", "").toString();
-        if (!before.count(i)) id = i;
-      }
-  }
-  e.startRecordingInNode(id);
-  process(100);
-  process(lengthSamples);
-  e.stopRecordingInNode(id);
-  // A non-first clip pads forward to its next Q boundary before
-  // committing (up to ~1Q away), so pump blocks until it actually
-  // commits rather than a fixed count.
-  for (int i = 0; i < 400 && !clipCommitted(e, id); ++i) process(512);
-  return id;
 }
 }  // namespace
 
@@ -105,7 +61,8 @@ class QTimeLockTests : public juce::UnitTest {
       };
     };
 
-    beginTest("sole clip: loop re-trim re-establishes (Q, epoch); undo restores");
+    beginTest(
+        "sole clip: loop re-trim re-establishes (Q, epoch); undo restores");
     {
       AudioEngine engine;
       auto process = makeProcess(engine);
@@ -118,7 +75,8 @@ class QTimeLockTests : public juce::UnitTest {
       // back after the edit.)
       const int64_t ws = 5000, len = 30000;
       engine.setLoopPoints(c1, ws, ws + len);
-      expectEquals(islandQ(engine), len, "Q re-established to the window length");
+      expectEquals(islandQ(engine), len,
+                   "Q re-established to the window length");
       expectEquals(islandEp(engine), clipOrigin(engine, c1) + ws,
                    "epoch := origin + window start");
 
@@ -140,7 +98,8 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), qLocked, "Q unchanged by the 2nd commit");
 
       engine.setLoopPoints(c1, 1000, 20000);  // would re-trim if provisional
-      expectEquals(islandQ(engine), qLocked, "locked: loop drag does not move Q");
+      expectEquals(islandQ(engine), qLocked,
+                   "locked: loop drag does not move Q");
     }
 
     beginTest("delete the sole Q-definer reverts Q; undo restores it");
@@ -167,8 +126,8 @@ class QTimeLockTests : public juce::UnitTest {
     {
       AudioEngine engine;
       auto process = makeProcess(engine);
-      auto c1 = recordClip(engine, process, Q);        // Q := ~1Q
-      auto c2 = recordClip(engine, process, 2 * Q);    // locks
+      auto c1 = recordClip(engine, process, Q);      // Q := ~1Q
+      auto c2 = recordClip(engine, process, 2 * Q);  // locks
       const int64_t qLocked = islandQ(engine);
 
       engine.setLoopPoints(c1, 0, 10000);  // locked: no effect on Q
@@ -178,7 +137,8 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), qLocked, "delete 2→1 leaves Q as-is");
 
       engine.setLoopPoints(c1, 0, 12345);  // now provisional again
-      expectEquals(islandQ(engine), (int64_t)12345, "Q re-opened: re-trim moves it");
+      expectEquals(islandQ(engine), (int64_t)12345,
+                   "Q re-opened: re-trim moves it");
     }
 
     beginTest("LOCK-COLLAPSE: arming take 2 makes the trimmed region THE take");
@@ -236,7 +196,9 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(clipProp(engine, c1, "duration"), len, "redo re-collapses");
     }
 
-    beginTest("RE-OPEN uncollapses: deleting take 2 restores the trimmed-away material");
+    beginTest(
+        "RE-OPEN uncollapses: deleting take 2 restores the trimmed-away "
+        "material");
     {
       // Owner report 2026-07-19c: after building on a trim and deleting
       // back down to one clip, the trim view returned but the dead air
@@ -258,7 +220,8 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(clipProp(engine, c1, "loopStart"), ws,
                    "the trim survives as the window");
       expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "…");
-      expectEquals(islandQ(engine), len, "Q untouched (still the trimmed loop)");
+      expectEquals(islandQ(engine), len,
+                   "Q untouched (still the trimmed loop)");
 
       engine.undo();  // re-insert c2 AND re-collapse c1 (uuid2 rider)
       expectEquals(clipProp(engine, c1, "duration"), len,
@@ -300,7 +263,8 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(p2, p1, "nudge: the sounding position does not move");
     }
 
-    beginTest("windowed playback anchors at origin + loopStart (epoch contract)");
+    beginTest(
+        "windowed playback anchors at origin + loopStart (epoch contract)");
     {
       // Q13's epoch := origin + loopStart names the trimmed loop's top
       // as island phase 0 — so at t = origin + loopStart the clip must
@@ -344,8 +308,8 @@ class QTimeLockTests : public juce::UnitTest {
                                 "…and every period after");
       // Mid-window content sounds at ITS performed moment (Audio Memory
       // applied to the surviving material).
-      expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123],
-                                1e-6f, "buffer[ws+x] sounds at origin+ws+x");
+      expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123], 1e-6f,
+                                "buffer[ws+x] sounds at origin+ws+x");
 
       // LOCK-COLLAPSE (content base): the window becomes the take —
       // playback through content_base_ is sample-identical to the
@@ -356,17 +320,19 @@ class QTimeLockTests : public juce::UnitTest {
                    "origin = the old window top");
       expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
                                 "collapsed take: phase 0 = old loop top");
-      expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123],
-                                1e-6f, "…content unchanged mid-take");
+      expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123], 1e-6f,
+                                "…content unchanged mid-take");
       clip.uncollapseFromWindow(ws, N);
-      expectEquals(clip.getIntrinsicDuration(), (int64_t)N, "uncollapse restores");
+      expectEquals(clip.getIntrinsicDuration(), (int64_t)N,
+                   "uncollapse restores");
       expectEquals(clip.getLoopStart(), ws, "…including the trim");
       expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
                                 "…and playback is unchanged");
     }
 
-    beginTest("multi-segment re-trim of the sole definer re-establishes "
-              "(Q := period, epoch := origin' + mapOffset(0)); undo restores");
+    beginTest(
+        "multi-segment re-trim of the sole definer re-establishes "
+        "(Q := period, epoch := origin' + mapOffset(0)); undo restores");
     {
       // Phase 3 (owner-ruled fully fractal): punching a cell out of the
       // scratch loop before locking is the multi-segment twin of the
@@ -384,8 +350,7 @@ class QTimeLockTests : public juce::UnitTest {
       cells.segs[1] = {q0 / 2, (3 * q0) / 4};
       engine.setSegments(c1, cells);
 
-      expectEquals(islandQ(engine), q0 / 2,
-                   "Q := the map period (Σ cells)");
+      expectEquals(islandQ(engine), q0 / 2, "Q := the map period (Σ cells)");
       expectEquals(islandEp(engine), clipOrigin(engine, c1),
                    "epoch = origin' + mapOffset(0) (first cell at 0)");
 

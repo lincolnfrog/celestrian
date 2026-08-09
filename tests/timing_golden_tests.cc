@@ -11,46 +11,30 @@
 #include <cmath>
 
 #include "../src/timing.h"
+#include "test_utils.h"
 
-namespace {
-
-juce::File findGoldenFile() {
-  // Search upward from both the working directory and the executable
-  // location so the test works from the repo root or the build tree.
-  auto searchUpFrom = [](juce::File dir) -> juce::File {
-    for (int i = 0; i < 8; ++i) {
-      auto candidate = dir.getChildFile("shared/timing_golden.json");
-      if (candidate.existsAsFile()) return candidate;
-      auto parent = dir.getParentDirectory();
-      if (parent == dir) break;
-      dir = parent;
-    }
-    return {};
-  };
-
-  auto fromCwd = searchUpFrom(juce::File::getCurrentWorkingDirectory());
-  if (fromCwd.existsAsFile()) return fromCwd;
-
-  return searchUpFrom(
-      juce::File::getSpecialLocation(juce::File::currentExecutableFile)
-          .getParentDirectory());
-}
-
-int64_t asInt64(const juce::var &v, const juce::Identifier &prop) {
-  return (int64_t)(double)v.getProperty(prop, 0);
-}
-
-}  // namespace
+using celestrian::test_utils::asInt64;
+using celestrian::test_utils::findSharedFile;
 
 class TimingGoldenTests : public juce::UnitTest {
  public:
   TimingGoldenTests() : juce::UnitTest("Timing Golden Vectors") {}
 
   void runTest() override {
-    using namespace celestrian::timing;
+    using celestrian::timing::armTarget;
+    using celestrian::timing::launchPointFor;
+    using celestrian::timing::lcm;
+    using celestrian::timing::nextStopBoundary;
+    using celestrian::timing::originQ;
+    using celestrian::timing::playheadPercent;
+    using celestrian::timing::QTime;
+    using celestrian::timing::snapCommittedDuration;
+    using celestrian::timing::throughMapDest;
+    using celestrian::timing::TimeMap;
+    using celestrian::timing::toSamples;
 
     beginTest("Load shared/timing_golden.json");
-    auto file = findGoldenFile();
+    auto file = findSharedFile("shared/timing_golden.json");
     expect(file.existsAsFile(),
            "shared/timing_golden.json not found (searched upward from cwd and "
            "executable dir)");
@@ -61,11 +45,11 @@ class TimingGoldenTests : public juce::UnitTest {
     if (!root.isObject()) return;
 
     beginTest("timeline LCM");
-    if (auto *cases = root.getProperty("lcm_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("lcm_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         int64_t result = asInt64(c, "quantum");
-        if (auto *durations = c.getProperty("durations", {}).getArray()) {
-          for (auto &d : *durations) {
+        if (auto* durations = c.getProperty("durations", {}).getArray()) {
+          for (auto& d : *durations) {
             int64_t dur = (int64_t)(double)d;
             if (dur > 0) result = lcm(result, dur);
           }
@@ -76,19 +60,18 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     beginTest("launchPointFor");
-    if (auto *cases = root.getProperty("launch_point_cases", {}).getArray()) {
-      for (auto &c : *cases) {
-        expectEquals(
-            (juce::int64)launchPointFor(asInt64(c, "startPhase"),
-                                        asInt64(c, "duration")),
-            (juce::int64)asInt64(c, "expected"),
-            c.getProperty("name", "?").toString());
+    if (auto* cases = root.getProperty("launch_point_cases", {}).getArray()) {
+      for (auto& c : *cases) {
+        expectEquals((juce::int64)launchPointFor(asInt64(c, "startPhase"),
+                                                 asInt64(c, "duration")),
+                     (juce::int64)asInt64(c, "expected"),
+                     c.getProperty("name", "?").toString());
       }
     }
 
     beginTest("playheadPercent");
-    if (auto *cases = root.getProperty("playhead_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("playhead_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         double actual =
             playheadPercent(asInt64(c, "masterPos"), asInt64(c, "launchPoint"),
                             asInt64(c, "duration"));
@@ -100,8 +83,8 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     beginTest("armTarget");
-    if (auto *cases = root.getProperty("arm_target_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("arm_target_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         expectEquals(
             (juce::int64)armTarget(asInt64(c, "rel"), asInt64(c, "quantum"),
                                    asInt64(c, "contextLoop")),
@@ -111,19 +94,18 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     beginTest("nextStopBoundary");
-    if (auto *cases = root.getProperty("stop_boundary_cases", {}).getArray()) {
-      for (auto &c : *cases) {
-        expectEquals(
-            (juce::int64)nextStopBoundary(asInt64(c, "recordedLength"),
-                                          asInt64(c, "quantum")),
-            (juce::int64)asInt64(c, "expected"),
-            c.getProperty("name", "?").toString());
+    if (auto* cases = root.getProperty("stop_boundary_cases", {}).getArray()) {
+      for (auto& c : *cases) {
+        expectEquals((juce::int64)nextStopBoundary(asInt64(c, "recordedLength"),
+                                                   asInt64(c, "quantum")),
+                     (juce::int64)asInt64(c, "expected"),
+                     c.getProperty("name", "?").toString());
       }
     }
 
     beginTest("snapCommittedDuration");
-    if (auto *cases = root.getProperty("snap_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("snap_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         auto name = c.getProperty("name", "?").toString();
         auto result = snapCommittedDuration(asInt64(c, "recordedLength"),
                                             asInt64(c, "quantum"));
@@ -133,18 +115,17 @@ class TimingGoldenTests : public juce::UnitTest {
         expectEquals((juce::int64)result.loop_end,
                      (juce::int64)asInt64(c, "expectedLoopEnd"),
                      name + " (loop_end)");
-        expect(result.snapped ==
-                   (bool)c.getProperty("expectedSnapped", false),
+        expect(result.snapped == (bool)c.getProperty("expectedSnapped", false),
                name + " (snapped)");
       }
     }
 
     // Shared helper: build a TimeMap from a golden case's "segments".
-    auto mapFrom = [this](const juce::var &c, const juce::String &name) {
+    auto mapFrom = [this](const juce::var& c, const juce::String& name) {
       TimeMap m;
-      if (auto *segs = c.getProperty("segments", {}).getArray()) {
-        for (auto &s : *segs) {
-          auto *pair = s.getArray();
+      if (auto* segs = c.getProperty("segments", {}).getArray()) {
+        for (auto& s : *segs) {
+          auto* pair = s.getArray();
           expect(pair != nullptr && pair->size() == 2 &&
                      m.n < TimeMap::kMaxSegments,
                  name + " (segment shape)");
@@ -157,14 +138,13 @@ class TimingGoldenTests : public juce::UnitTest {
     };
 
     beginTest("through-map arm (heard armTarget on the map-period grid)");
-    if (auto *cases =
+    if (auto* cases =
             root.getProperty("through_map_arm_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+      for (auto& c : *cases) {
         const auto name = c.getProperty("name", "?").toString();
         const TimeMap m = mapFrom(c, name);
-        const int64_t t_rel =
-            armTarget(asInt64(c, "relHeard"), asInt64(c, "quantum"),
-                      m.period());
+        const int64_t t_rel = armTarget(asInt64(c, "relHeard"),
+                                        asInt64(c, "quantum"), m.period());
         expectEquals((juce::int64)t_rel,
                      (juce::int64)asInt64(c, "expectedHeardTargetRel"),
                      name + " (heard target)");
@@ -175,13 +155,13 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     beginTest("through-map capture fold (throughMapDest)");
-    if (auto *cases =
+    if (auto* cases =
             root.getProperty("through_map_dest_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+      for (auto& c : *cases) {
         const auto name = c.getProperty("name", "?").toString();
         const TimeMap m = mapFrom(c, name);
-        if (auto *probes = c.getProperty("probes", {}).getArray()) {
-          for (auto &p : *probes) {
+        if (auto* probes = c.getProperty("probes", {}).getArray()) {
+          for (auto& p : *probes) {
             expectEquals(
                 (juce::int64)throughMapDest(asInt64(p, "i"),
                                             asInt64(c, "anchorOff"), m,
@@ -194,32 +174,31 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     beginTest("TimeMap inverse (heardOffsetOf)");
-    if (auto *cases = root.getProperty("map_inverse_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("map_inverse_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         const auto name = c.getProperty("name", "?").toString();
         const TimeMap m = mapFrom(c, name);
-        if (auto *probes = c.getProperty("probes", {}).getArray()) {
-          for (auto &p : *probes) {
-            expectEquals(
-                (juce::int64)m.heardOffsetOf(asInt64(p, "inner")),
-                (juce::int64)asInt64(p, "heard"),
-                name + " heardOffsetOf(" +
-                    juce::String(asInt64(p, "inner")) + ")");
+        if (auto* probes = c.getProperty("probes", {}).getArray()) {
+          for (auto& p : *probes) {
+            expectEquals((juce::int64)m.heardOffsetOf(asInt64(p, "inner")),
+                         (juce::int64)asInt64(p, "heard"),
+                         name + " heardOffsetOf(" +
+                             juce::String(asInt64(p, "inner")) + ")");
           }
         }
       }
     }
 
     beginTest("TimeMap (reified map: period / mapOffset / seamDistance)");
-    if (auto *cases = root.getProperty("time_map_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("time_map_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         const auto name = c.getProperty("name", "?").toString();
         const TimeMap m = mapFrom(c, name);
         expectEquals((juce::int64)m.period(),
                      (juce::int64)asInt64(c, "expectedPeriod"),
                      name + " (period)");
-        if (auto *probes = c.getProperty("probes", {}).getArray()) {
-          for (auto &p : *probes) {
+        if (auto* probes = c.getProperty("probes", {}).getArray()) {
+          for (auto& p : *probes) {
             const auto h = juce::String(asInt64(p, "h"));
             expectEquals((juce::int64)m.mapOffset(asInt64(p, "h")),
                          (juce::int64)asInt64(p, "inner"),
@@ -233,23 +212,20 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     beginTest("originQ (D-T3 physical/musical boundary projection)");
-    if (auto *cases = root.getProperty("qtime_origin_cases", {}).getArray()) {
-      for (auto &c : *cases) {
+    if (auto* cases = root.getProperty("qtime_origin_cases", {}).getArray()) {
+      for (auto& c : *cases) {
         const auto name = c.getProperty("name", "?").toString();
         const QTime q = originQ(asInt64(c, "origin"), asInt64(c, "epoch"),
                                 asInt64(c, "qSamples"));
-        expectEquals((juce::int64)q.num,
-                     (juce::int64)asInt64(c, "expectedNum"),
+        expectEquals((juce::int64)q.num, (juce::int64)asInt64(c, "expectedNum"),
                      "originQ num: " + name);
-        expectEquals((juce::int64)q.den,
-                     (juce::int64)asInt64(c, "expectedDen"),
+        expectEquals((juce::int64)q.den, (juce::int64)asInt64(c, "expectedDen"),
                      "originQ den: " + name);
         // The boundary must be lossless at the same exchange rate:
         // projecting to Q and back lands on the exact sample offset (I1).
-        expectEquals(
-            (juce::int64)toSamples(q, asInt64(c, "qSamples")),
-            (juce::int64)(asInt64(c, "origin") - asInt64(c, "epoch")),
-            "originQ round-trip: " + name);
+        expectEquals((juce::int64)toSamples(q, asInt64(c, "qSamples")),
+                     (juce::int64)(asInt64(c, "origin") - asInt64(c, "epoch")),
+                     "originQ round-trip: " + name);
       }
     }
   }

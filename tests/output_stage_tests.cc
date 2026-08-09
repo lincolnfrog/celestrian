@@ -6,17 +6,18 @@
 #include "../src/clip_node.h"
 #include "../src/session_io.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
 namespace {
 
 /** A committed clip carrying a constant-amplitude take, already playing. */
-std::unique_ptr<ClipNode> makePlayingClip(const char *name, double sr,
+std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
                                           float amp, int len = 4410) {
   auto clip = std::make_unique<ClipNode>(name, sr);
   std::vector<float> in((size_t)len, amp);
-  float *const ins[] = {in.data()};
+  float* const ins[] = {in.data()};
   ProcessContext rec;
   rec.num_samples = len;
   rec.is_recording = true;
@@ -28,9 +29,9 @@ std::unique_ptr<ClipNode> makePlayingClip(const char *name, double sr,
 }
 
 /** Peak absolute sample over both channels after one rendered block. */
-float renderPeak(AudioNode &node, int n = 4410, int64_t master_pos = 0) {
+float renderPeak(AudioNode& node, int n = 4410, int64_t master_pos = 0) {
   std::vector<float> outL((size_t)n, 0.0f), outR((size_t)n, 0.0f);
-  float *outs[] = {outL.data(), outR.data()};
+  float* outs[] = {outL.data(), outR.data()};
   ProcessContext play;
   play.num_samples = n;
   play.is_playing = true;
@@ -38,8 +39,8 @@ float renderPeak(AudioNode &node, int n = 4410, int64_t master_pos = 0) {
   node.process(nullptr, outs, 0, 2, play);
   float peak = 0.0f;
   for (int i = 0; i < n; ++i) {
-    peak = std::max(peak, std::max(std::abs(outL[(size_t)i]),
-                                   std::abs(outR[(size_t)i])));
+    peak = std::max(
+        peak, std::max(std::abs(outL[(size_t)i]), std::abs(outR[(size_t)i])));
   }
   return peak;
 }
@@ -83,7 +84,7 @@ class OutputStageTests : public juce::UnitTest {
       root.addChild(makePlayingClip("Direct", sr, 0.25f));
       auto group = std::make_unique<StackNode>("Inner");
       group->addChild(makePlayingClip("Grouped", sr, 0.5f));
-      StackNode *inner = group.get();
+      StackNode* inner = group.get();
       root.addChild(std::move(group));
 
       expectWithinAbsoluteError(renderPeak(root), 0.75f, 1.0e-6f,
@@ -97,7 +98,7 @@ class OutputStageTests : public juce::UnitTest {
     {
       StackNode stack("TelemetryStack");
       auto clip = makePlayingClip("Child", sr, 0.5f);
-      ClipNode *raw = clip.get();
+      ClipNode* raw = clip.get();
       stack.addChild(std::move(clip));
       stack.is_muted.store(true);
       // Render mid-take: the playhead phase is a render output — a muted
@@ -118,7 +119,7 @@ class OutputStageTests : public juce::UnitTest {
       // Hard left at half fader: L = amp·gain, R = 0.
       clip->pan.store(-1.0f);
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
-      float *outs[] = {outL.data(), outR.data()};
+      float* outs[] = {outL.data(), outR.data()};
       ProcessContext play;
       play.num_samples = 4410;
       play.is_playing = true;
@@ -141,7 +142,7 @@ class OutputStageTests : public juce::UnitTest {
       // silences L entirely.
       stack.pan.store(1.0f);
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
-      float *outs[] = {outL.data(), outR.data()};
+      float* outs[] = {outL.data(), outR.data()};
       ProcessContext play;
       play.num_samples = 4410;
       play.is_playing = true;
@@ -155,12 +156,12 @@ class OutputStageTests : public juce::UnitTest {
     {
       StackNode stack("MutedSoloHost");
       auto clip = makePlayingClip("Soloed", sr, 0.5f);
-      ClipNode *raw = clip.get();
+      ClipNode* raw = clip.get();
       stack.addChild(std::move(clip));
       stack.is_muted.store(true);
 
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
-      float *outs[] = {outL.data(), outR.data()};
+      float* outs[] = {outL.data(), outR.data()};
       ProcessContext play;
       play.num_samples = 4410;
       play.is_playing = true;
@@ -189,31 +190,28 @@ class OutputStageTests : public juce::UnitTest {
       group->gain.store(0.3f);
       root.addChild(std::move(group));
 
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_test_output_stage");
-      dir.deleteRecursively();
-      dir.createDirectory();
+      auto dir = test_utils::freshTempDir("output_stage");
       expect(session_io::save(root, (double)Q, dir), "save");
       auto loaded = session_io::load(dir, (double)Q);
       expect(loaded.ok, "load ok");
-      expectWithinAbsoluteError(loaded.children[0]->gain.load(), 0.6f,
-                                1.0e-6f, "clip gain restored");
-      expectWithinAbsoluteError(loaded.children[1]->gain.load(), 0.3f,
-                                1.0e-6f, "group gain restored");
+      expectWithinAbsoluteError(loaded.children[0]->gain.load(), 0.6f, 1.0e-6f,
+                                "clip gain restored");
+      expectWithinAbsoluteError(loaded.children[1]->gain.load(), 0.3f, 1.0e-6f,
+                                "group gain restored");
 
       // A pre-gain session (no `gain` key) must load at UNITY — the
       // absent-property var reads as 0.0, which would load it silent.
       auto jf = dir.getChildFile("session.json");
       auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      auto *clipObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
+      auto* clipObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
       expect(clipObj != nullptr && clipObj->hasProperty("gain"),
              "key was present to strip");
       clipObj->removeProperty("gain");
       jf.replaceWithText(juce::JSON::toString(parsed, true));
       auto legacy = session_io::load(dir, (double)Q);
       expect(legacy.ok, "legacy load ok");
-      expectWithinAbsoluteError(legacy.children[0]->gain.load(), 1.0f,
-                                1.0e-6f, "absent gain defaults to unity");
+      expectWithinAbsoluteError(legacy.children[0]->gain.load(), 1.0f, 1.0e-6f,
+                                "absent gain defaults to unity");
       dir.deleteRecursively();
     }
   }

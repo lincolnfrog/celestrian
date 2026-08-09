@@ -7,6 +7,7 @@
 #include "../src/clip_node.h"
 #include "../src/session_io.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
@@ -16,10 +17,10 @@ constexpr double kSr = 44100.0;
 constexpr int64_t kQ = 4410;  // 0.1 s "quantum" for fast tests
 
 /** A committed constant-amplitude clip, already playing. */
-std::unique_ptr<ClipNode> makeClip(const char *name, float amp, int64_t len) {
+std::unique_ptr<ClipNode> makeClip(const char* name, float amp, int64_t len) {
   auto clip = std::make_unique<ClipNode>(name, kSr);
   std::vector<float> in((size_t)len, amp);
-  float *const ins[] = {in.data()};
+  float* const ins[] = {in.data()};
   ProcessContext rec;
   rec.num_samples = (int)len;
   rec.is_recording = true;
@@ -33,9 +34,9 @@ std::unique_ptr<ClipNode> makeClip(const char *name, float amp, int64_t len) {
 /** Render one Q-sized block at master position `pos` and return the
  * value at sample 100 of channel 0 (constant-amp content makes single
  * samples meaningful). */
-float renderAt(AudioNode &node, int64_t pos) {
+float renderAt(AudioNode& node, int64_t pos) {
   std::vector<float> outL((size_t)kQ, 0.0f), outR((size_t)kQ, 0.0f);
-  float *outs[] = {outL.data(), outR.data()};
+  float* outs[] = {outL.data(), outR.data()};
   ProcessContext play;
   play.num_samples = (int)kQ;
   play.is_playing = true;
@@ -60,7 +61,8 @@ float renderAt(AudioNode &node, int64_t pos) {
  */
 class OneShotTests : public juce::UnitTest {
  public:
-  OneShotTests() : juce::UnitTest("One-Shots (period source)", "Audio Engine") {}
+  OneShotTests()
+      : juce::UnitTest("One-Shots (period source)", "Audio Engine") {}
 
   void runTest() override {
     beginTest("One-shot at origin 0: sounds Q1 of a 4Q context, rests after");
@@ -68,7 +70,7 @@ class OneShotTests : public juce::UnitTest {
       StackNode stack("Ctx");
       auto shot = makeClip("Shot", 0.5f, kQ);       // 1Q content
       auto loop = makeClip("Loop", 0.25f, 4 * kQ);  // defines the 4Q cycle
-      ClipNode *shotRaw = shot.get();
+      ClipNode* shotRaw = shot.get();
       stack.addChild(std::move(shot));
       stack.addChild(std::move(loop));
 
@@ -92,7 +94,7 @@ class OneShotTests : public juce::UnitTest {
       StackNode stack("Ctx");
       auto shot = makeClip("Shot", 0.5f, kQ);
       auto loop = makeClip("Loop", 0.25f, 4 * kQ);
-      ClipNode *shotRaw = shot.get();
+      ClipNode* shotRaw = shot.get();
       stack.addChild(std::move(shot));
       stack.addChild(std::move(loop));
       shotRaw->period_from_context_.store(true);
@@ -113,7 +115,7 @@ class OneShotTests : public juce::UnitTest {
       StackNode stack("Ctx");
       auto shot = makeClip("Shot", 0.5f, 3 * kQ);   // 3Q content
       auto loop = makeClip("Loop", 0.25f, 4 * kQ);  // 4Q loop
-      ClipNode *shotRaw = shot.get();
+      ClipNode* shotRaw = shot.get();
       stack.addChild(std::move(shot));
       stack.addChild(std::move(loop));
 
@@ -137,7 +139,7 @@ class OneShotTests : public juce::UnitTest {
       StackNode stack("Ctx");
       auto shot = makeClip("Shot", 0.5f, 2 * kQ);
       auto loop = makeClip("Loop", 0.25f, 4 * kQ);
-      ClipNode *shotRaw = shot.get();
+      ClipNode* shotRaw = shot.get();
       stack.addChild(std::move(shot));
       stack.addChild(std::move(loop));
       shotRaw->setLoopPoints(0, kQ);  // window = first 1Q of the take
@@ -157,14 +159,13 @@ class OneShotTests : public juce::UnitTest {
       AudioEngine engine;
       engine.createNode("clip");
       auto s = engine.getGraphState();
-      auto *arr = s.getProperty("nodes", juce::var()).getArray();
-      const juce::String uuid =
-          (*arr)[0].getProperty("id", "").toString();
+      auto* arr = s.getProperty("nodes", juce::var()).getArray();
+      const juce::String uuid = (*arr)[0].getProperty("id", "").toString();
 
-      auto sourceOf = [&](const juce::String &u) {
+      auto sourceOf = [&](const juce::String& u) {
         auto st = engine.getGraphState();
-        auto *nodes = st.getProperty("nodes", juce::var()).getArray();
-        for (auto &n : *nodes) {
+        auto* nodes = st.getProperty("nodes", juce::var()).getArray();
+        for (auto& n : *nodes) {
           if (n.getProperty("id", "").toString() == u)
             return n.getProperty("periodSource", "").toString();
         }
@@ -191,10 +192,7 @@ class OneShotTests : public juce::UnitTest {
       auto loop = makeClip("Loop", 0.25f, 4 * kQ);
       root.addChild(std::move(loop));
 
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_test_one_shot");
-      dir.deleteRecursively();
-      dir.createDirectory();
+      auto dir = test_utils::freshTempDir("one_shot");
       expect(session_io::save(root, kSr, dir), "save");
       auto loaded = session_io::load(dir, kSr);
       expect(loaded.ok, "load ok");
@@ -206,7 +204,7 @@ class OneShotTests : public juce::UnitTest {
       // Legacy session (no periodSource key) loads as a LOOP.
       auto jf = dir.getChildFile("session.json");
       auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      auto *shotObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
+      auto* shotObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
       expect(shotObj != nullptr && shotObj->hasProperty("periodSource"),
              "key was present to strip");
       shotObj->removeProperty("periodSource");

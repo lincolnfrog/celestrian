@@ -16,7 +16,9 @@ namespace celestrian::session_io {
  * BUNDLE directory:
  *
  *   <dir>/session.json      canonical state (below)
- *   <dir>/audio/<uuid>.wav  each committed clip's buffer (mono)
+ *   <dir>/audio/<uuid>.wav  each committed clip's buffer (32-bit float;
+ *                           channel count follows the content — stereo
+ *                           takes save as stereo WAVs)
  *
  * The format is device-independent (Q12-ready): every musical fact is
  * stored as QTime — a clip's origin as an offset from the island epoch,
@@ -70,8 +72,8 @@ struct SaveOptions {
  * bundle at `dir`. `device_sample_rate` is stored so a clip's buffer can
  * be recreated at the right size on load. Returns false on I/O failure.
  */
-bool save(const StackNode &root, double device_sample_rate,
-          const juce::File &dir, const SaveOptions &opts = {});
+bool save(const StackNode& root, double device_sample_rate,
+          const juce::File& dir, const SaveOptions& opts = {});
 
 /** Peek a bundle's identity without loading it (recents listings,
  * post-load name recovery). Cheap: parses session.json only. */
@@ -80,14 +82,14 @@ struct BundleInfo {
   juce::String name;
   juce::String created;
 };
-BundleInfo readBundleInfo(const juce::File &dir);
+BundleInfo readBundleInfo(const juce::File& dir);
 
 /** Parse a bundle. `ok` is false on any failure (missing/invalid json). */
-LoadedSession load(const juce::File &dir, double device_sample_rate);
+LoadedSession load(const juce::File& dir, double device_sample_rate);
 
 /** Replay an fx-params blob (from LoadedSession or a node's) onto a
  * node's rack. getMetadata() keys match setParam() keys, so it is
  * generic. Message thread. */
-void applyEffects(AudioNode &node, const juce::var &blob, double sample_rate);
+void applyEffects(AudioNode& node, const juce::var& blob, double sample_rate);
 
 }  // namespace celestrian::session_io

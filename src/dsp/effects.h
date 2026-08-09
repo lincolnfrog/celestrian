@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <array>
 #include <atomic>
 #include <vector>
 
@@ -48,6 +49,13 @@ class Biquad {
   }
 
  private:
+  /** The terms shared by the two shelf recipes (cookbook notation:
+   * A = 10^(dB/40), cw = cos ω0, sq = 2√A·α at slope S). */
+  struct ShelfTerms {
+    double A, cw, sq;
+  };
+  static ShelfTerms shelfTerms(double sample_rate, double f0, double gain_db);
+
   void set(double b0, double b1, double b2, double a0, double a1, double a2);
   double b0_ = 1, b1_ = 0, b2_ = 0, a1_ = 0, a2_ = 0;
   double z1_ = 0, z2_ = 0;
@@ -77,12 +85,12 @@ class FxCompressor {
  public:
   std::atomic<bool> enabled{false};
   std::atomic<float> threshold_db{-18.0f};
-  std::atomic<float> ratio{4.0f};        // 1..20
-  std::atomic<float> attack_ms{10.0f};   // 0.1..100
-  std::atomic<float> release_ms{100.0f}; // 10..1000
-  std::atomic<float> makeup_db{0.0f};    // −12..24 (output trim; makeup
-                                         // convention is raise-only, but
-                                         // cutting is harmless and useful)
+  std::atomic<float> ratio{4.0f};         // 1..20
+  std::atomic<float> attack_ms{10.0f};    // 0.1..100
+  std::atomic<float> release_ms{100.0f};  // 10..1000
+  std::atomic<float> makeup_db{0.0f};     // −12..24 (output trim; makeup
+                                          // convention is raise-only, but
+                                          // cutting is harmless and useful)
 
   void prepare(double sampleRate);
   void process(float* x, int n);
@@ -93,6 +101,18 @@ class FxCompressor {
   float currentGainReductionDb() const { return gr_db_.load(); }
 
  private:
+  /** One coherent snapshot of the atomic parameters, taken per block so
+   * a mid-block UI edit cannot tear the gain computer. `attack`/
+   * `release` are the derived one-pole coefficients, not the ms values. */
+  struct Coefficients {
+    float threshold_db, ratio, attack, release, makeup;
+  };
+  Coefficients loadCoefficients() const;
+  /** Advance the envelope by one detector sample and return the gain
+   * (≤ 1) the gain computer chooses for it. Shared by the mono and
+   * stereo paths — only the detector differs between them. */
+  float gainStep(float detector, const Coefficients& c);
+
   double sr_ = 44100.0;
   float env_ = 0.0f;  // peak envelope, linear
   std::atomic<float> gr_db_{0.0f};
@@ -111,6 +131,14 @@ class FxEcho {
   void processStereo(float* l, float* r, int n);
 
  private:
+  /** Per-block snapshot of the delay parameters (delay in samples,
+   * clamped to the line; feedback/wet clamped to their legal ranges). */
+  struct Parameters {
+    int delay;
+    float feedback, wet;
+  };
+  Parameters loadParameters(int line_length) const;
+
   double sr_ = 44100.0;
   std::vector<float> line_;    // sized in prepare; empty = not ready
   std::vector<float> line_r_;  // right-channel twin line
@@ -139,6 +167,12 @@ class FxReverb {
 /** The per-node rack: fixed slots, canonical order. */
 class EffectRack {
  public:
+  /** The slot ids, in canonical signal order — the ONE list the bridge
+   * (setEnabled/setParam), the metadata blob, and the save format all
+   * key on. Adding a fifth effect starts here. */
+  static constexpr std::array<const char*, 4> kSlotNames = {"eq", "compressor",
+                                                            "echo", "reverb"};
+
   FxEQ eq;
   FxCompressor compressor;
   FxEcho echo;
@@ -194,11 +228,17 @@ class EffectRack {
   bool isLive() const { return anyEnabled() || scope_on_.load(); }
 
  private:
+  /** Pre-rack scope capture (copy + peak only — analysis stays on the
+   * message thread). `right` may be null (mono); when present the ring
+   * records the L/R mean, which is what the mono-by-design displays
+   * center on. No-op unless a panel is watching. */
+  void captureScope(const float* left, const float* right, int n);
+
   double prepared_sr_ = 0.0;
   std::atomic<bool> scope_on_{false};  // panel open somewhere
   std::vector<float> scope_;           // sized in prepare()
   std::atomic<int> scope_write_{0};
-  std::atomic<float> in_peak_{0.0f};   // pre-rack block peak
+  std::atomic<float> in_peak_{0.0f};  // pre-rack block peak
 };
 
 }  // namespace celestrian::dsp

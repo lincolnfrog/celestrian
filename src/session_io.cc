@@ -13,15 +13,12 @@ namespace {
 
 using timing::QTime;
 
-juce::var qvar(QTime q) {
-  auto *o = new juce::DynamicObject();
-  o->setProperty("num", (double)q.num);
-  o->setProperty("den", (double)q.den);
-  return juce::var(o);
-}
+// Forwarded to the ONE QTime serializer (AudioNode::qtimeVar) so the
+// save format and the metadata path can never drift apart.
+juce::var qvar(QTime q) { return AudioNode::qtimeVar(q); }
 
-QTime qread(const juce::var &v) {
-  if (auto *o = v.getDynamicObject()) {
+QTime qread(const juce::var& v) {
+  if (auto* o = v.getDynamicObject()) {
     return timing::qtime((int64_t)(double)o->getProperty("num"),
                          (int64_t)(double)o->getProperty("den"));
   }
@@ -29,17 +26,17 @@ QTime qread(const juce::var &v) {
 }
 
 // The fx params only (drops the scope telemetry getMetadata may attach).
-juce::var effectsBlob(const AudioNode &node) {
+juce::var effectsBlob(const AudioNode& node) {
   const auto meta = node.effects().getMetadata();
-  auto *out = new juce::DynamicObject();
-  for (const char *fx : {"eq", "compressor", "echo", "reverb"})
+  auto* out = new juce::DynamicObject();
+  for (const char* fx : dsp::EffectRack::kSlotNames)
     out->setProperty(fx, meta.getProperty(fx, juce::var()));
   return juce::var(out);
 }
 
-void writeClipWav(const ClipNode &clip, int64_t duration,
-                  const juce::File &audioDir, bool incremental) {
-  const auto &buf = clip.getAudioBuffer();
+void writeClipWav(const ClipNode& clip, int64_t duration,
+                  const juce::File& audioDir, bool incremental) {
+  const auto& buf = clip.getAudioBuffer();
   // Content base (Q13 lock-collapse): save the COMMITTED content —
   // [base, base + duration). A collapsed take saves as the perfect
   // window; the cut material is undo-only state, not session state.
@@ -72,7 +69,7 @@ void writeClipWav(const ClipNode &clip, int64_t duration,
   writer->writeFromAudioSampleBuffer(buf, (int)base, n);
 }
 
-bool readClipWav(const juce::File &file, juce::AudioBuffer<float> &out) {
+bool readClipWav(const juce::File& file, juce::AudioBuffer<float>& out) {
   if (!file.existsAsFile()) return false;
   juce::WavAudioFormat fmt;
   std::unique_ptr<juce::AudioFormatReader> reader(
@@ -85,9 +82,9 @@ bool readClipWav(const juce::File &file, juce::AudioBuffer<float> &out) {
   return true;
 }
 
-juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
-                        const juce::File &audioDir, const SaveOptions &opts) {
-  auto *o = new juce::DynamicObject();
+juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
+                        const juce::File& audioDir, const SaveOptions& opts) {
+  auto* o = new juce::DynamicObject();
   o->setProperty("id", node.getUuid());
   o->setProperty("name", node.getName());
   o->setProperty("type", node.getNodeTypeString());
@@ -109,11 +106,12 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
   // additive to the format (absent = single-window fallback). Stripped
   // with the window — a map is a fact about a performance.
   if (!opts.strip_performances) {
-    if (const auto *m = node.mapOverride()) {
+    if (const auto* m = node.mapOverride()) {
       juce::Array<juce::var> segs;
       for (int i = 0; i < m->n; ++i) {
-        auto *so = new juce::DynamicObject();
-        so->setProperty("startQ", qvar(timing::fromSamples(m->segs[i].start, q)));
+        auto* so = new juce::DynamicObject();
+        so->setProperty("startQ",
+                        qvar(timing::fromSamples(m->segs[i].start, q)));
         so->setProperty("endQ", qvar(timing::fromSamples(m->segs[i].end, q)));
         segs.add(juce::var(so));
       }
@@ -123,7 +121,7 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
   o->setProperty("effects", effectsBlob(node));
 
   if (node.getNodeType() == NodeType::Clip) {
-    const auto &clip = static_cast<const ClipNode &>(node);
+    const auto& clip = static_cast<const ClipNode&>(node);
     const int64_t origin = node.origin_samples.load();
     const int64_t duration = node.duration_samples.load();
     o->setProperty("inputChannel", clip.getInputChannel());
@@ -142,21 +140,21 @@ juce::var serializeNode(const AudioNode &node, int64_t q, int64_t epoch,
     o->setProperty("hasAudio", hasAudio);
     if (hasAudio) writeClipWav(clip, duration, audioDir, opts.incremental);
   } else {
-    const auto &stack = static_cast<const StackNode &>(node);
+    const auto& stack = static_cast<const StackNode&>(node);
     o->setProperty("x", node.x_pos.load());
     o->setProperty("y", node.y_pos.load());
     juce::Array<juce::var> kids;
-    for (const auto &child : stack.ownedChildren())
+    for (const auto& child : stack.ownedChildren())
       kids.add(serializeNode(*child, q, epoch, audioDir, opts));
     o->setProperty("nodes", kids);
   }
   return juce::var(o);
 }
 
-std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
+std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
                                            int64_t epoch, double sr,
-                                           const juce::File &audioDir) {
-  auto *o = v.getDynamicObject();
+                                           const juce::File& audioDir) {
+  auto* o = v.getDynamicObject();
   if (!o) return nullptr;
   const juce::String type = o->getProperty("type").toString();
   const juce::String uuid = o->getProperty("id").toString();
@@ -167,8 +165,8 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
     auto stack = std::make_unique<StackNode>(name);
     stack->x_pos.store((double)o->getProperty("x"));
     stack->y_pos.store((double)o->getProperty("y"));
-    if (auto *kids = o->getProperty("nodes").getArray()) {
-      for (const auto &c : *kids)
+    if (auto* kids = o->getProperty("nodes").getArray()) {
+      for (const auto& c : *kids)
         if (auto ch = deserializeNode(c, q, epoch, sr, audioDir))
           stack->addChild(std::move(ch));
     }
@@ -179,9 +177,12 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
     node = std::move(stack);
   } else {
     auto clip = std::make_unique<ClipNode>(name, sr);
-    const int64_t origin = epoch + timing::toSamples(qread(o->getProperty("originQ")), q);
-    const int64_t duration = timing::toSamples(qread(o->getProperty("periodQ")), q);
-    const int64_t ctx = timing::toSamples(qread(o->getProperty("contextCycleQ")), q);
+    const int64_t origin =
+        epoch + timing::toSamples(qread(o->getProperty("originQ")), q);
+    const int64_t duration =
+        timing::toSamples(qread(o->getProperty("periodQ")), q);
+    const int64_t ctx =
+        timing::toSamples(qread(o->getProperty("contextCycleQ")), q);
     clip->setInputChannel((int)o->getProperty("inputChannel"));
     // Absent in pre-stereo sessions: juce::var() → 0 would silently arm
     // a stereo pair, so default explicitly to −1 (mono).
@@ -203,20 +204,20 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
   node->pan.store((float)(double)o->getProperty("pan"));
   // Absent key (pre-gain session) MUST default to unity — the missing-
   // property var reads as 0.0, which would load every legacy node silent.
-  node->gain.store(o->hasProperty("gain")
-                       ? (float)(double)o->getProperty("gain")
-                       : 1.0f);
-  node->period_from_context_.store(
-      o->getProperty("periodSource").toString() == "context");
-  node->setLoopPoints(timing::toSamples(qread(o->getProperty("windowStartQ")), q),
-                      timing::toSamples(qread(o->getProperty("windowEndQ")), q));
+  node->gain.store(
+      o->hasProperty("gain") ? (float)(double)o->getProperty("gain") : 1.0f);
+  node->period_from_context_.store(o->getProperty("periodSource").toString() ==
+                                   "context");
+  node->setLoopPoints(
+      timing::toSamples(qread(o->getProperty("windowStartQ")), q),
+      timing::toSamples(qread(o->getProperty("windowEndQ")), q));
   // Multi-segment map (phase 3): ≥2 entries install an override
   // (pre-graph node: no old pointer, no retire needed); absent/short
   // lists keep the single-window fallback above.
-  if (auto *segs = o->getProperty("segmentsQ").getArray();
+  if (auto* segs = o->getProperty("segmentsQ").getArray();
       segs != nullptr && segs->size() >= 2) {
     timing::TimeMap m;
-    for (const auto &sv : *segs) {
+    for (const auto& sv : *segs) {
       if (m.n >= timing::TimeMap::kMaxSegments) break;
       m.segs[m.n++] = {
           timing::toSamples(qread(sv.getProperty("startQ", {})), q),
@@ -233,12 +234,12 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var &v, int64_t q,
 
 // getMetadata()'s param keys match setParam()'s keys exactly, so restore
 // is generic: for each fx, replay enabled + every numeric field.
-BundleInfo readBundleInfo(const juce::File &dir) {
+BundleInfo readBundleInfo(const juce::File& dir) {
   BundleInfo out;
   const auto jf = dir.getChildFile("session.json");
   if (!jf.existsAsFile()) return out;
   const auto root = juce::JSON::parse(jf.loadFileAsString());
-  auto *o = root.getDynamicObject();
+  auto* o = root.getDynamicObject();
   if (!o) return out;
   out.ok = true;
   out.name = o->getProperty("name").toString();
@@ -246,13 +247,13 @@ BundleInfo readBundleInfo(const juce::File &dir) {
   return out;
 }
 
-void applyEffects(AudioNode &node, const juce::var &blob, double sr) {
+void applyEffects(AudioNode& node, const juce::var& blob, double sr) {
   if (!blob.isObject()) return;
   node.effects().prepare(sr);
-  for (const char *fx : {"eq", "compressor", "echo", "reverb"}) {
+  for (const char* fx : dsp::EffectRack::kSlotNames) {
     const auto sub = blob.getProperty(fx, juce::var());
-    if (auto *o = sub.getDynamicObject()) {
-      for (const auto &p : o->getProperties()) {
+    if (auto* o = sub.getDynamicObject()) {
+      for (const auto& p : o->getProperties()) {
         const juce::String key = p.name.toString();
         if (key == "enabled")
           node.effects().setEnabled(fx, (bool)p.value);
@@ -263,8 +264,8 @@ void applyEffects(AudioNode &node, const juce::var &blob, double sr) {
   }
 }
 
-bool save(const StackNode &root, double device_sample_rate,
-          const juce::File &dir, const SaveOptions &opts) {
+bool save(const StackNode& root, double device_sample_rate,
+          const juce::File& dir, const SaveOptions& opts) {
   dir.createDirectory();
   const auto audioDir = dir.getChildFile("audio");
   audioDir.createDirectory();
@@ -273,7 +274,7 @@ bool save(const StackNode &root, double device_sample_rate,
   const int64_t q = opts.strip_performances ? 0 : root.getQuantum();
   const int64_t epoch = opts.strip_performances ? 0 : root.getEpoch();
 
-  auto *top = new juce::DynamicObject();
+  auto* top = new juce::DynamicObject();
   top->setProperty("version", 1);
   if (opts.display_name.isNotEmpty())
     top->setProperty("name", opts.display_name);
@@ -285,7 +286,7 @@ bool save(const StackNode &root, double device_sample_rate,
   top->setProperty("rootEffects", effectsBlob(root));
 
   juce::Array<juce::var> nodes;
-  for (const auto &child : root.ownedChildren())
+  for (const auto& child : root.ownedChildren())
     nodes.add(serializeNode(*child, q, epoch, audioDir, opts));
   top->setProperty("nodes", nodes);
 
@@ -293,13 +294,13 @@ bool save(const StackNode &root, double device_sample_rate,
   return dir.getChildFile("session.json").replaceWithText(json);
 }
 
-LoadedSession load(const juce::File &dir, double device_sample_rate) {
+LoadedSession load(const juce::File& dir, double device_sample_rate) {
   LoadedSession out;
   const auto jf = dir.getChildFile("session.json");
   if (!jf.existsAsFile()) return out;
 
   const auto root = juce::JSON::parse(jf.loadFileAsString());
-  auto *o = root.getDynamicObject();
+  auto* o = root.getDynamicObject();
   if (!o) return out;
 
   out.q_samples = (int64_t)(double)o->getProperty("qSamples");
@@ -313,8 +314,8 @@ LoadedSession load(const juce::File &dir, double device_sample_rate) {
   out.created = o->getProperty("created").toString();
 
   const auto audioDir = dir.getChildFile("audio");
-  if (auto *nodes = o->getProperty("nodes").getArray()) {
-    for (const auto &n : *nodes)
+  if (auto* nodes = o->getProperty("nodes").getArray()) {
+    for (const auto& n : *nodes)
       if (auto ch = deserializeNode(n, out.q_samples, out.epoch,
                                     out.sample_rate, audioDir))
         out.children.push_back(std::move(ch));

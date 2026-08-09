@@ -27,7 +27,7 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
 
 juce::var ClipNode::getMetadata() const {
   auto base = AudioNode::getMetadata();
-  auto *obj = base.getDynamicObject();
+  auto* obj = base.getDynamicObject();
   obj->setProperty("sampleRate", sample_rate);
   obj->setProperty("inputChannel", preferred_input_channel);
   obj->setProperty("inputChannelR", preferred_input_channel_right);
@@ -47,12 +47,12 @@ juce::var ClipNode::getMetadata() const {
 }
 
 int64_t ClipNode::getEffectiveQuantum() const {
-  if (auto *p = parent.load()) return p->getEffectiveQuantum();
+  if (auto* p = parent.load()) return p->getEffectiveQuantum();
   return 0;
 }
 
-void ClipNode::control(const float *const *input_channels,
-                       int num_input_channels, const ProcessContext &context) {
+void ClipNode::control(const float* const* input_channels,
+                       int num_input_channels, const ProcessContext& context) {
   // A new block: last block's commit (if any) has been rendered-silent
   // once; playback proceeds from this block on.
   committed_this_block_.store(false);
@@ -95,7 +95,7 @@ void ClipNode::control(const float *const *input_channels,
   if (isRecording()) {
     // ONE content load per control pass (the message thread swaps this
     // pointer only for idle clips, never mid-capture).
-    juce::AudioBuffer<float> &buffer = *content_.load();
+    juce::AudioBuffer<float>& buffer = *content_.load();
 
     // D4 wall guard — integrity, not policy: the arm-time reservation
     // is ~hours, but IF capture ever nears it, finish CLEANLY at the
@@ -119,7 +119,8 @@ void ClipNode::control(const float *const *input_channels,
         cap_hit_.store(true);
         RtLog::instance().post(
             "ClipNode: first take reached the reservation bound — "
-            "committed at %lld samples", (long long)wp);
+            "committed at %lld samples",
+            (long long)wp);
         commitRecording(-1, &context);
         return;
       }
@@ -133,8 +134,7 @@ void ClipNode::control(const float *const *input_channels,
       // latency compensation, so a note played on the HEARD beat lands on
       // the beat in the clip — the live-block path below cannot do that,
       // because the note's audio arrives ~latency after the boundary.
-      const int64_t available_end =
-          context.input_clock + context.num_samples;
+      const int64_t available_end = context.input_clock + context.num_samples;
       int64_t src = capture_next_clock_;
       const int ring_len = context.prerecord_ring_len;
       const int64_t oldest = std::max<int64_t>(0, available_end - ring_len);
@@ -172,10 +172,10 @@ void ClipNode::control(const float *const *input_channels,
           for (int c = 0; c < ncap; ++c) {
             // Clamp both ways: −1 is a first-class "no assignment"
             // value in the UI/session layer and must not index ring[−1].
-            const int ch = std::clamp(
-                c == 0 ? preferred_input_channel : preferred_input_channel_right,
-                0, context.prerecord_ring_channels - 1);
-            const float *ring = context.prerecord_ring[ch];
+            const int ch = std::clamp(c == 0 ? preferred_input_channel
+                                             : preferred_input_channel_right,
+                                      0, context.prerecord_ring_channels - 1);
+            const float* ring = context.prerecord_ring[ch];
             captureWrite(buffer, c, wp, ring + idx, first);
             if (n > first) captureWrite(buffer, c, wp + first, ring, n - first);
 
@@ -189,34 +189,7 @@ void ClipNode::control(const float *const *input_channels,
             }
           }
           capture_next_clock_ = src + n;
-          last_block_peak.store(blockPeak);
-          if (blockPeak > current_max_peak.load()) {
-            current_max_peak.store(blockPeak);
-          }
-
-          const int64_t start_p = wp;
-          write_position.fetch_add(n);
-          const int64_t end_p = write_position.load();
-          live_duration_samples.store(end_p);  // Live update for UI
-
-          if (recState() == RecState::PendingStop) {
-            int64_t target = awaiting_stop_at.load();
-            if (start_p < target && end_p >= target) {
-              commit_master_pos.store(context.master_pos);
-              commitRecording(target, &context);
-              return;
-            }
-          }
-          // One-period cap wall: a full map pass auto-finishes CLEANLY
-          // (the D4 wall-guard discipline; the pass end IS a boundary).
-          if (through_map_capture_ && end_p >= take_map_.period()) {
-            commit_master_pos.store(context.master_pos);
-            RtLog::instance().post(
-                "ClipNode: through-map take completed one map period — "
-                "committing");
-            commitRecording(-1, &context);
-            return;
-          }
+          finishCaptureBlock(n, blockPeak, context);
         }
       }
     } else if (context.is_recording && input_channels != nullptr &&
@@ -232,14 +205,17 @@ void ClipNode::control(const float *const *input_channels,
       if (samples_to_write > 0) {
         const int ncap = std::min(capture_channels_, buffer.getNumChannels());
         for (int c = 0; c < ncap; ++c) {
-          const float *in = input_channels[std::clamp(
+          const float* in = input_channels[std::clamp(
               c == 0 ? preferred_input_channel : preferred_input_channel_right,
               0, num_input_channels - 1)];
-          captureWrite(buffer, c, write_position.load(), in,
-                       samples_to_write);
+          captureWrite(buffer, c, write_position.load(), in, samples_to_write);
         }
 
-        // Peak tracking
+        // Peak tracking. NOTE: this path meters ALL delivered input
+        // channels, while the ring path above meters only the CAPTURED
+        // channels — for an unassigned-but-hot input the two report
+        // different peaks. Kept as-is pending a ruling on which is
+        // intended (metering the take vs. metering the device input).
         float blockPeak = 0.0f;
         for (int ch = 0; ch < num_input_channels; ++ch) {
           if (input_channels[ch] != nullptr) {
@@ -248,43 +224,47 @@ void ClipNode::control(const float *const *input_channels,
             }
           }
         }
-        last_block_peak.store(blockPeak);
-
-        if (blockPeak > current_max_peak.load()) {
-          current_max_peak.store(blockPeak);
-        }
-
-        int64_t start_p = write_position.load();
-        write_position.fetch_add(samples_to_write);
-        int64_t end_p = write_position.load();
-        live_duration_samples.store(end_p);  // Live update for UI visibility
-
-        if (recState() == RecState::PendingStop) {
-          int64_t target = awaiting_stop_at.load();
-          if (start_p < target && end_p >= target) {
-            commit_master_pos.store(context.master_pos);
-            commitRecording(target, &context);
-            return;
-          }
-        }
-        // One-period cap wall (through-map) — see the ring path.
-        if (through_map_capture_ && end_p >= take_map_.period()) {
-          commit_master_pos.store(context.master_pos);
-          RtLog::instance().post(
-              "ClipNode: through-map take completed one map period — "
-              "committing");
-          commitRecording(-1, &context);
-          return;
-        }
-        // Note: if samples_to_write <= 0, buffer is full - just stop writing
-        // Do NOT call commitRecording here; wait for explicit stop
+        finishCaptureBlock(samples_to_write, blockPeak, context);
+        // Note: if samples_to_write <= 0, buffer is full - just stop
+        // writing. Do NOT commit here; wait for explicit stop.
       }
     }
   }
 }
 
-void ClipNode::captureWrite(juce::AudioBuffer<float> &buffer, int dest_ch,
-                            int64_t heard_pos, const float *src, int n) {
+void ClipNode::finishCaptureBlock(int written, float block_peak,
+                                  const ProcessContext& context) {
+  last_block_peak.store(block_peak);
+  if (block_peak > current_max_peak.load()) {
+    current_max_peak.store(block_peak);
+  }
+
+  const int64_t start_position = write_position.load();
+  write_position.fetch_add(written);
+  const int64_t end_position = write_position.load();
+  live_duration_samples.store(end_position);  // Live update for UI
+
+  if (recState() == RecState::PendingStop) {
+    const int64_t target = awaiting_stop_at.load();
+    if (start_position < target && end_position >= target) {
+      commit_master_pos.store(context.master_pos);
+      commitRecording(target, &context);
+      return;
+    }
+  }
+  // One-period cap wall: a full map pass auto-finishes CLEANLY (the D4
+  // wall-guard discipline; the pass end IS a boundary).
+  if (through_map_capture_ && end_position >= take_map_.period()) {
+    commit_master_pos.store(context.master_pos);
+    RtLog::instance().post(
+        "ClipNode: through-map take completed one map period — "
+        "committing");
+    commitRecording(-1, &context);
+  }
+}
+
+void ClipNode::captureWrite(juce::AudioBuffer<float>& buffer, int dest_ch,
+                            int64_t heard_pos, const float* src, int n) {
   if (!through_map_capture_) {
     buffer.copyFrom(dest_ch, (int)heard_pos, src, n);
     return;
@@ -308,11 +288,11 @@ void ClipNode::captureWrite(juce::AudioBuffer<float> &buffer, int dest_ch,
   }
 }
 
-void ClipNode::render(float *const *output_channels, int num_output_channels,
-                      const ProcessContext &context) const {
+void ClipNode::render(float* const* output_channels, int num_output_channels,
+                      const ProcessContext& context) const {
   // ONE content load per render (compaction may swap the pointer under
   // a playing clip; the retired buffer outlives this block).
-  const juce::AudioBuffer<float> &buffer = *content_.load();
+  const juce::AudioBuffer<float>& buffer = *content_.load();
   // The kernel playback equation (§2.3 render phase): a pure function
   // of (buffer, origin, window, t). The commit block renders SILENT
   // (committed_this_block_) — identical to the historical process(),
@@ -340,7 +320,7 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
           isSilenced =
               !snapIsUnderSolo(*context.snap, context.self, context.solo_node);
         } else {
-          const celestrian::AudioNode *curr = this;
+          const celestrian::AudioNode* curr = this;
           while (curr != nullptr) {
             if (curr == context.solo_node) {
               isSilenced = false;
@@ -395,23 +375,23 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         // out naturally after the shot). P == dur (knob off, or a
         // degenerate context no longer than the content) reduces to the
         // historical loop equation exactly.
-        const int64_t cyc = period_from_context_.load() &&
-                                    context.context_cycle > dur
-                                ? context.context_cycle
-                                : dur;
+        const int64_t cyc =
+            period_from_context_.load() && context.context_cycle > dur
+                ? context.context_cycle
+                : dur;
         // Run-split at map seams (bounded, allocation-free — the stack
         // splitter's discipline inside the clip loop): each run is a
         // contiguous read.
         for (int c = 0; c < (stereo ? 2 : 1); ++c) {
-          const float *data = buffer.getReadPointer(c);
-          float *scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
+          const float* data = buffer.getReadPointer(c);
+          float* scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
           int i = 0;
           while (i < context.num_samples) {
             int64_t h = (context.master_pos + i - org - a0) % cyc;
             h = (h + cyc) % cyc;
             if (h >= dur) {  // one-shot rest region
-              const int run = (int)std::min<int64_t>(
-                  context.num_samples - i, cyc - h);
+              const int run =
+                  (int)std::min<int64_t>(context.num_samples - i, cyc - h);
               std::fill(scratch + i, scratch + i + run, 0.0f);
               i += run;
               continue;
@@ -450,8 +430,8 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] == nullptr) continue;
           const bool right = ch == 1 && num_output_channels >= 2;
-          const float *src = stereo && right ? fx_scratch2_.data()
-                                             : fx_scratch_.data();
+          const float* src =
+              stereo && right ? fx_scratch2_.data() : fx_scratch_.data();
           float g = fader;
           if (num_output_channels >= 2 && ch < 2) g = right ? gr : gl;
           if (stereo && num_output_channels < 2) {
@@ -480,10 +460,10 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
       // segments. One-shots phase over their FULL period (the context
       // cycle), so the sweep is honest about the rest region.
       {
-        const int64_t pp = period_from_context_.load() &&
-                                   context.context_cycle > dur
-                               ? context.context_cycle
-                               : dur;
+        const int64_t pp =
+            period_from_context_.load() && context.context_cycle > dur
+                ? context.context_cycle
+                : dur;
         int64_t h = (context.master_pos - org - a0) % pp;
         h = (h + pp) % pp;
         playhead_pos.store((double)h / (double)pp);
@@ -494,14 +474,13 @@ void ClipNode::render(float *const *output_channels, int num_output_channels,
   }
 }
 
-void ClipNode::armEvaluate(const ProcessContext &context) {
+void ClipNode::armEvaluate(const ProcessContext& context) {
   // Island facts ride the context (Tier 3 Step 3): quantum, invariant
   // epoch, and the island root itself — no audio-thread parent walks.
   // The walks survive only as the node-level unit-test fallback.
   const int64_t Q =
       context.quantum > 0 ? context.quantum : getEffectiveQuantum();
-  celestrian::AudioNode *island =
-      context.island ? context.island : rootNode();
+  celestrian::AudioNode* island = context.island ? context.island : rootNode();
 
   // Latency compensation: the performer plays against what they HEARD
   // (delayed by output latency); it reaches the software input latency
@@ -536,8 +515,8 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
   // audibly-equivalent intrinsic slots to choose among.
   if (map_commit_cycle_.load() > 0 && context.map.active()) {
     const int64_t period = context.map.period();
-    int64_t heard = context.island_pos -
-                    (context.input_latency + context.output_latency);
+    int64_t heard =
+        context.island_pos - (context.input_latency + context.output_latency);
     if (heard < 0) heard = 0;
     int64_t rel_h = heard - context.map_heard_epoch;
     if (rel_h < 0) rel_h = 0;
@@ -642,7 +621,7 @@ void ClipNode::armEvaluate(const ProcessContext &context) {
   }
 }
 
-void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
+void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
                             int64_t compensated_pos) {
   // The take's HEARD FRAME: the EFFECTIVE island cycle it is being
   // performed against (snapshotted at arm on the island root; falls
@@ -650,11 +629,10 @@ void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
   // take-marking folds by this — "which heard cycle" never matters, the
   // phase within it always does (Q14) — making the mark stable across
   // later frame growth and epoch re-bases.
-  celestrian::AudioNode *island =
-      context.island ? context.island : rootNode();
+  celestrian::AudioNode* island = context.island ? context.island : rootNode();
   const int64_t heard = island->activeTakeHeardCycle();
-  take_context_cycle_.store(
-      heard > 0 ? heard : island->activeTakeIntrinsicCycle());
+  take_context_cycle_.store(heard > 0 ? heard
+                                      : island->activeTakeIntrinsicCycle());
 
   rec_state_.store((int)RecState::Capturing);
   awaiting_start_at.store(0);
@@ -670,15 +648,16 @@ void ClipNode::beginCapture(const ProcessContext &context, int64_t target,
 }
 
 void ClipNode::startRecording(int64_t through_map_commit_cycle) {
-  if (recState() != RecState::Idle) return;  // idempotent; keeps the
-                                             // island take counter exact
+  if (recState() != RecState::Idle)
+    return;  // idempotent; keeps the
+             // island take counter exact
 
   // D4: VIRTUAL reservation — address space only, deliberately not
   // cleared (touching the pages would commit them; capture writes are
   // the only thing that should). Nothing ever reads past
   // write_position, so the uninitialized tail is unreachable.
   {
-    auto &buffer = *content_.load();
+    auto& buffer = *content_.load();
     // The take's channel count is fixed HERE (a stereo pair of inputs
     // captures two channels): the audio thread reads capture_channels_
     // only after observing the Armed state stored below.
@@ -756,7 +735,7 @@ void ClipNode::stopRecording() {
 }
 
 void ClipNode::commitRecording(int64_t final_duration,
-                               const ProcessContext *ctx) {
+                               const ProcessContext* ctx) {
   if (recState() != RecState::Idle) {
     rec_state_.store((int)RecState::Idle);
     stop_requested_.store(false);
@@ -765,14 +744,13 @@ void ClipNode::commitRecording(int64_t final_duration,
     // Commit fires on the AUDIO thread (from process) with the context,
     // or on the message thread (first-clip immediate stop) without one
     // — the parent walks below are the message/unit-test path only.
-    celestrian::AudioNode *island =
+    celestrian::AudioNode* island =
         ctx && ctx->island ? ctx->island : rootNode();
     int64_t L = (int64_t)write_position.load();
     int64_t Q = ctx && ctx->quantum > 0 ? ctx->quantum : getEffectiveQuantum();
     int64_t duration = L;
 
-    const int64_t map_C =
-        through_map_capture_ ? map_commit_cycle_.load() : 0;
+    const int64_t map_C = through_map_capture_ ? map_commit_cycle_.load() : 0;
     if (map_C > 0) {
       // THROUGH-MAP COMMIT (time_maps.md ruling 2): the take IS the
       // mapping node's full inner cycle — one dense buffer, zeroed at
@@ -844,9 +822,9 @@ void ClipNode::commitRecording(int64_t final_duration,
     // duration includes this take — computed here in SNAPSHOT space
     // (audio thread; graph_snapshot.h) and passed in, because the
     // island's own traversal is message-thread-only.
-    const int64_t intrinsic_after =
-        ctx && ctx->snap ? snapIntrinsicDuration(*ctx->snap, 0)
-                         : island->getIntrinsicDuration();
+    const int64_t intrinsic_after = ctx && ctx->snap
+                                        ? snapIntrinsicDuration(*ctx->snap, 0)
+                                        : island->getIntrinsicDuration();
     island->takeCommitted(origin, intrinsic_after);
 
     // §2.3: the commit block renders silent (see render()); playback
@@ -871,7 +849,7 @@ void ClipNode::startPlayback() {
 void ClipNode::stopPlayback() { is_playing.store(false); }
 
 juce::var ClipNode::getWaveform(int num_peaks) const {
-  const juce::AudioBuffer<float> &buffer = *content_.load();
+  const juce::AudioBuffer<float>& buffer = *content_.load();
   juce::Array<juce::var> peaks;
   int total_samples = (int)duration_samples;
   if (total_samples <= 0) total_samples = write_position.load();
@@ -895,7 +873,7 @@ juce::var ClipNode::getWaveform(int num_peaks) const {
     float peak = 0.0f;
     if (start < total_samples) {
       for (int c = 0; c < chans; ++c) {
-        const float *data = buffer.getReadPointer(c);
+        const float* data = buffer.getReadPointer(c);
         for (int s = start; s < end; ++s) {
           const int64_t idx = base + s;
           if (idx < cap) peak = std::max(peak, std::abs(data[idx]));

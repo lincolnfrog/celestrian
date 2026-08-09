@@ -12,9 +12,8 @@
 
 #include <juce_core/juce_core.h>
 
-#include <vector>
-
 #include "../src/audio_engine.h"
+#include "test_utils.h"
 
 class MonotonicClockTests : public juce::UnitTest {
  public:
@@ -24,29 +23,20 @@ class MonotonicClockTests : public juce::UnitTest {
     const int BLOCK_SIZE = 512;
     const int64_t Q = 44100;
 
-    auto makeDriver = [&](AudioEngine &engine) {
+    auto makeDriver = [&](AudioEngine& engine) {
       return [&engine, BLOCK_SIZE](int64_t total_samples) {
-        static std::vector<float> buffer((size_t)512, 0.0f);
-        buffer.assign((size_t)BLOCK_SIZE, 0.0f);
-        float *ins[] = {buffer.data()};
-        float *outs[] = {buffer.data(), buffer.data()};
-        int64_t remaining = total_samples;
-        while (remaining > 0) {
-          int n = (int)std::min<int64_t>(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        celestrian::test_utils::driveEngine(engine, total_samples, BLOCK_SIZE);
       };
     };
 
-    auto firstClipId = [](AudioEngine &engine) -> juce::String {
+    auto firstClipId = [](AudioEngine& engine) -> juce::String {
       auto state = engine.getGraphState();
       return (*state.getDynamicObject()->getProperty("nodes").getArray())[0]
           .getDynamicObject()
           ->getProperty("id");
     };
 
-    auto masterPos = [](AudioEngine &engine) -> int64_t {
+    auto masterPos = [](AudioEngine& engine) -> int64_t {
       return (int64_t)(double)engine.getGraphState()
           .getDynamicObject()
           ->getProperty("masterPos");
@@ -70,7 +60,7 @@ class MonotonicClockTests : public juce::UnitTest {
       engine.stopRecordingInNode(id);  // no island Q yet -> immediate commit
 
       auto state = engine.getGraphState();
-      auto *root = state.getDynamicObject();
+      auto* root = state.getDynamicObject();
       const int64_t epoch = (int64_t)(double)root->getProperty("islandEpoch");
       expectEquals((juce::int64)epoch, (juce::int64)t0,
                    "island epoch is the arm moment, not 0");

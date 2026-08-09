@@ -7,8 +7,19 @@
 namespace celestrian {
 
 /**
- * A leaf node representing a single audio recording.
- * Handles storage, playback, and slicing logic.
+ * A leaf node: one recorded take and its playback.
+ *
+ * Three cooperating pieces, each documented at its members:
+ *   - the recording STATE MACHINE (RecState below) — arm targets, the
+ *     capture window, stop boundaries, commit;
+ *   - the CONTENT model — one buffer reached through one atomic pointer
+ *     (D4): a huge virtual reservation at arm, compacted after commit,
+ *     write-once thereafter (no overdub), with content_base_ letting a
+ *     lock-collapse re-window storage without copying;
+ *   - the kernel PLAYBACK equation in render() — a pure function of
+ *     (buffer, origin, active map, t); every cyclic behavior (loops,
+ *     windows, one-shots, spliced maps) is a parameter of that one
+ *     equation, never a separate code path.
  */
 class ClipNode : public AudioNode {
  public:
@@ -44,11 +55,11 @@ class ClipNode : public AudioNode {
   // AudioNode implementation (§2.3 control/render split)
   /** Decisions + capture: arm targets, stop boundaries, input ingest,
    * commit (with island consequences). */
-  void control(const float *const *input_channels, int num_input_channels,
-               const ProcessContext &context) override;
+  void control(const float* const* input_channels, int num_input_channels,
+               const ProcessContext& context) override;
   /** The kernel playback equation — pure; see AudioNode::render. */
-  void render(float *const *output_channels, int num_output_channels,
-              const ProcessContext &context) const override;
+  void render(float* const* output_channels, int num_output_channels,
+              const ProcessContext& context) const override;
 
   /**
    * Overrides GetWaveform to return peak data from the internal buffer.
@@ -163,8 +174,8 @@ class ClipNode : public AudioNode {
    * message-thread first-clip immediate stop (parent walks are fine
    * there). */
   void commitRecording(int64_t final_duration = -1,
-                       const ProcessContext *ctx = nullptr);
-  const juce::AudioBuffer<float> &getAudioBuffer() const {
+                       const ProcessContext* ctx = nullptr);
+  const juce::AudioBuffer<float>& getAudioBuffer() const {
     return *content_.load();
   }
 
@@ -188,15 +199,15 @@ class ClipNode : public AudioNode {
   /** Message thread: swap in a replacement content buffer (compaction).
    * The caller retires the returned old buffer — an in-flight render
    * may still be reading it this block. */
-  juce::AudioBuffer<float> *swapContent(
+  juce::AudioBuffer<float>* swapContent(
       std::unique_ptr<juce::AudioBuffer<float>> fresh) {
-    juce::AudioBuffer<float> *old = content_owned_.release();
+    juce::AudioBuffer<float>* old = content_owned_.release();
     content_owned_ = std::move(fresh);
     content_.store(content_owned_.get());
     return old;
   }
   /** TEST-ONLY: mutable content access (wall-guard simulations). */
-  juce::AudioBuffer<float> &contentForTest() { return *content_.load(); }
+  juce::AudioBuffer<float>& contentForTest() { return *content_.load(); }
   bool capHit() const { return cap_hit_.load(); }
 
   // --- Q13 lock-collapse (owner ruling 2026-07-19) ---
@@ -241,9 +252,9 @@ class ClipNode : public AudioNode {
    * committed clip only. The caller clears/retires the map override.
    */
   std::unique_ptr<juce::AudioBuffer<float>> spliceToMap(
-      const timing::TimeMap &m) {
+      const timing::TimeMap& m) {
     const int64_t period = m.period();
-    const auto &src = *content_.load();
+    const auto& src = *content_.load();
     const int chans = std::max(1, src.getNumChannels());
     auto spliced =
         std::make_unique<juce::AudioBuffer<float>>(chans, (int)period);
@@ -279,9 +290,8 @@ class ClipNode : public AudioNode {
    * full-span: the reinstalled map override shadows them (the same
    * documented looseness as LoopPoints-under-override). */
   std::unique_ptr<juce::AudioBuffer<float>> unspliceFromMap(
-      std::unique_ptr<juce::AudioBuffer<float>> old_buffer,
-      int64_t old_origin, int64_t old_duration, int64_t old_base,
-      int64_t old_recorded) {
+      std::unique_ptr<juce::AudioBuffer<float>> old_buffer, int64_t old_origin,
+      int64_t old_duration, int64_t old_base, int64_t old_recorded) {
     std::unique_ptr<juce::AudioBuffer<float>> displaced =
         std::move(content_owned_);
     content_owned_ = std::move(old_buffer);
@@ -301,12 +311,12 @@ class ClipNode : public AudioNode {
    * sets origin/duration/loop points/mute separately (public). Message
    * thread only — the node is not yet in the live graph.
    */
-  void loadCommitted(const juce::AudioBuffer<float> &audio,
+  void loadCommitted(const juce::AudioBuffer<float>& audio,
                      int64_t context_cycle) {
     // Exact-size: a saved take is never truncated to some prior
     // capacity (the old fixed 60 s buffer clipped long takes on load).
     // Channel count follows the audio (stereo takes reload as stereo).
-    auto &buffer = *content_.load();
+    auto& buffer = *content_.load();
     const int n = audio.getNumSamples();
     const int chans = std::max(1, audio.getNumChannels());
     if (n > 0) buffer.setSize(chans, n, false, false, false);
@@ -323,7 +333,7 @@ class ClipNode : public AudioNode {
   // Content storage (see the D4 block above): owned on the message
   // thread, read through the atomic by both threads.
   std::unique_ptr<juce::AudioBuffer<float>> content_owned_;
-  std::atomic<juce::AudioBuffer<float> *> content_{nullptr};
+  std::atomic<juce::AudioBuffer<float>*> content_{nullptr};
   // Set when the take auto-finished at the reservation bound.
   std::atomic<bool> cap_hit_{false};
 
@@ -370,16 +380,23 @@ class ClipNode : public AudioNode {
   int capture_channels_ = 1;
 
   /** Armed-state evaluation (audio thread, once per block). */
-  void armEvaluate(const ProcessContext &context);
+  void armEvaluate(const ProcessContext& context);
   /** Armed → Capturing: fixes the capture window for `target`. */
-  void beginCapture(const ProcessContext &context, int64_t target,
+  void beginCapture(const ProcessContext& context, int64_t target,
                     int64_t compensated_pos);
   /** Write `n` captured samples whose heard-elapsed index starts at
    * `heard_pos` into content channel `dest_ch` — plain takes write
    * linearly; through-map takes fold destinations through the frozen
    * map (bounded seam runs). */
-  void captureWrite(juce::AudioBuffer<float> &buffer, int dest_ch,
-                    int64_t heard_pos, const float *src, int n);
+  void captureWrite(juce::AudioBuffer<float>& buffer, int dest_ch,
+                    int64_t heard_pos, const float* src, int n);
+  /** The capture bookkeeping tail shared by the ring and live-block
+   * paths: peak telemetry, write-position/live-duration advance, the
+   * PendingStop boundary crossing, and the through-map one-period wall
+   * (both of which may COMMIT the take). Callers must not touch capture
+   * state after this returns — nothing may follow a commit. */
+  void finishCaptureBlock(int written, float block_peak,
+                          const ProcessContext& context);
 
   // --- Through-map take state (time_maps.md phase 2) ---
   // The commit cycle C, set at arm on the message thread (atomic: the

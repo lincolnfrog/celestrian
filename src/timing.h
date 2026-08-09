@@ -27,12 +27,25 @@ namespace celestrian::timing {
  * boundary. See docs/recording.md "Hysteresis-Based Snapping". */
 constexpr double kHysteresisThreshold = 0.15;
 
-
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 constexpr int kSubdivisions[] = {2, 4, 8};
 
 // gcd/lcm moved to qtime.h (the foundation layer); still exposed in
 // this namespace via the include above.
+
+/**
+ * One step of the composite-period fold shared by every LCM composition
+ * site (StackNode::getIntrinsicDuration / getEffectivePeriod, their
+ * snapshot twins in graph_snapshot.h, and the context-cycle fold):
+ * 0 is the empty accumulator, non-positive contributions are skipped.
+ * Centralized so the accumulate rule cannot drift between the node-side
+ * and snapshot-side folds. (The Q5 one-shot EXCLUSION stays at each
+ * call site — it is a property of the child, not of the fold.)
+ */
+inline int64_t foldPeriod(int64_t composite, int64_t next) {
+  if (next <= 0) return composite;
+  return composite == 0 ? next : lcm(composite, next);
+}
 
 /**
  * A Q subdivision boundary in samples, through THE rounding law
@@ -174,7 +187,7 @@ inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
  * map.period() ≤ commit_cycle.
  */
 inline int64_t throughMapDest(int64_t heard_i, int64_t anchor_off,
-                              const TimeMap &map, int64_t commit_cycle) {
+                              const TimeMap& map, int64_t commit_cycle) {
   const int64_t origin_inner = map.mapOffset(anchor_off);
   const int64_t inner = map.mapOffset(anchor_off + heard_i);
   int64_t d = inner - origin_inner;

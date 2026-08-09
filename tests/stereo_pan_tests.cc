@@ -7,6 +7,7 @@
 #include "../src/qtime.h"
 #include "../src/session_io.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
@@ -203,32 +204,29 @@ class StereoPanTests : public juce::UnitTest {
       const juce::String groupUuid = group->getUuid();
       root.addChild(std::move(group));
 
-      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
-                     .getChildFile("celestrian_test_stereo_pan");
-      dir.deleteRecursively();
-      dir.createDirectory();
+      auto dir = test_utils::freshTempDir("stereo_pan");
       expect(session_io::save(root, (double)Q, dir), "save");
       auto loaded = session_io::load(dir, (double)Q);
       expect(loaded.ok, "load ok");
 
-      auto *c = dynamic_cast<ClipNode *>(loaded.children[0].get());
+      auto* c = dynamic_cast<ClipNode*>(loaded.children[0].get());
       expect(c != nullptr, "clip restored");
       expectEquals(c->getInputChannel(), 2, "left input restored");
       expectEquals(c->getInputChannelRight(), 3, "right input restored");
       expectWithinAbsoluteError(c->pan.load(), -0.25f, 1.0e-6f,
                                 "clip pan restored");
       expectEquals(c->contentChannels(), 2, "stereo content restored");
-      const auto &rb = c->getAudioBuffer();
+      const auto& rb = c->getAudioBuffer();
       float maxErr = 0.0f;
       for (int i = 0; i < 200; ++i) {
-        maxErr = std::max(maxErr, std::abs(rb.getSample(0, i) -
-                                           audio.getSample(0, i)));
-        maxErr = std::max(maxErr, std::abs(rb.getSample(1, i) -
-                                           audio.getSample(1, i)));
+        maxErr = std::max(maxErr,
+                          std::abs(rb.getSample(0, i) - audio.getSample(0, i)));
+        maxErr = std::max(maxErr,
+                          std::abs(rb.getSample(1, i) - audio.getSample(1, i)));
       }
       expect(maxErr < 1.0e-6f, "stereo audio lossless (32-bit float wav)");
 
-      auto *g = dynamic_cast<StackNode *>(loaded.children[1].get());
+      auto* g = dynamic_cast<StackNode*>(loaded.children[1].get());
       expect(g != nullptr && g->getUuid() == groupUuid, "group restored");
       expectWithinAbsoluteError(g->pan.load(), 0.5f, 1.0e-6f,
                                 "group pan restored");
@@ -236,14 +234,13 @@ class StereoPanTests : public juce::UnitTest {
       // A pre-stereo session (no inputChannelR key) loads as MONO.
       auto jf = dir.getChildFile("session.json");
       auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      auto *clipObj =
-          parsed.getProperty("nodes", {})[0].getDynamicObject();
+      auto* clipObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
       expect(clipObj != nullptr && clipObj->hasProperty("inputChannelR"),
              "key was present to strip");
       clipObj->removeProperty("inputChannelR");
       jf.replaceWithText(juce::JSON::toString(parsed, true));
       auto legacy = session_io::load(dir, (double)Q);
-      auto *lc = dynamic_cast<ClipNode *>(legacy.children[0].get());
+      auto* lc = dynamic_cast<ClipNode*>(legacy.children[0].get());
       expect(lc != nullptr, "legacy clip loads");
       expectEquals(lc->getInputChannelRight(), -1,
                    "absent inputChannelR defaults to mono");

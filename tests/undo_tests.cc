@@ -11,20 +11,20 @@
 #include <juce_core/juce_core.h>
 
 #include "../src/audio_engine.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
+using test_utils::nodesOf;
+
 namespace {
-juce::Array<juce::var>* kids(const juce::var& state) {
-  return state.getProperty("nodes", juce::var()).getArray();
-}
 juce::String idAt(const juce::var& state, int i) {
-  auto* arr = kids(state);
+  auto* arr = nodesOf(state);
   return (arr && i < arr->size()) ? (*arr)[i].getProperty("id", "").toString()
                                   : juce::String();
 }
 juce::String nameOf(const juce::var& state, const juce::String& uuid) {
-  if (auto* arr = kids(state)) {
+  if (auto* arr = nodesOf(state)) {
     for (auto& n : *arr) {
       if (n.getProperty("id", "").toString() == uuid)
         return n.getProperty("name", "").toString();
@@ -33,7 +33,7 @@ juce::String nameOf(const juce::var& state, const juce::String& uuid) {
   return {};
 }
 int childCount(const juce::var& state) {
-  auto* arr = kids(state);
+  auto* arr = nodesOf(state);
   return arr ? arr->size() : 0;
 }
 // The uuid of child `childIdx` inside top-level stack `stackIdx`. Holds
@@ -41,7 +41,7 @@ int childCount(const juce::var& state) {
 // into its result dangles the moment the temporary dies; test_harness.md
 // gotcha). Everything stays inside this call while `state` is alive.
 juce::String nestedId(const juce::var& state, int stackIdx, int childIdx) {
-  auto* top = kids(state);
+  auto* top = nodesOf(state);
   if (!top || stackIdx >= top->size()) return {};
   const juce::var stackVar = (*top)[stackIdx];
   const juce::var nodesVar = stackVar.getProperty("nodes", juce::var());
@@ -132,8 +132,8 @@ class UndoTests : public juce::UnitTest {
       const juce::String uuid = idAt(engine.getGraphState(), 0);
       engine.toggleMute(uuid);
       auto muted = [&] {
-        return (bool)(*kids(engine.getGraphState()))[0].getProperty("isMuted",
-                                                                    false);
+        return (bool)(*nodesOf(engine.getGraphState()))[0].getProperty(
+            "isMuted", false);
       };
       expect(muted(), "muted after toggle");
       engine.undo();
@@ -194,7 +194,7 @@ class UndoTests : public juce::UnitTest {
       expect(childCount(s) == 2, "two siblings restored at root");
       // Both original nodes are back at the top level (not nested).
       bool haveA = false, haveB = false;
-      for (auto& n : *kids(s)) {
+      for (auto& n : *nodesOf(s)) {
         const auto id = n.getProperty("id", "").toString();
         if (id == a) haveA = true;
         if (id == b) haveB = true;

@@ -3,6 +3,7 @@
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
@@ -11,39 +12,18 @@ class AudioEngineTests : public juce::UnitTest {
   AudioEngineTests() : juce::UnitTest("AudioEngine", "Audio Engine") {}
 
   void runTest() override {
-    // Navigation tests removed - expand/collapse functionality replaces
-    // enter/exit
-    /*
-     beginTest("Navigation: Enter/Exit Stack");
-     {
-       AudioEngine engine;
-       // Root is already a stack
-       engine.createNode("stack");
-       auto state = engine.getGraphState();
-       auto nodesVar = state.getDynamicObject()->getProperty("nodes");
-       expect(nodesVar.isArray());
-       auto *nodes = nodesVar.getArray();
-       expect(nodes->size() == 1);
-       juce::String subStackUuid =
-           (*nodes)[0].getDynamicObject()->getProperty("id");
-
-       // NOTE: enterBox/exitBox removed - navigation via expand/collapse
-     instead
-     }
-     */
-
     beginTest("Node Management: Create/Rename/Input");
     {
       AudioEngine engine;
       engine.createNode("clip");
       auto state = engine.getGraphState();
-      auto *obj = state.getDynamicObject();
+      auto* obj = state.getDynamicObject();
       expect(obj != nullptr, "Graph state should be an object");
 
       auto nodesVar = obj->getProperty("nodes");
       expect(nodesVar.isArray(), "Graph state should have nodes array");
 
-      auto *nodes = nodesVar.getArray();
+      auto* nodes = nodesVar.getArray();
       expect(nodes != nullptr, "Nodes pointer should not be null");
       expect(nodes->size() == 1);
       juce::String clipUuid = (*nodes)[0].getDynamicObject()->getProperty("id");
@@ -53,7 +33,7 @@ class AudioEngineTests : public juce::UnitTest {
       auto renamedNodesVar =
           renamedState.getDynamicObject()->getProperty("nodes");
       expect(renamedNodesVar.isArray());
-      auto *renamedNodes = renamedNodesVar.getArray();
+      auto* renamedNodes = renamedNodesVar.getArray();
       expectEquals(
           (*renamedNodes)[0].getDynamicObject()->getProperty("name").toString(),
           juce::String("Guitar"));
@@ -83,7 +63,7 @@ class AudioEngineTests : public juce::UnitTest {
       engine.createNode("clip", stackId);
 
       state = engine.getGraphState();
-      auto *stackChildren = state.getDynamicObject()
+      auto* stackChildren = state.getDynamicObject()
                                 ->getProperty("nodes")
                                 .getArray()
                                 ->getReference(0)
@@ -195,7 +175,7 @@ class AudioEngineTests : public juce::UnitTest {
       auto state = engine.getGraphState();
       auto nodesVar = state.getDynamicObject()->getProperty("nodes");
       expect(nodesVar.isArray());
-      auto *nodes = nodesVar.getArray();
+      auto* nodes = nodesVar.getArray();
       juce::String uuid = (*nodes)[0].getDynamicObject()->getProperty("id");
 
       engine.toggleSolo(uuid);
@@ -216,7 +196,7 @@ class AudioEngineTests : public juce::UnitTest {
       engine.startRecordingInNode(uuid);
       // Process some samples to give it length
       float in[1] = {0.0f};
-      float *const ins[] = {in};
+      float* const ins[] = {in};
       celestrian::ProcessContext ctx;
       ctx.num_samples = 1;
       ctx.is_recording = true;
@@ -228,7 +208,7 @@ class AudioEngineTests : public juce::UnitTest {
       engine.stopRecordingInNode(uuid);
 
       auto playState = engine.getGraphState();
-      auto *nodeData = playState.getDynamicObject()
+      auto* nodeData = playState.getDynamicObject()
                            ->getProperty("nodes")
                            .getArray()
                            ->getReference(0)
@@ -238,7 +218,7 @@ class AudioEngineTests : public juce::UnitTest {
 
       engine.togglePlay(uuid);
       auto stopState = engine.getGraphState();
-      auto *nodeDataStop = stopState.getDynamicObject()
+      auto* nodeDataStop = stopState.getDynamicObject()
                                ->getProperty("nodes")
                                .getArray()
                                ->getReference(0)
@@ -330,19 +310,8 @@ class AudioEngineTests : public juce::UnitTest {
     {
       AudioEngine engine;
 
-      // Use a block size common in audio apps
-      const int BLOCK_SIZE = 512;
-      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
-      float *ins[] = {buffer.data()};
-      float *outs[] = {buffer.data(), buffer.data()};
-
       auto process = [&](int total_samples) {
-        int remaining = total_samples;
-        while (remaining > 0) {
-          int n = std::min(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        test_utils::driveEngine(engine, total_samples);
       };
 
       // 1Q = 44100 samples
@@ -367,9 +336,9 @@ class AudioEngineTests : public juce::UnitTest {
       // 2. Create and Record Clip 2 (4 sec)
       engine.createNode("clip");
       state = engine.getGraphState();
-      auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+      auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id2;
-      for (auto &n : *nodes) {
+      for (auto& n : *nodes) {
         juce::String id = n.getDynamicObject()->getProperty("id");
         if (id != id1) id2 = id;
       }
@@ -385,7 +354,7 @@ class AudioEngineTests : public juce::UnitTest {
       state = engine.getGraphState();
       nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id3;
-      for (auto &n : *nodes) {
+      for (auto& n : *nodes) {
         juce::String id = n.getDynamicObject()->getProperty("id");
         if (id != id1 && id != id2) id3 = id;
       }
@@ -399,13 +368,13 @@ class AudioEngineTests : public juce::UnitTest {
 
       // Now the crucial moment: logic runs on next callback
       int64_t pos_before =
-          (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+          (juce::int64)engine.getGraphState().getDynamicObject()->getProperty(
               "masterPos");
 
       process(100);  // Trigger snap/wrap logic
 
       int64_t pos_after =
-          (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+          (juce::int64)engine.getGraphState().getDynamicObject()->getProperty(
               "masterPos");
 
       // Verify:
@@ -436,18 +405,8 @@ class AudioEngineTests : public juce::UnitTest {
     {
       AudioEngine engine;
 
-      const int BLOCK_SIZE = 512;
-      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
-      float *ins[] = {buffer.data()};
-      float *outs[] = {buffer.data(), buffer.data()};
-
       auto process = [&](int total_samples) {
-        int remaining = total_samples;
-        while (remaining > 0) {
-          int n = std::min(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        test_utils::driveEngine(engine, total_samples);
       };
 
       const int Q = 44100;
@@ -470,7 +429,7 @@ class AudioEngineTests : public juce::UnitTest {
       // 2. Record Clip 2 (4Q) - Exact split
       engine.createNode("clip");
       state = engine.getGraphState();
-      auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+      auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       juce::String id2 =
           (*nodes)[nodes->size() - 1].getDynamicObject()->getProperty("id");
 
@@ -498,7 +457,7 @@ class AudioEngineTests : public juce::UnitTest {
       process(50);  // Total = 3 * 44100
 
       int64_t end_pos =
-          (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+          (juce::int64)engine.getGraphState().getDynamicObject()->getProperty(
               "masterPos");
 
       // Verification:
@@ -526,18 +485,8 @@ class AudioEngineTests : public juce::UnitTest {
     {
       AudioEngine engine;
 
-      const int BLOCK_SIZE = 512;
-      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
-      float *ins[] = {buffer.data()};
-      float *outs[] = {buffer.data(), buffer.data()};
-
       auto process = [&](int total_samples) {
-        int remaining = total_samples;
-        while (remaining > 0) {
-          int n = std::min(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        test_utils::driveEngine(engine, total_samples);
       };
 
       const int Q = 44100;
@@ -556,7 +505,7 @@ class AudioEngineTests : public juce::UnitTest {
       // Create Clip 1 inside the stack
       engine.createNode("clip", stackId);
       state = engine.getGraphState();
-      auto *stackNodes = state.getDynamicObject()
+      auto* stackNodes = state.getDynamicObject()
                              ->getProperty("nodes")
                              .getArray()
                              ->getReference(0)
@@ -597,7 +546,7 @@ class AudioEngineTests : public juce::UnitTest {
       process(Q / 2);
 
       int64_t pos =
-          (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
+          (juce::int64)engine.getGraphState().getDynamicObject()->getProperty(
               "masterPos");
 
       juce::Logger::writeToLog("NESTED LCM TEST: pos=" + juce::String(pos) +
@@ -629,19 +578,9 @@ class AudioEngineTests : public juce::UnitTest {
     {
       AudioEngine engine;
 
-      const int BLOCK_SIZE = 512;
-      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
-      float *ins[] = {buffer.data()};
-      float *outs[] = {buffer.data(), buffer.data()};
-
       // Helper to process N samples through the engine
       auto process = [&](int total_samples) {
-        int remaining = total_samples;
-        while (remaining > 0) {
-          int n = std::min(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        test_utils::driveEngine(engine, total_samples);
       };
 
       // Use smaller Q for faster test (1000 samples = ~22ms at 44.1kHz)
@@ -649,23 +588,24 @@ class AudioEngineTests : public juce::UnitTest {
 
       // Get initial master pos
       auto getMasterPos = [&]() -> int64_t {
-        return (int64_t)engine.getGraphState().getDynamicObject()->getProperty(
-            "masterPos");
+        return (juce::int64)engine.getGraphState()
+            .getDynamicObject()
+            ->getProperty("masterPos");
       };
 
-      auto getClipPlayhead = [&](const juce::String &clipId) -> double {
+      auto getClipPlayhead = [&](const juce::String& clipId) -> double {
         auto state = engine.getGraphState();
-        auto *nodes = state.getDynamicObject()->getProperty("nodes").getArray();
-        for (auto &n : *nodes) {
-          auto *obj = n.getDynamicObject();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        for (auto& n : *nodes) {
+          auto* obj = n.getDynamicObject();
           if (obj->getProperty("id").toString() == clipId) {
             return (double)obj->getProperty("playhead");
           }
           // Check nested
           if (obj->hasProperty("nodes")) {
-            auto *children = obj->getProperty("nodes").getArray();
-            for (auto &c : *children) {
-              auto *cobj = c.getDynamicObject();
+            auto* children = obj->getProperty("nodes").getArray();
+            for (auto& c : *children) {
+              auto* cobj = c.getDynamicObject();
               if (cobj->getProperty("id").toString() == clipId) {
                 return (double)cobj->getProperty("playhead");
               }
@@ -688,7 +628,7 @@ class AudioEngineTests : public juce::UnitTest {
       // === CLIP 1: Record 1Q ===
       engine.createNode("clip", stackId);
       state = engine.getGraphState();
-      auto *stackNodes = state.getDynamicObject()
+      auto* stackNodes = state.getDynamicObject()
                              ->getProperty("nodes")
                              .getArray()
                              ->getReference(0)
@@ -712,9 +652,9 @@ class AudioEngineTests : public juce::UnitTest {
                        .getDynamicObject()
                        ->getProperty("nodes")
                        .getArray();
-      int64_t clip1Duration =
-          (int64_t)stackNodes->getReference(0).getDynamicObject()->getProperty(
-              "duration");
+      int64_t clip1Duration = (juce::int64)stackNodes->getReference(0)
+                                  .getDynamicObject()
+                                  ->getProperty("duration");
 
       // === CLIP 2: Start recording MID-LOOP ===
       // Current master_pos should be around 2Q (processed 1Q + 1Q)
@@ -768,23 +708,23 @@ class AudioEngineTests : public juce::UnitTest {
                        .getDynamicObject()
                        ->getProperty("nodes")
                        .getArray();
-      int64_t clip2Duration =
-          (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
-              "duration");
-      int64_t clip2LaunchPoint =
-          (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
-              "launchPoint");
-      int64_t clip2Origin =
-          (int64_t)stackNodes->getReference(1).getDynamicObject()->getProperty(
-              "origin");
+      int64_t clip2Duration = (juce::int64)stackNodes->getReference(1)
+                                  .getDynamicObject()
+                                  ->getProperty("duration");
+      int64_t clip2LaunchPoint = (juce::int64)stackNodes->getReference(1)
+                                     .getDynamicObject()
+                                     ->getProperty("launchPoint");
+      int64_t clip2Origin = (juce::int64)stackNodes->getReference(1)
+                                .getDynamicObject()
+                                ->getProperty("origin");
 
       // Launch is the projection of the ABSOLUTE origin: content[0]
       // plays at t ≡ origin (mod duration). The old launch==0
       // expectation relied on the engine transport snap, removed with
       // the monotonic transport (kernel.md step 3); the behavioral
       // guarantee is the playhead check below.
-      expectEquals((clip2LaunchPoint + clip2Origin) % clip2Duration,
-                   (int64_t)0, "launch ≡ (−origin) mod duration");
+      expectEquals((clip2LaunchPoint + clip2Origin) % clip2Duration, (int64_t)0,
+                   "launch ≡ (−origin) mod duration");
 
       // Assert playhead is close to 0% — the true user-facing invariant:
       // right after commit the clip plays from its own top.

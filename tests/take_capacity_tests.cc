@@ -13,55 +13,24 @@
 
 #include <juce_core/juce_core.h>
 
-#include <functional>
-#include <set>
 #include <vector>
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
+using test_utils::nodesOf;
+using test_utils::recordClip;
+
 namespace {
-juce::Array<juce::var>* nodesOf(const juce::var& s) {
-  return s.getProperty("nodes", juce::var()).getArray();
-}
 juce::var clipVar(AudioEngine& e, const juce::String& uuid) {
   const juce::var s = e.getGraphState();
   if (auto* n = nodesOf(s))
     for (auto& x : *n)
       if (x.getProperty("id", "").toString() == uuid) return x;
   return {};
-}
-bool clipCommitted(AudioEngine& e, const juce::String& uuid) {
-  const auto v = clipVar(e, uuid);
-  return !(bool)v.getProperty("isRecording", false) &&
-         (double)v.getProperty("duration", 0) > 0;
-}
-juce::String recordClip(AudioEngine& e, std::function<void(int)> process,
-                        int64_t lengthSamples) {
-  std::set<juce::String> before;
-  {
-    const juce::var s = e.getGraphState();
-    if (auto* n = nodesOf(s))
-      for (auto& x : *n) before.insert(x.getProperty("id", "").toString());
-  }
-  e.createNode("clip");
-  juce::String id;
-  {
-    const juce::var s = e.getGraphState();
-    if (auto* n = nodesOf(s))
-      for (auto& x : *n) {
-        auto i = x.getProperty("id", "").toString();
-        if (!before.count(i)) id = i;
-      }
-  }
-  e.startRecordingInNode(id);
-  process(100);
-  process((int)lengthSamples);
-  e.stopRecordingInNode(id);
-  for (int i = 0; i < 400 && !clipCommitted(e, id); ++i) process(512);
-  return id;
 }
 ClipNode* clipPtr(AudioEngine& e, const juce::String& uuid) {
   // White-box: tests may reach the node for capacity checks.
@@ -100,11 +69,10 @@ class TakeCapacityTests : public juce::UnitTest {
       auto c1 = recordClip(engine, process, len);
       const int64_t dur =
           (int64_t)(double)clipVar(engine, c1).getProperty("duration", 0);
-      expect(dur > (int64_t)(65.0 * 44100),
-             "committed well past the old wall");
-      expect(clipPtr(engine, c1)->contentCapacity() >=
-                 ClipNode::kMaxTakeSamples,
-             "arm-time virtual reservation in place");
+      expect(dur > (int64_t)(65.0 * 44100), "committed well past the old wall");
+      expect(
+          clipPtr(engine, c1)->contentCapacity() >= ClipNode::kMaxTakeSamples,
+          "arm-time virtual reservation in place");
 
       // Compaction: reservation returns, audio identical.
       const auto peaksBefore =
@@ -152,16 +120,16 @@ class TakeCapacityTests : public juce::UnitTest {
       auto c1 = recordClip(engine, process, 44100);
       const int64_t dur0 =
           (int64_t)(double)clipVar(engine, c1).getProperty("duration", 0);
-      engine.setLoopPoints(c1, 5000, 35000);          // provisional trim
-      auto c2 = recordClip(engine, process, 60000);   // arm collapses c1
-      engine.compactIdleTakes();                      // keep = recordedLength
+      engine.setLoopPoints(c1, 5000, 35000);         // provisional trim
+      auto c2 = recordClip(engine, process, 60000);  // arm collapses c1
+      engine.compactIdleTakes();                     // keep = recordedLength
       expectEquals(clipPtr(engine, c1)->contentCapacity(),
                    clipPtr(engine, c1)->recordedLength(),
                    "collapsed definer compacted to its FULL material");
-      engine.deleteNode(c2);                          // re-open ⟹ uncollapse
+      engine.deleteNode(c2);  // re-open ⟹ uncollapse
       expectEquals(
-          (int64_t)(double)clipVar(engine, c1).getProperty("duration", 0),
-          dur0, "uncollapse restores the full take after compaction");
+          (int64_t)(double)clipVar(engine, c1).getProperty("duration", 0), dur0,
+          "uncollapse restores the full take after compaction");
     }
   }
 };

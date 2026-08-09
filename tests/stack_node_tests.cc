@@ -39,8 +39,8 @@ class StackNodeTests : public juce::UnitTest {
         in1[i] = 0.2f;
         in2[i] = 0.3f;
       }
-      float *const inputs1[] = {in1};
-      float *const inputs2[] = {in2};
+      float* const inputs1[] = {in1};
+      float* const inputs2[] = {in2};
 
       ProcessContext recCtx;
       recCtx.num_samples = 10;
@@ -63,15 +63,15 @@ class StackNodeTests : public juce::UnitTest {
         outL[i] = 0.0f;
         outR[i] = 0.0f;
       }
-      float *const outputs[] = {outL, outR};
+      float* const outputs[] = {outL, outR};
 
       ProcessContext playCtx;
       playCtx.num_samples = 10;
       playCtx.is_playing = true;
 
       // Start playback on both children
-      static_cast<ClipNode *>(root.getChild(0))->startPlayback();
-      static_cast<ClipNode *>(root.getChild(1))->startPlayback();
+      static_cast<ClipNode*>(root.getChild(0))->startPlayback();
+      static_cast<ClipNode*>(root.getChild(1))->startPlayback();
 
       root.process(nullptr, outputs, 0, 2, playCtx);
 
@@ -91,8 +91,8 @@ class StackNodeTests : public juce::UnitTest {
       // Clip 1 peak = 1.0, Clip 2 peak = 0.5
       float in1[1] = {1.0f};
       float in2[1] = {0.5f};
-      float *const ins1[] = {in1};
-      float *const ins2[] = {in2};
+      float* const ins1[] = {in1};
+      float* const ins2[] = {in2};
       ProcessContext ctx;
       ctx.num_samples = 1;
       ctx.is_recording = true;
@@ -120,7 +120,7 @@ class StackNodeTests : public juce::UnitTest {
       root.addChild(std::move(clip));
 
       float in[1] = {0.9f};
-      float *const ins[] = {in};
+      float* const ins[] = {in};
       ProcessContext ctx;
       ctx.num_samples = 1;
       ctx.is_recording = true;
@@ -146,8 +146,8 @@ class StackNodeTests : public juce::UnitTest {
         in1[i] = 0.3f;
         in2[i] = 0.7f;
       }
-      float *const inputs1[] = {in1};
-      float *const inputs2[] = {in2};
+      float* const inputs1[] = {in1};
+      float* const inputs2[] = {in2};
 
       ProcessContext recCtx;
       recCtx.num_samples = 10;
@@ -170,7 +170,7 @@ class StackNodeTests : public juce::UnitTest {
       // Playback without solo: should sum both clips (0.3 + 0.7 = 1.0)
       float outL[10] = {0.0f};
       float outR[10] = {0.0f};
-      float *const outputs[] = {outL, outR};
+      float* const outputs[] = {outL, outR};
 
       ProcessContext playCtx;
       playCtx.num_samples = 10;
@@ -202,7 +202,7 @@ class StackNodeTests : public juce::UnitTest {
       // Record 100 samples of DC signal
       float in[100];
       for (int i = 0; i < 100; ++i) in[i] = 0.5f;
-      float *const inputs[] = {in};
+      float* const inputs[] = {in};
 
       ProcessContext recCtx;
       recCtx.num_samples = 100;
@@ -229,7 +229,7 @@ class StackNodeTests : public juce::UnitTest {
       playCtx.master_pos = 50;
 
       float outL[1] = {0.0f};
-      float *const outputs[] = {outL};
+      float* const outputs[] = {outL};
       root.process(nullptr, outputs, 0, 1, playCtx);
 
       // ClipNode should have received master_pos = 30, which maps into its
@@ -248,7 +248,7 @@ class StackNodeTests : public juce::UnitTest {
       // Record 100 samples of DC signal
       float in[100];
       for (int i = 0; i < 100; ++i) in[i] = 0.5f;
-      float *const inputs[] = {in};
+      float* const inputs[] = {in};
 
       ProcessContext recCtx;
       recCtx.num_samples = 100;
@@ -275,7 +275,7 @@ class StackNodeTests : public juce::UnitTest {
       playCtx.master_pos = 50;
 
       float outL[1] = {0.0f};
-      float *const outputs[] = {outL};
+      float* const outputs[] = {outL};
       root.process(nullptr, outputs, 0, 1, playCtx);
 
       expect(outL[0] > 0.0f,
@@ -297,7 +297,7 @@ class StackNodeTests : public juce::UnitTest {
       // Record 100 samples
       float in[100];
       for (int i = 0; i < 100; ++i) in[i] = 0.5f;
-      float *const inputs[] = {in};
+      float* const inputs[] = {in};
 
       ProcessContext recCtx;
       recCtx.num_samples = 100;
@@ -320,7 +320,7 @@ class StackNodeTests : public juce::UnitTest {
       playCtx.master_pos = 50;
 
       float outL[1] = {0.0f};
-      float *const outputs[] = {outL};
+      float* const outputs[] = {outL};
       outer.process(nullptr, outputs, 0, 1, playCtx);
 
       expect(outL[0] > 0.0f,
@@ -330,6 +330,6 @@ class StackNodeTests : public juce::UnitTest {
   }
 };
 
-static StackNodeTests boxNodeTests;
+static StackNodeTests stackNodeTests;
 
 }  // namespace celestrian

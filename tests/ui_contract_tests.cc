@@ -24,6 +24,13 @@
 #include <vector>
 
 #include "../src/audio_engine.h"
+#include "test_utils.h"
+
+using celestrian::test_utils::childDuration;
+using celestrian::test_utils::childId;
+using celestrian::test_utils::childIsRecording;
+using celestrian::test_utils::childVar;
+using celestrian::test_utils::firstNodeId;
 
 class UiContractTests : public juce::UnitTest {
  public:
@@ -38,7 +45,7 @@ class UiContractTests : public juce::UnitTest {
     AudioEngine engine;
     juce::Array<juce::var> capture;
 
-    auto poll = [&](const char *tag) {
+    auto poll = [&](const char* tag) {
       auto state = engine.getGraphState();
       state.getDynamicObject()->setProperty("_tag", tag);
       capture.add(state);
@@ -119,8 +126,7 @@ class UiContractTests : public juce::UnitTest {
                  "stop pads forward to the next boundary (no snap-down)");
     // Epoch re-bases ONLY on growth — to the newest committed origin
     const int64_t epochAfter = islandEpoch(engine);
-    expect(epochAfter != epochBefore,
-           "epoch re-bases when the cycle grows");
+    expect(epochAfter != epochBefore, "epoch re-bases when the cycle grows");
     expectEquals(epochAfter, childOrigin(engine, 1),
                  "epoch re-bases to the newest committed origin");
 
@@ -145,7 +151,7 @@ class UiContractTests : public juce::UnitTest {
     return juce::var(m.get());
   }
 
-  juce::File repoFile(const juce::String &rel) {
+  juce::File repoFile(const juce::String& rel) {
     auto dir = juce::File::getCurrentWorkingDirectory();
     for (int i = 0; i < 8; ++i) {
       if (dir.getChildFile("shared").isDirectory())
@@ -159,75 +165,39 @@ class UiContractTests : public juce::UnitTest {
         .getChildFile(rel);
   }
 
-  void processBlock(AudioEngine &engine, const float *in, int n) {
+  void processBlock(AudioEngine& engine, const float* in, int n) {
     std::vector<float> outL((size_t)n, 0.0f), outR((size_t)n, 0.0f);
-    const float *ins[] = {in};
-    float *outs[] = {outL.data(), outR.data()};
+    const float* ins[] = {in};
+    float* outs[] = {outL.data(), outR.data()};
     engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
   }
 
-  void processSilence(AudioEngine &engine, int n) {
+  void processSilence(AudioEngine& engine, int n) {
     std::vector<float> in((size_t)n, 0.0f);
     processBlock(engine, in.data(), n);
   }
 
-  double masterPosD(AudioEngine &engine) {
+  double masterPosD(AudioEngine& engine) {
     return (double)engine.getGraphState().getDynamicObject()->getProperty(
         "masterPos");
   }
 
-  int64_t islandEpoch(AudioEngine &engine) {
+  int64_t islandEpoch(AudioEngine& engine) {
     return (int64_t)(double)engine.getGraphState()
         .getDynamicObject()
         ->getProperty("islandEpoch");
   }
 
-  juce::String firstNodeId(AudioEngine &engine) {
-    return engine.getGraphState()
-        .getDynamicObject()
-        ->getProperty("nodes")
-        .getArray()
-        ->getReference(0)
-        .getDynamicObject()
-        ->getProperty("id");
-  }
-
-  juce::var childVar(AudioEngine &engine, int index) {
-    return engine.getGraphState()
-        .getDynamicObject()
-        ->getProperty("nodes")
-        .getArray()
-        ->getReference(0)
-        .getDynamicObject()
-        ->getProperty("nodes")
-        .getArray()
-        ->getReference(index);
-  }
-
-  juce::String childId(AudioEngine &engine, int index) {
-    return childVar(engine, index).getDynamicObject()->getProperty("id");
-  }
-
-  int64_t childDuration(AudioEngine &engine, int index) {
-    return (int64_t)(double)childVar(engine, index)
-        .getDynamicObject()
-        ->getProperty("duration");
-  }
-
-  int64_t childOrigin(AudioEngine &engine, int index) {
+  int64_t childOrigin(AudioEngine& engine, int index) {
     return (int64_t)(double)childVar(engine, index)
         .getDynamicObject()
         ->getProperty("origin");
   }
 
-  bool childIsRecording(AudioEngine &engine, int index) {
-    return (bool)childVar(engine, index).getDynamicObject()->getProperty(
-        "isRecording");
-  }
-
-  bool childAwaitingStop(AudioEngine &engine, int index) {
-    return (bool)childVar(engine, index).getDynamicObject()->getProperty(
-        "isAwaitingStop");
+  bool childAwaitingStop(AudioEngine& engine, int index) {
+    return (bool)childVar(engine, index)
+        .getDynamicObject()
+        ->getProperty("isAwaitingStop");
   }
 };
 

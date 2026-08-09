@@ -14,6 +14,28 @@
 #include "session_io.h"
 #include "stack_node.h"
 
+/**
+ * The engine: device callback, transport, graph ownership, edit log,
+ * and the object-lifetime reclaimer — the seam between the two threads
+ * that matter here.
+ *
+ * THREADING MODEL (docs/performance.md): every public method is MESSAGE
+ * THREAD only unless its comment says otherwise; the AUDIO thread runs
+ * exactly one entry point (audioDeviceIOCallbackWithContext), takes no
+ * locks, and never allocates. The two sides share state three ways:
+ *   - per-node atomics for continuous facts (durations, origins, mixer
+ *     knobs, effect params);
+ *   - the whole-graph snapshot for STRUCTURE — rebuilt on the message
+ *     thread after every structural edit (publishGraph), loaded once
+ *     per callback;
+ *   - the reclaimer (retire) for lifetime: anything the audio thread
+ *     might still be reading is freed only after the callback counter
+ *     has advanced two callbacks past its retirement.
+ *
+ * TESTS drive the callback manually and must never open a real device
+ * (see initialiseAudioDevice) — that discipline is what makes the whole
+ * engine deterministic under test.
+ */
 class AudioEngine : public juce::AudioIODeviceCallback,
                     public celestrian::GraphReclaimer {
  public:
@@ -35,12 +57,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /**
    * Enables recording mode for a specific clip node.
    */
-  void startRecordingInNode(const juce::String &uuid);
+  void startRecordingInNode(const juce::String& uuid);
 
   /**
    * Disables recording mode for a specific clip node.
    */
-  void stopRecordingInNode(const juce::String &uuid);
+  void stopRecordingInNode(const juce::String& uuid);
 
   // State API
   /**
@@ -51,13 +73,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /**
    * Returns peak data for the specified node.
    */
-  juce::var getWaveform(const juce::String &uuid, int num_peaks) const;
+  juce::var getWaveform(const juce::String& uuid, int num_peaks) const;
 
   // Stack Management
   /**
    * Toggles the expand/collapse state of a stack.
    */
-  void toggleStackExpand(const juce::String &uuid);
+  void toggleStackExpand(const juce::String& uuid);
 
   /**
    * Creates a new node of the specified type.
@@ -65,8 +87,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * focused_node. The node is appended to the end of the parent's children.
    * Visual positioning is handled by the frontend.
    */
-  void createNode(const juce::String &type,
-                  const juce::String &parent_uuid = "");
+  void createNode(const juce::String& type,
+                  const juce::String& parent_uuid = "");
 
   /**
    * Populates a fresh engine with the default session graph: one stack
@@ -86,32 +108,32 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /**
    * Renames a specific node.
    */
-  void renameNode(const juce::String &uuid, const juce::String &new_name);
+  void renameNode(const juce::String& uuid, const juce::String& new_name);
 
   /**
    * Reorders a node within its parent stack or moves to a new parent at the
    * specified index. Frontend calculates the index from drag position; backend
    * simply inserts at that index.
    */
-  void reorderNode(const juce::String &node_uuid,
-                   const juce::String &new_parent_uuid, int new_index);
+  void reorderNode(const juce::String& node_uuid,
+                   const juce::String& new_parent_uuid, int new_index);
 
   /**
    * Updates a node's position (for freeform positioning of top-level stacks).
    */
-  void setNodePosition(const juce::String &node_uuid, double x, double y);
+  void setNodePosition(const juce::String& node_uuid, double x, double y);
 
   /**
    * Combines two sibling-level nodes into a new stack placed at the target's
    * position (target first, then dragged). Returns the new stack's UUID, or
    * an empty string on failure. Mirrors the mock backend's combineNodes.
    */
-  juce::String combineNodes(const juce::String &dragged_uuid,
-                            const juce::String &target_uuid);
+  juce::String combineNodes(const juce::String& dragged_uuid,
+                            const juce::String& target_uuid);
 
-  void toggleSolo(const juce::String &uuid);
-  void togglePlay(const juce::String &uuid);
-  void toggleMute(const juce::String &uuid);
+  void toggleSolo(const juce::String& uuid);
+  void togglePlay(const juce::String& uuid);
+  void toggleMute(const juce::String& uuid);
 
   /**
    * Deletes a node (and its subtree) — the user-facing verb the undo
@@ -119,7 +141,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * fatal, unification_audit.md §2.2). A no-op on the root or on a node
    * that is armed/recording (cancel is that verb). Undoable.
    */
-  void deleteNode(const juce::String &uuid);
+  void deleteNode(const juce::String& uuid);
 
   // --- Undo / redo (edits-as-events, Step 1). Message thread only.
   // The undo stack holds inverse edits; redo holds forwards. Structural
@@ -132,7 +154,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
   /** TEST-ONLY: the currently published whole-graph snapshot (pins the
    * publish discipline in graph_snapshot_tests). */
-  const celestrian::GraphSnapshot *currentGraphSnapshotForTest() const {
+  const celestrian::GraphSnapshot* currentGraphSnapshotForTest() const {
     return graph_snapshot_.load();
   }
 
@@ -142,12 +164,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // root's contents in place through the existing safe child-snapshot
   // path — the root node's identity never changes, so the audio thread
   // sees no pointer race.
-  bool saveSession(const juce::String &path);
-  bool loadSession(const juce::String &path);
+  bool saveSession(const juce::String& path);
+  bool loadSession(const juce::String& path);
   /** Project-model save (docs/projects.md): options carry display name
    * / template-strip / incremental-mirror. Message thread. */
-  bool saveSessionTo(const juce::File &dir,
-                     const celestrian::session_io::SaveOptions &opts) {
+  bool saveSessionTo(const juce::File& dir,
+                     const celestrian::session_io::SaveOptions& opts) {
     return celestrian::session_io::save(*root_node, cached_sample_rate_.load(),
                                         dir, opts);
   }
@@ -166,7 +188,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * (time_maps.md). Activation is data, not view state: expansion no
    * longer affects whether the window applies.
    */
-  void toggleLoopWindow(const juce::String &uuid);
+  void toggleLoopWindow(const juce::String& uuid);
 
   /**
    * Returns a list of available hardware audio inputs.
@@ -176,26 +198,26 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /**
    * Sets the input channel index for a specific node (left / mono).
    */
-  void setNodeInput(const juce::String &uuid, int channel_index);
+  void setNodeInput(const juce::String& uuid, int channel_index);
 
   /**
    * Sets the RIGHT input of a stereo pair (−1 reverts the clip to
    * mono). The channel count of a take is fixed at arm.
    */
-  void setNodeInputRight(const juce::String &uuid, int channel_index);
+  void setNodeInputRight(const juce::String& uuid, int channel_index);
 
   /**
    * Sets a node's stereo pan/balance, −1 (hard left) .. +1 (hard
    * right). Non-undoable (mixer knob — the effect-param ruling).
    */
-  void setNodePan(const juce::String &uuid, double pan);
+  void setNodePan(const juce::String& uuid, double pan);
 
   /**
    * Sets a node's volume fader, 0 (silent) .. 1 (unity — the default;
    * attenuate-only per the pan no-boost law). Applied at the node's
    * output stage after fx. Non-undoable (mixer knob).
    */
-  void setNodeGain(const juce::String &uuid, double gain);
+  void setNodeGain(const juce::String& uuid, double gain);
 
   /**
    * The period-source knob (Q5): from_context = true makes the clip a
@@ -203,22 +225,22 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * its origin, then rests); false restores the loop (period := own
    * length). Clips only; undoable (a musical fact).
    */
-  void setPeriodSource(const juce::String &uuid, bool from_context);
+  void setPeriodSource(const juce::String& uuid, bool from_context);
 
   // Built-in effects (dsp/effects.h): enable/param edits from the UI.
   // Message thread; prepare() runs before the enable flag flips so the
   // audio thread never sees an unprepared effect.
-  void setEffectEnabled(const juce::String &uuid, const juce::String &fx,
+  void setEffectEnabled(const juce::String& uuid, const juce::String& fx,
                         bool enabled);
-  void setEffectParam(const juce::String &uuid, const juce::String &fx,
-                      const juce::String &key, double value);
+  void setEffectParam(const juce::String& uuid, const juce::String& fx,
+                      const juce::String& key, double value);
   /** Panel open/closed: gates ALL scope capture + telemetry for a node. */
-  void setEffectScope(const juce::String &uuid, bool active);
+  void setEffectScope(const juce::String& uuid, bool active);
 
   /**
    * Sets the non-destructive loop points for a specific node.
    */
-  void setLoopPoints(const juce::String &uuid, int64_t start, int64_t end);
+  void setLoopPoints(const juce::String& uuid, int64_t start, int64_t end);
 
   /**
    * Installs a multi-segment time-map on a node (time_maps.md phase 3).
@@ -226,17 +248,17 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * n ≤ 1 delegates to setLoopPoints (the single-window path, which
    * owns Q13); undoable (Edit::Segments). Message thread.
    */
-  void setSegments(const juce::String &uuid,
-                   const celestrian::timing::TimeMap &map);
+  void setSegments(const juce::String& uuid,
+                   const celestrian::timing::TimeMap& map);
 
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
-      const float *const *input_channel_data, int num_input_channels,
-      float *const *output_channel_data, int num_output_channels,
+      const float* const* input_channel_data, int num_input_channels,
+      float* const* output_channel_data, int num_output_channels,
       int num_samples,
-      const juce::AudioIODeviceCallbackContext &context) override;
+      const juce::AudioIODeviceCallbackContext& context) override;
 
-  void audioDeviceAboutToStart(juce::AudioIODevice *device) override;
+  void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
   void audioDeviceStopped() override;
 
   // --- Latency Calibration (see docs/performance.md §7) ---
@@ -262,7 +284,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * Overrides where calibration persistence is stored (tests). Defaults to
    * <user app data>/Celestrian/calibration.json.
    */
-  void setCalibrationFile(const juce::File &file);
+  void setCalibrationFile(const juce::File& file);
 
   // --- Audio device selection (docs/performance.md §4) ---
   /**
@@ -289,15 +311,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * buffer means "keep whatever the device prefers". Returns "" on
    * success, else a human-readable error. Message thread only.
    */
-  juce::String setAudioDevice(const juce::String &type,
-                              const juce::String &device, double sample_rate,
+  juce::String setAudioDevice(const juce::String& type,
+                              const juce::String& device, double sample_rate,
                               int buffer_size);
 
   /**
    * Overrides where the device selection is persisted (tests). Defaults to
    * <user app data>/Celestrian/audio_device.xml.
    */
-  void setAudioDeviceFile(const juce::File &file);
+  void setAudioDeviceFile(const juce::File& file);
 
   /**
    * GraphReclaimer: defers destruction of graph objects (child snapshots,
@@ -313,8 +335,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void flushGraveyard();
   void init(int inputs, int outputs);
-  celestrian::AudioNode *findNodeByUuid(celestrian::AudioNode *node,
-                                        const juce::String &uuid);
+  celestrian::AudioNode* findNodeByUuid(celestrian::AudioNode* node,
+                                        const juce::String& uuid);
 
   // --- Edits-as-events plumbing (message thread) ---
   /**
@@ -327,14 +349,30 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   celestrian::Edit applyEditImpl(celestrian::Edit e);
   /** Apply `forward`, push its inverse to the undo stack, clear redo. */
   void record(celestrian::Edit forward);
+  /** Push an inverse onto the undo stack, enforcing kUndoDepth (evicted
+   * entries retire any owned subtree) and invalidating the redo branch.
+   * The tail shared by record() and combineNodes(). */
+  void pushUndo(celestrian::Edit&& inverse);
+  /** retire() an owned object with type intact: the graveyard's deleter
+   * runs after the 2-callback grace like every other retirement. */
+  template <typename T>
+  void retireOwned(T* owned) {
+    if (owned != nullptr) {
+      retire([owned] { delete owned; });
+    }
+  }
+  template <typename T>
+  void retireOwned(std::unique_ptr<T> owned) {
+    retireOwned(owned.release());
+  }
   /** The parent stack of `node` and its index within it (nullptr/−1 if
    * top-level unknown). */
-  celestrian::StackNode *parentOf(celestrian::AudioNode *node,
-                                  int *index_out) const;
+  celestrian::StackNode* parentOf(celestrian::AudioNode* node,
+                                  int* index_out) const;
   /** Frees any subtree an about-to-be-dropped edit owns via the reclaimer
    * (never inline — an in-flight callback may still read a just-detached
    * node). */
-  void retireEdit(celestrian::Edit &&e);
+  void retireEdit(celestrian::Edit&& e);
   void clearRedo();
   /** Empties both undo and redo, retiring any owned subtrees (load and
    * teardown discard history). */
@@ -363,7 +401,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::unique_ptr<celestrian::StackNode> root_node;
 
   // Navigation focus (no stack needed for single-level editing)
-  celestrian::AudioNode *focused_node = nullptr;
+  celestrian::AudioNode* focused_node = nullptr;
 
   // Global Transport (kernel.md step 3): MONOTONIC. The clock only moves
   // forward while playing and is NEVER reset or rebased — not by
@@ -393,14 +431,27 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // … and the resolved pointer the audio thread actually uses. Cleared /
   // re-resolved on toggleSolo; nodes are never freed while a callback might
   // read them (see retire()).
-  std::atomic<celestrian::AudioNode *> soloed_node_ptr_{nullptr};
+  std::atomic<celestrian::AudioNode*> soloed_node_ptr_{nullptr};
 
   // Device latencies, cached in audioDeviceAboutToStart so the callback
   // never queries the device object per block.
+  /** Assumed rate before any device reports one (fresh engine, unit
+   * tests). One constant for every "no device yet" path — the effect
+   * prepare fallback, the VU ballistics fallback, and the cache init
+   * below must agree, or pre-device DSP state is built at one rate and
+   * interpreted at another. */
+  static constexpr double kFallbackSampleRate = 44100.0;
+
   std::atomic<int> cached_input_latency_{0};
   std::atomic<int> cached_output_latency_{0};
-  std::atomic<double> cached_sample_rate_{44100.0};
+  std::atomic<double> cached_sample_rate_{kFallbackSampleRate};
   std::atomic<int> cached_block_size_{512};
+
+  /** Attaches the transport/undo/VU/perf properties every getGraphState
+   * shape carries (focused-node and empty-fallback branches must publish
+   * the same set — this is the one place it is defined). */
+  void attachTransportState(juce::DynamicObject& state, double master_view,
+                            double island_view) const;
 
   // --- Callback instrumentation (docs/performance.md §6) ---
   /** Builds the "perf" object attached to every getGraphState result. */
@@ -454,6 +505,36 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // The measured value is only valid for the device configuration it was
   // measured on, so it is stored keyed by name|sampleRate|bufferSize and
   // restored (or reset) whenever a device starts.
+  /** `<user app data>/Celestrian/<file_name>`, unless a test override is
+   * set — the shared shape of every per-user persistence file. */
+  static juce::File appDataFile(const juce::File& override_file,
+                                const juce::String& file_name);
+  /** The coherence predicate (owner ruling 2026-08-09) shared by
+   * setLoopPoints and setSegments: a map/window period may only be a
+   * whole multiple OR an exact divisor of Q (lcm(Q, Q/k) = Q, so sub-Q
+   * loops can never explode the effective cycle). False for
+   * non-positive periods; q <= 0 (no grid yet) counts as coherent. */
+  static bool isPeriodCoherentWithQuantum(int64_t period, int64_t quantum);
+  /** TWO-ANCHOR CONTINUITY riders (see the continuityOrigin note in
+   * audio_engine.cc), shared by setLoopPoints and setSegments: re-anchor
+   * the clip's origin so the sounding sample keeps sounding, and — when
+   * the delta is a whole multiple of `quantum` — ride the island epoch
+   * by the same delta so the edited clip's frame position is unchanged.
+   * `quantum` is supplied by the caller because the two paths
+   * historically judge the delta against different scopes (setLoopPoints
+   * against the root's Q, setSegments against the TARGET's effective Q —
+   * these differ for clips inside combine-created stacks that carry
+   * their own quantum). Attaches setsOrigin/setsIsland to `e`; no-op
+   * when the origin doesn't move. */
+  void attachContinuityRiders(celestrian::Edit& e,
+                              const celestrian::ClipNode& clip,
+                              const celestrian::timing::TimeMap& new_map,
+                              int64_t quantum);
+  /** prepare() a node's rack at the device rate (falling back to
+   * kFallbackSampleRate before any device has started) — the
+   * prepare-BEFORE-enable ordering every effect mutation must follow. */
+  void prepareEffects(celestrian::AudioNode& node) const;
+
   juce::File calibrationFile() const;
   void persistCalibration(int64_t samples);
   void restoreCalibrationForCurrentDevice();
@@ -485,7 +566,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // thread after every structural mutation (publishGraph), loaded ONCE
   // per callback into ProcessContext.snap. Superseded snapshots retire
   // through the reclaimer like any graph object.
-  std::atomic<const celestrian::GraphSnapshot *> graph_snapshot_{nullptr};
+  std::atomic<const celestrian::GraphSnapshot*> graph_snapshot_{nullptr};
   /** Rebuild + atomically publish the snapshot from the current
    * ownership tree; retires the predecessor. Message thread, after any
    * structural change (applyEdit does this for structural kinds). */

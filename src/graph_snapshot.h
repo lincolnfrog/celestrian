@@ -40,7 +40,7 @@ namespace celestrian {
 
 struct GraphSnapshot {
   struct Entry {
-    AudioNode *node = nullptr;
+    AudioNode* node = nullptr;
     NodeType type = NodeType::Unknown;  // cached: no virtual on audio thread
     int parent = -1;                    // entry index; -1 at the root
     int childBegin = 0;                 // span into child_indices
@@ -57,16 +57,16 @@ struct GraphSnapshot {
 /** Build a snapshot of the CURRENT ownership tree. Message thread only
  * (reads StackNode::ownedChildren, allocates). The caller owns the
  * result and retires superseded snapshots through the reclaimer. */
-inline GraphSnapshot *buildGraphSnapshot(AudioNode &root) {
-  auto *snap = new GraphSnapshot();
+inline GraphSnapshot* buildGraphSnapshot(AudioNode& root) {
+  auto* snap = new GraphSnapshot();
   // Recursive lambda via explicit stack-free structure: simple DFS.
   struct Builder {
-    GraphSnapshot &s;
-    int visit(AudioNode &n, int parentIdx) {
+    GraphSnapshot& s;
+    int visit(AudioNode& n, int parentIdx) {
       const int idx = (int)s.entries.size();
       s.entries.push_back({&n, n.getNodeType(), parentIdx, 0, 0});
       if (n.getNodeType() == NodeType::Stack) {
-        auto &stack = static_cast<StackNode &>(n);
+        auto& stack = static_cast<StackNode&>(n);
         // Two passes: children spans must be contiguous in
         // child_indices, but child subtrees interleave — so reserve the
         // span first, then fill as subtrees are visited.
@@ -91,8 +91,8 @@ inline GraphSnapshot *buildGraphSnapshot(AudioNode &root) {
  * stacks: LCM of children — recording.md "Nested Stacks and Composite
  * Duration"). The snapshot-space twin of the node virtuals, safe on the
  * audio thread. */
-inline int64_t snapIntrinsicDuration(const GraphSnapshot &s, int idx) {
-  const auto &e = s.entries[(size_t)idx];
+inline int64_t snapIntrinsicDuration(const GraphSnapshot& s, int idx) {
+  const auto& e = s.entries[(size_t)idx];
   if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
   int64_t composite = 0;
   for (int k = 0; k < e.childCount; ++k) {
@@ -102,8 +102,7 @@ inline int64_t snapIntrinsicDuration(const GraphSnapshot &s, int idx) {
     // it — a composite stays honestly periodic in the fold of its
     // LOOPING content (I1).
     if (s.entries[(size_t)child].node->periodFromContext()) continue;
-    const int64_t d = snapIntrinsicDuration(s, child);
-    if (d > 0) composite = composite == 0 ? d : timing::lcm(composite, d);
+    composite = timing::foldPeriod(composite, snapIntrinsicDuration(s, child));
   }
   return composite;
 }
@@ -111,8 +110,8 @@ inline int64_t snapIntrinsicDuration(const GraphSnapshot &s, int idx) {
 /** Effective (audible, E-C) period of the subtree at `idx`: an ACTIVE
  * window wins at any level; otherwise clips contribute their duration
  * and stacks the LCM of children's effective periods. */
-inline int64_t snapEffectivePeriod(const GraphSnapshot &s, int idx) {
-  const auto &e = s.entries[(size_t)idx];
+inline int64_t snapEffectivePeriod(const GraphSnapshot& s, int idx) {
+  const auto& e = s.entries[(size_t)idx];
   if (const timing::TimeMap map = e.node->activeTimeMap(); map.active()) {
     return map.period();
   }
@@ -121,15 +120,14 @@ inline int64_t snapEffectivePeriod(const GraphSnapshot &s, int idx) {
   for (int k = 0; k < e.childCount; ++k) {
     const int child = s.childAt(idx, k);
     if (s.entries[(size_t)child].node->periodFromContext()) continue;  // Q5
-    const int64_t p = snapEffectivePeriod(s, child);
-    if (p > 0) composite = composite == 0 ? p : timing::lcm(composite, p);
+    composite = timing::foldPeriod(composite, snapEffectivePeriod(s, child));
   }
   return composite;
 }
 
 /** The audible island cycle the transport wraps on (E-C):
  * lcm(quantum, effective period of the root). */
-inline int64_t snapEffectiveCycle(const GraphSnapshot &s, int64_t quantum,
+inline int64_t snapEffectiveCycle(const GraphSnapshot& s, int64_t quantum,
                                   int64_t fallback) {
   if (quantum <= 0) quantum = fallback;
   const int64_t p = snapEffectivePeriod(s, 0);
@@ -138,8 +136,8 @@ inline int64_t snapEffectiveCycle(const GraphSnapshot &s, int64_t quantum,
 
 /** Solo audibility: is the entry (or any ancestor) the soloed node?
  * Index walk — replaces the audio-thread parent-pointer chain. */
-inline bool snapIsUnderSolo(const GraphSnapshot &s, int idx,
-                            const AudioNode *solo) {
+inline bool snapIsUnderSolo(const GraphSnapshot& s, int idx,
+                            const AudioNode* solo) {
   for (int i = idx; i >= 0; i = s.entries[(size_t)i].parent) {
     if (s.entries[(size_t)i].node == solo) return true;
   }

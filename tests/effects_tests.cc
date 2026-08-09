@@ -32,8 +32,8 @@ class EffectsTests : public juce::UnitTest {
   static float sineRms(double freq, double sr, int n, Fn&& fn) {
     std::vector<float> x((size_t)n);
     for (int i = 0; i < n; ++i) {
-      x[(size_t)i] =
-          (float)std::sin(2.0 * juce::MathConstants<double>::pi * freq * i / sr);
+      x[(size_t)i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi *
+                                     freq * i / sr);
     }
     fn(x.data(), n);
     double acc = 0.0;
@@ -50,8 +50,8 @@ class EffectsTests : public juce::UnitTest {
       dsp::FxEQ eq;
       eq.prepare(sr);
       // Flat EQ ≈ identity
-      const float flat = sineRms(1000.0, sr, 8192,
-                                 [&](float* x, int n) { eq.process(x, n); });
+      const float flat =
+          sineRms(1000.0, sr, 8192, [&](float* x, int n) { eq.process(x, n); });
       expectWithinAbsoluteError(flat, 0.707f, 0.02f, "flat EQ passes through");
 
       // +12 dB low shelf: a 60 Hz sine gains ~4×
@@ -59,15 +59,15 @@ class EffectsTests : public juce::UnitTest {
       eq.markDirty();
       eq.prepare(sr);  // reset state between measurements
       eq.markDirty();
-      const float low = sineRms(60.0, sr, 16384,
-                                [&](float* x, int n) { eq.process(x, n); });
+      const float low =
+          sineRms(60.0, sr, 16384, [&](float* x, int n) { eq.process(x, n); });
       expectGreaterThan(low, 0.707f * 3.0f, "low shelf boosts 60 Hz");
 
       // …while 6 kHz is nearly untouched by the low shelf
       eq.prepare(sr);
       eq.markDirty();
-      const float hi = sineRms(6000.0, sr, 8192,
-                               [&](float* x, int n) { eq.process(x, n); });
+      const float hi =
+          sineRms(6000.0, sr, 8192, [&](float* x, int n) { eq.process(x, n); });
       expectWithinAbsoluteError(hi, 0.707f, 0.05f,
                                 "low shelf leaves highs alone");
     }
@@ -97,8 +97,8 @@ class EffectsTests : public juce::UnitTest {
       gentle.threshold_db.store(-6.0f);
       std::vector<float> q(8192, 0.1f);  // −20 dB DC-ish signal
       gentle.process(q.data(), (int)q.size());
-      expectWithinAbsoluteError(peakOf(q, q.size() / 2, q.size()), 0.1f,
-                                0.005f, "below threshold passes through");
+      expectWithinAbsoluteError(peakOf(q, q.size() / 2, q.size()), 0.1f, 0.005f,
+                                "below threshold passes through");
     }
 
     beginTest("Echo: delayed copies at time·sr, scaled by mix then feedback");
@@ -148,8 +148,8 @@ class EffectsTests : public juce::UnitTest {
       expect(!rack.setParam("echo", "flutter", 1.0), "unknown param rejected");
       // Makeup is an output trim: cuts allowed, clamped at −12
       expect(rack.setParam("compressor", "makeup", -6.0));
-      expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -6.0f,
-                                0.001f, "negative makeup accepted");
+      expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -6.0f, 0.001f,
+                                "negative makeup accepted");
       rack.setParam("compressor", "makeup", -40.0);
       expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -12.0f,
                                 0.001f, "makeup clamps at −12");
@@ -204,8 +204,8 @@ class EffectsTests : public juce::UnitTest {
                         "pre-rack peak published");
       // 0 dBFS into thr −20/ratio 4 → ~15 dB of reduction
       const double gr = (double)scope.getProperty("gr", 0.0);
-      expect(gr > 8.0 && gr < 22.0, "gain reduction ~15 dB, got " +
-                                        juce::String(gr));
+      expect(gr > 8.0 && gr < 22.0,
+             "gain reduction ~15 dB, got " + juce::String(gr));
     }
 
     beginTest("Clip playback runs its rack (echo audible in the output)");

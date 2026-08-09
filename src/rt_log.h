@@ -26,12 +26,12 @@ class RtLog {
   static constexpr int kSlots = 256;
   static constexpr int kMsgLen = 160;
 
-  static RtLog &instance() {
+  static RtLog& instance() {
     static RtLog log;
     return log;
   }
 
-  void post(const char *fmt, ...) {
+  void post(const char* fmt, ...) {
     char msg[kMsgLen];
     va_list args;
     va_start(args, fmt);

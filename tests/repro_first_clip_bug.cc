@@ -2,6 +2,7 @@
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
 
@@ -15,18 +16,8 @@ class FirstClipBugTests : public juce::UnitTest {
       AudioEngine engine;  // New engine (starts fresh)
 
       // Helper to process audio
-      const int BLOCK_SIZE = 512;
-      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
-      float* ins[] = {buffer.data()};
-      float* outs[] = {buffer.data(), buffer.data()};
-
       auto process = [&](int total_samples) {
-        int remaining = total_samples;
-        while (remaining > 0) {
-          int n = std::min(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        test_utils::driveEngine(engine, total_samples);
       };
 
       // 1. Create a single clip node
@@ -62,14 +53,15 @@ class FirstClipBugTests : public juce::UnitTest {
 
       state = engine.getGraphState();
       int64_t masterPos =
-          (int64_t)state.getDynamicObject()->getProperty("masterPos");
+          (juce::int64)state.getDynamicObject()->getProperty("masterPos");
 
       auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
       int64_t loopStart =
-          (int64_t)nodes->getReference(0).getDynamicObject()->getProperty(
+          (juce::int64)nodes->getReference(0).getDynamicObject()->getProperty(
               "loopStart");
       int64_t loopEnd =
-          nodes->getReference(0).getDynamicObject()->getProperty("loopEnd");
+          (juce::int64)nodes->getReference(0).getDynamicObject()->getProperty(
+              "loopEnd");
 
       juce::Logger::writeToLog("REPRO TEST: Post-Commit MasterPos = " +
                                juce::String(masterPos));
@@ -94,18 +86,8 @@ class FirstClipBugTests : public juce::UnitTest {
     beginTest("Repro: Short First Clip (< Q) Snap");
     {
       AudioEngine engine;
-      const int BLOCK_SIZE = 512;
-      std::vector<float> buffer(BLOCK_SIZE, 0.0f);
-      float* ins[] = {buffer.data()};
-      float* outs[] = {buffer.data(), buffer.data()};
-
       auto process = [&](int total_samples) {
-        int remaining = total_samples;
-        while (remaining > 0) {
-          int n = std::min(remaining, BLOCK_SIZE);
-          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
-          remaining -= n;
-        }
+        test_utils::driveEngine(engine, total_samples);
       };
 
       engine.createNode("clip");
@@ -128,7 +110,7 @@ class FirstClipBugTests : public juce::UnitTest {
 
       state = engine.getGraphState();
       int64_t masterPos =
-          (int64_t)state.getDynamicObject()->getProperty("masterPos");
+          (juce::int64)state.getDynamicObject()->getProperty("masterPos");
 
       juce::Logger::writeToLog("SHORT REPRO: MasterPos=" +
                                juce::String(masterPos));

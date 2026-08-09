@@ -1,8 +1,8 @@
 #include "audio_engine.h"
 
-#include <cmath>
-
 #include <juce_audio_basics/juce_audio_basics.h>
+
+#include <cmath>
 
 #include "clip_node.h"
 #include "rt_log.h"
@@ -34,14 +34,14 @@ void AudioEngine::compactIdleTakes() {
   // more callbacks — Step 3 lifetime discipline). Armed/recording
   // clips are never touched; keep = recordedLength (not duration!) so
   // a lock-collapsed definer keeps its dead air for uncollapse.
-  const std::function<void(celestrian::StackNode &)> visit =
-      [&](celestrian::StackNode &stack) {
-        for (const auto &child : stack.ownedChildren()) {
+  const std::function<void(celestrian::StackNode&)> visit =
+      [&](celestrian::StackNode& stack) {
+        for (const auto& child : stack.ownedChildren()) {
           if (child->getNodeType() == celestrian::NodeType::Stack) {
-            visit(static_cast<celestrian::StackNode &>(*child));
+            visit(static_cast<celestrian::StackNode&>(*child));
             continue;
           }
-          auto &clip = static_cast<celestrian::ClipNode &>(*child);
+          auto& clip = static_cast<celestrian::ClipNode&>(*child);
           if (clip.isArmedOrRecording()) continue;
           // Through-map takes store a dense [0, C) buffer with the
           // content folded past the heard length — keep the full
@@ -51,8 +51,7 @@ void AudioEngine::compactIdleTakes() {
                (int64_t)clip.getSampleRate()});
           // Compact only when the win is real (≥ ~4 MB of samples).
           if (clip.contentCapacity() - keep < (int64_t{1} << 20)) continue;
-          const int chans =
-              std::max(1, clip.getAudioBuffer().getNumChannels());
+          const int chans = std::max(1, clip.getAudioBuffer().getNumChannels());
           auto fresh =
               std::make_unique<juce::AudioBuffer<float>>(chans, (int)keep);
           for (int c = 0; c < chans; ++c) {
@@ -60,21 +59,20 @@ void AudioEngine::compactIdleTakes() {
                             (int)std::min<int64_t>(
                                 keep, clip.getAudioBuffer().getNumSamples()));
           }
-          juce::AudioBuffer<float> *old = clip.swapContent(std::move(fresh));
-          retire([old] { delete old; });
+          retireOwned(clip.swapContent(std::move(fresh)));
         }
       };
   visit(*root_node);
 }
 
 void AudioEngine::publishGraph() {
-  const auto *fresh = celestrian::buildGraphSnapshot(*root_node);
-  const auto *old = graph_snapshot_.exchange(fresh, std::memory_order_acq_rel);
+  const auto* fresh = celestrian::buildGraphSnapshot(*root_node);
+  const auto* old = graph_snapshot_.exchange(fresh, std::memory_order_acq_rel);
   // Publish-then-retire: an in-flight callback may still traverse the
   // old snapshot; the reclaimer's 2-callback grace covers it. (Nodes a
   // structural edit removed are retired by their own paths AFTER this
   // publish, so the old snapshot never outlives its referents.)
-  if (old) retire([old] { delete old; });
+  retireOwned(old);
 }
 
 void AudioEngine::initialiseAudioDevice() { init(1, 2); }
@@ -82,7 +80,7 @@ void AudioEngine::initialiseAudioDevice() { init(1, 2); }
 void AudioEngine::createDefaultSession() {
   // Create a default stack with one clip ready for recording
   createNode("stack");
-  if (auto *stack = dynamic_cast<celestrian::StackNode *>(focused_node)) {
+  if (auto* stack = dynamic_cast<celestrian::StackNode*>(focused_node)) {
     if (stack->getNumChildren() > 0) {
       juce::String stack_uuid = stack->getChild(0)->getUuid();
       createNode("clip", stack_uuid);
@@ -108,7 +106,7 @@ void AudioEngine::retire(std::function<void()> deleter) {
     // Reap: an item retired at epoch E is unreachable once the callback
     // counter has advanced by 2 — every callback that could have loaded the
     // old snapshot has completed by then.
-    auto still_pending = [now](const RetiredItem &item) {
+    auto still_pending = [now](const RetiredItem& item) {
       return item.epoch + 2 > now;
     };
     auto it =
@@ -117,7 +115,7 @@ void AudioEngine::retire(std::function<void()> deleter) {
       ready.push_back(std::move(i->free));
     graveyard_.erase(it, graveyard_.end());
   }
-  for (auto &free_fn : ready) free_fn();
+  for (auto& free_fn : ready) free_fn();
 }
 
 int64_t AudioEngine::islandEpoch() const { return root_node->getEpoch(); }
@@ -128,7 +126,7 @@ void AudioEngine::flushGraveyard() {
     std::lock_guard<std::mutex> lock(graveyard_mutex_);
     pending.swap(graveyard_);
   }
-  for (auto &item : pending) item.free();
+  for (auto& item : pending) item.free();
 }
 
 void AudioEngine::init(int inputs, int outputs) {
@@ -171,7 +169,7 @@ void AudioEngine::init(int inputs, int outputs) {
 
   enableAllInputChannels();
 
-  if (auto *device = device_manager.getCurrentAudioDevice()) {
+  if (auto* device = device_manager.getCurrentAudioDevice()) {
     juce::Logger::writeToLog(
         "AudioEngine: Initialized on '" + device->getName() + "' (" +
         device_manager.getCurrentAudioDeviceType() + ") with " +
@@ -186,7 +184,7 @@ void AudioEngine::init(int inputs, int outputs) {
 }
 
 void AudioEngine::enableAllInputChannels() {
-  auto *device = device_manager.getCurrentAudioDevice();
+  auto* device = device_manager.getCurrentAudioDevice();
   if (device == nullptr) return;
 
   const int available = device->getInputChannelNames().size();
@@ -201,14 +199,14 @@ void AudioEngine::enableAllInputChannels() {
   setup.useDefaultInputChannels = false;  // else the mask is ignored
   auto err = device_manager.setAudioDeviceSetup(setup, true);
   if (err.isNotEmpty()) {
-    juce::Logger::writeToLog(
-        "AudioEngine: could not enable all " + juce::String(available) +
-        " input channels: " + err);
+    juce::Logger::writeToLog("AudioEngine: could not enable all " +
+                             juce::String(available) +
+                             " input channels: " + err);
   }
 }
 
-celestrian::AudioNode *AudioEngine::findNodeByUuid(celestrian::AudioNode *node,
-                                                   const juce::String &uuid) {
+celestrian::AudioNode* AudioEngine::findNodeByUuid(celestrian::AudioNode* node,
+                                                   const juce::String& uuid) {
   return node ? node->findByUuid(uuid) : nullptr;
 }
 
@@ -226,24 +224,23 @@ using celestrian::Edit;
 // Continuous drags (Position) collapse into ONE undo step: when the new
 // inverse targets the same node/kind as the top of the stack, the older
 // inverse already restores further back, so the new one is dropped.
-bool editsCoalesce(const Edit &top, const Edit &fresh) {
+bool editsCoalesce(const Edit& top, const Edit& fresh) {
   if (top.kind != fresh.kind || top.uuid != fresh.uuid) return false;
   // Position drags and LIVE map-edit drags (seam slides stream
   // throttled setSegments commits so the splice is AUDIBLE while
   // dragging — time_maps.md, field 2026-07-23c) both flood; keep the
   // oldest inverse so one gesture is one undo step.
-  return top.kind == Edit::Kind::Position ||
-         top.kind == Edit::Kind::Segments;
+  return top.kind == Edit::Kind::Position || top.kind == Edit::Kind::Segments;
 }
 }  // namespace
 
-celestrian::StackNode *AudioEngine::parentOf(celestrian::AudioNode *node,
-                                             int *index_out) const {
+celestrian::StackNode* AudioEngine::parentOf(celestrian::AudioNode* node,
+                                             int* index_out) const {
   if (index_out) *index_out = -1;
   if (!node) return nullptr;
-  auto *parent = dynamic_cast<celestrian::StackNode *>(node->getParent());
+  auto* parent = dynamic_cast<celestrian::StackNode*>(node->getParent());
   if (!parent) return nullptr;
-  const auto &kids = parent->ownedChildren();  // message thread
+  const auto& kids = parent->ownedChildren();  // message thread
   for (int i = 0; i < (int)kids.size(); ++i) {
     if (kids[i].get() == node) {
       if (index_out) *index_out = i;
@@ -254,25 +251,25 @@ celestrian::StackNode *AudioEngine::parentOf(celestrian::AudioNode *node,
 }
 
 namespace {
-int countCommittedClips(const celestrian::AudioNode *node) {
+int countCommittedClips(const celestrian::AudioNode* node) {
   if (node->getNodeType() == celestrian::NodeType::Clip)
     return node->getIntrinsicDuration() > 0 ? 1 : 0;
-  const auto *stack = static_cast<const celestrian::StackNode *>(node);
+  const auto* stack = static_cast<const celestrian::StackNode*>(node);
   int n = 0;
-  for (const auto &child : stack->ownedChildren())
+  for (const auto& child : stack->ownedChildren())
     n += countCommittedClips(child.get());
   return n;
 }
 
-celestrian::ClipNode *firstCommittedClip(celestrian::AudioNode *node) {
+celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
   if (node->getNodeType() == celestrian::NodeType::Clip) {
     return node->getIntrinsicDuration() > 0
-               ? static_cast<celestrian::ClipNode *>(node)
+               ? static_cast<celestrian::ClipNode*>(node)
                : nullptr;
   }
-  auto *stack = static_cast<celestrian::StackNode *>(node);
-  for (const auto &child : stack->ownedChildren()) {
-    if (auto *c = firstCommittedClip(child.get())) return c;
+  auto* stack = static_cast<celestrian::StackNode*>(node);
+  for (const auto& child : stack->ownedChildren()) {
+    if (auto* c = firstCommittedClip(child.get())) return c;
   }
   return nullptr;
 }
@@ -309,12 +306,12 @@ celestrian::ClipNode *firstCommittedClip(celestrian::AudioNode *node) {
 // full-span form. The Q13 sole-definer riders keep their own
 // field-hardened algebra (island re-establish included) and win when
 // they apply.
-int64_t continuityOrigin(const celestrian::ClipNode &clip,
-                         const celestrian::timing::TimeMap &new_map,
+int64_t continuityOrigin(const celestrian::ClipNode& clip,
+                         const celestrian::timing::TimeMap& new_map,
                          int64_t t0) {
   using TimeMap = celestrian::timing::TimeMap;
   const int64_t dur = clip.getIntrinsicDuration();
-  auto effective = [dur](const TimeMap &m) {
+  auto effective = [dur](const TimeMap& m) {
     return m.active() ? m : TimeMap::single(0, dur);
   };
   const TimeMap oldm = effective(clip.activeTimeMap());
@@ -328,6 +325,29 @@ int64_t continuityOrigin(const celestrian::ClipNode &clip,
   return t0 - newm.mapOffset(0) - h_new;
 }
 }  // namespace
+
+bool AudioEngine::isPeriodCoherentWithQuantum(int64_t period, int64_t quantum) {
+  if (period <= 0) return false;
+  if (quantum <= 0) return true;  // no grid yet — nothing to cohere with
+  return period % quantum == 0 || quantum % period == 0;
+}
+
+void AudioEngine::attachContinuityRiders(
+    celestrian::Edit& e, const celestrian::ClipNode& clip,
+    const celestrian::timing::TimeMap& new_map, int64_t quantum) {
+  const int64_t origin = clip.origin_samples.load();
+  const int64_t origin_new =
+      continuityOrigin(clip, new_map, global_transport_pos.load());
+  if (origin_new == origin) return;
+  e.setsOrigin = true;
+  e.iorg = origin_new;
+  const int64_t delta = origin_new - origin;
+  if (quantum > 0 && delta % quantum == 0) {
+    e.setsIsland = true;
+    e.iq = quantum;  // Q unchanged — only the fold anchor moves
+    e.iepoch = root_node->getIslandEpoch() + delta;
+  }
+}
 
 int AudioEngine::islandCommittedClipCount() const {
   return root_node ? countCommittedClips(root_node.get()) : 0;
@@ -352,16 +372,16 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
   using celestrian::AudioNode;
   using celestrian::StackNode;
   using K = Edit::Kind;
-  auto find = [&](const juce::String &u) {
+  auto find = [&](const juce::String& u) {
     return findNodeByUuid(root_node.get(), u);
   };
-  auto asStack = [&](const juce::String &u) {
-    return dynamic_cast<StackNode *>(find(u));
+  auto asStack = [&](const juce::String& u) {
+    return dynamic_cast<StackNode*>(find(u));
   };
 
   switch (e.kind) {
     case K::Insert: {
-      auto *parent = asStack(e.parentUuid);
+      auto* parent = asStack(e.parentUuid);
       if (!parent || !e.node) return {};
       const juce::String uid = e.node->getUuid();
       const bool restoreIsland = e.setsIsland;
@@ -376,7 +396,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // it was. Same derivation as the forward CollapseTake; redo's
       // Remove re-derives the uncollapse, so no payload rides back.
       if (e.uuid2.isNotEmpty()) {
-        if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+        if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
                 findNodeByUuid(root_node.get(), e.uuid2))) {
           const int64_t dur = clip->getIntrinsicDuration();
           const int64_t ls = clip->getLoopStart();
@@ -391,11 +411,11 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Remove: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node || node == root_node.get()) return {};
       if (node->isArmedOrRecording()) return {};  // cancel is the verb
       int idx = -1;
-      auto *parent = parentOf(node, &idx);
+      auto* parent = parentOf(node, &idx);
       if (!parent || idx < 0) return {};
       Edit inv(K::Insert);
       inv.parentUuid = parent->getUuid();
@@ -422,7 +442,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // inverse Insert carries uuid2 so undo re-collapses with the
       // re-inserted take; redo re-derives the uncollapse right here.
       if (islandCommittedClipCount() == 1) {
-        if (auto *survivor = firstCommittedClip(root_node.get());
+        if (auto* survivor = firstCommittedClip(root_node.get());
             survivor &&
             survivor->getWritePosition() > survivor->getIntrinsicDuration()) {
           survivor->uncollapseFromWindow(survivor->getContentBase(),
@@ -433,11 +453,11 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Move: {
-      auto *node = find(e.uuid);
-      auto *newParent = asStack(e.parentUuid);
+      auto* node = find(e.uuid);
+      auto* newParent = asStack(e.parentUuid);
       if (!node || !newParent) return {};
       int oldIdx = -1;
-      auto *oldParent = parentOf(node, &oldIdx);
+      auto* oldParent = parentOf(node, &oldIdx);
       if (!oldParent || oldIdx < 0) return {};
       auto owned = oldParent->removeChild(oldIdx);
       newParent->insertChildAt(std::move(owned), e.index);
@@ -448,22 +468,22 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Combine: {
-      auto *dragged = find(e.uuid);
-      auto *target = find(e.uuid2);
+      auto* dragged = find(e.uuid);
+      auto* target = find(e.uuid2);
       if (!dragged || !target || dragged == target) return {};
       int draggedIdx = -1, targetIdx = -1;
-      auto *draggedParent = parentOf(dragged, &draggedIdx);
-      auto *targetParent = parentOf(target, &targetIdx);
+      auto* draggedParent = parentOf(dragged, &draggedIdx);
+      auto* targetParent = parentOf(target, &targetIdx);
       if (!draggedParent || !targetParent) return {};
       auto draggedOwned = draggedParent->removeChild(draggedIdx);
       // Target index may have shifted if it shared a parent with dragged.
       int tIdx = -1;
-      auto *tParent = parentOf(target, &tIdx);
+      auto* tParent = parentOf(target, &tIdx);
       auto targetOwned = tParent->removeChild(tIdx);
       auto newStack = std::make_unique<StackNode>("Combined Stack");
       newStack->x_pos.store(targetOwned->x_pos.load());
       newStack->y_pos.store(targetOwned->y_pos.load());
-      newStack->addChild(std::move(targetOwned));  // target first (index 0)
+      newStack->addChild(std::move(targetOwned));   // target first (index 0)
       newStack->addChild(std::move(draggedOwned));  // dragged second (index 1)
       const juce::String newUuid = newStack->getUuid();
       tParent->insertChildAt(std::move(newStack), tIdx);
@@ -476,14 +496,14 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Explode: {
-      auto *stack = asStack(e.uuid);
+      auto* stack = asStack(e.uuid);
       if (!stack || stack->getNumChildren() != 2) return {};
       auto child0 = stack->removeChild(0);  // target
       auto child1 = stack->removeChild(0);  // dragged (now at 0)
       const juce::String draggedUuid = child1->getUuid();
       const juce::String targetUuid = child0->getUuid();
-      auto *tParent = asStack(e.parentUuid);
-      auto *dParent = asStack(e.parentUuid2);
+      auto* tParent = asStack(e.parentUuid);
+      auto* dParent = asStack(e.parentUuid2);
       if (!tParent || !dParent) return {};
       // Reinsert in ascending index order so a shared parent reproduces
       // the exact original arrangement (inserting the lower slot first).
@@ -498,11 +518,9 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // Remove the now-empty combined stack; retire it — an in-flight
       // callback may still traverse it via the outgoing graph snapshot.
       int stackIdx = -1;
-      if (auto *stackParent = parentOf(stack, &stackIdx); stackParent &&
-                                                          stackIdx >= 0) {
-        auto owned = stackParent->removeChild(stackIdx);
-        celestrian::AudioNode *n = owned.release();
-        retire([n] { delete n; });
+      if (auto* stackParent = parentOf(stack, &stackIdx);
+          stackParent && stackIdx >= 0) {
+        retireOwned(stackParent->removeChild(stackIdx));
       }
       Edit inv(K::Combine);
       inv.uuid = draggedUuid;
@@ -510,7 +528,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Rename: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::Rename);
       inv.uuid = e.uuid;
@@ -519,7 +537,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Mute: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::Mute);
       inv.uuid = e.uuid;
@@ -528,7 +546,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::PeriodSource: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::PeriodSource);
       inv.uuid = e.uuid;
@@ -537,7 +555,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::LoopPoints: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::LoopPoints);
       inv.uuid = e.uuid;
@@ -546,17 +564,17 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // Phase 3: an explicit single-window edit SUPERSEDES a
       // multi-segment override; the inverse carries the removed map
       // back (setsMap) so undo restores it.
-      if (const auto *old = node->exchangeMapOverride(nullptr)) {
+      if (const auto* old = node->exchangeMapOverride(nullptr)) {
         inv.setsMap = true;
         inv.tmap = *old;
-        retire([old] { delete old; });
+        retireOwned(old);
       }
       node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
       if (e.setsMap && e.tmap.n >= 2) {
         // Undo path: reinstall the override this edit had removed.
-        const auto *fresh = new celestrian::timing::TimeMap(e.tmap);
-        if (const auto *prev = node->exchangeMapOverride(fresh)) {
-          retire([prev] { delete prev; });
+        const auto* fresh = new celestrian::timing::TimeMap(e.tmap);
+        if (const auto* prev = node->exchangeMapOverride(fresh)) {
+          retireOwned(prev);
         }
       }
       // Q13 re-trim: if the forward edit carries an island re-establishment
@@ -586,7 +604,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // its own window top = the epoch, window consumed). (Q, epoch)
       // do not move: the collapse lands the clip exactly on the grid
       // the trim already established.
-      auto *clip = dynamic_cast<celestrian::ClipNode *>(
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(
           findNodeByUuid(root_node.get(), e.uuid));
       if (!clip) return {};
       Edit inv(K::CollapseTake);
@@ -596,7 +614,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // the kept cells become the take; the inverse owns the
         // pre-splice buffer + map + facts (write-once safety, the
         // owned-subtree argument).
-        if (const auto *m = clip->mapOverride()) {
+        if (const auto* m = clip->mapOverride()) {
           inv.b1 = true;
           inv.setsMap = true;
           inv.tmap = *m;
@@ -605,8 +623,8 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           inv.d1 = (double)clip->getContentBase();
           inv.d2 = (double)clip->recordedLength();
           inv.buffer = clip->spliceToMap(*m);
-          if (const auto *old = clip->exchangeMapOverride(nullptr)) {
-            retire([old] { delete old; });
+          if (const auto* old = clip->exchangeMapOverride(nullptr)) {
+            retireOwned(old);
           }
           return inv;
         }
@@ -623,16 +641,11 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       } else if (e.setsMap) {
         // Un-splice: reinstall the pre-splice buffer + facts, retire
         // the displaced spliced buffer, and put the map back.
-        auto displaced = clip->unspliceFromMap(
-            std::move(e.buffer), e.iq, e.iepoch, (int64_t)e.d1,
-            (int64_t)e.d2);
-        if (displaced) {
-          juce::AudioBuffer<float> *raw = displaced.release();
-          retire([raw] { delete raw; });
-        }
-        const auto *fresh = new celestrian::timing::TimeMap(e.tmap);
-        if (const auto *prev = clip->exchangeMapOverride(fresh)) {
-          retire([prev] { delete prev; });
+        retireOwned(clip->unspliceFromMap(std::move(e.buffer), e.iq, e.iepoch,
+                                          (int64_t)e.d1, (int64_t)e.d2));
+        const auto* fresh = new celestrian::timing::TimeMap(e.tmap);
+        if (const auto* prev = clip->exchangeMapOverride(fresh)) {
+          retireOwned(prev);
         }
         // Inverse of the inverse: the parameterless forward re-derives
         // (the override is present again).
@@ -643,7 +656,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::LoopBypass: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::LoopBypass);
       inv.uuid = e.uuid;
@@ -659,25 +672,25 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // both. The inverse captures the RAW old storage — never
       // activeTimeMap(), which reads empty under bypass and would
       // lose a bypassed node's geometry on undo.
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::Segments);
       inv.uuid = e.uuid;
       inv.setsMap = true;
-      if (const auto *old = node->mapOverride()) {
+      if (const auto* old = node->mapOverride()) {
         inv.tmap = *old;
       } else {
         inv.tmap = celestrian::timing::TimeMap::single(node->getLoopStart(),
                                                        node->getLoopEnd());
       }
       if (e.tmap.n >= 2) {
-        const auto *fresh = new celestrian::timing::TimeMap(e.tmap);
-        if (const auto *old = node->exchangeMapOverride(fresh)) {
-          retire([old] { delete old; });
+        const auto* fresh = new celestrian::timing::TimeMap(e.tmap);
+        if (const auto* old = node->exchangeMapOverride(fresh)) {
+          retireOwned(old);
         }
       } else {
-        if (const auto *old = node->exchangeMapOverride(nullptr)) {
-          retire([old] { delete old; });
+        if (const auto* old = node->exchangeMapOverride(nullptr)) {
+          retireOwned(old);
         }
         if (e.tmap.n == 1) {
           node->setLoopPoints(e.tmap.segs[0].start, e.tmap.segs[0].end);
@@ -702,7 +715,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Input: {
-      auto *clip = dynamic_cast<celestrian::ClipNode *>(find(e.uuid));
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
       if (!clip) return {};
       Edit inv(K::Input);
       inv.uuid = e.uuid;
@@ -711,7 +724,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::InputR: {
-      auto *clip = dynamic_cast<celestrian::ClipNode *>(find(e.uuid));
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
       if (!clip) return {};
       Edit inv(K::InputR);
       inv.uuid = e.uuid;
@@ -720,7 +733,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::Position: {
-      auto *node = find(e.uuid);
+      auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::Position);
       inv.uuid = e.uuid;
@@ -736,32 +749,32 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
   return {};
 }
 
-void AudioEngine::retireEdit(celestrian::Edit &&e) {
+void AudioEngine::retireEdit(celestrian::Edit&& e) {
   // Never free a detached subtree inline — an in-flight callback may read
   // it for ≤2 more callbacks. Hand it to the same graveyard the graph
   // mutations use.
-  if (e.buffer) {
-    juce::AudioBuffer<float> *b = e.buffer.release();
-    retire([b] { delete b; });
-  }
-  if (e.node) {
-    celestrian::AudioNode *n = e.node.release();
-    retire([n] { delete n; });
-  }
-  if (e.node2) {
-    celestrian::AudioNode *n = e.node2.release();
-    retire([n] { delete n; });
-  }
+  retireOwned(std::move(e.buffer));
+  retireOwned(std::move(e.node));
+  retireOwned(std::move(e.node2));
 }
 
 void AudioEngine::clearRedo() {
-  for (auto &e : redo_) retireEdit(std::move(e));
+  for (auto& e : redo_) retireEdit(std::move(e));
   redo_.clear();
 }
 
 void AudioEngine::clearHistory() {
-  for (auto &e : undo_) retireEdit(std::move(e));
+  for (auto& e : undo_) retireEdit(std::move(e));
   undo_.clear();
+  clearRedo();
+}
+
+void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
+  undo_.push_back(std::move(inverse));
+  while (undo_.size() > kUndoDepth) {
+    retireEdit(std::move(undo_.front()));
+    undo_.erase(undo_.begin());
+  }
   clearRedo();
 }
 
@@ -772,12 +785,7 @@ void AudioEngine::record(celestrian::Edit forward) {
     clearRedo();  // a fresh user action still invalidates the redo branch
     return;       // keep the older inverse (restores further back)
   }
-  undo_.push_back(std::move(inv));
-  while (undo_.size() > kUndoDepth) {
-    retireEdit(std::move(undo_.front()));
-    undo_.erase(undo_.begin());
-  }
-  clearRedo();
+  pushUndo(std::move(inv));
 }
 
 void AudioEngine::undo() {
@@ -796,24 +804,24 @@ void AudioEngine::redo() {
   if (inv.kind != celestrian::Edit::Kind::Nop) undo_.push_back(std::move(inv));
 }
 
-void AudioEngine::deleteNode(const juce::String &uuid) {
+void AudioEngine::deleteNode(const juce::String& uuid) {
   celestrian::Edit e(celestrian::Edit::Kind::Remove);
   e.uuid = uuid;
   record(std::move(e));
 }
 
-bool AudioEngine::saveSession(const juce::String &path) {
+bool AudioEngine::saveSession(const juce::String& path) {
   return celestrian::session_io::save(*root_node, cached_sample_rate_.load(),
                                       juce::File(path));
 }
 
-bool AudioEngine::loadSession(const juce::String &path) {
+bool AudioEngine::loadSession(const juce::String& path) {
   // Refuse mid-take: an in-flight capture is TRANSIENT, not saved, and
   // tearing the graph out from under it would corrupt the buffer.
   if (root_node->hasActiveTake()) return false;
 
-  auto loaded =
-      celestrian::session_io::load(juce::File(path), cached_sample_rate_.load());
+  auto loaded = celestrian::session_io::load(juce::File(path),
+                                             cached_sample_rate_.load());
   if (!loaded.ok) return false;
 
   // Swap the root's CONTENTS in place: root_node's identity never
@@ -825,13 +833,11 @@ bool AudioEngine::loadSession(const juce::String &path) {
   // still traverse the old graph snapshot for ≤2 callbacks after the
   // publish below.
   {
-    auto removed = root_node->clearChildren();
-    for (auto &node : removed) {
-      celestrian::AudioNode *n = node.release();
-      retire([n] { delete n; });
+    for (auto& node : root_node->clearChildren()) {
+      retireOwned(std::move(node));
     }
   }
-  for (auto &child : loaded.children) root_node->addChild(std::move(child));
+  for (auto& child : loaded.children) root_node->addChild(std::move(child));
 
   // Force the island facts. addChild may have transiently re-established
   // (Q, epoch) from the first committed clip using the CLIP's origin as
@@ -851,7 +857,7 @@ bool AudioEngine::loadSession(const juce::String &path) {
   return true;
 }
 
-void AudioEngine::startRecordingInNode(const juce::String &uuid) {
+void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   juce::Logger::writeToLog("AudioEngine: start_recording requested for " +
                            uuid);
 
@@ -862,7 +868,7 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
         "AudioEngine: Auto-starting transport for recording.");
   }
 
-  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
           findNodeByUuid(root_node.get(), uuid))) {
     juce::Logger::writeToLog("AudioEngine: Found clip, starting recording.");
 
@@ -875,7 +881,7 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
     // take 2 anchored at origin − epoch = 56298 ∉ Q·Z. Undoable —
     // ⌘Z restores the full buffer and the trim.
     if (islandCommittedClipCount() == 1) {
-      if (auto *definer = firstCommittedClip(root_node.get());
+      if (auto* definer = firstCommittedClip(root_node.get());
           definer && definer->getUuid() != uuid &&
           definer->isLoopWindowActive()) {
         celestrian::Edit e(celestrian::Edit::Kind::CollapseTake);
@@ -893,8 +899,8 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
     int64_t through_map_cycle = 0;
     {
       int active_maps = 0;
-      celestrian::AudioNode *mapping = nullptr;
-      for (auto *a = clip->getParent(); a != nullptr; a = a->getParent()) {
+      celestrian::AudioNode* mapping = nullptr;
+      for (auto* a = clip->getParent(); a != nullptr; a = a->getParent()) {
         if (a->activeTimeMap().active()) {
           ++active_maps;
           if (mapping == nullptr) mapping = a;  // nearest wins
@@ -910,8 +916,7 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
       }
       if (mapping != nullptr && root_node->getQuantum() > 0) {
         const int64_t period = mapping->activeTimeMap().period();
-        const int64_t C =
-            std::max(mapping->getIntrinsicDuration(), period);
+        const int64_t C = std::max(mapping->getIntrinsicDuration(), period);
         if (C > celestrian::ClipNode::kMaxTakeSamples / 2) {
           juce::Logger::writeToLog(
               "AudioEngine: record refused — the mapped cycle is too "
@@ -933,9 +938,9 @@ void AudioEngine::startRecordingInNode(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::stopRecordingInNode(const juce::String &uuid) {
+void AudioEngine::stopRecordingInNode(const juce::String& uuid) {
   juce::Logger::writeToLog("AudioEngine: stop_recording requested for " + uuid);
-  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
           findNodeByUuid(root_node.get(), uuid))) {
     clip->stopRecording();
   }
@@ -978,51 +983,48 @@ juce::var AudioEngine::getGraphState() const {
 
   if (focused_node) {
     auto metadata = focused_node->getMetadata();
-    auto *obj = metadata.getDynamicObject();
-    obj->setProperty("isPlaying", (bool)is_playing_global.load());
-    obj->setProperty("masterPos", master_view);
-    obj->setProperty("islandPos", island_view);
-    // The island epoch is the UI's frame origin for every cycle-relative
-    // projection (kernel.md one-frame rule). It is NOT the root node's
-    // `origin` metadata — commit re-bases the epoch (see processBlock),
-    // and the UI marking take-vs-ghost tiles needs the re-based value.
-    obj->setProperty("islandEpoch", (double)islandEpoch());
+    auto* obj = metadata.getDynamicObject();
+    attachTransportState(*obj, master_view, island_view);
     // NOTE: the focused stack's metadata already carries `quantum` (its
     // stored island Q, stack_node.cc) — the VM reads it as the top-level
     // Q fact instead of re-deriving min-over-nodes (P0-3 completion).
-    obj->setProperty("soloedId", soloed_node_uuid);
     obj->setProperty("focusedId", focused_node->getUuid());
-    // Master monitor: smoothed output RMS per channel (linear 0..1) —
-    // the transport VU section reads these off the state poll.
-    obj->setProperty("masterVuL", (double)master_vu_l_.load());
-    obj->setProperty("masterVuR", (double)master_vu_r_.load());
-    obj->setProperty("canUndo", canUndo());
-    obj->setProperty("canRedo", canRedo());
-    obj->setProperty("perf", makePerfState());
     return metadata;
   }
 
   juce::DynamicObject::Ptr state = new juce::DynamicObject();
-  state->setProperty("isPlaying", (bool)is_playing_global.load());
-  state->setProperty("masterPos", master_view);
-  state->setProperty("islandPos", island_view);
-  state->setProperty("islandEpoch", (double)islandEpoch());
+  attachTransportState(*state, master_view, island_view);
   state->setProperty("quantum",
                      (double)(root_node ? root_node->getQuantum() : 0));
-  state->setProperty("soloedId", soloed_node_uuid);
-  state->setProperty("masterVuL", (double)master_vu_l_.load());
-  state->setProperty("masterVuR", (double)master_vu_r_.load());
-  state->setProperty("canUndo", canUndo());
-  state->setProperty("canRedo", canRedo());
   state->setProperty("nodes", juce::Array<juce::var>());
-  state->setProperty("perf", makePerfState());
   return juce::var(state.get());
 }
 
-juce::var AudioEngine::getWaveform(const juce::String &uuid,
+void AudioEngine::attachTransportState(juce::DynamicObject& state,
+                                       double master_view,
+                                       double island_view) const {
+  state.setProperty("isPlaying", (bool)is_playing_global.load());
+  state.setProperty("masterPos", master_view);
+  state.setProperty("islandPos", island_view);
+  // The island epoch is the UI's frame origin for every cycle-relative
+  // projection (kernel.md one-frame rule). It is NOT the root node's
+  // `origin` metadata — commit re-bases the epoch (see processBlock),
+  // and the UI marking take-vs-ghost tiles needs the re-based value.
+  state.setProperty("islandEpoch", (double)islandEpoch());
+  state.setProperty("soloedId", soloed_node_uuid);
+  // Master monitor: smoothed output RMS per channel (linear 0..1) —
+  // the transport VU section reads these off the state poll.
+  state.setProperty("masterVuL", (double)master_vu_l_.load());
+  state.setProperty("masterVuR", (double)master_vu_r_.load());
+  state.setProperty("canUndo", canUndo());
+  state.setProperty("canRedo", canRedo());
+  state.setProperty("perf", makePerfState());
+}
+
+juce::var AudioEngine::getWaveform(const juce::String& uuid,
                                    int num_peaks) const {
-  auto *self = const_cast<AudioEngine *>(this);
-  if (auto *node = self->findNodeByUuid(root_node.get(), uuid)) {
+  auto* self = const_cast<AudioEngine*>(this);
+  if (auto* node = self->findNodeByUuid(root_node.get(), uuid)) {
     return node->getWaveform(num_peaks);
   }
   return juce::Array<juce::var>();
@@ -1030,8 +1032,8 @@ juce::var AudioEngine::getWaveform(const juce::String &uuid,
 
 // --- Stack Expand/Collapse ---
 
-void AudioEngine::toggleStackExpand(const juce::String &uuid) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+void AudioEngine::toggleStackExpand(const juce::String& uuid) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     bool currentState = node->is_expanded.load();
     bool newState = !currentState;
     node->is_expanded.store(newState);
@@ -1044,18 +1046,18 @@ void AudioEngine::toggleStackExpand(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::createNode(const juce::String &type,
-                             const juce::String &parent_uuid) {
+void AudioEngine::createNode(const juce::String& type,
+                             const juce::String& parent_uuid) {
   // Find target parent stack
-  celestrian::StackNode *target_stack = nullptr;
+  celestrian::StackNode* target_stack = nullptr;
 
   if (!parent_uuid.isEmpty()) {
     // Use specified parent
-    auto *parent_node = findNodeByUuid(root_node.get(), parent_uuid);
-    target_stack = dynamic_cast<celestrian::StackNode *>(parent_node);
+    auto* parent_node = findNodeByUuid(root_node.get(), parent_uuid);
+    target_stack = dynamic_cast<celestrian::StackNode*>(parent_node);
   } else {
     // Default to focused_node
-    target_stack = dynamic_cast<celestrian::StackNode *>(focused_node);
+    target_stack = dynamic_cast<celestrian::StackNode*>(focused_node);
   }
 
   if (!target_stack) {
@@ -1086,16 +1088,16 @@ void AudioEngine::createNode(const juce::String &type,
   record(std::move(e));
 }
 
-void AudioEngine::renameNode(const juce::String &uuid,
-                             const juce::String &new_name) {
+void AudioEngine::renameNode(const juce::String& uuid,
+                             const juce::String& new_name) {
   celestrian::Edit e(celestrian::Edit::Kind::Rename);
   e.uuid = uuid;
   e.s1 = new_name;
   record(std::move(e));
 }
 
-void AudioEngine::reorderNode(const juce::String &node_uuid,
-                              const juce::String &new_parent_uuid,
+void AudioEngine::reorderNode(const juce::String& node_uuid,
+                              const juce::String& new_parent_uuid,
                               int new_index) {
   // Routed through the edit log (Move): the detach/insert dance and its
   // exact-inverse (back to the old parent/index) live in applyEdit.
@@ -1106,8 +1108,8 @@ void AudioEngine::reorderNode(const juce::String &node_uuid,
   record(std::move(e));
 }
 
-juce::String AudioEngine::combineNodes(const juce::String &dragged_uuid,
-                                       const juce::String &target_uuid) {
+juce::String AudioEngine::combineNodes(const juce::String& dragged_uuid,
+                                       const juce::String& target_uuid) {
   // The whole combine (detach both, build the stack target-first, insert
   // at the target's slot) lives in applyEdit(Combine); its inverse is an
   // Explode that restores each child to its original parent/index. We
@@ -1119,18 +1121,13 @@ juce::String AudioEngine::combineNodes(const juce::String &dragged_uuid,
   celestrian::Edit inv = applyEdit(std::move(e));
   if (inv.kind == celestrian::Edit::Kind::Nop) return {};
   const juce::String new_uuid = inv.uuid;  // Explode carries the new stack
-  undo_.push_back(std::move(inv));
-  while (undo_.size() > kUndoDepth) {
-    retireEdit(std::move(undo_.front()));
-    undo_.erase(undo_.begin());
-  }
-  clearRedo();
+  pushUndo(std::move(inv));
   juce::Logger::writeToLog("combineNodes: Combined " + dragged_uuid + " + " +
                            target_uuid + " into stack " + new_uuid);
   return new_uuid;
 }
 
-void AudioEngine::setNodePosition(const juce::String &node_uuid, double x,
+void AudioEngine::setNodePosition(const juce::String& node_uuid, double x,
                                   double y) {
   // Position drags coalesce into a single undo step (editsCoalesce).
   celestrian::Edit e(celestrian::Edit::Kind::Position);
@@ -1142,7 +1139,7 @@ void AudioEngine::setNodePosition(const juce::String &node_uuid, double x,
 
 juce::var AudioEngine::getInputList() const {
   juce::Array<juce::var> names;
-  if (auto *device = device_manager.getCurrentAudioDevice()) {
+  if (auto* device = device_manager.getCurrentAudioDevice()) {
     auto inputNames = device->getInputChannelNames();
     const auto active = device->getActiveInputChannels();
     // Only ACTIVE channels, in active order: the callback's
@@ -1153,10 +1150,10 @@ juce::var AudioEngine::getInputList() const {
     for (int i = 0; i < inputNames.size(); ++i) {
       if (active[i]) names.add(inputNames[i]);
     }
-    juce::Logger::writeToLog(
-        "AudioEngine: Found " + juce::String(names.size()) + " active of " +
-        juce::String(inputNames.size()) + " input channels on '" +
-        device->getName() + "'.");
+    juce::Logger::writeToLog("AudioEngine: Found " +
+                             juce::String(names.size()) + " active of " +
+                             juce::String(inputNames.size()) +
+                             " input channels on '" + device->getName() + "'.");
   }
   juce::DynamicObject::Ptr obj = new juce::DynamicObject();
   obj->setProperty("inputs", names);
@@ -1170,11 +1167,11 @@ juce::var AudioEngine::getAudioDeviceState() const {
 
   // const_cast: every accessor used here is logically const, but
   // AudioDeviceManager does not mark them so.
-  auto &mgr = const_cast<juce::AudioDeviceManager &>(device_manager);
+  auto& mgr = const_cast<juce::AudioDeviceManager&>(device_manager);
 
   juce::Array<juce::var> types;
   bool asio_available = false;
-  for (auto *type : mgr.getAvailableDeviceTypes()) {
+  for (auto* type : mgr.getAvailableDeviceTypes()) {
     types.add(type->getTypeName());
     if (type->getTypeName().containsIgnoreCase("ASIO")) asio_available = true;
   }
@@ -1183,20 +1180,21 @@ juce::var AudioEngine::getAudioDeviceState() const {
   obj->setProperty("asioAvailable", asio_available);
 
   juce::Array<juce::var> devices;
-  if (auto *type = mgr.getCurrentDeviceTypeObject()) {
+  if (auto* type = mgr.getCurrentDeviceTypeObject()) {
     type->scanForDevices();  // hot-plug: the picker is opened on demand
-    for (const auto &name : type->getDeviceNames(false)) devices.add(name);
+    for (const auto& name : type->getDeviceNames(false)) devices.add(name);
   }
   obj->setProperty("devices", devices);
 
   juce::Array<juce::var> rates, buffers;
-  auto *device = mgr.getCurrentAudioDevice();
+  auto* device = mgr.getCurrentAudioDevice();
   if (device != nullptr) {
     obj->setProperty("currentDevice", device->getName());
     for (double r : device->getAvailableSampleRates()) rates.add(r);
     for (int b : device->getAvailableBufferSizes()) buffers.add(b);
     obj->setProperty("currentSampleRate", device->getCurrentSampleRate());
-    obj->setProperty("currentBufferSize", device->getCurrentBufferSizeSamples());
+    obj->setProperty("currentBufferSize",
+                     device->getCurrentBufferSizeSamples());
     obj->setProperty("inputChannels",
                      device->getActiveInputChannels().countNumberOfSetBits());
     obj->setProperty("outputChannels",
@@ -1219,8 +1217,8 @@ juce::var AudioEngine::getAudioDeviceState() const {
   return juce::var(obj.get());
 }
 
-juce::String AudioEngine::setAudioDevice(const juce::String &type,
-                                         const juce::String &device,
+juce::String AudioEngine::setAudioDevice(const juce::String& type,
+                                         const juce::String& device,
                                          double sample_rate, int buffer_size) {
   // Switching driver type first: the device list is scoped to the type, so
   // a name from the new type is meaningless until the type is current.
@@ -1237,7 +1235,7 @@ juce::String AudioEngine::setAudioDevice(const juce::String &type,
   // behind, and forcing a stale rate onto new hardware just fails the open.
   if (sample_rate > 0) setup.sampleRate = sample_rate;
   if (buffer_size > 0) setup.bufferSize = buffer_size;
-  setup.useDefaultInputChannels = true;   // negotiate first…
+  setup.useDefaultInputChannels = true;  // negotiate first…
   setup.useDefaultOutputChannels = true;
 
   device_error_ = device_manager.setAudioDeviceSetup(setup, true);
@@ -1250,11 +1248,11 @@ juce::String AudioEngine::setAudioDevice(const juce::String &type,
   enableAllInputChannels();  // …then widen to every channel it has
   persistAudioDevice();
 
-  if (auto *opened = device_manager.getCurrentAudioDevice()) {
+  if (auto* opened = device_manager.getCurrentAudioDevice()) {
     juce::Logger::writeToLog(
         "AudioEngine: device set to '" + opened->getName() + "' (" +
-        device_manager.getCurrentAudioDeviceType() + ") sr=" +
-        juce::String(opened->getCurrentSampleRate()) + " block=" +
+        device_manager.getCurrentAudioDeviceType() +
+        ") sr=" + juce::String(opened->getCurrentSampleRate()) + " block=" +
         juce::String(opened->getCurrentBufferSizeSamples()) + " inputs=" +
         juce::String(opened->getActiveInputChannels().countNumberOfSetBits()));
   }
@@ -1262,16 +1260,10 @@ juce::String AudioEngine::setAudioDevice(const juce::String &type,
 }
 
 juce::File AudioEngine::audioDeviceFile() const {
-  if (audio_device_file_override_ != juce::File()) {
-    return audio_device_file_override_;
-  }
-  return juce::File::getSpecialLocation(
-             juce::File::userApplicationDataDirectory)
-      .getChildFile("Celestrian")
-      .getChildFile("audio_device.xml");
+  return appDataFile(audio_device_file_override_, "audio_device.xml");
 }
 
-void AudioEngine::setAudioDeviceFile(const juce::File &file) {
+void AudioEngine::setAudioDeviceFile(const juce::File& file) {
   audio_device_file_override_ = file;
 }
 
@@ -1293,14 +1285,14 @@ void AudioEngine::persistAudioDevice() {
   }
 }
 
-void AudioEngine::setNodeInput(const juce::String &uuid, int channel_index) {
+void AudioEngine::setNodeInput(const juce::String& uuid, int channel_index) {
   celestrian::Edit e(celestrian::Edit::Kind::Input);
   e.uuid = uuid;
   e.d1 = (double)channel_index;
   record(std::move(e));
 }
 
-void AudioEngine::setNodeInputRight(const juce::String &uuid,
+void AudioEngine::setNodeInputRight(const juce::String& uuid,
                                     int channel_index) {
   celestrian::Edit e(celestrian::Edit::Kind::InputR);
   e.uuid = uuid;
@@ -1308,30 +1300,34 @@ void AudioEngine::setNodeInputRight(const juce::String &uuid,
   record(std::move(e));
 }
 
-void AudioEngine::setNodePan(const juce::String &uuid, double pan) {
+void AudioEngine::setNodePan(const juce::String& uuid, double pan) {
   // A mixer knob, not an edit event: non-undoable by the same ruling as
   // effect params (dial drags would flood the undo log).
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     node->pan.store((float)juce::jlimit(-1.0, 1.0, pan));
   }
 }
 
-void AudioEngine::setNodeGain(const juce::String &uuid, double gain) {
+void AudioEngine::setNodeGain(const juce::String& uuid, double gain) {
   // A mixer knob like pan: non-undoable, clamped to [0, 1] (unity is
   // the ceiling — the no-boost law).
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     node->gain.store((float)juce::jlimit(0.0, 1.0, gain));
   }
 }
 
-void AudioEngine::setEffectEnabled(const juce::String &uuid,
-                                   const juce::String &fx, bool enabled) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+void AudioEngine::prepareEffects(celestrian::AudioNode& node) const {
+  double sample_rate = cached_sample_rate_.load();
+  if (sample_rate <= 0) sample_rate = kFallbackSampleRate;
+  node.effects().prepare(sample_rate);
+}
+
+void AudioEngine::setEffectEnabled(const juce::String& uuid,
+                                   const juce::String& fx, bool enabled) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     // Prepare BEFORE the flag flips: the audio thread must never see an
     // enabled effect whose buffers aren't allocated. Idempotent per rate.
-    double sr = cached_sample_rate_.load();
-    if (sr <= 0) sr = 44100.0;
-    node->effects().prepare(sr);
+    prepareEffects(*node);
     if (node->effects().setEnabled(fx, enabled)) {
       juce::Logger::writeToLog("AudioEngine: effect " + fx + " on " + uuid +
                                (enabled ? " ENABLED" : " DISABLED"));
@@ -1339,28 +1335,26 @@ void AudioEngine::setEffectEnabled(const juce::String &uuid,
   }
 }
 
-void AudioEngine::setEffectParam(const juce::String &uuid,
-                                 const juce::String &fx,
-                                 const juce::String &key, double value) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+void AudioEngine::setEffectParam(const juce::String& uuid,
+                                 const juce::String& fx,
+                                 const juce::String& key, double value) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     node->effects().setParam(fx, key, value);
   }
 }
 
-void AudioEngine::setEffectScope(const juce::String &uuid, bool active) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+void AudioEngine::setEffectScope(const juce::String& uuid, bool active) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     if (active) {
       // The scope can open before any slot is enabled — prepare so the
       // ring exists when the audio thread starts capturing
-      double sr = cached_sample_rate_.load();
-      if (sr <= 0) sr = 44100.0;
-      node->effects().prepare(sr);
+      prepareEffects(*node);
     }
     node->effects().setScopeActive(active);
   }
 }
 
-void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
+void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
                                 int64_t end) {
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
                            " start=" + juce::String(start) +
@@ -1371,7 +1365,7 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   // change time under the recorder. Refuse until the take commits.
   // Sibling windows stay editable (they don't shape this recorder's
   // clock; their heard-cycle effect was snapshotted at arm).
-  if (auto *target = findNodeByUuid(root_node.get(), uuid);
+  if (auto* target = findNodeByUuid(root_node.get(), uuid);
       target && target->getNodeType() == celestrian::NodeType::Stack &&
       target->isArmedOrRecording()) {
     juce::Logger::writeToLog(
@@ -1387,22 +1381,19 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   // the window length *re-establishes* Q rather than fighting it.
   // Lengths are checked post-clamp (the same clamp the clip branch
   // applies), so the judged window is the one that would be stored.
-  if (auto *target = findNodeByUuid(root_node.get(), uuid)) {
+  if (auto* target = findNodeByUuid(root_node.get(), uuid)) {
     const int64_t c_start = std::max((int64_t)0, start);
     int64_t c_end = end;
-    auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
+    auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
     if (clip != nullptr) c_end = std::min(end, clip->getIntrinsicDuration());
-    const bool q13_retrim =
-        clip != nullptr && c_end > c_start &&
-        clip->getIntrinsicDuration() > 0 &&
-        islandCommittedClipCount() == 1 && !root_node->hasActiveTake();
+    const bool q13_retrim = clip != nullptr && c_end > c_start &&
+                            clip->getIntrinsicDuration() > 0 &&
+                            islandCommittedClipCount() == 1 &&
+                            !root_node->hasActiveTake();
     const int64_t q = target->getEffectiveQuantum();
     const int64_t len = c_end - c_start;
-    // Coherent = a whole multiple of Q, or an exact divisor of it
-    // (sub-Q loops are first-class — SUBDIVISIONS commits at Q/2 etc.
-    // — and lcm(Q, Q/k) = Q, so they can never explode the cycle).
-    const bool coherent = len > 0 && (len % q == 0 || q % len == 0);
-    if (!q13_retrim && q > 0 && len > 0 && !coherent) {
+    if (!q13_retrim && q > 0 && len > 0 &&
+        !isPeriodCoherentWithQuantum(len, q)) {
       juce::Logger::writeToLog(
           "AudioEngine::setLoopPoints refused — window length " +
           juce::String(len) + " is neither a whole multiple nor an " +
@@ -1424,7 +1415,7 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
   // (exactly one committed clip); once a 2nd take commits, count ≥ 2 and
   // this no longer fires — Q is locked (derived). The re-establishment
   // rides the LoopPoints edit so it undoes atomically with the window.
-  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
           findNodeByUuid(root_node.get(), uuid))) {
     // A clip window selects recorded material — clamp to the buffer. A
     // fractional-Q drag rounded past the take's end once produced a
@@ -1457,8 +1448,8 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
       const int64_t len = end - start;
       const int64_t p0 =
           oldLen > 0
-              ? oldStart + (((t0 - oldOrg - oldStart) % oldLen) + oldLen) %
-                               oldLen
+              ? oldStart +
+                    (((t0 - oldOrg - oldStart) % oldLen) + oldLen) % oldLen
               : start;
       const int64_t pT = start + (((p0 - start) % len) + len) % len;
       e.setsOrigin = true;
@@ -1469,34 +1460,19 @@ void AudioEngine::setLoopPoints(const juce::String &uuid, int64_t start,
     } else if (clip->getIntrinsicDuration() > 0 &&
                !root_node->hasActiveTake() && is_playing_global.load()) {
       // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09 — see the note
-      // above the anonymous namespace): origin re-anchors so the
-      // sounding sample keeps sounding; the island epoch rides the
-      // SAME whole-Q delta so the edited clip's frame position — the
-      // timeline the user drew — is unchanged.
-      const int64_t org = clip->origin_samples.load();
-      const int64_t org2 = continuityOrigin(
-          *clip, celestrian::timing::TimeMap::single(start, end),
-          global_transport_pos.load());
-      if (org2 != org) {
-        e.setsOrigin = true;
-        e.iorg = org2;
-        const int64_t q = root_node->getEffectiveQuantum();
-        const int64_t delta = org2 - org;
-        if (q > 0 && delta % q == 0) {
-          e.setsIsland = true;
-          e.iq = q;  // Q unchanged — only the fold anchor moves
-          e.iepoch = root_node->getIslandEpoch() + delta;
-        }
-      }
+      // above the anonymous namespace).
+      attachContinuityRiders(e, *clip,
+                             celestrian::timing::TimeMap::single(start, end),
+                             root_node->getEffectiveQuantum());
     }
   }
   record(std::move(e));
 }
 
-void AudioEngine::setSegments(const juce::String &uuid,
-                              const celestrian::timing::TimeMap &map) {
+void AudioEngine::setSegments(const juce::String& uuid,
+                              const celestrian::timing::TimeMap& map) {
   using TimeMap = celestrian::timing::TimeMap;
-  auto *target = findNodeByUuid(root_node.get(), uuid);
+  auto* target = findNodeByUuid(root_node.get(), uuid);
   if (target == nullptr) return;
 
   // MID-TAKE MAP-EDIT GATE (owner-ruled, phase 2): a take recording
@@ -1515,7 +1491,7 @@ void AudioEngine::setSegments(const juce::String &uuid,
   const int64_t intrinsic = target->getIntrinsicDuration();
   int64_t prev_end = 0;
   for (int i = 0; i < map.n; ++i) {
-    const auto &s = map.segs[i];
+    const auto& s = map.segs[i];
     if (s.end <= s.start || s.start < prev_end ||
         (intrinsic > 0 && s.end > intrinsic)) {
       juce::Logger::writeToLog(
@@ -1545,21 +1521,16 @@ void AudioEngine::setSegments(const juce::String &uuid,
   // delegations above are guarded inside setLoopPoints.)
   {
     const bool q13_retrim =
-        dynamic_cast<celestrian::ClipNode *>(target) != nullptr &&
+        dynamic_cast<celestrian::ClipNode*>(target) != nullptr &&
         intrinsic > 0 && islandCommittedClipCount() == 1 &&
         !root_node->hasActiveTake();
     const int64_t q = target->getEffectiveQuantum();
     const int64_t p = map.period();
-    // Coherent = a whole multiple of Q, or an exact divisor of it
-    // (sub-Q loops are first-class; lcm(Q, Q/k) = Q — see
-    // setLoopPoints' twin guard).
-    const bool coherent = p > 0 && (p % q == 0 || q % p == 0);
-    if (!q13_retrim && q > 0 && !coherent) {
+    if (!q13_retrim && q > 0 && !isPeriodCoherentWithQuantum(p, q)) {
       juce::Logger::writeToLog(
-          "AudioEngine::setSegments refused — period " +
-          juce::String(p) + " is neither a whole multiple nor an " +
-          "exact divisor of Q " + juce::String(q) +
-          " (coherence is categorical)");
+          "AudioEngine::setSegments refused — period " + juce::String(p) +
+          " is neither a whole multiple nor an " + "exact divisor of Q " +
+          juce::String(q) + " (coherence is categorical)");
       return;
     }
   }
@@ -1577,7 +1548,7 @@ void AudioEngine::setSegments(const juce::String &uuid,
   // sounding RIGHT NOW keeps sounding (inverse-mapped when still
   // covered; the old heard phase folds into the new period when the
   // cut removed it).
-  if (auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
       clip != nullptr && intrinsic > 0 && islandCommittedClipCount() == 1 &&
       !root_node->hasActiveTake()) {
     const int64_t t0 = global_transport_pos.load();
@@ -1587,8 +1558,7 @@ void AudioEngine::setSegments(const juce::String &uuid,
     int64_t h_new = 0;
     if (old_map.active() && old_map.period() > 0) {
       const int64_t old_org = clip->origin_samples.load();
-      const int64_t p0 =
-          old_map.mapOffset(t0 - old_org - old_map.mapOffset(0));
+      const int64_t p0 = old_map.mapOffset(t0 - old_org - old_map.mapOffset(0));
       const int64_t inv_h = map.heardOffsetOf(p0);
       if (inv_h >= 0) {
         h_new = inv_h;
@@ -1603,37 +1573,21 @@ void AudioEngine::setSegments(const juce::String &uuid,
     e.setsIsland = true;
     e.iq = period;
     e.iepoch = origin_new + a0;
-  } else if (auto *clip = dynamic_cast<celestrian::ClipNode *>(target);
-             clip != nullptr && intrinsic > 0 &&
-             !root_node->hasActiveTake() && is_playing_global.load()) {
+  } else if (auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
+             clip != nullptr && intrinsic > 0 && !root_node->hasActiveTake() &&
+             is_playing_global.load()) {
     // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09 — see the note
-    // above the anonymous namespace): origin re-anchors so the
-    // sounding sample keeps sounding; the island epoch rides the SAME
-    // whole-Q delta so the edited clip's frame position — the seam
-    // where the cut was made — is unchanged.
-    const int64_t org = clip->origin_samples.load();
-    const int64_t org2 =
-        continuityOrigin(*clip, map, global_transport_pos.load());
-    if (org2 != org) {
-      e.setsOrigin = true;
-      e.iorg = org2;
-      const int64_t q = target->getEffectiveQuantum();
-      const int64_t delta = org2 - org;
-      if (q > 0 && delta % q == 0) {
-        e.setsIsland = true;
-        e.iq = q;  // Q unchanged — only the fold anchor moves
-        e.iepoch = root_node->getIslandEpoch() + delta;
-      }
-    }
+    // above the anonymous namespace).
+    attachContinuityRiders(e, *clip, map, target->getEffectiveQuantum());
   }
 
   record(std::move(e));
 }
 
-void AudioEngine::toggleLoopWindow(const juce::String &uuid) {
+void AudioEngine::toggleLoopWindow(const juce::String& uuid) {
   // Fractal (I5): window state lives on AudioNode — clips toggle their
   // single-segment window exactly like stacks toggle their time-map.
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     // MID-TAKE MAP-EDIT GATE (see setLoopPoints): flipping a stack's
     // map under a live take would change time under the recorder.
     if (node->getNodeType() == celestrian::NodeType::Stack &&
@@ -1650,9 +1604,9 @@ void AudioEngine::toggleLoopWindow(const juce::String &uuid) {
   }
 }
 void AudioEngine::audioDeviceIOCallbackWithContext(
-    const float *const *input_channel_data, int num_input_channels,
-    float *const *output_channel_data, int num_output_channels, int num_samples,
-    const juce::AudioIODeviceCallbackContext &context) {
+    const float* const* input_channel_data, int num_input_channels,
+    float* const* output_channel_data, int num_output_channels, int num_samples,
+    const juce::AudioIODeviceCallbackContext& context) {
   juce::ScopedNoDenormals no_denormals;
 
   // Epoch for deferred reclamation (see retire()).
@@ -1663,8 +1617,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
   if (last_entry_ticks_ != 0) {
     const double tps = (double)juce::Time::getHighResolutionTicksPerSecond();
     const double gap_s = (double)(entry_ticks - last_entry_ticks_) / tps;
-    const double period_s =
-        (double)num_samples / cached_sample_rate_.load();
+    const double period_s = (double)num_samples / cached_sample_rate_.load();
     // Gaps well beyond one block period mean the device starved (ignore
     // long idle gaps — those are stop/start, not overruns).
     if (gap_s > 2.0 * period_s && gap_s < 0.5) xrun_count_.fetch_add(1);
@@ -1775,9 +1728,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // Each stack recomputes it for its own scope in childContext; this
     // seed is the fallback an all-one-shot ROOT scope inherits.
     pc.context_cycle = pc.snap
-        ? celestrian::snapEffectiveCycle(*pc.snap, pc.quantum,
-                                         (int64_t)pc.sample_rate)
-        : calculateEffectiveCycleLength();
+                           ? celestrian::snapEffectiveCycle(
+                                 *pc.snap, pc.quantum, (int64_t)pc.sample_rate)
+                           : calculateEffectiveCycleLength();
 
     // Update Global Quantum Propagation:
     // If focused box has no quantum, check if its children have a finished
@@ -1810,11 +1763,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         // The frozen base continues the view the user was WATCHING —
         // the effective (window-aware) wrap. Snapshot-space math: this
         // runs on the AUDIO thread (graph_snapshot.h).
-        const int64_t view_cycle = pc.snap
-            ? celestrian::snapEffectiveCycle(
-                  *pc.snap, root_node->getQuantum(),
-                  (int64_t)cached_sample_rate_.load())
-            : calculateEffectiveCycleLength();
+        const int64_t view_cycle =
+            pc.snap ? celestrian::snapEffectiveCycle(
+                          *pc.snap, root_node->getQuantum(),
+                          (int64_t)cached_sample_rate_.load())
+                    : calculateEffectiveCycleLength();
         const int64_t rel = old_pos - islandEpoch();
         view_base_.store(view_cycle > 0 ? rel % view_cycle : rel);
         view_anchor_t_.store(old_pos);
@@ -1837,19 +1790,19 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
   // mid-dial while sustained material reads its true level. A mono
   // device mirrors channel 0 into the right meter.
   {
-    const double sr =
-        cached_sample_rate_.load() > 0 ? cached_sample_rate_.load() : 48000.0;
+    const double sr = cached_sample_rate_.load() > 0
+                          ? cached_sample_rate_.load()
+                          : kFallbackSampleRate;
     const float ka = (float)(1.0 - std::exp(-1.0 / (sr * 0.015)));  // attack
     const float kr = (float)std::exp(-1.0 / (sr * 0.4));            // release
     for (int ch = 0; ch < 2; ++ch) {
-      const int src = (ch < num_output_channels &&
-                       output_channel_data[ch] != nullptr)
-                          ? ch
-                          : 0;
-      auto &meter = ch == 0 ? master_vu_l_ : master_vu_r_;
+      const int src =
+          (ch < num_output_channels && output_channel_data[ch] != nullptr) ? ch
+                                                                           : 0;
+      auto& meter = ch == 0 ? master_vu_l_ : master_vu_r_;
       float env = meter.load(std::memory_order_relaxed);
       if (src < num_output_channels && output_channel_data[src] != nullptr) {
-        const float *d = output_channel_data[src];
+        const float* d = output_channel_data[src];
         for (int i = 0; i < num_samples; ++i) {
           const float a = std::abs(d[i]);
           env = a > env ? env + (a - env) * ka : env * kr;
@@ -1887,10 +1840,9 @@ juce::var AudioEngine::makePerfState() const {
   perf->setProperty("xruns", (double)xrun_count_.load());
 
   const int64_t measured = measured_latency_samples_.load();
-  const int64_t effective =
-      measured >= 0
-          ? measured
-          : cached_input_latency_.load() + cached_output_latency_.load();
+  const int64_t effective = measured >= 0 ? measured
+                                          : cached_input_latency_.load() +
+                                                cached_output_latency_.load();
   perf->setProperty("latencyCompensationSamples", (double)effective);
   perf->setProperty("calibrated", measured >= 0);
   // The device's actual rate — the UI must use this (not 44100) for any
@@ -1926,7 +1878,7 @@ juce::var AudioEngine::getLatencyCalibration() {
   // Run onset detection once, on the message thread, when capture is done.
   if (calibration_phase_.load() == (int)CalibrationPhase::Done &&
       measured_latency_samples_.load() < 0) {
-    const float *data = calibration_capture_.getReadPointer(0);
+    const float* data = calibration_capture_.getReadPointer(0);
     const int len = calibration_capture_.getNumSamples();
     const int click = calibration_click_pos_;
 
@@ -1935,8 +1887,7 @@ juce::var AudioEngine::getLatencyCalibration() {
     for (int i = 0; i < click; ++i)
       floor_level = std::max(floor_level, std::abs(data[i]));
     float peak = 0.0f;
-    for (int i = click; i < len; ++i)
-      peak = std::max(peak, std::abs(data[i]));
+    for (int i = click; i < len; ++i) peak = std::max(peak, std::abs(data[i]));
 
     // Need a clear response well above the room/line noise.
     if (peak < std::max(0.02f, floor_level * 4.0f)) {
@@ -1964,11 +1915,11 @@ juce::var AudioEngine::getLatencyCalibration() {
 
   juce::DynamicObject::Ptr result = new juce::DynamicObject();
   const int phase = calibration_phase_.load();
-  const char *phase_name =
-      phase == (int)CalibrationPhase::Capturing  ? "capturing"
-      : phase == (int)CalibrationPhase::Done     ? "done"
-      : phase == (int)CalibrationPhase::Failed   ? "failed"
-                                                 : "idle";
+  const char* phase_name = phase == (int)CalibrationPhase::Capturing
+                               ? "capturing"
+                           : phase == (int)CalibrationPhase::Done   ? "done"
+                           : phase == (int)CalibrationPhase::Failed ? "failed"
+                                                                    : "idle";
   const int64_t measured = measured_latency_samples_.load();
   result->setProperty("phase", phase_name);
   result->setProperty("roundTripSamples", (double)measured);
@@ -1978,7 +1929,7 @@ juce::var AudioEngine::getLatencyCalibration() {
   return juce::var(result.get());
 }
 
-void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {
+void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
   if (device) {
     cached_input_latency_.store(device->getInputLatencyInSamples());
     cached_output_latency_.store(device->getOutputLatencyInSamples());
@@ -2006,17 +1957,20 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice *device) {
 
 // --- Calibration persistence (docs/performance.md §7) ---
 
-juce::File AudioEngine::calibrationFile() const {
-  if (calibration_file_override_ != juce::File()) {
-    return calibration_file_override_;
-  }
+juce::File AudioEngine::appDataFile(const juce::File& override_file,
+                                    const juce::String& file_name) {
+  if (override_file != juce::File()) return override_file;
   return juce::File::getSpecialLocation(
              juce::File::userApplicationDataDirectory)
       .getChildFile("Celestrian")
-      .getChildFile("calibration.json");
+      .getChildFile(file_name);
 }
 
-void AudioEngine::setCalibrationFile(const juce::File &file) {
+juce::File AudioEngine::calibrationFile() const {
+  return appDataFile(calibration_file_override_, "calibration.json");
+}
+
+void AudioEngine::setCalibrationFile(const juce::File& file) {
   calibration_file_override_ = file;
 }
 
@@ -2039,9 +1993,8 @@ void AudioEngine::persistCalibration(int64_t samples) {
   file.replaceWithText(juce::JSON::toString(root, true));
 
   juce::Logger::writeToLog("AudioEngine: Calibration persisted for '" +
-                           current_device_key_ + "' (" +
-                           juce::String(samples) + " samples) -> " +
-                           file.getFullPathName());
+                           current_device_key_ + "' (" + juce::String(samples) +
+                           " samples) -> " + file.getFullPathName());
 }
 
 void AudioEngine::restoreCalibrationForCurrentDevice() {
@@ -2050,7 +2003,7 @@ void AudioEngine::restoreCalibrationForCurrentDevice() {
   auto file = calibrationFile();
   if (current_device_key_.isNotEmpty() && file.existsAsFile()) {
     auto root = juce::JSON::parse(file.loadFileAsString());
-    if (auto *obj = root.getDynamicObject()) {
+    if (auto* obj = root.getDynamicObject()) {
       if (obj->hasProperty(current_device_key_)) {
         restored = (int64_t)(double)obj->getProperty(current_device_key_);
       }
@@ -2080,12 +2033,12 @@ void AudioEngine::audioDeviceStopped() {
   flushGraveyard();
 }
 
-void AudioEngine::toggleSolo(const juce::String &uuid) {
+void AudioEngine::toggleSolo(const juce::String& uuid) {
   if (soloed_node_uuid == uuid) {
     soloed_node_uuid = "";  // Unsolo
     soloed_node_ptr_.store(nullptr);
   } else {
-    auto *node = findNodeByUuid(root_node.get(), uuid);
+    auto* node = findNodeByUuid(root_node.get(), uuid);
     soloed_node_uuid = node ? uuid : juce::String();
     soloed_node_ptr_.store(node);
   }
@@ -2093,9 +2046,9 @@ void AudioEngine::toggleSolo(const juce::String &uuid) {
                            " (Active Solo: " + soloed_node_uuid + ")");
 }
 
-void AudioEngine::togglePlay(const juce::String &uuid) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
-    if (auto *clip = dynamic_cast<celestrian::ClipNode *>(node)) {
+void AudioEngine::togglePlay(const juce::String& uuid) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
+    if (auto* clip = dynamic_cast<celestrian::ClipNode*>(node)) {
       if (clip->isPlaying()) {
         clip->stopPlayback();
       } else {
@@ -2107,8 +2060,8 @@ void AudioEngine::togglePlay(const juce::String &uuid) {
     }
   }
 }
-void AudioEngine::toggleMute(const juce::String &uuid) {
-  if (auto *node = findNodeByUuid(root_node.get(), uuid)) {
+void AudioEngine::toggleMute(const juce::String& uuid) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     celestrian::Edit e(celestrian::Edit::Kind::Mute);
     e.uuid = uuid;
     e.b1 = !node->is_muted.load();  // toggle to the opposite state
@@ -2116,13 +2069,12 @@ void AudioEngine::toggleMute(const juce::String &uuid) {
   }
 }
 
-void AudioEngine::setPeriodSource(const juce::String &uuid,
-                                  bool from_context) {
+void AudioEngine::setPeriodSource(const juce::String& uuid, bool from_context) {
   // The Q5 knob: one-shot ⟺ period := context cycle. A MUSICAL fact
   // (changes what sounds when), so unlike the mixer knobs it rides the
   // edit log. CLIPS ONLY for now — a stack has no origin to anchor a
   // once-per-cycle firing to (fractal one-shot groups are future work).
-  auto *node = findNodeByUuid(root_node.get(), uuid);
+  auto* node = findNodeByUuid(root_node.get(), uuid);
   if (!node || node->getNodeType() != celestrian::NodeType::Clip) return;
   if (node->period_from_context_.load() == from_context) return;
   celestrian::Edit e(celestrian::Edit::Kind::PeriodSource);
@@ -2132,8 +2084,6 @@ void AudioEngine::setPeriodSource(const juce::String &uuid,
 }
 
 // --- LCM Timeline Helpers ---
-
-
 
 int64_t AudioEngine::calculateEffectiveCycleLength() const {
   const int64_t one_second = (int64_t)cached_sample_rate_.load();
@@ -2147,4 +2097,3 @@ int64_t AudioEngine::calculateEffectiveCycleLength() const {
   const int64_t p = focused_node->getEffectivePeriod();
   return p > 0 ? celestrian::timing::lcm(quantum, p) : quantum;
 }
-

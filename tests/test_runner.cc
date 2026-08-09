@@ -3,7 +3,7 @@
 /**
  * A simple console application that runs all registered juce::UnitTests.
  */
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   juce::ignoreUnused(argc, argv);
 
   juce::UnitTestRunner runner;
@@ -13,7 +13,7 @@ int main(int argc, char *argv[]) {
 
   int numFailures = 0;
   for (int i = 0; i < runner.getNumResults(); ++i) {
-    auto *result = runner.getResult(i);
+    auto* result = runner.getResult(i);
     numFailures += result->failures;
   }
 

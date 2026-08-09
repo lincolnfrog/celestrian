@@ -8,10 +8,10 @@
 
 namespace {
 juce::String projectInfosToJson(
-    const std::vector<celestrian::ProjectManager::Info> &infos) {
+    const std::vector<celestrian::ProjectManager::Info>& infos) {
   juce::Array<juce::var> arr;
-  for (const auto &i : infos) {
-    auto *o = new juce::DynamicObject();
+  for (const auto& i : infos) {
+    auto* o = new juce::DynamicObject();
     o->setProperty("id", i.id);
     o->setProperty("name", i.name);
     o->setProperty("path", i.path);
@@ -29,22 +29,23 @@ MainComponent::MainComponent()
               // On Windows JUCE's default backend is Internet Explorer, which
               // ignores the resource provider entirely (the UI would never
               // load). WebView2 has to be opted into explicitly.
-              .withBackend(juce::WebBrowserComponent::Options::Backend::webview2)
+              .withBackend(
+                  juce::WebBrowserComponent::Options::Backend::webview2)
               .withWinWebView2Options(
                   juce::WebBrowserComponent::Options::WinWebView2{})
 #endif
               .withResourceProvider(
-                  [this](const juce::String &path)
+                  [this](const juce::String& path)
                       -> std::optional<juce::WebBrowserComponent::Resource> {
                     return getResource(path);
                   })
               .withNativeFunction(
-                  "ping", [](const juce::Array<juce::var> &args,
+                  "ping", [](const juce::Array<juce::var>& args,
                              juce::WebBrowserComponent::NativeFunctionCompletion
                                  completion) { completion("pong"); })
               .withNativeFunction(
                   "togglePlayback",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     audio_engine.togglePlayback();
@@ -52,7 +53,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "startRecordingInNode",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -61,7 +62,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "stopRecordingInNode",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -70,14 +71,14 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "getGraphState",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     completion(audio_engine.getGraphState());
                   })
               .withNativeFunction(
                   "getWaveform",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() >= 2) {
@@ -89,7 +90,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "toggleStackExpand",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -98,7 +99,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "createNode",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
@@ -113,7 +114,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "deleteNode",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -122,7 +123,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "undo",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
@@ -131,7 +132,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "saveSession",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     juce::String path =
@@ -145,7 +146,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "loadSession",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     juce::String path =
@@ -158,11 +159,11 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "getProjectInfo",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
-                    auto *o = new juce::DynamicObject();
+                    auto* o = new juce::DynamicObject();
                     o->setProperty("id", project_manager_.id());
                     o->setProperty("name", project_manager_.displayName());
                     o->setProperty("born", project_manager_.born());
@@ -170,16 +171,16 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "renameProject",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    project_manager_.rename(
-                        args.size() > 0 ? args[0].toString() : "");
+                    project_manager_.rename(args.size() > 0 ? args[0].toString()
+                                                            : "");
                     completion(true);
                   })
               .withNativeFunction(
                   "saveProjectNow",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
@@ -187,25 +188,25 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "listTemplates",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
-                    completion(projectInfosToJson(
-                        project_manager_.listTemplates()));
+                    completion(
+                        projectInfosToJson(project_manager_.listTemplates()));
                   })
               .withNativeFunction(
                   "listRecentProjects",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
-                    completion(projectInfosToJson(
-                        project_manager_.listRecents(10)));
+                    completion(
+                        projectInfosToJson(project_manager_.listRecents(10)));
                   })
               .withNativeFunction(
                   "newProjectFromTemplate",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     completion(project_manager_.newFromTemplate(
@@ -213,15 +214,15 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "openProjectPath",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
-                    completion(project_manager_.openProject(juce::File(
-                        args.size() > 0 ? args[0].toString() : "")));
+                    completion(project_manager_.openProject(
+                        juce::File(args.size() > 0 ? args[0].toString() : "")));
                   })
               .withNativeFunction(
                   "saveAsTemplate",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     completion(project_manager_.saveAsTemplate(
@@ -229,7 +230,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "duplicateProject",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
@@ -239,7 +240,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "redo",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     (void)args;
@@ -248,7 +249,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "renameNode",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1)
@@ -258,7 +259,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "reorderNode",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 2)
@@ -268,7 +269,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "combineNodes",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1)
@@ -279,7 +280,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setNodePosition",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 2)
@@ -289,29 +290,29 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "getInputList",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     completion(audio_engine.getInputList());
                   })
               .withNativeFunction(
                   "getAudioDeviceState",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     completion(audio_engine.getAudioDeviceState());
                   })
               .withNativeFunction(
                   "setAudioDevice",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     // (type, device, sampleRate, bufferSize); trailing args
                     // are optional — 0 means "keep the device's preference".
-                    const auto type = args.size() > 0 ? args[0].toString()
-                                                      : juce::String();
-                    const auto device = args.size() > 1 ? args[1].toString()
-                                                        : juce::String();
+                    const auto type =
+                        args.size() > 0 ? args[0].toString() : juce::String();
+                    const auto device =
+                        args.size() > 1 ? args[1].toString() : juce::String();
                     const double sr = args.size() > 2 ? (double)args[2] : 0.0;
                     const int block = args.size() > 3 ? (int)args[3] : 0;
                     completion(
@@ -319,7 +320,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setNodeInput",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
@@ -330,7 +331,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setNodeInputRight",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
@@ -341,7 +342,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setNodePan",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
@@ -352,7 +353,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setNodeGain",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
@@ -363,19 +364,18 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setPeriodSource",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
                       audio_engine.setPeriodSource(
-                          args[0].toString(),
-                          args[1].toString() == "context");
+                          args[0].toString(), args[1].toString() == "context");
                     }
                     completion(true);
                   })
               .withNativeFunction(
                   "setEffectEnabled",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 2) {
@@ -387,20 +387,19 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setEffectParam",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 3) {
-                      audio_engine.setEffectParam(args[0].toString(),
-                                                  args[1].toString(),
-                                                  args[2].toString(),
-                                                  (double)args[3]);
+                      audio_engine.setEffectParam(
+                          args[0].toString(), args[1].toString(),
+                          args[2].toString(), (double)args[3]);
                     }
                     completion(true);
                   })
               .withNativeFunction(
                   "setEffectScope",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 1) {
@@ -411,29 +410,29 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "setLoopPoints",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 2) {
                       audio_engine.setLoopPoints(args[0].toString(),
-                                                 (int64_t)args[1],
-                                                 (int64_t)args[2]);
+                                                 (juce::int64)args[1],
+                                                 (juce::int64)args[2]);
                     }
                     completion(true);
                   })
               .withNativeFunction(
                   "setSegments",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     // args[1] = flat [s0, e0, s1, e1, ...] in samples
                     // (time_maps.md phase 3).
                     if (args.size() > 1) {
                       celestrian::timing::TimeMap m;
-                      if (auto *flat = args[1].getArray()) {
-                        for (int i = 0; i + 1 < flat->size() &&
-                                        m.n < celestrian::timing::TimeMap::
-                                                  kMaxSegments;
+                      if (auto* flat = args[1].getArray()) {
+                        for (int i = 0;
+                             i + 1 < flat->size() &&
+                             m.n < celestrian::timing::TimeMap::kMaxSegments;
                              i += 2) {
                           m.segs[m.n++] = {(int64_t)(double)(*flat)[i],
                                            (int64_t)(double)(*flat)[i + 1]};
@@ -445,7 +444,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "warpPointer",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     // Move the OS cursor to a webview-viewport position
@@ -456,9 +455,9 @@ MainComponent::MainComponent()
                     // heard→raw reflow otherwise strands the handle
                     // away from the mouse; field 2026-07-25d).
                     if (args.size() > 1) {
-                      const auto global = web_browser.localPointToGlobal(
-                          juce::Point<float>((float)(double)args[0],
-                                             (float)(double)args[1]));
+                      const auto global =
+                          web_browser.localPointToGlobal(juce::Point<float>(
+                              (float)(double)args[0], (float)(double)args[1]));
                       juce::Desktop::setMousePosition(global.roundToInt());
                       completion(true);
                     } else {
@@ -467,7 +466,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "togglePlay",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -476,7 +475,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "toggleSolo",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -485,13 +484,13 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "toggleMute",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0) {
                       if (args[0].isString())
                         audio_engine.toggleMute(args[0].toString());
-                      else if (auto *obj = args[0].getDynamicObject())
+                      else if (auto* obj = args[0].getDynamicObject())
                         audio_engine.toggleMute(
                             obj->getProperty("uuid").toString());
                     }
@@ -499,7 +498,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "toggleLoopWindow",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     if (args.size() > 0)
@@ -508,7 +507,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "startLatencyCalibration",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     audio_engine.startLatencyCalibration();
@@ -516,14 +515,14 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "getLatencyCalibration",
-                  [this](const juce::Array<juce::var> &args,
+                  [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
                     completion(audio_engine.getLatencyCalibration());
                   })
               .withNativeFunction(
                   "nativeLog",
-                  [](const juce::Array<juce::var> &args,
+                  [](const juce::Array<juce::var>& args,
                      juce::WebBrowserComponent::NativeFunctionCompletion
                          completion) {
                     if (args.size() > 0)
@@ -532,7 +531,7 @@ MainComponent::MainComponent()
                   })
               .withNativeFunction(
                   "dumpStateToFile",
-                  [](const juce::Array<juce::var> &args,
+                  [](const juce::Array<juce::var>& args,
                      juce::WebBrowserComponent::NativeFunctionCompletion
                          completion) {
                     if (args.size() > 0) {
@@ -566,20 +565,20 @@ MainComponent::~MainComponent() {}
 
 void MainComponent::chooseSessionPath(
     bool saving, juce::WebBrowserComponent::NativeFunctionCompletion done) {
-  auto start = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
-                   .getChildFile("Celestrian Sessions");
+  auto start =
+      juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+          .getChildFile("Celestrian Sessions");
   const auto title =
       saving ? juce::String("Save session as…") : juce::String("Open session");
   session_chooser_ = std::make_unique<juce::FileChooser>(title, start);
 
-  const int flags =
-      juce::FileBrowserComponent::canSelectDirectories |
-      (saving ? juce::FileBrowserComponent::saveMode
-              : juce::FileBrowserComponent::openMode);
+  const int flags = juce::FileBrowserComponent::canSelectDirectories |
+                    (saving ? juce::FileBrowserComponent::saveMode
+                            : juce::FileBrowserComponent::openMode);
 
   session_chooser_->launchAsync(
-      flags, [this, saving, done = std::move(done)](
-                 const juce::FileChooser &fc) mutable {
+      flags, [this, saving,
+              done = std::move(done)](const juce::FileChooser& fc) mutable {
         const auto file = fc.getResult();
         if (file == juce::File()) {
           done(false);  // cancelled
@@ -600,14 +599,14 @@ void MainComponent::timerCallback() {
   // first committed take, then keeps the folder mirroring the session.
   project_manager_.tick();
 }
-void MainComponent::paint(juce::Graphics &g) {
+void MainComponent::paint(juce::Graphics& g) {
   g.fillAll(
       getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 }
 void MainComponent::resized() { web_browser.setBounds(getLocalBounds()); }
 
 std::optional<juce::WebBrowserComponent::Resource> MainComponent::getResource(
-    const juce::String &path) {
+    const juce::String& path) {
   juce::String cleanPath = path;
   if (cleanPath.startsWith("/")) cleanPath = cleanPath.substring(1);
   if (cleanPath.isEmpty()) cleanPath = "index.html";

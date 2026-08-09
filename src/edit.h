@@ -51,9 +51,9 @@ struct Edit {
                  // n==1 writes the single-window atomics, n==0 clears
                  // both. The inverse captures the RAW old storage.
     PeriodSource,  // b1 = period from context (Q5 one-shot knob)
-    Input,       // d1 = channel index (left / mono)
-    InputR,      // d1 = right channel index of a stereo pair (−1 = mono)
-    Position,    // d1 = x, d2 = y
+    Input,         // d1 = channel index (left / mono)
+    InputR,        // d1 = right channel index of a stereo pair (−1 = mono)
+    Position,      // d1 = x, d2 = y
     CollapseTake,  // Q13 lock-collapse: the clip's window BECOMES the
                    // take (duration = window len, origin += start,
                    // content base shifts; window consumed). Forward
@@ -93,7 +93,7 @@ struct Edit {
   // sounding buffer position does not move — the grid re-derives, the
   // audio flows. The inverse captures the old origin the same way.
   bool setsOrigin = false;
-  int64_t iorg = 0;    // clip origin to set
+  int64_t iorg = 0;  // clip origin to set
 
   // Multi-segment map payload (phase 3): the map value for Segments
   // edits, and the override a LoopPoints undo reinstalls (setsMap).

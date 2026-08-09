@@ -26,9 +26,9 @@ StackNode::~StackNode() = default;
 // structural edits is owned by the edit log / the engine's reclaimer.)
 
 juce::var StackNode::getMetadata() const {
-  const auto &kids = children;  // message thread: ownership vector
+  const auto& kids = children;  // message thread: ownership vector
   auto base = AudioNode::getMetadata();
-  auto *obj = base.getDynamicObject();
+  auto* obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)kids.size());
   obj->setProperty("isExpanded", (bool)is_expanded.load());
   // Loop window state (loopBypassed/windowActive) publishes from the
@@ -41,7 +41,7 @@ juce::var StackNode::getMetadata() const {
   obj->setProperty("quantum", (double)quantum_samples_.load());
   obj->setProperty("epoch", (double)epoch_samples_.load());
   juce::Array<juce::var> childData;
-  for (const auto &child : kids) {
+  for (const auto& child : kids) {
     childData.add(child->getMetadata());
   }
   obj->setProperty("nodes", childData);
@@ -53,18 +53,15 @@ int64_t StackNode::getIntrinsicDuration() const {
   // Stacks and Composite Duration"). Previously this returned the MIN
   // child duration, which doubled as a derived quantum — both wrong;
   // the quantum is now stored island state (P0-3).
-  const auto &kids = children;  // message thread: ownership vector
+  const auto& kids = children;  // message thread: ownership vector
   if (kids.empty()) return 0;
 
   int64_t composite = 0;
-  for (const auto &child : kids) {
+  for (const auto& child : kids) {
     // One-shots excluded (Q5): period := context cycle — they adopt the
     // scope's cycle, never extend it (snapshot twin agrees).
     if (child->periodFromContext()) continue;
-    int64_t d = child->getIntrinsicDuration();
-    if (d > 0) {
-      composite = (composite == 0) ? d : timing::lcm(composite, d);
-    }
+    composite = timing::foldPeriod(composite, child->getIntrinsicDuration());
   }
   return composite;
 }
@@ -78,16 +75,13 @@ int64_t StackNode::getEffectivePeriod() const {
   // contribute their window length, so nested windows shorten the
   // audible cycle. Same shape as getIntrinsicDuration, one recursion
   // deeper in honesty.
-  const auto &kids = children;  // message thread: ownership vector
+  const auto& kids = children;  // message thread: ownership vector
   if (kids.empty()) return 0;
 
   int64_t composite = 0;
-  for (const auto &child : kids) {
+  for (const auto& child : kids) {
     if (child->periodFromContext()) continue;  // Q5: one-shots excluded
-    int64_t p = child->getEffectivePeriod();
-    if (p > 0) {
-      composite = (composite == 0) ? p : timing::lcm(composite, p);
-    }
+    composite = timing::foldPeriod(composite, child->getEffectivePeriod());
   }
   return composite;
 }
@@ -99,12 +93,12 @@ int64_t StackNode::getEffectiveQuantum() const {
   int64_t q = quantum_samples_.load();
   if (q > 0) return q;
 
-  if (auto *p = parent.load()) return p->getEffectiveQuantum();
+  if (auto* p = parent.load()) return p->getEffectiveQuantum();
 
   return 0;
 }
 
-void StackNode::maybeEstablishQuantumFrom(const AudioNode &child) {
+void StackNode::maybeEstablishQuantumFrom(const AudioNode& child) {
   const int64_t d = child.getIntrinsicDuration();
   if (d > 0) {
     rootNode()->establishIsland(d, child.origin_samples.load());
@@ -183,7 +177,7 @@ std::vector<std::unique_ptr<AudioNode>> StackNode::clearChildren() {
   // thread may still traverse these nodes through the outgoing graph
   // snapshot for ≤2 callbacks after the next publish.
   std::vector<std::unique_ptr<AudioNode>> removed;
-  for (auto &child : children) {
+  for (auto& child : children) {
     if (child->isArmedOrRecording()) rootNode()->takeCancelled();
     child->setParent(nullptr);
     removed.push_back(std::move(child));
@@ -203,7 +197,18 @@ std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
   return nullptr;
 }
 
-ProcessContext StackNode::childContext(const ProcessContext &context) const {
+int StackNode::ChildView::count() const {
+  return snap ? snap->entries[(size_t)self].childCount : (int)owned->size();
+}
+int StackNode::ChildView::entryAt(int k) const {
+  return snap ? snap->childAt(self, k) : 0;
+}
+AudioNode* StackNode::ChildView::nodeAt(int k) const {
+  return snap ? snap->entries[(size_t)snap->childAt(self, k)].node
+              : (*owned)[(size_t)k].get();
+}
+
+ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // === THE TIME-MAP (time_maps.md §2, reified) ===
   // The map applies iff it is ACTIVE (valid + not bypassed) —
   // independent of expansion (I6b: collapse is purely visual). Phase is
@@ -249,7 +254,7 @@ ProcessContext StackNode::childContext(const ProcessContext &context) const {
     child_context.context_cycle = map.period();
   } else {
     int64_t fold = 0;
-    const GraphSnapshot *snap = context.snap;
+    const GraphSnapshot* snap = context.snap;
     const int n = snap ? snap->entries[(size_t)context.self].childCount
                        : (int)children.size();
     for (int k = 0; k < n; ++k) {
@@ -259,11 +264,11 @@ ProcessContext StackNode::childContext(const ProcessContext &context) const {
         if (snap->entries[(size_t)child].node->periodFromContext()) continue;
         p = snapEffectivePeriod(*snap, child);
       } else {
-        const AudioNode *child = children[(size_t)k].get();
+        const AudioNode* child = children[(size_t)k].get();
         if (child->periodFromContext()) continue;
         p = child->getEffectivePeriod();
       }
-      if (p > 0) fold = fold > 0 ? timing::lcm(fold, p) : p;
+      fold = timing::foldPeriod(fold, p);
     }
     if (fold > 0) {
       child_context.context_cycle =
@@ -277,69 +282,24 @@ ProcessContext StackNode::childContext(const ProcessContext &context) const {
   return child_context;
 }
 
-void StackNode::control(const float *const *input_channels,
-                        int num_input_channels,
-                        const ProcessContext &context) {
-  // SUB-BLOCK SEAM SPLIT (time_maps.md §5): an active map's seam
-  // mid-block would hand children a linearly-advancing clock across a
-  // mapped-time JUMP — up to a block of wrong positions per seam. Split
-  // the block into runs at seam boundaries (bounded: ≤ segments + 1
-  // per pass crossing, allocation-free) and recurse per run.
-  const timing::TimeMap own_map = activeTimeMap();
-  if (own_map.active() && context.num_samples > 0) {
-    const int64_t p = own_map.period();
-    int64_t rel = context.master_pos - context.cycle_epoch;
-    rel = ((rel % p) + p) % p;
-    int done = 0;
-    while (done < context.num_samples) {
-      const int run = (int)std::min<int64_t>(context.num_samples - done,
-                                             own_map.seamDistance(rel));
-      const float *shifted[kMaxSplitChannels];
-      const float *const *ins = input_channels;
-      int nin = num_input_channels;
-      if (input_channels != nullptr && done > 0) {
-        nin = std::min(num_input_channels, kMaxSplitChannels);
-        for (int ch = 0; ch < nin; ++ch) {
-          shifted[ch] =
-              input_channels[ch] ? input_channels[ch] + done : nullptr;
-        }
-        ins = shifted;
-      }
-      ProcessContext sub = context;
-      sub.master_pos = context.master_pos + done;
-      sub.island_pos = context.island_pos + done;
-      sub.num_samples = run;
-      sub.input_clock = context.input_clock + done;
-      controlChildren(ins, nin, sub);
-      done += run;
-      rel = (rel + run) % p;
-    }
-    return;
-  }
-  controlChildren(input_channels, num_input_channels, context);
+void StackNode::control(const float* const* input_channels,
+                        int num_input_channels, const ProcessContext& context) {
+  forEachSeamRun(input_channels, num_input_channels, context,
+                 [this](const float* const* ins, int input_count,
+                        const ProcessContext& sub) {
+                   controlChildren(ins, input_count, sub);
+                 });
 }
 
-void StackNode::controlChildren(const float *const *input_channels,
+void StackNode::controlChildren(const float* const* input_channels,
                                 int num_input_channels,
-                                const ProcessContext &context) {
+                                const ProcessContext& context) {
   ProcessContext child_context = childContext(context);
 
   // Children come from the WHOLE-GRAPH snapshot (one engine-side load
-  // per callback — Tier 3 Step 3): index spans, no per-stack atomics,
-  // structural consistency across the entire callback. The ownership
-  // fallback is the node-level unit-test path only (no engine, single
-  // thread, race-free by construction).
-  const GraphSnapshot *snap = context.snap;
-  const int child_count =
-      snap ? snap->entries[(size_t)context.self].childCount
-           : (int)children.size();
-  auto childEntry = [&](int k) -> int {
-    return snap ? snap->childAt(context.self, k) : 0;
-  };
-  auto childNode = [&](int k) -> AudioNode * {
-    return snap ? snap->entries[(size_t)snap->childAt(context.self, k)].node
-                : children[(size_t)k].get();
-  };
+  // per callback) or the ownership fallback — see ChildView.
+  const ChildView kids = childView(context);
+  const int child_count = kids.count();
 
   // Recording context, passed DOWN (P1-6): the longest committed child
   // duration in this scope. Recording/armed children contribute 0
@@ -349,7 +309,7 @@ void StackNode::controlChildren(const float *const *input_channels,
   // never needs it.
   int64_t longest_committed = 0;
   for (int k = 0; k < child_count; ++k) {
-    const int64_t d = childNode(k)->duration_samples.load();
+    const int64_t d = kids.nodeAt(k)->duration_samples.load();
     if (d > longest_committed) longest_committed = d;
   }
   // Under an ACTIVE map the heard loop IS the map period (time_maps.md
@@ -362,52 +322,25 @@ void StackNode::controlChildren(const float *const *input_channels,
   }
 
   for (int k = 0; k < child_count; ++k) {
-    child_context.self = childEntry(k);
-    childNode(k)->control(input_channels, num_input_channels, child_context);
+    child_context.self = kids.entryAt(k);
+    kids.nodeAt(k)->control(input_channels, num_input_channels, child_context);
   }
 }
 
-void StackNode::render(float *const *output_channels, int num_output_channels,
-                       const ProcessContext &context) const {
-  // SUB-BLOCK SEAM SPLIT — render twin of control's (time_maps.md §5):
-  // both phases must see the SAME mapped child clock, run for run.
-  const timing::TimeMap own_map = activeTimeMap();
-  if (own_map.active() && context.num_samples > 0) {
-    const int64_t p = own_map.period();
-    int64_t rel = context.master_pos - context.cycle_epoch;
-    rel = ((rel % p) + p) % p;
-    int done = 0;
-    while (done < context.num_samples) {
-      const int run = (int)std::min<int64_t>(context.num_samples - done,
-                                             own_map.seamDistance(rel));
-      float *shifted[kMaxSplitChannels];
-      float *const *outs = output_channels;
-      int nout = num_output_channels;
-      if (output_channels != nullptr && done > 0) {
-        nout = std::min(num_output_channels, kMaxSplitChannels);
-        for (int ch = 0; ch < nout; ++ch) {
-          shifted[ch] =
-              output_channels[ch] ? output_channels[ch] + done : nullptr;
-        }
-        outs = shifted;
-      }
-      ProcessContext sub = context;
-      sub.master_pos = context.master_pos + done;
-      sub.island_pos = context.island_pos + done;
-      sub.num_samples = run;
-      sub.input_clock = context.input_clock + done;
-      renderChildren(outs, nout, sub);
-      done += run;
-      rel = (rel + run) % p;
-    }
-    return;
-  }
-  renderChildren(output_channels, num_output_channels, context);
+void StackNode::render(float* const* output_channels, int num_output_channels,
+                       const ProcessContext& context) const {
+  // Render twin of control's seam split: both phases must see the SAME
+  // mapped child clock, run for run (the shared driver guarantees it).
+  forEachSeamRun(
+      output_channels, num_output_channels, context,
+      [this](float* const* outs, int output_count, const ProcessContext& sub) {
+        renderChildren(outs, output_count, sub);
+      });
 }
 
-void StackNode::renderChildren(float *const *output_channels,
+void StackNode::renderChildren(float* const* output_channels,
                                int num_output_channels,
-                               const ProcessContext &context) const {
+                               const ProcessContext& context) const {
   // Guard for atypical block sizes/channel counts. At normal sizes the
   // buffer was preallocated in the constructor and this never triggers.
   if (mix_buffer.getNumSamples() < context.num_samples ||
@@ -434,17 +367,8 @@ void StackNode::renderChildren(float *const *output_channels,
     }
   }
 
-  const GraphSnapshot *snap = context.snap;
-  const int child_count =
-      snap ? snap->entries[(size_t)context.self].childCount
-           : (int)children.size();
-  auto childEntry = [&](int k) -> int {
-    return snap ? snap->childAt(context.self, k) : 0;
-  };
-  auto childNode = [&](int k) -> const AudioNode * {
-    return snap ? snap->entries[(size_t)snap->childAt(context.self, k)].node
-                : children[(size_t)k].get();
-  };
+  const ChildView kids = childView(context);
+  const int child_count = kids.count();
 
   // With the effect rack ON — or the group's OUTPUT STAGE not at unity
   // (panned, fader below 1, or muted) — children sum into the fx
@@ -475,12 +399,12 @@ void StackNode::renderChildren(float *const *output_channels,
   }
 
   for (int k = 0; k < child_count; ++k) {
-    const AudioNode *child = childNode(k);
+    const AudioNode* child = kids.nodeAt(k);
     // Clear mix buffer for this specific child
     mix_buffer.clear();
 
     // Child renders into our mix_buffer.
-    child_context.self = childEntry(k);
+    child_context.self = kids.entryAt(k);
     child->render(mix_buffer.getArrayOfWritePointers(), num_output_channels,
                   child_context);
 
@@ -536,7 +460,7 @@ void StackNode::renderChildren(float *const *output_channels,
   }
 }
 juce::var StackNode::getWaveform(int num_peaks) const {
-  const auto &kids = children;  // message thread: ownership vector
+  const auto& kids = children;  // message thread: ownership vector
 
   if (kids.empty()) return juce::Array<juce::var>();
 
@@ -548,10 +472,10 @@ juce::var StackNode::getWaveform(int num_peaks) const {
   juce::Array<juce::var> aggregatePeaks;
   for (int i = 0; i < num_peaks; ++i) aggregatePeaks.add(0.0f);
 
-  for (const auto &child : kids) {
+  for (const auto& child : kids) {
     juce::var childWaveform = child->getWaveform(num_peaks);
     if (childWaveform.isArray()) {
-      auto *childArr = childWaveform.getArray();
+      auto* childArr = childWaveform.getArray();
       for (int i = 0; i < num_peaks && i < childArr->size(); ++i) {
         float p = (float)aggregatePeaks[i] + (float)childArr->getReference(i);
         aggregatePeaks.set(i, p);
@@ -569,12 +493,12 @@ juce::var StackNode::getWaveform(int num_peaks) const {
   return aggregatePeaks;
 }
 
-AudioNode *StackNode::findNodeByUuid(const juce::String &uuid) {
+AudioNode* StackNode::findNodeByUuid(const juce::String& uuid) {
   if (getUuid() == uuid) return this;
 
   // Virtual recursion (findByUuid) — no per-child dynamic_cast.
-  for (const auto &child : children) {
-    if (auto *found = child->findByUuid(uuid)) return found;
+  for (const auto& child : children) {
+    if (auto* found = child->findByUuid(uuid)) return found;
   }
 
   return nullptr;
@@ -584,8 +508,8 @@ bool StackNode::isAnyChildRecording() const {
   // Virtual dispatch replaces the old per-child dynamic_cast: clips
   // answer from their recording state machine, nested stacks recurse
   // via their own isArmedOrRecording override.
-  const auto &kids = children;  // message thread: ownership vector
-  for (const auto &child : kids) {
+  const auto& kids = children;  // message thread: ownership vector
+  for (const auto& child : kids) {
     if (child->isArmedOrRecording()) return true;
   }
   return false;

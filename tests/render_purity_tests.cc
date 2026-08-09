@@ -25,9 +25,9 @@ class RenderPurityTests : public juce::UnitTest {
 
   // One-sample render at master time t (distinct channel buffers — the
   // clip sums into every channel).
-  static float renderAt(const AudioNode &node, int64_t t) {
+  static float renderAt(const AudioNode& node, int64_t t) {
     float outL[4] = {0.0f}, outR[4] = {0.0f};
-    float *outs[] = {outL, outR};
+    float* outs[] = {outL, outR};
     ProcessContext ctx;
     ctx.num_samples = 1;
     ctx.is_playing = true;
@@ -43,7 +43,7 @@ class RenderPurityTests : public juce::UnitTest {
     std::vector<float> ramp(N);
     for (int i = 0; i < N; ++i) ramp[i] = (float)i / N;
     {
-      float *ins[] = {ramp.data()};
+      float* ins[] = {ramp.data()};
       ProcessContext recCtx;
       recCtx.num_samples = N;
       recCtx.is_recording = true;
@@ -95,9 +95,9 @@ class RenderPurityTests : public juce::UnitTest {
     {
       StackNode root("root");
       auto owned = std::make_unique<ClipNode>("child");
-      auto *child = owned.get();
+      auto* child = owned.get();
       {
-        float *ins[] = {ramp.data()};
+        float* ins[] = {ramp.data()};
         ProcessContext recCtx;
         recCtx.num_samples = N;
         recCtx.is_recording = true;

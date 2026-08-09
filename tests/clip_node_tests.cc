@@ -2,8 +2,8 @@
 
 #include <vector>
 
-#include "../src/stack_node.h"
 #include "../src/clip_node.h"
+#include "../src/stack_node.h"
 
 namespace celestrian {
 
@@ -42,7 +42,7 @@ class ClipNodeTests : public juce::UnitTest {
       // Simulate processing 100 samples
       float input[100];
       for (int i = 0; i < 100; ++i) input[i] = 1.0f;  // DC signal
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
 
       ProcessContext context;
       context.num_samples = 100;
@@ -70,7 +70,7 @@ class ClipNodeTests : public juce::UnitTest {
 
       // Write some samples
       float input[10] = {0.5f};
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
       ProcessContext context;
       context.num_samples = 10;
       context.is_recording = true;
@@ -88,7 +88,7 @@ class ClipNodeTests : public juce::UnitTest {
       node.startRecording();
 
       float input[10] = {0.8f};
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
       ProcessContext context;
       context.num_samples = 10;
       context.is_recording = true;  // MUST be true for node to capture
@@ -114,7 +114,7 @@ class ClipNodeTests : public juce::UnitTest {
       int initialWritePos = node.getWritePosition();
 
       float input[10] = {0.8f};
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
       context.num_samples = 10;
       context.is_recording = false;  // If false, node should NOT capture
 
@@ -129,7 +129,7 @@ class ClipNodeTests : public juce::UnitTest {
 
       float input[10] = {0.5f, -0.7f, 0.2f, 0.0f, 0.0f,
                          0.0f, 0.0f,  0.0f, 0.0f, 0.0f};
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
       ProcessContext context;
       context.num_samples = 10;
       context.is_recording = true;
@@ -142,13 +142,13 @@ class ClipNodeTests : public juce::UnitTest {
     {
       const double SR = 100.0;
       auto node = std::make_unique<ClipNode>("TestRotation", SR);
-      auto *nodePtr = node.get();
+      auto* nodePtr = node.get();
 
       StackNode parent("Parent");
       // Set parent quantum by adding a dummy clip that defines it
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[100] = {0.0f};
-      float *const dummyIns[] = {dummyIn};
+      float* const dummyIns[] = {dummyIn};
       ProcessContext dummyCtx;
       dummyCtx.num_samples = 100;
       dummyCtx.is_recording = true;
@@ -170,7 +170,7 @@ class ClipNodeTests : public juce::UnitTest {
       // First sample is 0.5, rest 0.0
       float input[50] = {0.0f};
       input[0] = 0.5f;
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
 
       nodePtr->startRecording();
       // This process call should anchor at 125 and capture 50 samples
@@ -209,10 +209,10 @@ class ClipNodeTests : public juce::UnitTest {
 
       // Sibling A: 100 samples -> defines Q = 100 (min duration)
       // Sibling B: 200 samples -> defines the context loop
-      auto makeCommittedClip = [SR](const char *name, int len) {
+      auto makeCommittedClip = [SR](const char* name, int len) {
         auto clip = std::make_unique<ClipNode>(name, SR);
         std::vector<float> in((size_t)len, 0.0f);
-        float *const ins[] = {in.data()};
+        float* const ins[] = {in.data()};
         ProcessContext ctx;
         ctx.num_samples = len;
         ctx.is_recording = true;
@@ -228,14 +228,14 @@ class ClipNodeTests : public juce::UnitTest {
       // Record clip C starting at master_pos=100: origin = 100 within
       // the 200-sample context.
       auto clipC = std::make_unique<ClipNode>("Anchored", SR);
-      auto *c = clipC.get();
+      auto* c = clipC.get();
       parent.addChild(std::move(clipC));
 
       auto v = [](int k) { return (float)(k + 1) * 0.001f; };
 
       float rec1[150];
       for (int i = 0; i < 150; ++i) rec1[i] = v(i);
-      float *const recIns1[] = {rec1};
+      float* const recIns1[] = {rec1};
       ProcessContext recCtx;
       recCtx.num_samples = 150;
       recCtx.master_pos = 100;
@@ -247,7 +247,7 @@ class ClipNodeTests : public juce::UnitTest {
 
       float rec2[50];
       for (int i = 0; i < 50; ++i) rec2[i] = v(150 + i);
-      float *const recIns2[] = {rec2};
+      float* const recIns2[] = {rec2};
       recCtx.num_samples = 50;
       recCtx.master_pos = 250;
       c->process(recIns2, nullptr, 1, 0, recCtx);
@@ -260,7 +260,7 @@ class ClipNodeTests : public juce::UnitTest {
       // At master ≡ origin (100), content[0] plays — what was performed
       // at cycle moment 100 replays at cycle moment 100 (I1).
       float outL[10] = {0.0f};
-      float *const outs[] = {outL};
+      float* const outs[] = {outL};
       ProcessContext playCtx;
       playCtx.num_samples = 10;
       playCtx.is_playing = true;
@@ -283,22 +283,22 @@ class ClipNodeTests : public juce::UnitTest {
       expect(wf.isArray());
       expectWithinAbsoluteError((float)wf.getArray()->getReference(0), v(0),
                                 0.0001f);
-      expectWithinAbsoluteError((float)wf.getArray()->getReference(100),
-                                v(100), 0.0001f);
+      expectWithinAbsoluteError((float)wf.getArray()->getReference(100), v(100),
+                                0.0001f);
     }
 
     beginTest("Loop Points API");
     {
       StackNode parent("Parent");
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
-      auto *clipPtr = clip.get();
+      auto* clipPtr = clip.get();
       parent.addChild(std::move(clip));
 
       // Record 1000 samples
       float input[1000];
       for (int i = 0; i < 1000; ++i)
         input[i] = (float)(i % 100) / 100.0f;  // Ramp pattern
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
 
       ProcessContext recCtx;
       recCtx.num_samples = 1000;
@@ -320,7 +320,7 @@ class ClipNodeTests : public juce::UnitTest {
       // Playback should use the new loop region
       clipPtr->startPlayback();
       float out[10] = {0.0f};
-      float *const outputs[] = {out, out};
+      float* const outputs[] = {out, out};
 
       ProcessContext playCtx;
       playCtx.num_samples = 10;
@@ -342,12 +342,12 @@ class ClipNodeTests : public juce::UnitTest {
 
       // First clip defines quantum of 1000 samples
       auto masterClip = std::make_unique<ClipNode>("Master", SR);
-      auto *masterPtr = masterClip.get();
+      auto* masterPtr = masterClip.get();
       parent.addChild(std::move(masterClip));
 
       float masterInput[1000];
       for (int i = 0; i < 1000; ++i) masterInput[i] = 0.1f;
-      float *const masterInputs[] = {masterInput};
+      float* const masterInputs[] = {masterInput};
 
       ProcessContext ctx;
       ctx.num_samples = 1000;
@@ -419,11 +419,11 @@ class ClipNodeTests : public juce::UnitTest {
       parent.setQuantum(1000, 0);  // island Q established, epoch 0
 
       auto clip = std::make_unique<ClipNode>("Armed", SR);
-      auto *c = clip.get();
+      auto* c = clip.get();
       parent.addChild(std::move(clip));
 
       float in[50] = {0.5f};
-      float *const ins[] = {in};
+      float* const ins[] = {in};
       ProcessContext ctx;
       ctx.num_samples = 50;
       ctx.is_recording = true;
@@ -457,12 +457,12 @@ class ClipNodeTests : public juce::UnitTest {
       parent.setQuantum(1000, 0);
 
       auto clip = std::make_unique<ClipNode>("StopRace", SR);
-      auto *c = clip.get();
+      auto* c = clip.get();
       parent.addChild(std::move(clip));
 
       float in[300];
       for (int i = 0; i < 300; ++i) in[i] = 0.4f;
-      float *const ins[] = {in};
+      float* const ins[] = {in};
       ProcessContext ctx;
       ctx.num_samples = 300;
       ctx.is_recording = true;
@@ -498,7 +498,7 @@ class ClipNodeTests : public juce::UnitTest {
       parent.setQuantum(1000, 0);
 
       auto clipA = std::make_unique<ClipNode>("A", SR);
-      auto *a = clipA.get();
+      auto* a = clipA.get();
       parent.addChild(std::move(clipA));
 
       expect(!parent.hasActiveTake());
@@ -510,7 +510,7 @@ class ClipNodeTests : public juce::UnitTest {
       // Removing a live take must balance the counter too (its
       // commit/cancel event will never arrive).
       auto clipB = std::make_unique<ClipNode>("B", SR);
-      auto *b = clipB.get();
+      auto* b = clipB.get();
       parent.addChild(std::move(clipB));
       b->startRecording();
       expect(parent.hasActiveTake());
@@ -534,11 +534,11 @@ class ClipNodeTests : public juce::UnitTest {
       parent.setQuantum(1000, 700);
 
       auto clip = std::make_unique<ClipNode>("Pickup", SR);
-      auto *c = clip.get();
+      auto* c = clip.get();
       parent.addChild(std::move(clip));
 
       float in[50] = {0.5f};
-      float *const ins[] = {in};
+      float* const ins[] = {in};
       ProcessContext ctx;
       ctx.num_samples = 50;
       ctx.is_recording = true;
@@ -563,11 +563,11 @@ class ClipNodeTests : public juce::UnitTest {
       parent.setQuantum(1000, 700);
 
       auto clip = std::make_unique<ClipNode>("Await", SR);
-      auto *c = clip.get();
+      auto* c = clip.get();
       parent.addChild(std::move(clip));
 
       float in[50] = {0.5f};
-      float *const ins[] = {in};
+      float* const ins[] = {in};
       ProcessContext ctx;
       ctx.num_samples = 50;
       ctx.is_recording = true;
@@ -599,7 +599,7 @@ class ClipNodeTests : public juce::UnitTest {
       StackNode parent("Parent");
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[1000] = {0.0f};
-      float *const dummyIns[] = {dummyIn};
+      float* const dummyIns[] = {dummyIn};
       ProcessContext dummyCtx;
       dummyCtx.num_samples = 1000;  // Q = 1000 samples
       dummyCtx.is_recording = true;
@@ -609,7 +609,7 @@ class ClipNodeTests : public juce::UnitTest {
       parent.addChild(std::move(dummy));
 
       parent.addChild(std::move(node));
-      auto *nodePtr = dynamic_cast<ClipNode *>(parent.getChild(1));
+      auto* nodePtr = dynamic_cast<ClipNode*>(parent.getChild(1));
 
       // Start recording
       nodePtr->startRecording();
@@ -618,7 +618,7 @@ class ClipNodeTests : public juce::UnitTest {
       ctx.is_recording = true;
       float input[500];
       for (int i = 0; i < 500; ++i) input[i] = 0.5f;
-      float *const inputs[] = {input};
+      float* const inputs[] = {input};
       nodePtr->process(inputs, nullptr, 1, 0, ctx);
 
       // Stop recording - should NOT commit immediately
