@@ -135,6 +135,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    CSS-drawn — font symbols came from different faces per platform and
    the pause glyph sat optically high (owner feedback 2026-08-08). */
 #play-btn {
+    /* flex:none — a knob is a CIRCLE. As a shrinkable flex item the
+       transport crunch squeezed it into an ellipse (owner feedback
+       2026-08-08h); the odometer is the row's designated shrinker. */
+    flex: none;
     width: 54px; height: 54px;
     border-radius: 50%;
     /* FLEX centering, not grid: the (hidden, zero-size) ▶/⏸ text node
@@ -179,7 +183,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-radius: 8px;
     padding: 6px 14px;
     box-shadow: inset 0 3px 8px rgba(0,0,0,.85);
-    min-width: 0;
+    /* THE row's designated shrinker — but never below a readable
+       readout head ("loop 4.30 s…" keeps its numbers) */
+    min-width: 15ch;
     flex: 0 1 auto;
 }
 #odometer .digits {
@@ -368,10 +374,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* Narrow windows: decoration yields first, then secondary info — the
    master monitor is an instrument, so it stays as long as possible
    (owner feedback 2026-08-08: the app runs well under 1080 CSS px and
-   the meters must be there). Order of sacrifice: brand → compact VU →
-   odometer sub → monitor last, only at phone-ish widths. */
-@media (max-width: 980px) { #transport .brand { display: none; } }
-@media (max-width: 820px) {
+   the meters must be there). The MARK is permanent at every width —
+   branding that pops in and out reads as a glitch (owner feedback
+   2026-08-08h); only the wordmark text yields. Order of sacrifice:
+   wordmark → compact VU → odometer sub → monitor last. */
+@media (max-width: 1150px) { #transport .brand .brand-text { display: none; } }
+@media (max-width: 1000px) {
     #master-monitor .vu { width: 84px; }
     #master-monitor .vu .arc { left: 9px; right: 9px; }
     #transport { gap: 10px; }

@@ -639,6 +639,14 @@ std::optional<juce::WebBrowserComponent::Resource> MainComponent::getResource(
     mimeType = "application/javascript";
   else if (ext == ".png")
     mimeType = "image/png";
+  else if (ext == ".svg")
+    // Served as text/plain, WKWebView refuses to render an <img> SVG —
+    // the brand mark showed as a broken-image icon (field 2026-08-08h).
+    mimeType = "image/svg+xml";
+  else if (ext == ".ico")
+    mimeType = "image/x-icon";
+  else if (ext == ".json")
+    mimeType = "application/json";
 
   std::vector<std::byte> data(mb.getSize());
   std::memcpy(data.data(), mb.getData(), mb.getSize());
