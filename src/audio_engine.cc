@@ -1858,7 +1858,9 @@ void AudioEngine::startLatencyCalibration() {
   // the phase — the audio thread only ever writes into existing storage.
   const double sr = cached_sample_rate_.load();
   const int capture_len = (int)(sr * 2.0);  // 2 s window
-  calibration_capture_.setSize(1, capture_len, false, true, false);
+  calibration_capture_.setSize(1, capture_len, /*keepExistingContent=*/false,
+                               /*clearExtraSpace=*/true,
+                               /*avoidReallocating=*/false);
   calibration_capture_.clear();
   calibration_click_pos_ = (int)(sr * 0.25);  // 250 ms of noise-floor lead-in
   calibration_write_pos_.store(0);
@@ -2069,11 +2071,13 @@ void AudioEngine::toggleMute(const juce::String& uuid) {
   }
 }
 
-void AudioEngine::setPeriodSource(const juce::String& uuid, bool from_context) {
+void AudioEngine::setPeriodSource(const juce::String& uuid,
+                                  celestrian::PeriodSource source) {
   // The Q5 knob: one-shot ⟺ period := context cycle. A MUSICAL fact
   // (changes what sounds when), so unlike the mixer knobs it rides the
   // edit log. CLIPS ONLY for now — a stack has no origin to anchor a
   // once-per-cycle firing to (fractal one-shot groups are future work).
+  const bool from_context = source == celestrian::PeriodSource::CONTEXT_CYCLE;
   auto* node = findNodeByUuid(root_node.get(), uuid);
   if (!node || node->getNodeType() != celestrian::NodeType::Clip) return;
   if (node->period_from_context_.load() == from_context) return;

@@ -39,4 +39,4 @@ trigger: always_on
 >
 > Missing step #2 causes JS promises to hang forever.
 
-* All native functions MUST log invocation via `juce::Logger::writeToLog`
+* Bridge invocations are traced automatically by the `voidCall`/`valueCall` adapters in `MainComponent.cc`, in DEBUG builds only — do not add per-call release logging (log spam; owner ruling). Functional logging (e.g. `nativeLog` relaying the JS payload, `dumpStateToFile` recording its target path) is separate and stays in all builds. New registrations should use the adapters; hand-written handlers (async/multi-branch) call `logBridgeCall` themselves.

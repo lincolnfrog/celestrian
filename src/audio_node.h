@@ -118,6 +118,11 @@ struct ProcessContext {
  */
 enum class NodeType { Clip, Stack, Unknown };
 
+/** The period-source knob's two positions (Q5): a LOOP's period is its
+ * own length; a ONE-SHOT adopts the context cycle (sounds once per
+ * scope cycle at its origin, then rests). */
+enum class PeriodSource { OWN_LENGTH, CONTEXT_CYCLE };
+
 /**
  * Pan gains, BALANCE law: center is unity on both channels (existing
  * sessions keep their exact loudness), panning attenuates the far
@@ -130,6 +135,10 @@ inline void panGains(float pan, float& gain_l, float& gain_r) {
   gain_r = p < 0.0f ? 1.0f + p : 1.0f;
 }
 
+/** Mute at the output stage (an enum so call sites read as intent,
+ * not a bare bool — style.md). */
+enum class MuteState { AUDIBLE, MUTED };
+
 /**
  * THE OUTPUT STAGE scalars (unification_audit.md §2.4): every node's
  * signal reaches its parent through one resolution — render/sum →
@@ -139,10 +148,10 @@ inline void panGains(float pan, float& gain_l, float& gain_r) {
  * audibility mechanism (fixes D1: containers silence like leaves).
  * `fader` is the mono/extra-channel scalar (pan does not apply there).
  */
-inline void outputStageGains(float pan, float gain, bool muted, float& gl,
+inline void outputStageGains(float pan, float gain, MuteState mute, float& gl,
                              float& gr, float& fader) {
   panGains(pan, gl, gr);
-  fader = muted ? 0.0f : gain;
+  fader = mute == MuteState::MUTED ? 0.0f : gain;
   gl *= fader;
   gr *= fader;
 }

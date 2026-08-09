@@ -38,8 +38,10 @@ class MainComponent : public juce::Component, public juce::Timer {
   // Opens a native chooser for a session bundle directory, then
   // saves/loads to it and reports success back to the webview. Keeps the
   // chooser alive for the async callback.
+  enum class ChooserMode { SAVE, OPEN };
   void chooseSessionPath(
-      bool saving, juce::WebBrowserComponent::NativeFunctionCompletion done);
+      ChooserMode mode,
+      juce::WebBrowserComponent::NativeFunctionCompletion done);
   std::unique_ptr<juce::FileChooser> session_chooser_;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)

@@ -117,9 +117,6 @@ class ClipNode : public AudioNode {
    */
   void startRecording(int64_t through_map_commit_cycle = 0);
 
-  /** The C a through-map arm will commit at; 0 = plain take. */
-  int64_t throughMapCommitCycle() const { return map_commit_cycle_.load(); }
-
   /**
    * Signals the recording thread to stop and flush the buffer.
    */
@@ -153,11 +150,6 @@ class ClipNode : public AudioNode {
   }
   int64_t getCommitMasterPos() const { return commit_master_pos.load(); }
   int64_t getAwaitingStartAt() const { return awaiting_start_at.load(); }
-
-  /**
-   * Returns the total recorded sample count in the buffer.
-   */
-  int getSampleCount() const { return content_.load()->getNumSamples(); }
 
   /**
    * Returns the atomic write position for the recording process.
@@ -319,7 +311,9 @@ class ClipNode : public AudioNode {
     auto& buffer = *content_.load();
     const int n = audio.getNumSamples();
     const int chans = std::max(1, audio.getNumChannels());
-    if (n > 0) buffer.setSize(chans, n, false, false, false);
+    if (n > 0)
+      buffer.setSize(chans, n, /*keepExistingContent=*/false,
+                     /*clearExtraSpace=*/false, /*avoidReallocating=*/false);
     buffer.clear();
     for (int c = 0; c < chans && n > 0; ++c)
       buffer.copyFrom(c, 0, audio, c, 0, n);

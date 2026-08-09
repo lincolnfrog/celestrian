@@ -220,12 +220,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setNodeGain(const juce::String& uuid, double gain);
 
   /**
-   * The period-source knob (Q5): from_context = true makes the clip a
+   * The period-source knob (Q5): CONTEXT_CYCLE makes the clip a
    * ONE-SHOT (period := context cycle — sounds once per scope cycle at
-   * its origin, then rests); false restores the loop (period := own
-   * length). Clips only; undoable (a musical fact).
+   * its origin, then rests); OWN_LENGTH restores the loop. Clips only;
+   * undoable (a musical fact).
    */
-  void setPeriodSource(const juce::String& uuid, bool from_context);
+  void setPeriodSource(const juce::String& uuid,
+                       celestrian::PeriodSource source);
 
   // Built-in effects (dsp/effects.h): enable/param edits from the UI.
   // Message thread; prepare() runs before the enable flag flips so the

@@ -203,8 +203,6 @@ class EffectRack {
   /** Nested state for getGraphState: { eq: {...}, compressor: {...}, … } */
   juce::var getMetadata() const;
 
-  bool isPrepared() const { return prepared_sr_ > 0.0; }
-
   /**
    * SCOPE: pre-rack signal telemetry for the effect visualizations
    * (docs/ui_overhaul.md effects bar). The audio thread only COPIES the
@@ -222,7 +220,6 @@ class EffectRack {
   static constexpr int kSpectrumBins = 24;  // log-spaced 40 Hz..16 kHz
 
   void setScopeActive(bool on) { scope_on_.store(on); }
-  bool scopeActive() const { return scope_on_.load(); }
 
   /** The audio thread runs the rack if it has work OR a watcher. */
   bool isLive() const { return anyEnabled() || scope_on_.load(); }

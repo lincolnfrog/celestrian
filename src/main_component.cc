@@ -19,6 +19,64 @@ juce::String projectInfosToJson(
   }
   return juce::JSON::toString(juce::var(arr), true);
 }
+
+// ---------------------------------------------------------------------------
+// WebView bridge adapters.
+//
+// The Three-Layer Handshake (.agent/style.md) still applies: every
+// UI-triggered feature needs (1) the C++ logic, (2) a registration below via
+// withNativeFunction, and (3) a JS callNative(...) call. New registrations
+// should go through voidCall/valueCall so they inherit the arity guard and
+// the DEBUG-only invocation trace. Only genuinely multi-branch or async
+// handlers (e.g. saveSession/loadSession, which hand the completion to an
+// async file chooser) stay hand-written — those call logBridgeCall
+// themselves.
+// ---------------------------------------------------------------------------
+
+// Traces a bridge invocation, DEBUG builds only — per-call logging in
+// release builds is log spam (owner ruling). In release this compiles to
+// nothing. Functional logging (e.g. nativeLog's payload) is separate and
+// stays in all builds.
+void logBridgeCall(const char* name) {
+#if JUCE_DEBUG
+  juce::Logger::writeToLog("bridge: " + juce::String(name));
+#else
+  juce::ignoreUnused(name);
+#endif
+}
+
+// Wraps `fn` in a native-function handler that traces the call, runs
+// fn(args) only when at least `min_args` arguments arrived (the old
+// hand-written guard `args.size() > N` means min_args = N + 1), and always
+// completes with true.
+template <typename Fn>
+auto voidCall(const char* name, int min_args, Fn fn) {
+  return [name, min_args, fn = std::move(fn)](
+             const juce::Array<juce::var>& args,
+             juce::WebBrowserComponent::NativeFunctionCompletion completion) {
+    logBridgeCall(name);
+    if (args.size() >= min_args) fn(args);
+    completion(true);
+  };
+}
+
+// Same as voidCall, but completes with fn(args)'s return value; when fewer
+// than `min_args` arguments arrived it completes with `missing_args_result`
+// instead (each call site preserves its historical fallback value).
+template <typename Fn>
+auto valueCall(const char* name, int min_args, Fn fn,
+               juce::var missing_args_result = juce::var()) {
+  return [name, min_args, fn = std::move(fn),
+          missing_args_result = std::move(missing_args_result)](
+             const juce::Array<juce::var>& args,
+             juce::WebBrowserComponent::NativeFunctionCompletion completion) {
+    logBridgeCall(name);
+    if (args.size() >= min_args)
+      completion(fn(args));
+    else
+      completion(missing_args_result);
+  };
+}
 }  // namespace
 
 MainComponent::MainComponent()
@@ -40,101 +98,74 @@ MainComponent::MainComponent()
                     return getResource(path);
                   })
               .withNativeFunction(
-                  "ping", [](const juce::Array<juce::var>& args,
-                             juce::WebBrowserComponent::NativeFunctionCompletion
-                                 completion) { completion("pong"); })
-              .withNativeFunction(
-                  "togglePlayback",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    audio_engine.togglePlayback();
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "startRecordingInNode",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.startRecordingInNode(args[0].toString());
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "stopRecordingInNode",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.stopRecordingInNode(args[0].toString());
-                    completion(true);
-                  })
+                  "ping",
+                  valueCall("ping", 0, [](const auto&) { return "pong"; }))
+              .withNativeFunction("togglePlayback",
+                                  voidCall("togglePlayback", 0,
+                                           [this](const auto&) {
+                                             audio_engine.togglePlayback();
+                                           }))
+              .withNativeFunction("startRecordingInNode",
+                                  voidCall("startRecordingInNode", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.startRecordingInNode(
+                                                 args[0].toString());
+                                           }))
+              .withNativeFunction("stopRecordingInNode",
+                                  voidCall("stopRecordingInNode", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.stopRecordingInNode(
+                                                 args[0].toString());
+                                           }))
               .withNativeFunction(
                   "getGraphState",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(audio_engine.getGraphState());
-                  })
-              .withNativeFunction(
-                  "getWaveform",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() >= 2) {
-                      completion(audio_engine.getWaveform(args[0].toString(),
-                                                          (int)args[1]));
-                    } else {
-                      completion(juce::Array<juce::var>());
-                    }
-                  })
-              .withNativeFunction(
-                  "toggleStackExpand",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.toggleStackExpand(args[0].toString());
-                    completion(true);
-                  })
+                  valueCall("getGraphState", 0,
+                            [this](const auto&) {
+                              return audio_engine.getGraphState();
+                            }))
+              .withNativeFunction("getWaveform",
+                                  valueCall(
+                                      "getWaveform", 2,
+                                      [this](const auto& args) {
+                                        return audio_engine.getWaveform(
+                                            args[0].toString(), (int)args[1]);
+                                      },
+                                      juce::var(juce::Array<juce::var>())))
+              .withNativeFunction("toggleStackExpand",
+                                  voidCall("toggleStackExpand", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.toggleStackExpand(
+                                                 args[0].toString());
+                                           }))
               .withNativeFunction(
                   "createNode",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      // type, parent_uuid
-                      audio_engine.createNode(args[0].toString(),
-                                              args[1].toString());
-                    } else if (args.size() > 0) {
-                      // type only
-                      audio_engine.createNode(args[0].toString());
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "deleteNode",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.deleteNode(args[0].toString());
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "undo",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    audio_engine.undo();
-                    completion(true);
-                  })
+                  voidCall("createNode", 1,
+                           [this](const auto& args) {
+                             if (args.size() > 1) {
+                               // type, parent_uuid
+                               audio_engine.createNode(args[0].toString(),
+                                                       args[1].toString());
+                             } else {
+                               // type only
+                               audio_engine.createNode(args[0].toString());
+                             }
+                           }))
+              .withNativeFunction("deleteNode",
+                                  voidCall("deleteNode", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.deleteNode(
+                                                 args[0].toString());
+                                           }))
+              .withNativeFunction("undo", voidCall("undo", 0,
+                                                   [this](const auto&) {
+                                                     audio_engine.undo();
+                                                   }))
               .withNativeFunction(
                   "saveSession",
                   [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
+                    logBridgeCall("saveSession");
                     juce::String path =
                         args.size() > 0 ? args[0].toString() : juce::String();
                     if (path.isNotEmpty()) {
@@ -142,408 +173,333 @@ MainComponent::MainComponent()
                       return;
                     }
                     // Empty path: pick a bundle directory to create.
-                    chooseSessionPath(true, std::move(completion));
+                    chooseSessionPath(ChooserMode::SAVE, std::move(completion));
                   })
               .withNativeFunction(
                   "loadSession",
                   [this](const juce::Array<juce::var>& args,
                          juce::WebBrowserComponent::NativeFunctionCompletion
                              completion) {
+                    logBridgeCall("loadSession");
                     juce::String path =
                         args.size() > 0 ? args[0].toString() : juce::String();
                     if (path.isNotEmpty()) {
                       completion(audio_engine.loadSession(path));
                       return;
                     }
-                    chooseSessionPath(false, std::move(completion));
+                    chooseSessionPath(ChooserMode::OPEN, std::move(completion));
                   })
               .withNativeFunction(
                   "getProjectInfo",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    auto* o = new juce::DynamicObject();
-                    o->setProperty("id", project_manager_.id());
-                    o->setProperty("name", project_manager_.displayName());
-                    o->setProperty("born", project_manager_.born());
-                    completion(juce::JSON::toString(juce::var(o), true));
-                  })
+                  valueCall("getProjectInfo", 0,
+                            [this](const auto&) {
+                              auto* o = new juce::DynamicObject();
+                              o->setProperty("id", project_manager_.id());
+                              o->setProperty("name",
+                                             project_manager_.displayName());
+                              o->setProperty("born", project_manager_.born());
+                              return juce::JSON::toString(juce::var(o), true);
+                            }))
               .withNativeFunction(
                   "renameProject",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    project_manager_.rename(args.size() > 0 ? args[0].toString()
-                                                            : "");
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "saveProjectNow",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    completion(project_manager_.saveNow());
-                  })
+                  voidCall("renameProject", 0,
+                           [this](const auto& args) {
+                             project_manager_.rename(
+                                 args.size() > 0 ? args[0].toString() : "");
+                           }))
+              .withNativeFunction("saveProjectNow",
+                                  valueCall("saveProjectNow", 0,
+                                            [this](const auto&) {
+                                              return project_manager_.saveNow();
+                                            }))
               .withNativeFunction(
                   "listTemplates",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    completion(
-                        projectInfosToJson(project_manager_.listTemplates()));
-                  })
+                  valueCall("listTemplates", 0,
+                            [this](const auto&) {
+                              return projectInfosToJson(
+                                  project_manager_.listTemplates());
+                            }))
               .withNativeFunction(
                   "listRecentProjects",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    completion(
-                        projectInfosToJson(project_manager_.listRecents(10)));
-                  })
+                  valueCall("listRecentProjects", 0,
+                            [this](const auto&) {
+                              return projectInfosToJson(
+                                  project_manager_.listRecents(10));
+                            }))
               .withNativeFunction(
                   "newProjectFromTemplate",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(project_manager_.newFromTemplate(
-                        args.size() > 0 ? args[0].toString() : ""));
-                  })
+                  valueCall("newProjectFromTemplate", 0,
+                            [this](const auto& args) {
+                              return project_manager_.newFromTemplate(
+                                  args.size() > 0 ? args[0].toString() : "");
+                            }))
               .withNativeFunction(
                   "openProjectPath",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(project_manager_.openProject(
-                        juce::File(args.size() > 0 ? args[0].toString() : "")));
-                  })
+                  valueCall("openProjectPath", 0,
+                            [this](const auto& args) {
+                              return project_manager_.openProject(juce::File(
+                                  args.size() > 0 ? args[0].toString() : ""));
+                            }))
               .withNativeFunction(
                   "saveAsTemplate",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(project_manager_.saveAsTemplate(
-                        args.size() > 0 ? args[0].toString() : ""));
-                  })
+                  valueCall("saveAsTemplate", 0,
+                            [this](const auto& args) {
+                              return project_manager_.saveAsTemplate(
+                                  args.size() > 0 ? args[0].toString() : "");
+                            }))
               .withNativeFunction(
                   "duplicateProject",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    const auto dest = project_manager_.duplicateProject();
-                    completion(dest == juce::File() ? juce::String("")
-                                                    : dest.getFileName());
-                  })
-              .withNativeFunction(
-                  "redo",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    (void)args;
-                    audio_engine.redo();
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "renameNode",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1)
-                      audio_engine.renameNode(args[0].toString(),
-                                              args[1].toString());
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "reorderNode",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 2)
-                      audio_engine.reorderNode(
-                          args[0].toString(), args[1].toString(), (int)args[2]);
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "combineNodes",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1)
-                      completion(audio_engine.combineNodes(args[0].toString(),
-                                                           args[1].toString()));
-                    else
-                      completion(juce::String());
-                  })
-              .withNativeFunction(
-                  "setNodePosition",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 2)
-                      audio_engine.setNodePosition(
-                          args[0].toString(), (double)args[1], (double)args[2]);
-                    completion(true);
-                  })
+                  valueCall("duplicateProject", 0,
+                            [this](const auto&) {
+                              const auto dest =
+                                  project_manager_.duplicateProject();
+                              return dest == juce::File() ? juce::String("")
+                                                          : dest.getFileName();
+                            }))
+              .withNativeFunction("redo", voidCall("redo", 0,
+                                                   [this](const auto&) {
+                                                     audio_engine.redo();
+                                                   }))
+              .withNativeFunction("renameNode",
+                                  voidCall("renameNode", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.renameNode(
+                                                 args[0].toString(),
+                                                 args[1].toString());
+                                           }))
+              .withNativeFunction("reorderNode",
+                                  voidCall("reorderNode", 3,
+                                           [this](const auto& args) {
+                                             audio_engine.reorderNode(
+                                                 args[0].toString(),
+                                                 args[1].toString(),
+                                                 (int)args[2]);
+                                           }))
+              .withNativeFunction("combineNodes",
+                                  valueCall(
+                                      "combineNodes", 2,
+                                      [this](const auto& args) {
+                                        return audio_engine.combineNodes(
+                                            args[0].toString(),
+                                            args[1].toString());
+                                      },
+                                      juce::var(juce::String())))
+              .withNativeFunction("setNodePosition",
+                                  voidCall("setNodePosition", 3,
+                                           [this](const auto& args) {
+                                             audio_engine.setNodePosition(
+                                                 args[0].toString(),
+                                                 (double)args[1],
+                                                 (double)args[2]);
+                                           }))
               .withNativeFunction(
                   "getInputList",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(audio_engine.getInputList());
-                  })
+                  valueCall("getInputList", 0,
+                            [this](const auto&) {
+                              return audio_engine.getInputList();
+                            }))
               .withNativeFunction(
                   "getAudioDeviceState",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(audio_engine.getAudioDeviceState());
-                  })
+                  valueCall("getAudioDeviceState", 0,
+                            [this](const auto&) {
+                              return audio_engine.getAudioDeviceState();
+                            }))
               .withNativeFunction(
                   "setAudioDevice",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    // (type, device, sampleRate, bufferSize); trailing args
-                    // are optional — 0 means "keep the device's preference".
-                    const auto type =
-                        args.size() > 0 ? args[0].toString() : juce::String();
-                    const auto device =
-                        args.size() > 1 ? args[1].toString() : juce::String();
-                    const double sr = args.size() > 2 ? (double)args[2] : 0.0;
-                    const int block = args.size() > 3 ? (int)args[3] : 0;
-                    completion(
-                        audio_engine.setAudioDevice(type, device, sr, block));
-                  })
-              .withNativeFunction(
-                  "setNodeInput",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      audio_engine.setNodeInput(args[0].toString(),
-                                                (int)args[1]);
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "setNodeInputRight",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      audio_engine.setNodeInputRight(args[0].toString(),
-                                                     (int)args[1]);
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "setNodePan",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      audio_engine.setNodePan(args[0].toString(),
-                                              (double)args[1]);
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "setNodeGain",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      audio_engine.setNodeGain(args[0].toString(),
-                                               (double)args[1]);
-                    }
-                    completion(true);
-                  })
+                  valueCall("setAudioDevice", 0,
+                            [this](const auto& args) {
+                              // (type, device, sampleRate, bufferSize);
+                              // trailing args are optional — 0 means "keep the
+                              // device's preference".
+                              const auto type = args.size() > 0
+                                                    ? args[0].toString()
+                                                    : juce::String();
+                              const auto device = args.size() > 1
+                                                      ? args[1].toString()
+                                                      : juce::String();
+                              const double sr =
+                                  args.size() > 2 ? (double)args[2] : 0.0;
+                              const int block =
+                                  args.size() > 3 ? (int)args[3] : 0;
+                              return audio_engine.setAudioDevice(type, device,
+                                                                 sr, block);
+                            }))
+              .withNativeFunction("setNodeInput",
+                                  voidCall("setNodeInput", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setNodeInput(
+                                                 args[0].toString(),
+                                                 (int)args[1]);
+                                           }))
+              .withNativeFunction("setNodeInputRight",
+                                  voidCall("setNodeInputRight", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setNodeInputRight(
+                                                 args[0].toString(),
+                                                 (int)args[1]);
+                                           }))
+              .withNativeFunction("setNodePan",
+                                  voidCall("setNodePan", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setNodePan(
+                                                 args[0].toString(),
+                                                 (double)args[1]);
+                                           }))
+              .withNativeFunction("setNodeGain",
+                                  voidCall("setNodeGain", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setNodeGain(
+                                                 args[0].toString(),
+                                                 (double)args[1]);
+                                           }))
               .withNativeFunction(
                   "setPeriodSource",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      audio_engine.setPeriodSource(
-                          args[0].toString(), args[1].toString() == "context");
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "setEffectEnabled",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 2) {
-                      audio_engine.setEffectEnabled(args[0].toString(),
-                                                    args[1].toString(),
-                                                    (bool)args[2]);
-                    }
-                    completion(true);
-                  })
+                  voidCall("setPeriodSource", 2,
+                           [this](const auto& args) {
+                             audio_engine.setPeriodSource(
+                                 args[0].toString(),
+                                 args[1].toString() == "context"
+                                     ? celestrian::PeriodSource::CONTEXT_CYCLE
+                                     : celestrian::PeriodSource::OWN_LENGTH);
+                           }))
+              .withNativeFunction("setEffectEnabled",
+                                  voidCall("setEffectEnabled", 3,
+                                           [this](const auto& args) {
+                                             audio_engine.setEffectEnabled(
+                                                 args[0].toString(),
+                                                 args[1].toString(),
+                                                 (bool)args[2]);
+                                           }))
               .withNativeFunction(
                   "setEffectParam",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 3) {
-                      audio_engine.setEffectParam(
-                          args[0].toString(), args[1].toString(),
-                          args[2].toString(), (double)args[3]);
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "setEffectScope",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 1) {
-                      audio_engine.setEffectScope(args[0].toString(),
-                                                  (bool)args[1]);
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "setLoopPoints",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 2) {
-                      audio_engine.setLoopPoints(args[0].toString(),
+                  voidCall("setEffectParam", 4,
+                           [this](const auto& args) {
+                             audio_engine.setEffectParam(
+                                 args[0].toString(), args[1].toString(),
+                                 args[2].toString(), (double)args[3]);
+                           }))
+              .withNativeFunction("setEffectScope",
+                                  voidCall("setEffectScope", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setEffectScope(
+                                                 args[0].toString(),
+                                                 (bool)args[1]);
+                                           }))
+              .withNativeFunction("setLoopPoints",
+                                  voidCall("setLoopPoints", 3,
+                                           [this](const auto& args) {
+                                             audio_engine.setLoopPoints(
+                                                 args[0].toString(),
                                                  (juce::int64)args[1],
                                                  (juce::int64)args[2]);
-                    }
-                    completion(true);
-                  })
+                                           }))
               .withNativeFunction(
                   "setSegments",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    // args[1] = flat [s0, e0, s1, e1, ...] in samples
-                    // (time_maps.md phase 3).
-                    if (args.size() > 1) {
-                      celestrian::timing::TimeMap m;
-                      if (auto* flat = args[1].getArray()) {
-                        for (int i = 0;
-                             i + 1 < flat->size() &&
-                             m.n < celestrian::timing::TimeMap::kMaxSegments;
-                             i += 2) {
-                          m.segs[m.n++] = {(int64_t)(double)(*flat)[i],
-                                           (int64_t)(double)(*flat)[i + 1]};
-                        }
-                      }
-                      audio_engine.setSegments(args[0].toString(), m);
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "warpPointer",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    // Move the OS cursor to a webview-viewport position
-                    // (CSS px == JUCE points at default zoom). The
-                    // expanded map drag warps the pointer ONTO the
-                    // handle it grabbed once the raw view has opened —
-                    // pointer and geometry stay 1:1, no easing (the
-                    // heard→raw reflow otherwise strands the handle
-                    // away from the mouse; field 2026-07-25d).
-                    if (args.size() > 1) {
-                      const auto global =
-                          web_browser.localPointToGlobal(juce::Point<float>(
-                              (float)(double)args[0], (float)(double)args[1]));
-                      juce::Desktop::setMousePosition(global.roundToInt());
-                      completion(true);
-                    } else {
-                      completion(false);
-                    }
-                  })
-              .withNativeFunction(
-                  "togglePlay",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.togglePlay(args[0].toString());
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "toggleSolo",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.toggleSolo(args[0].toString());
-                    completion(true);
-                  })
+                  voidCall("setSegments", 2,
+                           [this](const auto& args) {
+                             // args[1] = flat [s0, e0, s1, e1, ...] in samples
+                             // (time_maps.md phase 3).
+                             celestrian::timing::TimeMap m;
+                             if (auto* flat = args[1].getArray()) {
+                               for (int i = 0; i + 1 < flat->size() &&
+                                               m.n < celestrian::timing::
+                                                         TimeMap::kMaxSegments;
+                                    i += 2) {
+                                 m.segs[m.n++] = {
+                                     (int64_t)(double)(*flat)[i],
+                                     (int64_t)(double)(*flat)[i + 1]};
+                               }
+                             }
+                             audio_engine.setSegments(args[0].toString(), m);
+                           }))
+              .withNativeFunction("warpPointer",
+                                  valueCall(
+                                      "warpPointer", 2,
+                                      [this](const auto& args) {
+                                        // Move the OS cursor to a
+                                        // webview-viewport position (CSS px ==
+                                        // JUCE points at default zoom). The
+                                        // expanded map drag warps the pointer
+                                        // ONTO the handle it grabbed once the
+                                        // raw view has opened — pointer and
+                                        // geometry stay 1:1, no easing (the
+                                        // heard→raw reflow otherwise strands
+                                        // the handle away from the mouse; field
+                                        // 2026-07-25d).
+                                        const auto global =
+                                            web_browser.localPointToGlobal(
+                                                juce::Point<float>(
+                                                    (float)(double)args[0],
+                                                    (float)(double)args[1]));
+                                        juce::Desktop::setMousePosition(
+                                            global.roundToInt());
+                                        return true;
+                                      },
+                                      juce::var(false)))
+              .withNativeFunction("togglePlay",
+                                  voidCall("togglePlay", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.togglePlay(
+                                                 args[0].toString());
+                                           }))
+              .withNativeFunction("toggleSolo",
+                                  voidCall("toggleSolo", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.toggleSolo(
+                                                 args[0].toString());
+                                           }))
               .withNativeFunction(
                   "toggleMute",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0) {
-                      if (args[0].isString())
-                        audio_engine.toggleMute(args[0].toString());
-                      else if (auto* obj = args[0].getDynamicObject())
-                        audio_engine.toggleMute(
-                            obj->getProperty("uuid").toString());
-                    }
-                    completion(true);
-                  })
-              .withNativeFunction(
-                  "toggleLoopWindow",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    if (args.size() > 0)
-                      audio_engine.toggleLoopWindow(args[0].toString());
-                    completion(true);
-                  })
+                  voidCall("toggleMute", 1,
+                           [this](const auto& args) {
+                             if (args[0].isString())
+                               audio_engine.toggleMute(args[0].toString());
+                             else if (auto* obj = args[0].getDynamicObject())
+                               audio_engine.toggleMute(
+                                   obj->getProperty("uuid").toString());
+                           }))
+              .withNativeFunction("toggleLoopWindow",
+                                  voidCall("toggleLoopWindow", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.toggleLoopWindow(
+                                                 args[0].toString());
+                                           }))
               .withNativeFunction(
                   "startLatencyCalibration",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    audio_engine.startLatencyCalibration();
-                    completion(true);
-                  })
+                  voidCall("startLatencyCalibration", 0,
+                           [this](const auto&) {
+                             audio_engine.startLatencyCalibration();
+                           }))
               .withNativeFunction(
                   "getLatencyCalibration",
-                  [this](const juce::Array<juce::var>& args,
-                         juce::WebBrowserComponent::NativeFunctionCompletion
-                             completion) {
-                    completion(audio_engine.getLatencyCalibration());
-                  })
-              .withNativeFunction(
-                  "nativeLog",
-                  [](const juce::Array<juce::var>& args,
-                     juce::WebBrowserComponent::NativeFunctionCompletion
-                         completion) {
-                    if (args.size() > 0)
-                      juce::Logger::writeToLog("[JS] " + args[0].toString());
-                    completion(true);
-                  })
+                  valueCall("getLatencyCalibration", 0,
+                            [this](const auto&) {
+                              return audio_engine.getLatencyCalibration();
+                            }))
+              .withNativeFunction("nativeLog",
+                                  voidCall("nativeLog", 1,
+                                           [](const auto& args) {
+                                             // Functional logging — relaying
+                                             // the JS payload IS this
+                                             // function's job, so it stays in
+                                             // release builds (the debug-only
+                                             // rule covers only the invocation
+                                             // trace).
+                                             juce::Logger::writeToLog(
+                                                 "[JS] " + args[0].toString());
+                                           }))
               .withNativeFunction(
                   "dumpStateToFile",
-                  [](const juce::Array<juce::var>& args,
-                     juce::WebBrowserComponent::NativeFunctionCompletion
-                         completion) {
-                    if (args.size() > 0) {
-                      auto stateFile =
-                          juce::File::getCurrentWorkingDirectory().getChildFile(
-                              "celestrian_state.json");
-                      stateFile.replaceWithText(args[0].toString());
-                      juce::Logger::writeToLog("State dumped to: " +
-                                               stateFile.getFullPathName());
-                    }
-                    completion(true);
-                  })) {
+                  voidCall("dumpStateToFile", 1, [](const auto& args) {
+                    auto stateFile =
+                        juce::File::getCurrentWorkingDirectory().getChildFile(
+                            "celestrian_state.json");
+                    stateFile.replaceWithText(args[0].toString());
+                    // Functional logging (kept in release): records where
+                    // the state landed.
+                    juce::Logger::writeToLog("State dumped to: " +
+                                             stateFile.getFullPathName());
+                  }))) {
   audio_engine.initialiseAudioDevice();
   // The launch ritual (docs/projects.md): boot into the last template —
   // or, on first run, build the minimal Default template (one ready
@@ -564,7 +520,9 @@ MainComponent::MainComponent()
 MainComponent::~MainComponent() {}
 
 void MainComponent::chooseSessionPath(
-    bool saving, juce::WebBrowserComponent::NativeFunctionCompletion done) {
+    ChooserMode mode,
+    juce::WebBrowserComponent::NativeFunctionCompletion done) {
+  const bool saving = mode == ChooserMode::SAVE;
   auto start =
       juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
           .getChildFile("Celestrian Sessions");

@@ -78,7 +78,8 @@ bool readClipWav(const juce::File& file, juce::AudioBuffer<float>& out) {
   const int len = (int)reader->lengthInSamples;
   const int chans = std::max(1, (int)reader->numChannels);
   out.setSize(chans, len);
-  reader->read(&out, 0, len, 0, true, chans >= 2);
+  reader->read(&out, 0, len, 0, /*useReaderLeftChan=*/true,
+               /*useReaderRightChan=*/chans >= 2);
   return true;
 }
 

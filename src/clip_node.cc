@@ -204,24 +204,18 @@ void ClipNode::control(const float* const* input_channels,
 
       if (samples_to_write > 0) {
         const int ncap = std::min(capture_channels_, buffer.getNumChannels());
+        // Peak tracking over the CAPTURED channels only — the meter
+        // reports the take, not the device (owner ruling 2026-08-09b;
+        // unified with the ring path, which always did this).
+        float blockPeak = 0.0f;
         for (int c = 0; c < ncap; ++c) {
           const float* in = input_channels[std::clamp(
               c == 0 ? preferred_input_channel : preferred_input_channel_right,
               0, num_input_channels - 1)];
+          if (in == nullptr) continue;  // device delivered a null channel
           captureWrite(buffer, c, write_position.load(), in, samples_to_write);
-        }
-
-        // Peak tracking. NOTE: this path meters ALL delivered input
-        // channels, while the ring path above meters only the CAPTURED
-        // channels — for an unassigned-but-hot input the two report
-        // different peaks. Kept as-is pending a ruling on which is
-        // intended (metering the take vs. metering the device input).
-        float blockPeak = 0.0f;
-        for (int ch = 0; ch < num_input_channels; ++ch) {
-          if (input_channels[ch] != nullptr) {
-            for (int i = 0; i < samples_to_write; ++i) {
-              blockPeak = std::max(blockPeak, std::abs(input_channels[ch][i]));
-            }
+          for (int i = 0; i < samples_to_write; ++i) {
+            blockPeak = std::max(blockPeak, std::abs(in[i]));
           }
         }
         finishCaptureBlock(samples_to_write, blockPeak, context);
@@ -426,7 +420,8 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // unpanned mono sum). Mute short-circuited above (isSilenced),
         // so the fader here is just `gain`.
         float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-        outputStageGains(pan.load(), gain.load(), false, gl, gr, fader);
+        outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr,
+                         fader);
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] == nullptr) continue;
           const bool right = ch == 1 && num_output_channels >= 2;
@@ -666,7 +661,8 @@ void ClipNode::startRecording(int64_t through_map_commit_cycle) {
         kMaxTakeSamples, std::numeric_limits<int>::max() - 64);
     if (buffer.getNumSamples() < want ||
         buffer.getNumChannels() != capture_channels_) {
-      buffer.setSize(capture_channels_, want, false, false, false);
+      buffer.setSize(capture_channels_, want, /*keepExistingContent=*/false,
+                     /*clearExtraSpace=*/false, /*avoidReallocating=*/false);
     }
     // THROUGH-MAP take (time_maps.md phase 2, ruling 2): the commit is
     // a dense [0, C) buffer with LITERAL SILENCE in unvisited regions —

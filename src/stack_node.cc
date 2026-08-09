@@ -345,8 +345,9 @@ void StackNode::renderChildren(float* const* output_channels,
   // buffer was preallocated in the constructor and this never triggers.
   if (mix_buffer.getNumSamples() < context.num_samples ||
       mix_buffer.getNumChannels() < num_output_channels) {
-    mix_buffer.setSize(num_output_channels, context.num_samples, false, true,
-                       true);
+    mix_buffer.setSize(num_output_channels, context.num_samples,
+                       /*keepExistingContent=*/false, /*clearExtraSpace=*/true,
+                       /*avoidReallocating=*/true);
   }
 
   ProcessContext child_context = childContext(context);
@@ -393,7 +394,9 @@ void StackNode::renderChildren(float* const* output_channels,
   if (use_accum) {
     if (fx_accum_.getNumSamples() < context.num_samples ||
         fx_accum_.getNumChannels() < accum_ch) {
-      fx_accum_.setSize(accum_ch, context.num_samples, false, true, true);
+      fx_accum_.setSize(accum_ch, context.num_samples,
+                        /*keepExistingContent=*/false,
+                        /*clearExtraSpace=*/true, /*avoidReallocating=*/true);
     }
     fx_accum_.clear();
   }
@@ -440,7 +443,9 @@ void StackNode::renderChildren(float* const* output_channels,
     // get the fader-scaled unpanned channel-0 signal (the historical
     // duplicate-mono behavior).
     float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-    outputStageGains(group_pan, gain.load(), muted, gl, gr, fader);
+    outputStageGains(group_pan, gain.load(),
+                     muted ? MuteState::MUTED : MuteState::AUDIBLE, gl, gr,
+                     fader);
     for (int ch = 0; ch < num_output_channels; ++ch) {
       if (output_channels[ch] == nullptr) continue;
       const int src = std::min(ch, accum_ch - 1);

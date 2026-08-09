@@ -100,7 +100,12 @@ class ProjectManager {
   juce::File base() const;
   /** First free YYYYMMDD-NN folder for today, NN from 01. */
   juce::File nextSerialFolder() const;
-  bool mirror(bool incremental);
+  /** How the mirror writes take WAVs: INCREMENTAL skips files whose
+   * on-disk length already matches (committed audio is immutable);
+   * FULL_REWRITE stamps every file — used when a folder must become
+   * self-contained (save-as-template / duplicate). */
+  enum class MirrorMode { INCREMENTAL, FULL_REWRITE };
+  bool mirror(MirrorMode mode);
   void rememberLastTemplate(const juce::String& name);
 
   AudioEngine& engine_;

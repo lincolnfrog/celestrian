@@ -173,7 +173,7 @@ class OneShotTests : public juce::UnitTest {
       };
 
       expectEquals(sourceOf(uuid), juce::String("own"), "born a loop");
-      engine.setPeriodSource(uuid, true);
+      engine.setPeriodSource(uuid, PeriodSource::CONTEXT_CYCLE);
       expectEquals(sourceOf(uuid), juce::String("context"), "knob set");
       engine.undo();
       expectEquals(sourceOf(uuid), juce::String("own"), "undo restores");

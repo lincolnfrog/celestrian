@@ -35,12 +35,12 @@ juce::File ProjectManager::nextSerialFolder() const {
       date + "-" + juce::String(juce::Time::currentTimeMillis() % 100000));
 }
 
-bool ProjectManager::mirror(bool incremental) {
+bool ProjectManager::mirror(MirrorMode mode) {
   if (!born()) return false;
   session_io::SaveOptions opts;
   opts.display_name = display_name_;
   opts.created = created_;
-  opts.incremental = incremental;
+  opts.incremental = mode == MirrorMode::INCREMENTAL;
   return engine_.saveSessionTo(folder_, opts);
 }
 
@@ -63,7 +63,7 @@ void ProjectManager::tick() {
     juce::Logger::writeToLog("ProjectManager: project born — " +
                              folder_.getFullPathName());
   }
-  mirror(true);
+  mirror(MirrorMode::INCREMENTAL);
 }
 
 bool ProjectManager::saveNow() {
@@ -73,12 +73,12 @@ bool ProjectManager::saveNow() {
     display_name_ = folder_.getFileName();
     created_ = juce::Time::getCurrentTime().toISO8601(true);
   }
-  return mirror(true);
+  return mirror(MirrorMode::INCREMENTAL);
 }
 
 void ProjectManager::rename(const juce::String& name) {
   display_name_ = name.trim().isEmpty() ? id() : name.trim();
-  if (born()) mirror(true);  // persist the name; folder untouched
+  if (born()) mirror(MirrorMode::INCREMENTAL);  // persist the name only
 }
 
 bool ProjectManager::openProject(const juce::File& dir) {
@@ -162,13 +162,13 @@ bool ProjectManager::saveAsTemplate(const juce::String& template_name) {
 
 juce::File ProjectManager::duplicateProject() {
   if (!born()) return {};
-  mirror(true);  // the copy must include the latest state
+  mirror(MirrorMode::INCREMENTAL);  // copy must include the latest state
   const auto dest = nextSerialFolder();
   if (!folder_.copyDirectoryTo(dest)) return {};
   // Fork FORWARD: keep working in the copy; the original stays as the
   // checkpoint (the -02 habit, codified).
   folder_ = dest;
-  mirror(false);  // full rewrite stamps the mirror as this folder's own
+  mirror(MirrorMode::FULL_REWRITE);  // stamp the mirror as this folder's own
   return dest;
 }
 

@@ -187,8 +187,6 @@ inline QTime qsub(QTime a, QTime b) {
   return qtime(a.num * b.den - b.num * a.den, a.den * b.den);
 }
 
-inline QTime qmulInt(QTime a, int64_t k) { return qtime(a.num * k, a.den); }
-
 /**
  * Rational LCM of two positive periods: the smallest positive r such
  * that r/a and r/b are both integers. For a/b, c/d in lowest terms:
