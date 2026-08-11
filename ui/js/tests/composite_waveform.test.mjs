@@ -93,6 +93,22 @@ test('buildCacheKey', async (t) => {
         const key = buildCacheKey(stack, 400);
         assert.ok(typeof key === 'string');
     });
+
+    await t.test('windowActive flip → different key (tri-state incl. undefined)', () => {
+        const base = { id: 'c', type: 'clip', duration: 44100 };
+        const on = { nodes: [{ ...base, windowActive: true }] };
+        const off = { nodes: [{ ...base, windowActive: false }] };
+        const unset = { nodes: [{ ...base }] };
+        assert.notEqual(buildCacheKey(on, 400), buildCacheKey(off, 400));
+        assert.notEqual(buildCacheKey(off, 400), buildCacheKey(unset, 400));
+    });
+
+    await t.test('different child segments → different key', () => {
+        const base = { id: 'c', type: 'clip', duration: 132300 };
+        const a = { nodes: [{ ...base, segments: [0, 44100, 88200, 132300] }] };
+        const b = { nodes: [{ ...base, segments: [0, 88200] }] };
+        assert.notEqual(buildCacheKey(a, 400), buildCacheKey(b, 400));
+    });
 });
 
 // --- generateCompositeWaveform tests ---
@@ -229,6 +245,75 @@ test('generateCompositeWaveform', async (t) => {
             'bypassed: the silent recorded half shows again');
         assert.ok(bypassed[Math.floor(3 * n / 8)] > 0,
             'bypassed: the loud half at its recorded position');
+    });
+
+    await t.test('a MULTI-SEGMENT map contributes its segments concatenated (cut material excluded)', () => {
+        // 3Q take, peaks per Q: [0.5, silent, 1]. Map [0,1Q)+[2Q,3Q)
+        // cuts the silent middle: audibly the clip loops 0.5-then-1
+        // every 2Q. Over a 4Q cycle the composite must alternate
+        // 0.5/1 with the cut Q appearing NOWHERE.
+        const clip = {
+            id: 'c', type: 'clip', duration: 132300, origin: 0,
+            loopStart: 0, loopEnd: 132300,
+            segments: [0, 44100, 88200, 132300],
+            windowActive: true, loopBypassed: false,
+        };
+        const livePeaks = new Map([['c', [0.5, 0.5, 0, 0, 1, 1]]]);
+        const wf = generateCompositeWaveform({
+            stack: makeStack([clip]), stackDuration: 176400,
+            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            cache: new Map(), epochSamples: 0
+        });
+        // Heard period 2Q over a 4Q cycle: [0.5, 1, 0.5, 1] per Q.
+        assert.ok(wf.every(v => v > 0), 'the cut (silent) Q never appears');
+        assert.equal(wf[20], 0.5, 'Q0: first segment material');
+        assert.equal(wf[70], 1, 'Q1: second segment material');
+        assert.equal(wf[120], 0.5, 'Q2: pass repeats — first segment');
+        assert.equal(wf[170], 1, 'Q3: pass repeats — second segment');
+    });
+
+    await t.test('a BYPASSED multi-segment map falls back to the full take', () => {
+        const clip = {
+            id: 'c', type: 'clip', duration: 132300, origin: 0,
+            loopStart: 0, loopEnd: 132300,
+            segments: [0, 44100, 88200, 132300],
+            windowActive: false, loopBypassed: true,
+        };
+        const livePeaks = new Map([['c', [0.5, 0.5, 0, 0, 1, 1]]]);
+        const wf = generateCompositeWaveform({
+            stack: makeStack([clip]), stackDuration: 132300,
+            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            cache: new Map(), epochSamples: 0
+        });
+        // Full 3Q take at its recorded positions: the silent middle
+        // third SHOWS again when the map is bypassed.
+        assert.equal(wf[Math.floor(wf.length / 2)], 0,
+            'bypassed: the cut-out middle Q is visible');
+        assert.equal(wf[20], 0.5, 'first third at its recorded spot');
+        assert.equal(wf[wf.length - 20], 1, 'last third at its recorded spot');
+    });
+
+    await t.test('a mapped child anchors at origin and wraps before its offset', () => {
+        // Same 2Q-heard map, origin 1Q: passes sit at ≡1Q (mod 2Q) in
+        // the epoch frame, and the PRE-origin head [0,1Q) must carry
+        // the wrapped predecessor's tail (second segment = loud), not
+        // blankness — the segment-general twin of field 2026-07-16d.
+        const clip = {
+            id: 'c', type: 'clip', duration: 132300, origin: 44100,
+            loopStart: 0, loopEnd: 132300,
+            segments: [0, 44100, 88200, 132300],
+            windowActive: true, loopBypassed: false,
+        };
+        const livePeaks = new Map([['c', [0.5, 0.5, 0, 0, 1, 1]]]);
+        const wf = generateCompositeWaveform({
+            stack: makeStack([clip]), stackDuration: 176400,
+            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            cache: new Map(), epochSamples: 0
+        });
+        assert.equal(wf[20], 1, 'wrapped tail (segment 2) before the origin');
+        assert.equal(wf[70], 0.5, 'pass starts at origin with segment 1');
+        assert.equal(wf[120], 1, 'segment 2 follows');
+        assert.equal(wf[170], 0.5, 'next pass wraps the cycle');
     });
 
     await t.test('caches result and returns cached on second call', () => {

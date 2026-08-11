@@ -4,7 +4,16 @@
  * Generates a composite waveform for stack headers by layering each
  * child clip's peaks onto a unified timeline. Results are cached and
  * only regenerated when children change.
+ *
+ * The composite is the group's AUDIBLE mixdown: each child contributes
+ * what it sounds, not what was recorded. A child's active time-map
+ * (single loop window or phase-3 multi-segment override) reduces it to
+ * the map's content — the segments' material concatenated in heard
+ * order, looping at the map period (Σ segment lengths), mirroring
+ * time_map.js mapOffset's walk.
  */
+
+import { posMod } from './math_utils.js';
 
 // Degenerate-frame guard (mirrors unrollReps' maxTiles): a segment so
 // short relative to the stack cycle that it would tile more than this
@@ -30,8 +39,13 @@ export function buildCacheKey(stack, targetPeaks) {
                 child.loopStart || 0,
                 child.loopEnd || 0,
                 // Window ACTIVATION changes audibility without moving the
-                // loop points — it must invalidate the mixdown
+                // loop points — it must invalidate the mixdown. Tri-state:
+                // an engine that publishes windowActive drives the slicer
+                // directly; 'u' (undefined) falls back to the derived
+                // bypass check, and the two must not collide in the key.
                 child.loopBypassed ? 1 : 0,
+                child.windowActive === undefined ? 'u'
+                    : (child.windowActive ? 1 : 0),
                 // Multi-segment map (phase 3): the segment list shapes
                 // what sounds — it must invalidate too.
                 (child.segments || []).join('.')
@@ -48,15 +62,13 @@ export function buildCacheKey(stack, targetPeaks) {
  * Each clip contributes peaks at its position within the LCM timeline.
  * Clips that loop within the timeline have their peaks repeated.
  *
- * KNOWN LIMITATION (documented, intentionally unfixed here): a child's
- * multi-segment map (`child.segments`, the phase-3 flat override) is
- * included in buildCacheKey — so segment edits DO invalidate the cache —
- * but the slicer below ignores it: only the single [loopStart, loopEnd)
- * window is honored when extracting the audible segment. A multi-cut
- * child therefore contributes its window-shaped (or full-take) peaks,
- * not its true cell-mode mixdown. Do NOT "fix" this unilaterally —
- * there is a matching engine-side story for the composite mixdown of
- * segmented children, and both sides should land together.
+ * Time-map honoring (2026-08-11, closing the former KNOWN LIMITATION):
+ * an active multi-segment map contributes its segments' material
+ * concatenated in heard order, looping at the map period — the visual
+ * twin of mapOffset's walk in time_map.js, and of the per-lane heard
+ * view's `srcSegs` rendering. Cut-out material never appears in the
+ * mixdown. (The engine already PLAYS segments this way; only this
+ * visual mixdown used to ignore them.)
  *
  * @param {Object} opts
  * @param {Object} opts.stack          - Stack node data (with .nodes children)
@@ -125,61 +137,88 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         const clipDuration = child.duration || effectiveQ;
         if (!(clipDuration > 0) || !(stackDuration > 0)) return;
 
-        // An ACTIVE window reduces the clip to its window segment looping
-        // at the window length (E-C); otherwise the full take loops at
-        // its duration. Field 2026-07-16d: the composite drew the whole
-        // take — including the not-in-window half — for a windowed clip.
-        // (KNOWN LIMITATION: multi-segment maps are NOT honored here —
-        // see the function JSDoc before changing this.)
-        const winActive = child.windowActive ??
+        // The child's AUDIBLE slices on its inner timeline, in heard
+        // order. An ACTIVE multi-segment map (phase 3) contributes its
+        // segments concatenated; an active single window reduces to its
+        // [loopStart, loopEnd) slice (field 2026-07-16d: the composite
+        // drew the whole take — including the not-in-window half — for
+        // a windowed clip); otherwise the full take loops at its
+        // duration. `windowActive` is the engine's published verdict;
+        // the ?? fallback derives it for states that predate the field.
+        const hasMultiSeg = Array.isArray(child.segments) &&
+            child.segments.length >= 4;
+        const mapOn = child.windowActive ??
             (!child.loopBypassed &&
-                (child.loopEnd || 0) > (child.loopStart || 0));
-        const segStart = winActive ? (child.loopStart || 0) : 0;
-        const segLen = winActive
-            ? (child.loopEnd || 0) - segStart
-            : clipDuration;
-        if (!(segLen > 0)) return;
+                (hasMultiSeg ||
+                    (child.loopEnd || 0) > (child.loopStart || 0)));
+        const slices = []; // [innerStart, len] samples, heard order
+        if (mapOn && hasMultiSeg) {
+            for (let i = 0; i + 1 < child.segments.length; i += 2) {
+                const s = child.segments[i];
+                const e = child.segments[i + 1];
+                if (e > s) slices.push([s, e - s]);
+            }
+        } else if (mapOn) {
+            const s = child.loopStart || 0;
+            slices.push([s, (child.loopEnd || 0) - s]);
+        } else {
+            slices.push([0, clipDuration]);
+        }
+        // Heard-time period of one pass: Σ slice lengths (the map
+        // period — mirrors time_map.js flatSegPeriod/mapPeriod).
+        const heardLen = slices.reduce((n, sl) => n + sl[1], 0);
+        if (!(heardLen > 0)) return;
         // Degenerate guard (mirrors unrollReps' maxTiles)
-        if (stackDuration / segLen > MAX_SEGMENT_TILES) return;
+        if (stackDuration / heardLen > MAX_SEGMENT_TILES) return;
 
-        // Slice the segment's peaks out of the full-take peaks
+        // Slice each segment's peaks out of the full-take peaks
         const clipPeakCount = childPeaks.length;
-        const i0 = Math.max(0,
-            Math.floor((segStart / clipDuration) * clipPeakCount));
-        const i1 = Math.min(clipPeakCount, Math.max(i0 + 1,
-            Math.ceil(((segStart + segLen) / clipDuration) * clipPeakCount)));
-        const segPeaks = childPeaks.slice(i0, i1);
-        const segCount = segPeaks.length;
-        const segWidthPx = (segLen / stackDuration) * canvasWidth;
+        const sliceData = slices.map(([start, len]) => {
+            const i0 = Math.max(0,
+                Math.floor((start / clipDuration) * clipPeakCount));
+            const i1 = Math.min(clipPeakCount, Math.max(i0 + 1,
+                Math.ceil(((start + len) / clipDuration) * clipPeakCount)));
+            return { peaks: childPeaks.slice(i0, i1), len };
+        });
 
-        // Map segment peaks as RANGES, not point samples: floor-indexed
+        // Map slice peaks as RANGES, not point samples: floor-indexed
         // point writes left every other slot empty whenever targetPeaks
         // exceeds the source resolution — a sparse comb whose holes read
         // as density collapse at some canvas widths (field 2026-07-10).
-        const mapSegAt = (startPx) => {
-            for (let i = 0; i < segCount; i++) {
-                const px0 = startPx + (i / segCount) * segWidthPx;
-                const px1 = startPx + ((i + 1) / segCount) * segWidthPx;
+        const mapSliceAt = (slicePeaks, startPx, widthPx) => {
+            const n = slicePeaks.length;
+            for (let i = 0; i < n; i++) {
+                const px0 = startPx + (i / n) * widthPx;
+                const px1 = startPx + ((i + 1) / n) * widthPx;
                 const t0 = Math.max(0, Math.floor((px0 / canvasWidth) * targetPeaks));
                 const t1 = Math.min(targetPeaks,
                     Math.max(t0 + 1, Math.ceil((px1 / canvasWidth) * targetPeaks)));
-                const v = segPeaks[i] || 0;
+                const v = slicePeaks[i] || 0;
                 for (let t = t0; t < t1; t++) {
                     if (v > waveformData[t]) waveformData[t] = v;
                 }
             }
         };
 
-        // The segment sounds at positions ≡ its origin (mod its period),
-        // in the epoch frame — tiled across the WHOLE cycle, INCLUDING
-        // the wrapped predecessor before its first full repetition. (The
-        // old forward-only tiling left everything before the offset
-        // blank once origins stopped being ~0 — "the stack is blank for
-        // the first 2Q", field 2026-07-16d.)
+        // The map sounds at positions ≡ its origin (mod its heard
+        // period), in the epoch frame — tiled across the WHOLE cycle,
+        // INCLUDING the wrapped predecessor before its first full
+        // repetition. (The old forward-only tiling left everything
+        // before the offset blank once origins stopped being ~0 — "the
+        // stack is blank for the first 2Q", field 2026-07-16d.) Within
+        // each pass the slices land back-to-back at their heard
+        // offsets, each keeping its true sample proportion — exactly
+        // mapOffset's segment walk, drawn.
         const rel = (child.origin || 0) - epochSamples;
-        const first = ((rel % segLen) + segLen) % segLen;
-        for (let s = first - segLen; s < stackDuration; s += segLen) {
-            mapSegAt((s / stackDuration) * canvasWidth);
+        const first = posMod(rel, heardLen);
+        for (let s = first - heardLen; s < stackDuration; s += heardLen) {
+            let heardOff = 0;
+            for (const sl of sliceData) {
+                mapSliceAt(sl.peaks,
+                    ((s + heardOff) / stackDuration) * canvasWidth,
+                    (sl.len / stackDuration) * canvasWidth);
+                heardOff += sl.len;
+            }
         }
     });
 
