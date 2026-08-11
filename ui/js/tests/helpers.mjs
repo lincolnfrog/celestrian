@@ -4,10 +4,17 @@
  * builders ×5, golden-fixture loaders ×4, LCG ×3, `near`, engine-shaped
  * state builders). Pure module: importing it has NO side effects — in
  * particular it never imports the mock backend statically, so golden /
- * pure-math tests stay singleton-free. Helpers that drive the mock
- * (recordTake) import it lazily; mock state is module-global per test
- * process, which is safe because node runs each test file in its own
- * process — do not build cross-file fixtures that assume otherwise.
+ * pure-math tests stay singleton-free. (mock/rate.js IS imported
+ * statically — it is a bare rate variable with no graph state and no
+ * side effects beyond reading CELESTRIAN_MOCK_RATE.) Helpers that drive
+ * the mock (recordTake) import it lazily; mock state is module-global
+ * per test process, which is safe because node runs each test file in
+ * its own process — do not build cross-file fixtures that assume
+ * otherwise.
+ *
+ * SAMPLE RATE: nothing here spells 44100. MOCK_Q follows the mock's
+ * rate and PERF republishes it live, so `CELESTRIAN_MOCK_RATE=48000
+ * npm test` re-rates the whole suite (see mock/rate.js).
  */
 
 import { readFileSync } from 'node:fs';
@@ -15,14 +22,22 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
+import { getSampleRate, quantumSamples } from '../mock/rate.js';
+
 // The production math, so tests never re-implement it (the old local
 // lcm copies drifted into the overflow-prone (a*b)/gcd form).
 export { gcd, lcm } from '../math_utils.js';
+// Rate control for tests that want to assert at a specific rate. Call
+// setSampleRate BEFORE loadScenario/recordTake — fixture lengths and
+// MOCK_Q are read when the scenario loads / this module evaluates.
+export { getSampleRate, setSampleRate } from '../mock/rate.js';
 
-/** The mock backend's quantum in most scenarios (samples @44.1k). */
-export const Q44 = 44100;
-/** The `perf` blob deriveViewModel expects on engine-shaped states. */
-export const PERF = { sampleRate: 44100 };
+/** The mock backend's quantum in most scenarios: 1 s of audio at its
+ *  rate (the literal 44100 before the rate became a variable). */
+export const MOCK_Q = quantumSamples();
+/** The `perf` blob deriveViewModel expects on engine-shaped states.
+ *  A live getter, so a mid-test setSampleRate is reflected. */
+export const PERF = { get sampleRate() { return getSampleRate(); } };
 
 /** Repo root (…/celestrian) — the ui test suite's sanctioned reach to
  *  shared/ fixtures and C++ sources (a documented layout dependency). */
@@ -93,16 +108,18 @@ export function makeLcg(seed) {
 
 /* ------- engine-shaped state builders (view-model test scenes) ------- */
 
-/** Device-rate quantum the view-model scenes run at (avoids 44100
- *  defaults so absolute and Q-relative values never coincide). */
-export const Q48 = 48000;
+/** Quantum the view-model scenes run at — deliberately NOT the mock's
+ *  own rate, so absolute and Q-relative values never coincide (that
+ *  coincidence hid two field bugs). Follows the mock rate away rather
+ *  than pinning 48000, so a 48 kHz sweep keeps the property. */
+export const SCENE_Q = getSampleRate() === 48000 ? 96000 : 48000;
 
 let nextId = 1;
 /** A committed clip of `periodQ` quantums (engine-published shape). */
 export function clip(periodQ, extra = {}) {
     return Object.assign({
         id: `clip-${nextId++}`, name: `clip ${periodQ}Q`, type: 'clip',
-        duration: periodQ * Q48, origin: 0, effectiveQuantum: Q48,
+        duration: periodQ * SCENE_Q, origin: 0, effectiveQuantum: SCENE_Q,
         loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
         isMuted: false, isRecording: false, isPendingStart: false,
     }, extra);
@@ -112,7 +129,7 @@ export function clip(periodQ, extra = {}) {
 export function stack(children, extra = {}) {
     return Object.assign({
         id: `stack-${nextId++}`, name: 'stack', type: 'stack',
-        nodes: children, origin: 0, effectiveQuantum: Q48, isExpanded: true,
+        nodes: children, origin: 0, effectiveQuantum: SCENE_Q, isExpanded: true,
         loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
         isMuted: false, isRecording: false,
     }, extra);
@@ -122,7 +139,7 @@ export function stack(children, extra = {}) {
  *  (25 cycles of 12Q + 5.25Q) so cycle-relative math is exercised. */
 export function state(nodes, extra = {}) {
     return Object.assign({
-        masterPos: (25 * 12 + 5.25) * Q48, isPlaying: true, origin: 0,
+        masterPos: (25 * 12 + 5.25) * SCENE_Q, isPlaying: true, origin: 0,
         soloedId: '', nodes,
     }, extra);
 }

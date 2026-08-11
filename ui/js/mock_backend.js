@@ -15,6 +15,7 @@
  * This file is the FACADE: it owns the protocol handler table and the
  * callNative dispatch (with its undo interception), and re-exports the
  * public test surface. The implementation lives in js/mock/:
+ *   rate.js       — the mock's sample rate (one systemic variable)
  *   state.js      — the state singleton + pure graph queries
  *   undo.js       — undo/redo stacks behind accessors
  *   cycles.js     — committed/effective island cycle math
@@ -57,8 +58,13 @@ import './mock/scenarios.js';  // module load runs the launch-ritual boot
 // The public test surface (index_test.html, backend.js, and the node
 // tests import exactly these — keep this list stable).
 export { getState, setMasterPos, setIsPlaying } from './mock/publish.js';
-export { startTransport, pauseTransport, advanceBy } from './mock/transport.js';
+export { startTransport, pauseTransport, advanceBy,
+         SIMULATED_SAMPLES_PER_SECOND } from './mock/transport.js';
 export { loadScenario } from './mock/scenarios.js';
+// The mock's sample rate — every rate-dependent value derives from it.
+// Set it BEFORE loadScenario (fixture lengths are read at load time);
+// ?rate= / CELESTRIAN_MOCK_RATE do this early enough automatically.
+export { getSampleRate, setSampleRate, quantumSamples } from './mock/rate.js';
 
 /**
  * Handler table for every protocol method. Keys must match

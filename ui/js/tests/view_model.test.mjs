@@ -16,9 +16,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { deriveViewModel, unrollReps, windowDragTarget } from '../view_model.js';
-// Q48 device-rate quantum + minimal engine-shaped builders + the tiling
-// invariant — shared in helpers.mjs (this file was their birthplace).
-import { Q48 as Q, clip, stack, state, assertTilesCycle, makeLcg }
+// SCENE_Q (a quantum deliberately ≠ the mock's own rate, so absolute
+// and Q-relative values never coincide) + minimal engine-shaped
+// builders + the tiling invariant — shared in helpers.mjs (this file
+// was their birthplace).
+import { SCENE_Q as Q, clip, stack, state, assertTilesCycle, makeLcg }
     from './helpers.mjs';
 
 test('recording.md island: 1Q + 4Q + 3Q → cycle 12Q, correct rep counts', () => {

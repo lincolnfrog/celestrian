@@ -16,7 +16,7 @@ import {
 // helpers.recordTake's defaults (stopEarly 100, settle 100) are exactly
 // this file's old local builder: stop mid-Q, then reach the boundary so
 // the commit lands at lengthSamples and raw sits on a boundary (Q11).
-import { recordTake, Q44 as Q } from './helpers.mjs';
+import { recordTake, MOCK_Q as Q } from './helpers.mjs';
 
 test('epoch re-bases only when the cycle GROWS (engine parity)', async () => {
     loadScenario('empty');

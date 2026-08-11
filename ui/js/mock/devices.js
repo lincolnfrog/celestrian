@@ -3,7 +3,14 @@
  * mocks. Pure fixtures + a little phase state; nothing here touches the
  * graph. publish.js reads the calibration result through
  * getCalibrationSamples() rather than the raw state.
+ *
+ * The device's sample rate is NOT stored here — it lives in mock/rate.js
+ * (the mock's single rate variable), so the panel and the published
+ * `perf.sampleRate` can never disagree again. They used to: this file
+ * reported 48000 while publish.js published a hardcoded 44100.
  */
+
+import { getSampleRate, setSampleRate, toSeconds } from './rate.js';
 
 /* ---------- audio devices ----------
  *
@@ -29,10 +36,14 @@ const mockDevices = {
 const mockAudio = {
     type: 'Windows Audio',
     device: 'Microphone (USB Audio Device)',
-    sampleRate: 48000,
+    // sampleRate lives in mock/rate.js — read through getSampleRate().
     bufferSize: 256,
     error: '',
 };
+
+/** Rates this fake interface advertises. The rate actually in force is
+ *  always offered, however it was selected (?rate=, env, setAudioDevice). */
+const OFFERED_SAMPLE_RATES = [44100, 48000, 88200, 96000];
 
 function currentMockDevice() {
     return (mockDevices[mockAudio.type] || []).find(d => d.name === mockAudio.device);
@@ -46,8 +57,9 @@ export function getAudioDeviceState() {
         currentType: mockAudio.type,
         devices: list.map(d => d.name),
         currentDevice: dev ? dev.name : '',
-        sampleRates: [44100, 48000, 88200, 96000],
-        currentSampleRate: mockAudio.sampleRate,
+        sampleRates: [...new Set([...OFFERED_SAMPLE_RATES, getSampleRate()])]
+            .sort((a, b) => a - b),
+        currentSampleRate: getSampleRate(),
         bufferSizes: [64, 128, 256, 512, 1024],
         currentBufferSize: mockAudio.bufferSize,
         inputChannels: dev ? dev.inputs : 0,
@@ -66,10 +78,15 @@ export function setAudioDevice(type, device, sampleRate, bufferSize) {
     else if (!list.some(d => d.name === mockAudio.device)) {
         mockAudio.device = list.length ? list[0].name : '';
     }
-    if (sampleRate > 0) mockAudio.sampleRate = sampleRate;
+    // The rate is systemic: switching it here re-rates the whole mock
+    // (published perf.sampleRate, seconds conversions, tick size).
+    // Already-loaded scenario fixtures keep the lengths they were built
+    // with — reload a scenario after switching for a coherent session.
+    if (sampleRate > 0) setSampleRate(sampleRate);
     if (bufferSize > 0) mockAudio.bufferSize = bufferSize;
     mockAudio.error = '';
-    console.log('[MockBackend] Audio device:', mockAudio);
+    console.log('[MockBackend] Audio device:', mockAudio,
+        'rate:', getSampleRate());
     return '';
 }
 
@@ -104,7 +121,7 @@ export function getLatencyCalibration() {
     return {
         phase: calibration.phase,
         roundTripSamples: calibration.roundTripSamples,
-        roundTripMs: calibrated ? (calibration.roundTripSamples / 44100) * 1000 : -1,
+        roundTripMs: calibrated ? toSeconds(calibration.roundTripSamples) * 1000 : -1,
         calibrated,
     };
 }

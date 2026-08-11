@@ -46,6 +46,8 @@ if (useMock) {
             startTransport: mockBackend.startTransport,
             pauseTransport: mockBackend.pauseTransport,
             advanceBy: mockBackend.advanceBy,
+            // Simulated audio per wall-clock second (mock/transport.js)
+            SIMULATED_SAMPLES_PER_SECOND: mockBackend.SIMULATED_SAMPLES_PER_SECOND,
         };
 
         console.log('[Backend] Using Loaded Mock backend');

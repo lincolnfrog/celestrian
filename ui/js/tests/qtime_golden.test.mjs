@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import {
     qtime, qEq, qCmp, qAdd, qSub, qLcm, toSamples, fromSamples
 } from '../qtime.js';
-import { loadSharedJson } from './helpers.mjs';
+import { loadSharedJson, MOCK_Q } from './helpers.mjs';
 
 const golden = loadSharedJson('timing_golden.json');
 
@@ -58,7 +58,9 @@ test('golden: arithmetic', () => {
 });
 
 test('round-trip toSamples(fromSamples(s)) === s exactly', () => {
-    for (const q of [44100, 44101, 48000, 96000, 12345]) {
+    // A deliberate spread of rates INCLUDING the mock's own — the
+    // rounding law must hold at every one, prime denominators included.
+    for (const q of [...new Set([MOCK_Q, 44100, 44101, 48000, 96000, 12345])]) {
         for (let s = -3; s <= 3; ++s) {
             for (const b of [0, 1, Math.floor(q / 8), Math.floor(q / 3), q - 1, q, 7 * q + 13]) {
                 const samples = b + s;
@@ -80,8 +82,8 @@ test('monotonicity of the rounding law', () => {
 });
 
 test('tie rule — exact halves round toward +inf', () => {
-    const q = 44100;
-    for (const k of [0, 5, -6, 22049]) {
+    const q = MOCK_Q;
+    for (const k of [0, 5, -6, Math.floor(q / 2) - 1]) {
         // (2k+1)/(2q) Q at rate q is exactly k + 0.5 samples.
         assert.equal(toSamples(qtime(2 * k + 1, 2 * q), q), k + 1,
             `tie at k=${k} rounds up`);

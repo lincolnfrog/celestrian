@@ -12,6 +12,7 @@ import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { defaultEffects } from './effects.js';
 import { getCalibrationSamples } from './devices.js';
+import { getSampleRate, toSeconds } from './rate.js';
 
 /**
  * Recursively project raw graph nodes into the ENGINE's published
@@ -60,7 +61,7 @@ export function enrichNodes(nodes) {
         // compressor's theoretical GR.
         const fxs = updatedNode.effects;
         if (node._scopeOn) {
-            const t = state.masterPos / 44100;
+            const t = toSeconds(state.masterPos);
             const peak = state.isPlaying
                 ? 0.35 + 0.3 * Math.abs(Math.sin(t * 2.1 + 0.4)) : 0;
             let gr = 0;
@@ -111,7 +112,7 @@ function mockMasterVu(phase) {
     if (!state.isPlaying) return 0;
     const anyAudio = someNode(n => n.duration > 0 || n.isRecording);
     if (!anyAudio) return 0;
-    const t = state.masterPos / 44100;
+    const t = toSeconds(state.masterPos);
     const lv = 0.30 + 0.16 * Math.sin(t * 2.1 + phase) +
         0.10 * Math.sin(t * 5.3 + phase * 2) +
         0.05 * Math.sin(t * 11.7 + phase);
@@ -163,7 +164,9 @@ export function getState() {
             latencyCompensationSamples:
                 calibrationSamples >= 0 ? calibrationSamples : 0,
             calibrated: calibrationSamples >= 0,
-            sampleRate: 44100,
+            // The DEVICE rate (engine parity: makePerfState publishes
+            // the rate the callback is running at) — mock/rate.js.
+            sampleRate: getSampleRate(),
         },
     };
 }

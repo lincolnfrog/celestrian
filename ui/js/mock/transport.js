@@ -7,7 +7,7 @@
 
 // --- Transport Simulation ---
 // Simulates the C++ audio engine advancing masterPos and recording clip duration.
-// Auto-advance mode hooks into getState() polls (~50ms intervals).
+// Auto-advance mode hooks into getState() polls (a fixed sample step).
 // Deterministic mode uses advanceBy() for exact sample-count stepping.
 
 import { posMod } from '../math_utils.js';
@@ -15,10 +15,36 @@ import { state, effectiveQuantumForState } from './state.js';
 import { effectiveCycle } from './cycles.js';
 import { recView, growRecordingClips } from './recording.js';
 
+/**
+ * The simulation STEP: how far the clock moves per getState() poll.
+ * Deliberately a fixed SAMPLE COUNT, NOT derived from the mock's sample
+ * rate (mock/rate.js) — even though 2205 was originally chosen as
+ * ~50 ms at 44.1 kHz.
+ *
+ * Why not derive it: a test that plays and then polls reads the clock
+ * at multiples of this step, so a rate-derived step would move those
+ * positions under a rate sweep and flip outcomes that fold on them
+ * (map_anchor's cut then lands in a different Q). A mock tick is a
+ * simulation step, not a wall-clock duration — keeping it in samples is
+ * what lets the rest of the rate generalization sweep cleanly.
+ */
+export const DEFAULT_SAMPLES_PER_TICK = 2205;
+
+/**
+ * The UI polls every ~50 ms, so a fixed step means the mock renders a
+ * CONSTANT amount of simulated audio per wall-clock second, whatever
+ * the device rate is. Real-time specs (the dead-reckoning playhead
+ * sweep) need this to know how long a loop takes on the wall clock:
+ * `loopSeconds = loopSamples / SIMULATED_SAMPLES_PER_SECOND`.
+ */
+export const POLL_INTERVAL_MS = 50;
+export const SIMULATED_SAMPLES_PER_SECOND =
+    DEFAULT_SAMPLES_PER_TICK * (1000 / POLL_INTERVAL_MS);
+
 export const transport = {
-    running: false,           // Is transport auto-advancing?
-    samplesPerTick: 2205,     // Samples per poll tick (~50ms at 44100Hz)
-    speed: 1.0                // Speed multiplier (1.0 = real-time)
+    running: false,                            // Is transport auto-advancing?
+    samplesPerTick: DEFAULT_SAMPLES_PER_TICK,  // simulation step, in samples
+    speed: 1.0                                 // Speed multiplier (1.0 = real-time)
 };
 
 // Mirrors AudioEngine::togglePlayback — pause/resume: the clock is

@@ -12,6 +12,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCacheKey, generateCompositeWaveform } from '../composite_waveform.js';
+import { MOCK_Q as Q } from './helpers.mjs';
+
+// Lengths below are multiples of Q — the mock's quantum, i.e. 1 s of
+// audio at its sample rate. They used to be literals derived from
+// 44.1 kHz (88200, 132300, 176400). Only the RATIOS matter here, so
+// the file re-rates cleanly with the mock.
 
 // --- buildCacheKey tests ---
 
@@ -19,10 +25,10 @@ test('buildCacheKey', async (t) => {
     await t.test('produces deterministic key for same input', () => {
         const stack = {
             loopStart: 0,
-            loopEnd: 176400,
+            loopEnd: 4 * Q,
             nodes: [
-                { id: 'clip-1', type: 'clip', duration: 44100, x: 0, loopStart: 0, loopEnd: 44100, launchPoint: 0 },
-                { id: 'clip-2', type: 'clip', duration: 176400, x: 0, loopStart: 0, loopEnd: 176400, launchPoint: 0 }
+                { id: 'clip-1', type: 'clip', duration: Q, x: 0, loopStart: 0, loopEnd: Q, launchPoint: 0 },
+                { id: 'clip-2', type: 'clip', duration: 4 * Q, x: 0, loopStart: 0, loopEnd: 4 * Q, launchPoint: 0 }
             ]
         };
         const key1 = buildCacheKey(stack, 400);
@@ -32,8 +38,8 @@ test('buildCacheKey', async (t) => {
 
     await t.test('different targetPeaks → different key', () => {
         const stack = {
-            loopStart: 0, loopEnd: 176400,
-            nodes: [{ id: 'clip-1', type: 'clip', duration: 44100 }]
+            loopStart: 0, loopEnd: 4 * Q,
+            nodes: [{ id: 'clip-1', type: 'clip', duration: Q }]
         };
         const key1 = buildCacheKey(stack, 400);
         const key2 = buildCacheKey(stack, 800);
@@ -41,44 +47,44 @@ test('buildCacheKey', async (t) => {
     });
 
     await t.test('different loopStart → different key', () => {
-        const stack1 = { loopStart: 0, loopEnd: 176400, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
-        const stack2 = { loopStart: 44100, loopEnd: 176400, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        const stack1 = { loopStart: 0, loopEnd: 4 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
+        const stack2 = { loopStart: Q, loopEnd: 4 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
     await t.test('different loopEnd → different key', () => {
-        const stack1 = { loopStart: 0, loopEnd: 176400, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
-        const stack2 = { loopStart: 0, loopEnd: 88200, nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
+        const stack1 = { loopStart: 0, loopEnd: 4 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
+        const stack2 = { loopStart: 0, loopEnd: 2 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
     await t.test('different child origin → different key', () => {
-        const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: 44100, origin: 0 }] };
-        const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: 44100, origin: 88200 }] };
+        const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: Q, origin: 0 }] };
+        const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: Q, origin: 2 * Q }] };
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
     await t.test('different child durations → different key', () => {
-        const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: 44100 }] };
-        const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: 88200 }] };
+        const stack1 = { nodes: [{ id: 'c', type: 'clip', duration: Q }] };
+        const stack2 = { nodes: [{ id: 'c', type: 'clip', duration: 2 * Q }] };
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
     await t.test('different child IDs → different key', () => {
-        const stack1 = { nodes: [{ id: 'clip-a', type: 'clip', duration: 44100 }] };
-        const stack2 = { nodes: [{ id: 'clip-b', type: 'clip', duration: 44100 }] };
+        const stack1 = { nodes: [{ id: 'clip-a', type: 'clip', duration: Q }] };
+        const stack2 = { nodes: [{ id: 'clip-b', type: 'clip', duration: Q }] };
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
     await t.test('extra child → different key', () => {
-        const stack1 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }] };
-        const stack2 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }, { id: 'c2', type: 'clip', duration: 88200 }] };
+        const stack1 = { nodes: [{ id: 'c1', type: 'clip', duration: Q }] };
+        const stack2 = { nodes: [{ id: 'c1', type: 'clip', duration: Q }, { id: 'c2', type: 'clip', duration: 2 * Q }] };
         assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
     await t.test('skips non-clip children', () => {
-        const stack1 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }] };
-        const stack2 = { nodes: [{ id: 'c1', type: 'clip', duration: 44100 }, { id: 's1', type: 'stack', duration: 88200 }] };
+        const stack1 = { nodes: [{ id: 'c1', type: 'clip', duration: Q }] };
+        const stack2 = { nodes: [{ id: 'c1', type: 'clip', duration: Q }, { id: 's1', type: 'stack', duration: 2 * Q }] };
         assert.equal(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400), 'Non-clip children should be ignored');
     });
 
@@ -95,7 +101,7 @@ test('buildCacheKey', async (t) => {
     });
 
     await t.test('windowActive flip → different key (tri-state incl. undefined)', () => {
-        const base = { id: 'c', type: 'clip', duration: 44100 };
+        const base = { id: 'c', type: 'clip', duration: Q };
         const on = { nodes: [{ ...base, windowActive: true }] };
         const off = { nodes: [{ ...base, windowActive: false }] };
         const unset = { nodes: [{ ...base }] };
@@ -104,9 +110,9 @@ test('buildCacheKey', async (t) => {
     });
 
     await t.test('different child segments → different key', () => {
-        const base = { id: 'c', type: 'clip', duration: 132300 };
-        const a = { nodes: [{ ...base, segments: [0, 44100, 88200, 132300] }] };
-        const b = { nodes: [{ ...base, segments: [0, 88200] }] };
+        const base = { id: 'c', type: 'clip', duration: 3 * Q };
+        const a = { nodes: [{ ...base, segments: [0, Q, 2 * Q, 3 * Q] }] };
+        const b = { nodes: [{ ...base, segments: [0, 2 * Q] }] };
         assert.notEqual(buildCacheKey(a, 400), buildCacheKey(b, 400));
     });
 });
@@ -117,7 +123,7 @@ test('generateCompositeWaveform', async (t) => {
     const makeStack = (nodes) => ({
         id: 'stack-1',
         loopStart: 0,
-        loopEnd: 176400,
+        loopEnd: 4 * Q,
         nodes
     });
 
@@ -125,7 +131,7 @@ test('generateCompositeWaveform', async (t) => {
         const stack = { ...makeStack([]), waveform: [0.1, 0.2, 0.3] };
         const cache = new Map();
         const result = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks: new Map(), cache
         });
         assert.deepEqual(result, [0.1, 0.2, 0.3]);
@@ -135,7 +141,7 @@ test('generateCompositeWaveform', async (t) => {
         const stack = { id: 'stack-1' };
         const cache = new Map();
         const result = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks: new Map(), cache
         });
         assert.deepEqual(result, []);
@@ -143,12 +149,12 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('generates peaks from child livePeaks', () => {
         const stack = makeStack([
-            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+            { id: 'clip-1', type: 'clip', duration: 4 * Q, x: 0 }
         ]);
         const livePeaks = new Map([['clip-1', [0.5, 0.8, 0.3]]]);
         const cache = new Map();
         const result = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
         assert.ok(result.length > 0, 'Should produce peaks');
@@ -163,11 +169,11 @@ test('generateCompositeWaveform', async (t) => {
         // "[0,2Q) must be silent" expectation pinned the forward-only
         // tiling bug: a looping clip always sounds before its offset too).
         const stack = makeStack([
-            { id: 'c', type: 'clip', duration: 88200, origin: 44100 }
+            { id: 'c', type: 'clip', duration: 2 * Q, origin: Q }
         ]);
         const livePeaks = new Map([['c', [1, 1, 0, 0]]]);
         const result = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 0
         });
         const n = result.length;
@@ -181,12 +187,12 @@ test('generateCompositeWaveform', async (t) => {
         // Same loud/silent clip as above, but the island epoch IS its
         // origin: rel = 0, so the loud half sits at the frame TOP.
         const stack = makeStack([
-            { id: 'c', type: 'clip', duration: 88200, origin: 88200 }
+            { id: 'c', type: 'clip', duration: 2 * Q, origin: 2 * Q }
         ]);
         const livePeaks = new Map([['c', [1, 1, 0, 0]]]);
         const result = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
-            canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 88200
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
+            canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 2 * Q
         });
         const n = result.length;
         assert.ok(result[Math.floor(n / 8)] > 0, '[0,1Q) loud (rel 0)');
@@ -199,14 +205,14 @@ test('generateCompositeWaveform', async (t) => {
         // old forward-only tiling left [0,1) blank ("the stack is blank
         // for the first 2Q").
         const stack = makeStack([
-            { id: 'c', type: 'clip', duration: 88200, origin: 3 * 44100,
+            { id: 'c', type: 'clip', duration: 2 * Q, origin: 3 * Q,
               loopStart: 0, loopEnd: 0 }
         ]);
         const livePeaks = new Map([['c', [1, 1, 1, 1]]]);
         const result = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 100, livePeaks, cache: new Map(),
-            epochSamples: 4 * 44100  // rel = −1Q
+            epochSamples: 4 * Q  // rel = −1Q
         });
         assert.ok(result.every(v => v > 0),
             'a looping clip covers the WHOLE cycle, including before its offset');
@@ -218,14 +224,14 @@ test('generateCompositeWaveform', async (t) => {
         // loops every 1Q — the composite must be loud EVERYWHERE (and
         // must NOT draw the silent not-in-window half anywhere).
         const clip = {
-            id: 'c', type: 'clip', duration: 88200, origin: 88200,
-            loopStart: 44100, loopEnd: 88200, windowActive: true,
+            id: 'c', type: 'clip', duration: 2 * Q, origin: 2 * Q,
+            loopStart: Q, loopEnd: 2 * Q, windowActive: true,
             loopBypassed: false,
         };
         const livePeaks = new Map([['c', [0, 0, 1, 1]]]);
         const active = generateCompositeWaveform({
-            stack: makeStack([clip]), stackDuration: 176400,
-            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            stack: makeStack([clip]), stackDuration: 4 * Q,
+            effectiveQ: Q, canvasWidth: 100, livePeaks,
             cache: new Map(), epochSamples: 0
         });
         assert.ok(active.every(v => v > 0),
@@ -236,7 +242,7 @@ test('generateCompositeWaveform', async (t) => {
         const bypassed = generateCompositeWaveform({
             stack: makeStack([{ ...clip, id: 'c2', windowActive: false,
                 loopBypassed: true }]),
-            stackDuration: 176400, effectiveQ: 44100, canvasWidth: 100,
+            stackDuration: 4 * Q, effectiveQ: Q, canvasWidth: 100,
             livePeaks: new Map([['c2', [0, 0, 1, 1]]]),
             cache: new Map(), epochSamples: 0
         });
@@ -253,15 +259,15 @@ test('generateCompositeWaveform', async (t) => {
         // every 2Q. Over a 4Q cycle the composite must alternate
         // 0.5/1 with the cut Q appearing NOWHERE.
         const clip = {
-            id: 'c', type: 'clip', duration: 132300, origin: 0,
-            loopStart: 0, loopEnd: 132300,
-            segments: [0, 44100, 88200, 132300],
+            id: 'c', type: 'clip', duration: 3 * Q, origin: 0,
+            loopStart: 0, loopEnd: 3 * Q,
+            segments: [0, Q, 2 * Q, 3 * Q],
             windowActive: true, loopBypassed: false,
         };
         const livePeaks = new Map([['c', [0.5, 0.5, 0, 0, 1, 1]]]);
         const wf = generateCompositeWaveform({
-            stack: makeStack([clip]), stackDuration: 176400,
-            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            stack: makeStack([clip]), stackDuration: 4 * Q,
+            effectiveQ: Q, canvasWidth: 100, livePeaks,
             cache: new Map(), epochSamples: 0
         });
         // Heard period 2Q over a 4Q cycle: [0.5, 1, 0.5, 1] per Q.
@@ -274,15 +280,15 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('a BYPASSED multi-segment map falls back to the full take', () => {
         const clip = {
-            id: 'c', type: 'clip', duration: 132300, origin: 0,
-            loopStart: 0, loopEnd: 132300,
-            segments: [0, 44100, 88200, 132300],
+            id: 'c', type: 'clip', duration: 3 * Q, origin: 0,
+            loopStart: 0, loopEnd: 3 * Q,
+            segments: [0, Q, 2 * Q, 3 * Q],
             windowActive: false, loopBypassed: true,
         };
         const livePeaks = new Map([['c', [0.5, 0.5, 0, 0, 1, 1]]]);
         const wf = generateCompositeWaveform({
-            stack: makeStack([clip]), stackDuration: 132300,
-            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            stack: makeStack([clip]), stackDuration: 3 * Q,
+            effectiveQ: Q, canvasWidth: 100, livePeaks,
             cache: new Map(), epochSamples: 0
         });
         // Full 3Q take at its recorded positions: the silent middle
@@ -299,15 +305,15 @@ test('generateCompositeWaveform', async (t) => {
         // the wrapped predecessor's tail (second segment = loud), not
         // blankness — the segment-general twin of field 2026-07-16d.
         const clip = {
-            id: 'c', type: 'clip', duration: 132300, origin: 44100,
-            loopStart: 0, loopEnd: 132300,
-            segments: [0, 44100, 88200, 132300],
+            id: 'c', type: 'clip', duration: 3 * Q, origin: Q,
+            loopStart: 0, loopEnd: 3 * Q,
+            segments: [0, Q, 2 * Q, 3 * Q],
             windowActive: true, loopBypassed: false,
         };
         const livePeaks = new Map([['c', [0.5, 0.5, 0, 0, 1, 1]]]);
         const wf = generateCompositeWaveform({
-            stack: makeStack([clip]), stackDuration: 176400,
-            effectiveQ: 44100, canvasWidth: 100, livePeaks,
+            stack: makeStack([clip]), stackDuration: 4 * Q,
+            effectiveQ: Q, canvasWidth: 100, livePeaks,
             cache: new Map(), epochSamples: 0
         });
         assert.equal(wf[20], 1, 'wrapped tail (segment 2) before the origin');
@@ -318,13 +324,13 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('caches result and returns cached on second call', () => {
         const stack = makeStack([
-            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+            { id: 'clip-1', type: 'clip', duration: 4 * Q, x: 0 }
         ]);
         const livePeaks = new Map([['clip-1', [0.5, 0.8, 0.3]]]);
         const cache = new Map();
 
         const result1 = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
 
@@ -336,7 +342,7 @@ test('generateCompositeWaveform', async (t) => {
 
         // Second call should return cached result (same reference)
         const result2 = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
         assert.equal(result1, result2, 'Should return exact same array reference (cache hit)');
@@ -344,21 +350,21 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('invalidates cache when child duration changes', () => {
         const stack = makeStack([
-            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+            { id: 'clip-1', type: 'clip', duration: 4 * Q, x: 0 }
         ]);
         const livePeaks = new Map([['clip-1', [0.5, 0.8, 0.3]]]);
         const cache = new Map();
 
         const result1 = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
 
         // Change child duration
-        stack.nodes[0].duration = 88200;
+        stack.nodes[0].duration = 2 * Q;
 
         const result2 = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
 
@@ -367,21 +373,21 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('invalidates cache when loop points change', () => {
         const stack = makeStack([
-            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+            { id: 'clip-1', type: 'clip', duration: 4 * Q, x: 0 }
         ]);
         const livePeaks = new Map([['clip-1', [0.5, 0.8]]]);
         const cache = new Map();
 
         const result1 = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
 
         // Change loop points
-        stack.loopEnd = 88200;
+        stack.loopEnd = 2 * Q;
 
         const result2 = generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
 
@@ -390,7 +396,7 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('invalidates cache when child is added', () => {
         const stack = makeStack([
-            { id: 'clip-1', type: 'clip', duration: 176400, x: 0 }
+            { id: 'clip-1', type: 'clip', duration: 4 * Q, x: 0 }
         ]);
         const livePeaks = new Map([
             ['clip-1', [0.5, 0.8]],
@@ -399,16 +405,16 @@ test('generateCompositeWaveform', async (t) => {
         const cache = new Map();
 
         generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
         const key1 = cache.get('stack-1').key;
 
         // Add a child
-        stack.nodes.push({ id: 'clip-2', type: 'clip', duration: 88200, x: 0 });
+        stack.nodes.push({ id: 'clip-2', type: 'clip', duration: 2 * Q, x: 0 });
 
         generateCompositeWaveform({
-            stack, stackDuration: 176400, effectiveQ: 44100,
+            stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 200, livePeaks, cache
         });
         const key2 = cache.get('stack-1').key;

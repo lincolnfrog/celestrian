@@ -55,7 +55,40 @@
    assignment, so the facade would evaluate first and lock in the
    JUCE-bridge path for the whole page. `app.js` is dynamically imported
    there for exactly this reason.
-10. **The mock must mirror engine CONTRACTS, not plausible internals.**
+10. **The mock's SAMPLE RATE is a variable — never spell 44100.** It
+   lives in `ui/js/mock/rate.js` and everything rate-dependent derives
+   from it: the published `perf.sampleRate`, the seconds conversions
+   behind the VU and scope, the calibration `roundTripMs`, the device
+   panel's `currentSampleRate`, and every scenario fixture length (1Q =
+   one second of audio, so 3Q is `3 * Q`, not 132300). It got this way
+   because the mock published 44100 under a device panel that claimed
+   48000 — engine P0-5 threaded the device rate everywhere and the mock
+   was left behind. Sweep it to prove a test is rate-independent:
+
+   ```bash
+   CELESTRIAN_MOCK_RATE=48000 npm test        # node suite
+   E2E_MOCK_RATE=48000 npx playwright test    # seeds window.__celestrianMockRate
+   ```
+
+   Both suites pass at 22050/44100/44101/48000/88200/96000/12345.
+   Three deliberate exceptions, each load-bearing:
+
+   - `transport.samplesPerTick` is a fixed SAMPLE STEP, not 50 ms of
+     audio. Deriving it from the rate moves every play-then-poll clock
+     position and flips outcomes that fold on them (it put
+     `map_anchor`'s cut in a different Q at 48 kHz). Consequence: the
+     mock simulates a constant `SIMULATED_SAMPLES_PER_SECOND` of audio
+     per wall-clock second — real-time specs size their sampling window
+     from that constant, never from a hardcoded millisecond count.
+   - The e2e sweep seeds `window.__celestrianMockRate` via
+     `addInitScript`, NOT `?rate=`: the dev server's clean-urls
+     redirect drops the query on `/index_test.html`, which left the
+     harness quietly at 44.1 kHz through an entire "48 kHz" run.
+   - The fp-exactness case in `segments.test.mjs` keeps its literals —
+     its whole point is that 18480 + (88200 − 62580) = 44100 exactly.
+     It carries its own `quantum`, so it is rate-independent anyway.
+
+11. **The mock must mirror engine CONTRACTS, not plausible internals.**
    The mock once published the raw transport as `masterPos` while the
    engine publishes a derived view (wrapped idle, growing during
    recording — ui.md "masterPos contract"). UI code written against the

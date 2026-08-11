@@ -11,7 +11,47 @@
 
 import { test, expect } from '@playwright/test';
 
+/* ---------- the mock's sample rate ----------
+ *
+ * These specs used to spell 44100 (and 88200 / 110250 / 176400) into
+ * every position and length. The mock's rate is a variable now
+ * (ui/js/mock/rate.js), so they read it from the page instead: Q is
+ * one second of audio at whatever rate the mock publishes.
+ *
+ * Sweep the whole spec at another rate with
+ *   E2E_MOCK_RATE=48000 npx playwright test
+ * which seeds window.__celestrianMockRate before every navigation.
+ */
+const RATE = Number(process.env.E2E_MOCK_RATE) || 0;
+
+/** Install the sweep rate BEFORE the page's modules evaluate. Not a
+ *  ?rate= query param: the dev server's clean-urls redirect drops the
+ *  query on /index_test.html, which left the harness quietly at 44.1k
+ *  through a whole 48 kHz sweep. Call before every goto. */
+async function applyRate(page) {
+    if (RATE > 0) await page.addInitScript(r => {
+        window.__celestrianMockRate = r;
+    }, RATE);
+}
+
+/** The mock's quantum (1 s at its published sample rate). Cached PER
+ *  PAGE — a module-level cache leaks one page's rate into the next,
+ *  which is exactly how the stale-44.1k bug above stayed invisible. */
+const qByPage = new WeakMap();
+async function mockQ(page) {
+    if (!qByPage.has(page)) {
+        qByPage.set(page, await page.evaluate(async () => {
+            const state = window.celestrian
+                ? window.celestrian.getState()
+                : await window.__celestrianTest.callNative('getGraphState');
+            return state.perf.sampleRate;
+        }));
+    }
+    return qByPage.get(page);
+}
+
 async function loadHarness(page, scenario) {
+    await applyRate(page);
     await page.goto('/index_test.html');
     await page.waitForSelector('#test-controls', { timeout: 5000 });
     await page.click(`button:has-text("${scenario}")`);
@@ -160,11 +200,11 @@ test.describe('Session shell', () => {
         // Deterministic position assertion: reload the scenario (which
         // resets the mock's auto-advancing transport) and drive the
         // static state setters only — no drift between set and measure
-        await page.evaluate(() => {
+        await page.evaluate(Q => {
             window.loadScenario('example-1q-4q');
             window.celestrian.setIsPlaying(true);
-            window.celestrian.setMasterPos(88200); // 2Q @44.1k
-        });
+            window.celestrian.setMasterPos(2 * Q);
+        }, await mockQ(page));
         // Wait for the patch loop to REFLECT the state (the poll runs every
         // 50ms but can lag under test load) before measuring geometry —
         // the readout and playhead are patched together
@@ -183,7 +223,8 @@ test.describe('Session shell', () => {
 
     test('readout shows position over cycle in Q', async ({ page }) => {
         await loadHarness(page, '1Q + 4Q (LCM=4)');
-        await page.evaluate(() => window.celestrian.setMasterPos(110250)); // 2.5Q
+        await page.evaluate(Q => window.celestrian.setMasterPos(2.5 * Q),
+            await mockQ(page));
         await expect(page.locator('#position-readout')).toHaveText(/2\.5Q \/ 4Q ↺/);
     });
 
@@ -191,10 +232,10 @@ test.describe('Session shell', () => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         // Give the 3Q stack a bypassed window via the backend
         const stackId = (await stackState(page)).id;
-        await page.evaluate(id => {
-            window.celestrian.callNative('setLoopPoints', id, 0, 88200);
+        await page.evaluate(([id, Q]) => {
+            window.celestrian.callNative('setLoopPoints', id, 0, 2 * Q);
             window.celestrian.callNative('toggleLoopWindow', id); // → bypassed
-        }, stackId);
+        }, [stackId, await mockQ(page)]);
         const group = page.locator('.lane[data-kind="group"]').first();
         await expect(group.locator('.win-bracket.start')).toBeVisible();
         await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
@@ -286,11 +327,13 @@ test.describe('Rename (phase 3)', () => {
 });
 
 // Scenario: '1Q + 3Q (Loop)' (1q-3q-loop-bug) — one stack holding a 1Q
-// clip + a 3Q clip (id 'clip-3q'), Q = 44100, full-span loop points.
+// clip + a 3Q clip (id 'clip-3q'), Q = the mock's quantum,
+// full-span loop points.
 test.describe('Loop window brackets (phase 3)', () => {
 
     /** Give the 1Q+3Q stack a [0, 2Q) window through the backend. */
-    async function setWindow(page, endSamples = 88200) {
+    async function setWindow(page, endSamples) {
+        if (endSamples === undefined) endSamples = 2 * await mockQ(page);
         return page.evaluate(async end => {
             const stack = window.celestrian.getState().nodes.find(n => n.type === 'stack');
             await window.celestrian.callNative('setLoopPoints', stack.id, 0, end);
@@ -329,7 +372,8 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // End bracket 2Q → 1Q (pointer aims at 1.3Q; the snap must land 1Q)
         await dragBracket(page, group.locator('.win-bracket.end'), body, 1, 3);
-        await expect.poll(async () => (await stackState(page)).loopEnd).toBe(44100);
+        await expect.poll(async () => (await stackState(page)).loopEnd)
+            .toBe(await mockQ(page));
         expect((await stackState(page)).loopStart).toBe(0);
     });
 
@@ -343,8 +387,9 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // Start 0Q → aim past the end (2.7Q): clamps to endQ − 1 = 1Q
         await dragBracket(page, group.locator('.win-bracket.start'), body, 2.4, 3);
-        await expect.poll(async () => (await stackState(page)).loopStart).toBe(44100);
-        expect((await stackState(page)).loopEnd).toBe(88200);
+        await expect.poll(async () => (await stackState(page)).loopStart)
+            .toBe(await mockQ(page));
+        expect((await stackState(page)).loopEnd).toBe(2 * await mockQ(page));
     });
 
     test('an ACTIVE window never compresses the timeline (field 2026-07-11)', async ({ page }) => {
@@ -401,7 +446,8 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Release: ghost gone, snap committed
         await page.mouse.up();
         await expect(ghost).toHaveCount(0);
-        await expect.poll(async () => (await stackState(page)).loopEnd).toBe(44100);
+        await expect.poll(async () => (await stackState(page)).loopEnd)
+            .toBe(await mockQ(page));
     });
 
     test('FRACTAL: clip lanes window exactly like group lanes (I5)', async ({ page }) => {
@@ -419,7 +465,8 @@ test.describe('Loop window brackets (phase 3)', () => {
         const clip3qState = () => page.evaluate(() =>
             window.celestrian.getState().nodes.find(n => n.type === 'stack')
                 .nodes.find(c => c.id === 'clip-3q'));
-        await expect.poll(async () => (await clip3qState()).loopEnd).toBe(88200);
+        await expect.poll(async () => (await clip3qState()).loopEnd)
+            .toBe(2 * await mockQ(page));
         expect((await clip3qState()).windowActive).toBe(true);
 
         // An ACTIVE clip window rests in the HEARD view (law 13, cut
@@ -454,7 +501,8 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // masterPos 1.5Q → window phase (1.5 mod 2)/2 = 0.75 → heard
         // position 1.5Q of the 3Q frame = 50%
-        await page.evaluate(() => window.celestrian.setMasterPos(1.5 * 44100));
+        await page.evaluate(Q => window.celestrian.setMasterPos(1.5 * Q),
+            await mockQ(page));
         await expect.poll(() => page.evaluate(() =>
             parseFloat(document.querySelector('.win-cursor').style.left))).toBeGreaterThan(49);
         expect(await page.evaluate(() =>
@@ -463,7 +511,8 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Raw transport past the window: the VIEW wraps at the audible
         // cycle (E-C) — both clocks land at 0.5Q (16.7%); with a sole
         // windowed lane, white and amber coincide by construction
-        await page.evaluate(() => window.celestrian.setMasterPos(2.5 * 44100));
+        await page.evaluate(Q => window.celestrian.setMasterPos(2.5 * Q),
+            await mockQ(page));
         await expect.poll(() => page.evaluate(() =>
             parseFloat(document.querySelector('.win-cursor').style.left))).toBeLessThan(18);
 
@@ -482,7 +531,8 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // Raw transport at 2.5Q: the published view wraps at the AUDIBLE
         // cycle (2Q) → 0.5Q. The readout explains the early wrap.
-        await page.evaluate(() => window.celestrian.setMasterPos(2.5 * 44100));
+        await page.evaluate(Q => window.celestrian.setMasterPos(2.5 * Q),
+            await mockQ(page));
         await expect(page.locator('#position-readout'))
             .toHaveText(/0\.5Q \/ 3Q ↺ · loop 2Q/);
         // Playhead sits at 0.5Q of the 3Q frame (~16.7%), inside the window
@@ -509,19 +559,26 @@ test.describe('Loop window brackets (phase 3)', () => {
         });
         await expect(page.locator('#playhead')).toBeVisible();
 
-        // Sample the rendered playhead at frame rate for ~2.6s (one
-        // full 2s loop + margin) and check the sweep's extremes
-        const samples = await page.evaluate(() => new Promise(res => {
+        // Sample the rendered playhead at frame rate for one full loop
+        // + 30% margin. The window is WALL-CLOCK, so it must be sized
+        // from how fast the mock simulates audio, not from the device
+        // rate: the clock steps a fixed sample count per poll, so a 2Q
+        // loop takes 2Q / SIMULATED_SAMPLES_PER_SECOND seconds — which
+        // grows with Q. (Hardcoded 2600 ms, it timed out at 96 kHz.)
+        const loopMs = await page.evaluate(Q =>
+            (2 * Q / window.celestrian.SIMULATED_SAMPLES_PER_SECOND) * 1000,
+            await mockQ(page));
+        const samples = await page.evaluate(windowMs => new Promise(res => {
             const out = [];
             const t0 = performance.now();
             (function tick() {
                 const r = document.getElementById('ruler').getBoundingClientRect();
                 const x = document.getElementById('playhead').getBoundingClientRect().x;
                 out.push((x - r.x) / r.width); // fraction of the 3Q frame
-                if (performance.now() - t0 < 2600) requestAnimationFrame(tick);
+                if (performance.now() - t0 < windowMs) requestAnimationFrame(tick);
                 else res(out);
             })();
-        }));
+        }), Math.round(loopMs * 1.3));
         const boundary = 2 / 3; // the 2Q loop end in the 3Q frame
         // The sweep must REACH the loop end (was wrapping ~5% early)…
         expect(Math.max(...samples)).toBeGreaterThan(boundary - 0.05);
@@ -535,7 +592,8 @@ test.describe('Loop window brackets (phase 3)', () => {
                 return;
             }
         }
-        throw new Error('no wrap observed in 2.6s of a 2s loop');
+        throw new Error(`no wrap observed in ${Math.round(loopMs * 1.3)}ms ` +
+            `of a ${Math.round(loopMs)}ms loop`);
     });
 
     test('latent brackets: dragging in CREATES a window on a group lane', async ({ page }) => {
@@ -548,7 +606,8 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // Drag the latent end bracket 3Q → 2Q: the window becomes real
         await dragBracket(page, group.locator('.win-bracket.end'), body, 2, 3);
-        await expect.poll(async () => (await stackState(page)).loopEnd).toBe(88200);
+        await expect.poll(async () => (await stackState(page)).loopEnd)
+            .toBe(2 * await mockQ(page));
         expect((await stackState(page)).windowActive).toBe(true);
         // The settled overlay shows a real (non-latent) window + chip
         await expect(group.locator('.win-bracket.start:not(.latent)')).toHaveCount(1);
@@ -812,6 +871,7 @@ test.describe('Effects rack (built-ins)', () => {
 test.describe('Session shell (mock mode)', () => {
 
     test.beforeEach(async ({ page }) => {
+        await applyRate(page);
         await page.goto('/?mock=true');
         await page.waitForFunction(
             () => typeof window.__celestrianTest?.loadScenario === 'function',
@@ -825,12 +885,12 @@ test.describe('Session shell (mock mode)', () => {
     });
 
     test('deep playback position stays in the cycle frame', async ({ page }) => {
-        await page.evaluate(() => {
+        await page.evaluate(Q => {
             window.__celestrianTest.loadScenario('example-1q-4q');
-            // 25 cycles + 1.5Q deep (44.1k mock quantum)
-            window.__celestrianTest.setMasterPos((25 * 4 + 1.5) * 44100);
+            // 25 cycles + 1.5Q deep, in the mock's own quantum
+            window.__celestrianTest.setMasterPos((25 * 4 + 1.5) * Q);
             window.__celestrianTest.setIsPlaying(true);
-        });
+        }, await mockQ(page));
         await expect(page.locator('#position-readout')).toHaveText(/1\.5Q \/ 4Q ↺/);
     });
 
@@ -860,7 +920,8 @@ test.describe('Session shell (mock mode)', () => {
         })).toMatch(/armed|recording/);
 
         // Let 2Q of "audio" pass, then stop from the same button
-        await page.evaluate(() => window.__celestrianTest.setMasterPos(2 * 44100));
+        await page.evaluate(Q => window.__celestrianTest.setMasterPos(2 * Q),
+            await mockQ(page));
         await armBtn.click();
 
         // The take commits: one solid rep, rail shows a period, ● disables
@@ -896,9 +957,11 @@ test.describe('Session shell (mock mode)', () => {
         // Group ● again stops both: the stop request enters
         // awaiting-stop; the takes commit as the transport crosses the
         // next boundary (stops always pad forward — owner ruling)
-        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.6 * 44100)));
+        await page.evaluate(Q => window.__celestrianTest.advanceBy(Math.round(0.6 * Q)),
+            await mockQ(page));
         await groupArm.click();
-        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100)));
+        await page.evaluate(Q => window.__celestrianTest.advanceBy(Math.round(0.5 * Q)),
+            await mockQ(page));
         await expect.poll(() => page.evaluate(async () => {
             const s = (await window.__celestrianTest.callNative('getGraphState'))
                 .nodes.find(n => n.type === 'stack');
@@ -932,7 +995,8 @@ test.describe('Session shell (mock mode)', () => {
         // Once the transport crosses the Q11 boundary and audio flows,
         // the bar takes over (scenario sits at ~0.5Q: 0.5Q to the arm
         // point, then some audio)
-        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.8 * 44100)));
+        await page.evaluate(Q => window.__celestrianTest.advanceBy(Math.round(0.8 * Q)),
+            await mockQ(page));
         await expect(page.locator('.lane .recording-bar')).toHaveCount(1);
     });
 
@@ -942,14 +1006,16 @@ test.describe('Session shell (mock mode)', () => {
         await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
         await page.click('#create-track-btn');
         await page.locator('.lane[data-kind="clip"] .arm-btn').click();
-        await page.evaluate(() => window.__celestrianTest.advanceBy(44100));
+        await page.evaluate(Q => window.__celestrianTest.advanceBy(Q),
+            await mockQ(page));
         await page.locator('.lane[data-kind="clip"] .arm-btn').click();
         await expect(page.locator('.lane[data-kind="clip"] .rep')).toHaveCount(1);
 
         await page.click('#create-track-btn');
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(2);
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
-        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(1.5 * 44100)));
+        await page.evaluate(Q => window.__celestrianTest.advanceBy(Math.round(1.5 * Q)),
+            await mockQ(page));
         await expect(page.locator('.recording-bar')).toBeVisible();
 
         // Mark clip 1's rep div and its canvas before the commit
@@ -970,7 +1036,8 @@ test.describe('Session shell (mock mode)', () => {
         // trailing ellipsis ("1.5Q…") while the take pads to the boundary.
         await expect(page.locator('.lane[data-kind="clip"]').nth(1)
             .locator('.rail-sub')).toHaveText(/…$/);
-        await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100) + 10));
+        await page.evaluate(Q => window.__celestrianTest.advanceBy(Math.round(0.5 * Q) + 10),
+            await mockQ(page));
         await expect(page.locator('#position-readout')).toHaveText(/2Q ↺/);
 
         const survived = await page.evaluate(() => ({

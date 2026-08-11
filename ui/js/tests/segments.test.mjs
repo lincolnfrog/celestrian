@@ -162,6 +162,10 @@ test('view model: periodQ is EXACT for fractional-bound maps (fp)', () => {
     // lengths sum to exactly 1Q displayed "0.9999…Q" — periodQ must be
     // ONE division of the sample sum, never a sum of per-segment
     // divisions. 18480 + (88200 − 62580) = 44100 exactly.
+    // The literals stay literal ON PURPOSE: this is a pinned fp
+    // regression case whose whole point is that these exact sample
+    // lengths sum to exactly 1Q. It carries its own `quantum` and so
+    // is independent of the mock's rate.
     const state = {
         quantum: 44100, islandEpoch: 0, masterPos: 0, perf,
         nodes: [

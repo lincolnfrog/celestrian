@@ -12,13 +12,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { timelineLcm } from '../timeline_model.js';
-import { Q44 } from './helpers.mjs';
+import { MOCK_Q as Q } from './helpers.mjs';
 
 test('timelineLcm rounds float jitter before LCM-ing (no cycle explosion)', () => {
     // 1Q + 4Q + (3Q + ε): the ε must be ignored — 12Q, not astronomical
-    assert.equal(timelineLcm([Q44, 4 * Q44, 3 * Q44 + 0.00001], Q44), 12 * Q44);
+    assert.equal(timelineLcm([Q, 4 * Q, 3 * Q + 0.00001], Q), 12 * Q);
     // …and jitter below the integer too
-    assert.equal(timelineLcm([Q44, 4 * Q44, 3 * Q44 - 0.00001], Q44), 12 * Q44);
+    assert.equal(timelineLcm([Q, 4 * Q, 3 * Q - 0.00001], Q), 12 * Q);
     // A jittered QUANTUM is rounded the same way
-    assert.equal(timelineLcm([Q44, 3 * Q44], Q44 + 0.4), 3 * Q44);
+    assert.equal(timelineLcm([Q, 3 * Q], Q + 0.4), 3 * Q);
 });

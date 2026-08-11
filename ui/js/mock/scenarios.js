@@ -5,13 +5,20 @@
  * for them); makeClip/makeStack below collapse the repeated literals
  * while keeping each scenario's resulting state field-for-field
  * identical to the historical hand-rolled objects.
+ *
+ * SAMPLE RATE: every fixture length below used to be a literal derived
+ * from 44100 (1Q = 44100, 3Q = 132300, "2.5Q" = 110250 …). They are now
+ * multiples of `Q` — one second of audio at the mock's rate
+ * (mock/rate.js) — read at LOAD time, so a scenario keeps its musical
+ * shape (1Q + 3Q, LCM 3Q, a take 2.5Q in) at any rate.
  */
 
 import { state, findNode } from './state.js';
 import { clearUndoHistory } from './undo.js';
-import { transport } from './transport.js';
+import { transport, DEFAULT_SAMPLES_PER_TICK } from './transport.js';
 import { recView } from './recording.js';
 import { createNode } from './graph_crud.js';
+import { quantumSamples } from './rate.js';
 
 /** Clip fixture factory: the invariant base every scenario clip shares
  * (type + default geometry); `overrides` supplies the rest and NOTHING
@@ -23,7 +30,7 @@ function makeClip(overrides) {
 /** Stack fixture factory — same contract as makeClip. */
 function makeStack(overrides) {
     return { type: 'stack', x: 100, y: 100, isExpanded: true,
-             effectiveQuantum: 44100, ...overrides };
+             effectiveQuantum: quantumSamples(), ...overrides };
 }
 
 // The full at-rest flag block older fixtures spell out on every clip.
@@ -55,9 +62,15 @@ export function loadScenario(name) {
     console.log('[MockBackend] Loading scenario:', name);
     state.nextId = 1;
 
+    // The fixture quantum: 1 s of audio at the mock's CURRENT rate
+    // (read here, not at module load, so setSampleRate before a load
+    // re-rates the fixtures). Historically the literal 44100.
+    const Q = quantumSamples();
+
     // Reset transport simulation on scenario load
     transport.running = false;
     transport.speed = 1.0;
+    transport.samplesPerTick = DEFAULT_SAMPLES_PER_TICK;  // simulation step
     recView.active = false;
     // Scenario isolation (fix 2026-08-11): the clock resets too —
     // isPlaying/masterPos no longer leak in from whatever the previous
@@ -186,39 +199,39 @@ export function loadScenario(name) {
         // Expected: Clip 1 (1Q) should have 3 ghosts, Clip 2 (4Q) should have 0 ghosts
         case 'example-1q-4q':
             state.isPlaying = true;
-            state.masterPos = 22050;  // ~0.5Q into the timeline
+            state.masterPos = 0.5 * Q;  // 0.5Q into the timeline
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'LCM Test Stack',
                 w: 900,
                 h: 350,
-                effectiveQuantum: 44100,  // 1Q = 44100 samples
-                loopStart: 0,             // Stack-level loop points (for collapsed mode)
-                loopEnd: 176400,          // Full LCM duration (4Q)
+                effectiveQuantum: Q,     // the island quantum (1 s of audio)
+                loopStart: 0,            // Stack-level loop points (for collapsed mode)
+                loopEnd: 4 * Q,          // Full LCM duration (4Q)
                 nodes: [
                     makeClip({
                         id: 'clip-1q',
                         name: 'Clip 1Q',
-                        duration: 44100,      // 1Q
-                        effectiveQuantum: 44100,
+                        duration: Q,             // 1Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         playhead: 0.5,  // 50% through the clip
                         loopStart: 0,
-                        loopEnd: 44100,
+                        loopEnd: Q,
                     }),
                     makeClip({
                         id: 'clip-4q',
                         name: 'Clip 4Q',
                         y: 120,
                         w: 800,
-                        duration: 176400,     // 4Q
-                        effectiveQuantum: 44100,
+                        duration: 4 * Q,         // 4Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         playhead: 0.125,  // 12.5% through the clip (= 0.5Q / 4Q)
                         loopStart: 0,
-                        loopEnd: 176400,
+                        loopEnd: 4 * Q,
                     }),
                 ],
             })];
@@ -237,8 +250,8 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-1q',
                         name: 'Clip 1Q',
-                        duration: 44100,
-                        effectiveQuantum: 44100,
+                        duration: Q,
+                        effectiveQuantum: Q,
                         isRecording: false,
                     }),
                     makeClip({
@@ -246,8 +259,8 @@ export function loadScenario(name) {
                         name: 'Clip 4Q',
                         y: 120,
                         w: 800,
-                        duration: 176400,
-                        effectiveQuantum: 44100,
+                        duration: 4 * Q,
+                        effectiveQuantum: Q,
                         isRecording: false,
                     }),
                     makeClip({
@@ -255,8 +268,8 @@ export function loadScenario(name) {
                         name: 'Clip 3Q',
                         y: 240,
                         w: 600,
-                        duration: 132300,
-                        effectiveQuantum: 44100,
+                        duration: 3 * Q,
+                        effectiveQuantum: Q,
                         isRecording: false,
                     }),
                 ],
@@ -271,23 +284,23 @@ export function loadScenario(name) {
             // Scenario: Clip 1 = 1Q, Clip 2 = 4Q, Clip 3 = 1Q at 2Q
             // Expected: Clip 3 x=400 (2Q slot), ghosts wrap at 0Q→2Q
             state.isPlaying = true;
-            state.masterPos = 88200;  // 2Q in samples
+            state.masterPos = 2 * Q;    // 2Q in samples
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Anchor Bug Test Stack',
                 w: 900,
                 h: 450,
-                effectiveQuantum: 44100,  // 1Q = 44100 samples
+                effectiveQuantum: Q,     // the island quantum (1 s of audio)
                 nodes: [
                     makeClip({
                         id: 'clip-1',
                         name: 'Clip 1Q',
-                        duration: 44100,      // 1Q
-                        effectiveQuantum: 44100,
+                        duration: Q,             // 1Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         loopStart: 0,
-                        loopEnd: 44100,
+                        loopEnd: Q,
                         origin: 0,
                     }),
                     makeClip({
@@ -295,12 +308,12 @@ export function loadScenario(name) {
                         name: 'Clip 4Q',
                         y: 120,
                         w: 800,
-                        duration: 176400,     // 4Q
-                        effectiveQuantum: 44100,
+                        duration: 4 * Q,         // 4Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         loopStart: 0,
-                        loopEnd: 176400,
+                        loopEnd: 4 * Q,
                         origin: 0,
                     }),
                     makeClip({
@@ -308,13 +321,13 @@ export function loadScenario(name) {
                         name: 'Clip 1Q@2Q',
                         x: 400,
                         y: 240,
-                        duration: 44100,      // 1Q
-                        effectiveQuantum: 44100,
+                        duration: Q,             // 1Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         loopStart: 0,
-                        loopEnd: 44100,
-                        origin: 88200,        // KEY: started at 2Q (slot 2 derives from this)
+                        loopEnd: Q,
+                        origin: 2 * Q,           // KEY: started at 2Q (slot 2 derives from this)
                     }),
                 ],
             })];
@@ -326,7 +339,7 @@ export function loadScenario(name) {
             // Nested Stacks Scenario
             // ========================================
             state.isPlaying = true;
-            state.masterPos = 22050;
+            state.masterPos = 0.5 * Q;
             state.nodes = [makeStack({
                 id: 'parent-stack',
                 name: 'Parent Stack',
@@ -336,8 +349,8 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-1',
                         name: 'Top Level Clip',
-                        duration: 44100,
-                        effectiveQuantum: 44100,
+                        duration: Q,
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                     }),
@@ -353,8 +366,8 @@ export function loadScenario(name) {
                                 id: 'nested-clip-1',
                                 name: 'Nested Clip A',
                                 w: 400,
-                                duration: 88200,
-                                effectiveQuantum: 44100,
+                                duration: 2 * Q,
+                                effectiveQuantum: Q,
                                 isRecording: false,
                                 isPlaying: true,
                             }),
@@ -362,8 +375,8 @@ export function loadScenario(name) {
                                 id: 'nested-clip-2',
                                 name: 'Nested Clip B',
                                 y: 120,
-                                duration: 44100,
-                                effectiveQuantum: 44100,
+                                duration: Q,
+                                effectiveQuantum: Q,
                                 isRecording: false,
                                 isPlaying: true,
                             }),
@@ -388,33 +401,33 @@ export function loadScenario(name) {
                 w: 700,
                 h: 350,
                 isExpanded: true,  // User will collapse in test
-                effectiveQuantum: 44100,  // 1Q = 44100 samples
+                effectiveQuantum: Q,     // the island quantum (1 s of audio)
                 loopStart: 0,
-                loopEnd: 132300,  // Full LCM = 3Q (44100 * 3)
+                loopEnd: 3 * Q,          // Full LCM = 3Q
                 nodes: [
                     makeClip({
                         id: 'clip-1q',
                         name: 'Clip 1Q',
-                        duration: 44100,      // 1Q
-                        effectiveQuantum: 44100,
+                        duration: Q,             // 1Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         playhead: 0,
                         loopStart: 0,
-                        loopEnd: 44100,
+                        loopEnd: Q,
                     }),
                     makeClip({
                         id: 'clip-3q',
                         name: 'Clip 3Q',
                         y: 120,
                         w: 600,
-                        duration: 132300,     // 3Q
-                        effectiveQuantum: 44100,
+                        duration: 3 * Q,         // 3Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         playhead: 0,
                         loopStart: 0,
-                        loopEnd: 132300,
+                        loopEnd: 3 * Q,
                     }),
                 ],
             })];
@@ -426,7 +439,7 @@ export function loadScenario(name) {
             // ========================================
             // Simulates: Clip 1 = 1Q committed, Clip 2 = actively recording at ~2.5Q
             state.isPlaying = true;
-            state.masterPos = 110250;  // 2.5Q in samples
+            state.masterPos = 2.5 * Q;  // 2.5Q in samples
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Recording Test Stack',
@@ -436,26 +449,26 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-1',
                         name: 'New Clip',
-                        duration: 44100,  // 1Q
-                        effectiveQuantum: 44100,
+                        duration: Q,             // 1Q
+                        effectiveQuantum: Q,
                         isRecording: false,
                         isPlaying: true,
                         playhead: 0.5,
                         loopStart: 0,
-                        loopEnd: 44100,
+                        loopEnd: Q,
                     }),
                     makeClip({
                         id: 'clip-2',
                         name: 'New Clip',
                         y: 120,
                         w: 500,
-                        duration: 110250,  // 2.5Q - recording
-                        effectiveQuantum: 44100,
+                        duration: 2.5 * Q,       // 2.5Q — recording
+                        effectiveQuantum: Q,
                         isRecording: true,
                         isPlaying: false,
                         currentPeak: 0.002,
                         loopStart: 0,
-                        loopEnd: 110250,
+                        loopEnd: 2.5 * Q,
                     }),
                 ],
             })];

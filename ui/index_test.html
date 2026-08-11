@@ -112,7 +112,9 @@
         // (transitively) imports backend.js would evaluate the facade BEFORE
         // window.celestrian is set below and select the JUCE-bridge path.
         // app.js is dynamically imported at the bottom for the same reason.
-        import { callNative, log, getState, loadScenario as loadBackendScenario, setMasterPos, setIsPlaying } from './js/mock_backend.js';
+        import { callNative, log, getState, loadScenario as loadBackendScenario,
+         setMasterPos, setIsPlaying, SIMULATED_SAMPLES_PER_SECOND }
+    from './js/mock_backend.js';
 
         // Make loadScenario available globally for buttons
         window.loadScenario = function (name) {
@@ -134,7 +136,10 @@
             log,
             getState,
             setMasterPos,
-            setIsPlaying
+            setIsPlaying,
+            // Simulated audio per wall-clock second — real-time specs
+            // size their sampling window from it (mock/transport.js).
+            SIMULATED_SAMPLES_PER_SECOND
         };
 
         // Now load the main app (same file works for both test and production!)

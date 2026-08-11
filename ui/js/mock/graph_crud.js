@@ -11,6 +11,7 @@ import {
     committedClipCount, findSoleCommittedClip,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
+import { quantumSamples } from './rate.js';
 
 // createNode(type, parentId)
 export function createNode(type, parentId = null) {
@@ -169,7 +170,9 @@ export function combineNodes(draggedId, targetId) {
         w: Math.max(targetNode.w || 400, draggedNode.w || 400),
         h: 300,
         isExpanded: true,
-        effectiveQuantum: targetNode.effectiveQuantum || 44100,
+        // Fixture fallback for targets that predate the field: 1 s of
+        // audio at the mock's rate (was the literal 44100).
+        effectiveQuantum: targetNode.effectiveQuantum || quantumSamples(),
         nodes: [targetNode, draggedNode]  // Target first, then dragged
     };
 
