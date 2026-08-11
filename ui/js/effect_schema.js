@@ -52,7 +52,11 @@ export const EFFECT_SCHEMA = [
     },
 ];
 
-/** Enabled-slot count for a node's published effects state. */
+/**
+ * Enabled-slot count for a node's published effects state.
+ * Currently unimported — kept as the canonical helper for any future
+ * "N fx on" badge so callers don't re-derive it from EFFECT_SCHEMA.
+ */
 export function enabledFxCount(effects) {
     if (!effects) return 0;
     return EFFECT_SCHEMA.reduce(

@@ -30,6 +30,55 @@ async function loadHarness(page, scenario) {
     }, { timeout: 5000 });
 }
 
+/* ---------- shared page helpers (harness page only: they read the
+ * window.celestrian surface index_test.html injects; the mock-mode
+ * describe drives window.__celestrianTest instead) ---------- */
+
+/** The scenario stack's backend node (every harness scenario used here
+ *  has exactly one top-level stack). */
+const stackState = page => page.evaluate(() =>
+    window.celestrian.getState().nodes.find(n => n.type === 'stack'));
+
+/** The i-th clip inside the scenario stack (default: the first). */
+const clipState = (page, i = 0) => page.evaluate(idx =>
+    window.celestrian.getState().nodes.find(n => n.type === 'stack')
+        .nodes[idx], i);
+
+/** Press at a locator's center and drag to an absolute point WITHOUT
+ *  releasing — for mid-drag assertions. REAL input, hit-tested (the
+ *  2026-07-23c law: synthetic dispatch bypasses hit-testing). */
+async function dragHold(page, locator, toX, toY, steps = 5) {
+    const from = await locator.boundingBox();
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(toX, toY, { steps });
+}
+
+/** Full drag: center of `locator` → (toX, toY) → release. */
+async function dragTo(page, locator, toX, toY, steps = 5) {
+    await dragHold(page, locator, toX, toY, steps);
+    await page.mouse.up();
+}
+
+/** Drag a locator by a pixel delta from its center (dial sweeps). */
+async function dragBy(page, locator, dx, dy, steps = 5) {
+    const b = await locator.boundingBox();
+    await dragTo(page, locator,
+        b.x + b.width / 2 + dx, b.y + b.height / 2 + dy, steps);
+}
+
+/** Drag a window bracket to targetQ (of cycleQ) with a mid-Q offset that
+ *  only Q-snapping can land: proves the snap, not the pointer accuracy. */
+async function dragBracket(page, bracket, body, targetQ, cycleQ) {
+    const box = await body.boundingBox();
+    await dragTo(page, bracket,
+        box.x + box.width * ((targetQ + 0.3) / cycleQ),
+        box.y + box.height / 2, 6);
+}
+
+// Scenarios: each test names the harness button it loads; shapes live in
+// js/mock/scenarios.js (e.g. 'Stack with 3 Clips' = one stack "Main
+// Stack" with committed clips named Clip A/B/C).
 test.describe('Session shell', () => {
 
     test('boots the harness and renders the island as lanes', async ({ page }) => {
@@ -80,22 +129,21 @@ test.describe('Session shell', () => {
         const before = await page.locator('.lane').count();
         await page.locator('.lane[data-kind="group"]').first()
             .locator('.fold-btn').click();
-        await expect(page.locator('.lane')).not.toHaveCount(before, { timeout: 3000 });
+        await expect(page.locator('.lane')).not.toHaveCount(before);
         const after = await page.locator('.lane').count();
         expect(after).toBeLessThan(before);
         await expect(page.locator('.lane[data-kind="group"]').first()).toBeVisible();
     });
 
-    test('mute and solo round-trip through the backend', async ({ page }) => {
+    test('mute round-trips through the backend', async ({ page }) => {
+        // (Solo is unit-covered — view_model.test.mjs 'solo and mute
+        // pass through'; this spec only wires the mute button.)
         await loadHarness(page, 'Stack with 3 Clips');
         const firstClip = page.locator('.lane[data-kind="clip"]').first();
         await firstClip.locator('.mute-btn').click();
-        await expect(firstClip.locator('.mute-btn')).toHaveClass(/on/, { timeout: 3000 });
+        await expect(firstClip.locator('.mute-btn')).toHaveClass(/on/);
         // State is the source of truth, not just the button class
-        const muted = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack')
-                .nodes[0].isMuted);
-        expect(muted).toBe(true);
+        expect((await clipState(page)).isMuted).toBe(true);
     });
 
     test('play button and playhead: one line, in the timeline column', async ({ page }) => {
@@ -130,25 +178,25 @@ test.describe('Session shell', () => {
             const phX = document.getElementById('playhead').getBoundingClientRect().x;
             const r = document.getElementById('ruler').getBoundingClientRect();
             return Math.abs(phX - (r.x + r.width * 0.5));
-        }), { timeout: 3000 }).toBeLessThan(3);
+        })).toBeLessThan(3);
     });
 
     test('readout shows position over cycle in Q', async ({ page }) => {
         await loadHarness(page, '1Q + 4Q (LCM=4)');
         await page.evaluate(() => window.celestrian.setMasterPos(110250)); // 2.5Q
-        await expect(page.locator('#position-readout')).toHaveText(/2\.5Q \/ 4Q ↺/, { timeout: 3000 });
+        await expect(page.locator('#position-readout')).toHaveText(/2\.5Q \/ 4Q ↺/);
     });
 
     test('bypassed loop window renders visible brackets, no dimming', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         // Give the 3Q stack a bypassed window via the backend
-        await page.evaluate(() => {
-            const stack = window.celestrian.getState().nodes.find(n => n.type === 'stack');
-            window.celestrian.callNative('setLoopPoints', stack.id, 0, 88200);
-            window.celestrian.callNative('toggleLoopWindow', stack.id); // → bypassed
-        });
+        const stackId = (await stackState(page)).id;
+        await page.evaluate(id => {
+            window.celestrian.callNative('setLoopPoints', id, 0, 88200);
+            window.celestrian.callNative('toggleLoopWindow', id); // → bypassed
+        }, stackId);
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-bracket.start')).toBeVisible({ timeout: 3000 });
+        await expect(group.locator('.win-bracket.start')).toBeVisible();
         await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
         await expect(group.locator('.win-dim')).toHaveCount(0);
     });
@@ -181,6 +229,7 @@ test.describe('Session shell', () => {
     });
 });
 
+// Scenario: 'Stack with 3 Clips' — one stack, clips 'Clip A'/'B'/'C'.
 test.describe('Rename (phase 3)', () => {
 
     test('double-click the rail name edits and round-trips through the backend', async ({ page }) => {
@@ -192,10 +241,8 @@ test.describe('Rename (phase 3)', () => {
         await input.fill('Kick');
         await input.press('Enter');
         // Display settles AND the backend holds the new name
-        await expect(firstClip.locator('.rail-name')).toHaveText('Kick', { timeout: 3000 });
-        const name = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].name);
-        expect(name).toBe('Kick');
+        await expect(firstClip.locator('.rail-name')).toHaveText('Kick');
+        expect((await clipState(page)).name).toBe('Kick');
     });
 
     test('group lanes rename too, committing on blur', async ({ page }) => {
@@ -204,10 +251,8 @@ test.describe('Rename (phase 3)', () => {
         await group.locator('.rail-name').dblclick();
         await group.locator('.rail-name-input').fill('Drum Kit');
         await page.locator('#ruler').click(); // blur commits
-        await expect(group.locator('.rail-name')).toHaveText('Drum Kit', { timeout: 3000 });
-        const name = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').name);
-        expect(name).toBe('Drum Kit');
+        await expect(group.locator('.rail-name')).toHaveText('Drum Kit');
+        expect((await stackState(page)).name).toBe('Drum Kit');
     });
 
     test('Escape cancels without touching the backend', async ({ page }) => {
@@ -219,9 +264,7 @@ test.describe('Rename (phase 3)', () => {
         await input.press('Escape');
         await expect(input).toHaveCount(0);
         await expect(firstClip.locator('.rail-name')).toHaveText('Clip A');
-        const name = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].name);
-        expect(name).toBe('Clip A');
+        expect((await clipState(page)).name).toBe('Clip A');
     });
 
     test('the 50ms patch tick never clobbers typing; space stays out of the transport', async ({ page }) => {
@@ -238,10 +281,12 @@ test.describe('Rename (phase 3)', () => {
         // The space typed above must not have toggled the transport
         expect(await page.evaluate(() => window.celestrian.getState().isPlaying)).toBe(false);
         await input.press('Enter');
-        await expect(firstClip.locator('.rail-name')).toHaveText('Snare Top', { timeout: 3000 });
+        await expect(firstClip.locator('.rail-name')).toHaveText('Snare Top');
     });
 });
 
+// Scenario: '1Q + 3Q (Loop)' (1q-3q-loop-bug) — one stack holding a 1Q
+// clip + a 3Q clip (id 'clip-3q'), Q = 44100, full-span loop points.
 test.describe('Loop window brackets (phase 3)', () => {
 
     /** Give the 1Q+3Q stack a [0, 2Q) window through the backend. */
@@ -252,37 +297,23 @@ test.describe('Loop window brackets (phase 3)', () => {
             return stack.id;
         }, endSamples);
     }
-    const stackState = page => page.evaluate(() =>
-        window.celestrian.getState().nodes.find(n => n.type === 'stack'));
-
-    /** Drag a bracket to targetQ (of cycleQ) with a mid-Q offset that only
-     *  Q-snapping can land: proves the snap, not the pointer accuracy. */
-    async function dragBracket(page, bracket, body, targetQ, cycleQ) {
-        const from = await bracket.boundingBox();
-        const box = await body.boundingBox();
-        await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-        await page.mouse.down();
-        await page.mouse.move(box.x + box.width * ((targetQ + 0.3) / cycleQ),
-            box.y + box.height / 2, { steps: 6 });
-        await page.mouse.up();
-    }
 
     test('chip click toggles active ↔ bypassed; brackets stay visible', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         await setWindow(page); // active [0, 2Q): cycle shortens to 2Q (E-C)
         const group = page.locator('.lane[data-kind="group"]').first();
         const chip = group.locator('.win-chip');
-        await expect(chip).toHaveText(/active/, { timeout: 3000 });
+        await expect(chip).toHaveText(/active/);
 
         await chip.click();
-        await expect(chip).toHaveText(/bypassed/, { timeout: 3000 });
+        await expect(chip).toHaveText(/bypassed/);
         expect((await stackState(page)).loopBypassed).toBe(true);
         // Bypassed: no dimming, brackets remain editable/visible
         await expect(group.locator('.win-dim')).toHaveCount(0);
         await expect(group.locator('.win-bracket.start')).toBeVisible();
 
         await chip.click();
-        await expect(chip).toHaveText(/active/, { timeout: 3000 });
+        await expect(chip).toHaveText(/active/);
         expect((await stackState(page)).loopBypassed).toBe(false);
     });
 
@@ -294,12 +325,11 @@ test.describe('Loop window brackets (phase 3)', () => {
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         const group = page.locator('.lane[data-kind="group"]').first();
         const body = group.locator('.lane-body');
-        await expect(group.locator('.win-chip')).toHaveText(/bypassed/, { timeout: 3000 });
+        await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
 
         // End bracket 2Q → 1Q (pointer aims at 1.3Q; the snap must land 1Q)
         await dragBracket(page, group.locator('.win-bracket.end'), body, 1, 3);
-        await expect.poll(async () => (await stackState(page)).loopEnd,
-            { timeout: 3000 }).toBe(44100);
+        await expect.poll(async () => (await stackState(page)).loopEnd).toBe(44100);
         expect((await stackState(page)).loopStart).toBe(0);
     });
 
@@ -309,12 +339,11 @@ test.describe('Loop window brackets (phase 3)', () => {
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         const group = page.locator('.lane[data-kind="group"]').first();
         const body = group.locator('.lane-body');
-        await expect(group.locator('.win-chip')).toBeVisible({ timeout: 3000 });
+        await expect(group.locator('.win-chip')).toBeVisible();
 
         // Start 0Q → aim past the end (2.7Q): clamps to endQ − 1 = 1Q
         await dragBracket(page, group.locator('.win-bracket.start'), body, 2.4, 3);
-        await expect.poll(async () => (await stackState(page)).loopStart,
-            { timeout: 3000 }).toBe(44100);
+        await expect.poll(async () => (await stackState(page)).loopStart).toBe(44100);
         expect((await stackState(page)).loopEnd).toBe(88200);
     });
 
@@ -323,7 +352,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
         const id = await setWindow(page); // ACTIVE [0, 2Q)
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-chip')).toHaveText(/active/, { timeout: 3000 });
+        await expect(group.locator('.win-chip')).toHaveText(/active/);
 
         // The frame stays the intrinsic 3Q; the window dims [2Q, 3Q)
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
@@ -332,11 +361,11 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Toggling bypass ↔ active must never reframe (it once breathed
         // 1Q ↔ 2Q per toggle); only the dims come and go
         await group.locator('.win-chip').click();
-        await expect(group.locator('.win-chip')).toHaveText(/bypassed/, { timeout: 3000 });
+        await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
         await expect(group.locator('.win-dim')).toHaveCount(0);
         await group.locator('.win-chip').click();
-        await expect(group.locator('.win-chip')).toHaveText(/active/, { timeout: 3000 });
+        await expect(group.locator('.win-chip')).toHaveText(/active/);
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
         await expect(group.locator('.win-dim')).toHaveCount(1);
     });
@@ -349,17 +378,15 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Wait for the REAL window's overlay (chip only exists once the
         // poll echoes it) — grabbing the transient latent bracket at
         // 100% made the pointerdown miss the settled bracket at 66.7%
-        await expect(group.locator('.win-chip')).toHaveText(/active/, { timeout: 3000 });
+        await expect(group.locator('.win-chip')).toHaveText(/active/);
         const endBracket = group.locator('.win-bracket.end:not(.latent)');
-        await expect(endBracket).toBeVisible({ timeout: 3000 });
+        await expect(endBracket).toBeVisible();
 
         // Hold mid-drag at 1.3Q: the HANDLE sits at the pointer (~43%),
         // the GHOST sits at the snapped 1Q (33.3%)
-        const from = await endBracket.boundingBox();
         const box = await body.boundingBox();
-        await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-        await page.mouse.down();
-        await page.mouse.move(box.x + box.width * (1.3 / 3), box.y + box.height / 2, { steps: 4 });
+        await dragHold(page, endBracket,
+            box.x + box.width * (1.3 / 3), box.y + box.height / 2, 4);
 
         const ghost = group.locator('.win-bracket.snap-ghost');
         await expect(ghost).toHaveCount(1);
@@ -374,8 +401,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Release: ghost gone, snap committed
         await page.mouse.up();
         await expect(ghost).toHaveCount(0);
-        await expect.poll(async () => (await stackState(page)).loopEnd,
-            { timeout: 3000 }).toBe(44100);
+        await expect.poll(async () => (await stackState(page)).loopEnd).toBe(44100);
     });
 
     test('FRACTAL: clip lanes window exactly like group lanes (I5)', async ({ page }) => {
@@ -390,19 +416,18 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Drag the clip's latent end bracket 3Q → 2Q: window created
         await dragBracket(page, clip3Q.locator('.win-bracket.end'),
             clip3Q.locator('.lane-body'), 2, 3);
-        const clipState = () => page.evaluate(() =>
+        const clip3qState = () => page.evaluate(() =>
             window.celestrian.getState().nodes.find(n => n.type === 'stack')
                 .nodes.find(c => c.id === 'clip-3q'));
-        await expect.poll(async () => (await clipState()).loopEnd,
-            { timeout: 3000 }).toBe(88200);
-        expect((await clipState()).windowActive).toBe(true);
+        await expect.poll(async () => (await clip3qState()).loopEnd).toBe(88200);
+        expect((await clip3qState()).windowActive).toBe(true);
 
         // An ACTIVE clip window rests in the HEARD view (law 13, cut
         // bands 2026-07-23): the chip names the audible loop and opens
         // the inspector — "window · active" text lives on raw-framed
         // lanes only.
         await expect(clip3Q.locator('.win-open-chip'))
-            .toHaveText(/window 2Q/, { timeout: 3000 });
+            .toHaveText(/window 2Q/);
 
         // Bypass through the SAME engine verb groups use (fractal —
         // toggleLoopWindow works on any node since 2026-07-11): the raw
@@ -410,29 +435,28 @@ test.describe('Loop window brackets (phase 3)', () => {
         await page.evaluate(() =>
             window.celestrian.callNative('toggleLoopWindow', 'clip-3q'));
         const chip = clip3Q.locator('.win-chip');
-        await expect(chip).toHaveText(/bypassed/, { timeout: 3000 });
-        expect((await clipState()).loopBypassed).toBe(true);
+        await expect(chip).toHaveText(/bypassed/);
+        expect((await clip3qState()).loopBypassed).toBe(true);
 
         // And that chip IS the bypass toggle, exactly like a group's:
         // clicking it re-activates and the lane rests heard again.
         await chip.click();
         await expect(clip3Q.locator('.win-open-chip'))
-            .toHaveText(/window 2Q/, { timeout: 3000 });
-        expect((await clipState()).loopBypassed).toBe(false);
+            .toHaveText(/window 2Q/);
+        expect((await clip3qState()).loopBypassed).toBe(false);
     });
 
     test('window cursor: the heard-time playhead loops inside the brackets', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // stack window [0, 2Q), ACTIVE
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-cursor')).toBeVisible({ timeout: 3000 });
+        await expect(group.locator('.win-cursor')).toBeVisible();
 
         // masterPos 1.5Q → window phase (1.5 mod 2)/2 = 0.75 → heard
         // position 1.5Q of the 3Q frame = 50%
         await page.evaluate(() => window.celestrian.setMasterPos(1.5 * 44100));
         await expect.poll(() => page.evaluate(() =>
-            parseFloat(document.querySelector('.win-cursor').style.left)),
-            { timeout: 3000 }).toBeGreaterThan(49);
+            parseFloat(document.querySelector('.win-cursor').style.left))).toBeGreaterThan(49);
         expect(await page.evaluate(() =>
             parseFloat(document.querySelector('.win-cursor').style.left))).toBeLessThan(51);
 
@@ -441,38 +465,37 @@ test.describe('Loop window brackets (phase 3)', () => {
         // windowed lane, white and amber coincide by construction
         await page.evaluate(() => window.celestrian.setMasterPos(2.5 * 44100));
         await expect.poll(() => page.evaluate(() =>
-            parseFloat(document.querySelector('.win-cursor').style.left)),
-            { timeout: 3000 }).toBeLessThan(18);
+            parseFloat(document.querySelector('.win-cursor').style.left))).toBeLessThan(18);
 
         // Not playing → no cursor; bypassed → no cursor element at all
         await page.evaluate(() => window.celestrian.setIsPlaying(false));
-        await expect(group.locator('.win-cursor')).toBeHidden({ timeout: 3000 });
+        await expect(group.locator('.win-cursor')).toBeHidden();
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
-        await expect(group.locator('.win-cursor')).toHaveCount(0, { timeout: 3000 });
+        await expect(group.locator('.win-cursor')).toHaveCount(0);
     });
 
     test('E-C: the playhead never sails past an active window (field 2026-07-11)', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // [0, 2Q) of the sole 3Q stack
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-chip')).toHaveText(/active/, { timeout: 3000 });
+        await expect(group.locator('.win-chip')).toHaveText(/active/);
 
         // Raw transport at 2.5Q: the published view wraps at the AUDIBLE
         // cycle (2Q) → 0.5Q. The readout explains the early wrap.
         await page.evaluate(() => window.celestrian.setMasterPos(2.5 * 44100));
         await expect(page.locator('#position-readout'))
-            .toHaveText(/0\.5Q \/ 3Q ↺ · loop 2Q/, { timeout: 3000 });
+            .toHaveText(/0\.5Q \/ 3Q ↺ · loop 2Q/);
         // Playhead sits at 0.5Q of the 3Q frame (~16.7%), inside the window
         await expect.poll(() => page.evaluate(() => {
             const phX = document.getElementById('playhead').getBoundingClientRect().x;
             const r = document.getElementById('ruler').getBoundingClientRect();
             return (phX - r.x) / r.width;
-        }), { timeout: 3000 }).toBeLessThan(0.67); // never past the 2Q bracket
+        })).toBeLessThan(0.67); // never past the 2Q bracket
 
         // Bypass: full 3Q cycle again, loop note gone
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         await expect(page.locator('#position-readout'))
-            .toHaveText(/2\.5Q \/ 3Q ↺(?! · loop)/, { timeout: 3000 });
+            .toHaveText(/2\.5Q \/ 3Q ↺(?! · loop)/);
     });
 
     test('the playhead sweep TOUCHES the loop end before wrapping (dead-reckoning)', async ({ page }) => {
@@ -484,7 +507,7 @@ test.describe('Loop window brackets (phase 3)', () => {
             await window.celestrian.callNative('togglePlayback'); // stop
             await window.celestrian.callNative('togglePlayback'); // run
         });
-        await expect(page.locator('#playhead')).toBeVisible({ timeout: 3000 });
+        await expect(page.locator('#playhead')).toBeVisible();
 
         // Sample the rendered playhead at frame rate for ~2.6s (one
         // full 2s loop + margin) and check the sweep's extremes
@@ -525,15 +548,16 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // Drag the latent end bracket 3Q → 2Q: the window becomes real
         await dragBracket(page, group.locator('.win-bracket.end'), body, 2, 3);
-        await expect.poll(async () => (await stackState(page)).loopEnd,
-            { timeout: 3000 }).toBe(88200);
+        await expect.poll(async () => (await stackState(page)).loopEnd).toBe(88200);
         expect((await stackState(page)).windowActive).toBe(true);
         // The settled overlay shows a real (non-latent) window + chip
-        await expect(group.locator('.win-bracket.start:not(.latent)')).toHaveCount(1, { timeout: 3000 });
+        await expect(group.locator('.win-bracket.start:not(.latent)')).toHaveCount(1);
         await expect(group.locator('.win-chip')).toHaveText(/active/);
     });
 });
 
+// Scenario: 'Stack with 3 Clips' — clips sit on inputChannel 0; the
+// mock's active audio device exposes 2 channels ("USB Audio Device").
 test.describe('Input picker (phase 3)', () => {
 
     test('chip on clip lanes only; picking an input round-trips setNodeInput', async ({ page }) => {
@@ -557,10 +581,8 @@ test.describe('Input picker (phase 3)', () => {
         await menu.locator('.input-item', { hasText: '(USB Audio Device) 2' })
             .first().click();
         await expect(menu).toHaveCount(0); // picking closes the menu
-        await expect(chip).toHaveText('in 2', { timeout: 3000 });
-        const ch = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].inputChannel);
-        expect(ch).toBe(1);
+        await expect(chip).toHaveText('in 2');
+        expect((await clipState(page)).inputChannel).toBe(1);
     });
 
     test('stereo pair: picking a right input round-trips setNodeInputRight', async ({ page }) => {
@@ -575,18 +597,14 @@ test.describe('Input picker (phase 3)', () => {
         await menu.locator('.input-item', { hasText: '(USB Audio Device) 1' })
             .nth(1).click();
         await expect(menu).toHaveCount(0);
-        await expect(chip).toHaveText('1/1', { timeout: 3000 }); // L=ch1, R=ch1
-        const node = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0]);
-        expect(node.inputChannelR).toBe(0);
+        await expect(chip).toHaveText('1/1'); // L=ch1, R=ch1
+        expect((await clipState(page)).inputChannelR).toBe(0);
 
         // "· mono" clears the pair
         await chip.click();
         await page.locator('.input-menu .input-item', { hasText: 'mono' }).click();
-        await expect(chip).toHaveText('in 1', { timeout: 3000 });
-        const r = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].inputChannelR);
-        expect(r).toBe(-1);
+        await expect(chip).toHaveText('in 1');
+        expect((await clipState(page)).inputChannelR).toBe(-1);
     });
 
     test('menu dismisses on Escape and outside press, changing nothing', async ({ page }) => {
@@ -604,9 +622,7 @@ test.describe('Input picker (phase 3)', () => {
         await expect(page.locator('.input-menu')).toHaveCount(0);
 
         await expect(chip).toHaveText('in 1'); // untouched
-        const ch = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').nodes[0].inputChannel);
-        expect(ch).toBe(0);
+        expect((await clipState(page)).inputChannel).toBe(0);
     });
 
     test('a recording lane cannot switch input mid-take', async ({ page }) => {
@@ -619,6 +635,8 @@ test.describe('Input picker (phase 3)', () => {
     });
 });
 
+// Scenario: '1Q + 4Q (LCM=4)' (example-1q-4q) — a stack with committed
+// 1Q + 4Q clips (the 1Q lane ghosts across the 4Q frame).
 test.describe('One-shot toggle (period source, Q5)', () => {
 
     test('1× drops the ghosts; toggling back restores the loop; undoable', async ({ page }) => {
@@ -633,19 +651,17 @@ test.describe('One-shot toggle (period source, Q5)', () => {
 
         // One-shot: only the take tile remains, dashed lane styling on,
         // the state knob round-trips, and the 4Q frame is untouched.
-        await expect(ps).toHaveText('1×', { timeout: 3000 });
+        await expect(ps).toHaveText('1×');
         await expect(lane.locator('.rep.ghost')).toHaveCount(0);
         await expect(lane.locator('.lane-body')).toHaveClass(/one-shot/);
-        const src = await page.evaluate(() => window.celestrian.getState()
-            .nodes.find(n => n.type === 'stack').nodes[0].periodSource);
-        expect(src).toBe('context');
+        expect((await clipState(page)).periodSource).toBe('context');
         await expect(page.locator('#ruler .tick-label').last())
             .toHaveText(/4Q/); // the one-shot never extends the frame
 
         // A musical fact: ⌘Z takes it back.
         await page.keyboard.press(process.platform === 'darwin'
             ? 'Meta+z' : 'Control+z');
-        await expect(ps).toHaveText('↺', { timeout: 3000 });
+        await expect(ps).toHaveText('↺');
         await expect(lane.locator('.rep.ghost')).toHaveCount(3);
     });
 
@@ -656,11 +672,10 @@ test.describe('One-shot toggle (period source, Q5)', () => {
     });
 });
 
+// Scenario: 'Stack with 3 Clips' — clips born at unity gain.
 test.describe('Gain dial (volume fader)', () => {
 
-    const clipGain = page => page.evaluate(() =>
-        window.celestrian.getState().nodes.find(n => n.type === 'stack')
-            .nodes[0].gain);
+    const clipGain = async page => (await clipState(page)).gain;
 
     test('vertical drag lowers the fader; double-click restores unity', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
@@ -668,15 +683,9 @@ test.describe('Gain dial (volume fader)', () => {
             .locator('.gain-dial');
         await expect(dial).toBeVisible();
 
-        // REAL-input drag (hit-tested, the 2026-07-23c law — synthetic
-        // dispatch bypasses hit-testing): 75px is the full sweep, so
-        // ~38px down lands near half volume.
-        const box = await dial.boundingBox();
-        const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
-        await page.mouse.move(cx, cy);
-        await page.mouse.down();
-        await page.mouse.move(cx, cy + 38, { steps: 5 });
-        await page.mouse.up();
+        // 75px is the full dial sweep, so ~38px down lands near half
+        // volume (dragBy is real, hit-tested input).
+        await dragBy(page, dial, 0, 38);
         const dragged = await clipGain(page);
         expect(dragged).toBeLessThan(0.75);
         expect(dragged).toBeGreaterThan(0.2);
@@ -684,7 +693,7 @@ test.describe('Gain dial (volume fader)', () => {
 
         // Double-click restores unity (the resting state — no boost).
         await dial.dblclick();
-        await expect.poll(() => clipGain(page), { timeout: 3000 }).toBe(1);
+        await expect.poll(() => clipGain(page)).toBe(1);
         await expect(dial).not.toHaveClass(/off-center/);
     });
 
@@ -693,23 +702,16 @@ test.describe('Gain dial (volume fader)', () => {
         const dial = page.locator('.lane[data-kind="group"]').first()
             .locator('.gain-dial');
         await expect(dial).toBeVisible();
-        const box = await dial.boundingBox();
-        const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
-        await page.mouse.move(cx, cy);
-        await page.mouse.down();
-        await page.mouse.move(cx, cy + 75, { steps: 5 });
-        await page.mouse.up();
-        const g = await page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack').gain);
-        expect(g).toBe(0);
+        await dragBy(page, dial, 0, 75); // the full sweep → silence
+        expect((await stackState(page)).gain).toBe(0);
     });
 });
 
+// Scenario: 'Stack with 3 Clips' — the fixed 4-card rack (eq /
+// compressor / echo / reverb), everything off at load.
 test.describe('Effects rack (built-ins)', () => {
 
-    const clipFx = page => page.evaluate(() =>
-        window.celestrian.getState().nodes.find(n => n.type === 'stack')
-            .nodes[0].effects);
+    const clipFx = async page => (await clipState(page)).effects;
 
     test('fx chip expands the rack; enable and params round-trip', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
@@ -718,15 +720,14 @@ test.describe('Effects rack (built-ins)', () => {
 
         await firstClip.locator('.fx-btn').click();
         const fxRow = page.locator('.lane-fx');
-        await expect(fxRow).toHaveCount(1, { timeout: 3000 });
+        await expect(fxRow).toHaveCount(1);
         await expect(fxRow.locator('.fx-card')).toHaveCount(4); // the fixed rack
 
         // Power on the echo: backend flag flips, card lights, chip counts
         await fxRow.locator('.fx-card[data-fx="echo"] .fx-power').click();
-        await expect.poll(async () => (await clipFx(page)).echo.enabled,
-            { timeout: 3000 }).toBe(true);
+        await expect.poll(async () => (await clipFx(page)).echo.enabled).toBe(true);
         await expect(fxRow.locator('.fx-card[data-fx="echo"]')).not.toHaveClass(/off/);
-        await expect(firstClip.locator('.fx-btn')).toHaveText('fx·1', { timeout: 3000 });
+        await expect(firstClip.locator('.fx-btn')).toHaveText('fx·1');
 
         // Drag-equivalent: set the mix slider → setEffectParam round-trips
         await fxRow.locator('.fx-card[data-fx="echo"] input[data-key="mix"]')
@@ -734,14 +735,13 @@ test.describe('Effects rack (built-ins)', () => {
                 el.value = '0.8';
                 el.dispatchEvent(new Event('input', { bubbles: true }));
             });
-        await expect.poll(async () => (await clipFx(page)).echo.mix,
-            { timeout: 3000 }).toBe(0.8);
+        await expect.poll(async () => (await clipFx(page)).echo.mix).toBe(0.8);
         await expect(fxRow.locator('.fx-card[data-fx="echo"] .fx-param-value')
             .nth(2)).toHaveText('80%');
 
         // Chip again: panel folds away, state stays
         await firstClip.locator('.fx-btn').click();
-        await expect(page.locator('.lane-fx')).toHaveCount(0, { timeout: 3000 });
+        await expect(page.locator('.lane-fx')).toHaveCount(0);
         expect((await clipFx(page)).echo.enabled).toBe(true);
     });
 
@@ -749,13 +749,11 @@ test.describe('Effects rack (built-ins)', () => {
         await loadHarness(page, 'Stack with 3 Clips');
         const group = page.locator('.lane[data-kind="group"]').first();
         await group.locator('.fx-btn').click();
-        await expect(page.locator('.lane-fx')).toHaveCount(1, { timeout: 3000 });
+        await expect(page.locator('.lane-fx')).toHaveCount(1);
 
         await page.locator('.fx-card[data-fx="reverb"] .fx-power').click();
-        await expect.poll(() => page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack')
-                .effects.reverb.enabled), { timeout: 3000 }).toBe(true);
-        await expect(group.locator('.fx-btn')).toHaveText('fx·1', { timeout: 3000 });
+        await expect.poll(async () => (await stackState(page)).effects.reverb.enabled).toBe(true);
+        await expect(group.locator('.fx-btn')).toHaveText('fx·1');
     });
 
     test('visualizations: every card draws; comp shows GR while crushing', async ({ page }) => {
@@ -763,7 +761,7 @@ test.describe('Effects rack (built-ins)', () => {
         const firstClip = page.locator('.lane[data-kind="clip"]').first();
         await firstClip.locator('.fx-btn').click();
         const fxRow = page.locator('.lane-fx');
-        await expect(fxRow.locator('canvas.fx-viz')).toHaveCount(4, { timeout: 3000 });
+        await expect(fxRow.locator('canvas.fx-viz')).toHaveCount(4);
 
         // Enable the compressor and put the transport somewhere loud
         // (mock scope peak ≈ 0.65 → well above the −18 dB threshold)
@@ -773,12 +771,10 @@ test.describe('Effects rack (built-ins)', () => {
             window.celestrian.setMasterPos(24568); // sin phase ≈ 1
         });
         // The engine-parity scope publishes a positive gain reduction…
-        await expect.poll(() => page.evaluate(() =>
-            window.celestrian.getState().nodes.find(n => n.type === 'stack')
-                .nodes[0].effects.scope.gr), { timeout: 3000 }).toBeGreaterThan(1);
+        await expect.poll(async () => (await clipState(page)).effects.scope.gr).toBeGreaterThan(1);
         // …and the card's readout shows it
         await expect(fxRow.locator('.fx-card[data-fx="compressor"] .fx-gr'))
-            .toHaveText(/dB/, { timeout: 3000 });
+            .toHaveText(/dB/);
 
         // Canvases actually paint (non-zero backing store, drawn pixels)
         const painted = await fxRow.locator('.fx-card[data-fx="compressor"] .fx-viz')
@@ -796,7 +792,7 @@ test.describe('Effects rack (built-ins)', () => {
         await page.locator('.lane[data-kind="clip"]').first()
             .locator('.fx-btn').click();
         const slider = page.locator('.fx-card[data-fx="eq"] input[data-key="low"]');
-        await expect(slider).toBeVisible({ timeout: 3000 });
+        await expect(slider).toBeVisible();
         // Hold the slider "hot" and give it a local value; several polls
         // must not clobber it while held
         await slider.evaluate(el => {
@@ -810,6 +806,9 @@ test.describe('Effects rack (built-ins)', () => {
     });
 });
 
+// Mock mode (/?mock=true): drives the REAL backend facade through
+// window.__celestrianTest (backend.js) with scenario IDS, not harness
+// buttons — window.celestrian and the helpers above don't exist here.
 test.describe('Session shell (mock mode)', () => {
 
     test.beforeEach(async ({ page }) => {
@@ -832,7 +831,7 @@ test.describe('Session shell (mock mode)', () => {
             window.__celestrianTest.setMasterPos((25 * 4 + 1.5) * 44100);
             window.__celestrianTest.setIsPlaying(true);
         });
-        await expect(page.locator('#position-readout')).toHaveText(/1\.5Q \/ 4Q ↺/, { timeout: 3000 });
+        await expect(page.locator('#position-readout')).toHaveText(/1\.5Q \/ 4Q ↺/);
     });
 
     test('FIRST TAKE: ＋ Track → arm → stop → committed take', async ({ page }) => {
@@ -858,14 +857,14 @@ test.describe('Session shell (mock mode)', () => {
             return lane.querySelector('.rail-status').textContent +
                 (lane.querySelector('.rail-sub').classList.contains('recording')
                     ? ' recording' : '');
-        }), { timeout: 3000 }).toMatch(/armed|recording/);
+        })).toMatch(/armed|recording/);
 
         // Let 2Q of "audio" pass, then stop from the same button
         await page.evaluate(() => window.__celestrianTest.setMasterPos(2 * 44100));
         await armBtn.click();
 
         // The take commits: one solid rep, rail shows a period, ● disables
-        await expect(clipLane.locator('.rep:not(.ghost)')).toHaveCount(1, { timeout: 3000 });
+        await expect(clipLane.locator('.rep:not(.ghost)')).toHaveCount(1);
         await expect(armBtn).toBeDisabled(); // arm targets emptiness (Q7)
     });
 
@@ -890,9 +889,9 @@ test.describe('Session shell (mock mode)', () => {
             const s = (await window.__celestrianTest.callNative('getGraphState'))
                 .nodes.find(n => n.type === 'stack');
             return s.nodes.map(c => !!c.isRecording).join(',');
-        }), { timeout: 3000 }).toBe('false,false,false,true,true');
+        })).toBe('false,false,false,true,true');
         await expect(page.locator('.lane[data-kind="group"] .rail-status').first())
-            .toHaveText(/armed|recording|map live/, { timeout: 3000 });
+            .toHaveText(/armed|recording|map live/);
 
         // Group ● again stops both: the stop request enters
         // awaiting-stop; the takes commit as the transport crosses the
@@ -904,7 +903,7 @@ test.describe('Session shell (mock mode)', () => {
             const s = (await window.__celestrianTest.callNative('getGraphState'))
                 .nodes.find(n => n.type === 'stack');
             return s.nodes.some(c => c.isRecording);
-        }), { timeout: 3000 }).toBe(false);
+        })).toBe(false);
     });
 
     test('all-full island: group ● disables; a fresh track records (Q7)', async ({ page }) => {
@@ -920,7 +919,7 @@ test.describe('Session shell (mock mode)', () => {
 
         // The modern flow: ＋ Add track, then ITS ●.
         await page.locator('.lane-add .add-track-row-btn').click();
-        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3, { timeout: 3000 });
+        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3);
         const fresh = page.locator('.lane[data-kind="clip"]').nth(2);
         await expect(fresh.locator('.arm-btn')).toBeEnabled();
         await fresh.locator('.arm-btn').click();
@@ -929,12 +928,12 @@ test.describe('Session shell (mock mode)', () => {
             return lane.querySelector('.rail-status').textContent +
                 (lane.querySelector('.rail-sub').classList.contains('recording')
                     ? ' recording' : '');
-        }), { timeout: 3000 }).toMatch(/armed|recording/);
+        })).toMatch(/armed|recording/);
         // Once the transport crosses the Q11 boundary and audio flows,
         // the bar takes over (scenario sits at ~0.5Q: 0.5Q to the arm
         // point, then some audio)
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.8 * 44100)));
-        await expect(page.locator('.lane .recording-bar')).toHaveCount(1, { timeout: 3000 });
+        await expect(page.locator('.lane .recording-bar')).toHaveCount(1);
     });
 
     test('NO FLASH: committing a take must not destroy other lanes\' DOM', async ({ page }) => {
@@ -972,7 +971,7 @@ test.describe('Session shell (mock mode)', () => {
         await expect(page.locator('.lane[data-kind="clip"]').nth(1)
             .locator('.rail-sub')).toHaveText(/…$/);
         await page.evaluate(() => window.__celestrianTest.advanceBy(Math.round(0.5 * 44100) + 10));
-        await expect(page.locator('#position-readout')).toHaveText(/2Q ↺/, { timeout: 3000 });
+        await expect(page.locator('#position-readout')).toHaveText(/2Q ↺/);
 
         const survived = await page.evaluate(() => ({
             repConnected: window.__keepRep.isConnected,
@@ -995,6 +994,6 @@ test.describe('Session shell (mock mode)', () => {
         });
         await page.evaluate(id => window.__celestrianTest.callNative('startRecordingInNode', id), clipId);
         await expect(page.locator('.lane[data-kind="group"] .rail-status'))
-            .toHaveText(/armed|recording/, { timeout: 3000 });
+            .toHaveText(/armed|recording/);
     });
 });

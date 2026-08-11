@@ -19,7 +19,16 @@
 
 import { gcd } from './math_utils.js';
 
-/** Normalizing constructor: den > 0, lowest terms, canonical zero. */
+/**
+ * Normalizing constructor: den > 0, lowest terms, canonical zero.
+ * qtime(n, 0) returns the ZERO rational rather than throwing — a
+ * degenerate denominator is treated as "no musical value", matching the
+ * C++ side's total (never-throwing) constructor.
+ *
+ * @param {number} num  integer numerator (any sign)
+ * @param {number} den  integer denominator (any sign; 0 → canonical zero)
+ * @returns {{num: number, den: number}}  (num/den)·Q in lowest terms
+ */
 export function qtime(num, den) {
     if (den === 0 || num === 0) return { num: 0, den: 1 };
     if (den < 0) { num = -num; den = -den; }
@@ -27,6 +36,14 @@ export function qtime(num, den) {
     return { num: num / g, den: den / g };
 }
 
+/**
+ * Exact equality. Sound because every QTime is normalized at
+ * construction — comparing fields IS comparing values.
+ *
+ * @param {{num: number, den: number}} a
+ * @param {{num: number, den: number}} b
+ * @returns {boolean}
+ */
 export function qEq(a, b) {
     return a.num === b.num && a.den === b.den; // both normalized
 }
@@ -38,14 +55,37 @@ export function qCmp(a, b) {
     return lhs < rhs ? -1 : (lhs > rhs ? 1 : 0);
 }
 
+/**
+ * Exact rational sum, renormalized.
+ *
+ * @param {{num: number, den: number}} a
+ * @param {{num: number, den: number}} b
+ * @returns {{num: number, den: number}}  a + b in lowest terms
+ */
 export function qAdd(a, b) {
     return qtime(a.num * b.den + b.num * a.den, a.den * b.den);
 }
 
+/**
+ * Exact rational difference, renormalized.
+ *
+ * @param {{num: number, den: number}} a
+ * @param {{num: number, den: number}} b
+ * @returns {{num: number, den: number}}  a − b in lowest terms
+ */
 export function qSub(a, b) {
     return qtime(a.num * b.den - b.num * a.den, a.den * b.den);
 }
 
+/**
+ * Scale by an integer (k repetitions of a musical span). Currently
+ * unimported on the JS side but KEPT deliberately: this module mirrors
+ * the src/qtime.h API surface one-to-one, and the C++ side uses it.
+ *
+ * @param {{num: number, den: number}} a
+ * @param {number} k  integer factor
+ * @returns {{num: number, den: number}}  a · k in lowest terms
+ */
 export function qMulInt(a, k) { return qtime(a.num * k, a.den); }
 
 /**

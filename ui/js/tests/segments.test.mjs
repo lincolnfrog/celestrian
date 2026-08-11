@@ -12,29 +12,18 @@ import assert from 'node:assert/strict';
 import { advanceBy, callNative, getState, loadScenario, setMasterPos }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
+import { nodeById as findNodeById, recordTake, PERF as perf }
+    from './helpers.mjs';
 
-function nodeById(id, nodes = getState().nodes) {
-    for (const n of nodes || []) {
-        if (n.id === id) return n;
-        const found = n.nodes && nodeById(id, n.nodes);
-        if (found) return found;
-    }
-    return null;
-}
+const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
 
-// A committed 4Q group (Q = 1000): take A 1Q, take B 4Q.
+// A committed 4Q group (Q = 1000): take A 1Q, take B 4Q (stop mid-Q,
+// settle pads to the 4000 boundary).
 async function buildGroup() {
     loadScenario('empty');
     const groupId = await callNative('createNode', 'stack');
-    const aId = await callNative('createNode', 'clip', groupId);
-    await callNative('startRecordingInNode', aId);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', aId);
-    const bId = await callNative('createNode', 'clip', groupId);
-    await callNative('startRecordingInNode', bId);
-    advanceBy(3900);
-    await callNative('stopRecordingInNode', bId);
-    advanceBy(200);
+    const aId = await recordTake(groupId, 1000, { stopEarly: 0, settle: 0 });
+    const bId = await recordTake(groupId, 4000, { stopEarly: 100, settle: 200 });
     return { groupId, aId, bId };
 }
 
@@ -101,8 +90,6 @@ test('cell map shortens the audible cycle; record-through-cells parity', async (
 });
 
 // === Stage 5: view-model display generalization ===
-
-const perf = { sampleRate: 44100 };
 
 test('view model: multi-segment group lane — dims data, chip, no brackets', () => {
     const state = {
@@ -279,10 +266,7 @@ test('view model: enclosing map projects excluded regions onto children', () => 
 
 test('multi-segment definer re-trim: Q := period, epoch := origin\' + mapOffset(0)', async () => {
     loadScenario('empty');
-    const aId = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', aId);
-    advanceBy(4000);
-    await callNative('stopRecordingInNode', aId);
+    const aId = await recordTake('', 4000, { stopEarly: 0, settle: 0 });
     assert.equal(getState().quantum, 4000, 'Q established by the sole take');
 
     // Punch Q2 out: cells {[0,1000),[2000,4000)} → period 3000.

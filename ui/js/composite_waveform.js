@@ -6,6 +6,11 @@
  * only regenerated when children change.
  */
 
+// Degenerate-frame guard (mirrors unrollReps' maxTiles): a segment so
+// short relative to the stack cycle that it would tile more than this
+// many times is skipped rather than exploding the mixdown loop.
+const MAX_SEGMENT_TILES = 256;
+
 /**
  * Build a cache key from the stack's child state. The key invalidates
  * whenever any child property that affects the composite appearance changes.
@@ -43,6 +48,16 @@ export function buildCacheKey(stack, targetPeaks) {
  * Each clip contributes peaks at its position within the LCM timeline.
  * Clips that loop within the timeline have their peaks repeated.
  *
+ * KNOWN LIMITATION (documented, intentionally unfixed here): a child's
+ * multi-segment map (`child.segments`, the phase-3 flat override) is
+ * included in buildCacheKey — so segment edits DO invalidate the cache —
+ * but the slicer below ignores it: only the single [loopStart, loopEnd)
+ * window is honored when extracting the audible segment. A multi-cut
+ * child therefore contributes its window-shaped (or full-take) peaks,
+ * not its true cell-mode mixdown. Do NOT "fix" this unilaterally —
+ * there is a matching engine-side story for the composite mixdown of
+ * segmented children, and both sides should land together.
+ *
  * @param {Object} opts
  * @param {Object} opts.stack          - Stack node data (with .nodes children)
  * @param {number} opts.stackDuration  - LCM-based duration of the stack (samples)
@@ -50,6 +65,15 @@ export function buildCacheKey(stack, targetPeaks) {
  * @param {number} opts.canvasWidth    - Width of the canvas in pixels
  * @param {Map}    opts.livePeaks      - Map of nodeId → peak arrays
  * @param {Map}    opts.cache          - compositeWaveformCache Map (stackId → { key, peaks })
+ * @param {?Set<string>} opts.excludeIds - Child ids whose REAL waveform fetch
+ *                                       hasn't landed yet; excluded from the
+ *                                       mixdown AND the cache signature (their
+ *                                       live meter peaks use a different
+ *                                       amplitude scale — see peaksSig note).
+ * @param {number} [opts.epochSamples=0] - Island epoch (samples): origins are
+ *                                       ABSOLUTE, and segments tile at
+ *                                       positions ≡ origin (mod period) in
+ *                                       the EPOCH frame.
  * @returns {Array} Peak data array for the composite waveform
  */
 export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0 }) {
@@ -105,6 +129,8 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // at the window length (E-C); otherwise the full take loops at
         // its duration. Field 2026-07-16d: the composite drew the whole
         // take — including the not-in-window half — for a windowed clip.
+        // (KNOWN LIMITATION: multi-segment maps are NOT honored here —
+        // see the function JSDoc before changing this.)
         const winActive = child.windowActive ??
             (!child.loopBypassed &&
                 (child.loopEnd || 0) > (child.loopStart || 0));
@@ -114,7 +140,7 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
             : clipDuration;
         if (!(segLen > 0)) return;
         // Degenerate guard (mirrors unrollReps' maxTiles)
-        if (stackDuration / segLen > 256) return;
+        if (stackDuration / segLen > MAX_SEGMENT_TILES) return;
 
         // Slice the segment's peaks out of the full-take peaks
         const clipPeakCount = childPeaks.length;

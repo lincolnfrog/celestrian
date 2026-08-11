@@ -4,7 +4,7 @@
   "description": "Celestrian UI integration tests",
   "type": "module",
   "scripts": {
-    "test": "for f in js/tests/*.mjs; do echo \"--- $f\"; node \"$f\" || exit 1; done",
+    "test": "for f in js/tests/*.test.mjs; do echo \"--- $f\"; node \"$f\" || exit 1; done",
     "test:playwright": "npx playwright test",
     "test:all": "npm run test && npm run test:playwright"
   },

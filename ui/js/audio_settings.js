@@ -46,7 +46,9 @@ export function initAudioSettings(callNativeFn, log) {
     refreshButtonLabel();
 }
 
-export function closePanel() {
+/** Remove the panel from the DOM (no-op when closed). Module-internal:
+ *  nothing imports this today, so it is deliberately not exported. */
+function closePanel() {
     if (panel) { panel.remove(); panel = null; }
 }
 
@@ -60,6 +62,8 @@ async function togglePanel(btn) {
     await render();
 }
 
+/** Read the full device state from the engine (getAudioDeviceState).
+ *  Returns the state object, or null on failure (already logged). */
 async function fetchState() {
     try {
         return await callNative('getAudioDeviceState');
@@ -83,6 +87,16 @@ async function refreshButtonLabel() {
         : 'No audio device open — click to choose one';
 }
 
+/**
+ * Build one labelled <select> row for the panel.
+ * @param {string} labelText  Row label ("Driver", "Device", …).
+ * @param {Array} options     Option values; an empty/missing list renders
+ *                            a disabled "—" placeholder.
+ * @param {*} current         Value to pre-select (compared as strings).
+ * @param {function} onChange Called with the selected value (string).
+ * @param {function} [formatter] Optional value → display-text mapper.
+ * @returns {HTMLLabelElement} the assembled row.
+ */
 function sel(labelText, options, current, onChange, formatter) {
     const row = document.createElement('label');
     row.className = 'ap-row';
@@ -108,6 +122,12 @@ function sel(labelText, options, current, onChange, formatter) {
     return row;
 }
 
+/**
+ * Push a (partial) device change to the engine, then re-render the panel
+ * and the strip button from freshly fetched state (never patched
+ * locally — see the ordering note in the file header). All controls are
+ * disabled while the change applies; errors go to the status line.
+ */
 async function apply({ type, device, sampleRate, bufferSize }) {
     // Empty/0 mean "keep current" on the native side; a type switch
     // deliberately sends no device so the engine picks that type's default
@@ -125,6 +145,13 @@ async function apply({ type, device, sampleRate, bufferSize }) {
     refreshButtonLabel();
 }
 
+/**
+ * (Re)build the open panel's contents from engine state: the four
+ * dependency-chained selects (type → device → rate/buffer), the channel
+ * count, the WASAPI→ASIO nudge hints, and any engine error. Safe if the
+ * panel closed mid-fetch (bails), or if the engine is unreachable
+ * (renders a note instead).
+ */
 async function render() {
     if (!panel) return;
     const s = await fetchState();

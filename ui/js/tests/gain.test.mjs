@@ -12,17 +12,9 @@ import assert from 'node:assert/strict';
 
 import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
+import { findFirst } from './helpers.mjs';
 
-function findClip(nodes) {
-    for (const n of nodes) {
-        if (n.type === 'clip') return n;
-        if (n.nodes) {
-            const c = findClip(n.nodes);
-            if (c) return c;
-        }
-    }
-    return null;
-}
+const findClip = nodes => findFirst(nodes, n => n.type === 'clip');
 
 test('setNodeGain stores and clamps to [0, 1]', async () => {
     loadScenario('stack-with-clips');

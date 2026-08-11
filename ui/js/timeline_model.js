@@ -14,11 +14,13 @@
  *    engine) uses.
  */
 
-import { gcd, lcm } from './math_utils.js';
+import { lcm } from './math_utils.js';
 import { qtime, toSamples, fromSamples } from './qtime.js';
-import { mapOffset } from './time_map.js';
+import { flatSegPeriod, mapOffset } from './time_map.js';
 
-export { gcd, lcm };
+// Re-exported for consumers that fold periods on top of this module's
+// cycle math (view_model.js); the canonical home is math_utils.js.
+export { lcm };
 
 /**
  * Capture-fold for a take recorded THROUGH an active map (time_maps.md
@@ -139,9 +141,7 @@ export function commensuratePeriod(node, effectiveQ) {
     if (!node.loopBypassed) {
         let p = 0;
         if (node.segments && node.segments.length >= 4) {
-            for (let i = 0; i + 1 < node.segments.length; i += 2) {
-                p += node.segments[i + 1] - node.segments[i];
-            }
+            p = flatSegPeriod(node.segments);
         } else {
             p = (node.loopEnd || 0) - (node.loopStart || 0);
         }
@@ -275,26 +275,6 @@ export function snapCommittedDuration(recordedLength, quantum) {
 }
 
 /**
- * Visual timeline extent (px) for a stack. During recording, the timeline
- * extends in LCM-sized chunks when the recording crosses the committed LCM
- * boundary (docs/recording.md "Ghost Creation Rules").
- */
-export function timelineExtentPx({ stackLCM, effectiveQ, baseWidth, recordingDuration = 0 }) {
-    const stableQ = Math.round(effectiveQ);
-    const quantums = Math.max(1, Math.ceil(stackLCM / stableQ));
-    let widthPx = quantums * baseWidth;
-
-    if (recordingDuration > 0) {
-        const recordingWidthPx = (recordingDuration / effectiveQ) * baseWidth;
-        const lcmWidthPx = (stackLCM / effectiveQ) * baseWidth;
-        const chunksCrossed = Math.floor(recordingWidthPx / lcmWidthPx);
-        widthPx = Math.max(widthPx, (chunksCrossed + 1) * lcmWidthPx);
-    }
-
-    return widthPx;
-}
-
-/**
  * Ghost tile positions for a looping clip: fills the timeline with
  * clip-width tiles, skipping the region occupied by the main clip.
  * Pure extraction of the ghost renderer's tiling loop.
@@ -330,28 +310,4 @@ export function computeGhostTiles({ clipStartPx, clipWidthPx, timelineWidthPx, m
     }
 
     return tiles;
-}
-
-/**
- * Stack header playhead position as a fraction (0..1) of the stack timeline.
- * Loop windows are time-maps (docs/time_maps.md): active independent of
- * expansion; the engine publishes the window phase on the stack's
- * `playhead` field.
- */
-export function stackPlayheadPercent({
-    masterPos, windowActive = false, playhead = null,
-    loopStart = 0, loopEnd = 0, stackDuration
-}) {
-    // Active window: engine-published phase (fraction within the window),
-    // positioned inside the window on the full-stack scale. Collapse is
-    // purely visual (I6b) and plays no role here.
-    const loopLength = loopEnd - loopStart;
-    if (windowActive && loopLength > 0 && stackDuration > 0 &&
-        typeof playhead === 'number') {
-        return (loopStart + playhead * loopLength) / stackDuration;
-    }
-
-    // No active window: the stack follows the cycle view directly.
-    const pos = masterPos || 0;
-    return stackDuration > 0 ? (pos % stackDuration) / stackDuration : 0;
 }

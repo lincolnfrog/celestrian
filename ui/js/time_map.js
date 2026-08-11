@@ -13,18 +13,40 @@
 
 export const MAX_SEGMENTS = 8;
 
-/** No active map. */
-export function noMap() {
-    return { segs: [] };
-}
-
 /** Today's loop window: one segment, empty when invalid. */
 export function singleSegment(start, end) {
     return end > start ? { segs: [[start, end]] } : { segs: [] };
 }
 
+/**
+ * Whether a map restricts anything: non-null with at least one segment.
+ * An empty/absent map means "play the full inner timeline".
+ *
+ * @param {?{segs: Array<[number, number]>}} map
+ * @returns {boolean}
+ */
 export function mapActive(map) {
     return !!(map && map.segs && map.segs.length > 0);
+}
+
+/**
+ * Heard-time period of an ENGINE-FLAT segments array
+ * `[s0, e0, s1, e1, ...]` (samples, as published on node metadata):
+ * Σ (end − start). The companion of {@link mapPeriod}, which does the
+ * same sum over the reified pair-list shape. The `length >= 4`
+ * activity check ("is this a multi-segment override at all?") stays at
+ * the call sites — a short or absent array is a semantic fact about the
+ * node, not about this sum.
+ *
+ * @param {number[]} flatSegs  flat [start, end, start, end, ...] samples
+ * @returns {number}           summed segment length in samples
+ */
+export function flatSegPeriod(flatSegs) {
+    let p = 0;
+    for (let i = 0; i + 1 < flatSegs.length; i += 2) {
+        p += flatSegs[i + 1] - flatSegs[i];
+    }
+    return p;
 }
 
 /** Heard-time length of one map pass: Σ (end − start). */

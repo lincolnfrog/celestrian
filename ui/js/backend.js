@@ -4,6 +4,20 @@
 // module imports { callNative, log, getState } from here — never from
 // bridge.js or mock_backend.js directly, so all modes exercise the same
 // persistence path.
+//
+// The three-way selection, decided once at module load (top-level await):
+//
+//   1. HARNESS  — window.celestrian already set (index_test.html imports
+//      mock_backend statically and installs it BEFORE app.js loads; see
+//      the import-order note in that file). We adopt its backend as-is.
+//   2. MOCK     — ?mock=true in the URL: mock_backend.js is imported
+//      dynamically and, for Playwright, exposed as the single test
+//      namespace window.__celestrianTest (loadScenario / setMasterPos /
+//      setIsPlaying / callNative / startTransport / pauseTransport /
+//      advanceBy) — e2e drives the mock through that surface only.
+//   3. NATIVE   — neither: the JUCE bridge (bridge.js). `getState` is
+//      null in this mode; the polling loop detects that and calls
+//      callNative('getGraphState') instead of a synchronous getter.
 
 let callNative, log, getState;
 

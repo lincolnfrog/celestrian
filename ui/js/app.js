@@ -16,28 +16,70 @@ import { updateMasterVU, initMasterFader, updateMasterFader }
 const DEBUG = new URLSearchParams(window.location.search).get('debug') === 'true';
 const dbg = m => { if (DEBUG) log(m); };
 
+/* ---------- tuning constants ---------- */
+const POLL_MS = 50;                 // graph-state poll cadence
+const PROJECT_POLL_MS = 2000;       // project birth/rename follow the mirror
+const PEAK_COUNT = 800;             // waveform peaks requested per clip
+const RECENTS_CAP = 6;              // recent projects shown in the menu
+const CALIBRATION_POLL_TRIES = 40;  // latency calibration: poll attempts…
+const CALIBRATION_POLL_MS = 250;    // …every this many ms (10 s ceiling)
+
 const livePeaks = new Map();        // clip id → peak array
 const peakDurations = new Map();    // clip id → duration the peaks were fetched at
 const fxOpen = new Set();           // lane ids with the effects panel expanded (view state)
 const windowEdit = new Set();       // lanes expanded into the window editor
 
-/* ---------- waveform peaks ---------- */
-let fetchInFlight = null;
-async function fetchWaveform(id, duration) {
-    if (fetchInFlight === id) return;
-    fetchInFlight = id;
-    try {
-        const peaks = await callNative('getWaveform', id, 800);
-        if (peaks && peaks.length > 0) {
-            livePeaks.set(id, peaks);
-            peakDurations.set(id, duration);
-            dbg(`Fetched ${peaks.length} peaks for ${id}`);
-        }
-    } catch (err) {
-        console.error('Waveform fetch failed:', err);
-    } finally {
-        fetchInFlight = null;
+/* ---------- small helpers ---------- */
+
+/** Bridge results arrive as JSON strings from the native side but as
+ *  objects from the mock — accept either. */
+function parseMaybeJson(raw) {
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}
+
+/** Write to the status strip's one-line log. */
+function setLogLine(msg) {
+    const line = document.getElementById('log-line');
+    if (line) line.textContent = msg;
+}
+
+/**
+ * callNative + status line in one step: awaits `method(...args)`, then
+ * logs `okMsg` — or `failMsg`, when provided and the result is falsy.
+ * Either message may be a string or a function of the result (for
+ * messages that embed the returned value). Returns the bridge result.
+ */
+async function call(method, args = [], okMsg, failMsg) {
+    const result = await callNative(method, ...args);
+    const pick = (failMsg !== undefined && !result) ? failMsg : okMsg;
+    if (pick !== undefined) {
+        setLogLine(typeof pick === 'function' ? pick(result) : pick);
     }
+    return result;
+}
+
+/* ---------- waveform peaks ---------- */
+const peakFetches = new Map(); // clip id → in-flight fetch promise
+async function fetchWaveform(id, duration) {
+    // Per-id in-flight guard: concurrent fetches for DIFFERENT clips may
+    // proceed; a second request for the same clip while one is in flight
+    // is dropped (the poll loop retries next tick if the duration moved).
+    if (peakFetches.has(id)) return;
+    const p = (async () => {
+        try {
+            const peaks = await callNative('getWaveform', id, PEAK_COUNT);
+            if (peaks && peaks.length > 0) {
+                livePeaks.set(id, peaks);
+                peakDurations.set(id, duration);
+                dbg(`Fetched ${peaks.length} peaks for ${id}`);
+            }
+        } catch (err) {
+            console.error('Waveform fetch failed:', err);
+        } finally {
+            peakFetches.delete(id);
+        }
+    })();
+    peakFetches.set(id, p);
 }
 
 const LIVE = -1; // peakDurations marker: array holds live recording peaks
@@ -106,6 +148,11 @@ async function stopClips(clips) {
  * core journey direct: song looping → ＋ Track → hit its ● → recording
  * at the next Q boundary. A group's ● records all its empty tracks
  * (the drum-mic case); a recording track's ● stops it. */
+/**
+ * The lane record button: if anything under the lane is hot
+ * (recording/pending), stop it all; otherwise arm every armable clip
+ * beneath it (empty tracks record, full ones just play).
+ */
 async function onArm(lane) {
     const node = lastNodesById.get(lane.id);
     if (!node) return;
@@ -141,12 +188,149 @@ function findParentIn(node) {
     return null;
 }
 
-/* ---------- status strip ---------- */
-function setLogLine(msg) {
-    const line = document.getElementById('log-line');
-    if (line) line.textContent = msg;
+/* ---------- session-view callbacks (structure) ---------- */
+
+/* Drag-to-group (2026-07-19h/j): clip target → combine into a
+ * new group; group target → move inside. A multi-drag (selected
+ * rails) applies to every dragged track. */
+/**
+ * Sequencing: the first drop onto a CLIP target calls combineNodes
+ * (which creates the group); every further id is reorderNode'd into
+ * that group, appended in drag order. The graph is fetched ONCE, after
+ * the group exists, to seed the append cursor — each insert then
+ * advances it locally (a per-id refetch was an N+1).
+ */
+async function onDropLane(ids, target) {
+    const tNode = lastNodesById.get(target.id);
+    if (!tNode) return;
+    let stackId = tNode.type === 'stack' ? target.id : '';
+    let appendIndex = -1;  // resolved lazily once the group exists
+    let grouped = 0;
+    for (const id of ids) {
+        const node = lastNodesById.get(id);
+        if (!node) continue;
+        if (!stackId) {
+            // First drop onto a clip: combine forms the group.
+            stackId = await callNative('combineNodes', id, target.id);
+            grouped++;
+            continue;
+        }
+        if (appendIndex < 0) {
+            const st = await callNative('getGraphState');
+            const stack = findStackIn(st.nodes, stackId) || {};
+            // Append = current child count. 0 is a valid index (empty
+            // group) — no sentinel.
+            appendIndex = (stack.nodes || []).length;
+        }
+        await callNative('reorderNode', id, stackId, appendIndex++);
+        grouped++;
+    }
+    const tName = tNode.name || 'group';
+    setLogLine(grouped > 1
+        ? `Grouped ${grouped} tracks with "${tName}"`
+        : tNode.type === 'stack'
+            ? `Moved into "${tName}"`
+            : `Grouped with "${tName}" — rename the group on its rail`);
 }
 
+// Floating bar: group the SELECTION in place (no outside target).
+/**
+ * Sequencing: combineNodes(ids[1], ids[0]) forms the group with the
+ * first-selected as the anchor (the new stack lands at the TARGET's
+ * slot), holding exactly 2 children; each remaining id is appended at
+ * index i — the child count when it arrives.
+ */
+async function onGroupSelection(ids) {
+    if (ids.length < 2) return;
+    // combine(dragged, target): the new stack lands at the
+    // TARGET's slot — use the first-selected as the anchor.
+    const stackId = await callNative('combineNodes', ids[1], ids[0]);
+    for (let i = 2; i < ids.length; i++) {
+        // After combine the stack holds 2 children, so ids[2] appends at
+        // index 2, ids[3] at 3, … — i IS the append index (no sentinel).
+        await callNative('reorderNode', ids[i], stackId, i);
+    }
+    setLogLine(`Grouped ${ids.length} tracks — rename the group on its rail`);
+}
+
+// Drag-out: back to the top level (the island root).
+async function onMoveToTop(ids) {
+    if (!lastRootId) return;
+    // Append after the current top-level lanes: one fetch seeds the
+    // cursor, each move advances it locally (no sentinel index).
+    const st = await callNative('getGraphState');
+    let idx = (st.nodes || []).length;
+    for (const id of ids) {
+        await callNative('reorderNode', id, lastRootId, idx++);
+    }
+    setLogLine(ids.length > 1
+        ? `Moved ${ids.length} tracks to the top level`
+        : 'Moved to the top level');
+}
+
+// Ungroup: children move up to the group's slot; the shell goes.
+/**
+ * Sequencing: each child is reorderNode'd into the group's PARENT at
+ * consecutive indices starting from the group's own slot, then the
+ * (now empty) group shell is deleted. Order matters — deleting first
+ * would orphan the children.
+ */
+async function onUngroup(groupId) {
+    const group = lastNodesById.get(groupId);
+    if (!group) return;
+    const parentNode = findParentIn(group);
+    const parentId = parentNode ? parentNode.id : lastRootId;
+    const siblings = parentNode
+        ? (parentNode.nodes || [])
+        : [...lastNodesById.values()].filter(n => !findParentIn(n));
+    let idx = Math.max(0, siblings.indexOf(group));
+    for (const child of [...(group.nodes || [])]) {
+        await callNative('reorderNode', child.id, parentId, idx++);
+    }
+    await callNative('deleteNode', groupId);
+    setLogLine(`Ungrouped "${group.name}" — tracks moved up (⌘Z steps back through it)`);
+}
+
+/* ---------- session-view callbacks (per-lane state) ---------- */
+
+// Law 13 amendment: expand/collapse a lane's window editor.
+function onWindowEdit(id, open) {
+    if (id === null) { windowEdit.clear(); return; }
+    if (open) windowEdit.add(id); else windowEdit.delete(id);
+}
+
+// Move the OS cursor (viewport CSS px). True when the backend
+// actually warped; the mock returns false and the drag keeps
+// its eased-capture fallback.
+async function onWarpPointer(x, y) {
+    try { return (await callNative('warpPointer', x, y)) === true; }
+    catch (_) { return false; }
+}
+
+// Recording input (clips only — Q7: each child records from its
+// own input). The list is fetched per menu-open: hot-plugged
+// devices appear without a reload.
+async function getInputs() {
+    try {
+        const r = await callNative('getInputList');
+        return (r && r.inputs) || [];
+    } catch (err) {
+        console.error('getInputList failed:', err);
+        return [];
+    }
+}
+
+// Built-in effects: panel-open is pure view state; enable and
+// params go straight to the engine's fixed rack
+function onToggleFx(id) {
+    const open = !fxOpen.has(id);
+    if (open) fxOpen.add(id);
+    else fxOpen.delete(id);
+    // Gate the engine's scope capture: no watcher, no copying
+    callNative('setEffectScope', id, open);
+}
+
+/* ---------- status strip ---------- */
 function wireStatusStrip() {
     const dumpBtn = document.getElementById('dump-state-btn');
     dumpBtn.addEventListener('click', async () => {
@@ -168,8 +352,8 @@ function wireStatusStrip() {
             calibrationStatus.textContent = 'Calibrating… (keep quiet, click incoming)';
             await callNative('startLatencyCalibration');
             let result = null;
-            for (let i = 0; i < 40; i++) {
-                await new Promise(r => setTimeout(r, 250));
+            for (let i = 0; i < CALIBRATION_POLL_TRIES; i++) {
+                await new Promise(r => setTimeout(r, CALIBRATION_POLL_MS));
                 result = await callNative('getLatencyCalibration');
                 if (result && result.phase !== 'capturing') break;
             }
@@ -206,6 +390,19 @@ function patchCalibrateButton(state) {
 }
 
 /* ---------- polling ---------- */
+/**
+ * The render loop: poll graph state every POLL_MS, derive the view
+ * model, patch the DOM. Never returns.
+ *
+ * - Mock fast path: when backend.js exposes a `getState` (mock/harness
+ *   modes) it is called synchronously; production polls the bridge via
+ *   callNative('getGraphState').
+ * - Stale-engine handling: a binary built before the master VU publishes
+ *   no masterVuL — the monitor dims (`.stale`) with an explanatory
+ *   tooltip instead of showing dead needles.
+ * - Errors are logged and the loop keeps polling (one bad poll must not
+ *   kill the UI).
+ */
 async function startPolling() {
     const isMock = getState !== null;
     console.log(`Starting state polling loop (${isMock ? 'MOCK BACKEND' : 'JUCE BRIDGE'})...`);
@@ -273,7 +470,7 @@ async function startPolling() {
         } catch (err) {
             console.error('Polling error:', err);
         }
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, POLL_MS));
     }
 }
 
@@ -286,9 +483,16 @@ async function startPolling() {
  */
 let projectInfo = { id: '', name: '', born: false };
 
+/**
+ * Poll the bridge for project identity and mirror it into the chrome:
+ * the menu button shows the display name once the project is born, and
+ * the birth itself is announced on the status line the first poll that
+ * sees it. `announceSave` additionally logs "Saved …" (⌘S / Save now).
+ * Errors are swallowed — the next PROJECT_POLL_MS tick retries.
+ */
 function refreshProjectInfo(announceSave = false) {
     return callNative('getProjectInfo').then(raw => {
-        const info = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const info = parseMaybeJson(raw);
         const wasBorn = projectInfo.born;
         projectInfo = info;
         // The menu button IS the project's identity in the chrome: quiet
@@ -312,6 +516,13 @@ function refreshProjectInfo(announceSave = false) {
 /* The project menu — the compact "file menu": everything the bridge
  * offers, one popover. Rebuilt on every open so templates/recents are
  * always fresh. */
+/**
+ * Build the popover's DOM into `menu`. Static items render
+ * synchronously; the template and recents sections append when their
+ * bridge fetches resolve. Local helpers: item() = action row, head() =
+ * section header, sep() = divider, inlineRow() = input + one action
+ * (rename, save-as-template).
+ */
 function buildProjectMenu(menu) {
     menu.textContent = '';
     const close = () => menu.classList.remove('open');
@@ -364,53 +575,45 @@ function buildProjectMenu(menu) {
     if (born) {
         head('Rename (the folder never moves)');
         inlineRow('project name', projectInfo.name, 'Rename', name =>
-            callNative('renameProject', name).then(() => {
-                setLogLine('Project renamed (folder unchanged)');
-                refreshProjectInfo();
-            }));
+            call('renameProject', [name], 'Project renamed (folder unchanged)')
+                .then(() => refreshProjectInfo()));
     }
     item('Duplicate project (next serial)', () =>
-        callNative('duplicateProject').then(id => {
-            setLogLine(id ? `Forked to ${id} — the original stays as a checkpoint`
-                          : 'Nothing to duplicate yet');
-            refreshProjectInfo();
-        }), !born);
+        call('duplicateProject', [],
+            id => `Forked to ${id} — the original stays as a checkpoint`,
+            'Nothing to duplicate yet')
+            .then(() => refreshProjectInfo()), !born);
     item('Open project folder…', () =>
-        callNative('loadSession', '').then(ok => {
-            setLogLine(ok ? 'Project opened' : 'Open cancelled');
-            refreshProjectInfo();
-        }));
+        call('loadSession', [''], 'Project opened', 'Open cancelled')
+            .then(() => refreshProjectInfo()));
 
     sep();
     head('Save as template');
     inlineRow('e.g. My Rig', '', 'Save', name =>
-        callNative('saveAsTemplate', name).then(ok =>
-            setLogLine(ok ? `Template "${name}" saved — it loads automatically next launch`
-                          : 'Template save failed')));
+        call('saveAsTemplate', [name],
+            `Template "${name}" saved — it loads automatically next launch`,
+            'Template save failed'));
 
     callNative('listTemplates').then(raw => {
-        const templates = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const templates = parseMaybeJson(raw);
         if (!templates.length) return;
         sep();
         head('New from template');
         templates.forEach(t => item(t.name, () =>
-            callNative('newProjectFromTemplate', t.id).then(ok => {
-                setLogLine(ok ? `Template "${t.name}" loaded — play the seed`
-                              : 'Template failed to load');
-                refreshProjectInfo();
-            })));
+            call('newProjectFromTemplate', [t.id],
+                `Template "${t.name}" loaded — play the seed`,
+                'Template failed to load')
+                .then(() => refreshProjectInfo())));
     });
     callNative('listRecentProjects').then(raw => {
-        const recents = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        const recents = parseMaybeJson(raw);
         if (!recents.length) return;
         sep();
         head('Recent projects');
-        recents.slice(0, 6).forEach(r => item(
+        recents.slice(0, RECENTS_CAP).forEach(r => item(
             r.name === r.id ? r.id : `${r.name} · ${r.id}`, () =>
-            callNative('openProjectPath', r.path).then(ok => {
-                setLogLine(ok ? `Opened ${r.name}` : 'Open failed');
-                refreshProjectInfo();
-            })));
+            call('openProjectPath', [r.path], `Opened ${r.name}`, 'Open failed')
+                .then(() => refreshProjectInfo())));
     });
 }
 
@@ -432,179 +635,19 @@ function initProjectUI() {
         });
     }
     refreshProjectInfo();
-    setInterval(refreshProjectInfo, 2000);  // birth/rename follow the mirror
+    setInterval(refreshProjectInfo, PROJECT_POLL_MS);  // birth/rename follow the mirror
 }
 
-export function initApp() {
-    initSessionView({
-        onTogglePlay: () => callNative('togglePlayback'),
-        onFold: id => callNative('toggleStackExpand', id),
-        onMute: id => callNative('toggleMute', id),
-        onSolo: id => callNative('toggleSolo', id),
-        onAddTrack: () => callNative('createNode', 'clip', ''),
-        // Law 13 amendment: expand/collapse a lane's window editor.
-        onWindowEdit: (id, open) => {
-            if (id === null) { windowEdit.clear(); return; }
-            if (open) windowEdit.add(id); else windowEdit.delete(id);
-        },
-        // Drag-to-group (2026-07-19h/j): clip target → combine into a
-        // new group; group target → move inside. A multi-drag (selected
-        // rails) applies to every dragged track.
-        onDropLane: async (ids, target) => {
-            const tNode = lastNodesById.get(target.id);
-            if (!tNode) return;
-            let stackId = tNode.type === 'stack' ? target.id : '';
-            let grouped = 0;
-            for (const id of ids) {
-                const node = lastNodesById.get(id);
-                if (!node) continue;
-                if (!stackId) {
-                    // First drop onto a clip: combine forms the group.
-                    stackId = await callNative('combineNodes', id, target.id);
-                    grouped++;
-                    continue;
-                }
-                const parent = await callNative('getGraphState').then(st =>
-                    (findStackIn(st.nodes, stackId) || {}));
-                await callNative('reorderNode', id, stackId,
-                    ((parent.nodes || []).length) || 99);
-                grouped++;
-            }
-            const tName = tNode.name || 'group';
-            setLogLine(grouped > 1
-                ? `Grouped ${grouped} tracks with "${tName}"`
-                : tNode.type === 'stack'
-                    ? `Moved into "${tName}"`
-                    : `Grouped with "${tName}" — rename the group on its rail`);
-        },
-        // Floating bar: group the SELECTION in place (no outside target).
-        onGroupSelection: async ids => {
-            if (ids.length < 2) return;
-            // combine(dragged, target): the new stack lands at the
-            // TARGET's slot — use the first-selected as the anchor.
-            const stackId = await callNative('combineNodes', ids[1], ids[0]);
-            for (let i = 2; i < ids.length; i++) {
-                await callNative('reorderNode', ids[i], stackId, 99);
-            }
-            setLogLine(`Grouped ${ids.length} tracks — rename the group on its rail`);
-        },
-        // Drag-out: back to the top level (the island root).
-        onMoveToTop: async ids => {
-            if (!lastRootId) return;
-            for (const id of ids) {
-                await callNative('reorderNode', id, lastRootId, 99);
-            }
-            setLogLine(ids.length > 1
-                ? `Moved ${ids.length} tracks to the top level`
-                : 'Moved to the top level');
-        },
-        // Ungroup: children move up to the group's slot; the shell goes.
-        onUngroup: async groupId => {
-            const group = lastNodesById.get(groupId);
-            if (!group) return;
-            const parentNode = findParentIn(group);
-            const parentId = parentNode ? parentNode.id : lastRootId;
-            const siblings = parentNode
-                ? (parentNode.nodes || [])
-                : [...lastNodesById.values()].filter(n => !findParentIn(n));
-            let idx = Math.max(0, siblings.indexOf(group));
-            for (const child of [...(group.nodes || [])]) {
-                await callNative('reorderNode', child.id, parentId, idx++);
-            }
-            await callNative('deleteNode', groupId);
-            setLogLine(`Ungrouped "${group.name}" — tracks moved up (⌘Z steps back through it)`);
-        },
-        onAddClip: groupId => callNative('createNode', 'clip', groupId),
-        onDelete: async id => {
-            // No confirm: undo is the safety net (edits-as-events).
-            await callNative('deleteNode', id);
-            setLogLine('Deleted — ⌘Z to undo');
-        },
-        onRename: async (id, name) => {
-            await callNative('renameNode', id, name);
-            setLogLine(`Renamed to "${name}"`);
-        },
-        // Loop windows (time_maps.md): the region is data (setLoopPoints),
-        // activation is a toggle between active and bypassed
-        onSetWindow: async (id, startSamples, endSamples) => {
-            await callNative('setLoopPoints', id, startSamples, endSamples);
-            setLogLine('Loop window set');
-        },
-        onToggleWindow: id => callNative('toggleLoopWindow', id),
-        // Multi-segment maps (phase 3, the sequencer): one commit per
-        // editor gesture — flat [s0,e0,...] in samples.
-        onSetSegments: async (id, flatSegments) => {
-            await callNative('setSegments', id, flatSegments);
-            setLogLine('Map updated');
-        },
-        // Move the OS cursor (viewport CSS px). True when the backend
-        // actually warped; the mock returns false and the drag keeps
-        // its eased-capture fallback.
-        onWarpPointer: async (x, y) => {
-            try { return (await callNative('warpPointer', x, y)) === true; }
-            catch (_) { return false; }
-        },
-        // Recording input (clips only — Q7: each child records from its
-        // own input). The list is fetched per menu-open: hot-plugged
-        // devices appear without a reload.
-        getInputs: async () => {
-            try {
-                const r = await callNative('getInputList');
-                return (r && r.inputs) || [];
-            } catch (err) {
-                console.error('getInputList failed:', err);
-                return [];
-            }
-        },
-        onSetInput: async (id, channelIndex) => {
-            await callNative('setNodeInput', id, channelIndex);
-            setLogLine(`Input set to channel ${channelIndex + 1}`);
-        },
-        // Right input of a stereo pair; −1 reverts the clip to mono.
-        // The channel count of a take is fixed at arm (engine rule).
-        onSetInputRight: async (id, channelIndex) => {
-            await callNative('setNodeInputRight', id, channelIndex);
-            setLogLine(channelIndex >= 0
-                ? `Stereo pair: right = channel ${channelIndex + 1}`
-                : 'Track set to mono');
-        },
-        // Pan/balance dial, −1..+1. Streams while dragging (cheap atomic
-        // store engine-side; not undoable — the effect-param ruling).
-        onSetPan: (id, pan) => callNative('setNodePan', id, pan),
-        // Volume fader dial, 0..1 (unity default). Same streaming/
-        // non-undoable contract as pan.
-        onSetGain: (id, gain) => callNative('setNodeGain', id, gain),
-        // Period-source knob (Q5): 'own' = loop, 'context' = one-shot.
-        onSetPeriodSource: (id, source) => {
-            callNative('setPeriodSource', id, source);
-            setLogLine(source === 'context'
-                ? 'One-shot: sounds once per cycle (⌘Z to undo)'
-                : 'Looping again (⌘Z to undo)');
-        },
-        // Built-in effects: panel-open is pure view state; enable and
-        // params go straight to the engine's fixed rack
-        onToggleFx: id => {
-            const open = !fxOpen.has(id);
-            if (open) fxOpen.add(id);
-            else fxOpen.delete(id);
-            // Gate the engine's scope capture: no watcher, no copying
-            callNative('setEffectScope', id, open);
-        },
-        onSetEffectEnabled: async (id, fx, enabled) => {
-            await callNative('setEffectEnabled', id, fx, enabled);
-            setLogLine(`${fx} ${enabled ? 'on' : 'off'}`);
-        },
-        onSetEffectParam: (id, fx, param, value) =>
-            callNative('setEffectParam', id, fx, param, value),
-        onArm,
-    });
-    wireStatusStrip();
-    // Master fader → the island root's output-stage gain (stacks apply
-    // gain·pan at their output, so the root's fader IS the master).
-    initMasterFader(v => { if (lastRootId) callNative('setNodeGain', lastRootId, v); });
+/** True when a key event targets a text-entry surface — the global
+ *  shortcuts (Space, ⌘Z, ⌘S, …) must not fire while typing. */
+function isTypingTarget(t) {
+    return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+        t.tagName === 'SELECT' || t.isContentEditable;
+}
 
+function wireKeyboard() {
     window.addEventListener('keydown', e => {
-        if (e.target.tagName === 'INPUT') return;
+        if (isTypingTarget(e.target)) return;
         if (e.code === 'Space') {
             e.preventDefault();
             callNative('togglePlayback');
@@ -640,11 +683,74 @@ export function initApp() {
         }
         if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || e.key === 'O')) {
             e.preventDefault();
-            callNative('loadSession', '').then(ok =>
-                setLogLine(ok ? 'Session loaded' : 'Load cancelled'));
+            call('loadSession', [''], 'Session loaded', 'Load cancelled');
         }
     });
+}
 
+function initApp() {
+    initSessionView({
+        onTogglePlay: () => callNative('togglePlayback'),
+        onFold: id => callNative('toggleStackExpand', id),
+        onMute: id => callNative('toggleMute', id),
+        onSolo: id => callNative('toggleSolo', id),
+        onAddTrack: () => callNative('createNode', 'clip', ''),
+        onWindowEdit,
+        onDropLane,
+        onGroupSelection,
+        onMoveToTop,
+        onUngroup,
+        onAddClip: groupId => callNative('createNode', 'clip', groupId),
+        // No confirm: undo is the safety net (edits-as-events).
+        onDelete: id => call('deleteNode', [id], 'Deleted — ⌘Z to undo'),
+        onRename: (id, name) =>
+            call('renameNode', [id, name], `Renamed to "${name}"`),
+        // Loop windows (time_maps.md): the region is data (setLoopPoints),
+        // activation is a toggle between active and bypassed
+        onSetWindow: (id, startSamples, endSamples) =>
+            call('setLoopPoints', [id, startSamples, endSamples], 'Loop window set'),
+        onToggleWindow: id => callNative('toggleLoopWindow', id),
+        // Multi-segment maps (phase 3, the sequencer): one commit per
+        // editor gesture — flat [s0,e0,...] in samples.
+        onSetSegments: (id, flatSegments) =>
+            call('setSegments', [id, flatSegments], 'Map updated'),
+        onWarpPointer,
+        getInputs,
+        onSetInput: (id, channelIndex) =>
+            call('setNodeInput', [id, channelIndex],
+                `Input set to channel ${channelIndex + 1}`),
+        // Right input of a stereo pair; −1 reverts the clip to mono.
+        // The channel count of a take is fixed at arm (engine rule).
+        onSetInputRight: (id, channelIndex) =>
+            call('setNodeInputRight', [id, channelIndex], channelIndex >= 0
+                ? `Stereo pair: right = channel ${channelIndex + 1}`
+                : 'Track set to mono'),
+        // Pan/balance dial, −1..+1. Streams while dragging (cheap atomic
+        // store engine-side; not undoable — the effect-param ruling).
+        onSetPan: (id, pan) => callNative('setNodePan', id, pan),
+        // Volume fader dial, 0..1 (unity default). Same streaming/
+        // non-undoable contract as pan.
+        onSetGain: (id, gain) => callNative('setNodeGain', id, gain),
+        // Period-source knob (Q5): 'own' = loop, 'context' = one-shot.
+        onSetPeriodSource: (id, source) => {
+            callNative('setPeriodSource', id, source);
+            setLogLine(source === 'context'
+                ? 'One-shot: sounds once per cycle (⌘Z to undo)'
+                : 'Looping again (⌘Z to undo)');
+        },
+        onToggleFx,
+        onSetEffectEnabled: (id, fx, enabled) =>
+            call('setEffectEnabled', [id, fx, enabled],
+                `${fx} ${enabled ? 'on' : 'off'}`),
+        onSetEffectParam: (id, fx, param, value) =>
+            callNative('setEffectParam', id, fx, param, value),
+        onArm,
+    });
+    wireStatusStrip();
+    // Master fader → the island root's output-stage gain (stacks apply
+    // gain·pan at their output, so the root's fader IS the master).
+    initMasterFader(v => { if (lastRootId) callNative('setNodeGain', lastRootId, v); });
+    wireKeyboard();
     initProjectUI();
     startPolling();
 }

@@ -13,24 +13,10 @@ import assert from 'node:assert/strict';
 import {
     callNative, getState, loadScenario, advanceBy,
 } from '../mock_backend.js';
-
-const Q = 44100;
-
-/**
- * Record a take of exactly `lengthSamples`: drive most of it, request
- * the stop mid-Q, then run to the boundary — mirroring the engine's
- * AWAITING-STOP (stops always pad forward, owner ruling 2026-07-10).
- */
-async function recordTake(parentId, lengthSamples) {
-    const id = await callNative('createNode', 'clip', parentId);
-    await callNative('startRecordingInNode', id); // raw on a boundary → immediate
-    advanceBy(lengthSamples - 100);
-    await callNative('stopRecordingInNode', id);
-    // Reach the boundary EXACTLY: commit at lengthSamples, and raw lands
-    // on a boundary so the next arm starts immediately (Q11 pending)
-    advanceBy(100);
-    return id;
-}
+// helpers.recordTake's defaults (stopEarly 100, settle 100) are exactly
+// this file's old local builder: stop mid-Q, then reach the boundary so
+// the commit lands at lengthSamples and raw sits on a boundary (Q11).
+import { recordTake, Q44 as Q } from './helpers.mjs';
 
 test('epoch re-bases only when the cycle GROWS (engine parity)', async () => {
     loadScenario('empty');

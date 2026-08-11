@@ -16,49 +16,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { deriveViewModel, unrollReps, windowDragTarget } from '../view_model.js';
-
-const Q = 48000; // device-rate quantum (samples); tests avoid 44100 defaults
-
-/** Minimal engine-shaped state builders. */
-let nextId = 1;
-function clip(periodQ, extra = {}) {
-    return Object.assign({
-        id: `clip-${nextId++}`, name: `clip ${periodQ}Q`, type: 'clip',
-        duration: periodQ * Q, origin: 0, effectiveQuantum: Q,
-        loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-        isMuted: false, isRecording: false, isPendingStart: false,
-    }, extra);
-}
-function stack(children, extra = {}) {
-    return Object.assign({
-        id: `stack-${nextId++}`, name: 'stack', type: 'stack',
-        nodes: children, origin: 0, effectiveQuantum: Q, isExpanded: true,
-        loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
-        isMuted: false, isRecording: false,
-    }, extra);
-}
-function state(nodes, extra = {}) {
-    // masterPos defaults deep into playback: 25 cycles of 12Q + 5.25Q
-    return Object.assign({
-        masterPos: (25 * 12 + 5.25) * Q, isPlaying: true, origin: 0,
-        soloedId: '', nodes,
-    }, extra);
-}
-
-/** Assert reps of one lane exactly tile [0, cycleQ): sorted, gapless. */
-function assertTilesCycle(lane, cycleQ) {
-    const reps = lane.reps;
-    assert.ok(reps.length > 0, `${lane.name}: has reps`);
-    assert.equal(reps[0].startQ, 0, `${lane.name}: tiles start at 0`);
-    for (let i = 0; i < reps.length; i++) {
-        assert.ok(reps[i].endQ > reps[i].startQ, `${lane.name}: tile ${i} non-empty`);
-        if (i > 0) assert.equal(reps[i].startQ, reps[i - 1].endQ,
-            `${lane.name}: tile ${i} abuts tile ${i - 1}`);
-    }
-    assert.equal(reps[reps.length - 1].endQ, cycleQ, `${lane.name}: tiles end at cycle`);
-    assert.equal(reps.filter(r => !r.ghost).length, 1,
-        `${lane.name}: exactly one take tile`);
-}
+// Q48 device-rate quantum + minimal engine-shaped builders + the tiling
+// invariant — shared in helpers.mjs (this file was their birthplace).
+import { Q48 as Q, clip, stack, state, assertTilesCycle, makeLcg }
+    from './helpers.mjs';
 
 test('recording.md island: 1Q + 4Q + 3Q → cycle 12Q, correct rep counts', () => {
     const vm = deriveViewModel(state([clip(1), clip(4), clip(3)]));
@@ -707,8 +668,7 @@ test('solo and mute pass through', () => {
 });
 
 test('I2/I8 property: random scenes — every lane tiles one shared frame', () => {
-    let seed = 0xC0FFEE;
-    const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+    const rnd = makeLcg(0xC0FFEE);
     for (let i = 0; i < 200; i++) {
         const periods = [1, 2, 3, 4, 6];
         const laneCount = 1 + Math.floor(rnd() * 4);

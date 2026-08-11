@@ -1,27 +1,24 @@
+/**
+ * timelineLcm jitter-rounding: committed durations can arrive with
+ * float residue (a 3Q take publishing 132300.00001 samples); the LCM
+ * must round each duration to whole samples FIRST or the cycle explodes
+ * (the raw float LCM of the 2026-07 field bug). The clean integer
+ * vectors live in shared/timing_golden.json (timeline_model_golden
+ * .test.mjs) — this file pins only the jitter property, against the
+ * real production function (the old copy here tested a local lcm).
+ */
 
-const gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
-const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a * b) / gcd(a, b));
+import test from 'node:test';
+import assert from 'node:assert/strict';
 
-const nodes = [
-    { duration: 44100, isRecording: false },   // 1Q
-    { duration: 176400, isRecording: false },  // 4Q
-    { duration: 132300.00001, isRecording: false } // 3Q + jitter
-];
+import { timelineLcm } from '../timeline_model.js';
+import { Q44 } from './helpers.mjs';
 
-let effectiveQ = 44100;
-let committedLCM = effectiveQ;
-
-nodes.forEach(n => {
-    if (!n.isRecording && n.duration > 0) {
-        // Rounding logic as implemented in app.js
-        committedLCM = lcm(Math.round(committedLCM), Math.round(n.duration));
-    }
+test('timelineLcm rounds float jitter before LCM-ing (no cycle explosion)', () => {
+    // 1Q + 4Q + (3Q + ε): the ε must be ignored — 12Q, not astronomical
+    assert.equal(timelineLcm([Q44, 4 * Q44, 3 * Q44 + 0.00001], Q44), 12 * Q44);
+    // …and jitter below the integer too
+    assert.equal(timelineLcm([Q44, 4 * Q44, 3 * Q44 - 0.00001], Q44), 12 * Q44);
+    // A jittered QUANTUM is rounded the same way
+    assert.equal(timelineLcm([Q44, 3 * Q44], Q44 + 0.4), 3 * Q44);
 });
-
-console.log("Committed LCM:", committedLCM);
-if (committedLCM === 529200) {
-    console.log("PASS: Jitter ignored, 12Q established.");
-} else {
-    console.log("FAIL: Expected 529200, got", committedLCM);
-    process.exit(1);
-}

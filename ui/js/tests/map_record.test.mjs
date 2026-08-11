@@ -13,34 +13,23 @@ import assert from 'node:assert/strict';
 import { advanceBy, callNative, getState, loadScenario, setMasterPos }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
+import { nodeById as findNodeById, recordTake, PERF as perf }
+    from './helpers.mjs';
 
-function nodeById(id, nodes = getState().nodes) {
-    for (const n of nodes || []) {
-        if (n.id === id) return n;
-        const found = n.nodes && nodeById(id, n.nodes);
-        if (found) return found;
-    }
-    return null;
-}
+const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
 
 test('through-map record: heard arm, one-period cap, dense C commit', async () => {
     loadScenario('empty');
     const groupId = await callNative('createNode', 'stack');
 
     // Take A establishes Q = 1000 (first clip records immediately).
-    const aId = await callNative('createNode', 'clip', groupId);
-    await callNative('startRecordingInNode', aId);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', aId);
+    await recordTake(groupId, 1000, { stopEarly: 0, settle: 0 });
     assert.equal(getState().quantum, 1000, 'Q established by take A');
 
     // Take B = 4Q → group inner cycle 4000; its commit grows the cycle
-    // and re-bases the epoch to B's heard top (1000).
-    const bId = await callNative('createNode', 'clip', groupId);
-    await callNative('startRecordingInNode', bId);
-    advanceBy(3900);
-    await callNative('stopRecordingInNode', bId);
-    advanceBy(200); // pads forward to the 4000 boundary and commits
+    // and re-bases the epoch to B's heard top (1000). Stop mid-Q, then
+    // settle pads forward to the 4000 boundary and commits.
+    const bId = await recordTake(groupId, 4000, { stopEarly: 100, settle: 200 });
     assert.equal(nodeById(bId).duration, 4000, 'take B committed at 4Q');
     const epoch = getState().islandEpoch;
     assert.equal(epoch, 1000, 'epoch re-based to B\'s heard top');
@@ -108,10 +97,7 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
 test('nested active maps refuse the arm (phase-2 scope)', async () => {
     loadScenario('empty');
     const groupId = await callNative('createNode', 'stack');
-    const aId = await callNative('createNode', 'clip', groupId);
-    await callNative('startRecordingInNode', aId);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', aId);
+    await recordTake(groupId, 1000, { stopEarly: 0, settle: 0 });
 
     await callNative('setLoopPoints', groupId, 0, 500);
     const innerId = await callNative('createNode', 'stack', groupId);
@@ -129,7 +115,6 @@ test('nested active maps refuse the arm (phase-2 scope)', async () => {
 
 // === View model: the ruling-5 cue + heard-cursor honesty ===
 
-const perf = { sampleRate: 44100 };
 const mappedGroup = (extra = {}) => ({
     id: 'g', name: 'G', type: 'stack', isExpanded: true,
     windowActive: true, loopStart: 1000, loopEnd: 3000, loopBypassed: false,

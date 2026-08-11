@@ -1,3 +1,14 @@
+/**
+ * Composite waveform for folded stacks (composite_waveform.js): the
+ * group lane's drawn peaks must be the SUM of what its children
+ * audibly do — origin offsets are epoch-relative (one-frame rule),
+ * looping clips tile the WHOLE cycle including before their offset
+ * (FIELD 2026-07-16d: forward-only tiling left a blank head), and an
+ * ACTIVE window contributes only its segment. buildCacheKey pins the
+ * invalidation contract: any child/loop/width change must miss the
+ * cache; an unchanged stack must return the same array reference.
+ */
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCacheKey, generateCompositeWaveform } from '../composite_waveform.js';

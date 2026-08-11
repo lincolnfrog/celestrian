@@ -22,32 +22,20 @@ import { advanceBy, callNative, getState, loadScenario }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import { mapOffset } from '../time_map.js';
+import { nodeById as findNodeById, recordTake } from './helpers.mjs';
 
-function nodeById(id, nodes = getState().nodes) {
-    for (const n of nodes || []) {
-        if (n.id === id) return n;
-        const found = n.nodes && nodeById(id, n.nodes);
-        if (found) return found;
-    }
-    return null;
-}
+const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
 
 test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
      'the seam renders mid-lane (two-anchor continuity)', async () => {
     loadScenario('empty');
 
-    // Track 1 establishes Q.
-    const t1 = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', t1);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', t1);
+    // Track 1 establishes Q (first take: raw commit, no boundary wait).
+    await recordTake('', 1000, { stopEarly: 0, settle: 0 });
     assert.equal(getState().quantum, 1000, 'Q established');
 
     // Clip 2: a 3Q take.
-    const c2 = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', c2);
-    advanceBy(3000);
-    await callNative('stopRecordingInNode', c2);
+    const c2 = await recordTake('', 3000, { stopEarly: 0, settle: 0 });
 
     // The field repro clicked while the transport PLAYED (recording
     // auto-plays) — continuity only applies then.

@@ -8,10 +8,27 @@
  *
  * Live data comes from the engine's published `effects.scope`
  * (spectrum, pre-rack peak, compressor GR) — see EffectRack::getMetadata.
+ *
+ * Painters draw in CSS-pixel space via theme.fitCanvas: absolute values
+ * (line widths, dash patterns, tap widths, margins) mean CSS pixels, so
+ * they render at the designed size on retina displays. (The previous
+ * local fit() left the context in device pixels — every lineWidth and
+ * dash drew half-size at dpr 2.)
  */
+
+import { AMBER, REC, DIM, GRID, CREAM, rgbaOf, fitCanvas } from './theme.js';
 
 /* ---------- RBJ biquad magnitude (mirrors src/dsp/effects.cc) ---------- */
 
+/**
+ * RBJ low-shelf biquad coefficients (Audio EQ Cookbook), normalized so
+ * a0 = 1. Fixed shelf slope S = 0.9, matching the engine.
+ *
+ * @param {number} sr sample rate in Hz
+ * @param {number} f0 shelf corner frequency in Hz
+ * @param {number} gainDb shelf gain in dB (boost > 0, cut < 0)
+ * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
+ */
 function lowShelf(sr, f0, gainDb) {
     const A = Math.pow(10, gainDb / 40);
     const w0 = 2 * Math.PI * f0 / sr;
@@ -29,6 +46,15 @@ function lowShelf(sr, f0, gainDb) {
     };
 }
 
+/**
+ * RBJ peaking-EQ biquad coefficients, normalized so a0 = 1.
+ *
+ * @param {number} sr sample rate in Hz
+ * @param {number} f0 center frequency in Hz
+ * @param {number} q bandwidth as quality factor (higher = narrower)
+ * @param {number} gainDb peak gain in dB (boost > 0, cut < 0)
+ * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
+ */
 function peaking(sr, f0, q, gainDb) {
     const A = Math.pow(10, gainDb / 40);
     const w0 = 2 * Math.PI * f0 / sr;
@@ -44,6 +70,15 @@ function peaking(sr, f0, q, gainDb) {
     };
 }
 
+/**
+ * RBJ high-shelf biquad coefficients, normalized so a0 = 1. Fixed shelf
+ * slope S = 0.9, matching the engine.
+ *
+ * @param {number} sr sample rate in Hz
+ * @param {number} f0 shelf corner frequency in Hz
+ * @param {number} gainDb shelf gain in dB (boost > 0, cut < 0)
+ * @returns {{b0: number, b1: number, b2: number, a1: number, a2: number}}
+ */
 function highShelf(sr, f0, gainDb) {
     const A = Math.pow(10, gainDb / 40);
     const w0 = 2 * Math.PI * f0 / sr;
@@ -95,6 +130,9 @@ export function logFreqs(n, fLo = 40, fHi = 16000) {
 /** Echo tap timeline: dry pulse then repeats at k·time, mix·fb^(k−1). */
 export function echoTaps({ time, feedback, mix }, horizonS = 4, maxTaps = 12) {
     const taps = [{ t: 0, h: 1, dry: true }];
+    // Degenerate delay time: every repeat would land at t = 0 — a
+    // 13-tap pile on the dry pulse. Just the dry pulse instead.
+    if (time <= 0) return taps;
     let h = mix;
     for (let k = 1; k <= maxTaps; k++) {
         const t = k * time;
@@ -130,24 +168,32 @@ export function holdSpectrum(prev, next, { rise = 0.5, fall = 0.01 } = {}) {
     });
 }
 
-/* ---------- canvas painters (Tape Room tokens) ---------- */
+/* ---------- canvas painters (Tape Room tokens, theme.js) ---------- */
 
-const TAPE = '#e8a13c';
-const REC = '#d94f30';
-const DIM = '#93826d';
-const GRID = '#322920';
+// Display windows for the dB-space cards.
+// EQ_DB_RANGE: the EQ response curve spans ±15 dB about the midline.
+// COMP_DB_FLOOR: the compressor envelope maps [−60, 0] dB to the card.
+// GR_FULL_SCALE_DB: the gain-reduction meter's full scale (24 dB of GR
+//   fills the strip).
+const EQ_DB_RANGE = 15;
+const COMP_DB_FLOOR = -60;
+const GR_FULL_SCALE_DB = 24;
 
-function fit(canvas) {
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(20, Math.round(canvas.clientWidth * dpr));
-    const h = Math.max(20, Math.round(canvas.clientHeight * dpr));
-    if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w;
-        canvas.height = h;
-    }
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
-    return { ctx, w, h };
+/** Fit an fx card's canvas to its CSS layout size (min 20px). */
+function fitCard(canvas) {
+    return fitCanvas(canvas,
+        Math.max(20, canvas.clientWidth || 0),
+        Math.max(20, canvas.clientHeight || 0));
+}
+
+/** Stroke one connected polyline through [x, y] points. */
+function strokePolyline(ctx, pts) {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => {
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
 }
 
 /**
@@ -155,7 +201,7 @@ function fit(canvas) {
  * behind the bands' analytic response curve (tape).
  */
 export function drawEqViz(canvas, spectrum, gains, sr = 48000, avgSpectrum = null) {
-    const { ctx, w, h } = fit(canvas);
+    const { ctx, w, h } = fitCard(canvas);
     // 0 dB midline
     ctx.strokeStyle = GRID;
     ctx.lineWidth = 1;
@@ -165,7 +211,7 @@ export function drawEqViz(canvas, spectrum, gains, sr = 48000, avgSpectrum = nul
     ctx.stroke();
     // Spectrum: one bar per scope bin (already log-spaced 40..16k)
     if (spectrum && spectrum.length) {
-        ctx.fillStyle = 'rgba(232, 161, 60, 0.28)';
+        ctx.fillStyle = rgbaOf(AMBER, 0.28);
         const bw = w / spectrum.length;
         spectrum.forEach((s, i) => {
             const bh = Math.max(1, s * h);
@@ -176,44 +222,35 @@ export function drawEqViz(canvas, spectrum, gains, sr = 48000, avgSpectrum = nul
     // high-water mark — steady under the flickering bars and through
     // silence; what you actually EQ against
     if (avgSpectrum && avgSpectrum.length) {
-        ctx.strokeStyle = 'rgba(239, 230, 216, 0.8)';
+        ctx.strokeStyle = CREAM;
         ctx.lineWidth = 1.5;
-        ctx.beginPath();
         const bw = w / avgSpectrum.length;
-        avgSpectrum.forEach((s, i) => {
-            const x = (i + 0.5) * bw;
-            const y = h - s * h;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
+        strokePolyline(ctx, avgSpectrum.map(
+            (s, i) => [(i + 0.5) * bw, h - s * h]));
     }
-    // Response curve: ±15 dB about the midline
+    // Response curve: ±EQ_DB_RANGE dB about the midline
     const freqs = logFreqs(64);
     const dbs = eqResponseDb(freqs, gains, sr);
-    ctx.strokeStyle = TAPE;
+    ctx.strokeStyle = AMBER;
     ctx.lineWidth = 2;
-    ctx.beginPath();
-    dbs.forEach((db, i) => {
-        const x = (i / (dbs.length - 1)) * w;
-        const y = h / 2 - (db / 15) * (h / 2);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
+    strokePolyline(ctx, dbs.map((db, i) => [
+        (i / (dbs.length - 1)) * w,
+        h / 2 - (db / EQ_DB_RANGE) * (h / 2),
+    ]));
 }
 
 /**
- * Compressor: scrolling peak envelope in dB space [−60, 0], the
- * THRESHOLD as a red line across it, and a downward GR meter strip.
+ * Compressor: scrolling peak envelope in dB space [COMP_DB_FLOOR, 0],
+ * the THRESHOLD as a red line across it, and a downward GR meter strip.
  */
 export function drawCompViz(canvas, hist, thresholdDb, grDb) {
-    const { ctx, w, h } = fit(canvas);
+    const { ctx, w, h } = fitCard(canvas);
     const meterW = Math.max(6, w * 0.03);
     const waveW = w - meterW - 4;
-    const y01 = db => Math.min(1, Math.max(0, (db + 60) / 60));
+    const y01 = db => Math.min(1, Math.max(0,
+        (db - COMP_DB_FLOOR) / -COMP_DB_FLOOR));
     // Envelope history (newest right)
-    ctx.fillStyle = 'rgba(232, 161, 60, 0.55)';
+    ctx.fillStyle = rgbaOf(AMBER, 0.55);
     const n = hist.length;
     const cw = waveW / Math.max(60, n);
     for (let i = 0; i < n; i++) {
@@ -231,16 +268,19 @@ export function drawCompViz(canvas, hist, thresholdDb, grDb) {
     ctx.lineTo(waveW, ty);
     ctx.stroke();
     ctx.setLineDash([]);
-    // GR meter: hangs from the top (convention), 24 dB full scale
+    // GR meter: hangs from the top (convention), GR_FULL_SCALE_DB full
+    // scale, clamped to [0, 1] — a spurious negative GR must not paint
+    // a negative-height rect above the strip
     ctx.fillStyle = GRID;
     ctx.fillRect(w - meterW, 0, meterW, h);
     ctx.fillStyle = REC;
-    ctx.fillRect(w - meterW, 0, meterW, Math.min(1, (grDb || 0) / 24) * h);
+    ctx.fillRect(w - meterW, 0, meterW,
+        Math.max(0, Math.min(1, (grDb || 0) / GR_FULL_SCALE_DB)) * h);
 }
 
 /** Echo: the tap timeline, breathing with the live signal. */
 export function drawEchoViz(canvas, taps, peak, horizonS = 4) {
-    const { ctx, w, h } = fit(canvas);
+    const { ctx, w, h } = fitCard(canvas);
     ctx.strokeStyle = GRID;
     ctx.beginPath();
     ctx.moveTo(0, h - 1);
@@ -250,7 +290,7 @@ export function drawEchoViz(canvas, taps, peak, horizonS = 4) {
     taps.forEach(tap => {
         const x = 4 + (tap.t / horizonS) * (w - 8);
         const bh = Math.max(2, tap.h * breathe * (h - 6));
-        ctx.fillStyle = tap.dry ? DIM : TAPE;
+        ctx.fillStyle = tap.dry ? DIM : AMBER;
         ctx.fillRect(x - 1.5, h - 2 - bh, 3, bh);
         ctx.beginPath();
         ctx.arc(x, h - 2 - bh, 2.5, 0, 2 * Math.PI);
@@ -260,7 +300,7 @@ export function drawEchoViz(canvas, taps, peak, horizonS = 4) {
 
 /** Reverb: dry pulse + exponential tail scaled by mix, glowing live. */
 export function drawReverbViz(canvas, tailS, mix, peak, horizonS = 4) {
-    const { ctx, w, h } = fit(canvas);
+    const { ctx, w, h } = fitCard(canvas);
     ctx.strokeStyle = GRID;
     ctx.beginPath();
     ctx.moveTo(0, h - 1);
@@ -271,30 +311,23 @@ export function drawReverbViz(canvas, tailS, mix, peak, horizonS = 4) {
     // Dry pulse
     ctx.fillStyle = DIM;
     ctx.fillRect(x0 - 1.5, 4, 3, h - 6);
-    // Wet tail: y = mix · e^(−3t/T)
+    // Wet tail: y = mix · e^(−3t/T) — sample the curve once, then fill
+    // and stroke the same points
+    const steps = 72;
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+        const t = (i / steps) * horizonS;
+        const amp = (mix || 0) * Math.exp(-3 * t / Math.max(0.05, tailS));
+        pts.push([x0 + (t / horizonS) * (w - x0 - 4), h - 2 - amp * (h - 8)]);
+    }
     ctx.beginPath();
     ctx.moveTo(x0, h - 2);
-    const steps = 72;
-    for (let i = 0; i <= steps; i++) {
-        const t = (i / steps) * horizonS;
-        const amp = (mix || 0) * Math.exp(-3 * t / Math.max(0.05, tailS));
-        const x = x0 + (t / horizonS) * (w - x0 - 4);
-        ctx.lineTo(x, h - 2 - amp * (h - 8));
-    }
+    pts.forEach(([x, y]) => ctx.lineTo(x, y));
     ctx.lineTo(w - 4, h - 2);
     ctx.closePath();
-    ctx.fillStyle = `rgba(232, 161, 60, ${0.45 * glow})`;
+    ctx.fillStyle = rgbaOf(AMBER, 0.45 * glow);
     ctx.fill();
-    ctx.strokeStyle = TAPE;
+    ctx.strokeStyle = AMBER;
     ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    for (let i = 0; i <= steps; i++) {
-        const t = (i / steps) * horizonS;
-        const amp = (mix || 0) * Math.exp(-3 * t / Math.max(0.05, tailS));
-        const x = x0 + (t / horizonS) * (w - x0 - 4);
-        const y = h - 2 - amp * (h - 8);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+    strokePolyline(ctx, pts);
 }

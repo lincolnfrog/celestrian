@@ -14,6 +14,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { appendLivePeak, liveBoost, PEAKS_PER_SECOND } from '../live_peaks.js';
+import { makeLcg } from './helpers.mjs';
 
 const SR = 48000;
 
@@ -39,8 +40,7 @@ test('a transient stays put under any poll cadence (no drift)', () => {
     for (let t = 0.02; t <= 4; t += 0.05) steady.push(+t.toFixed(3));
 
     // Jittery: same 4s of audio, but 60% of polls dropped and irregular
-    let seed = 42;
-    const rnd = () => (seed = (seed * 48271) % 2147483647) / 2147483647;
+    const rnd = makeLcg(42);
     const jittery = steady.filter((t, i) =>
         Math.abs(t - transientAt) < 0.026 || rnd() > 0.6);
 

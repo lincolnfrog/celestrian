@@ -14,6 +14,22 @@
  * patch layer.
  */
 
+// Velocity blend weights: how much of the running estimate survives each
+// observation vs. how much the new instantaneous sample contributes. A
+// light low-pass — enough to smooth poll jitter without lagging real
+// tempo changes by more than a couple of polls. Must sum to 1.
+const VEL_KEEP = 0.6;
+const VEL_BLEND = 0.4;
+
+// Movement beyond this multiple of nominal real-time velocity is a
+// TELEPORT (a seek or a test's setMasterPos), never evidence of speed.
+const TELEPORT_VEL_FACTOR = 2;
+
+// Per-poll correction easing: fraction of the (wrap-aware) error closed
+// each poll. Small enough that corrections read as a glide, large
+// enough to converge within a few polls.
+const CORRECT_EASE = 0.3;
+
 /** Forward wrap-aware delta: how far target moved past `last` in [0, L). */
 export function forwardDelta(targetQ, lastQ, loopQ) {
     const d = targetQ - lastQ;
@@ -31,8 +47,10 @@ export function forwardDelta(targetQ, lastQ, loopQ) {
 export function estimateVelocity(prevVel, deltaQ, dtMs, nominalQperMs) {
     if (!(dtMs > 0) || !(nominalQperMs > 0)) return { vel: prevVel, teleport: false };
     const inst = deltaQ / dtMs;
-    if (inst < 0 || inst > 2 * nominalQperMs) return { vel: 0, teleport: true };
-    return { vel: 0.6 * prevVel + 0.4 * inst, teleport: false };
+    if (inst < 0 || inst > TELEPORT_VEL_FACTOR * nominalQperMs) {
+        return { vel: 0, teleport: true };
+    }
+    return { vel: VEL_KEEP * prevVel + VEL_BLEND * inst, teleport: false };
 }
 
 /** Advance a position by vel·dt, wrapping EXACTLY at the loop boundary. */
@@ -53,5 +71,5 @@ export function correctPosition(posQ, targetQ, loopQ, maxErrQ = 0.2) {
         if (e > loopQ / 2) e -= loopQ;
     }
     if (Math.abs(e) > maxErrQ) return targetQ;
-    return posQ + e * 0.3;
+    return posQ + e * CORRECT_EASE;
 }

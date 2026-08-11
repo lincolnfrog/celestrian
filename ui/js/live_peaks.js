@@ -16,6 +16,13 @@
 
 export const PEAKS_PER_SECOND = 50;
 
+// Normalization targets shared with the committed renderer: waveforms
+// draw to PEAK_HEADROOM of full scale (a hairline of air above the
+// loudest peak), and near-silent takes are never boosted past MAX_BOOST
+// — beyond that the "waveform" is just amplified noise floor.
+const PEAK_HEADROOM = 0.95;
+const MAX_BOOST = 8;
+
 /**
  * Smoothed display boost for a LIVE waveform. The committed renderer
  * normalizes a clip to its peak (boost = 0.95/max, capped 8×); drawing
@@ -29,7 +36,7 @@ export const PEAKS_PER_SECOND = 50;
 export function liveBoost(prevBoost, peaks) {
     let max = 0;
     for (let i = 0; i < peaks.length; i++) if (peaks[i] > max) max = peaks[i];
-    const target = max > 0 ? Math.min(0.95 / max, 8) : 1;
+    const target = max > 0 ? Math.min(PEAK_HEADROOM / max, MAX_BOOST) : 1;
     if (prevBoost === undefined || prevBoost === null) return target;
     return prevBoost + (target - prevBoost) * 0.3;
 }

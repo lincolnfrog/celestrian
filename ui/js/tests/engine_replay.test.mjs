@@ -13,15 +13,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 
 import { deriveViewModel } from '../view_model.js';
+import { loadSharedJson } from './helpers.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const fixture = JSON.parse(readFileSync(
-    path.resolve(__dirname, '../../../shared/ui_contract_capture.json'), 'utf8'));
+const fixture = loadSharedJson('ui_contract_capture.json');
 
 const vms = fixture.polls.map(p => ({ tag: p._tag, vm: deriveViewModel(p) }));
 

@@ -18,13 +18,13 @@
 </head>
 
 <body>
-    <!-- LOADING OVERLAY -->
-    <div id="loading-overlay"
-        style="position:fixed;top:0;left:0;width:100%;height:100%;background:#232529;display:flex;justify-content:center;align-items:center;color:#e8a13c;z-index:9999;font-family:sans-serif;">
-        <div style="text-align:center;">
-            <img src="assets/celestrian-mark.svg" alt="" width="64" height="64"
-                style="display:block;margin:0 auto 14px;">
-            <div style="font-size:24px;font-weight:900;margin-bottom:10px;letter-spacing:0.2em;">CELESTRIAN</div>
+    <!-- LOADING OVERLAY — styled by css/session.css §21 (the stylesheet
+         is a render-blocking link, so the splash paints exactly as the
+         old inline styles did). app.js hides it once modules land. -->
+    <div id="loading-overlay">
+        <div class="loading-inner">
+            <img src="assets/celestrian-mark.svg" alt="" width="64" height="64">
+            <div class="loading-title">CELESTRIAN</div>
             <div id="loading-status">Loading modules...</div>
         </div>
     </div>
@@ -87,6 +87,9 @@
                  (docs/projects.md launch ritual). Only reachable by
                  deleting every track. -->
             <div id="empty-state">Session cleared — ＋ Track to start again.</div>
+            <!-- Keep in lockstep with index_test.html — the harness binds
+                 the same IDs (initSessionView); see that file for the
+                 2026-07-21 crash story when create-row landed only here. -->
             <div id="selection-bar" class="mono">
                 <span class="sel-count"></span>
                 <button class="sel-group">Group</button>

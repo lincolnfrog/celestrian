@@ -12,9 +12,7 @@ import assert from 'node:assert/strict';
 import {
     forwardDelta, estimateVelocity, advancePosition, correctPosition,
 } from '../playhead_clock.js';
-
-const near = (a, b, eps = 1e-9) =>
-    assert.ok(Math.abs(a - b) < eps, `expected ${a} ≈ ${b}`);
+import { near } from './helpers.mjs';
 
 test('forwardDelta: wrap-aware forward movement', () => {
     near(forwardDelta(0.05, 1.95, 2), 0.1);   // playback across the wrap

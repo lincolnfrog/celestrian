@@ -13,35 +13,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { advanceBy, callNative, getState, loadScenario }
-    from '../mock_backend.js';
+import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
+import { nodeById as findNodeById, recordTake } from './helpers.mjs';
 
-function nodeById(id, nodes = getState().nodes) {
-    for (const n of nodes || []) {
-        if (n.id === id) return n;
-        const found = n.nodes && nodeById(id, n.nodes);
-        if (found) return found;
-    }
-    return null;
-}
+const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
 
 /** 1Q definer + a committed clip of exactly `nQ` on its own track.
- * Stop requests land MID-Q (a stop exactly ON a boundary pads a whole
- * extra Q — nextStopBoundary), then advance across the boundary so
- * the take commits before any edit (the mid-take gate refuses edits
- * under a live take). */
+ * Stop requests land MID-Q (recordTake's stopEarly), then settle across
+ * the boundary so the take commits before any edit (the mid-take gate
+ * refuses edits under a live take). */
 async function setup(nQ) {
     loadScenario('empty');
-    const t1 = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', t1);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', t1);
-    const c2 = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', c2);
-    advanceBy(nQ * 1000 - 200);
-    await callNative('stopRecordingInNode', c2);
-    advanceBy(600);   // cross the boundary: commit at exactly nQ
+    const t1 = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
+    const c2 = await recordTake('', nQ * 1000, { stopEarly: 200, settle: 600 });
     assert.equal(nodeById(c2).isRecording, false, 'take committed');
     assert.equal(nodeById(c2).duration, nQ * 1000, `committed at ${nQ}Q`);
     return { t1, c2 };
@@ -76,10 +61,7 @@ test('setLoopPoints: divisor windows are first-class, others refused', async () 
 
 test('Q13 sole definer may re-trim FREELY (the edit re-defines Q)', async () => {
     loadScenario('empty');
-    const t1 = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', t1);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', t1);
+    const t1 = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
     // Sole committed clip: a fractional window is a Q re-definition,
     // not an incoherence — the exception the guard carves out.
     await callNative('setLoopPoints', t1, 0, 650);
@@ -91,16 +73,9 @@ test('Q13 sole definer may re-trim FREELY (the edit re-defines Q)', async () => 
 
 async function groupSetup() {
     loadScenario('empty');
-    const t1 = await callNative('createNode', 'clip');
-    await callNative('startRecordingInNode', t1);
-    advanceBy(1000);
-    await callNative('stopRecordingInNode', t1);
+    const t1 = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
     const g = await callNative('createNode', 'stack');
-    const c = await callNative('createNode', 'clip', g);
-    await callNative('startRecordingInNode', c);
-    advanceBy(4000 - 200);   // stop mid-Q (see setup)
-    await callNative('stopRecordingInNode', c);
-    advanceBy(600);          // cross the boundary: commit at exactly 4Q
+    const c = await recordTake(g, 4000, { stopEarly: 200, settle: 600 });
     assert.equal(nodeById(c).isRecording, false, 'group take committed');
     return { t1, g, c };
 }

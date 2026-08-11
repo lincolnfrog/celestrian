@@ -24,12 +24,20 @@ const SWEEP_DEG = 26;
 const PEAK_LV = 0.9375;  // −3 dB on the −48..0 sweep
 
 /** Map a linear RMS level (0..1) to dial fraction (0..1). */
-export function levelToDial(level) {
+function levelToDial(level) {
     const db = 20 * Math.log10((Math.abs(level) || 0) + 1e-6);
     const lv = (db - SWEEP_MIN_DB) / (SWEEP_MAX_DB - SWEEP_MIN_DB);
     return Math.max(0, Math.min(1, lv));
 }
 
+/**
+ * Point one meter's needle at `level` and set its peak lamp. The
+ * rotation is written as an inline transform; the CSS transition on
+ * .needle supplies the sweep between polls.
+ *
+ * @param {Element|null} el the meter root (contains .needle and .peak)
+ * @param {number} level linear RMS 0..1 from the engine
+ */
 function drive(el, level) {
     if (!el) return;
     const lv = levelToDial(level);
@@ -67,6 +75,13 @@ function faderTravel(el, grip) {
     return Math.max(1, el.clientHeight - grip.offsetHeight - 2);
 }
 
+/**
+ * Position the fader grip for gain `v` (0..1). Pure DOM write — no
+ * backend call; both the gesture and the poll reflection go through
+ * this so the grip can never disagree with the value.
+ *
+ * @param {number} v master gain 0..1 (0 = bottom of travel, 1 = top)
+ */
 function paintFader(v) {
     const el = document.getElementById('master-fader');
     if (!el) return;
@@ -80,7 +95,10 @@ export function initMasterFader(onSetGain) {
     if (!el) return;
     el.addEventListener('pointerdown', e => {
         e.preventDefault();
-        el.setPointerCapture(e.pointerId);
+        // Capture keeps the drag alive off-element; a webview that
+        // refuses (or a synthetic pointer) must not kill the gesture
+        // wiring below (session_view convention).
+        try { el.setPointerCapture(e.pointerId); } catch (_) {}
         faderHot = true;
         const grip = el.querySelector('.grip');
         const travel = faderTravel(el, grip);
@@ -99,10 +117,15 @@ export function initMasterFader(onSetGain) {
             el.removeEventListener('pointermove', move);
             el.removeEventListener('pointerup', up);
             el.removeEventListener('pointercancel', up);
+            el.removeEventListener('lostpointercapture', up);
         };
         el.addEventListener('pointermove', move);
         el.addEventListener('pointerup', up);
         el.addEventListener('pointercancel', up);
+        // If capture is torn away mid-gesture (element re-render, OS
+        // gesture steal), release the hot flag so the 50 ms poll can
+        // reclaim the grip — otherwise the fader freezes forever.
+        el.addEventListener('lostpointercapture', up);
     });
     el.addEventListener('dblclick', () => {
         faderValue = 1;

@@ -13,17 +13,7 @@ import assert from 'node:assert/strict';
 
 import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
-
-function findByName(nodes, name) {
-    for (const n of nodes) {
-        if (n.name === name) return n;
-        if (n.nodes) {
-            const c = findByName(n.nodes, name);
-            if (c) return c;
-        }
-    }
-    return null;
-}
+import { findByName } from './helpers.mjs';
 
 test('setPeriodSource round-trips, clips only, undoable', async () => {
     loadScenario('stack-with-clips');

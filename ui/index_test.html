@@ -8,7 +8,11 @@
     <link rel="stylesheet" href="css/session.css">
     <style>
         /* Test harness sidebar: sits in-flow to the right of the app so it
-           never overlays lanes (a previous overlay cost real e2e debugging) */
+           never overlays lanes (a previous overlay cost real e2e debugging).
+           NOTE: this sidebar's palette (#201a15 / #93826d etc.) is the OLD
+           warm "Tape Room" theme — intentionally distinct from the app's
+           gunmetal chassis so harness-only chrome is unmistakable in
+           screenshots. Harness-only; not part of the design system. */
         body { display: grid; grid-template-columns: minmax(0, 1fr) 240px; }
         #app { min-width: 0; overflow: hidden; }
         #test-controls {
@@ -44,11 +48,9 @@
         <div id="transport">
             <span class="brand">CELESTRIAN · TEST</span>
             <button id="play-btn" title="Play / stop (space)">▶</button>
-            <button id="record-btn" title="Record"></button>
             <span id="position-readout">—</span>
             <span id="q-info"></span>
             <span class="spacer"></span>
-            <button id="add-stack-btn">+ New Stack</button>
         </div>
 
         <!-- SESSION -->

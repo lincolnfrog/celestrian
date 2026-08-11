@@ -12,6 +12,7 @@ import { advanceBy, callNative, getState, loadScenario, setMasterPos }
     from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import { commensuratePeriod } from '../timeline_model.js';
+import { PERF as perf } from './helpers.mjs';
 
 test('mock: sole committed clip window re-establishes Q', async () => {
     loadScenario('single-clip');            // one committed clip (clip-1)
@@ -43,7 +44,6 @@ test('mock: deleting the sole clip reverts Q (derived → fallback)', async () =
 
 // Provisional display: the definer frames its FULL buffer with the loop
 // as a selection overlay — so trimming never hides the rest of the clip.
-const perf = { sampleRate: 44100 };
 const definerClip = () => ({
     id: 'c1', type: 'clip', name: 'A', duration: 200, effectiveQuantum: 100,
     loopStart: 20, loopEnd: 120, isRecording: false,
