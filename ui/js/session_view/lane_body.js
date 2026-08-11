@@ -10,7 +10,7 @@
  */
 
 import { ctx } from './context.js';
-import { el, pct, fmtQ, setStyle, snapThenAnimate } from './sv_util.js';
+import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ, tickSetSig } from './sv_util.js';
 import { drawWaveform } from '../canvas_renderer.js';
 import { generateCompositeWaveform } from '../composite_waveform.js';
 import { calculateStackLCM } from '../timeline_model.js';
@@ -228,10 +228,13 @@ export function patchLaneBody(row, lane, vm, aux) {
     // its one honest cursor.
     body.classList.toggle('inspecting', !!lane.windowEditing);
 
-    // Grid layer: rebuilt only when the frame's tick set changes
-    reconcileMarkers(grid, 'g:' + cycleQ + ':' + vm.ruler.ticks.length, g => {
+    // Grid layer: rebuilt only when the frame's tick set changes. The
+    // key is a content signature (tickSetSig) — count-equal re-buckets
+    // can't render stale (audit 2026-08-11); edge suppression is
+    // epsilon-tolerant like the ruler's cycle-end label.
+    reconcileMarkers(grid, 'g:' + cycleQ + ':' + tickSetSig(vm.ruler.ticks), g => {
         vm.ruler.ticks.forEach(t => {
-            if (t.q === 0 || t.q === cycleQ) return;
+            if (approxQ(t.q, 0) || approxQ(t.q, cycleQ)) return;
             const d = el('div', 'gridline' + (t.major ? ' major' : ''));
             d.style.left = pct(t.q, cycleQ);
             g.appendChild(d);
