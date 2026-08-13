@@ -350,6 +350,46 @@ class TimeMapRecordTests : public juce::UnitTest {
                                 "pre-anchor window region: silence");
     }
 
+    beginTest("D3: getWaveform gated mid-take (through-map fold)");
+    {
+      // The motivating case for the gate: the fold scatters capture
+      // writes across [0, C) while write_position counts HEARD samples,
+      // so a mid-take read bounded by write_position could overlap an
+      // in-flight captureWrite. The state gate makes the buffer
+      // message-thread-readable only in Idle.
+      StackNode root("Root");
+      root.establishIsland(1000, 0);
+      root.addChild(makeCommittedSibling());
+      root.setLoopPoints(1000, 3000);
+
+      auto takeOwned = std::make_unique<ClipNode>("Take", 44100.0);
+      auto* take = takeOwned.get();
+      root.addChild(std::move(takeOwned));
+
+      auto peakCount = [](const juce::var& wf) {
+        return wf.getArray() ? wf.getArray()->size() : -1;
+      };
+
+      int64_t t = 0;
+      driveControl(root, t, 500, 250);
+      take->startRecording(4000);
+      expectEquals(peakCount(take->getWaveform(8)), 0, "Armed: no peaks");
+      driveControl(root, t, 1600, 250);  // capturing, mid-fold
+      expect(take->recState() == ClipNode::RecState::Capturing, "capturing");
+      expectEquals(peakCount(take->getWaveform(8)), 0,
+                   "Capturing (fold in flight): no peaks");
+      take->stopRecording();
+      expectEquals(peakCount(take->getWaveform(8)), 0,
+                   "stop requested: no peaks");
+      driveControl(root, t, 2500, 250);  // heard boundary 1000 → commit
+
+      expect(take->recState() == ClipNode::RecState::Idle, "committed");
+      auto wf = take->getWaveform(8);
+      expectEquals(peakCount(wf), 8, "Idle-with-content: peaks published");
+      expect((float)wf.getArray()->getReference(0) > 0.0f,
+             "committed content readable after the gate lifts");
+    }
+
     beginTest(
         "Through-map: multi-segment map folds segment-general "
         "(cells {Q1, Q3-Q5})");

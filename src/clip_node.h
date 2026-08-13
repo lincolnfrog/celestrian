@@ -121,6 +121,14 @@ class ClipNode : public AudioNode {
    * Signals the recording thread to stop and flush the buffer.
    */
   void stopRecording();
+  /** Group-stop variant (Q7): the caller snapshots whether the island
+   * had a quantum BEFORE stopping ANY clip of the set. Without the
+   * snapshot, a simultaneous first-take group stop diverges: the first
+   * clip's immediate commit establishes Q, flipping its siblings onto
+   * the record-to-next-boundary path — they'd run a full extra Q. One
+   * performance must mean one committed duration, so all first takes
+   * of a group stop take the immediate-commit path together. */
+  void stopRecording(bool island_has_quantum);
 
   /**
    * Starts audio playback from the current read position.

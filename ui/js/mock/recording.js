@@ -35,9 +35,49 @@ export const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
  *  - Q11: with Q established, arming PENDS to the next Q boundary in
  *    the epoch frame; exactly-on-boundary starts immediately.
  */
+/** All clips in a subtree (document order). */
+function clipsUnder(node, out = []) {
+    if (node.type === 'clip') out.push(node);
+    (node.nodes || []).forEach(c => clipsUnder(c, out));
+    return out;
+}
+
+/** Resolve an arm/stop target: the root id acts as a stack over the
+ * whole graph (the engine's root_node IS a StackNode; the mock's root
+ * is synthetic — see publish.js `mock-root`). */
+function recTarget(id) {
+    if (id === 'mock-root') return { type: 'stack', nodes: state.nodes };
+    return findNode(id);
+}
+
 export function startRecordingInNode(id) {
-    const node = findNode(id);
+    const node = recTarget(id);
     if (!node) return;
+
+    // Q7 GROUP ARM (engine parity, AudioEngine::startRecordingInNode):
+    // record is fractal — a stack target arms every EMPTY clip beneath
+    // it in this ONE call, so the group shares one arm target and one
+    // committed duration (one performance, N microphones). Arm targets
+    // EMPTINESS: committed members just play; re-recording is the
+    // *takes* feature.
+    if (node.type === 'stack') {
+        const targets = clipsUnder(node)
+            .filter(c => !c.isRecording && !((c.duration || 0) > 0));
+        if (!targets.length) {
+            console.log('[MockBackend] record refused — no empty clip under', id);
+            return;
+        }
+        targets.forEach(c => startRecordingInNode(c.id));
+        return;
+    }
+    // Arm targets emptiness (Q7): a committed clip is never re-armed.
+    if (!node.isRecording && (node.duration || 0) > 0) {
+        console.log('[MockBackend] record refused — clip has content (Q7):', id);
+        return;
+    }
+    // Idempotent like the engine (ClipNode::startRecording gates on
+    // Idle): re-arming a live take must not reset its capture state.
+    if (node.isRecording) return;
 
     console.log('[MockBackend] startRecordingInNode', id);
 
@@ -175,10 +215,42 @@ export function startRecordingInNode(id) {
 }
 
 export function stopRecordingInNode(id) {
-    const node = findNode(id);
-    if (!node || !node.isRecording) return;
+    const node = recTarget(id);
+    if (!node) return;
 
+    // Q7: stop is fractal like arm — a stack target stops every live
+    // take beneath it in ONE call. Snapshot the island-Q fact BEFORE
+    // any stop runs (engine parity, AudioEngine::stopRecordingInNode):
+    // a first-take group stop's first commit ESTABLISHES Q, which would
+    // flip the siblings onto the awaiting-stop path and run them a full
+    // extra Q (one performance, one committed duration).
+    if (node.type === 'stack') {
+        const hot = clipsUnder(node).filter(c => c.isRecording);
+        const hadQ = effectiveQuantumForState() > 0;
+        hot.forEach(c => stopClipRecording(c, hadQ));
+        return;
+    }
+    if (!node.isRecording) return;
+    stopClipRecording(node, effectiveQuantumForState() > 0);
+}
+
+function stopClipRecording(node, islandHasQuantum) {
+    const id = node.id;
     console.log('[MockBackend] stopRecordingInNode', id);
+
+    // Engine parity (ClipNode::stopRecording, Armed → CANCEL): stopping
+    // a clip that never reached its arm boundary un-arms it — no
+    // content, no phantom awaiting-stop.
+    if (node.isPendingStart) {
+        node.isRecording = false;
+        node.isPendingStart = false;
+        delete node.pendingStartAt;
+        delete node._mapArm;
+        node.duration = 0;
+        if (!anyNodeRecording()) recView.active = false;
+        console.log('[MockBackend] Arm cancelled before capture:', id);
+        return;
+    }
 
     const Q = effectiveQuantumForState();
     // Length authority: live duration (grown by the transport) and the
@@ -191,9 +263,10 @@ export function stopRecordingInNode(id) {
     // ENGINE PARITY (ClipNode::stopRecording + owner ruling 2026-07-10:
     // stops always pad FORWARD): with Q established, a stop request
     // enters AWAITING-STOP — recording continues to nextStopBoundary and
-    // commits there (growRecordingClips). Only the first clip (no Q)
+    // commits there (growRecordingClips). Only the first clip (no Q at
+    // the moment the stop SET was resolved — the group-stop snapshot)
     // commits immediately at its raw length.
-    if (Q > 0) {
+    if (islandHasQuantum) {
         node.isAwaitingStop = true;
         node.awaitingStopAt = nextStopBoundary(rawLen, Q);
         // Through-map: one map pass is the hard ceiling (engine parity).

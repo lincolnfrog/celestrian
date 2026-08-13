@@ -8,7 +8,7 @@
 
 import { initCtx, ctx } from './context.js';
 import { parseDropIds, isTypingTarget } from './sv_util.js';
-import { selection, clearSelection } from './selection.js';
+import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle, wireNavScroll } from './teleport.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
@@ -92,5 +92,12 @@ function wireKeyboard() {
         else if (e.key === ']') teleportToHandle(1, false);
         else if (e.key === '{') teleportToHandle(-1, true);
         else if (e.key === '}') teleportToHandle(1, true);
+        // R = the record key: press the selected track's (or group's) ●
+        // — a group cascades per Q7 (arm every empty member). While
+        // anything records, R stops it regardless of selection (the
+        // handler owns that logic; see app.js onRecordKey).
+        else if (e.key === 'r' || e.key === 'R') {
+            if (ctx.cb.onRecordKey) ctx.cb.onRecordKey(activeSelectedId());
+        }
     });
 }

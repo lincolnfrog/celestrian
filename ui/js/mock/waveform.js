@@ -10,6 +10,10 @@ export function getWaveform(id, numPeaks = 100) {
     const node = findNode(id);
     if (!node) return [];
     if (node.type === 'stack') return generateStackWaveform(node, numPeaks);
+    // D3 parity: the engine gates getWaveform on the recording state
+    // machine — a non-Idle clip returns no peaks (the UI draws live
+    // takes from currentPeak, never from the buffer).
+    if (node.isRecording || node.isPendingStart) return [];
     if (!node.duration || node.duration <= 0) return [];
 
     const peaks = [];

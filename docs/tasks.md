@@ -113,8 +113,24 @@ with kernel.md:
   computes the boundary from its own write position at the next block
   top and transitions to PendingStop. Pinned by "stop boundary is
   picked by the AUDIO thread" in clip_node_tests.
-- [ ] **D3: `getWaveform` race** — message thread reads the clip buffer
-  while recording writes it (long-known P3 item).
+- [x] **D3: `getWaveform` race** — ✅ fixed 2026-08-11: the message
+  thread may read clip content ONLY in Idle — `getWaveform` gates on
+  the recording state machine (empty while armed/capturing/pending;
+  the UI already draws live takes from `currentPeak`, and app.js
+  ignores empty results, so the torn-poll window can't poison its
+  peak cache). Commit's seq-cst Idle store is now the documented
+  publication point, replacing the ACCIDENTAL write_position
+  release/acquire edge — which the phase-2 through-map fold had
+  silently broken (destinations scatter across [0, C) while
+  write_position counts HEARD samples: a genuine mid-take data race
+  since 2026-07-21), reachable even from the polite UI through a
+  getGraphState torn-field window (isRecording read pre-capture,
+  duration read post-first-block). Only the message thread arms, so
+  Idle observed there can't flip mid-read. Stack aggregation inherits
+  the clip gate; mock parity in mock/waveform.js. Pinned by the "D3"
+  tests in clip_node_tests.cc (which also un-pins the racy read the
+  old Buffer Writing test encoded) + time_map_record_tests.cc (the
+  fold case). Full C++/JS suites green.
 - [x] **D4: The recording wall is GONE** ✅ done 2026-07-19i (owner
   ruling: no fixed limit — memory is the only limit): at ARM the
   content buffer becomes a huge VIRTUAL reservation (~6.7 h at
@@ -432,10 +448,39 @@ with kernel.md:
 - [ ] **Track Controls** — Play/Solo/Record buttons; partially done.
 - [ ] **Creation Menu** — contextual node creation; partially done.
 - [ ] **Selective Recording** — record into specific nodes.
-- [ ] **Group arm (Q7 ruling)** — arming a stack arms every armable
-  child (empty clips only); one arm target, one committed duration.
-  Companions: **templates** (saved subtrees) and **takes** (alternate
-  content buffers sharing one origin/period — deferred).
+- [x] **Group arm (Q7 ruling)** — ✅ done 2026-08-12: the ENGINE owns
+  the cascade — `startRecordingInNode`/`stopRecordingInNode` accept any
+  node; a stack target resolves every EMPTY Idle clip beneath it and
+  arms/stops the whole set in ONE message-thread call (the UI's old
+  per-clip bridge loop could straddle an audio block and split the
+  group across two boundaries). Arm targets emptiness at the engine
+  level too (direct arm on a committed clip is refused — re-recording
+  is the *takes* feature). Two simultaneity fixes rode along: the
+  group-stop path snapshots island-Q BEFORE any stop runs (a
+  first-take group stop's first commit establishes Q, which flipped
+  the siblings onto the record-to-next-boundary path — they'd run a
+  full extra Q; `ClipNode::stopRecording(bool)` overload), and the
+  mock gained arm-cancel parity (stop-while-pending un-arms instead of
+  wedging into a phantom awaiting-stop). Mock + UI in lockstep
+  (`onArm` is now one bridge call on the lane's own id; the mock
+  treats `mock-root` as a stack over the whole graph). **The I2
+  simultaneity invariant test now exists**: `tests/group_arm_tests.cc`
+  (first-take group → one origin/one duration/one Q; mid-cycle group →
+  shared Q11 boundary; committed member untouched; group cancel
+  balances the take counter) + `ui/js/tests/group_arm.test.mjs` (mock
+  twin). Companions still open: **templates** (saved subtrees) and
+  **takes** (alternate content buffers sharing one origin/period —
+  deferred).
+- [x] **`R` = the record key** — ✅ done 2026-08-12 (field request):
+  pressing `r` presses the selected track's (or group's) ● — group
+  targets cascade per Q7. Stop is SELECTION-PROOF: while anything
+  records, `r` stops it all via ONE engine call on the island root
+  (the selection may have changed mid-take; a stop that silently
+  no-ops while tape rolls is the worst failure mode). With nothing
+  hot: records the selected lane; no selection + exactly one
+  top-level lane → that lane (＋ Track → `r`, no click). Wired in the
+  session-view keyboard dispatcher (no-modifier, not-typing gate,
+  like the zoom/teleport keys); handler in app.js `onRecordKey`.
 
 ### Stacks / UI
 - [ ] Cache invalidation optimization (composite waveform).
@@ -458,15 +503,26 @@ with kernel.md:
 - [ ] Move clips in 2D space; resize durations via UI handles.
 
 ### Tests
-- [ ] Verify existing C++ test coverage; catalog pass/fail (run the
-  **Debug** binary — test_harness.md stale-binary gotcha).
-- [ ] Audit JS unit/E2E test health.
+- [x] **Verify existing C++ test coverage; catalog pass/fail** — ✅
+  done 2026-08-12: see **docs/test_audit.md**. 30 suites; 29 ran (211
+  sections, 0 failures, Debug binary per the gotcha); Stereo & Pan
+  crashes in the Linux audit sandbox only (double-free, reproduced on
+  a PRISTINE checkout → environmental, not a regression; green on
+  macOS 2026-08-11 — one Mac confirmation run closes it).
+- [x] **Audit JS unit/E2E test health** — ✅ done 2026-08-12
+  (test_audit.md): JS units 23 files / 169 tests / 0 fail / 0 skipped;
+  Playwright 42/42, 0 skipped, 0 flaky. The archive's "2 of 4
+  collapsed-stack tests still skipped" is moot — zero skips remain.
 - [ ] E2E: recording inside expanded stack; collapse → playhead
   constrained; drag visual feedback + grid lines for collapsed stacks.
-- [ ] **New invariant tests the audit motivates:** ~~stack-mute
-  audibility (D1)~~ ✅ (output_stage_tests.cc, 2026-08-06), I2
-  simultaneity test (still missing), stop-boundary race regression
-  (D2).
+- [x] **New invariant tests the audit motivates:** ~~stack-mute
+  audibility (D1)~~ ✅ (output_stage_tests.cc, 2026-08-06), ~~I2
+  simultaneity test~~ ✅ (group_arm_tests.cc, 2026-08-12 — pinned at
+  the source: takes performed together commit with one origin and one
+  duration), ~~stop-boundary race regression (D2)~~ ✅ was never
+  actually missing — pinned since 2026-07-16 by clip_node_tests.cc
+  "stop boundary is picked by the AUDIO thread" (audit 2026-08-12
+  found the tracker line stale, not the test).
 
 ## Tier 5: Advanced Engine & Vision (unchanged)
 

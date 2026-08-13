@@ -135,14 +135,6 @@ function clipsUnder(node, out = []) {
 const isArmableClip = c => c.isRecording || c.isPendingStart || !(c.duration > 0);
 const isHotClip = c => c.isRecording || c.isPendingStart;
 
-/** Arm = startRecordingInNode: the ENGINE owns the Q-boundary wait (Q11). */
-async function armClips(clips) {
-    for (const c of clips) await callNative('startRecordingInNode', c.id);
-}
-async function stopClips(clips) {
-    for (const c of clips) await callNative('stopRecordingInNode', c.id);
-}
-
 /* PER-TRACK RECORD (owner ruling 2026-07-19h): there is NO global
  * record button — the track's ● is the record verb, which keeps the
  * core journey direct: song looping → ＋ Track → hit its ● → recording
@@ -150,8 +142,13 @@ async function stopClips(clips) {
  * (the drum-mic case); a recording track's ● stops it. */
 /**
  * The lane record button: if anything under the lane is hot
- * (recording/pending), stop it all; otherwise arm every armable clip
- * beneath it (empty tracks record, full ones just play).
+ * (recording/pending), stop it all; otherwise record the lane. Both
+ * verbs are ONE bridge call on the lane's own id — the ENGINE owns the
+ * cascade (Q7 group arm: a stack arms every empty clip beneath it in
+ * one message-thread pass, so the group shares one arm target and one
+ * committed duration; the old per-clip loop here could straddle an
+ * audio block and split the group across two boundaries). The engine
+ * also owns the Q-boundary wait (Q11) and arm-targets-emptiness (Q7).
  */
 async function onArm(lane) {
     const node = lastNodesById.get(lane.id);
@@ -159,16 +156,46 @@ async function onArm(lane) {
     const clips = clipsUnder(node);
     const hot = clips.filter(isHotClip);
     if (hot.length > 0) {
-        await stopClips(hot);
+        await callNative('stopRecordingInNode', lane.id);
         setLogLine('Stopped recording');
         return;
     }
     const targets = clips.filter(isArmableClip);
-    if (targets.length === 0) return;
-    await armClips(targets);
+    if (targets.length === 0) {
+        setLogLine('Nothing to record — tracks already have takes');
+        return;
+    }
+    await callNative('startRecordingInNode', lane.id);
     setLogLine(targets.length > 1
         ? `Recording ${targets.length} empty tracks (full ones just play)`
         : 'Recording');
+}
+
+/* R = the record key (field request 2026-08-12): press the selected
+ * track's (or group's) ● from the keyboard. Stop is SELECTION-PROOF —
+ * if anything is recording anywhere, R stops it all (one engine call on
+ * the root: the selection may have changed mid-take, and a stop that
+ * silently no-ops while tape rolls is the worst failure mode). With
+ * nothing hot, R records the selected lane; with no selection and
+ * exactly one top-level lane, that lane (the scratch-track journey
+ * needs no click at all: ＋ Track → R). */
+async function onRecordKey(selectedId) {
+    const anyHot = [...lastNodesById.values()].some(isHotClip);
+    if (anyHot) {
+        if (lastRootId) await callNative('stopRecordingInNode', lastRootId);
+        setLogLine('Stopped recording');
+        return;
+    }
+    let id = selectedId && lastNodesById.has(selectedId) ? selectedId : null;
+    if (!id) {
+        const top = [...lastNodesById.values()].filter(n => !findParentIn(n));
+        if (top.length === 1) id = top[0].id;
+    }
+    if (!id) {
+        setLogLine('Select a track to record (R)');
+        return;
+    }
+    await onArm({ id });
 }
 
 function findStackIn(nodes, id) {
@@ -745,6 +772,7 @@ function initApp() {
         onSetEffectParam: (id, fx, param, value) =>
             callNative('setEffectParam', id, fx, param, value),
         onArm,
+        onRecordKey,
     });
     wireStatusStrip();
     // Master fader → the island root's output-stage gain (stacks apply

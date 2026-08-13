@@ -694,7 +694,9 @@ void ClipNode::startRecording(int64_t through_map_commit_cycle) {
   rootNode()->takeArmed();
 }
 
-void ClipNode::stopRecording() {
+void ClipNode::stopRecording() { stopRecording(getEffectiveQuantum() > 0); }
+
+void ClipNode::stopRecording(bool island_has_quantum) {
   switch (recState()) {
     case RecState::Armed:
       // Never started capturing: stopping an armed clip is a CANCEL —
@@ -708,7 +710,7 @@ void ClipNode::stopRecording() {
       break;
 
     case RecState::Capturing:
-      if (getEffectiveQuantum() > 0) {
+      if (island_has_quantum) {
         // ALWAYS record forward to the next clean boundary (owner
         // ruling). The boundary itself is computed by the AUDIO thread
         // at the top of its next block (see process()) — computing it
@@ -845,6 +847,18 @@ void ClipNode::startPlayback() {
 void ClipNode::stopPlayback() { is_playing.store(false); }
 
 juce::var ClipNode::getWaveform(int num_peaks) const {
+  // D3: the message thread may read clip content ONLY in Idle. A
+  // non-Idle clip has no committed content to draw (no-overdub), and
+  // the UI synthesizes its live picture from currentPeak. The state
+  // load is the publication point: commit stores Idle (seq-cst) after
+  // every capture write, so observing Idle here orders those writes
+  // before our reads — and only the message thread arms, so Idle
+  // cannot flip to Capturing under us. (The old mid-take read was
+  // bounded by write_position — an accidental release/acquire edge the
+  // through-map fold broke: its destinations scatter across [0, C)
+  // while write_position counts HEARD samples, so a bounded read could
+  // overlap an in-flight captureWrite.)
+  if (recState() != RecState::Idle) return juce::Array<juce::var>();
   const juce::AudioBuffer<float>& buffer = *content_.load();
   juce::Array<juce::var> peaks;
   int total_samples = (int)duration_samples;

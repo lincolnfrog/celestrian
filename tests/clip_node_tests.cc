@@ -53,6 +53,13 @@ class ClipNodeTests : public juce::UnitTest {
 
       expectEquals(node.getWritePosition(), 100);
 
+      // Mid-take the buffer is unreadable from the message thread (the
+      // D3 gate — this line previously pinned the racy read); commit
+      // publishes it.
+      expect(node.getWaveform(1).getArray()->isEmpty(),
+             "no peaks while capturing (D3 gate)");
+      node.stopRecording();  // no Q → immediate commit
+
       // Verify peek
       auto waveform = node.getWaveform(1);
       expect(waveform.isArray());
@@ -489,6 +496,60 @@ class ClipNodeTests : public juce::UnitTest {
       expect(!c->isAwaitingStop());
       expectEquals(c->duration_samples.load(), (int64_t)500,
                    "committed exactly at nextStopBoundary(300, 1000)");
+    }
+
+    beginTest("D3: getWaveform is gated by the recording state machine");
+    {
+      // The message thread may read clip content only in Idle — the
+      // gate replaces the accidental write_position release/acquire
+      // edge (broken by the through-map fold; see clip_node.cc).
+      const double SR = 1000.0;
+      StackNode parent("Parent");
+      parent.setQuantum(1000, 0);
+
+      auto clip = std::make_unique<ClipNode>("Gate", SR);
+      auto* c = clip.get();
+      parent.addChild(std::move(clip));
+
+      auto peakCount = [](const juce::var& wf) {
+        return wf.getArray() ? wf.getArray()->size() : -1;
+      };
+
+      float in[300];
+      for (int i = 0; i < 300; ++i) in[i] = 0.4f;
+      float* const ins[] = {in};
+      ProcessContext ctx;
+      ctx.num_samples = 50;
+      ctx.is_recording = true;
+      ctx.master_pos = 100;  // target 1000: beyond the near window
+
+      c->startRecording();
+      expectEquals(peakCount(c->getWaveform(8)), 0, "Armed: no peaks");
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(c->isPendingStart(), "still armed after evaluation");
+      expectEquals(peakCount(c->getWaveform(8)), 0,
+                   "Armed (evaluated): no peaks");
+
+      ctx.master_pos = 1000;  // the boundary: capture starts here
+      ctx.num_samples = 300;
+      c->process(ins, nullptr, 1, 0, ctx);  // L = 300
+      expect(c->isRecording(), "capturing");
+      expectEquals(peakCount(c->getWaveform(8)), 0, "Capturing: no peaks");
+
+      c->stopRecording();  // request only; boundary picked on audio thread
+      expect(c->isAwaitingStop());
+      expectEquals(peakCount(c->getWaveform(8)), 0,
+                   "stop requested: no peaks");
+
+      // Boundary = nextStopBoundary(300, 1000) = 500 → commit at L=500.
+      ctx.master_pos = 1300;
+      ctx.num_samples = 200;
+      c->process(ins, nullptr, 1, 0, ctx);
+      expect(!c->isRecording(), "committed");
+      auto wf = c->getWaveform(8);
+      expectEquals(peakCount(wf), 8, "Idle-with-content: peaks published");
+      expectWithinAbsoluteError((float)wf.getArray()->getReference(0), 0.4f,
+                                0.001f, "committed content readable");
     }
 
     beginTest("Take lifecycle: island counter tracks arm/cancel/removal");
