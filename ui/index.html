@@ -83,10 +83,13 @@
                 <div id="lanes"></div>
                 <div id="playhead"></div>
             </div>
-            <!-- Rarely seen: the app always boots into a template
-                 (docs/projects.md launch ritual). Only reachable by
-                 deleting every track. -->
-            <div id="empty-state">Session cleared — ＋ Track to start again.</div>
+            <!-- The BOOT state since Q17 (boot empty — the launch
+                 ritual is retired): no message needed, the ＋ Track
+                 row below is the whole story (owner call 2026-08-13:
+                 "just having a + button is pretty clear"). The element
+                 survives as the zero-lanes marker the shell toggles
+                 and the e2e specs assert on. -->
+            <div id="empty-state"></div>
             <!-- Keep in lockstep with index_test.html — the harness binds
                  the same IDs (initSessionView); see that file for the
                  2026-07-21 crash story when create-row landed only here. -->

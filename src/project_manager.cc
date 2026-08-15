@@ -2,6 +2,7 @@
 
 #include "audio_engine.h"
 #include "session_io.h"
+#include "track_template.h"
 
 namespace celestrian {
 
@@ -117,35 +118,12 @@ juce::String ProjectManager::lastTemplateName() const {
   return v.getProperty("lastTemplate", "").toString();
 }
 
-void ProjectManager::ensureLaunchSession() {
-  if (autoLoadLastTemplate()) return;
-  if (engine_.islandCommittedClipCount() > 0) return;  // already loaded
-  // First run: one track, ready to record — then persist it as the
-  // "Default" template so every later boot (and the user's edits to
-  // their setup, saved over it) follow the same path.
-  engine_.createNode("clip", "");
-  const juce::var s = engine_.getGraphState();
-  if (auto* nodes = s.getProperty("nodes", juce::var()).getArray()) {
-    if (nodes->size() > 0) {
-      engine_.renameNode(nodes->getFirst().getProperty("id", "").toString(),
-                         "Track 1");
-    }
-  }
-  saveAsTemplate("Default");
-}
-
-bool ProjectManager::autoLoadLastTemplate() {
-  if (engine_.islandCommittedClipCount() > 0) return false;  // not empty
-  const auto name = lastTemplateName();
-  if (name.isEmpty()) return false;
-  if (!templatesRoot()
-           .getChildFile(name)
-           .getChildFile("session.json")
-           .existsAsFile()) {
-    return false;  // remembered template no longer on disk
-  }
-  return newFromTemplate(name);
-}
+// (ensureLaunchSession + autoLoadLastTemplate were RETIRED by Q17,
+// 2026-08-13: the app boots EMPTY. The seeded "Track 1" / auto-loaded
+// "Default" launch ritual is superseded by the creation menu — every +
+// is a template picker, and `R` on an empty project creates + arms the
+// default track, so the spark still costs one gesture. Session
+// templates remain an explicit save-as / new-from choice.)
 
 bool ProjectManager::saveAsTemplate(const juce::String& template_name) {
   const auto name = template_name.trim();
@@ -156,8 +134,65 @@ bool ProjectManager::saveAsTemplate(const juce::String& template_name) {
   opts.strip_performances = true;
   const bool ok =
       engine_.saveSessionTo(templatesRoot().getChildFile(name), opts);
-  if (ok) rememberLastTemplate(name);  // your newest rig is the default
+  if (ok) rememberLastTemplate(name);  // bookkeeping (Q17: no auto-load)
   return ok;
+}
+
+// --- Track templates (Q17 — the Q7 companion) ------------------------
+
+juce::File ProjectManager::trackTemplatesRoot() const {
+  auto d = base().getChildFile("TrackTemplates");
+  d.createDirectory();
+  return d;
+}
+
+bool ProjectManager::saveTrackTemplate(const juce::String& name,
+                                       const juce::String& uuid) {
+  const auto trimmed = name.trim();
+  const auto legal = juce::File::createLegalFileName(trimmed);
+  if (trimmed.isEmpty() || legal.isEmpty()) return false;
+  const juce::var node = engine_.captureTrackTemplate(uuid);
+  if (node.isVoid()) return false;
+  auto* o = new juce::DynamicObject();
+  o->setProperty("version", 1);  // additive format: absent keys = defaults
+  o->setProperty("name", trimmed);
+  o->setProperty("node", node);
+  return trackTemplatesRoot()
+      .getChildFile(legal + ".json")
+      .replaceWithText(juce::JSON::toString(juce::var(o), false));
+}
+
+std::vector<ProjectManager::TrackTemplateInfo>
+ProjectManager::listTrackTemplates() const {
+  std::vector<TrackTemplateInfo> out;
+  auto files = trackTemplatesRoot().findChildFiles(juce::File::findFiles,
+                                                   false, "*.json");
+  files.sort();
+  for (const auto& f : files) {
+    const auto v = juce::JSON::parse(f.loadFileAsString());
+    const auto node = v.getProperty("node", juce::var());
+    if (node.isVoid()) continue;  // unreadable file: skip, never crash
+    TrackTemplateInfo info;
+    info.name = v.getProperty("name", f.getFileNameWithoutExtension())
+                    .toString();
+    info.kind =
+        node.getProperty("type", "clip").toString() == "stack" ? "group"
+                                                               : "clip";
+    info.tracks = track_templates::countClips(node);
+    out.push_back(std::move(info));
+  }
+  return out;
+}
+
+bool ProjectManager::createFromTrackTemplate(const juce::String& name,
+                                             const juce::String& parent_uuid) {
+  const auto legal = juce::File::createLegalFileName(name.trim());
+  const auto f = trackTemplatesRoot().getChildFile(legal + ".json");
+  if (!f.existsAsFile()) return false;
+  const auto v = juce::JSON::parse(f.loadFileAsString());
+  const auto node = v.getProperty("node", juce::var());
+  if (node.isVoid()) return false;
+  return engine_.insertTrackTemplate(node, parent_uuid);
 }
 
 juce::File ProjectManager::duplicateProject() {

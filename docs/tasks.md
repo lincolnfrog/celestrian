@@ -445,8 +445,59 @@ with kernel.md:
     per-lane scale through the patch layer; renderer tone follows
     ghostness (bright src tiles are warm). Supersedes Q14c clip echo
     rendering. See time_maps.md phase-1-extension-4.
-- [ ] **Track Controls** — Play/Solo/Record buttons; partially done.
-- [ ] **Creation Menu** — contextual node creation; partially done.
+- [x] **Track Controls — close-out (Q16, ruled 2026-08-13)** ✅ done
+  2026-08-13: per-node Play/Stop is SUPERSEDED (one transport + Q10:
+  "play this node" = solo + transport, "stop this node" = mute — no
+  third audibility state). SOLO CANON pinned and implemented:
+  island-wide, ADDITIVE, fractal (I5) — solo moved from the engine's
+  single `soloed_node_uuid` to per-node atomic flags (`is_soloed`,
+  published as `isSoloed`; `soloedId` is gone), resolved per callback
+  from the snapshot (`snapAnySolo` + ancestor walk — no republish, no
+  cached pointer, deleting a soloed node just drops out of the scan);
+  not undoable (mock parity). The old single-solo was EXCLUSIVE — the
+  additive canon is a behavior change, not just a pin.
+  - [x] `tests/solo_tests.cc` names all three properties (+ mute-beats-
+    solo + the no-snapshot fallback) via distinct-amplitude DC clips;
+    twin `ui/js/tests/solo.test.mjs` pins the state contract (per-node
+    additive flags, vm exposure incl. groups, not-undoable).
+  - [x] Vestiges deleted: engine+bridge+protocol+mock `togglePlay`,
+    `ClipNode::stopPlayback`; `is_playing` survives as the internal
+    content-sounds gate only.
+- [x] **Creation Menu = template picker (Q17, ruled 2026-08-13)** ✅
+  done 2026-08-13 — every + opens the SAME menu
+  (`session_view/creation_menu.js`): fixed "Track" default row anchored
+  under the cursor (click-click = bare track), the user's subtree
+  templates below (fetched per open — the input-menu pattern), "Save
+  as template" row when one lane is selected. No "New Box" item —
+  groups stay post-hoc (2026-07-19h) or arrive whole via a group
+  template.
+  - [x] Engine: `src/track_template.h` (capture/build/countClips;
+    structure + names + inputs, additive format) +
+    `AudioEngine::{capture,insert}TrackTemplate` (insert = ONE
+    undoable Edit::Insert) + `ProjectManager::{trackTemplatesRoot
+    (<base>/TrackTemplates — global user-level), saveTrackTemplate,
+    listTrackTemplates, createFromTrackTemplate}`.
+  - [x] Bridge (3 places: main_component + protocol.js + mock) —
+    `listTrackTemplates` / `saveTrackTemplate(uuid,name)` /
+    `createFromTrackTemplate(name,parentUuid?)`; mock twin
+    `mock/track_templates.js`, createFrom in the UNDOABLE set.
+  - [x] Menu UI on all three + affordances (top-level ＋ Track, group
+    rail +, add-row — group entries insert into their group);
+    Escape + outside-press dismissal ride the existing dispatchers.
+  - [x] `R` with an empty project creates + arms the default track
+    (app.js onRecordKey zero-lane case — the one-key spark).
+  - [x] Boot EMPTY: `ensureLaunchSession` + `autoLoadLastTemplate` +
+    `createDefaultSession` deleted (mock boot-ritual too); session
+    templates stay explicit in the projects UI;
+    `lastTemplateName` survives as bookkeeping.
+  - [x] Tests: `tests/track_template_tests.cc` (capture round-trip,
+    fresh-uuid build, ONE-undo insert, PM disk round-trip + junk-file
+    tolerance) + `ui/js/tests/track_templates.test.mjs` (mock twin) +
+    5 e2e specs (menu default click-click; template insert
+    names+routes+undoes-whole; save-from-selection; drum group →
+    group ● arms all (Q7); R-on-empty spark). Suites after: C++ 31
+    suites green (sandbox: stereo_pan env-excluded), JS units 25
+    files green, Playwright 47/47.
 - [ ] **Selective Recording** — record into specific nodes.
 - [x] **Group arm (Q7 ruling)** — ✅ done 2026-08-12: the ENGINE owns
   the cascade — `startRecordingInNode`/`stopRecordingInNode` accept any

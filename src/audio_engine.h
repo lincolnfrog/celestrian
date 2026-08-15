@@ -90,12 +90,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void createNode(const juce::String& type,
                   const juce::String& parent_uuid = "");
 
-  /**
-   * Populates a fresh engine with the default session graph: one stack
-   * containing one empty clip ready for recording. Called by the app shell
-   * on startup; tests construct a bare engine and build their own graph.
-   */
-  void createDefaultSession();
+  // (createDefaultSession was deleted with Q17's boot-empty rule — it
+  // was already call-less after the launch ritual took over, and the
+  // ritual itself is now retired. A fresh engine IS the boot state.)
 
   /**
    * Opens the hardware audio device and registers this engine as its
@@ -131,9 +128,30 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   juce::String combineNodes(const juce::String& dragged_uuid,
                             const juce::String& target_uuid);
 
+  /**
+   * Flips a node's solo flag (Q16 canon: island-wide, additive,
+   * fractal — resolved per callback from the snapshot). Per-node
+   * Play/Stop was deleted with the same ruling: mute/solo + the one
+   * transport ARE the per-node play controls.
+   */
   void toggleSolo(const juce::String& uuid);
-  void togglePlay(const juce::String& uuid);
   void toggleMute(const juce::String& uuid);
+
+  // --- Track templates (design_language.md Q17 — the Q7 companion) ---
+  /**
+   * Captures a node's structure + names + inputs as a template var
+   * (src/track_template.h). Void var when the node is missing or is
+   * the island root (whole-session templates cover that).
+   */
+  juce::var captureTrackTemplate(const juce::String& uuid) const;
+
+  /**
+   * Builds a fresh empty subtree from a template var and inserts it
+   * under `parent_uuid` (empty = the focused stack, i.e. top level) as
+   * ONE undoable edit — a "Drums" group lands, and un-lands, whole.
+   */
+  bool insertTrackTemplate(const juce::var& tpl,
+                           const juce::String& parent_uuid);
 
   /**
    * Deletes a node (and its subtree) — the user-facing verb the undo
@@ -427,12 +445,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int64_t> view_anchor_t_{0};
   std::atomic<bool> view_recording_{false};
 
-  // Message-thread copy for the UI (getGraphState) …
-  juce::String soloed_node_uuid;
-  // … and the resolved pointer the audio thread actually uses. Cleared /
-  // re-resolved on toggleSolo; nodes are never freed while a callback might
-  // read them (see retire()).
-  std::atomic<celestrian::AudioNode*> soloed_node_ptr_{nullptr};
+  // (Solo state lives on the nodes themselves since Q16 — per-node
+  // atomic flags, scanned from the snapshot each callback. No resolved
+  // pointer to cache, nothing to clear on load or delete.)
 
   // Device latencies, cached in audioDeviceAboutToStart so the callback
   // never queries the device object per block.

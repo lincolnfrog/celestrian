@@ -1503,13 +1503,15 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 #create-row button:hover { border-color: var(--tape); color: var(--tape); }
 
-/* Empty state — rarely seen: the app always boots into a template.
-   One dry line, no ceremony. */
+/* The zero-lanes marker — the BOOT state since Q17 (boot empty).
+   Deliberately WORDLESS (owner call 2026-08-13: "just having a +
+   button is pretty clear"), and nearly weightless — the ruler row
+   hides with it (patch.js), so the ＋ Track row sits right up top
+   with no stray hairline or dead air above it. The sliver of padding
+   keeps the non-zero box the e2e visibility pins read. */
 #empty-state {
-    color: var(--text-dim);
     text-align: center;
-    padding: 64px 0;
-    font-size: 0.95rem;
+    padding: 4px 0;
     display: none;
 }
 
@@ -1702,3 +1704,73 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     margin-bottom: 10px;
     letter-spacing: 0.2em;
 }
+
+/* ===== Creation menu (Q17: every + is a template picker) =====
+   A FIXED-position popup anchored so the default "Track" row sits
+   directly under the pointer (click-click = bare track). Same visual
+   vocabulary as .input-menu; z above the rails, below the loading
+   overlay. */
+.creation-menu {
+    position: fixed;
+    z-index: 50;
+    min-width: 220px;
+    max-width: 300px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--panel-2);
+    border: 1px solid var(--btn-border);
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.creation-menu-rest { display: flex; flex-direction: column; gap: 2px; }
+.creation-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 0.78rem;
+    color: var(--text);
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.creation-item:hover { background: var(--lane); }
+/* The default row reads as the anchor: subtly raised, always first. */
+.creation-item.default { background: rgba(255, 255, 255, 0.05); }
+.creation-item.default:hover { background: var(--lane); }
+.creation-item-label { overflow: hidden; text-overflow: ellipsis; }
+.creation-item-meta { font-size: 0.68rem; color: var(--text-dim); }
+.creation-menu-note {
+    padding: 8px 10px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    white-space: normal;
+}
+.creation-menu-sep { border-top: 1px solid var(--line); margin: 4px 0; }
+.creation-save-row { display: flex; gap: 6px; padding: 2px 4px 4px; }
+.creation-save-input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 8px;
+    font-size: 0.75rem;
+}
+.creation-save-btn {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+.creation-save-btn:hover { background: var(--lane); }

@@ -177,13 +177,28 @@ async function onArm(lane) {
  * the root: the selection may have changed mid-take, and a stop that
  * silently no-ops while tape rolls is the worst failure mode). With
  * nothing hot, R records the selected lane; with no selection and
- * exactly one top-level lane, that lane (the scratch-track journey
- * needs no click at all: ＋ Track → R). */
+ * exactly one top-level lane, that lane. With ZERO lanes (Q17: the app
+ * boots empty now), R CREATES + ARMS the default track — the scratch
+ * spark is literally one key: launch → R → recording. */
 async function onRecordKey(selectedId) {
     const anyHot = [...lastNodesById.values()].some(isHotClip);
     if (anyHot) {
         if (lastRootId) await callNative('stopRecordingInNode', lastRootId);
         setLogLine('Stopped recording');
+        return;
+    }
+    // Q17 spark path: empty project → create the default track and arm
+    // it in one gesture (the R canon's no-selection case extended down
+    // to zero lanes).
+    if (lastNodesById.size === 0) {
+        await callNative('createNode', 'clip', '');
+        const st = await callNative('getGraphState');
+        const first = (st && st.nodes && st.nodes[0]) || null;
+        if (first) {
+            lastNodesById = indexNodes(st.nodes);
+            lastRootId = st.id || lastRootId;
+            await onArm({ id: first.id });
+        }
         return;
     }
     let id = selectedId && lastNodesById.has(selectedId) ? selectedId : null;
@@ -728,6 +743,19 @@ function initApp() {
         onMoveToTop,
         onUngroup,
         onAddClip: groupId => callNative('createNode', 'clip', groupId),
+        // Track templates (Q17): the creation menu's data + verbs. The
+        // list is fetched per menu-open (the input-menu pattern — a
+        // fresh save appears without a reload).
+        getTrackTemplates: async () =>
+            parseMaybeJson(await callNative('listTrackTemplates')) || [],
+        onCreateFromTemplate: (name, groupId) =>
+            call('createFromTrackTemplate', [name, groupId || ''],
+                `"${name}" added — named and routed (⌘Z undoes it whole)`,
+                `Template "${name}" failed to load`),
+        onSaveTemplate: (id, name) =>
+            call('saveTrackTemplate', [id, name],
+                `Template "${name}" saved — it's on every + menu now`,
+                'Template save failed'),
         // No confirm: undo is the safety net (edits-as-events).
         onDelete: id => call('deleteNode', [id], 'Deleted — ⌘Z to undo'),
         onRename: (id, name) =>

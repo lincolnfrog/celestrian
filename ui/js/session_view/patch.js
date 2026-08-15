@@ -88,6 +88,11 @@ export function patchSessionView(vm, aux) {
     ctx.laneEls.forEach(row => updateNavDock(row));
 
     ctx.els.emptyState.style.display = vm.lanes.length ? 'none' : 'block';
+    // The ruler row measures LANES — with zero lanes it was just a
+    // stray hairline and 38px of dead air above the + row (owner
+    // report 2026-08-13, the boot-empty follow-up). '' restores the
+    // stylesheet's grid when lanes return.
+    ctx.els.rulerRow.style.display = vm.lanes.length ? '' : 'none';
 
     // The one playhead (I8): a single line from the ruler through the
     // last audio lane — never through the add-track affordance below.

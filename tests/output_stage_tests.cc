@@ -165,7 +165,10 @@ class OutputStageTests : public juce::UnitTest {
       ProcessContext play;
       play.num_samples = 4410;
       play.is_playing = true;
-      play.solo_node = raw;  // the child itself is the solo target
+      // Q16 flags: the child itself is soloed, and the context knows a
+      // solo is lit somewhere.
+      raw->is_soloed.store(true);
+      play.any_solo = true;
       stack.process(nullptr, outs, 0, 2, play);
       expectEquals(std::abs(outL[100]) + std::abs(outR[100]), 0.0f,
                    "muted ancestor silences even a soloed child");

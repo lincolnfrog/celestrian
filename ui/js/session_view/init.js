@@ -12,14 +12,18 @@ import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle, wireNavScroll } from './teleport.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
+import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
+    from './creation_menu.js';
 
 export function initSessionView(callbacks) {
     initCtx(callbacks);
     ctx.els.playBtn.addEventListener('click', () => ctx.cb.onTogglePlay());
     // Creation lives in the CANVAS (2026-07-19g): the persistent row
-    // under the lanes makes tracks/groups; the transport is transport.
+    // under the lanes makes tracks; the transport is transport. Since
+    // Q17 the + opens the TEMPLATE PICKER (default "Track" row under
+    // the cursor — click-click keeps the old one-verb speed).
     document.getElementById('create-track-btn')
-        .addEventListener('click', () => ctx.cb.onAddTrack());
+        .addEventListener('click', e => openCreationMenu(e, ''));
 
     // Selection: Escape or a click on empty canvas clears; the floating
     // bar groups the selection in place.
@@ -65,6 +69,7 @@ export function initSessionView(callbacks) {
     wireZoom();
     wireNavScroll();
     wireMenuDismiss();
+    wireCreationMenuDismiss();
     wireKeyboard();
 }
 
@@ -78,6 +83,7 @@ function wireKeyboard() {
             clearSelection();
             if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
             closeInputMenus();
+            closeCreationMenu();
             return;
         }
         if (e.ctrlKey || e.metaKey || e.altKey) return;

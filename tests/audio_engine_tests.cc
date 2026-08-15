@@ -168,63 +168,38 @@ class AudioEngineTests : public juce::UnitTest {
                    "After reorder back: index 1 should be ClipB");
     }
 
-    beginTest("Playback Controls: TogglePlay/Solo");
+    beginTest("Solo publishes per-node flags (Q16: additive, no soloedId)");
     {
+      // Per-node togglePlay is GONE (Q16: superseded — mute/solo + the
+      // one transport are the per-node play controls); solo publishes
+      // as a per-node `isSoloed` flag, not a single top-level soloedId.
       AudioEngine engine;
+      engine.createNode("clip");
       engine.createNode("clip");
       auto state = engine.getGraphState();
       auto nodesVar = state.getDynamicObject()->getProperty("nodes");
       expect(nodesVar.isArray());
       auto* nodes = nodesVar.getArray();
-      juce::String uuid = (*nodes)[0].getDynamicObject()->getProperty("id");
+      juce::String uuidA = (*nodes)[0].getDynamicObject()->getProperty("id");
+      juce::String uuidB = (*nodes)[1].getDynamicObject()->getProperty("id");
 
-      engine.toggleSolo(uuid);
-      expectEquals(engine.getGraphState()
-                       .getDynamicObject()
-                       ->getProperty("soloedId")
-                       .toString(),
-                   uuid);
+      auto soloedOf = [&](int idx) {
+        return (bool)engine.getGraphState()
+            .getDynamicObject()
+            ->getProperty("nodes")
+            .getArray()
+            ->getReference(idx)
+            .getProperty("isSoloed", false);
+      };
 
-      engine.toggleSolo(uuid);  // Toggle off
-      expect(engine.getGraphState()
-                 .getDynamicObject()
-                 ->getProperty("soloedId")
-                 .toString()
-                 .isEmpty());
-
-      // Toggle Play: First record something so it has duration
-      engine.startRecordingInNode(uuid);
-      // Process some samples to give it length
-      float in[1] = {0.0f};
-      float* const ins[] = {in};
-      celestrian::ProcessContext ctx;
-      ctx.num_samples = 1;
-      ctx.is_recording = true;
-      // We need to bypass the real audio device callback in the engine for this
-      // test or just call engine.audioDeviceIOCallback directly
-      engine.audioDeviceIOCallbackWithContext(
-          ins, 1, nullptr, 0, 1, juce::AudioIODeviceCallbackContext{});
-
-      engine.stopRecordingInNode(uuid);
-
-      auto playState = engine.getGraphState();
-      auto* nodeData = playState.getDynamicObject()
-                           ->getProperty("nodes")
-                           .getArray()
-                           ->getReference(0)
-                           .getDynamicObject();
-      expect(nodeData->getProperty("isPlaying"),
-             "Should be playing after recording stops");
-
-      engine.togglePlay(uuid);
-      auto stopState = engine.getGraphState();
-      auto* nodeDataStop = stopState.getDynamicObject()
-                               ->getProperty("nodes")
-                               .getArray()
-                               ->getReference(0)
-                               .getDynamicObject();
-      expect(!nodeDataStop->getProperty("isPlaying"),
-             "Should NOT be playing after togglePlay");
+      engine.toggleSolo(uuidA);
+      expect(soloedOf(0), "A soloed");
+      engine.toggleSolo(uuidB);  // ADDITIVE: B joins, A stays lit
+      expect(soloedOf(0) && soloedOf(1), "solos sum — never radio-button");
+      engine.toggleSolo(uuidA);  // A off, B still lit
+      expect(!soloedOf(0) && soloedOf(1), "un-solo is per-node too");
+      engine.toggleSolo(uuidB);
+      expect(!soloedOf(0) && !soloedOf(1), "all clear");
     }
 
     // --- LCM Timeline Tests ---

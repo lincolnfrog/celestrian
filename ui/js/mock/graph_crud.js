@@ -202,10 +202,15 @@ function toggleNodeFlag(id, key, { label, stackOnly = false }) {
     console.log(`[MockBackend] ${label}:`, id, '→', node[key]);
 }
 
-export function togglePlay(id) {
-    toggleNodeFlag(id, 'isPlaying', { label: 'Toggle play' });
-}
+// (togglePlay was deleted with Q16: per-node Play/Stop is superseded —
+// mute/solo + the one transport are the per-node play controls. The
+// node's isPlaying survives as the content-sounds gate the engine also
+// publishes; the user verb is gone.)
 
+// Solo canon (Q16): per-node flag — island-wide, ADDITIVE (multiple
+// solos sum), fractal (a soloed stack covers its subtree, resolved
+// engine-side at render). Not undoable (engine parity: a monitoring
+// gesture, absent from UNDOABLE like the mixer knobs).
 export function toggleSolo(id) {
     toggleNodeFlag(id, 'isSoloed', { label: 'Toggle solo' });
 }

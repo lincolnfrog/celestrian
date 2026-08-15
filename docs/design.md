@@ -96,14 +96,14 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Hierarchical Automation**: Automation envelopes applied to a Box act as a global "VCA" or offset for all internal child automation/parameters.
 
 ### 3. Interaction & UI Design
-* **The Plus (+) Button**:
+* **The Plus (+) Button** *(amended per Q17 ruling, 2026-08-13 — every + is a template picker)*:
     - **Contextual Spawning**: Clips and Boxes should spawn near the originating interaction point.
-    - **Stack-Specific (+)**: Every vertical stack has its own `(+)` button anchored to its base. This button adds a new clip to that specific stack.
-    - **Box (+)**: Boxes have a global `(+)` button that spawns new child elements (Clips, Stacks, or smaller Boxes).
-* **Track Controls**: Every node (Clip or Box) has immediate transport controls: 
-    - **Record**: Re-arm or toggle recording state (visible while recording to allow stop).
-    - **Play/Stop**: Toggle playback of the specific node.
-    - **Solo**: Isolate the node's output (muting siblings).
+    - **Stack-Specific (+)**: Every vertical stack has its own `(+)` button anchored to its base. It opens the creation menu; picks insert into that stack.
+    - **One menu everywhere**: every + affordance (top-level, group rail, add-row) opens the SAME template-picker menu — a fixed "Track" default row sits directly under the cursor (click-click = bare empty track), the user's subtree templates listed below. See design_language.md Q17.
+* **Track Controls** *(amended per Q16 ruling, 2026-08-13)*: Every node (Clip or Box) has immediate controls on its rail:
+    - **Record**: the track's ● — arm/record/stop; fractal per Q7 group arm (`R` key rides it).
+    - **Mute / Solo**: these ARE the per-node play controls. Per-node Play/Stop is **superseded** — with one transport and the island looping as a whole (Q10), "play just this node" is solo + transport, and "stop this node" is mute. No third audibility state exists.
+    - **Solo canon**: island-wide (a solo anywhere mutes every non-solo-ancestry leaf in the island), additive (multiple solos sum), fractal (solo on a group solos its subtree).
 * **Grid-Based Arrangement**: New elements snap to a dynamic grid layout, keeping the workspace organized automatically.
 
 * **Automatic Spatiotemporal Scaling (Growing Clips)**: 
@@ -156,10 +156,10 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
     - All clips in a stack share the same X position
     - `anchor_phase` is for audio timing (when the clip triggers during playback), not visual positioning
 
-* **Stack Interaction**: 
-    - **Creation Menu**: A floating **[+]** button at the bottom of the stack allows adding "New Clip" or "New Box". 
-    - **Interaction**: The [+] button is a simple circle that reveals a creation dropdown on click.
-* **Stack Templates**: The user can create a template for a stack and save it to the corpus. Example: the user has a drum kit with 5 microphones. The user can create a template for a drum kit with 5 microphones and save it to the corpus. The user can then create a new drum kit by clicking the [+] button and selecting "Templates" -> "Drum Kit" from the dropdown.
+* **Stack Interaction** *(amended per Q17 ruling, 2026-08-13)*:
+    - **Creation Menu**: the stack's **[+]** opens the template-picker menu — fixed "Track" default row under the cursor, the user's subtree templates below. "New Box" is NOT a menu item: groups stay post-hoc (drag-to-group, 2026-07-19h ruling) or arrive whole via a group template.
+    - **Interaction**: click-click in place = bare empty track; one short travel = a named, input-routed template. Two clicks either way — the template click replaces the rename + input-pick it saves.
+* **Stack Templates** *(ruled 2026-08-13, Q17 — the Q7 companion)*: "Save as template" on any selected track or group writes it to a **global user-level subtree library** (structure + names + input assignments; format additive for fx/gain/pan later). Example: the 5-mic drum kit is saved once; afterwards [+] → "Drums" inserts the whole named, routed 5-track group as one undoable edit, and the group's ● records all five (Q7).
     
 
 ### 7. Playback & Focus Logic

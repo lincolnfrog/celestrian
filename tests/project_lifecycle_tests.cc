@@ -2,7 +2,7 @@
  * Project lifecycle tests (src/project_manager.h — docs/projects.md).
  *
  * Pins the contracts the header documents: tick's mid-take guard,
- * saveNow's ⌘S-births-the-project branch, ensureLaunchSession's
+ * saveNow's ⌘S-births-the-project branch, the boot-empty rule's
  * never-boot-empty ritual, duplicateProject's fork-forward, rename's
  * empty-name fallback, and template listing.
  */
@@ -78,31 +78,26 @@ class ProjectLifecycleTests : public juce::UnitTest {
                    "display name defaults to the serial id");
     }
 
-    beginTest(
-        "ensureLaunchSession(): boots the canonical session and creates a "
-        "Default template");
+    beginTest("boot is EMPTY (Q17): no seeded track, no Default template");
     {
+      // The launch ritual is RETIRED (Q17, 2026-08-13): no seeded
+      // "Track 1", no auto-persisted Default template — the creation
+      // menu (+ = template picker) and R-on-empty own the first
+      // gesture now. A fresh ProjectManager does nothing at boot.
       AudioEngine engine;
       ProjectManager pm(engine);
       pm.setRootForTest(freshTempDir("pl_launch"));
-      pm.ensureLaunchSession();
 
-      // Never boot into an empty screen: one ready, named track.
       const juce::var state = engine.getGraphState();
       auto* nodes = nodesOf(state);
-      expect(nodes != nullptr && nodes->size() == 1,
-             "one track on stage after boot");
-      expectEquals((*nodes)[0].getProperty("name", "").toString(),
-                   juce::String("Track 1"), "the canonical track name");
-
-      expect(pm.templatesRoot()
-                 .getChildFile("Default")
-                 .getChildFile("session.json")
-                 .existsAsFile(),
-             "the Default template is persisted");
-      expectEquals(pm.lastTemplateName(), juce::String("Default"),
-                   "Default is remembered as the launch template");
-      expect(!pm.born(), "still unborn — the seed take dates the project");
+      expect(nodes == nullptr || nodes->size() == 0,
+             "nothing on stage at boot");
+      expect(!pm.templatesRoot()
+                  .getChildFile("Default")
+                  .getChildFile("session.json")
+                  .existsAsFile(),
+             "no auto-created Default template");
+      expect(!pm.born(), "unborn — the seed take dates the project");
     }
 
     beginTest("duplicateProject() forks forward");

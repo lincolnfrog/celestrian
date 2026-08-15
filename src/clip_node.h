@@ -131,14 +131,12 @@ class ClipNode : public AudioNode {
   void stopRecording(bool island_has_quantum);
 
   /**
-   * Starts audio playback from the current read position.
+   * Opens the content-sounds gate (`is_playing`) — the internal flag
+   * commit also sets. NOT a user verb since Q16 (per-node Play/Stop is
+   * superseded); tests use it to make a clip render without a full
+   * record→commit pass.
    */
   void startPlayback();
-
-  /**
-   * Stops audio playback.
-   */
-  void stopPlayback();
 
   RecState recState() const { return (RecState)rec_state_.load(); }
   bool isRecording() const override {

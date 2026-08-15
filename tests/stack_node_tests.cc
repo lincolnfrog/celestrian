@@ -175,22 +175,24 @@ class StackNodeTests : public juce::UnitTest {
       ProcessContext playCtx;
       playCtx.num_samples = 10;
       playCtx.is_playing = true;
-      playCtx.solo_node = nullptr;  // No solo
+      playCtx.any_solo = false;  // no solo lit anywhere
 
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 1.0f) < 0.0001f,
              "Without solo, both clips should play.");
 
-      // Playback with clip1 soloed: should only hear clip1 (0.3)
+      // Playback with clip1 soloed (Q16 flags): only clip1 (0.3)
       for (int i = 0; i < 10; ++i) {
         outL[i] = 0.0f;
         outR[i] = 0.0f;
       }
-      playCtx.solo_node = clip1Ptr;
+      clip1Ptr->is_soloed.store(true);
+      playCtx.any_solo = true;
 
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 0.3f) < 0.0001f,
              "With clip1 soloed, only clip1 should play.");
+      clip1Ptr->is_soloed.store(false);
     }
 
     beginTest("Loop Window: Active Window Applies (collapsed view)");

@@ -43,6 +43,7 @@ export function initCtx(callbacks) {
         readout: document.getElementById('position-readout'),
         qInfo: document.getElementById('q-info'),
         ruler: document.getElementById('ruler'),
+        rulerRow: document.getElementById('ruler-row'),
         lanes: document.getElementById('lanes'),
         playhead: document.getElementById('playhead'),
         emptyState: document.getElementById('empty-state'),

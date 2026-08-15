@@ -607,6 +607,76 @@ baseline and fold frame; windows must not leak into epoch permanence)
 and heard (`heard_cycle_at_arm_` — the fold step, and now the true
 source of each take's `contextCycle`).
 
+### Fourth review round (2026-08-13)
+
+**Q16. What is per-node Play/Stop in a one-transport world?**
+**RESOLVED (2026-08-13) — superseded; solo canon pinned.** design.md
+§3's "Play/Stop: toggle playback of the specific node" predates Q10
+(one active island; global play loops it as a whole) and the prime
+invariant's everything-sounds-together model. In that world, "play
+just this node" *is* solo + transport on, and "stop this node" *is*
+mute — a third per-node play state would be a mute-shaped flag under
+another name (the mock's vestigial `isPlaying`/`togglePlay` is exactly
+that residue; it dies with this ruling). Owner ruled: **superseded** —
+mute/solo plus the one transport ARE the per-node play controls. What
+the checkbox still owes is solo semantics, ruled in the same pass:
+**solo is island-wide** (any solo mutes every leaf without a soloed
+ancestor, anywhere in the island — not just among siblings),
+**additive** (multiple solos sum; never radio-button), and **fractal**
+(solo on a group solos its subtree — I5, the same shape fx/gain/arm
+took). Deserves the group-arm treatment: a C++ invariant test naming
+all three properties, plus the mock twin.
+
+**Q17. What does + create?**
+**RESOLVED (2026-08-13) — every + is a template picker.** Owner, from
+the field flow: *"almost always you will want to create a new track
+and pick a template, even if the template is basically just a named
+input (like Guitar – input 3)."* So the creation menu is not an
+advanced-options escape hatch off a fast path — **templates are the
+path, and the bare empty track is the degenerate template**. This also
+dissolves the apparent tension with post-hoc grouping (2026-07-19h): a
+"Drums" menu item is not an upfront structural decision but a
+*recalled* one — the 5-mic decision was made once and saved; the
+template replays it. Canon:
+
+- **One control, no second button.** Every + affordance (top-level
+  ＋ Track, group rail +, the add-row) opens the SAME menu; group
+  entry points insert into their group. A separate "…" menu button
+  was considered and rejected: its menu would be a strict superset of
+  +, which is the tell that they are one control — splitting one verb
+  across two targets makes every add a which-button decision.
+- **Fixed default under the cursor.** The menu opens with a "Track"
+  row (bare clip, default input) anchored directly under the pointer —
+  click-click in place reproduces today's one-verb behavior. FIXED,
+  not last-used: muscle memory needs the same thing under the cursor
+  every time; an adaptive default sabotages the double-click habit.
+- **Templates listed below** — the user's subtree library (Guitar,
+  Bass, Drums…). Two clicks either way, and the template click
+  *replaces* work rather than adding it: picking "Guitar – input 3"
+  does the rename + input-pick (+ stereo pair) it saves.
+- **Subtree templates (the Q7 companion, now landing).**
+  Save-from-selection: a "Save as template" verb on any track or
+  group. Capture = **structure + names + input assignments** (Q7's
+  canon minimum; the on-disk format stays additive so fx/gain/pan can
+  ride along later without migration). **Global library**, user-level
+  — Guitar follows you into every project; deliberately distinct from
+  projects.md's whole-session templates. A group template ("Drums" →
+  5 named, routed tracks) lands as ONE undoable insert-subtree edit;
+  Q7's group ● then gives arm-all-N for free.
+- **The spark stays one gesture, keyboard-shaped.** With an empty
+  project, `R` creates + arms the default track — the R canon's
+  no-selection case extended down to zero lanes. Launch → R →
+  recording.
+- **Boot empty.** `ensureLaunchSession`'s seeded "Track 1" — and the
+  auto-load-last-session-template behavior built around it — retires.
+  Owner: *"when I am making real music, I'll decide which instrument
+  I am using to form the Q."* Whole-session templates remain an
+  explicit save-as / new-from choice in the projects UI.
+
+End-state journeys: scratch spark = launch → `R` → recording (one
+key); real music = + → Guitar → ● (three clicks, and the track is
+already named and routed).
+
 ---
 
 *Companion: `kernel.md` — the claim that one stored number per clip

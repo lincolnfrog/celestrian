@@ -20,6 +20,19 @@ juce::String projectInfosToJson(
   return juce::JSON::toString(juce::var(arr), true);
 }
 
+juce::String trackTemplatesToJson(
+    const std::vector<celestrian::ProjectManager::TrackTemplateInfo>& infos) {
+  juce::Array<juce::var> arr;
+  for (const auto& i : infos) {
+    auto* o = new juce::DynamicObject();
+    o->setProperty("name", i.name);
+    o->setProperty("kind", i.kind);      // 'clip' | 'group'
+    o->setProperty("tracks", i.tracks);  // "Drums · 5 tracks"
+    arr.add(juce::var(o));
+  }
+  return juce::JSON::toString(juce::var(arr), true);
+}
+
 // ---------------------------------------------------------------------------
 // WebView bridge adapters.
 //
@@ -37,9 +50,16 @@ juce::String projectInfosToJson(
 // release builds is log spam (owner ruling). In release this compiles to
 // nothing. Functional logging (e.g. nativeLog's payload) is separate and
 // stays in all builds.
+//
+// The POLLS are exempt even in DEBUG (owner report 2026-08-13): the
+// 50ms graph poll and the 2s project poll are the UI's heartbeat, not
+// events — tracing them buries every real bridge call under
+// "bridge: getGraphState" spam. Event-shaped calls all still trace.
 void logBridgeCall(const char* name) {
 #if JUCE_DEBUG
-  juce::Logger::writeToLog("bridge: " + juce::String(name));
+  const juce::String n(name);
+  if (n == "getGraphState" || n == "getProjectInfo") return;
+  juce::Logger::writeToLog("bridge: " + n);
 #else
   juce::ignoreUnused(name);
 #endif
@@ -436,12 +456,36 @@ MainComponent::MainComponent()
                                         return true;
                                       },
                                       juce::var(false)))
-              .withNativeFunction("togglePlay",
-                                  voidCall("togglePlay", 1,
-                                           [this](const auto& args) {
-                                             audio_engine.togglePlay(
-                                                 args[0].toString());
-                                           }))
+              // (togglePlay deleted with Q16: per-node Play/Stop is
+              // superseded — mute/solo + the one transport are the
+              // per-node play controls.)
+              .withNativeFunction(
+                  "listTrackTemplates",
+                  valueCall("listTrackTemplates", 0,
+                            [this](const auto&) {
+                              return trackTemplatesToJson(
+                                  project_manager_.listTrackTemplates());
+                            }))
+              .withNativeFunction(
+                  "saveTrackTemplate",
+                  valueCall("saveTrackTemplate", 2,
+                            [this](const auto& args) {
+                              // (uuid, name) — Q17 save-from-selection
+                              return juce::var(
+                                  project_manager_.saveTrackTemplate(
+                                      args[1].toString(),
+                                      args[0].toString()));
+                            }))
+              .withNativeFunction(
+                  "createFromTrackTemplate",
+                  valueCall("createFromTrackTemplate", 1,
+                            [this](const auto& args) {
+                              return juce::var(
+                                  project_manager_.createFromTrackTemplate(
+                                      args[0].toString(),
+                                      args.size() > 1 ? args[1].toString()
+                                                      : juce::String()));
+                            }))
               .withNativeFunction("toggleSolo",
                                   voidCall("toggleSolo", 1,
                                            [this](const auto& args) {
@@ -501,11 +545,11 @@ MainComponent::MainComponent()
                                              stateFile.getFullPathName());
                   }))) {
   audio_engine.initialiseAudioDevice();
-  // The launch ritual (docs/projects.md): boot into the last template —
-  // or, on first run, build the minimal Default template (one ready
-  // track) and boot into that. Either way: launch → hit record. One
-  // click, never an empty screen.
-  project_manager_.ensureLaunchSession();
+  // Boot EMPTY (Q17, ruled 2026-08-13 — the launch ritual is retired):
+  // the creation menu is the instrument path (+ → Guitar → ●), and `R`
+  // on an empty project creates + arms the default track, so the spark
+  // still costs one gesture. Session templates load on explicit request
+  // via the project menu.
 
   addAndMakeVisible(web_browser);
 

@@ -662,10 +662,12 @@ test('recording lane: excluded from cycle, exposes growing length', () => {
     assert.deepEqual(r.reps, []);
 });
 
-test('solo and mute pass through', () => {
-    const a = clip(4), b = clip(3, { isMuted: true });
-    const vm = deriveViewModel(state([a, b], { soloedId: a.id }));
+test('solo and mute pass through (Q16: per-node additive flags)', () => {
+    const a = clip(4, { isSoloed: true }),
+        b = clip(3, { isMuted: true, isSoloed: true });
+    const vm = deriveViewModel(state([a, b]));
     assert.equal(vm.lanes[0].soloed, true);
+    assert.equal(vm.lanes[1].soloed, true); // additive — both lit at once
     assert.equal(vm.lanes[1].muted, true);
 });
 

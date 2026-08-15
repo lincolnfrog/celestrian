@@ -8,6 +8,7 @@
 #include "rt_log.h"
 #include "stack_node.h"
 #include "timing.h"
+#include "track_template.h"
 
 // (The old scanCommitted lived here; the epoch re-base is now driven by
 // the commit EVENT — StackNode::takeCommitted — not by callback edge
@@ -77,16 +78,7 @@ void AudioEngine::publishGraph() {
 
 void AudioEngine::initialiseAudioDevice() { init(1, 2); }
 
-void AudioEngine::createDefaultSession() {
-  // Create a default stack with one clip ready for recording
-  createNode("stack");
-  if (auto* stack = dynamic_cast<celestrian::StackNode*>(focused_node)) {
-    if (stack->getNumChildren() > 0) {
-      juce::String stack_uuid = stack->getChild(0)->getUuid();
-      createNode("clip", stack_uuid);
-    }
-  }
-}
+// (createDefaultSession deleted — Q17 boot-empty; see the header note.)
 
 AudioEngine::~AudioEngine() {
   device_manager.removeAudioCallback(this);
@@ -849,8 +841,6 @@ bool AudioEngine::loadSession(const juce::String& path) {
   publishGraph();  // the audio thread sees the loaded topology
 
   focused_node = root_node.get();
-  soloed_node_uuid = "";
-  soloed_node_ptr_.store(nullptr);
   clearHistory();  // a loaded session starts with no undo history
 
   juce::Logger::writeToLog("AudioEngine: session loaded from " + path);
@@ -1094,7 +1084,6 @@ void AudioEngine::attachTransportState(juce::DynamicObject& state,
   // `origin` metadata — commit re-bases the epoch (see processBlock),
   // and the UI marking take-vs-ghost tiles needs the re-based value.
   state.setProperty("islandEpoch", (double)islandEpoch());
-  state.setProperty("soloedId", soloed_node_uuid);
   // Master monitor: smoothed output RMS per channel (linear 0..1) —
   // the transport VU section reads these off the state poll.
   state.setProperty("masterVuL", (double)master_vu_l_.load());
@@ -1169,6 +1158,43 @@ void AudioEngine::createNode(const juce::String& type,
   e.index = target_stack->getNumChildren();  // append
   e.node = std::move(new_node);
   record(std::move(e));
+}
+
+juce::var AudioEngine::captureTrackTemplate(const juce::String& uuid) const {
+  auto* node = const_cast<AudioEngine*>(this)->findNodeByUuid(root_node.get(),
+                                                              uuid);
+  // The island root is a session, not a track — that is what
+  // whole-session templates (projects.md) are for.
+  if (node == nullptr || node == root_node.get()) return {};
+  return celestrian::track_templates::capture(*node);
+}
+
+bool AudioEngine::insertTrackTemplate(const juce::var& tpl,
+                                      const juce::String& parent_uuid) {
+  // Same parent resolution as createNode: explicit parent, else the
+  // focused stack (the island root in the single-level flow).
+  celestrian::StackNode* target_stack = nullptr;
+  if (!parent_uuid.isEmpty()) {
+    target_stack = dynamic_cast<celestrian::StackNode*>(
+        findNodeByUuid(root_node.get(), parent_uuid));
+  } else {
+    target_stack = dynamic_cast<celestrian::StackNode*>(focused_node);
+  }
+  if (!target_stack) return false;
+
+  auto built =
+      celestrian::track_templates::build(tpl, cached_sample_rate_.load());
+  if (!built) return false;
+
+  built->setParent(target_stack);
+  // ONE undoable insert (Q17): a group template lands whole — 5 named,
+  // routed tracks arrive and depart the undo log as a single edit.
+  celestrian::Edit e(celestrian::Edit::Kind::Insert);
+  e.parentUuid = target_stack->getUuid();
+  e.index = target_stack->getNumChildren();  // append
+  e.node = std::move(built);
+  record(std::move(e));
+  return true;
 }
 
 void AudioEngine::renameNode(const juce::String& uuid,
@@ -1792,7 +1818,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       pc.input_latency = cached_input_latency_.load();
       pc.output_latency = cached_output_latency_.load();
     }
-    pc.solo_node = soloed_node_ptr_.load();
+    // Solo canon (Q16): one snapshot scan per callback answers "is any
+    // solo lit anywhere?" — leaves then resolve their own ancestry.
+    // (The scan happens below once `snap` is loaded.)
     // Cycle-top of the island frame — loop-window time-maps phase off
     // this (time_maps.md); windowed stacks re-base it for their children.
     pc.cycle_epoch = islandEpoch();
@@ -1801,6 +1829,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // context instead of walking parents.
     pc.snap = graph_snapshot_.load(std::memory_order_acquire);
     pc.self = 0;
+    pc.any_solo = pc.snap ? celestrian::snapAnySolo(*pc.snap) : false;
     pc.quantum = root_node->getQuantum();
     pc.island_epoch = pc.cycle_epoch;
     pc.island = root_node.get();
@@ -2119,32 +2148,27 @@ void AudioEngine::audioDeviceStopped() {
 }
 
 void AudioEngine::toggleSolo(const juce::String& uuid) {
-  if (soloed_node_uuid == uuid) {
-    soloed_node_uuid = "";  // Unsolo
-    soloed_node_ptr_.store(nullptr);
-  } else {
-    auto* node = findNodeByUuid(root_node.get(), uuid);
-    soloed_node_uuid = node ? uuid : juce::String();
-    soloed_node_ptr_.store(node);
+  // Solo canon (Q16, ruled 2026-08-13): per-node flag — island-wide,
+  // ADDITIVE (multiple solos sum, never radio-button), fractal (a
+  // soloed stack covers its subtree via snapshot ancestry). The audio
+  // thread re-reads the flags every callback, so no republish and no
+  // resolved-pointer cache — deleting a soloed node just removes its
+  // flag from the scan. Not undoable (a monitoring gesture; matches
+  // the mock's UNDOABLE set).
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
+    const bool now = !node->is_soloed.load();
+    node->is_soloed.store(now);
+    juce::Logger::writeToLog("AudioEngine: Solo " +
+                             juce::String(now ? "on" : "off") + " for " +
+                             uuid);
   }
-  juce::Logger::writeToLog("AudioEngine: Solo toggled for " + uuid +
-                           " (Active Solo: " + soloed_node_uuid + ")");
 }
 
-void AudioEngine::togglePlay(const juce::String& uuid) {
-  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
-    if (auto* clip = dynamic_cast<celestrian::ClipNode*>(node)) {
-      if (clip->isPlaying()) {
-        clip->stopPlayback();
-      } else {
-        clip->startPlayback();
-      }
-      juce::Logger::writeToLog(
-          "AudioEngine: Play toggled for " + uuid + " (New State: " +
-          juce::String(clip->isPlaying() ? "true" : "false") + ")");
-    }
-  }
-}
+// (Per-node togglePlay was deleted with Q16: per-node Play/Stop is
+// SUPERSEDED — mute/solo + the one transport are the per-node play
+// controls. ClipNode::is_playing survives as the internal
+// content-sounds gate; the user verb is gone.)
+
 void AudioEngine::toggleMute(const juce::String& uuid) {
   if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     celestrian::Edit e(celestrian::Edit::Kind::Mute);

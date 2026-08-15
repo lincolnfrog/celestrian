@@ -81,20 +81,40 @@ class ProjectManager {
   std::vector<Info> listTemplates() const;
   std::vector<Info> listRecents(int max = 10) const;
 
-  // --- Default template (the Ableton launch ritual) ---
-  /** The last template used or saved, persisted in <base>/state.json. */
+  /** The last session template used or saved, persisted in
+   * <base>/state.json. Bookkeeping only since Q17 (2026-08-13): the
+   * launch ritual (auto-load + the seeded "Track 1" Default template)
+   * is RETIRED — the app boots EMPTY, and session templates are an
+   * explicit new-from choice. Owner: "when I am making real music,
+   * I'll decide which instrument I am using to form the Q." */
   juce::String lastTemplateName() const;
-  /** Launch ritual: with an empty session and a remembered template on
-   * disk, load it — the app boots instrument-ready, zero clicks to
-   * record. Unborn as ever: the seed take dates the project. */
-  bool autoLoadLastTemplate();
 
-  /** Boot: last template if there is one; otherwise build the canonical
-   * minimal session (ONE ready track) and save it as the "Default"
-   * template — from then on the user edits their setup and saves over
-   * it (the Ableton default-set ritual). The app NEVER boots into an
-   * empty screen. */
-  void ensureLaunchSession();
+  // --- Track templates (design_language.md Q17 — the Q7 companion) ---
+  // SUBTREE templates: a track or group's structure + names + inputs,
+  // saved once from the selection and replayed from the creation menu.
+  // A GLOBAL user-level library (they follow the user across projects)
+  // — deliberately distinct from the whole-session templates above.
+  juce::File trackTemplatesRoot() const;
+
+  /** Capture the node as a template file <root>/<name>.json
+   * ({version, name, node} — additive format, see track_template.h).
+   * Overwrites an existing template of the same name (re-saving your
+   * rig is the expected gesture). False if the node is missing/root or
+   * the name sanitizes to nothing. */
+  bool saveTrackTemplate(const juce::String& name, const juce::String& uuid);
+
+  struct TrackTemplateInfo {
+    juce::String name;
+    juce::String kind;  // "clip" | "group"
+    int tracks = 0;     // clip-leaf count ("Drums · 5 tracks")
+  };
+  /** The library, name-sorted (stable menu order beats mtime shuffle). */
+  std::vector<TrackTemplateInfo> listTrackTemplates() const;
+
+  /** Insert a fresh subtree from the named template under parent_uuid
+   * (empty = top level) — ONE undoable edit, engine-side. */
+  bool createFromTrackTemplate(const juce::String& name,
+                               const juce::String& parent_uuid);
 
  private:
   juce::File base() const;

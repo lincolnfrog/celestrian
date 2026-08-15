@@ -227,12 +227,12 @@ function groupArmState(node) {
  * published node. Every lane builder spreads this into its row.
  *
  * @param {Object} node   engine-published node (clip or stack)
- * @param {Object} state  full graph state (only soloedId is read)
+ * @param {Object} state  full graph state (unused here since Q16)
  * @returns {{
  *   id: string,            //  node id
  *   name: string,          //  display name (falls back to id)
  *   muted: boolean,
- *   soloed: boolean,       //  state.soloedId === node.id
+ *   soloed: boolean,       //  per-node isSoloed (Q16: additive flags)
  *   recording: boolean,
  *   awaitingStop: boolean, //  stop requested; engine pads to boundary
  *   armed: boolean,        //  pending start or already recording
@@ -250,7 +250,10 @@ function laneCommon(node, state) {
         id: node.id,
         name: node.name || node.id,
         muted: !!node.isMuted,
-        soloed: state.soloedId === node.id,
+        // Solo canon (Q16): island-wide, ADDITIVE, fractal — the engine
+        // publishes a per-node flag (multiple lanes may be lit at once;
+        // the old single top-level soloedId is gone).
+        soloed: !!node.isSoloed,
         recording: !!node.isRecording,
         // Stop requested; the engine records on to the next boundary
         // (owner ruling 2026-07-10: stops always pad forward)

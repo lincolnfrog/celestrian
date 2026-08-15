@@ -55,19 +55,19 @@ async function loadHarness(page, scenario) {
     await page.goto('/index_test.html');
     await page.waitForSelector('#test-controls', { timeout: 5000 });
     await page.click(`button:has-text("${scenario}")`);
-    // The mock BOOTS a "Track 1" session at module load, and the app's
-    // poll can paint it before (or while) the scenario click lands — so
-    // "a .lane exists" may be the BOOT shell, torn down on the next
-    // tick. Counting or clicking that DOM loses the interaction (the
-    // fold-test flake: `before` read as 1 boot lane, fold click
-    // swallowed by the swap). No scenario names a node "Track 1", so
-    // wait until lanes exist AND the boot lane is gone — one tick
-    // renders the whole scenario VM, so the DOM is then complete.
-    await page.waitForFunction(() => {
-        const lanes = [...document.querySelectorAll('.lane')];
-        return lanes.length > 0 && !lanes.some(l =>
-            l.querySelector('.rail-name')?.textContent === 'Track 1');
-    }, { timeout: 5000 });
+    // The mock boots EMPTY since Q17 (no seeded "Track 1" — the old
+    // boot-lane race is gone with the launch ritual), so lanes existing
+    // means the scenario VM painted; one tick renders it whole.
+    await page.waitForFunction(
+        () => document.querySelectorAll('.lane').length > 0,
+        { timeout: 5000 });
+}
+
+/** Q17: every + opens the creation menu — the fixed "Track" default
+ *  row under the cursor is the old one-verb add. Click-click. */
+async function addDefaultTrack(page, trigger = '#create-track-btn') {
+    await page.locator(trigger).first().click();
+    await page.click('.creation-menu .creation-item.default');
 }
 
 /* ---------- shared page helpers (harness page only: they read the
@@ -878,9 +878,13 @@ test.describe('Session shell (mock mode)', () => {
             { timeout: 5000 });
     });
 
-    test('empty session shows the empty state', async ({ page }) => {
+    test('empty session: wordless empty state, the + row is the story', async ({ page }) => {
         await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
         await expect(page.locator('#empty-state')).toBeVisible();
+        // Q17 boot-empty, owner call 2026-08-13: no "Session cleared"
+        // copy — the ＋ Track affordance alone reads as the invitation.
+        await expect(page.locator('#empty-state')).toHaveText('');
+        await expect(page.locator('#create-track-btn')).toBeVisible();
         await expect(page.locator('.lane')).toHaveCount(0);
     });
 
@@ -899,9 +903,10 @@ test.describe('Session shell (mock mode)', () => {
         await expect(page.locator('#empty-state')).toBeVisible();
 
         // Build the session from the chrome alone — the core journey
-        // (owner ruling 2026-07-19h): ＋ Track, then hit ITS ●. There
-        // is no global record button; the track's ● is the record verb.
-        await page.click('#create-track-btn');
+        // (owner ruling 2026-07-19h, menu per Q17): ＋ Track → the
+        // menu's default row, then hit ITS ●. There is no global
+        // record button; the track's ● is the record verb.
+        await addDefaultTrack(page);
         const clipLane = page.locator('.lane[data-kind="clip"]');
         await expect(clipLane).toHaveCount(1);
         await expect(clipLane.locator('.rail-sub')).toHaveText('empty');
@@ -980,8 +985,8 @@ test.describe('Session shell (mock mode)', () => {
         const groupArm = page.locator('.lane[data-kind="group"] .arm-btn').first();
         await expect(groupArm).toBeDisabled();
 
-        // The modern flow: ＋ Add track, then ITS ●.
-        await page.locator('.lane-add .add-track-row-btn').click();
+        // The modern flow: ＋ Add track → menu default (Q17), then ITS ●.
+        await addDefaultTrack(page, '.lane-add .add-track-row-btn');
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3);
         const fresh = page.locator('.lane[data-kind="clip"]').nth(2);
         await expect(fresh.locator('.arm-btn')).toBeEnabled();
@@ -1004,14 +1009,14 @@ test.describe('Session shell (mock mode)', () => {
         // Build: 1Q committed take, then record a second track past 1Q
         // — through the current chrome (＋ Track + the per-track ●).
         await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
-        await page.click('#create-track-btn');
+        await addDefaultTrack(page);
         await page.locator('.lane[data-kind="clip"] .arm-btn').click();
         await page.evaluate(Q => window.__celestrianTest.advanceBy(Q),
             await mockQ(page));
         await page.locator('.lane[data-kind="clip"] .arm-btn').click();
         await expect(page.locator('.lane[data-kind="clip"] .rep')).toHaveCount(1);
 
-        await page.click('#create-track-btn');
+        await addDefaultTrack(page);
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(2);
         await page.locator('.lane[data-kind="clip"]').nth(1).locator('.arm-btn').click();
         await page.evaluate(Q => window.__celestrianTest.advanceBy(Math.round(1.5 * Q)),
@@ -1062,5 +1067,131 @@ test.describe('Session shell (mock mode)', () => {
         await page.evaluate(id => window.__celestrianTest.callNative('startRecordingInNode', id), clipId);
         await expect(page.locator('.lane[data-kind="group"] .rail-status'))
             .toHaveText(/armed|recording/);
+    });
+});
+
+/* ---------- Creation menu (Q17: every + is a template picker) ----- */
+
+test.describe('Creation menu (Q17)', () => {
+    test.beforeEach(async ({ page }) => {
+        await applyRate(page);
+        await page.goto('/?mock=true');
+        await page.waitForFunction(
+            () => typeof window.__celestrianTest?.loadScenario === 'function',
+            { timeout: 5000 });
+        await page.evaluate(() =>
+            window.__celestrianTest.loadScenario('empty'));
+    });
+
+    /** Seed the library backend-side: a routed Guitar clip template
+     *  and (optionally) a 3-mic Drums group template, without leaving
+     *  graph residue. */
+    const seedTemplates = (page, { drums = false } = {}) =>
+        page.evaluate(async withDrums => {
+            const call = window.__celestrianTest.callNative;
+            const g = await call('createNode', 'clip', '');
+            await call('renameNode', g, 'Guitar');
+            await call('setNodeInput', g, 3);
+            await call('saveTrackTemplate', g, 'Guitar');
+            await call('deleteNode', g);
+            if (withDrums) {
+                const s = await call('createNode', 'stack', '');
+                await call('renameNode', s, 'Drums');
+                for (let i = 0; i < 3; i++) {
+                    const c = await call('createNode', 'clip', s);
+                    await call('renameNode', c, `Mic ${i + 1}`);
+                    await call('setNodeInput', c, i);
+                }
+                await call('saveTrackTemplate', s, 'Drums');
+                await call('deleteNode', s);
+            }
+        }, drums);
+
+    test('click-click in place: the default row makes a bare track', async ({ page }) => {
+        await expect(page.locator('#empty-state')).toBeVisible();
+        await page.click('#create-track-btn');
+        // The menu opens with the FIXED default row (the anchor).
+        const menu = page.locator('.creation-menu');
+        await expect(menu).toBeVisible();
+        await expect(menu.locator('.creation-item.default')).toHaveText(/Track/);
+        await menu.locator('.creation-item.default').click();
+        await expect(page.locator('.creation-menu')).toHaveCount(0);
+        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(1);
+        await expect(page.locator('.lane[data-kind="clip"] .rail-sub'))
+            .toHaveText('empty');
+    });
+
+    test('template insert: named and routed on arrival; ⌘Z undoes it whole', async ({ page }) => {
+        await seedTemplates(page);
+        await page.click('#create-track-btn');
+        // The template row carries its metadata and stamps the track.
+        const row = page.locator('.creation-item', { hasText: 'Guitar' });
+        await expect(row).toBeVisible();
+        await row.click();
+        const lane = page.locator('.lane[data-kind="clip"]');
+        await expect(lane).toHaveCount(1);
+        await expect(lane.locator('.rail-name')).toHaveText('Guitar');
+        // The input chip shows the saved routing (channel 4 = index 3).
+        await expect(lane.locator('.input-btn')).toHaveText(/in 4/);
+        // ONE undo removes the arrival whole.
+        await page.keyboard.press('Control+z');
+        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(0);
+    });
+
+    test('save from selection: the menu grows your library', async ({ page }) => {
+        await addDefaultTrack(page);
+        const lane = page.locator('.lane[data-kind="clip"]');
+        // Name + route the rig, then select its rail.
+        await page.evaluate(async () => {
+            const call = window.__celestrianTest.callNative;
+            const st = await call('getGraphState');
+            await call('renameNode', st.nodes[0].id, 'Keys');
+            await call('setNodeInput', st.nodes[0].id, 1);
+        });
+        await lane.locator('.lane-rail').click();
+        await page.click('#create-track-btn');
+        const input = page.locator('.creation-save-input');
+        await expect(input).toBeVisible();
+        await expect(input).toHaveAttribute('placeholder', /Keys/);
+        await input.fill('Keys');
+        await page.click('.creation-save-btn');
+        await expect(page.locator('.creation-menu')).toHaveCount(0);
+        // Reopen: the saved template is a row now; it stamps a copy.
+        await page.click('#create-track-btn');
+        const row = page.locator('.creation-item', { hasText: 'Keys' });
+        await expect(row).toBeVisible();
+        await row.click();
+        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(2);
+        await expect(page.locator('.lane[data-kind="clip"] .rail-name').nth(1))
+            .toHaveText('Keys');
+    });
+
+    test('drum template: the group lands whole and its ● arms all (Q7)', async ({ page }) => {
+        await seedTemplates(page, { drums: true });
+        await page.click('#create-track-btn');
+        const row = page.locator('.creation-item', { hasText: 'Drums' });
+        await expect(row.locator('.creation-item-meta')).toHaveText('3 tracks');
+        await row.click();
+        await expect(page.locator('.lane[data-kind="group"]')).toHaveCount(1);
+        await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3);
+        // The Q7 payoff: the stamped group's ● records every mic.
+        await page.locator('.lane[data-kind="group"] .arm-btn').click();
+        await expect.poll(() => page.evaluate(async () => {
+            const s = (await window.__celestrianTest.callNative('getGraphState'))
+                .nodes.find(n => n.type === 'stack');
+            return s.nodes.every(c => c.isRecording);
+        })).toBe(true);
+    });
+
+    test('R on an empty project creates + arms the default track (the spark)', async ({ page }) => {
+        await expect(page.locator('#empty-state')).toBeVisible();
+        await page.keyboard.press('r');
+        const lane = page.locator('.lane[data-kind="clip"]');
+        await expect(lane).toHaveCount(1);
+        // First take on an empty island: instant capture — recording.
+        await expect.poll(() => page.evaluate(async () => {
+            const st = await window.__celestrianTest.callNative('getGraphState');
+            return st.nodes.length === 1 && !!st.nodes[0].isRecording;
+        })).toBe(true);
     });
 });

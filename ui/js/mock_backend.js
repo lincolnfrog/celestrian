@@ -34,10 +34,13 @@
 import { interceptUndoableCall, mockUndo, mockRedo } from './mock/undo.js';
 import {
     createNode, deleteNode, renameNode, reorderNode, setNodePosition,
-    combineNodes, togglePlay, toggleSolo, toggleMute, toggleStackExpand,
+    combineNodes, toggleSolo, toggleMute, toggleStackExpand,
     setNodeInput, setNodeInputRight, setNodePan, setNodeGain,
     setPeriodSource,
 } from './mock/graph_crud.js';
+import {
+    saveTrackTemplate, listTrackTemplates, createFromTrackTemplate,
+} from './mock/track_templates.js';
 import { setLoopPoints, setSegments, toggleLoopWindow } from './mock/maps.js';
 import { startRecordingInNode, stopRecordingInNode } from './mock/recording.js';
 import { togglePlayback } from './mock/transport.js';
@@ -116,7 +119,12 @@ export const handlers = {
     // expanded drag fall back to its eased-capture path.
     warpPointer: () => false,
     toggleLoopWindow,
-    togglePlay,
+    // Track templates (Q17): createFrom is UNDOABLE as one step (see
+    // mock/undo.js); save writes the LIBRARY, not the graph. togglePlay
+    // is GONE (Q16: per-node play superseded).
+    listTrackTemplates,
+    saveTrackTemplate,
+    createFromTrackTemplate,
     toggleSolo,
     toggleMute,
     nativeLog: (msg) => { console.log('[JS]', msg); return true; },
@@ -136,8 +144,16 @@ export const handlers = {
  *
  * Unknown methods warn and resolve to null.
  */
+// The POLLS are exempt from the invocation trace (owner report
+// 2026-08-13, C++ bridge parity — logBridgeCall): the 50ms graph poll
+// and the 2s project poll are the heartbeat, not events; tracing them
+// buries every real call. Event-shaped methods all still trace.
+const QUIET_POLLS = new Set(['getGraphState', 'getProjectInfo']);
+
 export async function callNative(method, ...args) {
-    console.log(`[MockBackend] callNative: ${method}`, args);
+    if (!QUIET_POLLS.has(method)) {
+        console.log(`[MockBackend] callNative: ${method}`, args);
+    }
 
     const handler = handlers[method];
     if (!handler) {

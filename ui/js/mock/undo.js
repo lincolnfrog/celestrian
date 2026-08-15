@@ -22,6 +22,10 @@ const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
     'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
     'setSegments', 'setNodeInput', 'setNodeInputRight', 'setPeriodSource',
+    // Q17: a template insert is ONE undoable step — a 5-track group
+    // arrives and departs the undo log whole (engine: single Insert
+    // edit). saveTrackTemplate is a LIBRARY write, deliberately absent.
+    'createFromTrackTemplate',
 ]);
 
 let lastUndoable = { method: null, arg0: null };

@@ -134,12 +134,25 @@ inline int64_t snapEffectiveCycle(const GraphSnapshot& s, int64_t quantum,
   return p > 0 ? timing::lcm(quantum, p) : quantum;
 }
 
-/** Solo audibility: is the entry (or any ancestor) the soloed node?
- * Index walk — replaces the audio-thread parent-pointer chain. */
-inline bool snapIsUnderSolo(const GraphSnapshot& s, int idx,
-                            const AudioNode* solo) {
+/** Solo audibility (Q16 canon — island-wide, additive, fractal): is
+ * the entry, or any ancestor, soloed? Index walk over parent indices —
+ * replaces the audio-thread parent-pointer chain; the per-node flag is
+ * an atomic, so no republish rides a solo toggle. */
+inline bool snapIsUnderSolo(const GraphSnapshot& s, int idx) {
   for (int i = idx; i >= 0; i = s.entries[(size_t)i].parent) {
-    if (s.entries[(size_t)i].node == solo) return true;
+    if (s.entries[(size_t)i].node->is_soloed.load()) return true;
+  }
+  return false;
+}
+
+/** Any solo anywhere in the island (the any_solo context flag): a
+ * per-callback scan of the entry list — entries are tens, not
+ * thousands, and the flags are atomics, so this stays allocation- and
+ * lock-free. Additive by construction: the scan doesn't care how many
+ * solos are lit. */
+inline bool snapAnySolo(const GraphSnapshot& s) {
+  for (const auto& e : s.entries) {
+    if (e.node->is_soloed.load()) return true;
   }
   return false;
 }

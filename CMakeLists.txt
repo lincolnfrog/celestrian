@@ -201,6 +201,8 @@ target_sources(CelestrianTests PRIVATE
     tests/one_shot_tests.cc
     tests/callback_edge_tests.cc
     tests/group_arm_tests.cc
+    tests/solo_tests.cc
+    tests/track_template_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc

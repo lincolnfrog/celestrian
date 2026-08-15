@@ -304,19 +304,22 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
     const int64_t dur = map.period();
 
     if (dur > 0) {
-      bool isSilenced = is_muted.load() || (context.solo_node != nullptr);
+      bool isSilenced = is_muted.load() || context.any_solo;
       if (isSilenced && !is_muted.load()) {
-        // Solo audibility: are we (or an ancestor) the soloed node?
-        // Index walk over the whole-graph snapshot — the audio thread
-        // never chases parent pointers (Tier 3 Step 3). The pointer
-        // walk survives only as the unit-test fallback.
+        // Solo audibility (Q16 canon): with any solo lit anywhere in
+        // the island, a leaf sounds iff it — or an ancestor — is
+        // soloed (additive: every lit path sounds; fractal: a soloed
+        // group covers its subtree). Index walk over the whole-graph
+        // snapshot — the audio thread never chases parent pointers
+        // (Tier 3 Step 3). The pointer walk survives only as the
+        // unit-test fallback. Mute wins over solo (the container rule
+        // pinned in output_stage_tests).
         if (context.snap) {
-          isSilenced =
-              !snapIsUnderSolo(*context.snap, context.self, context.solo_node);
+          isSilenced = !snapIsUnderSolo(*context.snap, context.self);
         } else {
           const celestrian::AudioNode* curr = this;
           while (curr != nullptr) {
-            if (curr == context.solo_node) {
+            if (curr->is_soloed.load()) {
               isSilenced = false;
               break;
             }
@@ -843,8 +846,8 @@ void ClipNode::startPlayback() {
     is_playing.store(true);
   }
 }
-
-void ClipNode::stopPlayback() { is_playing.store(false); }
+// (stopPlayback was deleted with Q16's togglePlay — nothing closed the
+// gate except the superseded per-node play verb.)
 
 juce::var ClipNode::getWaveform(int num_peaks) const {
   // D3: the message thread may read clip content ONLY in Idle. A

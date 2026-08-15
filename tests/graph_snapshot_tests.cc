@@ -51,10 +51,20 @@ class GraphSnapshotTests : public juce::UnitTest {
       expect(snap->entries[(size_t)bi].node == b, "inner's child is B");
       expectEquals(snap->entries[(size_t)bi].parent, ii, "B's parent is inner");
 
-      // Solo ancestry: B is under inner and root, not under A.
-      expect(snapIsUnderSolo(*snap, bi, in), "B under soloed inner");
-      expect(snapIsUnderSolo(*snap, bi, &root), "B under soloed root");
-      expect(!snapIsUnderSolo(*snap, bi, a), "B NOT under soloed A");
+      // Solo ancestry (Q16 flags): B is under inner and root, not A —
+      // and the any-solo scan sees a flag anywhere in the island.
+      expect(!snapAnySolo(*snap), "no solo lit yet");
+      in->is_soloed.store(true);
+      expect(snapAnySolo(*snap), "any-solo scan sees inner");
+      expect(snapIsUnderSolo(*snap, bi), "B under soloed inner");
+      in->is_soloed.store(false);
+      root.is_soloed.store(true);
+      expect(snapIsUnderSolo(*snap, bi), "B under soloed root");
+      root.is_soloed.store(false);
+      a->is_soloed.store(true);
+      expect(!snapIsUnderSolo(*snap, bi), "B NOT under soloed A");
+      expect(snapIsUnderSolo(*snap, ai), "A is under its own solo");
+      a->is_soloed.store(false);
     }
 
     beginTest("snapshot-space cycle math agrees with the node-side math");

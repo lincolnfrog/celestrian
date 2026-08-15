@@ -13,11 +13,10 @@
  * shape (1Q + 3Q, LCM 3Q, a take 2.5Q in) at any rate.
  */
 
-import { state, findNode } from './state.js';
+import { state } from './state.js';
 import { clearUndoHistory } from './undo.js';
 import { transport, DEFAULT_SAMPLES_PER_TICK } from './transport.js';
 import { recView } from './recording.js';
-import { createNode } from './graph_crud.js';
 import { quantumSamples } from './rate.js';
 
 /** Clip fixture factory: the invariant base every scenario clip shares
@@ -480,14 +479,9 @@ export function loadScenario(name) {
     }
 }
 
-// Initialize with the launch-ritual boot (ProjectManager parity,
-// docs/projects.md): the app never boots empty — one ready track.
-// Tests reset with loadScenario(...) as ever.
+// Boot EMPTY (Q17 parity, ruled 2026-08-13 — the launch ritual is
+// retired): the creation menu is the instrument path and `R` on an
+// empty project creates + arms the default track, so no seeded
+// "Track 1" and no auto-loaded template. Tests reset with
+// loadScenario(...) as ever.
 loadScenario('empty');
-{
-    const bootId = createNode('clip', '');
-    const boot = findNode(bootId) ||
-        (state.nodes[0] && state.nodes[0].type === 'clip' ? state.nodes[0] : null);
-    if (boot) boot.name = 'Track 1';
-    clearUndoHistory();  // boot setup is not a user action
-}

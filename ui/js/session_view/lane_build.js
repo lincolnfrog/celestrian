@@ -11,6 +11,7 @@ import { selection, clearSelection, toggleSelect } from './selection.js';
 import { buildGainDial, buildPanDial } from './dials.js';
 import { buildNavDock } from './teleport.js';
 import { toggleInputMenu } from './input_menu.js';
+import { openCreationMenu } from './creation_menu.js';
 import { buildFxRow } from './fx_row.js';
 
 /**
@@ -28,15 +29,17 @@ export function buildLane(lane) {
     // Synthetic effects-panel row (built once; values patch in place)
     if (lane.kind === 'fx') return buildFxRow(row, lane);
 
-    // Synthetic add-track row at the bottom of an open group
+    // Synthetic add-track row at the bottom of an open group. Since
+    // Q17 the + opens the creation menu (template picker) targeting
+    // this group — click-click on the default row keeps the old speed.
     if (lane.kind === 'add') {
         row.classList.add('lane-add');
         row.dataset.depth = String(Math.min(lane.depth, 2));
         const spacer = document.createElement('div');
         const btn = el('button', 'add-track-row-btn', {
             textContent: '+ Add track',
-            title: 'Add an empty track to this group' });
-        btn.addEventListener('click', () => ctx.cb.onAddClip(lane.groupId));
+            title: 'Add a track to this group — templates on the menu' });
+        btn.addEventListener('click', e => openCreationMenu(e, lane.groupId));
         row.append(spacer, btn);
         return row;
     }
@@ -196,8 +199,10 @@ export function buildLane(lane) {
 
     if (lane.kind === 'group') {
         const add = el('button', 'rail-btn add-clip-btn', {
-            textContent: '+', title: 'Add a track to this group' });
-        add.addEventListener('click', () => ctx.cb.onAddClip(lane.id));
+            textContent: '+',
+            title: 'Add a track to this group — templates on the menu' });
+        // Q17: the + opens the creation menu targeting this group.
+        add.addEventListener('click', e => openCreationMenu(e, lane.id));
         foot.appendChild(add);
     }
 

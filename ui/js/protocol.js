@@ -25,7 +25,7 @@ export const BRIDGE_METHODS = [
     { name: 'stopRecordingInNode', params: ['uuid'] },
 
     // State
-    { name: 'getGraphState', params: [], returns: 'GraphState (focused node metadata tree + isPlaying/masterPos/soloedId/masterVuL/masterVuR)' },
+    { name: 'getGraphState', params: [], returns: 'GraphState (focused node metadata tree + isPlaying/masterPos/masterVuL/masterVuR; per-node isSoloed since Q16)' },
     { name: 'getWaveform', params: ['uuid', 'numPeaks'], returns: 'float[] peaks' },
     { name: 'dumpStateToFile', params: ['json'] },
 
@@ -65,8 +65,18 @@ export const BRIDGE_METHODS = [
     { name: 'saveAsTemplate', params: ['name'], returns: 'true on success' },
     { name: 'duplicateProject', params: [], returns: 'new project id or ""' },
 
-    // Per-node audio state
-    { name: 'togglePlay', params: ['uuid'] },
+    // Track templates (design_language.md Q17 — the Q7 companion):
+    // SUBTREE templates — a track or group's structure + names + input
+    // assignments, saved once from the selection and replayed from the
+    // creation menu. A GLOBAL user-level library, distinct from the
+    // whole-session templates above. Insert is ONE undoable edit.
+    { name: 'listTrackTemplates', params: [], returns: 'JSON [{name, kind: "clip"|"group", tracks}]' },
+    { name: 'saveTrackTemplate', params: ['uuid', 'name'], returns: 'true on success' },
+    { name: 'createFromTrackTemplate', params: ['name', 'parentUuid?'], returns: 'true on success' },
+
+    // Per-node audio state. (togglePlay was deleted with Q16: per-node
+    // Play/Stop is superseded — mute/solo + the one transport are the
+    // per-node play controls. Solo is per-node, additive, fractal.)
     { name: 'toggleSolo', params: ['uuid'] },
     { name: 'toggleMute', params: ['uuid'] },
     { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples'] },

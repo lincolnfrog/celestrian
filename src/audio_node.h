@@ -33,10 +33,12 @@ struct ProcessContext {
   int input_latency = 0;
   int output_latency = 0;
 
-  // Solo state: resolved once by the engine on the message thread.
-  // Null when nothing is soloed. Nodes compare pointers (never strings)
-  // and walk their ancestor chain to honor soloed containers.
-  const AudioNode* solo_node = nullptr;
+  // Solo canon (Q16): true when ANY node in the island is soloed —
+  // computed once per callback from the snapshot's per-node atomic
+  // flags (additive: solos sum; island-wide: a solo anywhere silences
+  // every leaf without a soloed ancestor; fractal: leaves resolve
+  // ancestry through the snapshot's parent indices).
+  bool any_solo = false;
 
   // The received frame's cycle top (time_maps.md): the engine sets this
   // to the island epoch; a stack with an ACTIVE loop window re-bases it
@@ -256,6 +258,7 @@ class AudioNode {
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
     obj->setProperty("isMuted", (bool)is_muted.load());
+    obj->setProperty("isSoloed", (bool)is_soloed.load());
     obj->setProperty("pan", (double)pan.load());
     obj->setProperty("gain", (double)gain.load());
     // launchPoint is a PROJECTION of origin (kernel.md §2 table):
@@ -539,6 +542,12 @@ class AudioNode {
   // state (§2.3 sanctioned exception).
   mutable dsp::EffectRack fx_;
   std::atomic<bool> is_muted{false};
+  // Solo canon (Q16, ruled 2026-08-13): island-wide, ADDITIVE, fractal.
+  // A per-node flag like mute; the audio thread resolves audibility per
+  // callback from the snapshot (any_solo + ancestor scan), so toggling
+  // never republishes structure. Not undoable (a monitoring gesture —
+  // matches the mock's UNDOABLE set).
+  std::atomic<bool> is_soloed{false};
   // Stereo mix position (balance law — see panGains). A MIXER fact like
   // mute, not a musical fact: read by render, edited on the message
   // thread, deliberately not undoable (dial drags would flood the undo
