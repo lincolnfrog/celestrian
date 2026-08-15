@@ -246,13 +246,17 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setPeriodSource(const juce::String& uuid,
                        celestrian::PeriodSource source);
 
-  // Built-in effects (dsp/effects.h): enable/param edits from the UI.
-  // Message thread; prepare() runs before the enable flag flips so the
-  // audio thread never sees an unprepared effect.
-  void setEffectEnabled(const juce::String& uuid, const juce::String& fx,
-                        bool enabled);
-  void setEffectParam(const juce::String& uuid, const juce::String& fx,
-                      const juce::String& key, double value);
+  // The effect chain (dsp/fx_chain.h, docs/vst3.md phase 2): slot-uuid
+  // keyed edits from the UI. Message thread; prepare() runs before the
+  // enable flag flips so the audio thread never sees an unprepared
+  // slot. Enable/param are non-undoable knobs; MOVE is chain structure
+  // and records an undoable Edit (Kind::MoveSlot).
+  void setSlotEnabled(const juce::String& uuid, const juce::String& slot_uuid,
+                      bool enabled);
+  void setSlotParam(const juce::String& uuid, const juce::String& slot_uuid,
+                    const juce::String& key, double value);
+  void moveChainSlot(const juce::String& uuid, const juce::String& slot_uuid,
+                     int new_index);
   /** Panel open/closed: gates ALL scope capture + telemetry for a node. */
   void setEffectScope(const juce::String& uuid, bool active);
 

@@ -50,7 +50,9 @@ import {
     getAudioDeviceState, setAudioDevice, getInputList,
     startLatencyCalibration, getLatencyCalibration,
 } from './mock/devices.js';
-import { setEffectEnabled, setEffectParam, setEffectScope } from './mock/effects.js';
+import {
+    setSlotEnabled, setSlotParam, moveChainSlot, setEffectScope,
+} from './mock/effects.js';
 import {
     getKnownPlugins, scanPlugins, getPluginScanStatus,
 } from './mock/plugins.js';
@@ -111,8 +113,9 @@ export const handlers = {
     setPeriodSource,
     getAudioDeviceState,
     setAudioDevice,
-    setEffectEnabled,
-    setEffectParam,
+    setSlotEnabled,
+    setSlotParam,
+    moveChainSlot,
     setEffectScope,
     startLatencyCalibration,
     getLatencyCalibration,

@@ -22,6 +22,9 @@ const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
     'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
     'setSegments', 'setNodeInput', 'setNodeInputRight', 'setPeriodSource',
+    // Chain STRUCTURE is undoable (docs/vst3.md §6); slot enable/params
+    // stay non-undoable knobs like pan/gain.
+    'moveChainSlot',
     // Q17: a template insert is ONE undoable step — a 5-track group
     // arrives and departs the undo log whole (engine: single Insert
     // edit). saveTrackTemplate is a LIBRARY write, deliberately absent.

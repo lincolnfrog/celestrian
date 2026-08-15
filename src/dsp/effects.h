@@ -9,16 +9,15 @@
 namespace celestrian::dsp {
 
 /**
- * Built-in effects (docs/ui_overhaul.md effects bar; VST3 later).
+ * Built-in effect DSP (docs/ui_overhaul.md effects bar).
  *
- * Design: a FIXED rack of the four canonical effects per node, in
- * canonical signal order EQ → Compressor → Echo → Reverb. "Adding an
- * effect" is enabling a slot. This deliberately avoids a dynamic chain:
- * the audio-thread contract (performance.md §1) then needs no new
- * lock-free collection machinery — every parameter is an atomic, and
- * enable is a flag flip whose buffers were prepared on the message
- * thread beforehand. The dynamic-chain complexity arrives with VST3,
- * which will replace the rack's internals, not its bridge surface.
+ * These four classes are the DSP truth for the built-in effects. They
+ * used to live behind a FIXED per-node rack (EffectRack); the rack was
+ * replaced by the dynamic slot CHAIN in fx_chain.h (docs/vst3.md
+ * phase 2) — exactly the migration the old rack comment predicted
+ * ("the dynamic-chain complexity arrives with VST3"). Slot identity,
+ * ordering, param clamps, and the scope now live there; nothing in
+ * THIS file knows about slots.
  *
  * Every effect has a mono path (process — the historical rack surface)
  * and a stereo path (processStereo, the Mono→Stereo roadmap item):
@@ -64,7 +63,6 @@ class Biquad {
 /** 3-band tone EQ: low shelf @120 Hz, peak @1 kHz, high shelf @6 kHz. */
 class FxEQ {
  public:
-  std::atomic<bool> enabled{false};
   std::atomic<float> low_db{0.0f}, mid_db{0.0f}, high_db{0.0f};
 
   void prepare(double sampleRate);
@@ -83,7 +81,6 @@ class FxEQ {
 /** Feed-forward peak compressor: threshold/ratio/attack/release/makeup. */
 class FxCompressor {
  public:
-  std::atomic<bool> enabled{false};
   std::atomic<float> threshold_db{-18.0f};
   std::atomic<float> ratio{4.0f};         // 1..20
   std::atomic<float> attack_ms{10.0f};    // 0.1..100
@@ -121,7 +118,6 @@ class FxCompressor {
 /** Echo: preallocated delay line; time/feedback/mix. */
 class FxEcho {
  public:
-  std::atomic<bool> enabled{false};
   std::atomic<float> time_s{0.35f};    // 0.05..2.0
   std::atomic<float> feedback{0.35f};  // 0..0.9
   std::atomic<float> mix{0.35f};       // 0..1
@@ -148,7 +144,6 @@ class FxEcho {
 /** Reverb: juce::Reverb (Freeverb — the canonical implementation). */
 class FxReverb {
  public:
-  std::atomic<bool> enabled{false};
   std::atomic<float> size{0.5f};  // 0..1 room size
   std::atomic<float> damp{0.5f};  // 0..1
   std::atomic<float> mix{0.3f};   // 0..1 wet level
@@ -162,80 +157,6 @@ class FxReverb {
   void applyParams();
   std::atomic<bool> dirty_{true};
   juce::Reverb reverb_;
-};
-
-/** The per-node rack: fixed slots, canonical order. */
-class EffectRack {
- public:
-  /** The slot ids, in canonical signal order — the ONE list the bridge
-   * (setEnabled/setParam), the metadata blob, and the save format all
-   * key on. Adding a fifth effect starts here. */
-  static constexpr std::array<const char*, 4> kSlotNames = {"eq", "compressor",
-                                                            "echo", "reverb"};
-
-  FxEQ eq;
-  FxCompressor compressor;
-  FxEcho echo;
-  FxReverb reverb;
-
-  /** Message thread. Idempotent per sample rate; call before enabling. */
-  void prepare(double sampleRate);
-
-  /** Audio thread: in-place, mono. No-op when nothing is enabled. */
-  void process(float* x, int n);
-  /** Audio thread: in-place, stereo (separate per-channel DSP state,
-   * linked compressor). The scope captures the L/R mean. */
-  void processStereo(float* l, float* r, int n);
-
-  bool anyEnabled() const {
-    return eq.enabled.load() || compressor.enabled.load() ||
-           echo.enabled.load() || reverb.enabled.load();
-  }
-  int enabledCount() const {
-    return (eq.enabled.load() ? 1 : 0) + (compressor.enabled.load() ? 1 : 0) +
-           (echo.enabled.load() ? 1 : 0) + (reverb.enabled.load() ? 1 : 0);
-  }
-
-  /** Message thread. Returns false for an unknown effect/param key. */
-  bool setEnabled(const juce::String& fx, bool on);
-  bool setParam(const juce::String& fx, const juce::String& key, double v);
-
-  /** Nested state for getGraphState: { eq: {...}, compressor: {...}, … } */
-  juce::var getMetadata() const;
-
-  /**
-   * SCOPE: pre-rack signal telemetry for the effect visualizations
-   * (docs/ui_overhaul.md effects bar). The audio thread only COPIES the
-   * rack's input into a small ring (single writer, atomic index); all
-   * analysis (the 24-bin Goertzel spectrum) runs on the MESSAGE thread
-   * at poll time inside getMetadata — zero analysis cost on the audio
-   * thread, and a racy ring read only ever smears a visualization.
-   *
-   * GATED on the UI's panel being open (setEffectScope bridge method):
-   * when nobody is looking, the audio thread doesn't even copy. The
-   * ring exists solely for the SPECTRUM — every other display consumes
-   * block peaks; a spectrum cannot be derived from compressed data.
-   */
-  static constexpr int kScopeSize = 2048;   // power of two
-  static constexpr int kSpectrumBins = 24;  // log-spaced 40 Hz..16 kHz
-
-  void setScopeActive(bool on) { scope_on_.store(on); }
-
-  /** The audio thread runs the rack if it has work OR a watcher. */
-  bool isLive() const { return anyEnabled() || scope_on_.load(); }
-
- private:
-  /** Pre-rack scope capture (copy + peak only — analysis stays on the
-   * message thread). `right` may be null (mono); when present the ring
-   * records the L/R mean, which is what the mono-by-design displays
-   * center on. No-op unless a panel is watching. */
-  void captureScope(const float* left, const float* right, int n);
-
-  double prepared_sr_ = 0.0;
-  std::atomic<bool> scope_on_{false};  // panel open somewhere
-  std::vector<float> scope_;           // sized in prepare()
-  std::atomic<int> scope_write_{0};
-  std::atomic<float> in_peak_{0.0f};  // pre-rack block peak
 };
 
 }  // namespace celestrian::dsp

@@ -406,21 +406,29 @@ MainComponent::MainComponent()
                                      ? celestrian::PeriodSource::CONTEXT_CYCLE
                                      : celestrian::PeriodSource::OWN_LENGTH);
                            }))
-              .withNativeFunction("setEffectEnabled",
-                                  voidCall("setEffectEnabled", 3,
+              .withNativeFunction("setSlotEnabled",
+                                  voidCall("setSlotEnabled", 3,
                                            [this](const auto& args) {
-                                             audio_engine.setEffectEnabled(
+                                             audio_engine.setSlotEnabled(
                                                  args[0].toString(),
                                                  args[1].toString(),
                                                  (bool)args[2]);
                                            }))
               .withNativeFunction(
-                  "setEffectParam",
-                  voidCall("setEffectParam", 4,
+                  "setSlotParam",
+                  voidCall("setSlotParam", 4,
                            [this](const auto& args) {
-                             audio_engine.setEffectParam(
+                             audio_engine.setSlotParam(
                                  args[0].toString(), args[1].toString(),
                                  args[2].toString(), (double)args[3]);
+                           }))
+              .withNativeFunction(
+                  "moveChainSlot",
+                  voidCall("moveChainSlot", 3,
+                           [this](const auto& args) {
+                             audio_engine.moveChainSlot(args[0].toString(),
+                                                        args[1].toString(),
+                                                        (int)args[2]);
                            }))
               .withNativeFunction("setEffectScope",
                                   voidCall("setEffectScope", 2,

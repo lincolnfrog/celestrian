@@ -770,7 +770,11 @@ test.describe('Gain dial (volume fader)', () => {
 // compressor / echo / reverb), everything off at load.
 test.describe('Effects rack (built-ins)', () => {
 
-    const clipFx = async page => (await clipState(page)).effects;
+    // Type-keyed view of the published CHAIN (docs/vst3.md phase 2) so
+    // the assertions below stay readable; scope rides alongside.
+    const byType = fx => Object.fromEntries(
+        (fx.chain || []).map(s => [s.type, s]));
+    const clipFx = async page => byType((await clipState(page)).effects);
 
     test('fx chip expands the rack; enable and params round-trip', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
@@ -811,7 +815,7 @@ test.describe('Effects rack (built-ins)', () => {
         await expect(page.locator('.lane-fx')).toHaveCount(1);
 
         await page.locator('.fx-card[data-fx="reverb"] .fx-power').click();
-        await expect.poll(async () => (await stackState(page)).effects.reverb.enabled).toBe(true);
+        await expect.poll(async () => byType((await stackState(page)).effects).reverb.enabled).toBe(true);
         await expect(group.locator('.fx-btn')).toHaveText('fx·1');
     });
 

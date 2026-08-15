@@ -52,13 +52,16 @@ export const EFFECT_SCHEMA = [
     },
 ];
 
+/** Schema lookup by chain-entry type ("eq", "compressor", ...). */
+export function schemaFor(type) {
+    return EFFECT_SCHEMA.find(fx => fx.type === type) || null;
+}
+
 /**
- * Enabled-slot count for a node's published effects state.
- * Currently unimported — kept as the canonical helper for any future
- * "N fx on" badge so callers don't re-derive it from EFFECT_SCHEMA.
+ * Enabled-slot count for a node's published effects state
+ * ({chain: [...]} — docs/vst3.md phase 2).
  */
 export function enabledFxCount(effects) {
-    if (!effects) return 0;
-    return EFFECT_SCHEMA.reduce(
-        (n, fx) => n + (effects[fx.type] && effects[fx.type].enabled ? 1 : 0), 0);
+    if (!effects || !Array.isArray(effects.chain)) return 0;
+    return effects.chain.filter(s => s.enabled).length;
 }

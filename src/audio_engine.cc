@@ -735,6 +735,31 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       node->y_pos.store(e.d2);
       return inv;
     }
+    case K::MoveSlot: {
+      auto* node = find(e.uuid);
+      if (!node) return {};
+      celestrian::dsp::FxChain* chain = node->fxChain();
+      const int from = chain->indexOfSlot(e.s1);
+      const int slot_count = (int)chain->slots().size();
+      const int to = juce::jlimit(0, slot_count - 1, e.index);
+      if (from < 0 || from == to) return {};
+      Edit inv(K::MoveSlot);
+      inv.uuid = e.uuid;
+      inv.s1 = e.s1;
+      inv.index = from;
+      // Successor chain sharing the slot objects (DSP state survives);
+      // publish, then retire the predecessor (D4 — an in-flight render
+      // may read it for <= 2 more callbacks).
+      auto slots = chain->slots();
+      auto moved = slots[(size_t)from];
+      slots.erase(slots.begin() + from);
+      slots.insert(slots.begin() + to, std::move(moved));
+      retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(
+          node->exchangeFxChain(
+              celestrian::dsp::FxChain::makeFromSlots(std::move(slots))
+                  .release())));
+      return inv;
+    }
     case K::Nop:
       return {};
   }
@@ -836,8 +861,9 @@ bool AudioEngine::loadSession(const juce::String& path) {
   // the epoch (wrong); this overrides it with the persisted values.
   root_node->setQuantum(loaded.q_samples, loaded.epoch);
   root_node->is_muted.store(loaded.root_muted);
-  celestrian::session_io::applyEffects(*root_node, loaded.root_effects,
-                                       loaded.sample_rate);
+  celestrian::session_io::applyEffects(
+      *root_node, loaded.root_effects, loaded.sample_rate,
+      [this](celestrian::dsp::FxChain* old) { retireOwned(old); });
   publishGraph();  // the audio thread sees the loaded topology
 
   focused_node = root_node.get();
@@ -1428,28 +1454,44 @@ void AudioEngine::setNodeGain(const juce::String& uuid, double gain) {
 void AudioEngine::prepareEffects(celestrian::AudioNode& node) const {
   double sample_rate = cached_sample_rate_.load();
   if (sample_rate <= 0) sample_rate = kFallbackSampleRate;
-  node.effects().prepare(sample_rate);
+  node.fxChain()->prepare(sample_rate);
+  node.fxScope().prepare(sample_rate);
 }
 
-void AudioEngine::setEffectEnabled(const juce::String& uuid,
-                                   const juce::String& fx, bool enabled) {
+void AudioEngine::setSlotEnabled(const juce::String& uuid,
+                                 const juce::String& slot_uuid, bool enabled) {
   if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
     // Prepare BEFORE the flag flips: the audio thread must never see an
-    // enabled effect whose buffers aren't allocated. Idempotent per rate.
+    // enabled slot whose buffers aren't allocated. Idempotent per rate.
     prepareEffects(*node);
-    if (node->effects().setEnabled(fx, enabled)) {
-      juce::Logger::writeToLog("AudioEngine: effect " + fx + " on " + uuid +
+    if (auto* slot = node->fxChain()->findSlot(slot_uuid)) {
+      slot->enabled.store(enabled);
+      juce::Logger::writeToLog("AudioEngine: slot " + slot_uuid + " (" +
+                               slot->typeId() + ") on " + uuid +
                                (enabled ? " ENABLED" : " DISABLED"));
     }
   }
 }
 
-void AudioEngine::setEffectParam(const juce::String& uuid,
-                                 const juce::String& fx,
-                                 const juce::String& key, double value) {
+void AudioEngine::setSlotParam(const juce::String& uuid,
+                               const juce::String& slot_uuid,
+                               const juce::String& key, double value) {
   if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
-    node->effects().setParam(fx, key, value);
+    if (auto* slot = node->fxChain()->findSlot(slot_uuid)) {
+      slot->setParam(key, value);
+    }
   }
+}
+
+void AudioEngine::moveChainSlot(const juce::String& uuid,
+                                const juce::String& slot_uuid, int new_index) {
+  // Chain STRUCTURE is undoable (docs/vst3.md §6) — unlike the
+  // enable/param knobs, order is an arrangement fact.
+  celestrian::Edit e(celestrian::Edit::Kind::MoveSlot);
+  e.uuid = uuid;
+  e.s1 = slot_uuid;
+  e.index = new_index;
+  record(std::move(e));
 }
 
 void AudioEngine::setEffectScope(const juce::String& uuid, bool active) {
@@ -1459,7 +1501,7 @@ void AudioEngine::setEffectScope(const juce::String& uuid, bool active) {
       // ring exists when the audio thread starts capturing
       prepareEffects(*node);
     }
-    node->effects().setScopeActive(active);
+    node->fxScope().setActive(active);
   }
 }
 

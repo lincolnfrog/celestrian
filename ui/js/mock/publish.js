@@ -10,7 +10,7 @@ import { mapPeriod, mapActive, mapOffset } from '../time_map.js';
 import { state, nodeMap, someNode } from './state.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
-import { defaultEffects } from './effects.js';
+import { ensureEffects } from './effects.js';
 import { getCalibrationSamples } from './devices.js';
 import { getSampleRate, toSeconds } from './rate.js';
 
@@ -46,9 +46,12 @@ export function enrichNodes(nodes) {
         }
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
-        // Effect rack state publishes on EVERY node (engine parity:
-        // AudioNode::getMetadata always carries `effects`)
-        updatedNode.effects = node.effects || defaultEffects();
+        // Effect chain state publishes on EVERY node (engine parity:
+        // AudioNode::getMetadata always carries `effects` = {chain,
+        // scope?}). ensureEffects INSTALLS the default chain on the
+        // node — slot uuids must be STABLE across polls (a fresh chain
+        // per publish would orphan every slot-keyed edit in flight).
+        updatedNode.effects = ensureEffects(node);
         // Mixer + period-source facts publish on EVERY node (engine
         // parity: metadata always carries them; hand-written scenario
         // fixtures predate the fields, so normalize at the boundary).
@@ -60,16 +63,16 @@ export function enrichNodes(nodes) {
         // that breathes with the transport, a peak, and the
         // compressor's theoretical GR.
         const fxs = updatedNode.effects;
+        const comp = (fxs.chain || []).find(s => s.type === 'compressor');
         if (node._scopeOn) {
             const t = toSeconds(state.masterPos);
             const peak = state.isPlaying
                 ? 0.35 + 0.3 * Math.abs(Math.sin(t * 2.1 + 0.4)) : 0;
             let gr = 0;
-            if (fxs.compressor.enabled && peak > 0) {
+            if (comp && comp.enabled && peak > 0) {
                 const peakDb = 20 * Math.log10(peak);
-                const c = fxs.compressor;
-                if (peakDb > c.threshold) {
-                    gr = (peakDb - c.threshold) * (1 - 1 / c.ratio);
+                if (peakDb > comp.threshold) {
+                    gr = (peakDb - comp.threshold) * (1 - 1 / comp.ratio);
                 }
             }
             // Engine parity: a stopped transport is SILENCE — bins near

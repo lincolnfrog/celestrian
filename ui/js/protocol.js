@@ -126,13 +126,15 @@ export const BRIDGE_METHODS = [
         returns: '"" on success, else an error string'
     },
 
-    // Built-in effects (src/dsp/effects.h): a FIXED per-node rack in
-    // canonical order eq → compressor → echo → reverb. State publishes
-    // on every node's metadata as `effects`; these two methods are the
-    // whole edit surface (VST3 later replaces the rack's internals,
-    // not this bridge shape).
-    { name: 'setEffectEnabled', params: ['uuid', 'fx', 'enabled'] },
-    { name: 'setEffectParam', params: ['uuid', 'fx', 'param', 'value'] },
+    // The effect chain (src/dsp/fx_chain.h, docs/vst3.md phase 2): a
+    // dynamic per-node slot chain (built-ins now; VST3 slots in phase
+    // 3). State publishes on every node's metadata as `effects` =
+    // {chain: [{slot, type, enabled, ...params}], scope?}; edits are
+    // keyed by the stable slot uuid. moveChainSlot is UNDOABLE (chain
+    // structure); enable/params are knobs (not undoable, like pan).
+    { name: 'setSlotEnabled', params: ['uuid', 'slotUuid', 'enabled'] },
+    { name: 'setSlotParam', params: ['uuid', 'slotUuid', 'key', 'value'] },
+    { name: 'moveChainSlot', params: ['uuid', 'slotUuid', 'newIndex'] },
     // Panel open/closed: gates the node's scope capture + telemetry —
     // when no panel watches, the audio thread doesn't even copy.
     { name: 'setEffectScope', params: ['uuid', 'active'] },

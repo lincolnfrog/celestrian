@@ -799,11 +799,11 @@ function initApp() {
                 : 'Looping again (⌘Z to undo)');
         },
         onToggleFx,
-        onSetEffectEnabled: (id, fx, enabled) =>
-            call('setEffectEnabled', [id, fx, enabled],
-                `${fx} ${enabled ? 'on' : 'off'}`),
-        onSetEffectParam: (id, fx, param, value) =>
-            callNative('setEffectParam', id, fx, param, value),
+        onSetSlotEnabled: (id, slotUuid, enabled, label) =>
+            call('setSlotEnabled', [id, slotUuid, enabled],
+                `${label || 'fx'} ${enabled ? 'on' : 'off'}`),
+        onSetSlotParam: (id, slotUuid, key, value) =>
+            callNative('setSlotParam', id, slotUuid, key, value),
         onArm,
         onRecordKey,
     });

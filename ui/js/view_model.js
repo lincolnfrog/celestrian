@@ -259,12 +259,12 @@ function laneCommon(node, state) {
         // (owner ruling 2026-07-10: stops always pad forward)
         awaitingStop: !!node.isAwaitingStop,
         armed: !!(node.isPendingStart || node.isRecording),
-        // Built-in effect rack state (published on every node) + the
-        // enabled count for the rail's fx chip
+        // Effect chain state (published on every node as {chain,
+        // scope?} — docs/vst3.md phase 2) + the enabled count for the
+        // rail's fx chip
         effects: node.effects || null,
-        fxCount: node.effects
-            ? ['eq', 'compressor', 'echo', 'reverb']
-                .filter(k => node.effects[k] && node.effects[k].enabled).length
+        fxCount: node.effects && Array.isArray(node.effects.chain)
+            ? node.effects.chain.filter(s => s.enabled).length
             : 0,
         // Mixer facts (published on every node): pan/balance −1..+1 and
         // the volume fader 0..1 (absent = unity — pre-gain states);
@@ -281,7 +281,7 @@ function laneCommon(node, state) {
 }
 
 /**
- * The effects PANEL row for a lane whose rack is expanded (view state:
+ * The effects PANEL row for a lane whose chain is expanded (view state:
  * opts.fxOpen). A synthetic row like the 'add' affordance — the panel
  * itself renders from the owner lane's published effects.
  */

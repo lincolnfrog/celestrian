@@ -399,11 +399,14 @@ test('loopCycleQ: the audible cycle (E-C) — windows shorten it, display stays'
 });
 
 test('effects: fx rows from view state, fxCount on lanes', () => {
+    // Chain shape (docs/vst3.md phase 2): {chain: [{slot, type, ...}]}
     const effects = {
-        eq: { enabled: true, low: 3, mid: 0, high: 0 },
-        compressor: { enabled: false, threshold: -18, ratio: 4, attack: 10, release: 100, makeup: 0 },
-        echo: { enabled: true, time: 0.35, feedback: 0.35, mix: 0.35 },
-        reverb: { enabled: false, size: 0.5, damp: 0.5, mix: 0.3 },
+        chain: [
+            { slot: 's-eq', type: 'eq', enabled: true, low: 3, mid: 0, high: 0 },
+            { slot: 's-comp', type: 'compressor', enabled: false, threshold: -18, ratio: 4, attack: 10, release: 100, makeup: 0 },
+            { slot: 's-echo', type: 'echo', enabled: true, time: 0.35, feedback: 0.35, mix: 0.35 },
+            { slot: 's-verb', type: 'reverb', enabled: false, size: 0.5, damp: 0.5, mix: 0.3 },
+        ],
     };
     const c = clip(2, { effects });
     // No fxOpen: no synthetic rows, but the chip count rides the lane
@@ -415,7 +418,7 @@ test('effects: fx rows from view state, fxCount on lanes', () => {
     const open = deriveViewModel(state([c, clip(1)]), { fxOpen: new Set([c.id]) });
     assert.equal(open.lanes[1].kind, 'fx');
     assert.equal(open.lanes[1].ownerId, c.id);
-    assert.equal(open.lanes[1].effects.echo.mix, 0.35);
+    assert.equal(open.lanes[1].effects.chain.find(s => s.type === 'echo').mix, 0.35);
     assert.equal(open.lanes[2].kind, 'clip'); // the 1Q lane, un-shifted
 });
 

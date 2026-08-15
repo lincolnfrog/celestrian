@@ -2,6 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -87,9 +88,12 @@ BundleInfo readBundleInfo(const juce::File& dir);
 /** Parse a bundle. `ok` is false on any failure (missing/invalid json). */
 LoadedSession load(const juce::File& dir, double device_sample_rate);
 
-/** Replay an fx-params blob (from LoadedSession or a node's) onto a
- * node's rack. getMetadata() keys match setParam() keys, so it is
- * generic. Message thread. */
-void applyEffects(AudioNode& node, const juce::var& blob, double sample_rate);
+/** Rebuild a node's fx chain from a saved chain array (docs/vst3.md
+ * §6; fillParams() keys match setParam() keys, so replay is generic).
+ * Publishes a fresh chain and hands the OLD one to `retire` — pass the
+ * engine reclaimer for a LIVE node (the root on load), or null for a
+ * pre-graph node (deleted inline). Message thread. */
+void applyEffects(AudioNode& node, const juce::var& blob, double sample_rate,
+                  const std::function<void(dsp::FxChain*)>& retire);
 
 }  // namespace celestrian::session_io

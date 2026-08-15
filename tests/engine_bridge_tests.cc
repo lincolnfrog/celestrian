@@ -60,13 +60,30 @@ bool boolProperty(const AudioEngine& engine, const juce::String& uuid,
       .getProperty(property, false);
 }
 
-/** effects.<fx>.<key> from a node's metadata (numeric). */
+/** The chain-entry var of the first slot with `type` in a node's
+ * published effects.chain array; void when absent. */
+juce::var chainEntry(const AudioEngine& engine, const juce::String& uuid,
+                     const juce::String& type) {
+  const juce::var node = nodeVar(engine.getGraphState(), uuid);
+  const juce::var chain = node.getProperty("effects", juce::var())
+                              .getProperty("chain", juce::var());
+  if (auto* entries = chain.getArray()) {
+    for (const auto& entry : *entries)
+      if (entry.getProperty("type", "").toString() == type) return entry;
+  }
+  return {};
+}
+
+/** effects.chain[type].<key> from a node's metadata (numeric). */
 double effectProperty(const AudioEngine& engine, const juce::String& uuid,
                       const juce::String& fx, const juce::Identifier& key) {
-  const juce::var node = nodeVar(engine.getGraphState(), uuid);
-  const juce::var effects = node.getProperty("effects", juce::var());
-  const juce::var slot = effects.getProperty(fx, juce::var());
-  return (double)slot.getProperty(key, -999.0);
+  return (double)chainEntry(engine, uuid, fx).getProperty(key, -999.0);
+}
+
+/** The slot uuid of the first `type` slot (the bridge's addressing). */
+juce::String slotIdOf(const AudioEngine& engine, const juce::String& uuid,
+                      const juce::String& type) {
+  return chainEntry(engine, uuid, type).getProperty("slot", "").toString();
 }
 
 }  // namespace
@@ -262,16 +279,16 @@ class EngineBridgeTests : public juce::UnitTest {
              "redo flipped it again");
     }
 
-    beginTest("setEffectEnabled via the engine prepares before enabling");
+    beginTest("setSlotEnabled via the engine prepares before enabling");
     {
-      // Fresh engine: no device ever started, so the effect prepare must
+      // Fresh engine: no device ever started, so the slot prepare must
       // fall back to kFallbackSampleRate — an unprepared-but-enabled
       // reverb would emit NaNs or crash on the first block.
       AudioEngine engine;
       engine.createNode("clip");
       const juce::String uuid = lastTopLevelId(engine);
 
-      engine.setEffectEnabled(uuid, "reverb", true);
+      engine.setSlotEnabled(uuid, slotIdOf(engine, uuid, "reverb"), true);
       expect(effectProperty(engine, uuid, "reverb", "enabled") != 0.0,
              "metadata shows reverb enabled");
 
@@ -282,32 +299,68 @@ class EngineBridgeTests : public juce::UnitTest {
              "master VU is finite after driving an enabled reverb");
       expect(master_vu_left >= 0.0, "master VU is non-negative (no NaN/junk)");
 
-      // Unknown effect id: a safe no-op (EffectRack::setEnabled returns
-      // false; nothing flips, nothing crashes).
-      engine.setEffectEnabled(uuid, "flanger", true);
+      // Unknown slot uuid: a safe no-op (findSlot returns null; nothing
+      // flips, nothing crashes).
+      engine.setSlotEnabled(uuid, "no-such-slot", true);
       expect(effectProperty(engine, uuid, "reverb", "enabled") != 0.0,
-             "known slots untouched by the unknown-fx call");
-      const juce::var effects = nodeVar(engine.getGraphState(), uuid)
-                                    .getProperty("effects", juce::var());
-      expect(!effects.hasProperty("flanger"),
-             "no phantom slot appears for an unknown fx id");
+             "known slots untouched by the unknown-slot call");
     }
 
-    beginTest("setEffectParam via the engine updates metadata");
+    beginTest("setSlotParam via the engine updates metadata");
     {
       AudioEngine engine;
       engine.createNode("clip");
       const juce::String uuid = lastTopLevelId(engine);
 
-      engine.setEffectParam(uuid, "echo", "time", 0.5);
+      const juce::String echo_slot = slotIdOf(engine, uuid, "echo");
+      engine.setSlotParam(uuid, echo_slot, "time", 0.5);
       expectWithinAbsoluteError(effectProperty(engine, uuid, "echo", "time"),
                                 0.5, 1e-6, "echo time set to 0.5 s");
 
       // Unknown key: a no-op — the known value is unchanged.
-      engine.setEffectParam(uuid, "echo", "wobble", 0.9);
+      engine.setSlotParam(uuid, echo_slot, "wobble", 0.9);
       expectWithinAbsoluteError(effectProperty(engine, uuid, "echo", "time"),
                                 0.5, 1e-6,
                                 "unknown key left the echo time alone");
+    }
+
+    beginTest("moveChainSlot reorders, preserves state, and is undoable");
+    {
+      AudioEngine engine;
+      engine.createNode("clip");
+      const juce::String uuid = lastTopLevelId(engine);
+
+      const juce::String echo_slot = slotIdOf(engine, uuid, "echo");
+      engine.setSlotParam(uuid, echo_slot, "time", 0.5);
+
+      // Move echo (index 2) to the head of the chain.
+      engine.moveChainSlot(uuid, echo_slot, 0);
+      auto typeAt = [&](int i) {
+        const juce::var chain = nodeVar(engine.getGraphState(), uuid)
+                                    .getProperty("effects", juce::var())
+                                    .getProperty("chain", juce::var());
+        return chain[i].getProperty("type", "").toString();
+      };
+      expectEquals(typeAt(0), juce::String("echo"), "echo moved to head");
+      expectEquals(typeAt(1), juce::String("eq"), "eq shifted to index 1");
+      expectWithinAbsoluteError(effectProperty(engine, uuid, "echo", "time"),
+                                0.5, 1e-6,
+                                "slot state survives the reorder");
+      expectEquals(slotIdOf(engine, uuid, "echo"), echo_slot,
+                   juce::String("slot identity survives the reorder"));
+
+      // Undo restores the canonical order; redo re-applies the move.
+      engine.undo();
+      expectEquals(typeAt(0), juce::String("eq"), "undo restores order");
+      expectEquals(typeAt(2), juce::String("echo"), "echo back at index 2");
+      engine.redo();
+      expectEquals(typeAt(0), juce::String("echo"), "redo re-applies move");
+
+      // Degenerate moves are not recorded: same index and unknown slot.
+      engine.undo();  // back to canonical before probing
+      engine.moveChainSlot(uuid, echo_slot, 2);      // already there
+      engine.moveChainSlot(uuid, "no-such-slot", 0); // unknown slot
+      expectEquals(typeAt(2), juce::String("echo"), "no-op moves change nothing");
     }
 
     beginTest(

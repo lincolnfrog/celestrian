@@ -25,13 +25,11 @@ QTime qread(const juce::var& v) {
   return {0, 1};
 }
 
-// The fx params only (drops the scope telemetry getMetadata may attach).
+// The chain array verbatim (docs/vst3.md §6): the chain's metadata IS
+// the save format — [{slot, type, enabled, ...params}] in signal order.
+// (Scope telemetry lives outside the chain and never appears here.)
 juce::var effectsBlob(const AudioNode& node) {
-  const auto meta = node.effects().getMetadata();
-  auto* out = new juce::DynamicObject();
-  for (const char* fx : dsp::EffectRack::kSlotNames)
-    out->setProperty(fx, meta.getProperty(fx, juce::var()));
-  return juce::var(out);
+  return node.fxChain()->getMetadata();
 }
 
 void writeClipWav(const ClipNode& clip, int64_t duration,
@@ -227,7 +225,7 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     delete node->exchangeMapOverride(new timing::TimeMap(m));
   }
   node->setLoopWindowBypassed((bool)o->getProperty("loopBypassed"));
-  applyEffects(*node, o->getProperty("effects"), sr);
+  applyEffects(*node, o->getProperty("effects"), sr, nullptr);
   return node;
 }
 
@@ -248,21 +246,42 @@ BundleInfo readBundleInfo(const juce::File& dir) {
   return out;
 }
 
-void applyEffects(AudioNode& node, const juce::var& blob, double sr) {
-  if (!blob.isObject()) return;
-  node.effects().prepare(sr);
-  for (const char* fx : dsp::EffectRack::kSlotNames) {
-    const auto sub = blob.getProperty(fx, juce::var());
-    if (auto* o = sub.getDynamicObject()) {
-      for (const auto& p : o->getProperties()) {
-        const juce::String key = p.name.toString();
-        if (key == "enabled")
-          node.effects().setEnabled(fx, (bool)p.value);
-        else
-          node.effects().setParam(fx, key, (double)p.value);
-      }
+void applyEffects(AudioNode& node, const juce::var& blob,
+                  double sr, const std::function<void(dsp::FxChain*)>& retire) {
+  // Array form only (owner ruling 2026-08-15, no back-compat): a
+  // non-array blob — including the legacy object form — is IGNORED and
+  // the node keeps its default chain, rather than erroring the load.
+  auto* entries = blob.getArray();
+  if (entries == nullptr || entries->isEmpty()) return;
+
+  std::vector<std::shared_ptr<dsp::FxSlot>> slots;
+  slots.reserve((size_t)entries->size());
+  for (const auto& entry : *entries) {
+    auto* o = entry.getDynamicObject();
+    if (o == nullptr) continue;
+    auto slot =
+        dsp::FxChain::makeBuiltIn(o->getProperty("type").toString());
+    if (slot == nullptr) continue;  // unknown type (forward-tolerant)
+    const juce::String slot_uuid = o->getProperty("slot").toString();
+    if (slot_uuid.isNotEmpty()) slot->setSlotUuid(slot_uuid);
+    slot->prepare(sr);
+    for (const auto& p : o->getProperties()) {
+      const juce::String key = p.name.toString();
+      if (key == "slot" || key == "type") continue;
+      if (key == "enabled")
+        slot->enabled.store((bool)p.value);
+      else
+        slot->setParam(key, (double)p.value);
     }
+    slots.push_back(std::move(slot));
   }
+  if (slots.empty()) return;
+  dsp::FxChain* old =
+      node.exchangeFxChain(dsp::FxChain::makeFromSlots(std::move(slots)).release());
+  if (retire)
+    retire(old);  // live node (the root on load): reclaimer grace
+  else
+    delete old;  // pre-graph node: nothing can be reading it
 }
 
 bool save(const StackNode& root, double device_sample_rate,

@@ -60,6 +60,12 @@ struct Edit {
                    // needs no payload (derived from the clip's window);
                    // the inverse sets b1 with iq = shift, iepoch = the
                    // old duration, restoring buffer view + trim.
+    MoveSlot,      // fx chain reorder (docs/vst3.md §6): s1 = slot
+                   // uuid, index = destination. Applied by building a
+                   // successor chain sharing the slot objects and
+                   // retiring the predecessor (D4); the inverse is a
+                   // MoveSlot back to the old index. Chain STRUCTURE
+                   // is undoable; enable/params stay non-undoable.
   };
   // Effect enable/param edits are deliberately NOT undoable in this pass
   // (non-destructive knobs; slider drags would flood the log without

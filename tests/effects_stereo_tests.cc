@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../src/dsp/effects.h"
+#include "../src/dsp/fx_chain.h"
 
 namespace celestrian {
 
@@ -177,10 +178,10 @@ class EffectsStereoTests : public juce::UnitTest {
       expectLessThan(late_right, early_right, "R tail decays");
     }
 
-    beginTest("Rack processStereo: disabled is bit-identical passthrough");
+    beginTest("Chain processStereo: disabled is bit-identical passthrough");
     {
-      dsp::EffectRack rack;
-      rack.prepare(sample_rate);
+      auto chain = dsp::FxChain::makeDefault();
+      chain->prepare(sample_rate);
       std::vector<float> left(4096), right(4096);
       for (size_t i = 0; i < left.size(); ++i) {
         left[i] = (float)std::sin(0.01 * (double)i);
@@ -188,28 +189,30 @@ class EffectsStereoTests : public juce::UnitTest {
       }
       const std::vector<float> left_reference = left;
       const std::vector<float> right_reference = right;
-      rack.processStereo(left.data(), right.data(), (int)left.size());
-      expect(left == left_reference, "all-disabled rack leaves L untouched");
-      expect(right == right_reference, "all-disabled rack leaves R untouched");
+      chain->processStereo(left.data(), right.data(), (int)left.size());
+      expect(left == left_reference, "all-disabled chain leaves L untouched");
+      expect(right == right_reference,
+             "all-disabled chain leaves R untouched");
     }
 
     beginTest(
-        "Rack processStereo: enabled effect shapes both channels through "
+        "Chain processStereo: enabled effect shapes both channels through "
         "separate state");
     {
-      dsp::EffectRack rack;
-      rack.prepare(sample_rate);
-      expect(rack.setEnabled("echo", true));
-      expect(rack.setParam("echo", "time", 0.05));  // 2205 samples
-      expect(rack.setParam("echo", "mix", 0.8));
-      expect(rack.setParam("echo", "feedback", 0.0));
+      auto chain = dsp::FxChain::makeDefault();
+      chain->prepare(sample_rate);
+      auto* echo_slot = chain->slots()[2].get();
+      echo_slot->enabled.store(true);
+      expect(echo_slot->setParam("time", 0.05));  // 2205 samples
+      expect(echo_slot->setParam("mix", 0.8));
+      expect(echo_slot->setParam("feedback", 0.0));
 
       const int left_impulse_position = 0;
       const int right_impulse_position = 100;
       std::vector<float> left(8192, 0.0f), right(8192, 0.0f);
       left[(size_t)left_impulse_position] = 1.0f;
       right[(size_t)right_impulse_position] = 1.0f;
-      rack.processStereo(left.data(), right.data(), (int)left.size());
+      chain->processStereo(left.data(), right.data(), (int)left.size());
 
       expectWithinAbsoluteError(left[(size_t)(left_impulse_position + 2205)],
                                 0.8f, 0.01f, "L echo lands at L's position");
@@ -222,34 +225,38 @@ class EffectsStereoTests : public juce::UnitTest {
     }
 
     beginTest(
-        "setEnabled/setParam: unknown ids return false, valid ones true; "
+        "slot setParam: unknown ids return false, valid ones true; "
         "params clamp");
     {
-      dsp::EffectRack rack;
-      rack.prepare(sample_rate);
-      expect(!rack.setEnabled("flanger", true), "unknown effect rejected");
-      expect(!rack.setParam("echo", "nonsense", 1.0), "unknown param rejected");
+      auto chain = dsp::FxChain::makeDefault();
+      chain->prepare(sample_rate);
+      expect(dsp::FxChain::makeBuiltIn("flanger") == nullptr,
+             "unknown type rejected");
+      auto* echo_slot = dynamic_cast<dsp::EchoSlot*>(chain->slots()[2].get());
+      auto* comp_slot =
+          dynamic_cast<dsp::CompressorSlot*>(chain->slots()[1].get());
+      expect(!echo_slot->setParam("nonsense", 1.0), "unknown param rejected");
 
-      expect(rack.setParam("compressor", "ratio", 999.0),
-             "valid param accepted");
-      expectWithinAbsoluteError(rack.compressor.ratio.load(), 20.0f, 0.001f,
-                                "ratio clamps to 20");
-      expect(rack.setParam("echo", "time", 99.0));
-      expectWithinAbsoluteError(rack.echo.time_s.load(), 2.0f, 0.001f,
+      expect(comp_slot->setParam("ratio", 999.0), "valid param accepted");
+      expectWithinAbsoluteError(comp_slot->compressor.ratio.load(), 20.0f,
+                                0.001f, "ratio clamps to 20");
+      expect(echo_slot->setParam("time", 99.0));
+      expectWithinAbsoluteError(echo_slot->echo.time_s.load(), 2.0f, 0.001f,
                                 "echo time clamps to 2.0");
-      expect(rack.setParam("echo", "feedback", 5.0));
-      expectWithinAbsoluteError(rack.echo.feedback.load(), 0.9f, 0.001f,
+      expect(echo_slot->setParam("feedback", 5.0));
+      expectWithinAbsoluteError(echo_slot->echo.feedback.load(), 0.9f, 0.001f,
                                 "echo feedback clamps to 0.9");
     }
 
     beginTest(
-        "prepare before enable: enabling echo on an unprepared rack is a safe "
-        "no-op signal path");
+        "prepare before enable: an enabled-but-unprepared echo slot is a "
+        "safe no-op signal path");
     {
       // The documented fail-silent path: an echo whose lines were never
       // allocated must pass audio through untouched, mono and stereo.
-      dsp::FxEcho unprepared_echo;
-      unprepared_echo.enabled.store(true);
+      dsp::EchoSlot unprepared_slot;
+      unprepared_slot.enabled.store(true);
+      dsp::FxEcho& unprepared_echo = unprepared_slot.echo;
 
       std::vector<float> mono(2048);
       for (size_t i = 0; i < mono.size(); ++i) {

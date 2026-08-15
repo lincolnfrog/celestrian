@@ -305,15 +305,24 @@ rulings before phase 5, not before phase 1.
 ## 10. Phase plan
 
 Each phase leaves the build green and shippable; tests named per phase.
+Status: **phases 1 and 2 landed 2026-08-15** (all three test layers
+green); phase 3 is next.
 
-1. **Hosting foundation.** CMake: `JUCE_PLUGINHOST_VST3=1` on Celestrian
+1. **Hosting foundation.** ✅ DONE 2026-08-15.
+    CMake: `JUCE_PLUGINHOST_VST3=1` on Celestrian
    *and* CelestrianTests (juce_audio_processors is already linked into the
    app target; the tests target gains it). PluginHostService: format
    manager, KnownPluginList + XML persistence, background scan with
    dead-man's-pedal blacklist. Bridge: `getKnownPlugins`, `scanPlugins`.
    UI: plugin list in a settings-ish panel (no chain integration yet).
    *Tests:* list persistence round-trip, pedal blacklist logic.
-2. **Dynamic chain refactor (no VST3 in the chain yet).** `FxChain` with
+2. **Dynamic chain refactor (no VST3 in the chain yet).** ✅ DONE
+   2026-08-15 — `dsp::FxChain`/`FxSlot` (fx_chain.h; EffectRack deleted,
+   the four DSP classes untouched), scope split into a stable per-node
+   `FxScope`, `Edit::Kind::MoveSlot` undoable reorder, chain-array save
+   format, slot-uuid bridge (setSlotEnabled/setSlotParam/moveChainSlot),
+   fx panel patched from the chain (cards follow chain order).
+    `FxChain` with
    built-in slots, atomic publish + reclaimer retirement, default
    four-slot chain, array save format (no legacy loader — ruled
    2026-08-15), slot-uuid bridge methods replacing the type-id ones (UI

@@ -5,6 +5,7 @@
 
 #include "../src/clip_node.h"
 #include "../src/dsp/effects.h"
+#include "../src/dsp/fx_chain.h"
 #include "../src/stack_node.h"
 
 namespace celestrian {
@@ -131,42 +132,87 @@ class EffectsTests : public juce::UnitTest {
       expectLessThan(late, early, "tail decays");
     }
 
-    beginTest("Rack: disabled is bit-identical passthrough; order is fixed");
+    beginTest("Chain: disabled is bit-identical passthrough; default order");
     {
-      dsp::EffectRack rack;
-      rack.prepare(sr);
+      auto chain = dsp::FxChain::makeDefault();
+      chain->prepare(sr);
       std::vector<float> x(4096), ref(4096);
       for (size_t i = 0; i < x.size(); ++i) {
         ref[i] = x[i] = (float)std::sin(0.01 * (double)i);
       }
-      rack.process(x.data(), (int)x.size());
-      expect(x == ref, "all-disabled rack is identity");
+      chain->process(x.data(), (int)x.size());
+      expect(x == ref, "all-disabled chain is identity");
 
-      expect(rack.setEnabled("echo", true));
-      expect(rack.setParam("echo", "mix", 0.5));
-      expect(!rack.setEnabled("chorus", false), "unknown effect rejected");
-      expect(!rack.setParam("echo", "flutter", 1.0), "unknown param rejected");
+      // Default chain: the four built-ins in canonical signal order.
+      expectEquals((int)chain->slots().size(), 4);
+      for (size_t i = 0; i < dsp::FxChain::kBuiltInTypes.size(); ++i) {
+        expectEquals(juce::String(chain->slots()[i]->typeId()),
+                     juce::String(dsp::FxChain::kBuiltInTypes[i]));
+      }
+
+      auto* echo_slot = chain->slots()[2].get();
+      echo_slot->enabled.store(true);
+      expect(echo_slot->setParam("mix", 0.5));
+      expect(dsp::FxChain::makeBuiltIn("chorus") == nullptr,
+             "unknown type has no factory");
+      expect(!echo_slot->setParam("flutter", 1.0), "unknown param rejected");
       // Makeup is an output trim: cuts allowed, clamped at −12
-      expect(rack.setParam("compressor", "makeup", -6.0));
-      expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -6.0f, 0.001f,
-                                "negative makeup accepted");
-      rack.setParam("compressor", "makeup", -40.0);
-      expectWithinAbsoluteError(rack.compressor.makeup_db.load(), -12.0f,
-                                0.001f, "makeup clamps at −12");
-      expectEquals(rack.enabledCount(), 1);
-      auto meta = rack.getMetadata();
-      expect((bool)meta.getProperty("echo", {}).getProperty("enabled", false));
+      auto* comp_slot = chain->slots()[1].get();
+      expect(comp_slot->setParam("makeup", -6.0));
+      auto* comp = dynamic_cast<dsp::CompressorSlot*>(comp_slot);
+      expectWithinAbsoluteError(comp->compressor.makeup_db.load(), -6.0f,
+                                0.001f, "negative makeup accepted");
+      comp_slot->setParam("makeup", -40.0);
+      expectWithinAbsoluteError(comp->compressor.makeup_db.load(), -12.0f,
+                                0.001f, "makeup clamps at -12");
+      expectEquals(chain->enabledCount(), 1);
+      auto meta = chain->getMetadata();
+      expect((bool)meta[2].getProperty("enabled", false));
+      expectEquals(meta[2].getProperty("type", "").toString(),
+                   juce::String("echo"));
+      expect(meta[2].getProperty("slot", "").toString().isNotEmpty(),
+             "slot uuid published");
+    }
+
+    beginTest("Chain: slot lookup by uuid; state survives a reorder");
+    {
+      auto chain = dsp::FxChain::makeDefault();
+      chain->prepare(sr);
+      auto* echo_slot = chain->slots()[2].get();
+      const juce::String echo_uuid = echo_slot->slotUuid();
+      echo_slot->setParam("time", 0.05);
+      expect(chain->findSlot(echo_uuid) == echo_slot, "findSlot by uuid");
+      expectEquals(chain->indexOfSlot(echo_uuid), 2);
+      expect(chain->findSlot("nope") == nullptr, "unknown uuid is null");
+
+      // Successor sharing the slots, echo moved to the head: the SAME
+      // slot object (and so its DSP state + params) rides along.
+      auto slots = chain->slots();
+      auto moved = slots[2];
+      slots.erase(slots.begin() + 2);
+      slots.insert(slots.begin(), std::move(moved));
+      auto successor = dsp::FxChain::makeFromSlots(std::move(slots));
+      expectEquals(successor->indexOfSlot(echo_uuid), 0, juce::String("moved"));
+      expect(successor->findSlot(echo_uuid) == echo_slot,
+             "the reorder shares the slot object");
+      auto meta = successor->getMetadata();
+      expectWithinAbsoluteError((double)meta[0].getProperty("time", 0.0), 0.05,
+                                1e-6, "param rode the reorder");
     }
 
     beginTest("Scope telemetry: gated on a watcher; spectrum discriminates");
     {
-      dsp::EffectRack rack;
-      rack.prepare(sr);
-      rack.setEnabled("compressor", true);
-      rack.setParam("compressor", "threshold", -20.0);
-      rack.setParam("compressor", "attack", 1.0);
+      auto chain = dsp::FxChain::makeDefault();
+      dsp::FxScope scope_obj;
+      chain->prepare(sr);
+      scope_obj.prepare(sr);
+      auto* comp_slot = chain->slots()[1].get();
+      comp_slot->setParam("threshold", -20.0);
+      comp_slot->setParam("attack", 1.0);
+      comp_slot->enabled.store(true);
 
-      // Feed a loud LOW sine (100 Hz) through the rack
+      // Feed a loud LOW sine (100 Hz) through capture + chain (the node
+      // fx pass: AudioNode::fxProcess).
       std::vector<float> x(4096);
       for (size_t i = 0; i < x.size(); ++i) {
         x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 100.0 *
@@ -174,41 +220,42 @@ class EffectsTests : public juce::UnitTest {
       }
 
       // NO WATCHER: processing captures nothing, publishes nothing
-      rack.process(x.data(), 2048);
-      expect(!rack.getMetadata().hasProperty("scope"),
+      scope_obj.capture(x.data(), nullptr, 2048);
+      chain->process(x.data(), 2048);
+      expect(scope_obj.metadataVar(0.0f).isVoid(),
              "no scope without a watcher");
 
-      // Panel opens (setEffectScope): capture + telemetry live. A rack
-      // with ZERO enabled slots is still live for capture (isLive) so
-      // the threshold can be lined up before enabling.
-      rack.setScopeActive(true);
-      expect(rack.isLive());
+      // Panel opens (setEffectScope): capture + telemetry live even
+      // with ZERO enabled slots (line up the threshold, then commit).
+      scope_obj.setActive(true);
+      expect(scope_obj.watching());
       for (size_t i = 0; i < x.size(); ++i) {
         x[i] = (float)std::sin(2.0 * juce::MathConstants<double>::pi * 100.0 *
                                (double)i / sr);
       }
-      rack.process(x.data(), 2048);
-      rack.process(x.data() + 2048, 2048);
+      scope_obj.capture(x.data(), nullptr, 2048);
+      chain->process(x.data(), 2048);
+      scope_obj.capture(x.data() + 2048, nullptr, 2048);
+      chain->process(x.data() + 2048, 2048);
 
-      auto meta = rack.getMetadata();
-      auto scope = meta.getProperty("scope", {});
+      auto scope = scope_obj.metadataVar(chain->compressorGainReductionDb());
       expect(scope.isObject(), "scope published while watched");
       auto* spec = scope.getProperty("spectrum", {}).getArray();
-      expect(spec != nullptr && spec->size() == dsp::EffectRack::kSpectrumBins,
+      expect(spec != nullptr && spec->size() == dsp::FxScope::kSpectrumBins,
              "24 spectrum bins");
       // Low bins outweigh high bins for a 100 Hz tone
       const double lowE = (double)(*spec)[2] + (double)(*spec)[3];
       const double highE = (double)(*spec)[20] + (double)(*spec)[21];
       expectGreaterThan(lowE, highE + 0.2, "spectrum sees the low tone");
       expectGreaterThan((double)scope.getProperty("peak", 0.0), 0.5,
-                        "pre-rack peak published");
-      // 0 dBFS into thr −20/ratio 4 → ~15 dB of reduction
+                        "pre-chain peak published");
+      // 0 dBFS into thr -20/ratio 4 -> ~15 dB of reduction
       const double gr = (double)scope.getProperty("gr", 0.0);
       expect(gr > 8.0 && gr < 22.0,
              "gain reduction ~15 dB, got " + juce::String(gr));
     }
 
-    beginTest("Clip playback runs its rack (echo audible in the output)");
+    beginTest("Clip playback runs its chain (echo audible in the output)");
     {
       ClipNode clip("FxClip", sr);
       // Record an impulse-then-silence take of 8820 samples (0.2 s)
@@ -223,11 +270,12 @@ class EffectsTests : public juce::UnitTest {
       clip.stopRecording();
       clip.startPlayback();
 
-      clip.effects().prepare(sr);
-      clip.effects().setParam("echo", "time", 0.05);  // 2205 samples
-      clip.effects().setParam("echo", "mix", 0.8);
-      clip.effects().setParam("echo", "feedback", 0.0);
-      clip.effects().setEnabled("echo", true);
+      clip.fxChain()->prepare(sr);
+      auto* clip_echo = clip.fxChain()->slots()[2].get();
+      clip_echo->setParam("time", 0.05);  // 2205 samples
+      clip_echo->setParam("mix", 0.8);
+      clip_echo->setParam("feedback", 0.0);
+      clip_echo->enabled.store(true);
 
       std::vector<float> out(8820, 0.0f);
       float* outs[] = {out.data()};
@@ -239,10 +287,10 @@ class EffectsTests : public juce::UnitTest {
 
       expectWithinAbsoluteError(out[0], 1.0f, 0.01f, "dry impulse");
       expectWithinAbsoluteError(out[2205], 0.8f, 0.01f,
-                                "clip rack produced the echo");
+                                "clip chain produced the echo");
     }
 
-    beginTest("Stack rack shapes the SUMMED group");
+    beginTest("Stack chain shapes the SUMMED group");
     {
       StackNode stack("FxStack");
       auto clip = std::make_unique<ClipNode>("Child", sr);
@@ -258,11 +306,12 @@ class EffectsTests : public juce::UnitTest {
       clip->startPlayback();
       stack.addChild(std::move(clip));
 
-      stack.effects().prepare(sr);
-      stack.effects().setParam("echo", "time", 0.05);
-      stack.effects().setParam("echo", "mix", 0.8);
-      stack.effects().setParam("echo", "feedback", 0.0);
-      stack.effects().setEnabled("echo", true);
+      stack.fxChain()->prepare(sr);
+      auto* stack_echo = stack.fxChain()->slots()[2].get();
+      stack_echo->setParam("time", 0.05);
+      stack_echo->setParam("mix", 0.8);
+      stack_echo->setParam("feedback", 0.0);
+      stack_echo->enabled.store(true);
 
       std::vector<float> out(8820, 0.0f);
       float* outs[] = {out.data()};
@@ -274,7 +323,7 @@ class EffectsTests : public juce::UnitTest {
 
       expectWithinAbsoluteError(out[0], 1.0f, 0.01f, "dry impulse via stack");
       expectWithinAbsoluteError(out[2205], 0.8f, 0.01f,
-                                "stack rack produced the echo");
+                                "stack chain produced the echo");
     }
   }
 };

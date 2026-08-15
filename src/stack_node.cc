@@ -387,7 +387,7 @@ void StackNode::renderChildren(float* const* output_channels,
   const float group_pan = pan.load();
   const bool muted = is_muted.load();
   const float group_gain = muted ? 0.0f : gain.load();
-  const bool use_fx = fx_.isLive() && !muted;
+  const bool use_fx = fxIsLive() && !muted;
   const bool use_accum =
       use_fx || muted || group_pan != 0.0f || group_gain != 1.0f;
   const int accum_ch = std::min(2, std::max(1, num_output_channels));
@@ -432,10 +432,10 @@ void StackNode::renderChildren(float* const* output_channels,
   if (use_accum) {
     if (use_fx) {
       if (accum_ch >= 2) {
-        fx_.processStereo(fx_accum_.getWritePointer(0),
-                          fx_accum_.getWritePointer(1), context.num_samples);
+        fxProcessStereo(fx_accum_.getWritePointer(0),
+                        fx_accum_.getWritePointer(1), context.num_samples);
       } else {
-        fx_.process(fx_accum_.getWritePointer(0), context.num_samples);
+        fxProcess(fx_accum_.getWritePointer(0), context.num_samples);
       }
     }
     // The group's output stage: gain·pan (balance law), mute = gain 0.

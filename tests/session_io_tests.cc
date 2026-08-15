@@ -13,6 +13,7 @@
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
+#include "../src/dsp/fx_chain.h"
 #include "../src/session_io.h"
 #include "../src/stack_node.h"
 #include "../src/timing.h"
@@ -44,8 +45,18 @@ class SessionIoTests : public juce::UnitTest {
       clip->setLoopWindowBypassed(false);
       clip->is_muted.store(true);
       clip->setInputChannel(2);
-      clip->effects().setEnabled("echo", true);
-      clip->effects().setParam("echo", "mix", 0.42);
+      // Chain surface (docs/vst3.md phase 2): reorder echo to the head
+      // so the round-trip pins ORDER as well as params, then enable it.
+      {
+        auto slots = clip->fxChain()->slots();
+        std::rotate(slots.begin(), slots.begin() + 2, slots.begin() + 3);
+        delete clip->exchangeFxChain(
+            dsp::FxChain::makeFromSlots(std::move(slots)).release());
+        auto* echo_slot = clip->fxChain()->slots()[0].get();
+        echo_slot->prepare((double)Q);
+        echo_slot->setParam("mix", 0.42);
+        echo_slot->enabled.store(true);
+      }
 
       // A deterministic ramp fills the committed buffer.
       juce::AudioBuffer<float> audio(1, (int)(4 * Q));
@@ -98,12 +109,17 @@ class SessionIoTests : public juce::UnitTest {
       expect(maxErr < 1.0e-4f,
              "buffer samples round-trip (err=" + juce::String(maxErr) + ")");
 
-      // fx params restored.
-      auto fxMeta = c->effects().getMetadata();
-      auto echo = fxMeta.getProperty("echo", juce::var());
-      expect((bool)echo.getProperty("enabled", false), "echo enabled restored");
-      expect(std::abs((double)echo.getProperty("mix", 0.0) - 0.42) < 1e-6,
+      // fx chain restored: order, enable, params, and slot identity.
+      const auto& loaded_slots = c->fxChain()->slots();
+      expectEquals((int)loaded_slots.size(), 4, juce::String("4 slots"));
+      expectEquals(juce::String(loaded_slots[0]->typeId()),
+                   juce::String("echo"), juce::String("saved order restored"));
+      expect(loaded_slots[0]->enabled.load(), "echo enabled restored");
+      auto fxMeta = c->fxChain()->getMetadata();
+      expect(std::abs((double)fxMeta[0].getProperty("mix", 0.0) - 0.42) < 1e-6,
              "echo mix restored");
+      expect(fxMeta[0].getProperty("slot", "").toString().isNotEmpty(),
+             "slot uuid persisted");
 
       // Nested stack survived with its uuid and holds no island quantum
       // (only the root does).

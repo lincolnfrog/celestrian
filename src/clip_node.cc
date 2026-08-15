@@ -403,14 +403,14 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
             i += run;
           }
         }
-        // isLive: enabled slots OR an open panel watching the scope
-        // (capture-only pass costs one copy; effects all no-op)
-        if (fx_.isLive()) {
+        // fxIsLive: enabled slots OR an open panel watching the scope
+        // (capture-only pass costs one copy; the chain no-ops)
+        if (fxIsLive()) {
           if (stereo) {
-            fx_.processStereo(fx_scratch_.data(), fx_scratch2_.data(),
-                              context.num_samples);
+            fxProcessStereo(fx_scratch_.data(), fx_scratch2_.data(),
+                            context.num_samples);
           } else {
-            fx_.process(fx_scratch_.data(), context.num_samples);
+            fxProcess(fx_scratch_.data(), context.num_samples);
           }
         }
         // The output stage (unification_audit §2.4): gain·pan resolved

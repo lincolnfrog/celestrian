@@ -119,6 +119,7 @@ target_sources(Celestrian PRIVATE
     src/plugin_host_service.h
     src/plugin_host_service.cc
     src/dsp/effects.cc
+    src/dsp/fx_chain.cc
 )
 
 # Link JUCE modules
@@ -217,6 +218,7 @@ target_sources(CelestrianTests PRIVATE
     src/project_manager.cc
     src/plugin_host_service.cc
     src/dsp/effects.cc
+    src/dsp/fx_chain.cc
 )
 
 target_link_libraries(CelestrianTests PRIVATE

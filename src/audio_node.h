@@ -5,7 +5,7 @@
 
 #include <atomic>
 
-#include "dsp/effects.h"
+#include "dsp/fx_chain.h"
 #include "timing.h"
 
 namespace celestrian {
@@ -168,8 +168,9 @@ class AudioNode {
       : node_name(std::move(node_name)), node_uuid(juce::Uuid().toString()) {}
   virtual ~AudioNode() {
     // Nodes only die via the reclaimer (2-callback grace), so no
-    // in-flight audio can still be reading the override here.
+    // in-flight audio can still be reading the override or chain here.
     delete map_override_.load();
+    delete chain_.load();
   }
 
   /**
@@ -252,8 +253,18 @@ class AudioNode {
       }
       obj->setProperty("segments", segs);
     }
-    // Built-in effect rack state (fractal like windows)
-    obj->setProperty("effects", fx_.getMetadata());
+    // Effect chain state (fractal like windows): {chain: [...slots],
+    // scope: {...}?} — the chain array doubles as the save format
+    // (docs/vst3.md §6); scope telemetry only while a panel watches.
+    {
+      const dsp::FxChain* chain = chain_.load();
+      juce::DynamicObject::Ptr fx = new juce::DynamicObject();
+      fx->setProperty("chain", chain->getMetadata());
+      const juce::var scope =
+          fx_scope_.metadataVar(chain->compressorGainReductionDb());
+      if (!scope.isVoid()) fx->setProperty("scope", scope);
+      obj->setProperty("effects", juce::var(fx.get()));
+    }
     obj->setProperty("effectiveQuantum", (double)getEffectiveQuantum());
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
@@ -458,16 +469,43 @@ class AudioNode {
     return map_override_.exchange(fresh);
   }
 
-  // --- Built-in effects (docs/ui_overhaul.md effects bar) ---
+  // --- The effect chain (docs/vst3.md phase 2) ---
   /**
-   * The node's effect rack — FRACTAL like windows: a clip's rack
-   * processes its rendered playback; a stack's rack processes the
-   * summed group (so a stack reverb wets the whole kit). Mutations
-   * (enable/params) happen on the message thread through AudioEngine;
-   * the audio thread only reads atomics. prepare() before enable.
+   * The node's effect chain — FRACTAL like windows: a clip's chain
+   * processes its rendered playback; a stack's chain processes the
+   * summed group (so a stack reverb wets the whole kit). Reached
+   * through ONE atomic pointer (the D4 discipline): the MESSAGE thread
+   * builds successors (sharing slot objects) and retires the old chain
+   * through the engine reclaimer; the audio thread loads the pointer
+   * per block and only reads. Enable/param changes are slot-internal
+   * atomics — no republish. prepare() before enable, as ever.
    */
-  dsp::EffectRack& effects() { return fx_; }
-  const dsp::EffectRack& effects() const { return fx_; }
+  dsp::FxChain* fxChain() const { return chain_.load(); }
+  /** Swap in `fresh` (heap-owned); returns the OLD chain, which the
+   * caller must retire — never delete inline while the node is live. */
+  dsp::FxChain* exchangeFxChain(dsp::FxChain* fresh) {
+    return chain_.exchange(fresh);
+  }
+
+  /** Pre-chain scope telemetry (stable across chain swaps). */
+  dsp::FxScope& fxScope() { return fx_scope_; }
+
+  /** True when the audio thread must run the fx path: an enabled slot
+   * OR a watching scope panel (capture-only pass). */
+  bool fxIsLive() const {
+    return chain_.load()->anyEnabled() || fx_scope_.watching();
+  }
+  /** The node's fx pass, mono / stereo: scope capture, then the chain.
+   * Called from the CONST render phase — chain DSP state and the scope
+   * ring are DSP scratch (performance.md §2.3 sanctioned exception). */
+  void fxProcess(float* x, int n) const {
+    fx_scope_.capture(x, nullptr, n);
+    chain_.load()->process(x, n);
+  }
+  void fxProcessStereo(float* l, float* r, int n) const {
+    fx_scope_.capture(l, r, n);
+    chain_.load()->processStereo(l, r, n);
+  }
 
   /**
    * The node's audible period in its parent's frame (E-C,
@@ -535,12 +573,14 @@ class AudioNode {
   // here, swapped on the message thread, retired via the reclaimer.
   std::atomic<const timing::TimeMap*> map_override_{nullptr};
 
-  // Built-in effect rack (dsp/effects.h): fixed slots, all-atomic
-  // parameters — safe for the audio thread to read while the message
-  // thread edits. `mutable`: effect DSP state (echo/reverb lines)
-  // advances during the CONST render phase — DSP scratch, not musical
-  // state (§2.3 sanctioned exception).
-  mutable dsp::EffectRack fx_;
+  // The effect chain (dsp/fx_chain.h): ONE atomic pointer, message
+  // thread swaps + reclaimer retirement, audio thread loads per block
+  // (D4 discipline — see fxChain above). Every node is born with the
+  // default four-built-in chain. The scope is a separate STABLE member
+  // so chain swaps never disturb the telemetry ring; both are touched
+  // from the CONST render phase as sanctioned DSP scratch (§2.3).
+  std::atomic<dsp::FxChain*> chain_{dsp::FxChain::makeDefault().release()};
+  mutable dsp::FxScope fx_scope_;
   std::atomic<bool> is_muted{false};
   // Solo canon (Q16, ruled 2026-08-13): island-wide, ADDITIVE, fractal.
   // A per-node flag like mute; the audio thread resolves audibility per
