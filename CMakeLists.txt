@@ -116,6 +116,8 @@ target_sources(Celestrian PRIVATE
     src/stack_node.cc
     src/session_io.cc
     src/project_manager.cc
+    src/plugin_host_service.h
+    src/plugin_host_service.cc
     src/dsp/effects.cc
 )
 
@@ -133,8 +135,12 @@ target_link_libraries(Celestrian PRIVATE
     juce::juce_core
 )
 
-# Enable WebView features
+# Enable WebView features + VST3 hosting (docs/vst3.md phase 1). The
+# VST3 SDK headers ship inside JUCE under the SDK's GPLv3 option, which
+# combines with this project's AGPLv3 exactly as the ASIO SDK does (see
+# the ASIO comment above for the §13 reasoning) — no extra download.
 target_compile_definitions(Celestrian PRIVATE
+    JUCE_PLUGINHOST_VST3=1
     JUCE_WEB_BROWSER=1
     JUCE_USE_WIN_WEBVIEW2=1
     # NEEDS_WEBVIEW2 links WebView2LoaderStatic.lib, so JUCE must call
@@ -203,11 +209,13 @@ target_sources(CelestrianTests PRIVATE
     tests/group_arm_tests.cc
     tests/solo_tests.cc
     tests/track_template_tests.cc
+    tests/plugin_host_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc
     src/session_io.cc
     src/project_manager.cc
+    src/plugin_host_service.cc
     src/dsp/effects.cc
 )
 
@@ -215,6 +223,7 @@ target_link_libraries(CelestrianTests PRIVATE
     juce::juce_audio_basics
     juce::juce_audio_devices
     juce::juce_audio_formats
+    juce::juce_audio_processors
     juce::juce_audio_utils
     juce::juce_gui_basics
     juce::juce_core
@@ -225,6 +234,7 @@ target_link_libraries(CelestrianTests PRIVATE
 # juce_core's networking needs libcurl) on Linux. Disabling both keeps the
 # console tests buildable on headless machines.
 target_compile_definitions(CelestrianTests PRIVATE
+    JUCE_PLUGINHOST_VST3=1
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
 )

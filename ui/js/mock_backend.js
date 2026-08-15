@@ -52,6 +52,9 @@ import {
 } from './mock/devices.js';
 import { setEffectEnabled, setEffectParam, setEffectScope } from './mock/effects.js';
 import {
+    getKnownPlugins, scanPlugins, getPluginScanStatus,
+} from './mock/plugins.js';
+import {
     saveSession, loadSession, getProjectInfo, renameProject, saveProjectNow,
     listTemplates, listRecentProjects, newProjectFromTemplate,
     openProjectPath, saveAsTemplate, duplicateProject,
@@ -113,6 +116,10 @@ export const handlers = {
     setEffectScope,
     startLatencyCalibration,
     getLatencyCalibration,
+    // Plugin hosting (docs/vst3.md phase 1): registry + simulated scan.
+    getKnownPlugins,
+    scanPlugins,
+    getPluginScanStatus,
     setLoopPoints,
     setSegments,
     // The mock cannot move the OS cursor — returning false makes the

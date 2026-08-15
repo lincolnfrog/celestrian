@@ -318,6 +318,30 @@ MainComponent::MainComponent()
                             [this](const auto&) {
                               return audio_engine.getInputList();
                             }))
+              // Plugin hosting (docs/vst3.md phase 1): the known-plugin
+              // registry + background scan. The UI polls scan status
+              // while its panel is open (same poll-shaped pattern as
+              // the device panel).
+              .withNativeFunction(
+                  "getKnownPlugins",
+                  valueCall("getKnownPlugins", 0,
+                            [this](const auto&) {
+                              return plugin_host_.getKnownPluginsVar();
+                            }))
+              .withNativeFunction(
+                  "scanPlugins",
+                  voidCall("scanPlugins", 0,
+                           [this](const auto& args) {
+                             plugin_host_.startScan(args.size() > 0
+                                                        ? args[0].toString()
+                                                        : juce::String());
+                           }))
+              .withNativeFunction(
+                  "getPluginScanStatus",
+                  valueCall("getPluginScanStatus", 0,
+                            [this](const auto&) {
+                              return plugin_host_.getScanStatusVar();
+                            }))
               .withNativeFunction(
                   "getAudioDeviceState",
                   valueCall("getAudioDeviceState", 0,

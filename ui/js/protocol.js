@@ -143,6 +143,14 @@ export const BRIDGE_METHODS = [
     { name: 'startLatencyCalibration', params: [], returns: 'true' },
     { name: 'getLatencyCalibration', params: [], returns: '{ phase, roundTripSamples, roundTripMs, calibrated }' },
 
+    // Plugin hosting (docs/vst3.md phase 1): the known-plugin registry.
+    // Scanning runs on a backend background thread with the
+    // dead-man's-pedal crash blacklist; the UI polls status while the
+    // plugin panel is open (poll-shaped, like the device panel).
+    { name: 'getKnownPlugins', params: [], returns: '[{name, uid, file, maker, category, version, isInstrument}] name-sorted' },
+    { name: 'scanPlugins', params: ['extraPath?'] },
+    { name: 'getPluginScanStatus', params: [], returns: '{ scanning, progress, current, count, blacklistCount }' },
+
     // Debug
     { name: 'nativeLog', params: ['message'] },
 ];

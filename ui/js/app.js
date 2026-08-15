@@ -10,6 +10,7 @@ import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initAudioSettings } from './audio_settings.js';
+import { initPluginPanel } from './plugin_panel.js';
 import { updateMasterVU, initMasterFader, updateMasterFader }
     from './vu_meter.js';
 
@@ -416,6 +417,10 @@ function wireStatusStrip() {
     // Audio device picker. Calibration is keyed on device|rate|buffer, so
     // it sits right next to the button that changes all three.
     initAudioSettings(callNative, setLogLine);
+
+    // Plugin registry panel (docs/vst3.md phase 1) — same popover
+    // pattern; chain integration arrives with phases 2-3.
+    initPluginPanel(callNative, setLogLine);
 }
 
 function patchCalibrateButton(state) {
