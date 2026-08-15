@@ -495,16 +495,16 @@ class AudioNode {
   bool fxIsLive() const {
     return chain_.load()->anyEnabled() || fx_scope_.watching();
   }
-  /** The node's fx pass, mono / stereo: scope capture, then the chain.
-   * Called from the CONST render phase — chain DSP state and the scope
-   * ring are DSP scratch (performance.md §2.3 sanctioned exception). */
-  void fxProcess(float* x, int n) const {
-    fx_scope_.capture(x, nullptr, n);
-    chain_.load()->process(x, n);
-  }
-  void fxProcessStereo(float* l, float* r, int n) const {
-    fx_scope_.capture(l, r, n);
-    chain_.load()->processStereo(l, r, n);
+  /** The node's fx pass: scope capture (pre-chain), then FxChain::run
+   * with the Q-V1 stereo promotion. `stereo_in` says whether (l, r)
+   * already carry two live channels; `r` may be null on a pure-mono
+   * path (promotion then folds back internally). Returns whether the
+   * caller's buffers now hold stereo. Called from the CONST render
+   * phase — chain DSP state and the scope ring are DSP scratch
+   * (performance.md §2.3 sanctioned exception). */
+  bool fxProcess(float* l, float* r, int n, bool stereo_in) const {
+    fx_scope_.capture(l, stereo_in ? r : nullptr, n);
+    return chain_.load()->run(l, r, n, stereo_in);
   }
 
   /**

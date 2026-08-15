@@ -804,6 +804,16 @@ function initApp() {
                 `${label || 'fx'} ${enabled ? 'on' : 'off'}`),
         onSetSlotParam: (id, slotUuid, key, value) =>
             callNative('setSlotParam', id, slotUuid, key, value),
+        // VST3 slots (docs/vst3.md phase 3). Add is async on the
+        // backend — the chip appears when the chain publishes it.
+        onAddPlugin: (id, pluginUid, name) =>
+            call('addPluginToChain', [id, pluginUid, -1],
+                `adding ${name}…`),
+        onRemoveChainSlot: (id, slotUuid, name) =>
+            call('removeChainSlot', [id, slotUuid],
+                `${name || 'plugin'} removed (⌘Z to undo)`),
+        onOpenPluginEditor: (id, slotUuid) =>
+            callNative('openPluginEditor', id, slotUuid),
         onArm,
         onRecordKey,
     });

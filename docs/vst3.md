@@ -305,8 +305,9 @@ rulings before phase 5, not before phase 1.
 ## 10. Phase plan
 
 Each phase leaves the build green and shippable; tests named per phase.
-Status: **phases 1 and 2 landed 2026-08-15** (all three test layers
-green); phase 3 is next.
+Status: **phases 1–3 landed 2026-08-15** (all three test layers green,
+including REAL-BINARY hosting validation via the in-repo test plugin);
+phase 4 (MIDI input + live play-through) is next.
 
 1. **Hosting foundation.** ✅ DONE 2026-08-15.
     CMake: `JUCE_PLUGINHOST_VST3=1` on Celestrian
@@ -331,11 +332,27 @@ green); phase 3 is next.
    (updated only where they speak the old bridge/save surface), plus new
    chain-order and reorder-preserves-DSP-state tests, save-format
    round-trip.
-3. **VST3 effect slots.** Async instantiation → prepare → publish; stereo
-   promotion; editor windows; state persistence + missing-plugin
-   placeholder; latency reporting; undo entries owning removed instances.
-   *Tests:* stub-plugin slot processing (order, bypass, promotion),
-   placeholder round-trip; manual pass with a few real plugins on macOS.
+3. **VST3 effect slots.** ✅ DONE 2026-08-15 — `dsp::Vst3Slot`
+   (live + placeholder modes in one class), FxChain::run with the Q-V1
+   promotion (internal fold-back for mono-device callers),
+   Edit::AddSlot/RemoveSlot (undo entries own the plugin instance;
+   retired through the reclaimer grace), async instantiation +
+   load-time revival sweep in MainComponent (the engine's ONE
+   post-load hook), PluginEditorWindows (native floating windows;
+   GenericAudioProcessorEditor fallback), chain-array save format with
+   base64 state (save-time only — never in the 20 Hz poll), fx-bar
+   chips + picker. **Owner addition (2026-08-15): the in-repo test
+   plugin** — test_plugin/ "Celestrian Test Gain" (gain ×0.5 default,
+   64-sample REPORTED latency on purpose, 4-byte state; the
+   real-binary twin of tests/stub_plugin_instance.h), built behind
+   CELESTRIAN_BUILD_TEST_PLUGIN=ON and hosted end-to-end by
+   tests/plugin_host_integration_tests.cc (scan thread → pedal-clean →
+   instantiate → process → promote → state round-trip, all against the
+   actual .vst3). Field note pinned by that test: a PluginDescription
+   refilled from a HOSTED instance drops the format tag — slot
+   identity must come from the registry description, or revival
+   matching breaks.
+   Still manual on macOS: real third-party plugins + editor windows.
 4. **MIDI input + live play-through** (§8). *Tests:* FIFO timestamping
    against the input clock, all-notes-off on device stop.
 5. **Note clips + recording** (§8). *Tests:* golden block-slicing vectors

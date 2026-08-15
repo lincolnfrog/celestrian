@@ -52,6 +52,7 @@ import {
 } from './mock/devices.js';
 import {
     setSlotEnabled, setSlotParam, moveChainSlot, setEffectScope,
+    addPluginToChain, removeChainSlot, openPluginEditor,
 } from './mock/effects.js';
 import {
     getKnownPlugins, scanPlugins, getPluginScanStatus,
@@ -116,6 +117,9 @@ export const handlers = {
     setSlotEnabled,
     setSlotParam,
     moveChainSlot,
+    addPluginToChain,
+    removeChainSlot,
+    openPluginEditor,
     setEffectScope,
     startLatencyCalibration,
     getLatencyCalibration,

@@ -11,6 +11,7 @@
  */
 
 import { findNode } from './state.js';
+import { getKnownPlugins } from './plugins.js';
 
 let slotCounter = 0;
 
@@ -74,6 +75,53 @@ export function moveChainSlot(id, slotUuid, newIndex) {
     const [moved] = chain.splice(from, 1);
     chain.splice(to, 0, moved);
     console.log('[MockBackend] Slot', slotUuid, 'on', id, 'moved →', to);
+}
+
+/** VST3 slot add (docs/vst3.md phase 3). The REAL backend is async
+ * (instantiation completes later); the mock lands the slot
+ * immediately — the UI contract is only "the chip appears when the
+ * chain publishes it". Arrives ENABLED, like the engine's. */
+export function addPluginToChain(id, pluginUid, index) {
+    const node = findNode(id);
+    if (!node) return;
+    const known = getKnownPlugins().find(p => p.uid === pluginUid);
+    if (!known) {
+        console.log('[MockBackend] addPluginToChain: unknown uid', pluginUid);
+        return;
+    }
+    const chain = ensureEffects(node).chain;
+    const entry = {
+        slot: 'slot-vst3-' + (++slotCounter),
+        type: 'vst3',
+        enabled: true,
+        name: known.name,
+        uid: known.uid,
+        file: known.file,
+        missing: false,
+        latency: 0,
+    };
+    const at = (typeof index === 'number' && index >= 0)
+        ? Math.min(chain.length, index) : chain.length;
+    chain.splice(at, 0, entry);
+    console.log('[MockBackend] Plugin', known.name, 'added to', id, 'at', at);
+}
+
+/** VST3-only removal (engine parity: built-ins are the fixed cards). */
+export function removeChainSlot(id, slotUuid) {
+    const node = findNode(id);
+    if (!node) return;
+    const chain = ensureEffects(node).chain;
+    const at = chain.findIndex(s => s.slot === slotUuid && s.type === 'vst3');
+    if (at < 0) return;
+    chain.splice(at, 1);
+    console.log('[MockBackend] Slot', slotUuid, 'removed from', id);
+}
+
+export function openPluginEditor(id, slotUuid) {
+    // Native windows do not exist in the mock; log the gesture so e2e
+    // can assert the bridge call happened if it ever needs to.
+    console.log('[MockBackend] openPluginEditor', id, slotUuid);
+    return true;
 }
 
 export function setEffectScope(id, active) {

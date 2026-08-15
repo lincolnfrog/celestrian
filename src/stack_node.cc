@@ -432,10 +432,13 @@ void StackNode::renderChildren(float* const* output_channels,
   if (use_accum) {
     if (use_fx) {
       if (accum_ch >= 2) {
-        fxProcessStereo(fx_accum_.getWritePointer(0),
-                        fx_accum_.getWritePointer(1), context.num_samples);
+        fxProcess(fx_accum_.getWritePointer(0), fx_accum_.getWritePointer(1),
+                  context.num_samples, /*stereo_in=*/true);
       } else {
-        fxProcess(fx_accum_.getWritePointer(0), context.num_samples);
+        // Mono device: no right buffer — a promoting chain folds back
+        // to mono internally (FxChain::run).
+        fxProcess(fx_accum_.getWritePointer(0), nullptr, context.num_samples,
+                  /*stereo_in=*/false);
       }
     }
     // The group's output stage: gain·pan (balance law), mute = gain 0.

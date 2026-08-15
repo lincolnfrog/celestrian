@@ -135,6 +135,14 @@ export const BRIDGE_METHODS = [
     { name: 'setSlotEnabled', params: ['uuid', 'slotUuid', 'enabled'] },
     { name: 'setSlotParam', params: ['uuid', 'slotUuid', 'key', 'value'] },
     { name: 'moveChainSlot', params: ['uuid', 'slotUuid', 'newIndex'] },
+    // VST3 slots (docs/vst3.md phase 3): add is ASYNC on the backend
+    // (instantiation completes later; the chip appears when the chain
+    // publishes) and lands enabled; add/remove are UNDOABLE structure
+    // edits; removal is VST3-only (built-ins are the fixed cards).
+    // openPluginEditor raises the plugin's native floating window.
+    { name: 'addPluginToChain', params: ['uuid', 'pluginUid', 'index?'] },
+    { name: 'removeChainSlot', params: ['uuid', 'slotUuid'] },
+    { name: 'openPluginEditor', params: ['uuid', 'slotUuid'] },
     // Panel open/closed: gates the node's scope capture + telemetry —
     // when no panel watches, the audio thread doesn't even copy.
     { name: 'setEffectScope', params: ['uuid', 'active'] },

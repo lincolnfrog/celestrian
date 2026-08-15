@@ -81,3 +81,35 @@ test('moveChainSlot: reorders with state riding, undoable', async () => {
     chain = nodeById(clip.id, getState().nodes).effects.chain;
     assert.equal(chain[0].type, 'echo', 'redo re-applies the move');
 });
+
+test('vst3 slots: add from registry, remove (vst3-only), undoable', async () => {
+    await loadScenario('stack-with-clips');
+    const clip = await firstClip();
+    const known = await callNative('getKnownPlugins');
+    const plugin = known[0];
+
+    await callNative('addPluginToChain', clip.id, plugin.uid, -1);
+    let chain = nodeById(clip.id, getState().nodes).effects.chain;
+    assert.equal(chain.length, 5);
+    const entry = chain[4];
+    assert.equal(entry.type, 'vst3');
+    assert.equal(entry.name, plugin.name);
+    assert.equal(entry.enabled, true, 'arrives audible');
+    assert.equal(entry.missing, false);
+
+    // Unknown uid: safe no-op.
+    await callNative('addPluginToChain', clip.id, 'no-such-plugin', -1);
+    assert.equal(nodeById(clip.id, getState().nodes).effects.chain.length, 5);
+
+    // Built-ins refuse removal; the vst3 slot removes; undo restores.
+    const eq = chain.find(s => s.type === 'eq');
+    await callNative('removeChainSlot', clip.id, eq.slot);
+    assert.equal(nodeById(clip.id, getState().nodes).effects.chain.length, 5,
+        'built-ins are not removable');
+    await callNative('removeChainSlot', clip.id, entry.slot);
+    assert.equal(nodeById(clip.id, getState().nodes).effects.chain.length, 4);
+    await callNative('undo');
+    chain = nodeById(clip.id, getState().nodes).effects.chain;
+    assert.equal(chain.length, 5, 'undo restores the plugin');
+    assert.equal(chain[4].slot, entry.slot, 'same slot identity');
+});

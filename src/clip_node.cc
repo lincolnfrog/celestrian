@@ -361,7 +361,10 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         const int64_t cap = buffer.getNumSamples();
         if (cap <= 0) return;  // degenerate buffer: `% cap` would SIGFPE
         const bool stereo = buffer.getNumChannels() >= 2;
-        if (stereo && (int)fx_scratch2_.size() < context.num_samples) {
+        // scratch2 is also the PROMOTION target (Q-V1): a mono clip
+        // with a live chain may come back stereo from the fx pass.
+        if ((stereo || fxIsLive()) &&
+            (int)fx_scratch2_.size() < context.num_samples) {
           fx_scratch2_.resize((size_t)context.num_samples);
         }
         // THE PERIOD-SOURCE KNOB (Q5): a one-shot's period is the
@@ -404,14 +407,15 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
           }
         }
         // fxIsLive: enabled slots OR an open panel watching the scope
-        // (capture-only pass costs one copy; the chain no-ops)
+        // (capture-only pass costs one copy; the chain no-ops). The fx
+        // pass may PROMOTE a mono clip to stereo (Q-V1: first enabled
+        // VST3 slot) — out_stereo carries the post-chain shape into
+        // the output stage; pan is untouched by this (applied below,
+        // per channel, after the chain — §3.3).
+        bool out_stereo = stereo;
         if (fxIsLive()) {
-          if (stereo) {
-            fxProcessStereo(fx_scratch_.data(), fx_scratch2_.data(),
-                            context.num_samples);
-          } else {
-            fxProcess(fx_scratch_.data(), context.num_samples);
-          }
+          out_stereo = fxProcess(fx_scratch_.data(), fx_scratch2_.data(),
+                                 context.num_samples, stereo);
         }
         // The output stage (unification_audit §2.4): gain·pan resolved
         // together, post-fx. Pan (balance law, audio_node.h): output
@@ -429,10 +433,10 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
           if (output_channels[ch] == nullptr) continue;
           const bool right = ch == 1 && num_output_channels >= 2;
           const float* src =
-              stereo && right ? fx_scratch2_.data() : fx_scratch_.data();
+              out_stereo && right ? fx_scratch2_.data() : fx_scratch_.data();
           float g = fader;
           if (num_output_channels >= 2 && ch < 2) g = right ? gr : gl;
-          if (stereo && num_output_channels < 2) {
+          if (out_stereo && num_output_channels < 2) {
             // Fold stereo content to a mono device: equal halves.
             if (fader <= 0.0f) continue;
             juce::FloatVectorOperations::addWithMultiply(

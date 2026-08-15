@@ -66,6 +66,15 @@ struct Edit {
                    // retiring the predecessor (D4); the inverse is a
                    // MoveSlot back to the old index. Chain STRUCTURE
                    // is undoable; enable/params stay non-undoable.
+    AddSlot,       // insert `slot` (a VST3 slot, phase 3) into the
+                   // node's chain at `index` (clamped; <0 = append).
+                   // Inverse: RemoveSlot. The shared_ptr payload keeps
+                   // the plugin INSTANCE alive across undo/redo — the
+                   // owned-subtree argument applies (write-once by our
+                   // hands; the plugin's own state just persists).
+    RemoveSlot,    // detach chain slot s1 (VST3 only for now — the UI
+                   // offers removal on plugin chips alone). Inverse:
+                   // AddSlot owning the slot at its old index.
   };
   // Effect enable/param edits are deliberately NOT undoable in this pass
   // (non-destructive knobs; slider drags would flood the log without
@@ -106,6 +115,10 @@ struct Edit {
   // POD by design — edits stay move-only without custom machinery.
   bool setsMap = false;
   timing::TimeMap tmap{};
+
+  // AddSlot (and RemoveSlot's inverse) own the chain slot to insert.
+  // shared_ptr because chains share slot objects by design (D4).
+  std::shared_ptr<dsp::FxSlot> slot;
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

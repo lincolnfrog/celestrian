@@ -3,6 +3,7 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 
 #include "audio_engine.h"
+#include "plugin_editor_windows.h"
 #include "plugin_host_service.h"
 #include "project_manager.h"
 
@@ -38,6 +39,18 @@ class MainComponent : public juce::Component, public juce::Timer {
   celestrian::PluginHostService plugin_host_{
       juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
           .getChildFile("Celestrian")};
+  // Floating native editor windows, keyed by slot uuid (docs/vst3.md
+  // §5). Declared after the engine: windows close before the engine
+  // (and its plugin instances) tears down.
+  celestrian::PluginEditorWindows plugin_editor_windows_;
+
+  /** Async VST3 instantiation → engine AddSlot edit (docs/vst3.md §4).
+   * index < 0 appends. */
+  void addPluginToChain(const juce::String& node_uuid,
+                        const juce::String& plugin_uid, int index);
+  /** Load-time revival sweep: instantiate every placeholder slot whose
+   * plugin is installed here (docs/vst3.md §6). */
+  void revivePlaceholderPlugins();
 
   std::optional<juce::WebBrowserComponent::Resource> getResource(
       const juce::String& path);

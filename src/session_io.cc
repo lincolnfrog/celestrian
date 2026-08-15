@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "clip_node.h"
+#include "dsp/vst3_slot.h"
 #include "timing.h"
 
 namespace celestrian::session_io {
@@ -29,7 +30,7 @@ QTime qread(const juce::var& v) {
 // the save format — [{slot, type, enabled, ...params}] in signal order.
 // (Scope telemetry lives outside the chain and never appears here.)
 juce::var effectsBlob(const AudioNode& node) {
-  return node.fxChain()->getMetadata();
+  return node.fxChain()->getMetadata(/*include_persistent_state=*/true);
 }
 
 void writeClipWav(const ClipNode& clip, int64_t duration,
@@ -259,20 +260,35 @@ void applyEffects(AudioNode& node, const juce::var& blob,
   for (const auto& entry : *entries) {
     auto* o = entry.getDynamicObject();
     if (o == nullptr) continue;
-    auto slot =
-        dsp::FxChain::makeBuiltIn(o->getProperty("type").toString());
-    if (slot == nullptr) continue;  // unknown type (forward-tolerant)
+    const juce::String type = o->getProperty("type").toString();
+    std::shared_ptr<dsp::FxSlot> slot;
+    if (type == "vst3") {
+      // Loaded as a PLACEHOLDER (docs/vst3.md §6): identity + state
+      // verbatim, hard-bypassed audio. The engine's post-load revival
+      // sweep instantiates the real plugin where it is installed;
+      // where it isn't, the placeholder round-trips the save intact.
+      juce::MemoryBlock state;
+      state.fromBase64Encoding(o->getProperty("state").toString());
+      slot = std::make_shared<dsp::Vst3Slot>(
+          o->getProperty("uid").toString(),
+          o->getProperty("name").toString(),
+          o->getProperty("file").toString(), state);
+      slot->enabled.store((bool)o->getProperty("enabled"));
+    } else {
+      slot = dsp::FxChain::makeBuiltIn(type);
+      if (slot == nullptr) continue;  // unknown type (forward-tolerant)
+      slot->prepare(sr);
+      for (const auto& p : o->getProperties()) {
+        const juce::String key = p.name.toString();
+        if (key == "slot" || key == "type") continue;
+        if (key == "enabled")
+          slot->enabled.store((bool)p.value);
+        else
+          slot->setParam(key, (double)p.value);
+      }
+    }
     const juce::String slot_uuid = o->getProperty("slot").toString();
     if (slot_uuid.isNotEmpty()) slot->setSlotUuid(slot_uuid);
-    slot->prepare(sr);
-    for (const auto& p : o->getProperties()) {
-      const juce::String key = p.name.toString();
-      if (key == "slot" || key == "type") continue;
-      if (key == "enabled")
-        slot->enabled.store((bool)p.value);
-      else
-        slot->setParam(key, (double)p.value);
-    }
     slots.push_back(std::move(slot));
   }
   if (slots.empty()) return;

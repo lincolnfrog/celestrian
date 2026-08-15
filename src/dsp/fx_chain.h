@@ -67,9 +67,19 @@ class FxSlot {
   /** Adds this slot's parameter properties to `out` (metadata/save). */
   virtual void fillParams(juce::DynamicObject& out) const = 0;
 
+  /** Adds SAVE-ONLY properties (a VST3 slot's base64 state blob —
+   * docs/vst3.md §6). Not part of the 20 Hz metadata poll. */
+  virtual void fillPersistentExtras(juce::DynamicObject& out) const {
+    juce::ignoreUnused(out);
+  }
+
   /** Reported processing latency (docs/vst3.md §3.4). Built-ins are 0;
    * VST3 slots (phase 3) forward the plugin's report. */
   virtual int latencySamples() const { return 0; }
+
+  /** True for slots that only process stereo (VST3, Q-V1): the chain
+   * PROMOTES a mono signal to stereo at the first enabled such slot. */
+  virtual bool wantsStereo() const { return false; }
 
   std::atomic<bool> enabled{false};
 
@@ -174,20 +184,41 @@ class FxChain {
   FxSlot* findSlot(const juce::String& slot_uuid) const;
   int indexOfSlot(const juce::String& slot_uuid) const;
 
-  /** Message thread; per-slot idempotent (see FxSlot::prepare). */
+  /** Message thread; per-slot idempotent (see FxSlot::prepare). Also
+   * sizes the internal promotion scratch (see run). */
   void prepare(double sample_rate);
 
-  // Audio thread: run every ENABLED slot in order, in place. No-op when
-  // nothing is enabled.
-  void process(float* x, int sample_count);
-  void processStereo(float* l, float* r, int sample_count);
+  /**
+   * Audio thread: run every ENABLED slot in order, in place.
+   *
+   * The canonical fx pass with the Q-V1 stereo promotion: `stereo_in`
+   * says whether (l, r) already carry two live channels. On a MONO
+   * pass, the first enabled wantsStereo() slot promotes — the mono
+   * signal is duplicated into `r` and the rest of the chain runs
+   * stereo. When the caller has no right buffer (`r` null — a mono
+   * output device), promotion runs through the chain's internal
+   * scratch and the result FOLDS back to mono (equal halves) before
+   * returning. Returns whether the CALLER's buffers now hold stereo.
+   * A promotion-needing slot with no usable scratch is skipped
+   * (fail-silent, the unprepared-echo discipline).
+   */
+  bool run(float* l, float* r, int sample_count, bool stereo_in);
+
+  // The historical shapes, kept as thin wrappers over run() for the
+  // pure-built-in paths and the DSP tests.
+  void process(float* x, int sample_count) { run(x, nullptr, sample_count, false); }
+  void processStereo(float* l, float* r, int sample_count) {
+    run(l, r, sample_count, true);
+  }
 
   bool anyEnabled() const;
   int enabledCount() const;
 
   /** The chain array for metadata AND the save format (docs/vst3.md
-   * §6): [{slot, type, enabled, ...params}] in signal order. */
-  juce::var getMetadata() const;
+   * §6): [{slot, type, enabled, ...params}] in signal order. Pass
+   * include_persistent_state=true at SAVE time only — it adds the
+   * VST3 state blobs (base64), which the 20 Hz poll must not carry. */
+  juce::var getMetadata(bool include_persistent_state = false) const;
 
   /** Live GR of the first compressor slot (the scope's `gr` display);
    * 0 when the chain has none. */
@@ -202,6 +233,9 @@ class FxChain {
       : slots_(std::move(slots)) {}
 
   const std::vector<std::shared_ptr<FxSlot>> slots_;
+  // Promotion scratch (right channel for the fold-back path): sized in
+  // prepare on the message thread, written only by the audio thread.
+  std::vector<float> promotion_scratch_;
 };
 
 /**

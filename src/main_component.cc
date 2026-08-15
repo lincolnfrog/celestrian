@@ -430,6 +430,35 @@ MainComponent::MainComponent()
                                                         args[1].toString(),
                                                         (int)args[2]);
                            }))
+              .withNativeFunction(
+                  "addPluginToChain",
+                  voidCall("addPluginToChain", 2,
+                           [this](const auto& args) {
+                             addPluginToChain(
+                                 args[0].toString(), args[1].toString(),
+                                 args.size() > 2 ? (int)args[2] : -1);
+                           }))
+              .withNativeFunction(
+                  "removeChainSlot",
+                  voidCall("removeChainSlot", 2,
+                           [this](const auto& args) {
+                             // Close-before-removal: never show an
+                             // editor for a slot the user just deleted.
+                             plugin_editor_windows_.closeFor(
+                                 args[1].toString());
+                             audio_engine.removeChainSlot(args[0].toString(),
+                                                          args[1].toString());
+                           }))
+              .withNativeFunction(
+                  "openPluginEditor",
+                  voidCall("openPluginEditor", 2,
+                           [this](const auto& args) {
+                             auto* slot = audio_engine.vst3SlotFor(
+                                 args[0].toString(), args[1].toString());
+                             if (slot != nullptr && slot->instance() != nullptr)
+                               plugin_editor_windows_.open(args[1].toString(),
+                                                           *slot->instance());
+                           }))
               .withNativeFunction("setEffectScope",
                                   voidCall("setEffectScope", 2,
                                            [this](const auto& args) {
@@ -591,9 +620,102 @@ MainComponent::MainComponent()
 
   // Project heartbeat (docs/projects.md): birth + mirror every 3 s.
   startTimer(3000);
+
+  // Plugin revival (docs/vst3.md §6): after ANY successful session load
+  // (bridge, chooser, project manager), instantiate every placeholder
+  // slot whose plugin is installed on this machine. Editor windows for
+  // slots from the PREVIOUS graph close first — their instances are
+  // about to be torn down with the old graph.
+  audio_engine.setOnSessionLoaded([this] {
+    plugin_editor_windows_.closeAll();
+    revivePlaceholderPlugins();
+  });
 }
 
-MainComponent::~MainComponent() {}
+MainComponent::~MainComponent() {
+  // Editors reference plugin instances owned by the engine's graph —
+  // close them before member destruction order gets there.
+  plugin_editor_windows_.closeAll();
+}
+
+void MainComponent::addPluginToChain(const juce::String& node_uuid,
+                                     const juce::String& plugin_uid,
+                                     int index) {
+  const auto types = plugin_host_.knownPlugins().getTypes();
+  const juce::PluginDescription* found = nullptr;
+  for (const auto& type : types) {
+    if (type.createIdentifierString() == plugin_uid) {
+      found = &type;
+      break;
+    }
+  }
+  if (found == nullptr) {
+    juce::Logger::writeToLog("addPluginToChain: unknown plugin uid " +
+                             plugin_uid);
+    return;
+  }
+  // Async instantiation (docs/vst3.md §4): the completion lambda runs
+  // on the MESSAGE thread; the engine preps + publishes + records the
+  // undoable AddSlot. A node deleted mid-flight no-ops in the engine.
+  // Identity comes from the REGISTRY description (captured by value) —
+  // a description refilled from a hosted instance drops the format
+  // tag, and the uid must match what the known list will report at
+  // revival time (pinned by plugin_host_integration_tests.cc).
+  const juce::PluginDescription description = *found;
+  plugin_host_.formats().createPluginInstanceAsync(
+      description, audio_engine.currentSampleRateOrFallback(),
+      celestrian::dsp::Vst3Slot::kMaxBlockSize,
+      [this, node_uuid, index, description](
+          std::unique_ptr<juce::AudioPluginInstance> instance,
+          const juce::String& error) {
+        if (instance == nullptr) {
+          juce::Logger::writeToLog("addPluginToChain: instantiation failed: " +
+                                   error);
+          return;
+        }
+        auto slot = std::make_shared<celestrian::dsp::Vst3Slot>(
+            std::move(instance), description.createIdentifierString(),
+            description.name, description.fileOrIdentifier);
+        audio_engine.addVst3SlotToChain(node_uuid, std::move(slot), index);
+      });
+}
+
+void MainComponent::revivePlaceholderPlugins() {
+  // Discovery pass first (the visit mutates no chains), then the async
+  // instantiations; each completion swaps its live twin in.
+  struct Pending {
+    juce::String node_uuid, slot_uuid, plugin_uid;
+  };
+  std::vector<Pending> pending;
+  audio_engine.forEachVst3Placeholder(
+      [&pending](const juce::String& node_uuid, const juce::String& slot_uuid,
+                 const juce::String& plugin_uid) {
+        pending.push_back({node_uuid, slot_uuid, plugin_uid});
+      });
+  const auto types = plugin_host_.knownPlugins().getTypes();
+  for (const auto& p : pending) {
+    const juce::PluginDescription* found = nullptr;
+    for (const auto& type : types) {
+      if (type.createIdentifierString() == p.plugin_uid) {
+        found = &type;
+        break;
+      }
+    }
+    if (found == nullptr) continue;  // not installed here: stays missing
+    plugin_host_.formats().createPluginInstanceAsync(
+        *found, audio_engine.currentSampleRateOrFallback(),
+        celestrian::dsp::Vst3Slot::kMaxBlockSize,
+        [this, p](std::unique_ptr<juce::AudioPluginInstance> instance,
+                  const juce::String& error) {
+          if (instance == nullptr) {
+            juce::Logger::writeToLog("revive: instantiation failed: " + error);
+            return;
+          }
+          audio_engine.reviveVst3Slot(p.node_uuid, p.slot_uuid,
+                                      std::move(instance));
+        });
+  }
+}
 
 void MainComponent::chooseSessionPath(
     ChooserMode mode,

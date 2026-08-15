@@ -760,6 +760,42 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
                   .release())));
       return inv;
     }
+    case K::AddSlot: {
+      auto* node = find(e.uuid);
+      if (!node || e.slot == nullptr) return {};
+      celestrian::dsp::FxChain* chain = node->fxChain();
+      auto slots = chain->slots();
+      const int slot_count = (int)slots.size();
+      const int to =
+          e.index < 0 ? slot_count : juce::jlimit(0, slot_count, e.index);
+      Edit inv(K::RemoveSlot);
+      inv.uuid = e.uuid;
+      inv.s1 = e.slot->slotUuid();
+      slots.insert(slots.begin() + to, e.slot);
+      retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(
+          node->exchangeFxChain(
+              celestrian::dsp::FxChain::makeFromSlots(std::move(slots))
+                  .release())));
+      return inv;
+    }
+    case K::RemoveSlot: {
+      auto* node = find(e.uuid);
+      if (!node) return {};
+      celestrian::dsp::FxChain* chain = node->fxChain();
+      const int from = chain->indexOfSlot(e.s1);
+      if (from < 0) return {};
+      auto slots = chain->slots();
+      Edit inv(K::AddSlot);
+      inv.uuid = e.uuid;
+      inv.index = from;
+      inv.slot = slots[(size_t)from];  // the undo entry OWNS the slot
+      slots.erase(slots.begin() + from);
+      retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(
+          node->exchangeFxChain(
+              celestrian::dsp::FxChain::makeFromSlots(std::move(slots))
+                  .release())));
+      return inv;
+    }
     case K::Nop:
       return {};
   }
@@ -773,6 +809,12 @@ void AudioEngine::retireEdit(celestrian::Edit&& e) {
   retireOwned(std::move(e.buffer));
   retireOwned(std::move(e.node));
   retireOwned(std::move(e.node2));
+  // A chain slot rides the same grace: the chain that referenced it was
+  // itself just retired, so an in-flight callback may still process the
+  // slot. The deleter holds the shared_ptr until the grace passes.
+  if (e.slot != nullptr) {
+    retire([slot = std::move(e.slot)] {});
+  }
 }
 
 void AudioEngine::clearRedo() {
@@ -870,6 +912,10 @@ bool AudioEngine::loadSession(const juce::String& path) {
   clearHistory();  // a loaded session starts with no undo history
 
   juce::Logger::writeToLog("AudioEngine: session loaded from " + path);
+  // The ONE post-load hook (all load paths funnel through here —
+  // bridge, chooser, project manager): MainComponent uses it for the
+  // plugin revival sweep (docs/vst3.md §6).
+  if (on_session_loaded_) on_session_loaded_();
   return true;
 }
 
@@ -1492,6 +1538,102 @@ void AudioEngine::moveChainSlot(const juce::String& uuid,
   e.s1 = slot_uuid;
   e.index = new_index;
   record(std::move(e));
+}
+
+void AudioEngine::addVst3SlotToChain(
+    const juce::String& uuid, std::shared_ptr<celestrian::dsp::FxSlot> slot,
+    int index) {
+  if (slot == nullptr) return;
+  // Prepare BEFORE publication: the audio thread must never see an
+  // unprepared instance (prepareEffects' rule, applied to the arriving
+  // slot; the node lookup also guards a node deleted mid-instantiate).
+  auto* node = findNodeByUuid(root_node.get(), uuid);
+  if (node == nullptr) return;
+  double sample_rate = cached_sample_rate_.load();
+  if (sample_rate <= 0) sample_rate = kFallbackSampleRate;
+  slot->prepare(sample_rate);
+  slot->enabled.store(true);  // an added plugin arrives audible
+  celestrian::Edit e(celestrian::Edit::Kind::AddSlot);
+  e.uuid = uuid;
+  e.index = index;
+  e.slot = std::move(slot);
+  record(std::move(e));
+}
+
+void AudioEngine::removeChainSlot(const juce::String& uuid,
+                                  const juce::String& slot_uuid) {
+  // VST3 slots only for now: the built-in four are the panel's fixed
+  // cards (docs/vst3.md §6 — removal UI exists on plugin chips alone).
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
+    auto* slot = node->fxChain()->findSlot(slot_uuid);
+    if (slot == nullptr || juce::String(slot->typeId()) != "vst3") return;
+  } else {
+    return;
+  }
+  celestrian::Edit e(celestrian::Edit::Kind::RemoveSlot);
+  e.uuid = uuid;
+  e.s1 = slot_uuid;
+  record(std::move(e));
+}
+
+celestrian::dsp::Vst3Slot* AudioEngine::vst3SlotFor(
+    const juce::String& uuid, const juce::String& slot_uuid) {
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
+    return dynamic_cast<celestrian::dsp::Vst3Slot*>(
+        node->fxChain()->findSlot(slot_uuid));
+  }
+  return nullptr;
+}
+
+void AudioEngine::forEachVst3Placeholder(
+    const std::function<void(const juce::String& node_uuid,
+                             const juce::String& slot_uuid,
+                             const juce::String& plugin_uid)>& visit) {
+  // Message-thread walk over the ownership tree (root included — the
+  // master chain can carry plugins too).
+  std::function<void(celestrian::AudioNode&)> walk =
+      [&](celestrian::AudioNode& node) {
+        for (const auto& slot : node.fxChain()->slots()) {
+          if (auto* v = dynamic_cast<celestrian::dsp::Vst3Slot*>(slot.get()))
+            if (v->isMissing())
+              visit(node.getUuid(), v->slotUuid(), v->pluginUid());
+        }
+        if (auto* stack = dynamic_cast<celestrian::StackNode*>(&node))
+          for (const auto& child : stack->ownedChildren()) walk(*child);
+      };
+  walk(*root_node);
+}
+
+void AudioEngine::reviveVst3Slot(
+    const juce::String& uuid, const juce::String& slot_uuid,
+    std::unique_ptr<juce::AudioPluginInstance> instance) {
+  auto* node = findNodeByUuid(root_node.get(), uuid);
+  if (node == nullptr || instance == nullptr) return;
+  celestrian::dsp::FxChain* chain = node->fxChain();
+  const int at = chain->indexOfSlot(slot_uuid);
+  auto* placeholder =
+      dynamic_cast<celestrian::dsp::Vst3Slot*>(chain->findSlot(slot_uuid));
+  if (at < 0 || placeholder == nullptr || !placeholder->isMissing()) return;
+
+  // A LIVE twin: same slot uuid + identity, the kept state applied
+  // after prepare. Published as a successor chain; NOT an undo edit
+  // (revival restores what the session already means).
+  auto live = std::make_shared<celestrian::dsp::Vst3Slot>(
+      std::move(instance), placeholder->pluginUid(),
+      placeholder->displayName(), placeholder->fileOrIdentifier());
+  live->setSlotUuid(placeholder->slotUuid());
+  double sample_rate = cached_sample_rate_.load();
+  if (sample_rate <= 0) sample_rate = kFallbackSampleRate;
+  live->prepare(sample_rate);
+  live->restoreState(placeholder->stateBlob());
+  live->enabled.store(placeholder->enabled.load());
+
+  auto slots = chain->slots();
+  slots[(size_t)at] = std::move(live);
+  retireOwned(std::unique_ptr<celestrian::dsp::FxChain>(node->exchangeFxChain(
+      celestrian::dsp::FxChain::makeFromSlots(std::move(slots)).release())));
+  juce::Logger::writeToLog("AudioEngine: revived plugin slot " + slot_uuid +
+                           " on " + uuid);
 }
 
 void AudioEngine::setEffectScope(const juce::String& uuid, bool active) {

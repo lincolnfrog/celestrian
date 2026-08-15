@@ -819,6 +819,42 @@ test.describe('Effects rack (built-ins)', () => {
         await expect(group.locator('.fx-btn')).toHaveText('fx·1');
     });
 
+    test('VST3 chips: add from the picker, toggle, remove, undo', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const firstClip = page.locator('.lane[data-kind="clip"]').first();
+        await firstClip.locator('.fx-btn').click();
+        const fxRow = page.locator('.lane-fx');
+        await expect(fxRow.locator('.fx-card')).toHaveCount(4);
+
+        // "+" opens the picker listing the mock registry; picking adds
+        // a chip (arrives enabled) and the chain gains a vst3 entry.
+        await fxRow.locator('.fx-add').click();
+        const picker = fxRow.locator('.fx-picker');
+        await expect(picker.locator('.fx-picker-item')).toHaveCount(2);
+        await picker.locator('.fx-picker-item', { hasText: 'Aurora Reverb' }).click();
+        const chip = fxRow.locator('.fx-card.fx-vst3');
+        await expect(chip).toHaveCount(1);
+        await expect(chip.locator('.fx-vst3-name')).toHaveText('Aurora Reverb');
+        await expect(chip).not.toHaveClass(/off/);
+        await expect.poll(async () => {
+            const fx = (await clipState(page)).effects;
+            const entry = fx.chain.find(s => s.type === 'vst3');
+            return entry && entry.enabled;
+        }).toBe(true);
+        // The chip counts toward the rail's fx badge like any slot.
+        await expect(firstClip.locator('.fx-btn')).toHaveText('fx·1');
+
+        // Power toggles the slot off.
+        await chip.locator('.fx-power').click();
+        await expect(chip).toHaveClass(/off/);
+
+        // Remove, then undo brings the chip back.
+        await chip.locator('.fx-remove').click();
+        await expect(fxRow.locator('.fx-card.fx-vst3')).toHaveCount(0);
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect(fxRow.locator('.fx-card.fx-vst3')).toHaveCount(1);
+    });
+
     test('visualizations: every card draws; comp shows GR while crushing', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
         const firstClip = page.locator('.lane[data-kind="clip"]').first();

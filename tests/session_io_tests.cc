@@ -14,6 +14,7 @@
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
 #include "../src/dsp/fx_chain.h"
+#include "../src/dsp/vst3_slot.h"
 #include "../src/session_io.h"
 #include "../src/stack_node.h"
 #include "../src/timing.h"
@@ -56,6 +57,21 @@ class SessionIoTests : public juce::UnitTest {
         echo_slot->prepare((double)Q);
         echo_slot->setParam("mix", 0.42);
         echo_slot->enabled.store(true);
+      }
+      // A MISSING vst3 slot (docs/vst3.md §6): the save must round-trip
+      // its identity + state blob verbatim even with no plugin
+      // installed anywhere near this test.
+      {
+        juce::MemoryBlock vst3_state;
+        const float fake = 0.33f;
+        vst3_state.replaceAll(&fake, sizeof(fake));
+        auto slots = clip->fxChain()->slots();
+        auto ghost = std::make_shared<dsp::Vst3Slot>(
+            "VST3-ghost-uid", "Ghost Plugin", "/gone/Ghost.vst3", vst3_state);
+        ghost->enabled.store(true);
+        slots.push_back(std::move(ghost));
+        delete clip->exchangeFxChain(
+            dsp::FxChain::makeFromSlots(std::move(slots)).release());
       }
 
       // A deterministic ramp fills the committed buffer.
@@ -111,7 +127,8 @@ class SessionIoTests : public juce::UnitTest {
 
       // fx chain restored: order, enable, params, and slot identity.
       const auto& loaded_slots = c->fxChain()->slots();
-      expectEquals((int)loaded_slots.size(), 4, juce::String("4 slots"));
+      expectEquals((int)loaded_slots.size(), 5,
+                   juce::String("4 built-ins + the ghost vst3 slot"));
       expectEquals(juce::String(loaded_slots[0]->typeId()),
                    juce::String("echo"), juce::String("saved order restored"));
       expect(loaded_slots[0]->enabled.load(), "echo enabled restored");
@@ -120,6 +137,18 @@ class SessionIoTests : public juce::UnitTest {
              "echo mix restored");
       expect(fxMeta[0].getProperty("slot", "").toString().isNotEmpty(),
              "slot uuid persisted");
+
+      // The ghost vst3 slot: placeholder with identity + state intact.
+      expectEquals((int)c->fxChain()->slots().size(), 5,
+                   juce::String("vst3 slot survived the round trip"));
+      auto* ghost = dynamic_cast<dsp::Vst3Slot*>(c->fxChain()->slots()[4].get());
+      expect(ghost != nullptr && ghost->isMissing(), "loaded as placeholder");
+      expectEquals(ghost->pluginUid(), juce::String("VST3-ghost-uid"));
+      expect(ghost->enabled.load(), "enable flag persisted");
+      float restored = 0.0f;
+      ghost->stateBlob().copyTo(&restored, 0, sizeof(restored));
+      expectWithinAbsoluteError(restored, 0.33f, 1e-6f,
+                                "state blob verbatim through save+load");
 
       // Nested stack survived with its uuid and holds no island quantum
       // (only the root does).

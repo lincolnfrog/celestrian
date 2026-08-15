@@ -1,5 +1,6 @@
 #include "fx_chain.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace celestrian::dsp {
@@ -135,18 +136,55 @@ int FxChain::indexOfSlot(const juce::String& slot_uuid) const {
   return -1;
 }
 
+namespace {
+// The promotion scratch ceiling — matches the engine's mix_buffer
+// ceiling (blocks are never larger in practice; a larger one skips
+// promotion-needing slots, fail-silent).
+constexpr int kMaxPromotionBlock = 8192;
+}  // namespace
+
 void FxChain::prepare(double sample_rate) {
   for (const auto& slot : slots_) slot->prepare(sample_rate);
+  if (promotion_scratch_.empty() &&
+      std::any_of(slots_.begin(), slots_.end(),
+                  [](const auto& s) { return s->wantsStereo(); })) {
+    promotion_scratch_.assign((size_t)kMaxPromotionBlock, 0.0f);
+  }
 }
 
-void FxChain::process(float* x, int sample_count) {
-  for (const auto& slot : slots_)
-    if (slot->enabled.load()) slot->process(x, sample_count);
-}
-
-void FxChain::processStereo(float* l, float* r, int sample_count) {
-  for (const auto& slot : slots_)
-    if (slot->enabled.load()) slot->processStereo(l, r, sample_count);
+bool FxChain::run(float* l, float* r, int sample_count, bool stereo_in) {
+  bool stereo = stereo_in;
+  bool internal_right = false;  // r is the chain's own scratch
+  float* right = stereo ? r : nullptr;
+  for (const auto& slot : slots_) {
+    if (!slot->enabled.load()) continue;
+    if (!stereo && slot->wantsStereo()) {
+      // Q-V1 promotion at the first enabled VST3 slot: duplicate the
+      // mono signal into the right channel and go stereo from here.
+      if (r != nullptr) {
+        right = r;
+      } else if ((int)promotion_scratch_.size() >= sample_count) {
+        right = promotion_scratch_.data();
+        internal_right = true;
+      } else {
+        continue;  // no usable right buffer: skip the slot, fail silent
+      }
+      juce::FloatVectorOperations::copy(right, l, sample_count);
+      stereo = true;
+    }
+    if (stereo)
+      slot->processStereo(l, right, sample_count);
+    else
+      slot->process(l, sample_count);
+  }
+  if (internal_right) {
+    // Mono caller: fold the promoted pair back down, equal halves.
+    juce::FloatVectorOperations::multiply(l, 0.5f, sample_count);
+    juce::FloatVectorOperations::addWithMultiply(l, right, 0.5f,
+                                                 sample_count);
+    return false;
+  }
+  return stereo;
 }
 
 bool FxChain::anyEnabled() const {
@@ -162,7 +200,7 @@ int FxChain::enabledCount() const {
   return count;
 }
 
-juce::var FxChain::getMetadata() const {
+juce::var FxChain::getMetadata(bool include_persistent_state) const {
   juce::Array<juce::var> chain;
   for (const auto& slot : slots_) {
     juce::DynamicObject::Ptr o = new juce::DynamicObject();
@@ -170,6 +208,7 @@ juce::var FxChain::getMetadata() const {
     o->setProperty("type", slot->typeId());
     o->setProperty("enabled", slot->enabled.load());
     slot->fillParams(*o);
+    if (include_persistent_state) slot->fillPersistentExtras(*o);
     chain.add(juce::var(o.get()));
   }
   return juce::var(chain);

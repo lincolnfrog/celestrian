@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "../src/audio_engine.h"
+#include "../src/dsp/vst3_slot.h"
+#include "stub_plugin_instance.h"
 #include "test_utils.h"
 
 namespace celestrian {
@@ -361,6 +363,112 @@ class EngineBridgeTests : public juce::UnitTest {
       engine.moveChainSlot(uuid, echo_slot, 2);      // already there
       engine.moveChainSlot(uuid, "no-such-slot", 0); // unknown slot
       expectEquals(typeAt(2), juce::String("echo"), "no-op moves change nothing");
+    }
+
+    beginTest("addVst3SlotToChain / removeChainSlot: undoable, guarded");
+    {
+      AudioEngine engine;
+      engine.createNode("clip");
+      const juce::String uuid = lastTopLevelId(engine);
+
+      // The stub-backed slot (Q-V5) rides the same engine path the
+      // async instantiation completion uses.
+      auto slot = std::make_shared<dsp::Vst3Slot>(
+          std::make_unique<test_utils::StubPluginInstance>(0.5f), "Stub-uid",
+          "Stub Gain", "/stub/StubGain.vst3");
+      const juce::String vst3_slot_uuid = slot->slotUuid();
+      engine.addVst3SlotToChain(uuid, slot, -1);  // append
+
+      auto chainOf = [&]() {
+        return nodeVar(engine.getGraphState(), uuid)
+            .getProperty("effects", juce::var())
+            .getProperty("chain", juce::var());
+      };
+      expectEquals((int)chainOf().getArray()->size(), 5,
+                   juce::String("slot appended"));
+      const auto entry = chainOf()[4];
+      expectEquals(entry.getProperty("type", "").toString(),
+                   juce::String("vst3"));
+      expect((bool)entry.getProperty("enabled", false),
+             "an added plugin arrives audible");
+      expect(!(bool)entry.getProperty("missing", true), "live, not missing");
+      expectEquals((int)entry.getProperty("latency", -1),
+                   (int)test_utils::StubPluginInstance::kLatency,
+                   juce::String("latency published"));
+
+      // Undo removes it; redo restores THE SAME slot (instance kept by
+      // the undo entry).
+      engine.undo();
+      expectEquals((int)chainOf().getArray()->size(), 4,
+                   juce::String("undo removes the plugin"));
+      engine.redo();
+      expectEquals((int)chainOf().getArray()->size(), 5,
+                   juce::String("redo restores it"));
+      expectEquals(chainOf()[4].getProperty("slot", "").toString(),
+                   vst3_slot_uuid, juce::String("same slot identity"));
+
+      // removeChainSlot: vst3 only — a built-in refuses.
+      engine.removeChainSlot(uuid, slotIdOf(engine, uuid, "reverb"));
+      expectEquals((int)chainOf().getArray()->size(), 5,
+                   juce::String("built-ins are not removable"));
+      engine.removeChainSlot(uuid, vst3_slot_uuid);
+      expectEquals((int)chainOf().getArray()->size(), 4,
+                   juce::String("vst3 slot removed"));
+      engine.undo();
+      expectEquals(chainOf()[4].getProperty("slot", "").toString(),
+                   vst3_slot_uuid,
+                   juce::String("undo restores the removed plugin"));
+    }
+
+    beginTest("reviveVst3Slot: placeholder becomes live with kept state");
+    {
+      AudioEngine engine;
+      engine.createNode("clip");
+      const juce::String uuid = lastTopLevelId(engine);
+
+      // Install a placeholder directly (the loader's path).
+      juce::MemoryBlock state;
+      const float saved_gain = 0.25f;
+      state.replaceAll(&saved_gain, sizeof(saved_gain));
+      auto placeholder = std::make_shared<dsp::Vst3Slot>(
+          "Stub-uid", "Stub Gain", "/stub/StubGain.vst3", state);
+      placeholder->enabled.store(true);
+      const juce::String slot_uuid = placeholder->slotUuid();
+      {
+        auto* node_chain =
+            engine.vst3SlotFor(uuid, slot_uuid);  // null — not added yet
+        expect(node_chain == nullptr);
+      }
+      engine.addVst3SlotToChain(uuid, placeholder, -1);
+      // (addVst3SlotToChain force-enables; fine for this test.)
+
+      int visited = 0;
+      engine.forEachVst3Placeholder(
+          [&](const juce::String& node_uuid, const juce::String& s,
+              const juce::String& plugin_uid) {
+            ++visited;
+            expectEquals(node_uuid, uuid);
+            expectEquals(s, slot_uuid);
+            expectEquals(plugin_uid, juce::String("Stub-uid"));
+          });
+      expectEquals(visited, 1, juce::String("sweep finds the placeholder"));
+
+      engine.reviveVst3Slot(uuid, slot_uuid,
+                            std::make_unique<test_utils::StubPluginInstance>(
+                                0.9f));  // state should override this
+      auto* live = engine.vst3SlotFor(uuid, slot_uuid);
+      expect(live != nullptr && !live->isMissing(), "slot is live");
+      auto* stub =
+          static_cast<test_utils::StubPluginInstance*>(live->instance());
+      expectWithinAbsoluteError(stub->gain, 0.25f, 1e-6f,
+                                "kept state applied to the live twin");
+      expect(live->enabled.load(), "enable flag carried over");
+      int still_missing = 0;
+      engine.forEachVst3Placeholder(
+          [&](const juce::String&, const juce::String&, const juce::String&) {
+            ++still_missing;
+          });
+      expectEquals(still_missing, 0, juce::String("sweep is now empty"));
     }
 
     beginTest(

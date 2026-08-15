@@ -14,6 +14,7 @@
 
 import { ctx } from './context.js';
 import { el, setText } from './sv_util.js';
+import { callNative } from '../backend.js';
 import { EFFECT_SCHEMA } from '../effect_schema.js';
 import {
     drawEqViz, drawCompViz, drawEchoViz, drawReverbViz,
@@ -82,8 +83,97 @@ export function buildFxRow(row, lane) {
         body.appendChild(card);
     });
 
+    // The add-plugin affordance (docs/vst3.md phase 3): a "+" chip at
+    // the end of the body opening a picker fed by getKnownPlugins.
+    const add = el('button', 'fx-add mono', {
+        textContent: '＋',
+        title: 'Add a VST3 plugin to this chain',
+    });
+    add.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await openPluginPicker(row, add);
+    });
+    body.appendChild(add);
+
     row.append(rail, body);
     return row;
+}
+
+/** Build + show the plugin picker under the "+" chip. One picker at a
+ * time; outside click / Escape close it (the popover conventions). */
+async function openPluginPicker(row, anchor) {
+    closePluginPicker();
+    const menu = el('div', 'fx-picker');
+    menu.appendChild(el('div', 'fx-picker-head mono', { textContent: 'ADD PLUGIN' }));
+    let plugins = [];
+    try {
+        plugins = await callNative('getKnownPlugins') || [];
+    } catch (err) { /* backend without plugin support: empty list */ }
+    if (!plugins.length) {
+        menu.appendChild(el('div', 'fx-picker-empty',
+            { textContent: 'No plugins known — scan from the 🔌 Plugins panel' }));
+    }
+    plugins.forEach(p => {
+        const item = el('button', 'fx-picker-item', {
+            textContent: (p.isInstrument ? '🎹 ' : '') + p.name,
+            title: p.file,
+        });
+        item.addEventListener('click', () => {
+            ctx.cb.onAddPlugin(row._lane.ownerId, p.uid, p.name);
+            closePluginPicker();
+        });
+        menu.appendChild(item);
+    });
+    anchor.parentElement.appendChild(menu);
+    menu._closeOnOutside = (e) => {
+        if (!menu.contains(e.target) && e.target !== anchor) closePluginPicker();
+    };
+    document.addEventListener('click', menu._closeOnOutside);
+    activePicker = menu;
+}
+
+let activePicker = null;
+function closePluginPicker() {
+    if (!activePicker) return;
+    document.removeEventListener('click', activePicker._closeOnOutside);
+    activePicker.remove();
+    activePicker = null;
+}
+
+/** Build one VST3 chip: power, name (click = open the native editor),
+ * missing/latency badges, remove. Values patch in place like cards. */
+function buildVst3Chip(row, body, entry) {
+    const chip = el('div', 'fx-card fx-vst3');
+    chip.dataset.fx = 'vst3';
+    chip.dataset.slot = entry.slot;
+
+    const head = el('div', 'fx-card-head');
+    const power = el('button', 'fx-power', { textContent: '⏻', title: 'Enable / disable' });
+    power.addEventListener('click', () => {
+        const cur = chainEntry(row._lane, chip.dataset.slot);
+        if (cur) ctx.cb.onSetSlotEnabled(row._lane.ownerId, cur.slot, !cur.enabled, cur.name);
+    });
+    const title = el('button', 'fx-title fx-vst3-name', {
+        textContent: entry.name || 'plugin',
+        title: 'Open the plugin editor',
+    });
+    title.addEventListener('click', () => {
+        const cur = chainEntry(row._lane, chip.dataset.slot);
+        if (cur && !cur.missing)
+            ctx.cb.onOpenPluginEditor(row._lane.ownerId, cur.slot);
+    });
+    const badge = el('span', 'fx-vst3-badge mono');
+    const remove = el('button', 'fx-remove', { textContent: '✕', title: 'Remove plugin' });
+    remove.addEventListener('click', () => {
+        ctx.cb.onRemoveChainSlot(row._lane.ownerId, chip.dataset.slot,
+            entry.name);
+    });
+    head.append(power, title, badge, remove);
+    chip.appendChild(head);
+    // Insert before the "+" chip so the affordance stays last.
+    const add = body.querySelector('.fx-add');
+    body.insertBefore(chip, add || null);
+    return chip;
 }
 
 /** The chain entry backing a card's slot uuid (null when absent). */
@@ -102,25 +192,55 @@ export function patchFxRow(row, lane) {
     const effects = lane.effects;
     if (!effects || !Array.isArray(effects.chain)) return;
     const body = row.querySelector('.fx-body');
-    // Keep the DOM cards in chain order — but only MOVE nodes when the
-    // order actually changed (a 20 Hz re-append would disturb an
-    // in-flight slider drag).
     if (body) {
+        // Reconcile VST3 chips: create for new slots, drop stale ones.
+        const chainSlots = new Set(effects.chain.map(e => e.slot));
+        [...body.querySelectorAll('.fx-vst3')].forEach(chip => {
+            if (!chainSlots.has(chip.dataset.slot)) chip.remove();
+        });
+        effects.chain.forEach(entry => {
+            if (entry.type !== 'vst3') return;
+            if (!body.querySelector(`.fx-card[data-slot="${entry.slot}"]`))
+                buildVst3Chip(row, body, entry);
+        });
+
+        // Keep the DOM cards + chips in chain order — but only MOVE
+        // nodes when the order actually changed (a 20 Hz re-append
+        // would disturb an in-flight slider drag). Built-in cards bind
+        // lazily by type; chips are keyed by slot uuid at creation.
         const known = effects.chain.filter(e =>
-            EFFECT_SCHEMA.some(f => f.type === e.type));
-        const want = known.map(e => e.type).join();
-        const have = [...body.children].map(c => c.dataset.fx).join();
+            e.type === 'vst3' || EFFECT_SCHEMA.some(f => f.type === e.type));
+        const cardFor = entry =>
+            body.querySelector(`.fx-card[data-slot="${entry.slot}"]`) ||
+            body.querySelector(`.fx-card[data-fx="${entry.type}"]`);
+        const want = known.map(e => e.slot).join();
+        const have = [...body.querySelectorAll('.fx-card')]
+            .map(c => c.dataset.slot).join();
         if (want !== have) {
+            const add = body.querySelector('.fx-add');
             known.forEach(entry => {
-                const card = row.querySelector(`.fx-card[data-fx="${entry.type}"]`);
-                if (card) body.appendChild(card);
+                const card = cardFor(entry);
+                if (card) body.insertBefore(card, add || null);
             });
         }
     }
     effects.chain.forEach(entry => {
-        const fx = EFFECT_SCHEMA.find(f => f.type === entry.type);
-        if (!fx) return;  // unknown slot type (future VST3 chip)
         const state = entry;
+        if (entry.type === 'vst3') {
+            const chip = body &&
+                body.querySelector(`.fx-card[data-slot="${entry.slot}"]`);
+            if (!chip) return;
+            chip.classList.toggle('off', !state.enabled);
+            chip.querySelector('.fx-power').classList.toggle('on', !!state.enabled);
+            setText(chip.querySelector('.fx-vst3-name'), state.name || 'plugin');
+            setText(chip.querySelector('.fx-vst3-badge'),
+                state.missing ? 'missing'
+                    : state.latency > 0 ? state.latency + ' smp' : '');
+            chip.classList.toggle('missing', !!state.missing);
+            return;
+        }
+        const fx = EFFECT_SCHEMA.find(f => f.type === entry.type);
+        if (!fx) return;  // unknown slot type
         const card = row.querySelector(`.fx-card[data-fx="${fx.type}"]`);
         if (!card) return;
         card.dataset.slot = entry.slot;

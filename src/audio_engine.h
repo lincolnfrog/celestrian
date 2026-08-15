@@ -9,6 +9,7 @@
 
 #include "audio_node.h"
 #include "clip_node.h"
+#include "dsp/vst3_slot.h"
 #include "edit.h"
 #include "graph_snapshot.h"
 #include "session_io.h"
@@ -257,6 +258,48 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                     const juce::String& key, double value);
   void moveChainSlot(const juce::String& uuid, const juce::String& slot_uuid,
                      int new_index);
+  /**
+   * Inserts a PREPARED-by-us VST3 slot (docs/vst3.md phase 3) as an
+   * undoable AddSlot edit; index < 0 appends. The slot arrives from
+   * MainComponent's async instantiation completion (the engine owns no
+   * format manager) and lands ENABLED — an added plugin is audible.
+   * Message thread.
+   */
+  void addVst3SlotToChain(const juce::String& uuid,
+                          std::shared_ptr<celestrian::dsp::FxSlot> slot,
+                          int index);
+  /** Undoable RemoveSlot edit; VST3 slots only (the built-in four are
+   * the panel's fixed cards). The undo entry owns the removed slot —
+   * and its plugin instance — until history drops it (reclaimer). */
+  void removeChainSlot(const juce::String& uuid,
+                       const juce::String& slot_uuid);
+  /** The live Vst3Slot for (node, slot), or null — the editor-window
+   * lookup. Message thread. */
+  celestrian::dsp::Vst3Slot* vst3SlotFor(const juce::String& uuid,
+                                         const juce::String& slot_uuid);
+  /** Visits every MISSING vst3 slot in the graph (root included) —
+   * the load-time revival sweep's discovery pass. Message thread. */
+  void forEachVst3Placeholder(
+      const std::function<void(const juce::String& node_uuid,
+                               const juce::String& slot_uuid,
+                               const juce::String& plugin_uid)>& visit);
+  /** Swaps a live instance into a placeholder slot (same uuid, kept
+   * state applied). Not undoable — revival restores what the session
+   * already means. Message thread. */
+  void reviveVst3Slot(const juce::String& uuid, const juce::String& slot_uuid,
+                      std::unique_ptr<juce::AudioPluginInstance> instance);
+  /** The device rate, or the fallback before any device started — the
+   * rate plugin instantiation should request. Message thread. */
+  double currentSampleRateOrFallback() const {
+    const double rate = cached_sample_rate_.load();
+    return rate > 0 ? rate : kFallbackSampleRate;
+  }
+  /** Fired at the end of every successful loadSession (bridge, chooser,
+   * and project-manager loads all funnel through it) — the plugin
+   * revival sweep's trigger. Message thread. */
+  void setOnSessionLoaded(std::function<void()> hook) {
+    on_session_loaded_ = std::move(hook);
+  }
   /** Panel open/closed: gates ALL scope capture + telemetry for a node. */
   void setEffectScope(const juce::String& uuid, bool active);
 
@@ -352,6 +395,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void retire(std::function<void()> deleter) override;
 
  private:
+  std::function<void()> on_session_loaded_;
   /**
    * Runs every pending deleter. Only call when no audio callback can be in
    * flight (device stopped, or after removeAudioCallback in the dtor).

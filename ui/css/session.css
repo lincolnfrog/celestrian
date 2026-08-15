@@ -1265,6 +1265,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 .fx-body {
+    position: relative; /* anchors .fx-picker */
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
@@ -1774,3 +1775,69 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     cursor: pointer;
 }
 .creation-save-btn:hover { background: var(--lane); }
+
+/* --- VST3 chips + plugin picker (docs/vst3.md phase 3) ------------
+   A .fx-vst3 chip is a compact .fx-card: head only (power, name =
+   open-editor, badge, remove) — the plugin's real UI lives in its
+   native floating window, not here. The picker is the "+" popover. */
+.fx-card.fx-vst3 {
+    flex: 0 0 auto;
+    min-width: 0;
+    align-self: flex-start;
+}
+.fx-card.fx-vst3 .fx-card-head { margin-bottom: 0; }
+.fx-vst3-name {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 2px;
+}
+.fx-card.fx-vst3.missing .fx-vst3-name {
+    color: var(--rec);
+    text-decoration: line-through;
+    cursor: default;
+}
+.fx-vst3-badge { font-size: 0.62rem; color: var(--text-dim); }
+.fx-remove {
+    width: 22px; height: 22px;
+    border: none; border-radius: 50%;
+    background: none; color: var(--text-dim);
+    cursor: pointer; padding: 0;
+}
+.fx-remove:hover { color: var(--rec); }
+.fx-add {
+    flex: 0 0 auto;
+    align-self: flex-start;
+    min-width: 34px; height: 34px;
+    border: 1px dashed var(--lane-line);
+    border-radius: 10px;
+    background: none; color: var(--text-dim);
+    cursor: pointer;
+}
+.fx-add:hover { color: var(--tape); border-color: var(--tape); }
+.fx-picker {
+    position: absolute;
+    z-index: 60; /* above the popover tier */
+    background: var(--panel);
+    border: 1px solid var(--lane-line);
+    border-radius: 10px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 220px;
+    overflow-y: auto;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+.fx-picker-head { font-size: 0.62rem; color: var(--text-dim); padding: 2px 6px; }
+.fx-picker-empty { font-size: 0.72rem; color: var(--text-dim); padding: 4px 6px; }
+.fx-picker-item {
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    color: var(--text);
+    padding: 4px 8px;
+    cursor: pointer;
+}
+.fx-picker-item:hover { background: var(--lane); }

@@ -120,6 +120,7 @@ target_sources(Celestrian PRIVATE
     src/plugin_host_service.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
+    src/dsp/vst3_slot.cc
 )
 
 # Link JUCE modules
@@ -211,6 +212,8 @@ target_sources(CelestrianTests PRIVATE
     tests/solo_tests.cc
     tests/track_template_tests.cc
     tests/plugin_host_tests.cc
+    tests/vst3_slot_tests.cc
+    tests/plugin_host_integration_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc
@@ -219,6 +222,7 @@ target_sources(CelestrianTests PRIVATE
     src/plugin_host_service.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
+    src/dsp/vst3_slot.cc
 )
 
 target_link_libraries(CelestrianTests PRIVATE
@@ -242,3 +246,47 @@ target_compile_definitions(CelestrianTests PRIVATE
 )
 
 celestrian_enable_asio(CelestrianTests)
+
+# --- In-repo test VST3 plugin (docs/vst3.md phase 3) -------------------
+# "Celestrian Test Gain": a deterministic real-binary validation target
+# for the hosting path (test_plugin/test_gain_plugin.cc). The
+# integration test (tests/plugin_host_integration_tests.cc) scans,
+# instantiates, and processes the ACTUAL built .vst3 — the real-binary
+# twin of the in-tree stub. OFF for plain app builds if you want the
+# shortest compile: it only exists for validation.
+option(CELESTRIAN_BUILD_TEST_PLUGIN
+    "Build the in-repo test VST3 used by hosting validation" ON)
+if (CELESTRIAN_BUILD_TEST_PLUGIN)
+    juce_add_plugin(CelestrianTestGain
+        PRODUCT_NAME "Celestrian Test Gain"
+        COMPANY_NAME "Celestrian"
+        BUNDLE_ID "com.celestrian.testgain"
+        PLUGIN_MANUFACTURER_CODE Cele
+        PLUGIN_CODE Ctg1
+        FORMATS VST3
+        IS_SYNTH FALSE
+        NEEDS_MIDI_INPUT FALSE
+        NEEDS_MIDI_OUTPUT FALSE
+        COPY_PLUGIN_AFTER_BUILD FALSE
+    )
+    target_sources(CelestrianTestGain PRIVATE
+        test_plugin/test_gain_plugin.cc
+    )
+    target_link_libraries(CelestrianTestGain PRIVATE
+        juce::juce_audio_processors
+        juce::juce_audio_utils
+    )
+    target_compile_definitions(CelestrianTestGain PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_VST3_CAN_REPLACE_VST2=0
+    )
+
+    # The integration test hosts the freshly built bundle: build it
+    # first, and tell the test where the binary landed (the test walks
+    # up from there to the .vst3 bundle root).
+    add_dependencies(CelestrianTests CelestrianTestGain_VST3)
+    target_compile_definitions(CelestrianTests PRIVATE
+        CELESTRIAN_TEST_GAIN_VST3_BINARY_DIR="$<TARGET_FILE_DIR:CelestrianTestGain_VST3>"
+    )
+endif()
