@@ -21,7 +21,7 @@ import { pinFrame, unpinFrame } from './drag_pin.js';
 import { buildWindowDims } from './dims.js';
 import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
          slideCutTarget, segsPeriod, trimBoundTo,
-         trimBoundForPeriod, cutBounds } from '../map_edit.js';
+         trimBoundForPeriod, cutBounds, slideSegs } from '../map_edit.js';
 import { mapOffset } from '../time_map.js';
 import { posMod } from '../math_utils.js';
 
@@ -56,7 +56,7 @@ const CUT_HANDLE_W_PX = 14;
 const SEAM_HANDLE_HALF_PX = 7;
 /* Coincident trim grips nudge apart by this much ("loop end ][ loop
  * start"). */
-const GRIP_PAIR_NUDGE_PX = 3;
+const GRIP_PAIR_NUDGE_PX = 8;
 /* Preview badge: edge-aware text anchoring inside this fraction of the
  * lane keeps the label from clipping off the ends. */
 const BADGE_EDGE_FRAC = 0.15;
@@ -794,15 +794,20 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     const coincident = Math.abs(startPos - endPos) < 1e-6 ||
         Math.abs(Math.abs(startPos - endPos) - cycleQ) < 1e-6;
     if (coincident && startPos > 1e-6 && startPos < cycleQ - 1e-6) {
+        // Named, and visible at rest (owner report 2026-08-18: the bare
+        // ][ pair mid-lane "looks like a split I never made" — a loop
+        // whose top rests mid-phase must SAY so).
         const top = el('div', 'loop-top-chip mono', {
-            textContent: '↺',
-            title: 'The loop\'s top — its end wraps to its start here' });
+            textContent: '↺ loop top',
+            title: 'The loop\'s top: its END wraps to its START here — the ' +
+                'window was performed mid-cycle. Grips: ] end · start [' });
         top.style.left = pct(startPos, cycleQ);
         o.appendChild(top);
     }
     ['start', 'end'].forEach(edge => {
         const basePos = edge === 'start' ? startPos : endPos;
-        const grip = el('div', 'win-bracket latent ' + edge + ' trim-grip');
+        const grip = el('div', 'win-bracket latent ' + edge + ' trim-grip' +
+            (coincident ? ' paired' : ''));
         grip.style.left = coincident
             ? 'calc(' + pct(basePos, cycleQ) +
               (edge === 'start' ? ' + ' + GRIP_PAIR_NUDGE_PX + 'px)'
@@ -831,10 +836,8 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
                     // (the anchoring law keeps content in place; only
                     // which stretch is heard changes). Clamped to the
                     // take's extent; a slide never trims.
-                    const lo = -segs[0][0];
-                    const hi = st.totalQ - segs[segs.length - 1][1];
-                    const delta = Math.max(lo, Math.min(hi, rawQ - bound0));
-                    const next = segs.map(([s, e]) => [s + delta, e + delta]);
+                    const { segs: next, deltaQ: delta } =
+                        slideSegs(segs, rawQ - bound0, st.totalQ);
                     const edgeQ = edge === 'start'
                         ? next[0][0] : next[next.length - 1][1];
                     const p = segsPeriod(next, st.totalQ);

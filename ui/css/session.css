@@ -1859,3 +1859,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--tape);
     border-color: var(--tape);
 }
+
+/* --- Mid-phase loop top (owner report 2026-08-18) -------------------
+   A window performed mid-cycle loops with its top mid-lane: the end
+   grip and the start grip meet there ("] end · start [") and the wrap
+   seam in the waveform looks like a cut. Name it at rest — the chip
+   reads "↺ loop top" — and keep the paired grips visible so BOTH stay
+   findable (the end grip used to hide 3px behind the start). */
+.loop-top-chip { opacity: 0.85; }
+.win-bracket.latent.trim-grip.paired { opacity: 0.55; }
+.lane-body:hover .win-bracket.latent.trim-grip.paired { opacity: 0.8; }

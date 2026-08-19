@@ -1284,4 +1284,90 @@ test.describe('Creation menu (Q17)', () => {
             return st.nodes.length === 1 && !!st.nodes[0].isRecording;
         })).toBe(true);
     });
+
+    test('trim a long take: left handle to 6Q, then right handle to 9Q', async ({ page }) => {
+        // Owner repro 2026-08-18: "record a 10Q clip, drag the left
+        // handle to 6Q and let go, then try to drag the right handle to
+        // 9Q — the right handle is gone and there is a weird thing in
+        // the middle that looks like a split." The window [6, 10) on a
+        // take performed from 1Q loops 4Q with its TOP at cycle phase
+        // 2Q (anchoring law), so in the heard view the loop's end and
+        // start grips MEET mid-lane under a "↺ loop top" chip — that is
+        // the "split"; the right handle is the END grip of that pair.
+        // Real mouse input throughout (hit-tested).
+        await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
+        const Q = await mockQ(page);
+        // Track 1: the 1Q definer. Track 2: a 10Q take from 1Q.
+        const ids = await page.evaluate(async Q => {
+            const c = window.__celestrianTest.callNative;
+            const adv = window.__celestrianTest.advanceBy;
+            const id1 = await c('createNode', 'clip', '');
+            await c('startRecordingInNode', id1);
+            adv(Q);
+            await c('stopRecordingInNode', id1);
+            const id2 = await c('createNode', 'clip', '');
+            await c('startRecordingInNode', id2);
+            adv(10 * Q - 10);
+            await c('stopRecordingInNode', id2);
+            adv(20);
+            return { id1, id2 };
+        }, Q);
+        const clip2 = () => page.evaluate(async id => {
+            const st = await window.__celestrianTest.callNative('getGraphState');
+            return st.nodes.find(n => n.id === id);
+        }, ids.id2);
+        await expect.poll(async () => (await clip2()).duration).toBe(10 * Q);
+        const lane = page.locator('.lane[data-kind="clip"]').nth(1);
+        const body = lane.locator('.lane-body');
+        await expect(body.locator('.win-bracket.start')).toHaveCount(1);
+
+        // STEP 1 — the left (start) bracket to 6Q of the 10Q lane
+        // (mid-Q offset: only the period snap can land exactly on 6).
+        const box = await body.boundingBox();
+        await body.hover();  // latent brackets reveal on hover
+        await dragTo(page, body.locator('.win-bracket.start'),
+            box.x + box.width * (6.3 / 10), box.y + box.height / 2, 8);
+        await expect.poll(async () => {
+            const n = await clip2();
+            return [n.loopStart / Q, n.loopEnd / Q].join(',');
+        }).toBe('6,10');
+
+        // The heard view: a 4Q loop, top mid-lane. BOTH grips exist,
+        // are named by the loop-top chip, and never overlap (the end
+        // grip hides no more) — and nothing looks like a cut band.
+        const start = body.locator('.trim-grip.start');
+        const end = body.locator('.trim-grip.end');
+        await expect(start).toHaveCount(1);
+        await expect(end).toHaveCount(1);
+        await expect(body.locator('.loop-top-chip')).toHaveText(/loop top/);
+        await expect(body.locator('.cut-band, .seam-handle')).toHaveCount(0);
+        const sb = await start.boundingBox();
+        const eb = await end.boundingBox();
+        expect(sb.x).toBeGreaterThan(eb.x + eb.width - 1); // "] end · start ["
+        expect(Math.abs(sb.x - box.x - box.width / 2)).toBeLessThan(box.width * 0.05);
+
+        // STEP 2 — the right (END) grip to 9Q. The grab expands the
+        // lane to the raw take; without pointer warp (mock) the handle
+        // glues to the pointer, so a slow drag to the raw 9Q lands
+        // the bound there (period 3Q).
+        await body.hover();
+        const ebox = await end.boundingBox();
+        await page.mouse.move(ebox.x + ebox.width / 2, ebox.y + ebox.height / 2);
+        await page.mouse.down();
+        await page.waitForTimeout(220);                    // engage (hold)
+        await page.mouse.move(ebox.x + ebox.width / 2 + 6, ebox.y + ebox.height / 2);
+        await expect(body).toHaveClass(/inspecting/);      // raw take open
+        const raw = await body.boundingBox();
+        await page.mouse.move(raw.x + raw.width * (9.2 / 10), raw.y + raw.height / 2,
+            { steps: 12 });
+        await page.mouse.up();
+        await expect.poll(async () => {
+            const n = await clip2();
+            return [n.loopStart / Q, n.loopEnd / Q].join(',');
+        }).toBe('6,9');
+        // A 3Q loop performed from 7Q sits at phase 0: grips at the
+        // frame edges again, no mid-lane pair.
+        await expect(body.locator('.loop-top-chip')).toHaveCount(0);
+        await expect(body.locator('.win-chip')).toHaveText(/3Q/);
+    });
 });

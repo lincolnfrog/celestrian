@@ -412,7 +412,12 @@ indirection were both considered and rejected):**
   material; the old display dimmed its own wrap as if it were a
   repeat), correct waveform slicing everywhere, cross-lane phase
   alignment (I2) preserved. The loop top is a marked ↺ point with the
-  paired trim grips slightly separated and drag badges labeled "loop
+  paired trim grips separated (16 px since 2026-08-18 — the end grip
+  hid 3 px behind the start: owner repro "drag the left handle to 6Q,
+  the right handle is gone, a split-looking thing mid-lane"; the pair is
+  now visible at rest under a "↺ loop top" chip that NAMES the mid-
+  phase wrap; e2e "trim a long take" + tests/trim_drag.test.mjs pin
+  the recipe) and drag badges labeled "loop
   start/end". LIVE SPLICE: seam/band/grip drags stream throttled
   `setSegments` commits — the new loop is AUDIBLE (and its waveform
   visible) while dragging; `Edit::Segments` coalesces in the undo log

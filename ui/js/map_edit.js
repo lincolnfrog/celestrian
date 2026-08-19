@@ -219,3 +219,18 @@ export function trimBoundForPeriod(segs, edge, targetP, totalQ) {
     }
     return first;
 }
+
+/** ⌥ FREE SLIDE (owner request 2026-08-18): move the whole covered set
+ * by `deltaQ` — any fractional amount — with the period HELD, so Q
+ * coherence survives (the anchoring law keeps content in place; only
+ * which stretch of the take is heard changes). The delta is clamped so
+ * the set stays inside [0, totalQ]; a slide never trims. Returns
+ * { segs, deltaQ } with the clamped delta actually applied. A full-span
+ * set (nothing to slide against) comes back unchanged. */
+export function slideSegs(segs, deltaQ, totalQ) {
+    const cov = (segs && segs.length) ? segs : [[0, totalQ]];
+    const lo = -cov[0][0];
+    const hi = totalQ - cov[cov.length - 1][1];
+    const d = Math.max(lo, Math.min(hi, deltaQ));
+    return { segs: cov.map(([s, e]) => [s + d, e + d]), deltaQ: d };
+}
