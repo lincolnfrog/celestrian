@@ -112,3 +112,9 @@ whichever instrument wants to start, Q is born, build.
   channel indices load as-is).
 - Cross-rate load (the QTime storage makes it possible without a
   re-cut; not yet implemented).
+- **Export (WAV/MP3 mixdown)** — deferred until the sequencer / song
+  structure module exists (owner ruling 2026-08-19): the session loops,
+  so "how long is the piece" has no answer yet. When it lands, the
+  cheap pre-sequencer form is a master-bus bounce of exactly N island
+  cycles (the master cycle is well-defined today); full arrangements
+  and MP3 wait for song structure.

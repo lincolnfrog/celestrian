@@ -38,7 +38,11 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     await recordTake('', 1000, { stopEarly: 0, settle: 0 });
     const Q = getState().quantum;
     assert.equal(Q, 1000, 'Q established by the 1Q definer');
-    const c2 = await recordTake('', 10 * Q, { stopEarly: 0, settle: 0 });
+    // Q established → the stop must land BEFORE the boundary and settle
+    // across it (helpers.mjs defaults): a stop exactly ON a boundary
+    // pads a whole extra Q (nextStopBoundary — stops always pad
+    // forward, owner ruling 2026-07-10) and the take never commits.
+    const c2 = await recordTake('', 10 * Q);
     assert.equal(nodeById(c2).duration, 10 * Q, 'a 10Q take');
     assert.equal((nodeById(c2).origin || 0) / Q, 1, 'performed from 1Q');
 
@@ -115,7 +119,7 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     // cycle 6Q (lcm 1, 3, 6); trimming clip 2 to [6Q, 8Q) (2Q ∤ 6Q's
     // cycle owner... 2 % 6 != 0) is a sub-loop under clip 3's cycle →
     // the frame belongs to clip 3, the epoch stays put.
-    await recordTake('', 6 * Q, { stopEarly: 0, settle: 0 });
+    await recordTake('', 6 * Q);
     const epochBefore = getState().islandEpoch || 0;
     await callNative('setSegments', c2, [6 * Q, 8 * Q]);
     assert.equal(getState().islandEpoch || 0, epochBefore,

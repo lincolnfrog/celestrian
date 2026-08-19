@@ -887,8 +887,12 @@ test.describe('Effects rack (built-ins)', () => {
         await expect(midiLane.locator('.input-btn')).toBeDisabled();
 
         // Selecting the instrument lane makes it the keyboard's target:
-        // the backend flag follows and the chip lights (♪ MIDI).
-        await midiLane.locator('.lane-rail').click();
+        // the backend flag follows and the chip lights (♪ MIDI). Click
+        // the NAME, not the rail's center — the center is layout-
+        // dependent and can land on a rail button (Linux font metrics
+        // put the solo button there), which the rail's click guard
+        // swallows (buttons keep their own verbs).
+        await midiLane.locator('.rail-name').click();
         const lastState = () => page.evaluate(async () => {
             const st = await window.celestrian.callNative('getGraphState');
             return st.nodes[st.nodes.length - 1];
@@ -899,7 +903,7 @@ test.describe('Effects rack (built-ins)', () => {
 
         // Selecting an AUDIO lane leaves the target where it was (tweak
         // another track without silencing the keys).
-        await audioClip.locator('.lane-rail').click();
+        await audioClip.locator('.rail-name').click();
         await page.waitForTimeout(200);
         expect((await lastState()).midiArmed).toBe(true);
         await expect(midiLane.locator('.input-btn')).toHaveClass(/on/);
@@ -1238,7 +1242,9 @@ test.describe('Creation menu (Q17)', () => {
             await call('renameNode', st.nodes[0].id, 'Keys');
             await call('setNodeInput', st.nodes[0].id, 1);
         });
-        await lane.locator('.lane-rail').click();
+        // Click the name, not the rail center (same guard-swallow hazard
+        // as the MIDI-target test: the center can land on a rail button).
+        await lane.locator('.rail-name').click();
         await page.click('#create-track-btn');
         const input = page.locator('.creation-save-input');
         await expect(input).toBeVisible();
@@ -1390,5 +1396,57 @@ test.describe('Creation menu (Q17)', () => {
         const ps = await body.locator('.trim-grip.start').boundingBox();
         const pe = await body.locator('.trim-grip.end').boundingBox();
         expect(ps.x).toBeGreaterThan(pe.x + pe.width + 8);   // "] end · start ["
+    });
+});
+
+// Project menu (docs/projects.md): the transport's "Project ▾" button.
+// Regression pin for 2026-08-19: a lost getProjectInfo poll used to
+// null-poison projectInfo, after which every click threw before the
+// menu opened — the button read as simply dead. The specs below drive
+// the REAL buildProjectMenu/refreshProjectInfo path through the mock.
+test.describe('Project menu (docs/projects.md)', () => {
+
+    test.beforeEach(async ({ page }) => {
+        await applyRate(page);
+        await page.goto('/?mock=true');
+        await page.waitForFunction(
+            () => typeof window.__celestrianTest?.loadScenario === 'function',
+            { timeout: 5000 });
+    });
+
+    test('Project ▾ opens the menu; pre-birth verbs read right', async ({ page }) => {
+        await page.click('#project-menu-btn');
+        await expect(page.locator('#project-menu')).toBeVisible();
+        // Pre-birth: save-now offers to create today's project, and
+        // duplicate (fork forward) is disabled — nothing to fork yet.
+        await expect(page.locator('#project-menu .pm-item').first())
+            .toHaveText('Save now — creates today’s project');
+        await expect(page.locator(
+            '#project-menu .pm-item:has-text("Duplicate project")'))
+            .toBeDisabled();
+        // Click-away closes (the document-level closer).
+        await page.click('#session', { position: { x: 40, y: 40 } });
+        await expect(page.locator('#project-menu')).not.toBeVisible();
+    });
+
+    test('save births the project; rename edits the name, never the id', async ({ page }) => {
+        await page.click('#project-menu-btn');
+        await page.click('#project-menu .pm-item:has-text("Save now")');
+        // Birth: the button label becomes the dated id (YYYYMMDD-NN ▾).
+        await expect(page.locator('#project-menu-btn'))
+            .toHaveText(/^\d{8}-\d{2} ▾$/);
+        const id = (await page.locator('#project-menu-btn').textContent())
+            .replace(' ▾', '');
+        // Rename via the inline row: display name changes...
+        await page.click('#project-menu-btn');
+        await page.fill('#project-menu .pm-inline input', 'Slow Burn');
+        await page.click('#project-menu .pm-inline button:has-text("Rename")');
+        await expect(page.locator('#project-menu-btn'))
+            .toHaveText('Slow Burn ▾');
+        // ...and the id (folder) survives underneath, in the recents row.
+        await page.click('#project-menu-btn');
+        await expect(page.locator(
+            `#project-menu .pm-item:has-text("Slow Burn · ${id}")`))
+            .toBeVisible();
     });
 });

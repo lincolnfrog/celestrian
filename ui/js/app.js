@@ -585,6 +585,12 @@ let projectInfo = { id: '', name: '', born: false };
 function refreshProjectInfo(announceSave = false) {
     return callNative('getProjectInfo').then(raw => {
         const info = parseMaybeJson(raw);
+        // A lost bridge call resolves null (bridge.js contract: never
+        // rejects). Keep the last good state — assigning it poisoned
+        // projectInfo permanently, and every later click on the button
+        // threw on `projectInfo.born` BEFORE the menu opened (the dead
+        // "Project ▾" button, owner report 2026-08-19).
+        if (!info || typeof info !== 'object') return;
         const wasBorn = projectInfo.born;
         projectInfo = info;
         // The menu button IS the project's identity in the chrome: quiet
@@ -687,7 +693,9 @@ function buildProjectMenu(menu) {
             'Template save failed'));
 
     callNative('listTemplates').then(raw => {
-        const templates = parseMaybeJson(raw);
+        // `|| []`: a lost bridge call resolves null — the menu simply
+        // shows no template section rather than dying mid-build.
+        const templates = parseMaybeJson(raw) || [];
         if (!templates.length) return;
         sep();
         head('New from template');
@@ -698,7 +706,7 @@ function buildProjectMenu(menu) {
                 .then(() => refreshProjectInfo())));
     });
     callNative('listRecentProjects').then(raw => {
-        const recents = parseMaybeJson(raw);
+        const recents = parseMaybeJson(raw) || [];
         if (!recents.length) return;
         sep();
         head('Recent projects');
