@@ -16,6 +16,7 @@ import {
 } from './state.js';
 import { pushUndo } from './undo.js';
 import { committedCycle, effectiveCycle } from './cycles.js';
+import { setMidiArmed } from './effects.js';
 
 export const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
 
@@ -166,6 +167,13 @@ export function startRecordingInNode(id) {
             mapArm = { map, period, C, heardEpoch: state.islandEpoch };
         }
     }
+
+    // MIDI takes (phase 5, engine parity ClipNode::startRecording): an
+    // instrument slot on the clip makes the take notes, not audio —
+    // and record MIDI-arms it (AudioEngine::startRecordingInNode).
+    const chain = (node.effects && node.effects.chain) || [];
+    node.contentKind = chain.some(s => s.isInstrument) ? 'midi' : 'audio';
+    if (node.contentKind === 'midi' && !node.midiArmed) setMidiArmed(node.id, true);
 
     node.isRecording = true;
 

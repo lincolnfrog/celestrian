@@ -71,6 +71,7 @@ export function wireWindow(o, lane, vm, body, win) {
     ['start', 'end'].forEach(edge => {
         const bracket = brackets[edge];
         let ghost = null;
+        let grab = null;
         bracket.addEventListener('pointerdown', e => {
             e.preventDefault();
             selectOnly(lane.id); // grabbing a handle claims the track
@@ -83,6 +84,11 @@ export function wireWindow(o, lane, vm, body, win) {
             ghost.classList.remove('dragging', 'latent');
             ghost.classList.add('snap-ghost');
             o.appendChild(ghost);
+            // ⌥ FREE SLIDE needs the grab point: the window at the grab
+            // and the frame-Q under the pointer (deltas from here).
+            const r0 = body.getBoundingClientRect();
+            grab = { win: { ...cur },
+                     q: ((e.clientX - r0.left) / r0.width) * laneCycleQ - anchorQ };
         });
         bracket.addEventListener('pointermove', e => {
             if (!body._winDrag || !ghost) return;
@@ -90,6 +96,24 @@ export function wireWindow(o, lane, vm, body, win) {
             // Frame Q under the pointer → content Q for the snap math
             const rawQ =
                 ((e.clientX - r.left) / r.width) * laneCycleQ - anchorQ;
+            // ⌥ FREE SLIDE (owner request 2026-08-18): the grabbed edge
+            // follows the pointer by ANY fractional amount and the OTHER
+            // end moves by the same delta — the window length is held,
+            // so Q coherence survives (the anchoring law keeps content
+            // in place; only which stretch is heard changes). Clamped to
+            // the take's extent. Not for the Q-definer (its brackets
+            // define Q; there is nothing to slide against).
+            if (e.altKey && grab && !lane.isQDefiner) {
+                const len = grab.win.endQ - grab.win.startQ;
+                let s = grab.win.startQ + (rawQ - grab.q);
+                s = Math.max(0, Math.min(maxQ - len, s));
+                const t = { startQ: s, endQ: s + len };
+                bracket.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), laneCycleQ);
+                const other = brackets[edge === 'start' ? 'end' : 'start'];
+                if (other) other.style.left = pct(anchorQ + (edge === 'start' ? t.endQ : t.startQ), laneCycleQ);
+                previewSnap(t, edge, ghost);
+                return;
+            }
             // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
             // not snapping to it. The handle position is the landing; a
             // small min length keeps Q positive. Clamp to the RAW

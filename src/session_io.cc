@@ -136,9 +136,32 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     o->setProperty("contextCycleQ",
                    qvar(timing::fromSamples(
                        opts.strip_performances ? 0 : clip.contextCycle(), q)));
-    const bool hasAudio = sDur > 0;
+    // MIDI takes (docs/vst3.md §8, phase 5 — Q-V4 ruling): the note
+    // sequence lives inline, positions as QTime on the island exchange
+    // rate like every other musical fact: [[num, den, byte...], ...]
+    // in content order (base-relative — a collapsed take saves as its
+    // window, exactly like the WAV path).
+    const bool isMidi = clip.contentKind() == ClipNode::ContentKind::Midi;
+    const bool hasAudio = sDur > 0 && !isMidi;
+    const bool hasMidi = sDur > 0 && isMidi;
     o->setProperty("hasAudio", hasAudio);
     if (hasAudio) writeClipWav(clip, duration, audioDir, opts.incremental);
+    if (isMidi) o->setProperty("contentKind", "midi");
+    if (hasMidi) {
+      juce::Array<juce::var> events;
+      const int64_t base = clip.getContentBase();
+      for (const MidiEvent& e : clip.midiSequence().snapshot()) {
+        const int64_t rel = e.pos - base;
+        if (rel < 0 || rel >= duration) continue;
+        const timing::QTime pos = timing::fromSamples(rel, q);
+        juce::Array<juce::var> ev;
+        ev.add((double)pos.num);
+        ev.add((double)pos.den);
+        for (int k = 0; k < (int)e.size; ++k) ev.add((int)e.bytes[k]);
+        events.add(ev);
+      }
+      o->setProperty("midi", events);
+    }
   } else {
     const auto& stack = static_cast<const StackNode&>(node);
     o->setProperty("x", node.x_pos.load());
@@ -195,6 +218,29 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
       juce::AudioBuffer<float> audio;
       if (readClipWav(audioDir.getChildFile(uuid + ".wav"), audio))
         clip->loadCommitted(audio, ctx);
+    } else if (o->getProperty("contentKind").toString() == "midi" &&
+               duration > 0) {
+      // MIDI take: [[num, den, byte...], ...] → content positions in
+      // samples through the island exchange rate (Q-V4).
+      std::vector<MidiEvent> events;
+      if (auto* arr = o->getProperty("midi").getArray()) {
+        events.reserve((size_t)arr->size());
+        for (const auto& ev : *arr) {
+          auto* fields = ev.getArray();
+          if (!fields || fields->size() < 3) continue;
+          MidiEvent e;
+          e.pos = timing::toSamples(
+              timing::qtime((int64_t)(double)(*fields)[0],
+                            (int64_t)(double)(*fields)[1]),
+              q);
+          const int size = std::min(3, fields->size() - 2);
+          e.size = (juce::uint8)size;
+          for (int k = 0; k < size; ++k)
+            e.bytes[k] = (juce::uint8)(int)(*fields)[k + 2];
+          events.push_back(e);
+        }
+      }
+      clip->loadCommittedMidi(std::move(events), ctx);
     }
     node = std::move(clip);
   }

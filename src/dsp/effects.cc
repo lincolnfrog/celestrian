@@ -219,17 +219,30 @@ void FxEcho::processStereo(float* l, float* r, int n) {
 // ===== Reverb =====
 
 void FxReverb::prepare(double sampleRate) {
+  // Apply the law BEFORE setSampleRate: juce::Reverb's level smoothers
+  // snap to their targets on reset, so the first block runs at our
+  // dry/wet instead of ramping in from Freeverb's defaults.
+  applyParams();
   reverb_.setSampleRate(sampleRate);
   reverb_.reset();
-  dirty_.store(true);
+  dirty_.store(false);
 }
 
 void FxReverb::applyParams() {
   juce::Reverb::Parameters p;
   p.roomSize = juce::jlimit(0.0f, 1.0f, size.load());
   p.damping = juce::jlimit(0.0f, 1.0f, damp.load());
-  p.wetLevel = juce::jlimit(0.0f, 1.0f, mix.load());
-  p.dryLevel = 1.0f;
+  // MIX LAW: an equal-power crossfade, unity-preserving — dry cos(θ),
+  // wet sin(θ) with θ = mix·π/2 (mix 0 = bit-exact dry, mix 1 = fully
+  // wet, mix 0.5 = both at −3 dB). juce::Reverb SCALES its levels
+  // internally (dry ×2, wet ×3 — Freeverb's convention, where the
+  // defaults are 0.4/0.33); passing dry = 1.0 boosted the dry signal
+  // +6 dB the moment the slot enabled (field: "reverb makes the track
+  // louder", 2026-08-18). Divide the scales back out here.
+  const float m = juce::jlimit(0.0f, 1.0f, mix.load());
+  const float theta = m * juce::MathConstants<float>::halfPi;
+  p.wetLevel = std::sin(theta) / 3.0f;
+  p.dryLevel = std::cos(theta) / 2.0f;
   p.width = 1.0f;
   reverb_.setParameters(p);
 }

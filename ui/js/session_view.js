@@ -27,3 +27,4 @@
 export { initSessionView } from './session_view/init.js';
 export { patchSessionView } from './session_view/patch.js';
 export { mapDragPinQ, mapDragPinFoldQ } from './session_view/drag_pin.js';
+export { activeSelectedId } from './session_view/selection.js';

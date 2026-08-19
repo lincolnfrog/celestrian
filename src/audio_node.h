@@ -6,6 +6,7 @@
 #include <atomic>
 
 #include "dsp/fx_chain.h"
+#include "midi_input_queue.h"
 #include "timing.h"
 
 namespace celestrian {
@@ -109,6 +110,17 @@ struct ProcessContext {
   // live play-through target). Null in unit tests driving nodes
   // directly and on engines with no MIDI devices.
   const juce::MidiBuffer* live_midi = nullptr;
+  // MIDI recording facts (docs/vst3.md §8, phase 5). `midi_history` is
+  // the arrival-indexed history ring (midi_input_queue.h) MIDI takes
+  // capture from — the note twin of the pre-record ring; null in unit
+  // tests driving nodes directly (takes then capture from live_midi
+  // at block offsets, the live-block fallback). `midi_latency` is the
+  // compensation for a MIDI arrival: the performer plays against what
+  // they HEAR, and a key pressed on the heard beat reaches the callback
+  // OUTPUT-latency later — unlike audio there is no input-side device
+  // delay to add. Content position of an arrival = heard time − this.
+  const MidiHistory* midi_history = nullptr;
+  int midi_latency = 0;
 
   // The innermost enclosing ACTIVE map (empty when none): set by a
   // mapping stack in childContext for its whole subtree, alongside

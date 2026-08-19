@@ -855,39 +855,54 @@ test.describe('Effects rack (built-ins)', () => {
         await expect(fxRow.locator('.fx-card.fx-vst3')).toHaveCount(1);
     });
 
-    test('MIDI arm: instrument chip reveals the lane toggle; single-armed', async ({ page }) => {
+    test('MIDI target follows selection: instrument lane lights its MIDI chip', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
-        const firstClip = page.locator('.lane[data-kind="clip"]').first();
+        const audioClip = page.locator('.lane[data-kind="clip"]').first();
 
-        // No instrument yet: the arm affordance stays hidden.
-        await expect(firstClip.locator('.midi-btn')).toBeHidden();
+        // No ♪ toggle anywhere: monitoring follows selection (owner ruling
+        // 2026-08-18) — there is no arm verb. Audio lanes keep the input
+        // picker.
+        await expect(page.locator('.midi-btn')).toHaveCount(0);
+        await expect(audioClip.locator('.input-btn')).not.toHaveClass(/midi/);
 
-        // The mock registry's synth only exists after a scan.
+        // A fresh EMPTY track with the mock synth on it (the registry's
+        // synth only exists after a scan) — the engine parity case: an
+        // empty clip whose chain carries an instrument IS a MIDI track.
         await page.evaluate(async () => {
-            await window.celestrian.callNative('scanPlugins');
+            const c = window.celestrian;
+            await c.callNative('scanPlugins');
             for (let i = 0; i < 5; i++) {
-                const s = await window.celestrian.callNative('getPluginScanStatus');
+                const s = await c.callNative('getPluginScanStatus');
                 if (!s.scanning) break;
             }
+            await c.callNative('createNode', 'clip', '');
+            const st = await c.callNative('getGraphState');
+            const fresh = st.nodes[st.nodes.length - 1];
+            const synth = (await c.callNative('getKnownPlugins')).find(p => p.isInstrument);
+            await c.callNative('addPluginToChain', fresh.id, synth.uid, -1);
         });
+        const midiLane = page.locator('.lane[data-kind="clip"]').last();
+        await expect(midiLane.locator('.input-btn')).toHaveClass(/midi/);
+        await expect(midiLane.locator('.input-btn')).toHaveText(/MIDI/);
+        await expect(midiLane.locator('.input-btn')).toBeDisabled();
 
-        await firstClip.locator('.fx-btn').click();
-        const fxRow = page.locator('.lane-fx');
-        await fxRow.locator('.fx-add').click();
-        await fxRow.locator('.fx-picker-item', { hasText: 'Cinder Synth' }).click();
-        await expect(fxRow.locator('.fx-card.fx-vst3')).toHaveCount(1);
+        // Selecting the instrument lane makes it the keyboard's target:
+        // the backend flag follows and the chip lights (♪ MIDI).
+        await midiLane.locator('.lane-rail').click();
+        const lastState = () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            return st.nodes[st.nodes.length - 1];
+        });
+        await expect.poll(async () => (await lastState()).midiArmed).toBe(true);
+        await expect(midiLane.locator('.input-btn')).toHaveClass(/on/);
+        await expect(midiLane.locator('.input-btn')).toHaveText(/♪ MIDI/);
 
-        // Instrument present → ♪ appears; arming lights it and the
-        // backend flag follows.
-        await expect(firstClip.locator('.midi-btn')).toBeVisible();
-        await firstClip.locator('.midi-btn').click();
-        await expect(firstClip.locator('.midi-btn')).toHaveClass(/on/);
-        await expect.poll(async () => (await clipState(page)).midiArmed).toBe(true);
-
-        // Toggling off disarms.
-        await firstClip.locator('.midi-btn').click();
-        await expect(firstClip.locator('.midi-btn')).not.toHaveClass(/on/);
-        await expect.poll(async () => (await clipState(page)).midiArmed).toBe(false);
+        // Selecting an AUDIO lane leaves the target where it was (tweak
+        // another track without silencing the keys).
+        await audioClip.locator('.lane-rail').click();
+        await page.waitForTimeout(200);
+        expect((await lastState()).midiArmed).toBe(true);
+        await expect(midiLane.locator('.input-btn')).toHaveClass(/on/);
     });
 
     test('visualizations: every card draws; comp shows GR while crushing', async ({ page }) => {

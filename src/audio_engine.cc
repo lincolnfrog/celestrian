@@ -618,6 +618,10 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           inv.iepoch = clip->getIntrinsicDuration();
           inv.d1 = (double)clip->getContentBase();
           inv.d2 = (double)clip->recordedLength();
+          // MIDI content splices its note sequence too (phase 5) —
+          // BEFORE spliceToMap rewrites the shared facts (base).
+          if (clip->contentKind() == celestrian::ClipNode::ContentKind::Midi)
+            inv.midi = clip->spliceMidiToMap(*m);
           inv.buffer = clip->spliceToMap(*m);
           if (const auto* old = clip->exchangeMapOverride(nullptr)) {
             retireOwned(old);
@@ -639,6 +643,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // the displaced spliced buffer, and put the map back.
         retireOwned(clip->unspliceFromMap(std::move(e.buffer), e.iq, e.iepoch,
                                           (int64_t)e.d1, (int64_t)e.d2));
+        if (e.midi) retireOwned(clip->unspliceMidi(std::move(e.midi)));
         const auto* fresh = new celestrian::timing::TimeMap(e.tmap);
         if (const auto* prev = clip->exchangeMapOverride(fresh)) {
           retireOwned(prev);
@@ -1072,6 +1077,17 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   // untouched.
   for (size_t i = 0; i < targets.size(); ++i) {
     targets[i]->startRecording(through_map_cycles[i]);
+  }
+
+  // MIDI takes (phase 5): recording a MIDI track means "my keyboard
+  // goes here" — MIDI-arm it so the performer hears the instrument
+  // they are recording into (single-armed: the first MIDI target of a
+  // group takes it; capture itself reads the input regardless).
+  for (auto* target : targets) {
+    if (target->contentKind() == celestrian::ClipNode::ContentKind::Midi) {
+      if (!target->midi_armed.load()) setMidiArmed(target->getUuid(), true);
+      break;
+    }
   }
 }
 
@@ -2030,14 +2046,17 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     }
   }
 
-  // --- Live MIDI drain (docs/vst3.md §8, phase 4) ---
+  // --- Live MIDI drain (docs/vst3.md §8, phases 4–5) ---
   // One drain per callback: everything that arrived since the last
-  // block lands at offset 0 (sub-block onset jitter ≤ one device
-  // block — inaudible for monitoring; recording timestamps are a
-  // phase-5 concern). The buffer is preallocated; addEvent never
-  // grows it here.
+  // block, spread across it by arrival timestamp (sub-block onsets for
+  // play-through AND recording). The buffer is preallocated; addEvent
+  // never grows it here. Every event then joins the arrival history
+  // (input-clock indexed) that recording clips capture from — the
+  // note twin of the pre-record ring write above.
   live_midi_buffer_.clear();
-  midi_input_queue_.drainTo(live_midi_buffer_);
+  midi_input_queue_.drainTo(live_midi_buffer_, num_samples,
+                            juce::Time::getMillisecondCounterHiRes() * 0.001);
+  midi_history_.pushBlock(live_midi_buffer_, input_clock_);
 
   if (root_node) {
     celestrian::ProcessContext pc;
@@ -2064,6 +2083,18 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       pc.input_latency = cached_input_latency_.load();
       pc.output_latency = cached_output_latency_.load();
     }
+    // MIDI compensation (phase 5): a key pressed on the HEARD beat
+    // arrives output-latency after the callback that rendered it — no
+    // input-side device delay. The driver's output report is the
+    // estimate; when the round trip was measured and the driver reports
+    // no output figure, half the round trip is the honest guess.
+    {
+      const int out_reported = cached_output_latency_.load();
+      pc.midi_latency = out_reported > 0 ? out_reported
+                        : measured >= 0  ? (int)(measured / 2)
+                                         : 0;
+    }
+    pc.midi_history = &midi_history_;
     // Solo canon (Q16): one snapshot scan per callback answers "is any
     // solo lit anywhere?" — leaves then resolve their own ancestry.
     // (The scan happens below once `snap` is loaded.)

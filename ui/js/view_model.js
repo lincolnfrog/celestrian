@@ -243,6 +243,9 @@ function groupArmState(node) {
  *   oneShot: boolean,      //  Q5 period-source knob (context = one-shot)
  *   inputChannelR: number, //  right input of a stereo pair (−1 = mono)
  *   channels: number,      //  content channel count for the lane badge
+ *   hasInstrument: boolean, // chain carries an instrument slot (♪ toggle)
+ *   midiArmed: boolean,    //  THE live MIDI target (single-armed)
+ *   isMidi: boolean,       //  MIDI track: records notes, no audio input
  * }}
  */
 function laneCommon(node, state) {
@@ -271,6 +274,12 @@ function laneCommon(node, state) {
         hasInstrument: !!(node.effects && Array.isArray(node.effects.chain) &&
             node.effects.chain.some(s => s.isInstrument)),
         midiArmed: !!node.midiArmed,
+        // Content kind (phase 5): a MIDI track records notes from the
+        // keyboard into its instrument — the audio-input picker is
+        // meaningless on it. Published by the backend as contentKind:
+        // 'midi' for a note take, or an empty clip whose chain carries
+        // an instrument (its next take records notes).
+        isMidi: node.contentKind === 'midi',
         // Mixer facts (published on every node): pan/balance −1..+1 and
         // the volume fader 0..1 (absent = unity — pre-gain states);
         // clips also carry their stereo wiring (right input of a pair,

@@ -132,6 +132,41 @@ class EffectsTests : public juce::UnitTest {
       expectLessThan(late, early, "tail decays");
     }
 
+    beginTest("Reverb: mix law is unity-preserving (no +6 dB dry boost)");
+    {
+      // Field 2026-08-18: enabling the reverb made the track LOUDER —
+      // juce::Reverb scales dry ×2 internally and we passed dry = 1.0.
+      // Pin the law: mix 0 is bit-exact dry; a steady sine at any mix
+      // never comes out hotter than ~+1 dB of unity (equal-power sums
+      // of a dry tone and its own diffuse tail sit near unity).
+      const float dry_rms = sineRms(440.0, sr, 44100, [](float*, int) {});
+      {
+        dsp::FxReverb rv;
+        rv.mix.store(0.0f);
+        rv.prepare(sr);  // prepare applies (and snaps) the law
+        std::vector<float> x(4096), ref(4096);
+        for (size_t i = 0; i < x.size(); ++i)
+          ref[i] = x[i] = (float)std::sin(0.02 * (double)i);
+        rv.process(x.data(), (int)x.size());
+        float max_err = 0.0f;
+        for (size_t i = 0; i < x.size(); ++i)
+          max_err = std::max(max_err, std::abs(x[i] - ref[i]));
+        expectLessThan(max_err, 1e-4f, "mix 0 passes dry through at unity");
+      }
+      for (const float mix : {0.3f, 0.5f, 1.0f}) {
+        dsp::FxReverb rv;
+        rv.mix.store(mix);
+        rv.prepare(sr);
+        const float out = sineRms(440.0, sr, 88200, [&](float* x, int n) {
+          rv.process(x, n);
+        });
+        expectLessThan(out, dry_rms * 1.15f,
+                       "mix " + juce::String(mix) + " does not boost");
+        expectGreaterThan(out, dry_rms * 0.3f,
+                          "mix " + juce::String(mix) + " still sounds");
+      }
+    }
+
     beginTest("Chain: disabled is bit-identical passthrough; default order");
     {
       auto chain = dsp::FxChain::makeDefault();

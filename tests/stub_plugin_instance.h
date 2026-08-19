@@ -64,9 +64,10 @@ class StubPluginInstance : public juce::AudioPluginInstance {
 /**
  * The stub INSTRUMENT (phase 4): acceptsMidi, generates a constant
  * 0.25 level while any note is held (note-on sets held, note-off
- * clears it — block-granular on purpose: deterministic assertions,
- * no envelope math). OVERWRITES the buffer, the chain-head instrument
- * semantic (docs/vst3.md §8).
+ * clears it — SAMPLE-ACCURATE from the event's block offset, no
+ * envelope math: deterministic assertions on where a note starts and
+ * stops). OVERWRITES the buffer, the chain-head instrument semantic
+ * (docs/vst3.md §8). Counts note-ons/offs for the phase-5 tests.
  */
 class StubSynthInstance : public juce::AudioPluginInstance {
  public:
@@ -74,6 +75,8 @@ class StubSynthInstance : public juce::AudioPluginInstance {
 
   bool note_held = false;
   int blocks_processed = 0;
+  int note_ons = 0;
+  int note_offs = 0;
 
   void fillInPluginDescription(juce::PluginDescription& d) const override {
     d.name = "Stub Synth";
@@ -89,18 +92,33 @@ class StubSynthInstance : public juce::AudioPluginInstance {
   void processBlock(juce::AudioBuffer<float>& buffer,
                     juce::MidiBuffer& midi) override {
     ++blocks_processed;
+    // Overwrite: an instrument GENERATES (the incoming buffer is the
+    // chain's promoted silence on the play-through path). Segment by
+    // event offset: [prev, offset) carries the state before the event.
+    const int n = buffer.getNumSamples();
+    int cursor = 0;
+    auto fillTo = [&](int end) {
+      for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+        juce::FloatVectorOperations::fill(buffer.getWritePointer(ch) + cursor,
+                                          note_held ? kLevel : 0.0f,
+                                          end - cursor);
+      }
+      cursor = end;
+    };
     for (const auto metadata : midi) {
       const auto message = metadata.getMessage();
-      if (message.isNoteOn()) note_held = true;
-      if (message.isNoteOff()) note_held = false;
+      const int at = juce::jlimit(0, n, metadata.samplePosition);
+      if (at > cursor) fillTo(at);
+      if (message.isNoteOn()) {
+        note_held = true;
+        ++note_ons;
+      }
+      if (message.isNoteOff()) {
+        note_held = false;
+        ++note_offs;
+      }
     }
-    // Overwrite: an instrument GENERATES (the incoming buffer is the
-    // chain's promoted silence on the play-through path).
-    for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
-      juce::FloatVectorOperations::fill(buffer.getWritePointer(ch),
-                                        note_held ? kLevel : 0.0f,
-                                        buffer.getNumSamples());
-    }
+    if (cursor < n) fillTo(n);
   }
   double getTailLengthSeconds() const override { return 0.0; }
   bool acceptsMidi() const override { return true; }

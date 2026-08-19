@@ -120,15 +120,6 @@ export function patchRail(row, lane, vm) {
         fxBtn.classList.toggle('on', lane.fxCount > 0);
     }
 
-    // MIDI arm (docs/vst3.md §8): visible only with an instrument slot
-    // in the chain; lit while this lane is THE play-through target.
-    const midiBtn = row.querySelector('.midi-btn');
-    if (midiBtn) {
-        const show = lane.hasInstrument ? '' : 'none';
-        if (midiBtn.style.display !== show) midiBtn.style.display = show;
-        midiBtn.classList.toggle('on', !!lane.midiArmed);
-    }
-
     // Period-source toggle (Q5): ↺ = loop, 1× = one-shot.
     const ps = row.querySelector('.oneshot-btn');
     if (ps) {
@@ -142,7 +133,22 @@ export function patchRail(row, lane, vm) {
     }
 
     const input = row.querySelector('.input-btn');
-    if (input) {
+    if (input && lane.isMidi) {
+        // A MIDI track (phase 5) records notes from the keyboard into
+        // its instrument — there is no audio input to pick. The chip
+        // says so instead of offering a channel, and LIGHTS while this
+        // lane is the keyboard's target (monitoring follows selection —
+        // app.js syncMidiTarget; there is no arm toggle).
+        setText(input, lane.midiArmed ? '♪ MIDI' : 'MIDI');
+        const t = lane.midiArmed
+            ? 'MIDI track — your keyboard plays this instrument now'
+            : 'MIDI track — select it to play its instrument from your keyboard';
+        if (input.title !== t) input.title = t;
+        input.classList.add('midi');
+        input.classList.toggle('on', !!lane.midiArmed);
+        if (!input.disabled) input.disabled = true;
+    } else if (input) {
+        input.classList.remove('midi', 'on');
         // −1 = device default (no explicit assignment yet). A stereo
         // pair shows both channels, compact ("3/4" — the rail foot runs
         // at the rail's full width, no room for a prefix).

@@ -29,7 +29,9 @@ void Vst3Slot::doPrepare(double sample_rate) {
                                   kMaxBlockSize);
   instance_->prepareToPlay(sample_rate, kMaxBlockSize);
   // The MIDI scratch must never grow on the audio thread.
-  midi_scratch_.ensureSize(4096);
+  // Sized for a dense note-clip block plus live events (phase 5), so
+  // addEvents never grows it on the audio thread.
+  midi_scratch_.ensureSize(65536);
 }
 
 void Vst3Slot::process(float* x, int sample_count) {

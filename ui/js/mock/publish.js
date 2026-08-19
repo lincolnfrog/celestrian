@@ -56,6 +56,18 @@ export function enrichNodes(nodes) {
         // parity: metadata always carries them; hand-written scenario
         // fixtures predate the fields, so normalize at the boundary).
         updatedNode.midiArmed = !!node.midiArmed;
+        // Content kind (phase 5, engine parity ClipNode::isMidiClip): a
+        // MIDI take, or an empty clip whose chain carries an instrument
+        // slot (its next take records notes) — the rail shows a MIDI
+        // chip instead of the audio-input picker.
+        if (node.type !== 'stack') {
+            const chain = updatedNode.effects.chain || [];
+            const instrument = chain.some(s => s.isInstrument);
+            updatedNode.contentKind = node.contentKind === 'midi' ||
+                (instrument && !((node.duration || 0) > 0) && !node.isRecording)
+                ? 'midi' : 'audio';
+            updatedNode.midiEvents = node.midiEvents || 0;
+        }
         if (typeof updatedNode.gain !== 'number') updatedNode.gain = 1;
         if (typeof updatedNode.pan !== 'number') updatedNode.pan = 0;
         if (!updatedNode.periodSource) updatedNode.periodSource = 'own';

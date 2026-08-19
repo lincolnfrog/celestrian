@@ -6,7 +6,8 @@
 
 import { callNative, log, getState } from './backend.js';
 import { deriveViewModel } from './view_model.js';
-import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ }
+import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
+         activeSelectedId }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initAudioSettings } from './audio_settings.js';
@@ -167,9 +168,12 @@ async function onArm(lane) {
         return;
     }
     await callNative('startRecordingInNode', lane.id);
+    // A MIDI track (phase 5) records notes from the keyboard into its
+    // instrument (the engine MIDI-arms it on record) — say so.
+    const midi = targets.every(c => c.contentKind === 'midi');
     setLogLine(targets.length > 1
         ? `Recording ${targets.length} empty tracks (full ones just play)`
-        : 'Recording');
+        : midi ? 'Recording MIDI — play your keyboard' : 'Recording');
 }
 
 /* R = the record key (field request 2026-08-12): press the selected
@@ -436,6 +440,46 @@ function patchCalibrateButton(state) {
     }
 }
 
+/* ---------- MIDI target follows selection ---------- */
+/**
+ * The keyboard plays the SELECTED instrument track (owner ruling
+ * 2026-08-18: "it should just always be monitoring if it's selected" —
+ * the ♪ toggle is gone). Reconciled every poll: the desired target is a
+ * MIDI take in progress if there is one (record MIDI-arms its clip in
+ * the engine; the performer is playing INTO it), else the most recently
+ * selected lane whose chain carries an instrument. Nothing selected /
+ * an audio lane selected keeps the last target, so tweaking another
+ * track never silences the keys. One bridge call per change, and only
+ * when the published state disagrees (no re-sends while a call is in
+ * flight).
+ */
+let midiTargetPending = null;
+function hasInstrumentSlot(node) {
+    return !!(node && node.effects && Array.isArray(node.effects.chain) &&
+        node.effects.chain.some(s => s.isInstrument));
+}
+function syncMidiTarget() {
+    let desired = null;
+    for (const n of lastNodesById.values()) {
+        if (n.contentKind === 'midi' && (n.isRecording || n.isPendingStart)) {
+            desired = n.id;
+            break;
+        }
+    }
+    if (!desired) {
+        const sel = lastNodesById.get(activeSelectedId());
+        if (hasInstrumentSlot(sel)) desired = sel.id;
+    }
+    if (!desired) { midiTargetPending = null; return; }
+    const node = lastNodesById.get(desired);
+    if (node.midiArmed) { midiTargetPending = null; return; }
+    if (midiTargetPending === desired) return;  // call in flight
+    midiTargetPending = desired;
+    callNative('setMidiArmed', desired, true).catch(() => {
+        midiTargetPending = null;
+    });
+}
+
 /* ---------- polling ---------- */
 /**
  * The render loop: poll graph state every POLL_MS, derive the view
@@ -483,6 +527,7 @@ async function startPolling() {
                     sampleRate: state.perf ? state.perf.sampleRate : 0,
                 });
                 patchCalibrateButton(state);
+                syncMidiTarget();
                 // Master monitor: engine-side smoothed output RMS →
                 // needle sweep (vu_meter.js; CSS transition interpolates
                 // between polls). The fader mirrors the root's gain.
@@ -814,9 +859,6 @@ function initApp() {
                 `${name || 'plugin'} removed (⌘Z to undo)`),
         onOpenPluginEditor: (id, slotUuid) =>
             callNative('openPluginEditor', id, slotUuid),
-        onMidiArm: (id, on) =>
-            call('setMidiArmed', [id, on],
-                on ? 'MIDI live — play your keyboard' : 'MIDI off'),
         onArm,
         onRecordKey,
     });

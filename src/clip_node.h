@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "audio_node.h"
+#include "midi_sequence.h"
 
 namespace celestrian {
 
@@ -46,6 +47,19 @@ class ClipNode : public AudioNode {
    * flips.
    */
   enum class RecState : int { Idle = 0, Armed, Capturing, PendingStop };
+
+  /**
+   * What a take's CONTENT is (docs/vst3.md §8, phase 5): AUDIO — a
+   * sample buffer captured from the assigned device input(s); MIDI — a
+   * note sequence captured from the MIDI input, rendered through the
+   * chain's instrument slot. Decided at ARM from the clip's own chain
+   * (an instrument slot makes it a MIDI track — Q-V3's MidiClipNode
+   * folded into ClipNode, because the take lifecycle is content-
+   * agnostic and lives here) and fixed for the take's lifetime; the
+   * kernel playback equation, arm/stop/commit math, through-map fold,
+   * epoch re-base and undo entries are shared verbatim.
+   */
+  enum class ContentKind : int { Audio = 0, Midi };
 
   // The default rate is a convenience for unit tests; the engine passes
   // the actual device rate when creating clips (P0-5).
@@ -101,6 +115,19 @@ class ClipNode : public AudioNode {
   bool isStereoInput() const { return preferred_input_channel_right >= 0; }
   /** Channel count of the clip's CONTENT (committed or capturing). */
   int contentChannels() const { return content_.load()->getNumChannels(); }
+  /** The content kind of the current/last take (Audio until a MIDI
+   * take is armed). Audio-thread safe. */
+  ContentKind contentKind() const { return (ContentKind)content_kind_.load(); }
+  /** True when this clip records/renders NOTES: it holds MIDI content,
+   * or it is empty and its chain carries an instrument slot (the next
+   * take will be MIDI). Message thread (metadata / arm decisions). */
+  bool isMidiClip() const {
+    if (contentKind() == ContentKind::Midi) return true;
+    return duration_samples.load() <= 0 && !isArmedOrRecording() &&
+           fxChain()->hasInstrumentSlot();
+  }
+  /** The note sequence (D3: message thread reads only while Idle). */
+  const MidiSequence& midiSequence() const { return *midi_.load(); }
   double getSampleRate() const { return sample_rate; }
   /** The take's heard frame (contextCycle) — a recorded fact that must
    * persist (session_io); 0 for the first take. */
@@ -254,12 +281,15 @@ class ClipNode : public AudioNode {
     const int64_t period = m.period();
     const auto& src = *content_.load();
     const int chans = std::max(1, src.getNumChannels());
-    auto spliced =
-        std::make_unique<juce::AudioBuffer<float>>(chans, (int)period);
+    // A MIDI clip's audio buffer is the idle baseline (its content is
+    // the note sequence — spliceMidiToMap); keep the audio side minimal.
+    const bool midi = contentKind() == ContentKind::Midi;
+    auto spliced = std::make_unique<juce::AudioBuffer<float>>(
+        chans, midi ? 1 : (int)period);
     spliced->clear();
     const int64_t base = content_base_.load();
     int64_t w = 0;
-    for (int i = 0; i < m.n; ++i) {
+    for (int i = 0; i < (midi ? 0 : m.n); ++i) {
       const int64_t s = m.segs[i].start;
       const int64_t len = m.segs[i].end - s;
       const int64_t from = base + s;
@@ -329,11 +359,98 @@ class ClipNode : public AudioNode {
     is_playing.store(true);  // committed clips sound
   }
 
+  /**
+   * Restore a committed MIDI take on session load (session_io): the
+   * events become the content (exact-size), the clip becomes a MIDI
+   * clip, playable. Origin/duration/loop points set by the caller.
+   * Message thread only — the node is not yet in the live graph.
+   */
+  void loadCommittedMidi(std::vector<MidiEvent> events,
+                         int64_t context_cycle) {
+    auto fresh = std::make_unique<MidiSequence>();
+    fresh->assign(std::move(events));
+    midi_owned_ = std::move(fresh);
+    midi_.store(midi_owned_.get());
+    content_kind_.store((int)ContentKind::Midi);
+    write_position.store((int)duration_samples.load());
+    take_context_cycle_.store(context_cycle);
+    rec_state_.store((int)RecState::Idle);
+    is_playing.store(true);
+  }
+
+  /** The MIDI twin of spliceToMap (call it BEFORE spliceToMap, which
+   * rewrites the shared facts): events inside the kept cells move to
+   * their spliced positions; the rest are cut. Returns the OLD
+   * sequence — the caller (the edit inverse) OWNS it for undo; never
+   * freed inline. Message thread, committed MIDI clip only. */
+  std::unique_ptr<MidiSequence> spliceMidiToMap(const timing::TimeMap& m) {
+    const MidiSequence& src = *midi_.load();
+    const int64_t base = content_base_.load();
+    std::vector<MidiEvent> kept;
+    kept.reserve((size_t)src.count());
+    int64_t w = 0;
+    for (int i = 0; i < m.n; ++i) {
+      const int64_t s = m.segs[i].start;
+      const int64_t len = m.segs[i].end - s;
+      for (int k = 0; k < src.count(); ++k) {
+        const int64_t rel = src[k].pos - base - s;
+        if (rel >= 0 && rel < len) {
+          MidiEvent e = src[k];
+          e.pos = w + rel;
+          kept.push_back(e);
+        }
+      }
+      w += len;
+    }
+    auto spliced = std::make_unique<MidiSequence>();
+    spliced->assign(std::move(kept));
+    std::unique_ptr<MidiSequence> old = std::move(midi_owned_);
+    midi_owned_ = std::move(spliced);
+    midi_.store(midi_owned_.get());
+    return old;
+  }
+  /** Inverse of spliceMidiToMap: reinstall the pre-splice sequence;
+   * returns the DISPLACED one for the caller to retire. */
+  std::unique_ptr<MidiSequence> unspliceMidi(
+      std::unique_ptr<MidiSequence> old_sequence) {
+    std::unique_ptr<MidiSequence> displaced = std::move(midi_owned_);
+    midi_owned_ = std::move(old_sequence);
+    midi_.store(midi_owned_.get());
+    return displaced;
+  }
+
  private:
   // Content storage (see the D4 block above): owned on the message
   // thread, read through the atomic by both threads.
   std::unique_ptr<juce::AudioBuffer<float>> content_owned_;
   std::atomic<juce::AudioBuffer<float>*> content_{nullptr};
+  // MIDI content (phase 5): the note twin of content_, same D4
+  // discipline (message thread owns/swaps on idle clips, audio thread
+  // appends during capture and reads during render).
+  std::unique_ptr<MidiSequence> midi_owned_;
+  std::atomic<MidiSequence*> midi_{nullptr};
+  std::atomic<int> content_kind_{(int)ContentKind::Audio};
+  // MIDI capture state (audio-thread only, the capture_next_clock_
+  // discipline): the arrival index content position write_position
+  // corresponds to, the history cursor (next sequence number to
+  // consider), the held-note meter, and the lost-events log latch.
+  int64_t midi_capture_next_clock_ = 0;
+  int64_t midi_history_cursor_ = 0;
+  HeldNotes capture_held_;
+  bool midi_lost_logged_ = false;
+  // MIDI render scratch (mutable: DSP scratch written by the CONST
+  // render phase, §2.3): the block's event buffer (preallocated in
+  // the constructor), the notes the content has sounding (released at
+  // seams / stop), whether content ran last block, and the content
+  // position the next block is expected to continue from (−1 = none)
+  // — a jump anywhere is a discontinuity that releases held notes.
+  mutable juce::MidiBuffer render_midi_;
+  mutable HeldNotes render_held_;
+  mutable bool midi_content_was_active_ = false;
+  mutable int64_t midi_render_next_pos_ = -1;
+  // Release-tail budget: the chain keeps running this many samples
+  // after the last content/live event so envelopes ring out.
+  mutable int64_t midi_tail_samples_left_ = 0;
   // Set when the take auto-finished at the reservation bound.
   std::atomic<bool> cap_hit_{false};
 
@@ -397,6 +514,23 @@ class ClipNode : public AudioNode {
    * state after this returns — nothing may follow a commit. */
   void finishCaptureBlock(int written, float block_peak,
                           const ProcessContext& context);
+  /** MIDI take capture for one block (phase 5): the history-ring path
+   * (arrival-indexed, latency-compensated — the note twin of the
+   * pre-record path) or the live-block fallback. Calls
+   * finishCaptureBlock, which may commit. */
+  void captureMidiBlock(const ProcessContext& context);
+  /** Append one event to the take at content position `pos` (through-
+   * map takes fold it like captureWrite does for samples). */
+  void captureMidiEvent(int64_t pos, const juce::uint8* bytes, int size,
+                        float& block_peak);
+  /** The MIDI clip render path (phase 5): the kernel playback equation
+   * over the note sequence — the block's covered content window(s)
+   * sliced into sample-accurate events, seam releases, live play-
+   * through, one chain run over silence from the instrument down. */
+  void renderMidi(float* const* output_channels, int num_output_channels,
+                  const ProcessContext& context) const;
+  /** Solo/mute audibility for this block (Q16 canon; snapshot walk). */
+  bool isSilencedThisBlock(const ProcessContext& context) const;
 
   // --- Through-map take state (time_maps.md phase 2) ---
   // The commit cycle C, set at arm on the message thread (atomic: the

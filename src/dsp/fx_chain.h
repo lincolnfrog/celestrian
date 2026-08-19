@@ -234,6 +234,10 @@ class FxChain {
   /** An ENABLED instrument slot exists — the live play-through
    * precondition (docs/vst3.md §8). Audio-thread safe. */
   bool hasEnabledInstrument() const;
+  /** ANY instrument slot (enabled or not, live or placeholder) — what
+   * makes a clip a MIDI track: its takes record notes, not audio
+   * (docs/vst3.md §8, phase 5). Message thread (arm-time decision). */
+  bool hasInstrumentSlot() const;
 
   /** The chain array for metadata AND the save format (docs/vst3.md
    * §6): [{slot, type, enabled, ...params}] in signal order. Pass

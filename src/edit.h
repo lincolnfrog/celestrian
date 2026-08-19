@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "audio_node.h"
+#include "midi_sequence.h"
 
 namespace celestrian {
 
@@ -127,6 +128,9 @@ struct Edit {
   // buffer; its inverse OWNS the pre-splice buffer (same write-once
   // safety argument as owned subtrees). Retired, never freed inline.
   std::unique_ptr<juce::AudioBuffer<float>> buffer;
+  // The MIDI twin (phase 5): a note-clip splice displaces its sequence;
+  // the inverse owns the pre-splice one. Retired, never freed inline.
+  std::unique_ptr<MidiSequence> midi;
 
   Edit() = default;
   Edit(Kind k) : kind(k) {}

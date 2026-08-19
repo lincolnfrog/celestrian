@@ -13,6 +13,7 @@ import { patchRail } from './rail.js';
 import { patchLaneBody } from './lane_body.js';
 import { updateNavDock } from './teleport.js';
 import { animatorPoll, stopAnimator } from './animator.js';
+import { ensureDefaultSelection } from './selection.js';
 
 /* A recording playhead moving backwards by more than this many px is a
  * commit jump — snap, never sweep backwards. */
@@ -82,6 +83,13 @@ export function patchSessionView(vm, aux) {
             ctx.laneEls.delete(id);
         }
     });
+
+    // A track is selected by default (selection.js): prune vanished ids,
+    // and with nothing selected pick the first real lane — after the
+    // rails are patched, so paintSelection sees current rows.
+    ensureDefaultSelection(
+        vm.lanes.filter(l => l.kind === 'clip' || l.kind === 'group')
+            .map(l => l.id));
 
     // Handle nav docks mirror the overlays just patched above (ticks
     // parse the handles' own left styles — same pct() truth, no drift).

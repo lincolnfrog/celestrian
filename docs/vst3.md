@@ -278,21 +278,64 @@ new is capture, storage, and rendering.
   persisted) hands the block's events to its fx pass; a clip with no
   content/transport renders a silence pass through the chain (the
   play-through tail — never a SECOND chain run in one block), stacks
-  get it free via their every-block fx pass. UI: ♪ rail toggle
-  (visible only with an instrument slot), `getMidiInputs` diagnostics.
-- **Phase 5 — note clips + recording.** A `MidiClipNode : AudioNode` whose
-  content is a note sequence in the origin frame (samples, like audio
-  content; the D4 pointer discipline applies to the sequence buffer). Its
-  chain's head slot is a VST3 **instrument** (2-out, MIDI-in); `render`
-  slices the folded cycle window into a per-block `MidiBuffer` (events at
-  sample-accurate offsets, the cycle math already answers "which content
-  samples does this block cover") and runs the chain from the instrument
-  down — effects after the instrument work today's machinery unchanged.
-  Recording reuses the take lifecycle verbatim (arm → capture from the
-  MIDI FIFO with input-clock timestamps → commit folds by the heard
-  cycle): the lifecycle events, epoch math, and undo entries are
-  content-agnostic already. Note-offs straddling the commit boundary get
-  the standard treatment (hanging notes closed at the loop seam).
+  get it free via their every-block fx pass. UI: `getMidiInputs`
+  diagnostics. *(The ♪ rail toggle shipped here was retired 2026-08-18
+  — owner ruling "it should just always be monitoring if it's
+  selected": the MIDI target FOLLOWS SELECTION — app.js
+  syncMidiTarget reconciles setMidiArmed to the most recently selected
+  instrument lane every poll, a MIDI take in progress winning; the
+  MIDI chip on the rail lights ♪ for the current target.)*
+- **Phase 5 — note clips + recording.** ✅ DONE 2026-08-18. Built as
+  planned with one structural choice made in the spirit of Q-V3 rather
+  than its letter: instead of a separate `MidiClipNode` class, `ClipNode`
+  gained a **content kind** (`ContentKind::{Audio, Midi}`,
+  `midi_sequence.h`) — the take lifecycle (arm → capture → stop → commit,
+  quantum snapping, through-map fold, epoch re-base, undo entries) is
+  content-agnostic and lives in ClipNode, so a MIDI take reuses it
+  *verbatim* and only the ingest/render differ (`captureMidiBlock`,
+  `renderMidi`). The kind is decided AT ARM from the clip's own chain
+  (an instrument slot ⇒ MIDI track; `hasInstrumentSlot`) and fixed for
+  the take; the UI's "MIDI track" affordances key on the published
+  `contentKind` (also `"midi"` for an empty clip with an instrument —
+  its next take records notes; the rail shows a ♪ MIDI chip where the
+  audio-input picker was, since a note take has no audio input).
+  Content: a fixed-capacity `MidiSequence` (POD events `{pos, bytes,
+  size}` in the origin frame — samples in the engine, QTime in the save
+  format per Q-V4 — reached through one atomic pointer, D4 verbatim;
+  arm-time reservation, drop-and-count at the wall). Capture is the
+  note twin of the pre-record ring: the engine drains the FIFO by
+  **arrival timestamp** (sub-block offsets, MidiMessageCollector rule)
+  into an input-clock-indexed `MidiHistory` ring; a recording clip
+  reads its window from it — `content 0 ↔ arrival(target + midi_lat)`
+  where `midi_lat` is OUTPUT latency only (a key pressed on the heard
+  beat has no input-side device delay; `ProcessContext.midi_latency`,
+  driver-reported output figure or half the measured round trip) — so
+  the pickup and the first-clip reach-back work exactly as for audio,
+  and the write head advances by heard samples so stop boundaries and
+  commit snapping are shared. Render slices the folded cycle window into
+  a preallocated per-block `MidiBuffer` (sample-accurate offsets, the
+  audio path's run split) and runs the chain ONCE over silence from the
+  instrument down; **any content discontinuity** (loop seam, map seam,
+  one-shot rest, transport stop, duration truncation) releases the
+  notes the content had sounding (`HeldNotes`) — the "hanging notes
+  closed at the seam" rule, general. Mute is gain 0 at the output stage
+  even here: a silenced MIDI clip keeps feeding its instrument (unmute
+  resumes mid-phrase, nothing hangs). Live play-through and content
+  share the one chain run; a release tail (4 s) keeps the chain running
+  after the last event so envelopes ring out. Record on a MIDI track
+  auto-MIDI-arms it (`AudioEngine::startRecordingInNode`). Waveform
+  peaks for a MIDI take are a velocity envelope (note bars in the
+  existing lane renderer — the piano-roll view stays phase 6).
+  Persistence: `contentKind:"midi"` + inline `midi:[[num,den,byte…],…]`
+  (base-relative like the WAV path); no WAV. Multi-segment lock-collapse
+  splices the sequence too (`spliceMidiToMap`, `Edit::midi`).
+  *Tests:* tests/midi_record_tests.cc — timestamped drain, history
+  ring, node-level take (capture → commit → sample-accurate render, seam
+  release, stop release, mute-feeds), latency-compensated history
+  capture, through-map fold, engine record path + save/load, QTime
+  round-trip. The stub synth became sample-accurate for these.
+  Known limits (phase 6): SysEx still ignored; a note held ACROSS the
+  take's start boundary is dropped (its note-on precedes the take).
 - **Phase 6 — polish.** All-notes-off on stop/mute/solo-silence
   (sound-off to the instrument, not just event starvation), instrument
   state in the take undo entries, MIDI clip visualization (piano-roll-ish
@@ -308,16 +351,16 @@ rulings before phase 5, not before phase 1.
 |---|---|---|
 | Q-V1 | Mono nodes × stereo plugins: promote-at-first-VST3-slot (§3.3) vs. forcing whole fx path stereo always | **RULED: promote at first VST3 slot** (default accepted). Pan consistency confirmed — see §3.3, pan applies post-chain per channel, so promotion is transparent to it |
 | Q-V2 | PDC in a cyclic kernel: plugin latency delays a loop's content *within its cycle* — classic delay-everyone-else PDC fights the island clock. | **RULED: don't worry about it for now.** Metadata latency readout stays (near-free, tells the user when a plugin buffers); compensation deferred indefinitely. The read-ahead sketch stays on file for whenever it matters |
-| Q-V3 | Where instruments attach: dedicated MidiClipNode (proposed) vs. instrument-on-stack ("track synth" model) | **RULED: MidiClipNode** — MIDI has genuinely different affordances (e.g. a post-hoc performance editor later); a stack instrument fed by note clips is a later composition |
+| Q-V3 | Where instruments attach: dedicated MidiClipNode (proposed) vs. instrument-on-stack ("track synth" model) | **RULED: MidiClipNode** — MIDI has genuinely different affordances (e.g. a post-hoc performance editor later); a stack instrument fed by note clips is a later composition. *Phase-5 note (2026-08-18): realized as a CONTENT KIND on ClipNode rather than a second class — the affordances still key on the kind (`contentKind`), and the take lifecycle is shared by construction instead of duplicated; see §8.* |
 | Q-V4 | Note storage frame: samples (like audio content) vs. QTime rationals (musical facts, Q12 ruling) | **RULED: default accepted** — samples in the engine content buffer, QTime in the save format (mirrors audio duration/origin, qSamples exchange rate) |
 | Q-V5 | Should `CelestrianTests` link the VST3 hosting code? | **RULED: default accepted** — yes, with in-tree stub `AudioPluginInstance` slots; no real plugin binaries in tests |
 
 ## 10. Phase plan
 
 Each phase leaves the build green and shippable; tests named per phase.
-Status: **phases 1–4 landed 2026-08-15** (all three test layers green,
-including REAL-BINARY hosting validation via the in-repo test plugin);
-phase 5 (note clips + recording) is next.
+Status: **phases 1–5 landed** (1–4 on 2026-08-15, all three test layers
+green including REAL-BINARY hosting validation via the in-repo test
+plugin; 5 on 2026-08-18 — see §8); phase 6 (polish) is next.
 
 1. **Hosting foundation.** ✅ DONE 2026-08-15.
     CMake: `JUCE_PLUGINHOST_VST3=1` on Celestrian
@@ -365,9 +408,11 @@ phase 5 (note clips + recording) is next.
    Still manual on macOS: real third-party plugins + editor windows.
 4. **MIDI input + live play-through** (§8). *Tests:* FIFO timestamping
    against the input clock, all-notes-off on device stop.
-5. **Note clips + recording** (§8). *Tests:* golden block-slicing vectors
-   (a note sequence + cycle window → exact per-block MidiBuffer offsets),
-   take lifecycle reuse, seam note-off.
+5. **Note clips + recording** (§8). ✅ DONE 2026-08-18 — MIDI takes on
+   ClipNode (content kind), arrival-history capture, sample-accurate
+   note render with seam releases, QTime persistence; tests in
+   tests/midi_record_tests.cc (block slicing, lifecycle reuse, seam
+   note-off, latency compensation, through-map fold, save/load).
 6. **Polish** (§8) + revisit Q-V2 with real-world latency numbers.
 
 Phase 2 is the risk concentrator — it touches every node's render path —

@@ -215,6 +215,7 @@ target_sources(CelestrianTests PRIVATE
     tests/vst3_slot_tests.cc
     tests/plugin_host_integration_tests.cc
     tests/midi_tests.cc
+    tests/midi_record_tests.cc
     src/clip_node.cc
     src/stack_node.cc
     src/audio_engine.cc

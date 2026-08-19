@@ -427,6 +427,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // at construction (message thread) so the drain never allocates.
   celestrian::MidiInputQueue midi_input_queue_;
   juce::MidiBuffer live_midi_buffer_;
+  // MIDI arrival history (phase 5): the note twin of the pre-record
+  // ring — every drained event with its input-clock arrival index;
+  // recording clips capture from it. Audio-thread only.
+  celestrian::MidiHistory midi_history_;
   bool midi_callback_registered_ = false;
   /**
    * Runs every pending deleter. Only call when no audio callback can be in

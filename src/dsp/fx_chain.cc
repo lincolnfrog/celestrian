@@ -198,6 +198,12 @@ bool FxChain::hasEnabledInstrument() const {
   return false;
 }
 
+bool FxChain::hasInstrumentSlot() const {
+  for (const auto& slot : slots_)
+    if (slot->isInstrument()) return true;
+  return false;
+}
+
 bool FxChain::anyEnabled() const {
   for (const auto& slot : slots_)
     if (slot->enabled.load()) return true;

@@ -23,6 +23,13 @@ ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
   content_.store(content_owned_.get());
   fx_scratch_.resize(4096, 0.0f);  // typical max device block
   fx_scratch2_.resize(4096, 0.0f);
+  // MIDI content (phase 5): an empty sequence until a MIDI take arms
+  // (the arm-time reservation is the note twin of the audio one); the
+  // render event buffer is preallocated so addEvent never grows it on
+  // the audio thread (kMaxBlockEvents in renderMidi guards the bound).
+  midi_owned_ = std::make_unique<MidiSequence>(0);
+  midi_.store(midi_owned_.get());
+  render_midi_.ensureSize(65536);
 }
 
 juce::var ClipNode::getMetadata() const {
@@ -40,6 +47,12 @@ juce::var ClipNode::getMetadata() const {
   // The take's heard frame (Q14 take-marking modulus); 0 = first take.
   obj->setProperty("contextCycle", (double)take_context_cycle_.load());
   obj->setProperty("isPlaying", (bool)is_playing.load());
+  // Content kind (phase 5): "midi" for a note take — or for an empty
+  // clip whose chain carries an instrument (its next take records
+  // notes, so the UI shows a MIDI track, not an audio input). The
+  // event count is a plain atomic read (diagnostics / lane badge).
+  obj->setProperty("contentKind", isMidiClip() ? "midi" : "audio");
+  obj->setProperty("midiEvents", midi_.load()->count());
 
   // (recordingStartPhase was deleted 2026-07-16: no consumer existed —
   // the take's landing phase is a projection of `origin`.)
@@ -91,8 +104,12 @@ void ClipNode::control(const float* const* input_channels,
     stop_requested_.store(false);
   }
 
-  // Handle Recording (Capturing or PendingStop)
-  if (isRecording()) {
+  // Handle Recording (Capturing or PendingStop). A MIDI take (phase 5)
+  // captures notes instead of samples — the same lifecycle, a
+  // different ingest; everything after finishCaptureBlock is shared.
+  if (isRecording() && contentKind() == ContentKind::Midi) {
+    captureMidiBlock(context);
+  } else if (isRecording()) {
     // ONE content load per control pass (the message thread swaps this
     // pointer only for idle clips, never mid-capture).
     juce::AudioBuffer<float>& buffer = *content_.load();
@@ -282,8 +299,131 @@ void ClipNode::captureWrite(juce::AudioBuffer<float>& buffer, int dest_ch,
   }
 }
 
+void ClipNode::captureMidiBlock(const ProcessContext& context) {
+  if (!context.is_recording) return;
+  const int wp = write_position.load();
+  // The heard-length ceiling: the reservation bound (integrity), and
+  // one map pass for through-map takes (ruling 2 — same as samples).
+  int64_t space = kMaxTakeSamples - wp;
+  if (through_map_capture_) {
+    space = std::min(space, take_map_.period() - wp);
+  }
+  float block_peak = 0.0f;
+
+  if (context.midi_history != nullptr) {
+    // ARRIVAL-TIME CAPTURE — the note twin of the pre-record ring path
+    // (docs/performance.md §3): content position wp corresponds to
+    // arrival index midi_capture_next_clock_ (fixed at beginCapture
+    // with the MIDI compensation baked in), and this block covers the
+    // arrivals up to available_end. Events that arrived BEFORE the
+    // window (a lead of compensation) are skipped: they precede the
+    // take. The write head advances by heard samples exactly as the
+    // audio path's does, so stop boundaries and commit snapping are
+    // content-agnostic.
+    const MidiHistory& hist = *context.midi_history;
+    const int64_t available_end = context.input_clock + context.num_samples;
+    const int64_t src = midi_capture_next_clock_;
+    if (src >= available_end) return;  // window not reached yet
+    const int n = (int)std::min<int64_t>(available_end - src, space);
+    if (n <= 0) return;
+    if (midi_history_cursor_ < hist.oldestSeq()) {
+      // The ring overwrote entries this take had not consumed yet —
+      // impossible at human event rates; drop-and-count, one log line.
+      if (!midi_lost_logged_) {
+        midi_lost_logged_ = true;
+        RtLog::instance().post(
+            "ClipNode: MIDI history overrun, %lld events lost",
+            (long long)(hist.oldestSeq() - midi_history_cursor_));
+      }
+      midi_history_cursor_ = hist.oldestSeq();
+    }
+    while (midi_history_cursor_ < hist.total()) {
+      const MidiHistory::Entry& e = hist.entry(midi_history_cursor_);
+      if (e.arrival >= src + n) break;  // past this block's window
+      ++midi_history_cursor_;
+      if (e.arrival < src) continue;  // precedes the take
+      captureMidiEvent(wp + (e.arrival - src), e.bytes, e.size, block_peak);
+    }
+    midi_capture_next_clock_ = src + n;
+    if (block_peak <= 0.0f && capture_held_.any())
+      block_peak = last_block_peak.load();  // sustain the meter while held
+    finishCaptureBlock(n, block_peak, context);
+    return;
+  }
+
+  // Live-block fallback (no history: unit tests driving nodes
+  // directly): the block's events at their offsets, uncompensated —
+  // the same fallback the audio path takes without a ring.
+  const int n = (int)std::min<int64_t>(context.num_samples, space);
+  if (n <= 0) return;
+  if (context.live_midi != nullptr) {
+    for (const auto metadata : *context.live_midi) {
+      if (metadata.samplePosition >= n) break;
+      captureMidiEvent(wp + std::max(0, metadata.samplePosition),
+                       metadata.data, metadata.numBytes, block_peak);
+    }
+  }
+  if (block_peak <= 0.0f && capture_held_.any())
+    block_peak = last_block_peak.load();
+  finishCaptureBlock(n, block_peak, context);
+}
+
+void ClipNode::captureMidiEvent(int64_t pos, const juce::uint8* bytes,
+                                int size, float& block_peak) {
+  if (pos < 0 || size <= 0 || size > 3) return;
+  int64_t dest = pos;
+  if (through_map_capture_) {
+    // THROUGH-MAP FOLD (time_maps.md §3), the point version of
+    // captureWrite: the note lands at the inner position the
+    // performance was heard against, inside the dense [0, C) content.
+    if (pos >= take_map_.period()) return;  // beyond the one-period cap
+    dest = timing::throughMapDest(pos, map_anchor_off_, take_map_,
+                                  map_commit_cycle_.load());
+  }
+  midi_.load()->append(dest, bytes, size);
+  // The take meter reads velocity: note-ons peak it, held notes
+  // sustain it (captureMidiBlock), releases let it fall.
+  if (capture_held_.track(bytes, size) && (bytes[0] & 0xF0) == 0x90 &&
+      bytes[2] > 0) {
+    block_peak = std::max(block_peak, (float)bytes[2] / 127.0f);
+  }
+}
+
+bool ClipNode::isSilencedThisBlock(const ProcessContext& context) const {
+  bool silenced = is_muted.load() || context.any_solo;
+  if (silenced && !is_muted.load()) {
+    // Solo audibility (Q16 canon): with any solo lit anywhere in the
+    // island, a leaf sounds iff it — or an ancestor — is soloed
+    // (additive: every lit path sounds; fractal: a soloed group covers
+    // its subtree). Index walk over the whole-graph snapshot — the
+    // audio thread never chases parent pointers (Tier 3 Step 3). The
+    // pointer walk survives only as the unit-test fallback. Mute wins
+    // over solo (the container rule pinned in output_stage_tests).
+    if (context.snap) {
+      silenced = !snapIsUnderSolo(*context.snap, context.self);
+    } else {
+      const celestrian::AudioNode* curr = this;
+      while (curr != nullptr) {
+        if (curr->is_soloed.load()) {
+          silenced = false;
+          break;
+        }
+        curr = curr->getParent();
+      }
+    }
+  }
+  return silenced;
+}
+
 void ClipNode::render(float* const* output_channels, int num_output_channels,
                       const ProcessContext& context) const {
+  // A MIDI clip (phase 5) renders notes through its instrument — the
+  // same kernel equation over a note sequence; one path handles
+  // content, live play-through, and tails.
+  if (contentKind() == ContentKind::Midi) {
+    renderMidi(output_channels, num_output_channels, context);
+    return;
+  }
   // ONE content load per render (compaction may swap the pointer under
   // a playing clip; the retired buffer outlives this block).
   const juce::AudioBuffer<float>& buffer = *content_.load();
@@ -308,29 +448,8 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
     const int64_t dur = map.period();
 
     if (dur > 0) {
-      bool isSilenced = is_muted.load() || context.any_solo;
-      if (isSilenced && !is_muted.load()) {
-        // Solo audibility (Q16 canon): with any solo lit anywhere in
-        // the island, a leaf sounds iff it — or an ancestor — is
-        // soloed (additive: every lit path sounds; fractal: a soloed
-        // group covers its subtree). Index walk over the whole-graph
-        // snapshot — the audio thread never chases parent pointers
-        // (Tier 3 Step 3). The pointer walk survives only as the
-        // unit-test fallback. Mute wins over solo (the container rule
-        // pinned in output_stage_tests).
-        if (context.snap) {
-          isSilenced = !snapIsUnderSolo(*context.snap, context.self);
-        } else {
-          const celestrian::AudioNode* curr = this;
-          while (curr != nullptr) {
-            if (curr->is_soloed.load()) {
-              isSilenced = false;
-              break;
-            }
-            curr = curr->getParent();
-          }
-        }
-      }
+      // Solo/mute audibility (Q16 canon) — see isSilencedThisBlock.
+      const bool isSilenced = isSilencedThisBlock(context);
 
       // Audio Memory Principle — the kernel playback equation
       // (docs/kernel.md §2), generalized through the map (phase 3, the
@@ -492,22 +611,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
   // audibility rule content follows.
   if (!fx_pass_ran && midi_armed.load() && context.live_midi != nullptr &&
       fxChain()->hasEnabledInstrument()) {
-    bool silenced = is_muted.load() || context.any_solo;
-    if (silenced && !is_muted.load()) {
-      if (context.snap) {
-        silenced = !snapIsUnderSolo(*context.snap, context.self);
-      } else {
-        const celestrian::AudioNode* curr = this;
-        while (curr != nullptr) {
-          if (curr->is_soloed.load()) {
-            silenced = false;
-            break;
-          }
-          curr = curr->getParent();
-        }
-      }
-    }
-    if (!silenced) {
+    if (!isSilencedThisBlock(context)) {
       if ((int)fx_scratch_.size() < context.num_samples)
         fx_scratch_.resize((size_t)context.num_samples);
       if ((int)fx_scratch2_.size() < context.num_samples)
@@ -534,6 +638,153 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
               output_channels[ch], src, g, context.num_samples);
         }
       }
+    }
+  }
+}
+
+void ClipNode::renderMidi(float* const* output_channels,
+                          int num_output_channels,
+                          const ProcessContext& context) const {
+  // Guard on the preallocated event buffer (render_midi_ is sized in
+  // the constructor; addEvent must never grow it here).
+  constexpr int kMaxBlockEvents = 4096;
+  const MidiSequence& seq = *midi_.load();
+  const int n = context.num_samples;
+  if (n <= 0) return;
+  render_midi_.clear();
+  int events_added = 0;
+
+  // === CONTENT: the kernel playback equation over the note sequence
+  // (docs/kernel.md §2, generalized through the map exactly as the
+  // audio path — same run split, same one-shot rest, same anchoring
+  // law). Each run covers content [p0, p0 + run); its events land at
+  // block offset i + (pos − p0): sample-accurate. A DISCONTINUITY in
+  // the covered content (loop seam, map seam, one-shot rest, transport
+  // stop) releases whatever the content had sounding — the "hanging
+  // notes closed at the seam" rule (docs/vst3.md §8), tracked in
+  // render_held_.
+  bool content_active = false;
+  if (context.is_playing && is_playing && !committed_this_block_.load()) {
+    timing::TimeMap map = activeTimeMap();
+    if (!map.active()) {
+      map = timing::TimeMap::single(0, duration_samples.load());
+    }
+    const int64_t dur = map.period();
+    if (dur > 0) {
+      content_active = true;
+      const int64_t org = origin_samples.load();
+      const int64_t a0 = map.mapOffset(0);
+      const int64_t base = content_base_.load();
+      const int64_t cyc =
+          period_from_context_.load() && context.context_cycle > dur
+              ? context.context_cycle
+              : dur;
+      int i = 0;
+      while (i < n) {
+        int64_t h = (context.master_pos + i - org - a0) % cyc;
+        h = (h + cyc) % cyc;
+        if (h >= dur) {  // one-shot rest region: nothing sounds
+          const int run = (int)std::min<int64_t>(n - i, cyc - h);
+          if (midi_render_next_pos_ >= 0) {
+            render_held_.releaseInto(render_midi_, i);
+            midi_render_next_pos_ = -1;
+          }
+          i += run;
+          continue;
+        }
+        const int run = (int)std::min<int64_t>(
+            std::min<int64_t>(n - i, dur - h), map.seamDistance(h));
+        const int64_t p0 = base + map.mapOffset(h);
+        if (midi_render_next_pos_ != p0) {
+          render_held_.releaseInto(render_midi_, i);
+        }
+        for (int k = seq.lowerBound(p0);
+             k < seq.count() && seq[k].pos < p0 + run; ++k) {
+          if (events_added >= kMaxBlockEvents) break;
+          const MidiEvent& e = seq[k];
+          render_midi_.addEvent(e.bytes, e.size, i + (int)(e.pos - p0));
+          render_held_.track(e.bytes, e.size);
+          ++events_added;
+        }
+        midi_render_next_pos_ = p0 + run;
+        i += run;
+      }
+      // Playhead (0..1): the heard phase of the pass; one-shots phase
+      // over their full period (the context cycle).
+      int64_t hh = (context.master_pos - org - a0) % cyc;
+      hh = (hh + cyc) % cyc;
+      playhead_pos.store((double)hh / (double)cyc);
+    } else {
+      playhead_pos.store(0.0);
+    }
+  }
+  if (!content_active && midi_content_was_active_) {
+    // Content stopped (transport paused, gate closed): release what
+    // it had sounding, right now.
+    render_held_.releaseInto(render_midi_, 0);
+    midi_render_next_pos_ = -1;
+  }
+  midi_content_was_active_ = content_active;
+
+  // === LIVE PLAY-THROUGH (phase 4): the armed node's events at their
+  // block offsets. Not tracked in render_held_ — the player's own
+  // fingers own those releases.
+  if (midi_armed.load() && context.live_midi != nullptr) {
+    for (const auto metadata : *context.live_midi) {
+      if (events_added >= kMaxBlockEvents) break;
+      render_midi_.addEvent(metadata.data, metadata.numBytes,
+                            std::clamp(metadata.samplePosition, 0, n - 1));
+      ++events_added;
+    }
+  }
+
+  // === ONE chain run over silence, from the instrument down. The
+  // chain runs whenever something is (or was just) sounding: content
+  // playing, live events, releases pending, or the release tail after
+  // either (kTailSeconds — the instrument's envelopes and any effect
+  // after it ring out; an idle MIDI clip costs nothing after that).
+  constexpr double kTailSeconds = 4.0;
+  if (content_active || events_added > 0) {
+    midi_tail_samples_left_ = (int64_t)(context.sample_rate * kTailSeconds);
+  }
+  if (!fxChain()->hasEnabledInstrument()) return;  // nothing generates
+  if (midi_tail_samples_left_ <= 0) return;
+  midi_tail_samples_left_ -= n;
+
+  if ((int)fx_scratch_.size() < n) fx_scratch_.resize((size_t)n);
+  if ((int)fx_scratch2_.size() < n) fx_scratch2_.resize((size_t)n);
+  std::fill(fx_scratch_.begin(), fx_scratch_.begin() + n, 0.0f);
+  std::fill(fx_scratch2_.begin(), fx_scratch2_.begin() + n, 0.0f);
+  // Mono silence in; the chain promotes at the instrument slot and the
+  // synth overwrites — stereo out by construction.
+  fxProcess(fx_scratch_.data(), fx_scratch2_.data(), n, /*stereo_in=*/false,
+            &render_midi_);
+
+  // Mute IS gain 0 at the output stage (unification_audit §2.4): a
+  // silenced MIDI clip still FEEDS its instrument (so an unmute resumes
+  // mid-phrase and no note hangs) — the output just does not sum.
+  if (isSilencedThisBlock(context)) return;
+  float gl = 1.0f, gr = 1.0f, fader = 1.0f;
+  outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr, fader);
+  for (int ch = 0; ch < num_output_channels; ++ch) {
+    if (output_channels[ch] == nullptr) continue;
+    const bool right = ch == 1 && num_output_channels >= 2;
+    const float* src = right ? fx_scratch2_.data() : fx_scratch_.data();
+    if (num_output_channels < 2) {
+      // Fold the stereo pair to a mono device: equal halves.
+      if (fader <= 0.0f) continue;
+      juce::FloatVectorOperations::addWithMultiply(output_channels[ch],
+                                                   fx_scratch_.data(),
+                                                   0.5f * fader, n);
+      juce::FloatVectorOperations::addWithMultiply(output_channels[ch],
+                                                   fx_scratch2_.data(),
+                                                   0.5f * fader, n);
+      continue;
+    }
+    const float g = ch < 2 ? (right ? gr : gl) : fader;
+    if (g > 0.0f) {
+      juce::FloatVectorOperations::addWithMultiply(output_channels[ch], src,
+                                                   g, n);
     }
   }
 }
@@ -709,6 +960,22 @@ void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
   capture_uses_ring_ = (context.prerecord_ring != nullptr);
   capture_next_clock_ = context.input_clock + (target - compensated_pos);
   underrun_logged_ = false;
+  // MIDI window (phase 5): content 0 is the note that arrives when the
+  // heard clock reaches `target` — MIDI-compensated. `compensated_pos`
+  // is the AUDIO-compensated clock (input + output latency behind the
+  // callback clock); a MIDI arrival is only OUTPUT-latency behind it,
+  // so the window sits (audio − MIDI compensation) later on the
+  // arrival clock than the audio window does. Same law on the plain
+  // and through-map paths (both hand in target/compensated in one
+  // heard frame). Events already in the history that fall inside the
+  // window are picked up (the pickup / first-clip reach-back).
+  midi_capture_next_clock_ =
+      capture_next_clock_ -
+      (context.input_latency + context.output_latency) + context.midi_latency;
+  midi_history_cursor_ =
+      context.midi_history ? context.midi_history->oldestSeq() : 0;
+  capture_held_.clear();
+  midi_lost_logged_ = false;
 }
 
 void ClipNode::startRecording(int64_t through_map_commit_cycle) {
@@ -716,11 +983,26 @@ void ClipNode::startRecording(int64_t through_map_commit_cycle) {
     return;  // idempotent; keeps the
              // island take counter exact
 
+  // The take's CONTENT KIND (phase 5): an instrument slot on this
+  // clip's chain makes it a MIDI track — the take records notes from
+  // the MIDI input, not samples from an audio input. Fixed here, before
+  // the Armed store publishes it to the audio thread; the arm-time
+  // reservation follows the kind. is_playing goes down first so no
+  // render reads the sequence being reallocated (arm targets emptiness
+  // — the same discipline the audio buffer's setSize relies on).
+  is_playing.store(false);
+  const bool midi_take = fxChain()->hasInstrumentSlot();
+  content_kind_.store((int)(midi_take ? ContentKind::Midi : ContentKind::Audio));
+  if (midi_take) {
+    midi_.load()->reserve(MidiSequence::kMaxEvents);
+    capture_channels_ = 1;
+  }
+
   // D4: VIRTUAL reservation — address space only, deliberately not
   // cleared (touching the pages would commit them; capture writes are
   // the only thing that should). Nothing ever reads past
   // write_position, so the uninitialized tail is unreachable.
-  {
+  if (!midi_take) {
     auto& buffer = *content_.load();
     // The take's channel count is fixed HERE (a stereo pair of inputs
     // captures two channels): the audio thread reads capture_channels_
@@ -939,6 +1221,42 @@ juce::var ClipNode::getWaveform(int num_peaks) const {
   // Content base (Q13 lock-collapse): peaks cover the COMMITTED content
   // [base, base + duration) — the cut material never renders.
   const int64_t base = content_base_.load();
+
+  if (contentKind() == ContentKind::Midi) {
+    // A MIDI take draws as a VELOCITY ENVELOPE in the same peak lane:
+    // each window's value is the loudest note sounding in it (held
+    // notes sustain their velocity, releases drop it) — note bars, in
+    // the renderer the audio lanes already use. Events before the
+    // content base only prime the held state.
+    const MidiSequence& seq = *midi_.load();
+    std::array<juce::uint8, 128> held{};
+    held.fill(0);
+    int cursor = 0;
+    auto step = [&](int64_t until, int& cur) {
+      while (cursor < seq.count() && seq[cursor].pos < until) {
+        const MidiEvent& e = seq[cursor++];
+        if (e.isNoteOn()) {
+          held[(size_t)e.note()] = (juce::uint8)e.velocity();
+          cur = std::max(cur, e.velocity());
+        } else if (e.isNoteOff()) {
+          held[(size_t)e.note()] = 0;
+        }
+      }
+    };
+    int dummy = 0;
+    step(base, dummy);
+    for (int i = 0; i < num_peaks; ++i) {
+      const int64_t start = base + (int64_t)i * window_size;
+      const int64_t end =
+          std::max(start + 1, std::min(start + window_size,
+                                       base + (int64_t)total_samples));
+      int cur = 0;
+      for (const auto v : held) cur = std::max(cur, (int)v);
+      if (start < base + total_samples) step(end, cur);
+      peaks.add((float)cur / 127.0f);
+    }
+    return peaks;
+  }
   const int64_t cap = buffer.getNumSamples();
   const int chans = buffer.getNumChannels();
 

@@ -390,7 +390,10 @@ indirection were both considered and rejected):**
   (whole-Q snap), double-click heals; double-click on content still
   creates a cell cut (the pointer hops heard→raw through mapOffset).
   The edge grips are LIVE TRIM handles (inward consumes kept time,
-  outward reveals more take, whole-Q snap, one setSegments on release)
+  outward reveals more take, whole-Q snap, one setSegments on release;
+  **⌥-drag SLIDES** the loop by any fractional amount with the other
+  end pulled along — length held, so Q coherence survives — owner
+  request 2026-08-18; the plain window brackets do the same)
   — they no longer open the inspector on pointerdown (that ate the
   drag); the chip CLICK opens it, for inspection only. Two frame-math
   bugs fixed in the same pass: `clipCycleContribution` and the VM's

@@ -808,11 +808,12 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
               (edge === 'start' ? ' + ' + GRIP_PAIR_NUDGE_PX + 'px)'
                                 : ' - ' + GRIP_PAIR_NUDGE_PX + 'px)')
             : pct(basePos, cycleQ);
-        grip.title = edge === 'start'
+        grip.title = (edge === 'start'
             ? 'Loop START — drag right to trim it in, left to reveal ' +
               'earlier material (whole-Q snap)'
             : 'Loop END — drag left to trim it in, right to reveal ' +
-              'later material (whole-Q snap)';
+              'later material (whole-Q snap)') +
+            ' · ⌥-drag SLIDES the loop by any amount (length held)';
         grip.addEventListener('pointerdown', ev => {
             selectOnly(lane.id); // grabbing a handle claims the track
             // EXPANDED DRAG (owner-ruled): the lane opens to the raw
@@ -821,7 +822,32 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
             // dimmed content restores it (nothing is ever off-screen).
             const bound0 = edge === 'start'
                 ? segs[0][0] : segs[segs.length - 1][1];
-            runExpandedDrag(ev, o, lane, st, body, bound0, rawQ => {
+            runExpandedDrag(ev, o, lane, st, body, bound0, (rawQ, alt) => {
+                if (alt && rawQ !== null) {
+                    // ⌥ FREE SLIDE (owner request 2026-08-18): the
+                    // grabbed edge follows the pointer by ANY fractional
+                    // amount and the other end moves by the same delta
+                    // — the period is held, so Q coherence survives
+                    // (the anchoring law keeps content in place; only
+                    // which stretch is heard changes). Clamped to the
+                    // take's extent; a slide never trims.
+                    const lo = -segs[0][0];
+                    const hi = st.totalQ - segs[segs.length - 1][1];
+                    const delta = Math.max(lo, Math.min(hi, rawQ - bound0));
+                    const next = segs.map(([s, e]) => [s + delta, e + delta]);
+                    const edgeQ = edge === 'start'
+                        ? next[0][0] : next[next.length - 1][1];
+                    const p = segsPeriod(next, st.totalQ);
+                    return { segs: next,
+                        follow: { kind: 'bracket', edge, q: edgeQ },
+                        active: {
+                            q: edgeQ,
+                            text: 'slide ' + (delta >= 0 ? '+' : '−') +
+                                fmtQ(Math.abs(delta)) + 'Q · ' + fmtQ(p) + 'Q',
+                            incoherent: false,
+                            ghost: false,
+                        } };
+                }
                 const rawBound = rawQ === null
                     ? bound0                       // at-rest render
                     : Math.max(0, Math.min(st.totalQ, rawQ));

@@ -188,17 +188,6 @@ export function buildLane(lane) {
     fx.addEventListener('click', () => ctx.cb.onToggleFx(lane.id));
     foot.appendChild(fx);
 
-    // MIDI arm (docs/vst3.md §8): only shown when the chain carries an
-    // instrument slot (patchRail toggles visibility); single-armed —
-    // the backend clears every other node.
-    const midi = el('button', 'rail-btn midi-btn', {
-        textContent: '♪',
-        title: 'MIDI: play this instrument live from your keyboard' });
-    midi.style.display = 'none';
-    midi.addEventListener('click', () =>
-        ctx.cb.onMidiArm(lane.id, !(row._lane && row._lane.midiArmed)));
-    foot.appendChild(midi);
-
     // Recording input picker — clips only (Q7: group record captures
     // each child from ITS OWN input; a group has no input of its own)
     if (lane.kind === 'clip') {
