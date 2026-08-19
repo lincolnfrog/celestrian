@@ -1290,10 +1290,13 @@ test.describe('Creation menu (Q17)', () => {
         // handle to 6Q and let go, then try to drag the right handle to
         // 9Q — the right handle is gone and there is a weird thing in
         // the middle that looks like a split." The window [6, 10) on a
-        // take performed from 1Q loops 4Q with its TOP at cycle phase
-        // 2Q (anchoring law), so in the heard view the loop's end and
-        // start grips MEET mid-lane under a "↺ loop top" chip — that is
-        // the "split"; the right handle is the END grip of that pair.
+        // take performed from 1Q loops 4Q; with the epoch parked at the
+        // take's origin its top sat at cycle phase 2Q, so the loop's end
+        // and start grips MET mid-lane. CYCLE-TOP RULE (owner follow-up,
+        // same day): the loop that defines the cycle puts its top at
+        // the frame top — epoch := 7Q — so the heard view shows the 4Q
+        // loop from its top with the grips at the frame edges, and the
+        // right handle is exactly where a right handle should be.
         // Real mouse input throughout (hit-tested).
         await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
         const Q = await mockQ(page);
@@ -1332,24 +1335,28 @@ test.describe('Creation menu (Q17)', () => {
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,10');
 
-        // The heard view: a 4Q loop, top mid-lane. BOTH grips exist,
-        // are named by the loop-top chip, and never overlap (the end
-        // grip hides no more) — and nothing looks like a cut band.
+        // The heard view: a 4Q loop from its TOP (cycle-top rule: the
+        // epoch moved to 7Q, whole-Q, audio untouched). BOTH grips
+        // exist at the frame EDGES — no mid-lane pair, no loop-top
+        // chip, nothing that looks like a cut band.
+        await expect.poll(async () => (await page.evaluate(async () =>
+            (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q)
+            .toBe(7);
         const start = body.locator('.trim-grip.start');
         const end = body.locator('.trim-grip.end');
         await expect(start).toHaveCount(1);
         await expect(end).toHaveCount(1);
-        await expect(body.locator('.loop-top-chip')).toHaveText(/loop top/);
+        await expect(body.locator('.loop-top-chip')).toHaveCount(0);
         await expect(body.locator('.cut-band, .seam-handle')).toHaveCount(0);
         const sb = await start.boundingBox();
         const eb = await end.boundingBox();
-        expect(sb.x).toBeGreaterThan(eb.x + eb.width - 1); // "] end · start ["
-        expect(Math.abs(sb.x - box.x - box.width / 2)).toBeLessThan(box.width * 0.05);
+        expect(sb.x - box.x).toBeLessThan(box.width * 0.03);            // start at the left edge
+        expect(box.x + box.width - (eb.x + eb.width)).toBeLessThan(box.width * 0.03); // end at the right
 
         // STEP 2 — the right (END) grip to 9Q. The grab expands the
         // lane to the raw take; without pointer warp (mock) the handle
         // glues to the pointer, so a slow drag to the raw 9Q lands
-        // the bound there (period 3Q).
+        // the bound there (period 3Q). Same top → the epoch stays.
         await body.hover();
         const ebox = await end.boundingBox();
         await page.mouse.move(ebox.x + ebox.width / 2, ebox.y + ebox.height / 2);
@@ -1365,9 +1372,23 @@ test.describe('Creation menu (Q17)', () => {
             const n = await clip2();
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,9');
-        // A 3Q loop performed from 7Q sits at phase 0: grips at the
-        // frame edges again, no mid-lane pair.
+        // A 3Q loop from the same top: still no mid-lane pair.
         await expect(body.locator('.loop-top-chip')).toHaveCount(0);
         await expect(body.locator('.win-chip')).toHaveText(/3Q/);
+        expect((await page.evaluate(async () =>
+            (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q).toBe(7);
+
+        // The mid-lane pair DOES exist for an off-grid loop: an ⌥-style
+        // fractional slide ([6.4Q, 9.4Q)) leaves the epoch (the grid
+        // never moves), so the loop shows 0.4Q in, its end/start grips
+        // meet mid-lane, named by the chip and 16 px apart.
+        await page.evaluate(async ({ id, Q }) => {
+            await window.__celestrianTest.callNative('setSegments', id,
+                [Math.round(6.4 * Q), Math.round(9.4 * Q)]);
+        }, { id: ids.id2, Q });
+        await expect(body.locator('.loop-top-chip')).toHaveText(/loop top/);
+        const ps = await body.locator('.trim-grip.start').boundingBox();
+        const pe = await body.locator('.trim-grip.end').boundingBox();
+        expect(ps.x).toBeGreaterThan(pe.x + pe.width + 8);   // "] end · start ["
     });
 });

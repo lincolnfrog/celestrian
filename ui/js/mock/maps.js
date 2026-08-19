@@ -13,6 +13,8 @@ import {
     anyNodeRecording, isQ13SoleDefiner,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
+import { lcm } from '../math_utils.js';
+import { effectivePeriodOf } from './cycles.js';
 
 /** PHASE-PRESERVING RE-ANCHOR (engine parity, 2026-07-25h/i): origin'
  * such that the buffer position sounding right now keeps sounding when
@@ -42,19 +44,61 @@ export function continuityOrigin(node, oldMap, newMap) {
     return t0 - mapOffset(nm, 0) - hNew;
 }
 
-/** The epoch rider: apply continuity to `node` for `newMap`, moving
- * the island epoch by the same whole-Q delta (two-anchor law). */
-export function applyTwoAnchorContinuity(node, oldMap, newMap) {
+/** The island's audible period WITHOUT `skip` (engine parity:
+ * periodExcluding) — "everyone else", the fold a map edit is judged
+ * against. A mapped stack's period stands whole. 0 = nothing else. */
+function periodExcluding(node, skip) {
+    if (node === skip || node.periodSource === 'context') return 0;
+    if (node.type === 'stack') {
+        if (!node.loopBypassed && mapActive(nodeMap(node))) {
+            return Math.round(mapPeriod(nodeMap(node)));
+        }
+        let composite = 0;
+        (node.nodes || []).forEach(c => {
+            const p = periodExcluding(c, skip);
+            if (p > 0) composite = composite > 0 ? lcm(composite, p) : p;
+        });
+        return composite;
+    }
+    return effectivePeriodOf(node);
+}
+
+/** The map-edit riders (engine parity: AudioEngine::attachMapEditRiders).
+ * While playing, continuity re-anchors the origin so the sounding sample
+ * keeps sounding. Then the CYCLE-TOP RULE (owner question 2026-08-18):
+ * if `node` DEFINES the cycle after the edit (its new period is a
+ * multiple of Q and of every other loop's period) and the loop's heard
+ * top (origin' + mapOffset(0)) is off the frame top by a whole number of
+ * Qs, the epoch moves TO that top — the loop you just shaped fills the
+ * frame from its own top (the visual successor of the commit re-base
+ * and the Q13 sole-definer re-trim). Otherwise two-anchor continuity
+ * (2026-08-09) rides the epoch by the origin's whole-Q delta. Nothing
+ * audible moves either way. */
+export function applyMapEditRiders(node, oldMap, newMap) {
     const org = node.origin || 0;
-    const org2 = continuityOrigin(node, oldMap, newMap);
-    if (org2 === org) return;
-    node.origin = org2;
+    const org2 = state.isPlaying ? continuityOrigin(node, oldMap, newMap) : org;
+    if (org2 !== org) node.origin = org2;
     const q = state.islandQ;
     const delta = org2 - org;
-    if (q > 0 && delta % q === 0) {
-        state.islandEpoch = state.islandEpoch + delta;
+    const epoch = state.islandEpoch || 0;
+    const active = newMap && mapActive(newMap) && mapPeriod(newMap) > 0;
+    const a0 = active ? mapOffset(newMap, 0) : 0;
+    const top = org2 + a0;
+    const newPeriod = Math.round(active ? mapPeriod(newMap) : (node.duration || 0));
+    let others = periodExcluding({ type: 'stack', nodes: state.nodes }, node);
+    if (q > 0) others = others > 0 ? lcm(others, q) : q;
+    const definer = newPeriod > 0 && (others <= 0 || newPeriod % others === 0);
+    const topOffFrame = definer && posMod(top - epoch, newPeriod) !== 0;
+    if (q > 0 && topOffFrame && posMod(top - epoch, q) === 0) {
+        state.islandEpoch = top;
+        return;
+    }
+    if (delta !== 0 && q > 0 && delta % q === 0) {
+        state.islandEpoch = epoch + delta;
     }
 }
+/** Legacy name (tests import it). */
+export const applyTwoAnchorContinuity = applyMapEditRiders;
 
 /**
  * Set a node's single loop window [loopStart, loopEnd) — the phase-3
@@ -147,9 +191,9 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         state.islandEpoch = node.origin + loopStart;
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
-               state.isPlaying && !anyNodeRecording()) {
-        // TWO-ANCHOR CONTINUITY (see the note above continuityOrigin).
-        applyTwoAnchorContinuity(node, oldMapPre,
+               !anyNodeRecording()) {
+        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders).
+        applyMapEditRiders(node, oldMapPre,
             loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
                                 : { segs: [] });
     }
@@ -263,9 +307,9 @@ export function setSegments(id, flat) {
         state.islandEpoch = node.origin + a0;
         console.log('[MockBackend] Q13 segments re-trim → Q =', period);
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
-               state.isPlaying && !anyNodeRecording()) {
-        // TWO-ANCHOR CONTINUITY (see the note above continuityOrigin).
-        applyTwoAnchorContinuity(node, oldMap, { segs });
+               !anyNodeRecording()) {
+        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders).
+        applyMapEditRiders(node, oldMap, { segs });
     }
     console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));
 }

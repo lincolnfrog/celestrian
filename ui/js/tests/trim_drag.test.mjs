@@ -3,14 +3,19 @@
  * definer, then a 10Q take; drag its LEFT handle to 6Q; then its RIGHT
  * handle to 9Q. The field symptom — "the right handle is gone and
  * there is a weird thing in the middle that looks like a split but I
- * never split" — is the heard view of a window whose loop top rests
- * MID-PHASE: [6Q, 10Q) on a take that began at 1Q loops 4Q with its
- * top at cycle phase 2Q (the anchoring law: window content sounds at
- * its performed moment), so the end grip and the start grip meet
- * mid-lane and the waveform wraps there. That geometry is right; what
- * this pins is (a) the model facts behind it, (b) that both trims
- * commit exactly what the drag math proposes, and (c) the ⌥ free-slide
- * algebra. The realistic pointer version lives in e2e/session_view
+ * never split" — was the heard view of a window whose loop top rested
+ * MID-PHASE: [6Q, 10Q) on a take that began at 1Q loops 4Q, and with
+ * the epoch parked at the take's origin its top sat at cycle phase 2Q,
+ * so the end grip and the start grip met mid-lane and the waveform
+ * wrapped there. The owner's follow-up ("if my first track is 1Q, why
+ * the mid-lane split?") became the CYCLE-TOP RULE (2026-08-18): the
+ * loop that DEFINES the cycle after an edit puts its heard top at the
+ * frame top (epoch := origin + window start — whole-Q, grid untouched,
+ * audio untouched). What this pins: (a) the model facts, (b) that both
+ * trims commit exactly what the drag math proposes, (c) the rule's
+ * boundaries (an off-grid ⌥-slide honestly stays mid-phase; a
+ * non-definer leaves the frame to whoever defines it), and (d) the ⌥
+ * free-slide algebra. The realistic pointer version lives in e2e/session_view
  * ("trim a long take: left to 6Q, right to 9Q").
  */
 
@@ -57,17 +62,20 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     assert.equal(n.loopEnd / Q, 10);
     assert.equal(n.windowActive, true);
 
-    // The heard view after step 1: a 4Q loop in a 4Q cycle whose TOP
-    // rests mid-lane (phase 2Q) — the "split-looking" wrap. Both grips
-    // are legitimately at that spot; nothing was cut.
+    // CYCLE-TOP RULE: the 4Q loop IS the cycle (the 1Q definer divides
+    // it), so the epoch moves to its heard top (1Q + 6Q = 7Q) — whole-Q,
+    // grid untouched — and the loop fills the frame from the top. No
+    // mid-lane pair, no "split". Audio untouched: origin unchanged.
+    assert.equal((getState().islandEpoch || 0) / Q, 7, 'epoch := loop top');
+    assert.equal((n.origin || 0) / Q, 1, 'origin untouched (audio)');
     let vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
     assert.equal(vm.cycleQ, 4, 'island cycle = lcm(1, 4)');
     assert.deepEqual(lane.bandSegs, [[6, 10]]);
     assert.equal(lane.windowChipQ, 4);
-    assert.equal(lane.takeStartQ, 2, 'loop top at cycle phase 2Q');
+    assert.equal(lane.takeStartQ, 0, 'loop top at the frame top');
     assert.equal(lane.reps.length, 1);
-    assert.equal(lane.reps[0].srcTopFrac, 0.5, 'the wrap sits mid-lane');
+    assert.equal(lane.reps[0].srcTopFrac, 0, 'no mid-lane wrap');
     assert.equal(lane.mapMulti, false, 'single window — no inner cuts');
 
     // STEP 2 — the right handle to 9Q (from the raw 10Q bound).
@@ -82,13 +90,38 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     assert.equal(n.loopStart / Q, 6);
     assert.equal(n.loopEnd / Q, 9);
 
-    // A 3Q loop performed from 7Q: cycle 3Q, top back at phase 0.
+    // A 3Q loop from the same top: cycle 3Q, epoch stays (no churn).
+    assert.equal((getState().islandEpoch || 0) / Q, 7, 'same top, epoch stays');
     vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
     assert.equal(vm.cycleQ, 3);
     assert.deepEqual(lane.bandSegs, [[6, 9]]);
     assert.equal(lane.windowChipQ, 3);
-    assert.equal(lane.takeStartQ, 0, 'loop top at the frame edge again');
+    assert.equal(lane.takeStartQ, 0, 'loop top at the frame top');
+
+    // RULE BOUNDARY 1 — an off-grid ⌥-slide ([6.4Q, 9.4Q)): the top is
+    // 0.4Q past the epoch, not a whole Q → the epoch must NOT move (the
+    // grid never does); the loop honestly shows 0.4Q into the frame,
+    // its end/start pair mid-lane under the "↺ loop top" chip.
+    await callNative('setSegments', c2, [Math.round(6.4 * Q), Math.round(9.4 * Q)]);
+    assert.equal((getState().islandEpoch || 0) / Q, 7, 'off-grid top: epoch stays');
+    vm = deriveViewModel(getState(), opts);
+    lane = laneOf(vm, c2);
+    assert.equal(vm.cycleQ, 3);
+    assert.ok(Math.abs(lane.takeStartQ - 0.4) < 1e-9, 'loop shows 0.4Q in');
+    await callNative('setSegments', c2, [6 * Q, 9 * Q]);  // back on grid
+
+    // RULE BOUNDARY 2 — a NON-definer: a third take of 6Q makes the
+    // cycle 6Q (lcm 1, 3, 6); trimming clip 2 to [6Q, 8Q) (2Q ∤ 6Q's
+    // cycle owner... 2 % 6 != 0) is a sub-loop under clip 3's cycle →
+    // the frame belongs to clip 3, the epoch stays put.
+    await recordTake('', 6 * Q, { stopEarly: 0, settle: 0 });
+    const epochBefore = getState().islandEpoch || 0;
+    await callNative('setSegments', c2, [6 * Q, 8 * Q]);
+    assert.equal(getState().islandEpoch || 0, epochBefore,
+        'non-definer trim: epoch untouched');
+    vm = deriveViewModel(getState(), opts);
+    assert.equal(vm.cycleQ, 6);
 });
 
 test('⌥ free slide: any fractional delta, period held, clamped to the take', () => {

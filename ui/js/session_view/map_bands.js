@@ -793,7 +793,10 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     // ("loop end ][ loop start"), not noise (field 2026-07-23c).
     const coincident = Math.abs(startPos - endPos) < 1e-6 ||
         Math.abs(Math.abs(startPos - endPos) - cycleQ) < 1e-6;
-    if (coincident && startPos > 1e-6 && startPos < cycleQ - 1e-6) {
+    // MID-LANE pair only: at the frame edges the two grips already sit
+    // apart (start at 0%, end at 100%) — no nudge, no chip.
+    const paired = coincident && startPos > 1e-6 && startPos < cycleQ - 1e-6;
+    if (paired) {
         // Named, and visible at rest (owner report 2026-08-18: the bare
         // ][ pair mid-lane "looks like a split I never made" — a loop
         // whose top rests mid-phase must SAY so).
@@ -807,8 +810,8 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     ['start', 'end'].forEach(edge => {
         const basePos = edge === 'start' ? startPos : endPos;
         const grip = el('div', 'win-bracket latent ' + edge + ' trim-grip' +
-            (coincident ? ' paired' : ''));
-        grip.style.left = coincident
+            (paired ? ' paired' : ''));
+        grip.style.left = paired
             ? 'calc(' + pct(basePos, cycleQ) +
               (edge === 'start' ? ' + ' + GRIP_PAIR_NUDGE_PX + 'px)'
                                 : ' - ' + GRIP_PAIR_NUDGE_PX + 'px)')

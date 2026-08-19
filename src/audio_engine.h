@@ -617,19 +617,30 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   static bool isPeriodCoherentWithQuantum(int64_t period, int64_t quantum);
   /** TWO-ANCHOR CONTINUITY riders (see the continuityOrigin note in
    * audio_engine.cc), shared by setLoopPoints and setSegments: re-anchor
-   * the clip's origin so the sounding sample keeps sounding, and — when
-   * the delta is a whole multiple of `quantum` — ride the island epoch
-   * by the same delta so the edited clip's frame position is unchanged.
+   * the clip's origin so the sounding sample keeps sounding (while
+   * playing), then place the island epoch by the CYCLE-TOP RULE
+   * (2026-08-18): if the clip DEFINES the island's cycle after the edit
+   * (its new period is a multiple of Q and of every other loop's
+   * period) and the loop's heard top (origin' + mapOffset(0)) sits a
+   * whole number of Qs from the current epoch, the epoch moves TO that
+   * top — the loop you just shaped fills the frame from its own top,
+   * exactly as a cycle-extending commit and the Q13 sole-definer
+   * re-trim already do. Otherwise (a sub-loop under someone else's
+   * cycle, or an off-grid ⌥-slid top) the two-anchor delta ride keeps
+   * the edited clip's frame position (owner ruling 2026-08-09).
+   * Nothing audible moves in either case: origins are absolute; the
+   * epoch is the visual cycle top and the arm grid, which whole-Q
+   * moves preserve.
    * `quantum` is supplied by the caller because the two paths
    * historically judge the delta against different scopes (setLoopPoints
    * against the root's Q, setSegments against the TARGET's effective Q —
    * these differ for clips inside combine-created stacks that carry
    * their own quantum). Attaches setsOrigin/setsIsland to `e`; no-op
    * when the origin doesn't move. */
-  void attachContinuityRiders(celestrian::Edit& e,
-                              const celestrian::ClipNode& clip,
-                              const celestrian::timing::TimeMap& new_map,
-                              int64_t quantum);
+  void attachMapEditRiders(celestrian::Edit& e,
+                           const celestrian::ClipNode& clip,
+                           const celestrian::timing::TimeMap& new_map,
+                           int64_t quantum);
   /** prepare() a node's rack at the device rate (falling back to
    * kFallbackSampleRate before any device has started) — the
    * prepare-BEFORE-enable ordering every effect mutation must follow. */

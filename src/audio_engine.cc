@@ -328,20 +328,81 @@ bool AudioEngine::isPeriodCoherentWithQuantum(int64_t period, int64_t quantum) {
   return period % quantum == 0 || quantum % period == 0;
 }
 
-void AudioEngine::attachContinuityRiders(
+namespace {
+/** The island's audible period WITHOUT `skip` (message thread): the
+ * effective-period fold of stack_node.cc with one clip left out — the
+ * "everyone else" a map edit is judged against. A mapped stack's period
+ * stands whole (its map defines the subtree's cycle). 0 = no other
+ * looping content. */
+int64_t periodExcluding(const celestrian::AudioNode& node,
+                        const celestrian::AudioNode* skip) {
+  if (&node == skip || node.periodFromContext()) return 0;  // Q5 one-shots
+  if (const auto* stack = dynamic_cast<const celestrian::StackNode*>(&node)) {
+    if (const auto map = stack->activeTimeMap(); map.active())
+      return map.period();
+    int64_t composite = 0;
+    for (const auto& child : stack->ownedChildren())
+      composite = celestrian::timing::foldPeriod(
+          composite, periodExcluding(*child, skip));
+    return composite;
+  }
+  return node.getEffectivePeriod();
+}
+}  // namespace
+
+void AudioEngine::attachMapEditRiders(
     celestrian::Edit& e, const celestrian::ClipNode& clip,
     const celestrian::timing::TimeMap& new_map, int64_t quantum) {
   const int64_t origin = clip.origin_samples.load();
+  // Audio continuity is a PLAYING concern: stopped, the origin stays.
   const int64_t origin_new =
-      continuityOrigin(clip, new_map, global_transport_pos.load());
-  if (origin_new == origin) return;
-  e.setsOrigin = true;
-  e.iorg = origin_new;
+      is_playing_global.load()
+          ? continuityOrigin(clip, new_map, global_transport_pos.load())
+          : origin;
+  if (origin_new != origin) {
+    e.setsOrigin = true;
+    e.iorg = origin_new;
+  }
   const int64_t delta = origin_new - origin;
-  if (quantum > 0 && delta % quantum == 0) {
+  const int64_t epoch = root_node->getIslandEpoch();
+
+  // CYCLE-TOP RULE (owner question 2026-08-18, "if my first track is
+  // 1Q, why the mid-lane split?"): the loop that DEFINES the cycle
+  // after this edit puts its heard top at the frame top — the visual
+  // successor of "epoch re-bases to the newest cycle-defining origin"
+  // (commits) and of the Q13 sole-definer re-trim (epoch := origin +
+  // window start), now on a LOCKED island too. Definer = its period is
+  // a multiple of Q and of every other loop's period. Whole-Q from the
+  // current epoch only: the Q grid never moves (an off-grid ⌥-slid top
+  // stays mid-phase — honestly). Nothing audible changes: origins are
+  // absolute; the epoch is the visual top + the arm grid.
+  const int64_t a0 = new_map.active() ? new_map.mapOffset(0) : 0;
+  const int64_t top = origin_new + a0;
+  const int64_t new_period =
+      new_map.active() ? new_map.period() : clip.getIntrinsicDuration();
+  const int64_t others = celestrian::timing::foldPeriod(
+      quantum > 0 ? quantum : 0, periodExcluding(*root_node, &clip));
+  const bool definer =
+      new_period > 0 && (others <= 0 || new_period % others == 0);
+  // …and only when the top is not ALREADY at the frame top: the definer's
+  // period is the cycle, so a top ≡ epoch (mod period) draws identically
+  // and a re-base would be pure churn (a 1Q loop under a 1Q Q: every
+  // whole-Q epoch is the same frame).
+  const bool top_off_frame =
+      definer && (((top - epoch) % new_period) + new_period) % new_period != 0;
+  if (quantum > 0 && top_off_frame && (top - epoch) % quantum == 0) {
     e.setsIsland = true;
-    e.iq = quantum;  // Q unchanged — only the fold anchor moves
-    e.iepoch = root_node->getIslandEpoch() + delta;
+    e.iq = quantum;  // Q unchanged — only the frame top moves
+    e.iepoch = top;
+    return;
+  }
+  // Otherwise: TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09) — the
+  // epoch rides the origin's whole-Q delta so the edited clip's frame
+  // position is unchanged (the fold, not the clip, absorbs it).
+  if (delta != 0 && quantum > 0 && delta % quantum == 0) {
+    e.setsIsland = true;
+    e.iq = quantum;
+    e.iepoch = epoch + delta;
   }
 }
 
@@ -1818,13 +1879,13 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       e.setsIsland = true;
       e.iq = len;
       e.iepoch = e.iorg + start;
-    } else if (clip->getIntrinsicDuration() > 0 &&
-               !root_node->hasActiveTake() && is_playing_global.load()) {
-      // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09 — see the note
-      // above the anonymous namespace).
-      attachContinuityRiders(e, *clip,
-                             celestrian::timing::TimeMap::single(start, end),
-                             root_node->getEffectiveQuantum());
+    } else if (clip->getIntrinsicDuration() > 0 && !root_node->hasActiveTake()) {
+      // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (see attachMapEditRiders).
+      attachMapEditRiders(e, *clip,
+                          end > start
+                              ? celestrian::timing::TimeMap::single(start, end)
+                              : celestrian::timing::TimeMap::none(),
+                          root_node->getEffectiveQuantum());
     }
   }
   record(std::move(e));
@@ -1935,11 +1996,9 @@ void AudioEngine::setSegments(const juce::String& uuid,
     e.iq = period;
     e.iepoch = origin_new + a0;
   } else if (auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
-             clip != nullptr && intrinsic > 0 && !root_node->hasActiveTake() &&
-             is_playing_global.load()) {
-    // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09 — see the note
-    // above the anonymous namespace).
-    attachContinuityRiders(e, *clip, map, target->getEffectiveQuantum());
+             clip != nullptr && intrinsic > 0 && !root_node->hasActiveTake()) {
+    // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (see attachMapEditRiders).
+    attachMapEditRiders(e, *clip, map, target->getEffectiveQuantum());
   }
 
   record(std::move(e));

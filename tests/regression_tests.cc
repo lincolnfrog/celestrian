@@ -1245,6 +1245,103 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expectEquals(((clipProp(1, "origin") - epoch) % Q + Q) % Q, (int64_t)0,
                    "clip 2's anchor keeps its grid phase");
     }
+
+    beginTest("CYCLE-TOP RULE: the cycle-defining loop's top IS the frame top");
+    {
+      // Owner question 2026-08-18: "if my first track is 1Q, why the
+      // mid-lane split?" — a 10Q take from 1Q windowed to [6Q, 10Q)
+      // loops 4Q; the 1Q definer is indifferent to where the 4Q cycle
+      // tops, so the loop you just shaped fills the frame from its own
+      // top: epoch := origin + 6Q. Whole-Q (grid untouched), audio
+      // untouched (origins are absolute), and a NON-definer edit
+      // (someone else owns the cycle) leaves the epoch alone.
+      AudioEngine engine;
+      const int64_t Q = 44100;
+      const int BLOCK = 512;
+      std::vector<float> buf((size_t)BLOCK, 0.1f);
+      float* ins[] = {buf.data()};
+      float* outs[] = {buf.data(), buf.data()};
+      auto process = [&](int64_t total) {
+        while (total > 0) {
+          int n = (int)std::min<int64_t>(total, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          total -= n;
+        }
+      };
+      auto nthClipId = [&](int n) -> juce::String {
+        auto state = engine.getGraphState();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (*nodes)[n].getDynamicObject()->getProperty("id");
+      };
+      auto clipProp = [&](int n, const char* prop) -> int64_t {
+        auto state = engine.getGraphState();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
+            prop);
+      };
+      auto epochNow = [&]() {
+        return (int64_t)(double)engine.getGraphState()
+            .getDynamicObject()
+            ->getProperty("islandEpoch");
+      };
+
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(0));
+      process(Q);
+      engine.stopRecordingInNode(nthClipId(0));
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(1));
+      process(10 * Q - 200);
+      engine.stopRecordingInNode(nthClipId(1));
+      process(400);
+      expectEquals(clipProp(1, "duration"), 10 * Q, "a 10Q take");
+      const int64_t origin2 = clipProp(1, "origin");
+      expectEquals(epochNow(), origin2, "epoch at clip 2's origin (1Q)");
+      // Stopped, like the field: no continuity re-anchor is in play.
+      engine.togglePlayback();
+
+      // Left handle to 6Q: [6Q, 10Q) — a 4Q loop, the cycle (Q is 1Q).
+      engine.setLoopPoints(nthClipId(1), 6 * Q, 10 * Q);
+      expectEquals(clipProp(1, "origin"), origin2, "audio: origin untouched");
+      expectEquals(epochNow(), origin2 + 6 * Q,
+                   "epoch := the loop's heard top (origin + 6Q)");
+      expectEquals(((epochNow() - origin2) % Q + Q) % Q, (int64_t)0,
+                   "whole-Q move: the grid is untouched");
+      // The clip's frame position: its window top at phase 0 of the 4Q
+      // cycle — the loop fills the frame from its top, no mid-lane pair.
+      expectEquals((clipProp(1, "origin") + 6 * Q - epochNow()) % (4 * Q),
+                   (int64_t)0, "loop top at the frame top");
+
+      // Right handle to 9Q: [6Q, 9Q) — still the definer, top unchanged
+      // → epoch stays (no churn).
+      engine.setLoopPoints(nthClipId(1), 6 * Q, 9 * Q);
+      expectEquals(epochNow(), origin2 + 6 * Q, "same top, epoch stays");
+
+      // Undo both: the riders restore the epoch atomically.
+      engine.undo();
+      engine.undo();
+      expectEquals(epochNow(), origin2, "undo restores the epoch");
+      expectEquals(clipProp(1, "loopEnd") - clipProp(1, "loopStart"), 10 * Q,
+                   "undo restores the full span");
+
+      // A NON-definer: clip 3 (8Q) now owns the cycle (lcm(1, 10, 8) →
+      // its commit re-bases the epoch to ITS origin); trimming clip 2
+      // to [6Q, 8Q) (2Q ∤ 8Q's cycle... 8 % 2 == 0 but 2 % 8 != 0) is
+      // a sub-loop under clip 3's cycle → the epoch stays where clip 3
+      // put it.
+      engine.togglePlayback();
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(2));
+      process(8 * Q + 100);
+      engine.stopRecordingInNode(nthClipId(2));
+      process(2 * Q);
+      expectEquals(clipProp(2, "duration"), 8 * Q, "an 8Q take");
+      engine.togglePlayback();
+      const int64_t epochBefore = epochNow();
+      engine.setLoopPoints(nthClipId(1), 6 * Q, 8 * Q);
+      expectEquals(epochNow(), epochBefore,
+                   "non-definer trim: the frame belongs to the definer");
+    }
   }
 };
 

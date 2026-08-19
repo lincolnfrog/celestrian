@@ -221,6 +221,28 @@ equation applied to the surviving material, the un-windowed case
 window-start re-base. Pinned in qtime_lock_tests.cc ("windowed
 playback anchors at origin + loopStart"). UI: same
 brackets/latents/chip/heard-time cursor on both.
+**Cycle-top rule (2026-08-18, owner question "if my first track is 1Q,
+why the mid-lane split?"):** the Q13 `epoch := origin + loopStart`
+generalizes to LOCKED islands. A window/map edit on the clip that
+DEFINES the island cycle after the edit — its new period is a multiple
+of Q and of every other loop's period — moves the epoch to that
+loop's heard top (`origin' + mapOffset(0)`) whenever the top sits a
+whole number of Qs off the current epoch and is not already at the
+frame top; the loop you just shaped fills the frame from its own top
+(the visual successor of "epoch re-bases to the newest cycle-defining
+origin" at commit). Whole-Q only: the Q grid never moves; an off-grid
+⌥-slid top honestly stays mid-phase (its end/start grips meet under
+the "↺ loop top" chip). A NON-definer edit (a sub-loop under someone
+else's cycle) leaves the frame to whoever defines it — while playing,
+two-anchor continuity (2026-08-09) rides the epoch by the origin's
+whole-Q delta so the edited clip's frame position holds; stopped,
+nothing moves. This SUPERSEDES the "both anchors stay put when the
+edit removed the sounding region" half of 2026-08-09 for the definer
+(the origin still stays put — audio is never touched; only the frame
+top moves). `AudioEngine::attachMapEditRiders` / mock
+`applyMapEditRiders`; pinned in regression_tests.cc ("CYCLE-TOP
+RULE"), time_map_record_tests.cc (two-anchor, updated),
+tests/trim_drag.test.mjs, e2e "trim a long take".
 **Phase 1 extension 2 (2026-07-11, E-C in the transport):** the
 engine's published masterPos wraps on the EFFECTIVE island cycle
 (`calculateEffectiveCycleLength` / `AudioNode::getEffectivePeriod`,

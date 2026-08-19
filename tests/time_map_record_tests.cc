@@ -1012,9 +1012,16 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals((juce::int64)(((orgB1 - orgB) % dA + dA) % dA),
                    (juce::int64)0, "the delta is a whole number of Qs");
 
-      // A map that REMOVES p0's region: {[1Q, 2Q), [2Q, 3Q)} — both
-      // anchors stay put (2026-07-25i: you deleted what you were
-      // hearing; the jump is expected).
+      // A map that REMOVES p0's region: {[1Q, 2Q), [2Q, 3Q)} — the
+      // ORIGIN stays put (2026-07-25i: you deleted what you were
+      // hearing; the jump is expected), but the EPOCH moves to the
+      // loop's heard top: CYCLE-TOP RULE (owner question 2026-08-18,
+      // superseding the 2026-08-09 "epoch stays put" half — a loop
+      // that defines the cycle fills the frame from its own top; a
+      // mid-lane loop top only ever meant "someone else owns the
+      // frame"). B's 2Q loop [1Q, 3Q) IS the cycle (A is 1Q), and its
+      // top sits 1Q into the old frame → epoch := origin + 1Q. Whole-Q:
+      // the grid is untouched; audio never moved (origins are absolute).
       timing::TimeMap m2;
       m2.n = 2;
       m2.segs[0] = {dA, 2 * dA};
@@ -1022,8 +1029,10 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.setSegments(bId, m2);
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
                    "removed sounding region: origin stays put");
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)ep1,
-                   "removed sounding region: epoch stays put");
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)(orgB1 + dA),
+                   "cycle-top rule: epoch at the loop's heard top");
+      expectEquals((juce::int64)(((islandEpoch() - ep1) % dA + dA) % dA),
+                   (juce::int64)0, "the epoch moved by whole Qs");
 
       // ONE undo restores both anchors: consecutive Segments edits
       // coalesce (one gesture, one undo step) and the setsOrigin /
