@@ -266,6 +266,11 @@ function laneCommon(node, state) {
         fxCount: node.effects && Array.isArray(node.effects.chain)
             ? node.effects.chain.filter(s => s.enabled).length
             : 0,
+        // MIDI (docs/vst3.md §8): the rail's arm affordance appears
+        // only when the chain carries an instrument slot.
+        hasInstrument: !!(node.effects && Array.isArray(node.effects.chain) &&
+            node.effects.chain.some(s => s.isInstrument)),
+        midiArmed: !!node.midiArmed,
         // Mixer facts (published on every node): pan/balance −1..+1 and
         // the volume fader 0..1 (absent = unity — pre-gain states);
         // clips also carry their stereo wiring (right input of a pair,

@@ -152,7 +152,8 @@ void FxChain::prepare(double sample_rate) {
   }
 }
 
-bool FxChain::run(float* l, float* r, int sample_count, bool stereo_in) {
+bool FxChain::run(float* l, float* r, int sample_count, bool stereo_in,
+                  const juce::MidiBuffer* live_midi) {
   bool stereo = stereo_in;
   bool internal_right = false;  // r is the chain's own scratch
   float* right = stereo ? r : nullptr;
@@ -172,10 +173,14 @@ bool FxChain::run(float* l, float* r, int sample_count, bool stereo_in) {
       juce::FloatVectorOperations::copy(right, l, sample_count);
       stereo = true;
     }
-    if (stereo)
-      slot->processStereo(l, right, sample_count);
-    else
+    if (stereo) {
+      if (live_midi != nullptr)
+        slot->processStereoMidi(l, right, sample_count, *live_midi);
+      else
+        slot->processStereo(l, right, sample_count);
+    } else {
       slot->process(l, sample_count);
+    }
   }
   if (internal_right) {
     // Mono caller: fold the promoted pair back down, equal halves.
@@ -185,6 +190,12 @@ bool FxChain::run(float* l, float* r, int sample_count, bool stereo_in) {
     return false;
   }
   return stereo;
+}
+
+bool FxChain::hasEnabledInstrument() const {
+  for (const auto& slot : slots_)
+    if (slot->enabled.load() && slot->isInstrument()) return true;
+  return false;
 }
 
 bool FxChain::anyEnabled() const {

@@ -53,6 +53,7 @@ import {
 import {
     setSlotEnabled, setSlotParam, moveChainSlot, setEffectScope,
     addPluginToChain, removeChainSlot, openPluginEditor,
+    setMidiArmed, getMidiInputs,
 } from './mock/effects.js';
 import {
     getKnownPlugins, scanPlugins, getPluginScanStatus,
@@ -120,6 +121,8 @@ export const handlers = {
     addPluginToChain,
     removeChainSlot,
     openPluginEditor,
+    setMidiArmed,
+    getMidiInputs,
     setEffectScope,
     startLatencyCalibration,
     getLatencyCalibration,

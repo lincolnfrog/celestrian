@@ -43,17 +43,20 @@ class Vst3Slot : public FxSlot {
   static constexpr int kMaxBlockSize = 8192;
 
   /** LIVE slot around a freshly created instance (message thread).
-   * The instance is configured stereo and prepared by prepare(). */
+   * The instance is configured stereo (effects: 2-in/2-out;
+   * instruments: 0-in/2-out) and prepared by prepare(). */
   Vst3Slot(std::unique_ptr<juce::AudioPluginInstance> instance,
            const juce::String& uid, const juce::String& display_name,
-           const juce::String& file);
+           const juce::String& file, bool is_instrument = false);
 
   /** PLACEHOLDER slot (missing plugin on load): identity + state only. */
   Vst3Slot(const juce::String& uid, const juce::String& display_name,
-           const juce::String& file, const juce::MemoryBlock& state);
+           const juce::String& file, const juce::MemoryBlock& state,
+           bool is_instrument = false);
 
   const char* typeId() const override { return "vst3"; }
   bool wantsStereo() const override { return true; }
+  bool isInstrument() const override { return is_instrument_; }
 
   bool isMissing() const { return instance_ == nullptr; }
   const juce::String& pluginUid() const { return uid_; }
@@ -64,6 +67,11 @@ class Vst3Slot : public FxSlot {
   /** Audio thread. Mono is never reached (see class comment). */
   void process(float* x, int sample_count) override;
   void processStereo(float* l, float* r, int sample_count) override;
+  /** The MIDI-carrying pass (phase 4): events are copied into the
+   * preallocated scratch (processBlock may consume/produce), then fed
+   * to the plugin. */
+  void processStereoMidi(float* l, float* r, int sample_count,
+                         const juce::MidiBuffer& midi) override;
 
   /** VST3 parameters belong to the plugin's editor (owner ruling
    * 2026-08-15) — the bridge param surface rejects everything. */
@@ -92,6 +100,7 @@ class Vst3Slot : public FxSlot {
   void doPrepare(double sample_rate) override;
 
   std::unique_ptr<juce::AudioPluginInstance> instance_;
+  bool is_instrument_ = false;
   juce::String uid_;           // PluginDescription::createIdentifierString
   juce::String display_name_;  // plugin name for chips/windows
   juce::String file_;          // fileOrIdentifier (diagnostics/rescan)

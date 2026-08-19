@@ -262,14 +262,24 @@ origin/period/quantum/launch are facts about *time*, not audio buffers
 (kernel.md) — so a note clip slots into the timing model unchanged; what's
 new is capture, storage, and rendering.
 
-- **Phase 4 — MIDI input + live play-through.** `juce::MidiInput` devices
-  opened via the device manager; incoming messages timestamped onto the
-  same monotonic **input clock** the pre-record ring uses (performance.md
-  §3), landing in a lock-free FIFO (`juce::AbstractFifo`) the audio thread
-  drains. Live monitoring: a selected node with an instrument slot plays
-  incoming notes immediately (the looper equivalent of "instrument in
-  hand", ui_overhaul.md). This phase alone is useful: play a synth live
-  over your loops.
+- **Phase 4 — MIDI input + live play-through.** ✅ DONE 2026-08-15 —
+  `MidiInputQueue` (lock-free SPSC ring, channel messages only, drop-
+  and-count overflow), engine as the all-devices `MidiInputCallback`
+  (device enabling happens in the APP shell at startup + heartbeat, so
+  headless tests stay device-free), one drain per callback into a
+  preallocated MidiBuffer riding `ProcessContext.live_midi` (events at
+  block offset 0 — sub-block onset jitter is inaudible for monitoring;
+  finer recording timestamps are phase 5's). Instrument slots:
+  `Vst3Slot(is_instrument)` prepares 0-in/2-out, consumes MIDI via the
+  new `FxSlot::processStereoMidi` hook, and OVERWRITES the buffer (the
+  chain-head generate semantic); the flag rides add/save/revive. The
+  armed node (`AudioNode::midi_armed`, single-armed via
+  `setMidiArmed`, a monitoring gesture like solo — not undoable, not
+  persisted) hands the block's events to its fx pass; a clip with no
+  content/transport renders a silence pass through the chain (the
+  play-through tail — never a SECOND chain run in one block), stacks
+  get it free via their every-block fx pass. UI: ♪ rail toggle
+  (visible only with an instrument slot), `getMidiInputs` diagnostics.
 - **Phase 5 — note clips + recording.** A `MidiClipNode : AudioNode` whose
   content is a note sequence in the origin frame (samples, like audio
   content; the D4 pointer discipline applies to the sequence buffer). Its
@@ -305,9 +315,9 @@ rulings before phase 5, not before phase 1.
 ## 10. Phase plan
 
 Each phase leaves the build green and shippable; tests named per phase.
-Status: **phases 1–3 landed 2026-08-15** (all three test layers green,
+Status: **phases 1–4 landed 2026-08-15** (all three test layers green,
 including REAL-BINARY hosting validation via the in-repo test plugin);
-phase 4 (MIDI input + live play-through) is next.
+phase 5 (note clips + recording) is next.
 
 1. **Hosting foundation.** ✅ DONE 2026-08-15.
     CMake: `JUCE_PLUGINHOST_VST3=1` on Celestrian

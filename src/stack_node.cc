@@ -431,14 +431,19 @@ void StackNode::renderChildren(float* const* output_channels,
 
   if (use_accum) {
     if (use_fx) {
+      // Armed groups hand the block's live MIDI to their chain (phase
+      // 4): the stack's fx pass runs every block over the summed group
+      // (silence included), so a group instrument speaks with no extra
+      // machinery.
       if (accum_ch >= 2) {
         fxProcess(fx_accum_.getWritePointer(0), fx_accum_.getWritePointer(1),
-                  context.num_samples, /*stereo_in=*/true);
+                  context.num_samples, /*stereo_in=*/true,
+                  liveMidiFor(context));
       } else {
         // Mono device: no right buffer — a promoting chain folds back
         // to mono internally (FxChain::run).
         fxProcess(fx_accum_.getWritePointer(0), nullptr, context.num_samples,
-                  /*stereo_in=*/false);
+                  /*stereo_in=*/false, liveMidiFor(context));
       }
     }
     // The group's output stage: gain·pan (balance law), mute = gain 0.

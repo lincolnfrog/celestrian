@@ -60,6 +60,15 @@ class FxSlot {
   // Audio thread: in-place, allocation-free.
   virtual void process(float* x, int sample_count) = 0;
   virtual void processStereo(float* l, float* r, int sample_count) = 0;
+  /** Stereo pass WITH live MIDI (docs/vst3.md §8, phase 4). Built-ins
+   * ignore the events; VST3 slots feed them to processBlock. Only ever
+   * called on the stereo path — instruments wantsStereo(), so the
+   * chain promotes before any MIDI consumer runs. */
+  virtual void processStereoMidi(float* l, float* r, int sample_count,
+                                 const juce::MidiBuffer& midi) {
+    juce::ignoreUnused(midi);
+    processStereo(l, r, sample_count);
+  }
 
   /** Message thread. False for an unknown key; values are clamped. */
   virtual bool setParam(const juce::String& key, double value) = 0;
@@ -80,6 +89,11 @@ class FxSlot {
   /** True for slots that only process stereo (VST3, Q-V1): the chain
    * PROMOTES a mono signal to stereo at the first enabled such slot. */
   virtual bool wantsStereo() const { return false; }
+
+  /** True for instrument slots (VST3 synths, phase 4): they GENERATE
+   * the signal (processBlock overwrites the buffer — the chain-head
+   * semantic) and consume live MIDI. */
+  virtual bool isInstrument() const { return false; }
 
   std::atomic<bool> enabled{false};
 
@@ -201,8 +215,12 @@ class FxChain {
    * returning. Returns whether the CALLER's buffers now hold stereo.
    * A promotion-needing slot with no usable scratch is skipped
    * (fail-silent, the unprepared-echo discipline).
+   *
+   * `live_midi` (phase 4): the block's live events for MIDI-consuming
+   * slots — null on every path except a MIDI-armed node's fx pass.
    */
-  bool run(float* l, float* r, int sample_count, bool stereo_in);
+  bool run(float* l, float* r, int sample_count, bool stereo_in,
+           const juce::MidiBuffer* live_midi = nullptr);
 
   // The historical shapes, kept as thin wrappers over run() for the
   // pure-built-in paths and the DSP tests.
@@ -213,6 +231,9 @@ class FxChain {
 
   bool anyEnabled() const;
   int enabledCount() const;
+  /** An ENABLED instrument slot exists — the live play-through
+   * precondition (docs/vst3.md §8). Audio-thread safe. */
+  bool hasEnabledInstrument() const;
 
   /** The chain array for metadata AND the save format (docs/vst3.md
    * §6): [{slot, type, enabled, ...params}] in signal order. Pass

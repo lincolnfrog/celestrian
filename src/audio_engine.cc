@@ -24,6 +24,10 @@ AudioEngine::AudioEngine() {
   // Pre-record ring: preallocated here so the audio thread never resizes it.
   prerecord_ring_.setSize(kPreRecordRingChannels, kPreRecordRingLen);
   prerecord_ring_.clear();
+
+  // Live MIDI buffer (phase 4): preallocated so the per-callback drain
+  // never grows it on the audio thread.
+  live_midi_buffer_.ensureSize(8192);
 }
 
 void AudioEngine::compactIdleTakes() {
@@ -1620,7 +1624,8 @@ void AudioEngine::reviveVst3Slot(
   // (revival restores what the session already means).
   auto live = std::make_shared<celestrian::dsp::Vst3Slot>(
       std::move(instance), placeholder->pluginUid(),
-      placeholder->displayName(), placeholder->fileOrIdentifier());
+      placeholder->displayName(), placeholder->fileOrIdentifier(),
+      placeholder->isInstrument());
   live->setSlotUuid(placeholder->slotUuid());
   double sample_rate = cached_sample_rate_.load();
   if (sample_rate <= 0) sample_rate = kFallbackSampleRate;
@@ -1634,6 +1639,53 @@ void AudioEngine::reviveVst3Slot(
       celestrian::dsp::FxChain::makeFromSlots(std::move(slots)).release())));
   juce::Logger::writeToLog("AudioEngine: revived plugin slot " + slot_uuid +
                            " on " + uuid);
+}
+
+void AudioEngine::setMidiArmed(const juce::String& uuid, bool on) {
+  // Single-armed: clear the whole graph first (message-thread walk),
+  // then set the target. Disarming just clears everything and stops.
+  std::function<void(celestrian::AudioNode&)> clear_all =
+      [&](celestrian::AudioNode& node) {
+        node.midi_armed.store(false);
+        if (auto* stack = dynamic_cast<celestrian::StackNode*>(&node))
+          for (const auto& child : stack->ownedChildren()) clear_all(*child);
+      };
+  clear_all(*root_node);
+  if (!on) return;
+  if (auto* node = findNodeByUuid(root_node.get(), uuid)) {
+    // Prepare first: the armed chain runs every block from the next
+    // callback on (instrument included).
+    prepareEffects(*node);
+    node->midi_armed.store(true);
+    juce::Logger::writeToLog("AudioEngine: MIDI armed on " + uuid);
+  }
+}
+
+void AudioEngine::refreshMidiInputs() {
+  for (const auto& device : juce::MidiInput::getAvailableDevices()) {
+    if (!device_manager.isMidiInputDeviceEnabled(device.identifier))
+      device_manager.setMidiInputDeviceEnabled(device.identifier, true);
+  }
+  if (!midi_callback_registered_) {
+    // Empty identifier = every enabled device routes here.
+    device_manager.addMidiInputDeviceCallback({}, this);
+    midi_callback_registered_ = true;
+  }
+}
+
+juce::var AudioEngine::getMidiInputs() const {
+  juce::Array<juce::var> names;
+  for (const auto& device : juce::MidiInput::getAvailableDevices())
+    names.add(device.name);
+  auto* out = new juce::DynamicObject();
+  out->setProperty("devices", names);
+  out->setProperty("dropped", midi_input_queue_.droppedCount());
+  return juce::var(out);
+}
+
+void AudioEngine::handleIncomingMidiMessage(juce::MidiInput*,
+                                            const juce::MidiMessage& message) {
+  midi_input_queue_.push(message);
 }
 
 void AudioEngine::setEffectScope(const juce::String& uuid, bool active) {
@@ -1978,6 +2030,15 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     }
   }
 
+  // --- Live MIDI drain (docs/vst3.md §8, phase 4) ---
+  // One drain per callback: everything that arrived since the last
+  // block lands at offset 0 (sub-block onset jitter ≤ one device
+  // block — inaudible for monitoring; recording timestamps are a
+  // phase-5 concern). The buffer is preallocated; addEvent never
+  // grows it here.
+  live_midi_buffer_.clear();
+  midi_input_queue_.drainTo(live_midi_buffer_);
+
   if (root_node) {
     celestrian::ProcessContext pc;
     pc.sample_rate = cached_sample_rate_.load();
@@ -1985,6 +2046,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     pc.is_playing = is_playing_global;
     pc.is_recording = true;  // Enable recording capture from inputs
     pc.master_pos = global_transport_pos;
+    pc.live_midi = &live_midi_buffer_;
     if (ring_channels > 0) {
       pc.prerecord_ring = prerecord_ring_.getArrayOfReadPointers();
       pc.prerecord_ring_len = kPreRecordRingLen;

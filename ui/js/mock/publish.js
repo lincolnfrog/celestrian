@@ -55,6 +55,7 @@ export function enrichNodes(nodes) {
         // Mixer + period-source facts publish on EVERY node (engine
         // parity: metadata always carries them; hand-written scenario
         // fixtures predate the fields, so normalize at the boundary).
+        updatedNode.midiArmed = !!node.midiArmed;
         if (typeof updatedNode.gain !== 'number') updatedNode.gain = 1;
         if (typeof updatedNode.pan !== 'number') updatedNode.pan = 0;
         if (!updatedNode.periodSource) updatedNode.periodSource = 'own';

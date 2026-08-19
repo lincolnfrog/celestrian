@@ -67,7 +67,8 @@ class SessionIoTests : public juce::UnitTest {
         vst3_state.replaceAll(&fake, sizeof(fake));
         auto slots = clip->fxChain()->slots();
         auto ghost = std::make_shared<dsp::Vst3Slot>(
-            "VST3-ghost-uid", "Ghost Plugin", "/gone/Ghost.vst3", vst3_state);
+            "VST3-ghost-uid", "Ghost Plugin", "/gone/Ghost.vst3", vst3_state,
+            /*is_instrument=*/true);
         ghost->enabled.store(true);
         slots.push_back(std::move(ghost));
         delete clip->exchangeFxChain(
@@ -145,6 +146,7 @@ class SessionIoTests : public juce::UnitTest {
       expect(ghost != nullptr && ghost->isMissing(), "loaded as placeholder");
       expectEquals(ghost->pluginUid(), juce::String("VST3-ghost-uid"));
       expect(ghost->enabled.load(), "enable flag persisted");
+      expect(ghost->isInstrument(), "instrument flag persisted (phase 4)");
       float restored = 0.0f;
       ghost->stateBlob().copyTo(&restored, 0, sizeof(restored));
       expectWithinAbsoluteError(restored, 0.33f, 1e-6f,

@@ -103,6 +103,13 @@ struct ProcessContext {
   // against THIS clock — the folded master_pos wraps every map period
   // and never crosses a target at/past the map's end.
   int64_t island_pos = 0;
+  // Live MIDI (docs/vst3.md §8, phase 4): the block's incoming events,
+  // drained once per callback by the engine from the lock-free queue.
+  // Consumed ONLY by a node whose midi_armed_ flag is set (the single
+  // live play-through target). Null in unit tests driving nodes
+  // directly and on engines with no MIDI devices.
+  const juce::MidiBuffer* live_midi = nullptr;
+
   // The innermost enclosing ACTIVE map (empty when none): set by a
   // mapping stack in childContext for its whole subtree, alongside
   // map_heard_epoch — the RECEIVED frame's cycle top at that stack,
@@ -269,6 +276,7 @@ class AudioNode {
     obj->setProperty("playhead", (double)playhead_pos.load());
     obj->setProperty("isRecording", (bool)isRecording());
     obj->setProperty("isMuted", (bool)is_muted.load());
+    obj->setProperty("midiArmed", (bool)midi_armed.load());
     obj->setProperty("isSoloed", (bool)is_soloed.load());
     obj->setProperty("pan", (double)pan.load());
     obj->setProperty("gain", (double)gain.load());
@@ -502,9 +510,16 @@ class AudioNode {
    * caller's buffers now hold stereo. Called from the CONST render
    * phase — chain DSP state and the scope ring are DSP scratch
    * (performance.md §2.3 sanctioned exception). */
-  bool fxProcess(float* l, float* r, int n, bool stereo_in) const {
+  bool fxProcess(float* l, float* r, int n, bool stereo_in,
+                 const juce::MidiBuffer* live_midi = nullptr) const {
     fx_scope_.capture(l, stereo_in ? r : nullptr, n);
-    return chain_.load()->run(l, r, n, stereo_in);
+    return chain_.load()->run(l, r, n, stereo_in, live_midi);
+  }
+
+  /** This block's live MIDI for THIS node's fx pass: the context's
+   * events iff the node is the armed play-through target. */
+  const juce::MidiBuffer* liveMidiFor(const ProcessContext& context) const {
+    return midi_armed.load() ? context.live_midi : nullptr;
   }
 
   /**
@@ -582,6 +597,11 @@ class AudioNode {
   std::atomic<dsp::FxChain*> chain_{dsp::FxChain::makeDefault().release()};
   mutable dsp::FxScope fx_scope_;
   std::atomic<bool> is_muted{false};
+  // MIDI arm (docs/vst3.md §8, phase 4): THE live play-through target —
+  // incoming MIDI reaches this node's chain (its instrument slot).
+  // Single-armed: AudioEngine::setMidiArmed clears every other node.
+  // A monitoring gesture like solo: not undoable, not persisted.
+  std::atomic<bool> midi_armed{false};
   // Solo canon (Q16, ruled 2026-08-13): island-wide, ADDITIVE, fractal.
   // A per-node flag like mute; the audio thread resolves audibility per
   // callback from the snapshot (any_solo + ancestor scan), so toggling

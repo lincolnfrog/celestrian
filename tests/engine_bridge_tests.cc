@@ -431,7 +431,8 @@ class EngineBridgeTests : public juce::UnitTest {
       const float saved_gain = 0.25f;
       state.replaceAll(&saved_gain, sizeof(saved_gain));
       auto placeholder = std::make_shared<dsp::Vst3Slot>(
-          "Stub-uid", "Stub Gain", "/stub/StubGain.vst3", state);
+          "Stub-uid", "Stub Gain", "/stub/StubGain.vst3", state,
+          /*is_instrument=*/true);
       placeholder->enabled.store(true);
       const juce::String slot_uuid = placeholder->slotUuid();
       {
@@ -463,6 +464,8 @@ class EngineBridgeTests : public juce::UnitTest {
       expectWithinAbsoluteError(stub->gain, 0.25f, 1e-6f,
                                 "kept state applied to the live twin");
       expect(live->enabled.load(), "enable flag carried over");
+      expect(live->isInstrument(),
+             "instrument flag carried into the live twin (phase 4)");
       int still_missing = 0;
       engine.forEachVst3Placeholder(
           [&](const juce::String&, const juce::String&, const juce::String&) {

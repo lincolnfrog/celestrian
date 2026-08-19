@@ -272,7 +272,8 @@ void applyEffects(AudioNode& node, const juce::var& blob,
       slot = std::make_shared<dsp::Vst3Slot>(
           o->getProperty("uid").toString(),
           o->getProperty("name").toString(),
-          o->getProperty("file").toString(), state);
+          o->getProperty("file").toString(), state,
+          (bool)o->getProperty("isInstrument"));
       slot->enabled.store((bool)o->getProperty("enabled"));
     } else {
       slot = dsp::FxChain::makeBuiltIn(type);

@@ -287,6 +287,10 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
   // ONE content load per render (compaction may swap the pointer under
   // a playing clip; the retired buffer outlives this block).
   const juce::AudioBuffer<float>& buffer = *content_.load();
+  // Whether the content branch ran the chain this block — the live
+  // play-through tail below must never run it a SECOND time (echo
+  // lines and plugin state advance per run).
+  bool fx_pass_ran = false;
   // The kernel playback equation (§2.3 render phase): a pure function
   // of (buffer, origin, window, t). The commit block renders SILENT
   // (committed_this_block_) — identical to the historical process(),
@@ -414,8 +418,12 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // per channel, after the chain — §3.3).
         bool out_stereo = stereo;
         if (fxIsLive()) {
+          // Armed nodes hand the block's live MIDI to their chain
+          // (phase 4) — an enabled instrument slot consumes it.
           out_stereo = fxProcess(fx_scratch_.data(), fx_scratch2_.data(),
-                                 context.num_samples, stereo);
+                                 context.num_samples, stereo,
+                                 liveMidiFor(context));
+          fx_pass_ran = true;
         }
         // The output stage (unification_audit §2.4): gain·pan resolved
         // together, post-fx. Pan (balance law, audio_node.h): output
@@ -472,6 +480,60 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       }
     } else {
       playhead_pos.store(0.0);
+    }
+  }
+
+  // --- Live MIDI play-through (docs/vst3.md §8, phase 4) ---
+  // The armed node's instrument sounds INDEPENDENT of transport and
+  // content: when the content branch did not run the chain (stopped
+  // transport, empty clip, pending take), render silence through it
+  // with the live events so the synth speaks under the player's
+  // hands. Muted / solo-silenced nodes stay quiet — the same
+  // audibility rule content follows.
+  if (!fx_pass_ran && midi_armed.load() && context.live_midi != nullptr &&
+      fxChain()->hasEnabledInstrument()) {
+    bool silenced = is_muted.load() || context.any_solo;
+    if (silenced && !is_muted.load()) {
+      if (context.snap) {
+        silenced = !snapIsUnderSolo(*context.snap, context.self);
+      } else {
+        const celestrian::AudioNode* curr = this;
+        while (curr != nullptr) {
+          if (curr->is_soloed.load()) {
+            silenced = false;
+            break;
+          }
+          curr = curr->getParent();
+        }
+      }
+    }
+    if (!silenced) {
+      if ((int)fx_scratch_.size() < context.num_samples)
+        fx_scratch_.resize((size_t)context.num_samples);
+      if ((int)fx_scratch2_.size() < context.num_samples)
+        fx_scratch2_.resize((size_t)context.num_samples);
+      std::fill(fx_scratch_.begin(),
+                fx_scratch_.begin() + context.num_samples, 0.0f);
+      std::fill(fx_scratch2_.begin(),
+                fx_scratch2_.begin() + context.num_samples, 0.0f);
+      // Mono silence in; the chain promotes at the instrument slot and
+      // the synth overwrites — out_stereo is true by construction.
+      fxProcess(fx_scratch_.data(), fx_scratch2_.data(), context.num_samples,
+                /*stereo_in=*/false, context.live_midi);
+      float gl = 1.0f, gr = 1.0f, fader = 1.0f;
+      outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr,
+                       fader);
+      for (int ch = 0; ch < num_output_channels; ++ch) {
+        if (output_channels[ch] == nullptr) continue;
+        const bool right = ch == 1 && num_output_channels >= 2;
+        const float* src = right ? fx_scratch2_.data() : fx_scratch_.data();
+        const float g =
+            num_output_channels >= 2 && ch < 2 ? (right ? gr : gl) : fader;
+        if (g > 0.0f) {
+          juce::FloatVectorOperations::addWithMultiply(
+              output_channels[ch], src, g, context.num_samples);
+        }
+      }
     }
   }
 }

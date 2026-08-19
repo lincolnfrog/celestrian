@@ -61,4 +61,59 @@ class StubPluginInstance : public juce::AudioPluginInstance {
   }
 };
 
+/**
+ * The stub INSTRUMENT (phase 4): acceptsMidi, generates a constant
+ * 0.25 level while any note is held (note-on sets held, note-off
+ * clears it — block-granular on purpose: deterministic assertions,
+ * no envelope math). OVERWRITES the buffer, the chain-head instrument
+ * semantic (docs/vst3.md §8).
+ */
+class StubSynthInstance : public juce::AudioPluginInstance {
+ public:
+  static constexpr float kLevel = 0.25f;
+
+  bool note_held = false;
+  int blocks_processed = 0;
+
+  void fillInPluginDescription(juce::PluginDescription& d) const override {
+    d.name = "Stub Synth";
+    d.pluginFormatName = "Stub";
+    d.manufacturerName = "Celestrian Tests";
+    d.isInstrument = true;
+    d.uniqueId = 0x51b6a2;
+  }
+
+  const juce::String getName() const override { return "Stub Synth"; }
+  void prepareToPlay(double, int) override {}
+  void releaseResources() override {}
+  void processBlock(juce::AudioBuffer<float>& buffer,
+                    juce::MidiBuffer& midi) override {
+    ++blocks_processed;
+    for (const auto metadata : midi) {
+      const auto message = metadata.getMessage();
+      if (message.isNoteOn()) note_held = true;
+      if (message.isNoteOff()) note_held = false;
+    }
+    // Overwrite: an instrument GENERATES (the incoming buffer is the
+    // chain's promoted silence on the play-through path).
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch) {
+      juce::FloatVectorOperations::fill(buffer.getWritePointer(ch),
+                                        note_held ? kLevel : 0.0f,
+                                        buffer.getNumSamples());
+    }
+  }
+  double getTailLengthSeconds() const override { return 0.0; }
+  bool acceptsMidi() const override { return true; }
+  bool producesMidi() const override { return false; }
+  juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+  bool hasEditor() const override { return false; }
+  int getNumPrograms() override { return 1; }
+  int getCurrentProgram() override { return 0; }
+  void setCurrentProgram(int) override {}
+  const juce::String getProgramName(int) override { return {}; }
+  void changeProgramName(int, const juce::String&) override {}
+  void getStateInformation(juce::MemoryBlock&) override {}
+  void setStateInformation(const void*, int) override {}
+};
+
 }  // namespace celestrian::test_utils

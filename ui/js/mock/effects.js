@@ -10,7 +10,7 @@
  * are stable per node (engine parity: reorders preserve identity).
  */
 
-import { findNode } from './state.js';
+import { findNode, state } from './state.js';
 import { getKnownPlugins } from './plugins.js';
 
 let slotCounter = 0;
@@ -98,6 +98,7 @@ export function addPluginToChain(id, pluginUid, index) {
         uid: known.uid,
         file: known.file,
         missing: false,
+        isInstrument: !!known.isInstrument,
         latency: 0,
     };
     const at = (typeof index === 'number' && index >= 0)
@@ -122,6 +123,28 @@ export function openPluginEditor(id, slotUuid) {
     // can assert the bridge call happened if it ever needs to.
     console.log('[MockBackend] openPluginEditor', id, slotUuid);
     return true;
+}
+
+/** Single-armed play-through target (engine parity: setMidiArmed
+ * clears every other node's flag first). Not undoable. */
+export function setMidiArmed(id, on) {
+    const clearAll = nodes => nodes.forEach(n => {
+        n.midiArmed = false;
+        if (n.nodes) clearAll(n.nodes);
+    });
+    clearAll(state.nodes);
+    if (on) {
+        const node = findNode(id);
+        if (node) {
+            node.midiArmed = true;
+            console.log('[MockBackend] MIDI armed on', id);
+        }
+    }
+}
+
+/** Diagnostics fixture (engine parity: {devices, dropped}). */
+export function getMidiInputs() {
+    return { devices: ['Mock Keys 61'], dropped: 0 };
 }
 
 export function setEffectScope(id, active) {

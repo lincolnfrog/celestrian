@@ -855,6 +855,41 @@ test.describe('Effects rack (built-ins)', () => {
         await expect(fxRow.locator('.fx-card.fx-vst3')).toHaveCount(1);
     });
 
+    test('MIDI arm: instrument chip reveals the lane toggle; single-armed', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const firstClip = page.locator('.lane[data-kind="clip"]').first();
+
+        // No instrument yet: the arm affordance stays hidden.
+        await expect(firstClip.locator('.midi-btn')).toBeHidden();
+
+        // The mock registry's synth only exists after a scan.
+        await page.evaluate(async () => {
+            await window.celestrian.callNative('scanPlugins');
+            for (let i = 0; i < 5; i++) {
+                const s = await window.celestrian.callNative('getPluginScanStatus');
+                if (!s.scanning) break;
+            }
+        });
+
+        await firstClip.locator('.fx-btn').click();
+        const fxRow = page.locator('.lane-fx');
+        await fxRow.locator('.fx-add').click();
+        await fxRow.locator('.fx-picker-item', { hasText: 'Cinder Synth' }).click();
+        await expect(fxRow.locator('.fx-card.fx-vst3')).toHaveCount(1);
+
+        // Instrument present → ♪ appears; arming lights it and the
+        // backend flag follows.
+        await expect(firstClip.locator('.midi-btn')).toBeVisible();
+        await firstClip.locator('.midi-btn').click();
+        await expect(firstClip.locator('.midi-btn')).toHaveClass(/on/);
+        await expect.poll(async () => (await clipState(page)).midiArmed).toBe(true);
+
+        // Toggling off disarms.
+        await firstClip.locator('.midi-btn').click();
+        await expect(firstClip.locator('.midi-btn')).not.toHaveClass(/on/);
+        await expect.poll(async () => (await clipState(page)).midiArmed).toBe(false);
+    });
+
     test('visualizations: every card draws; comp shows GR while crushing', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
         const firstClip = page.locator('.lane[data-kind="clip"]').first();

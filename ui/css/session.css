@@ -1841,3 +1841,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     cursor: pointer;
 }
 .fx-picker-item:hover { background: var(--lane); }
+
+/* --- MIDI arm (docs/vst3.md §8, phase 4) --------------------------
+   The rail's play-through toggle: hidden without an instrument slot,
+   lit while this lane is THE armed target. */
+.midi-btn.on { color: var(--tape); border-color: var(--tape); }

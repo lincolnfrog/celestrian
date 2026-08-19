@@ -449,6 +449,19 @@ MainComponent::MainComponent()
                              audio_engine.removeChainSlot(args[0].toString(),
                                                           args[1].toString());
                            }))
+              .withNativeFunction("setMidiArmed",
+                                  voidCall("setMidiArmed", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setMidiArmed(
+                                                 args[0].toString(),
+                                                 (bool)args[1]);
+                                           }))
+              .withNativeFunction(
+                  "getMidiInputs",
+                  valueCall("getMidiInputs", 0,
+                            [this](const auto&) {
+                              return audio_engine.getMidiInputs();
+                            }))
               .withNativeFunction(
                   "openPluginEditor",
                   voidCall("openPluginEditor", 2,
@@ -621,6 +634,11 @@ MainComponent::MainComponent()
   // Project heartbeat (docs/projects.md): birth + mirror every 3 s.
   startTimer(3000);
 
+  // Live MIDI (docs/vst3.md §8): open every keyboard now and on the
+  // heartbeat below (hot-plug pickup) — the engine never touches MIDI
+  // devices on its own, so headless tests stay device-free.
+  audio_engine.refreshMidiInputs();
+
   // Plugin revival (docs/vst3.md §6): after ANY successful session load
   // (bridge, chooser, project manager), instantiate every placeholder
   // slot whose plugin is installed on this machine. Editor windows for
@@ -675,7 +693,8 @@ void MainComponent::addPluginToChain(const juce::String& node_uuid,
         }
         auto slot = std::make_shared<celestrian::dsp::Vst3Slot>(
             std::move(instance), description.createIdentifierString(),
-            description.name, description.fileOrIdentifier);
+            description.name, description.fileOrIdentifier,
+            description.isInstrument);
         audio_engine.addVst3SlotToChain(node_uuid, std::move(slot), index);
       });
 }
@@ -751,6 +770,9 @@ void MainComponent::chooseSessionPath(
 }
 
 void MainComponent::timerCallback() {
+  // Hot-plugged MIDI keyboards join on the heartbeat (cheap: enable is
+  // an idempotent per-device check).
+  audio_engine.refreshMidiInputs();
   // Project heartbeat (docs/projects.md): births the project at the
   // first committed take, then keeps the folder mirroring the session.
   project_manager_.tick();

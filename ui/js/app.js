@@ -814,6 +814,9 @@ function initApp() {
                 `${name || 'plugin'} removed (⌘Z to undo)`),
         onOpenPluginEditor: (id, slotUuid) =>
             callNative('openPluginEditor', id, slotUuid),
+        onMidiArm: (id, on) =>
+            call('setMidiArmed', [id, on],
+                on ? 'MIDI live — play your keyboard' : 'MIDI off'),
         onArm,
         onRecordKey,
     });

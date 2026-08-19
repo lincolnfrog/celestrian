@@ -143,6 +143,12 @@ export const BRIDGE_METHODS = [
     { name: 'addPluginToChain', params: ['uuid', 'pluginUid', 'index?'] },
     { name: 'removeChainSlot', params: ['uuid', 'slotUuid'] },
     { name: 'openPluginEditor', params: ['uuid', 'slotUuid'] },
+    // Live MIDI (docs/vst3.md §8, phase 4): single-armed play-through
+    // target (arming a node clears every other); a monitoring gesture
+    // like solo — not undoable, not persisted. getMidiInputs is the
+    // diagnostics readout for the plugins panel.
+    { name: 'setMidiArmed', params: ['uuid', 'on'] },
+    { name: 'getMidiInputs', params: [], returns: '{ devices: [name], dropped }' },
     // Panel open/closed: gates the node's scope capture + telemetry —
     // when no panel watches, the audio thread doesn't even copy.
     { name: 'setEffectScope', params: ['uuid', 'active'] },

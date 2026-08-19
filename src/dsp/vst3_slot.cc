@@ -4,22 +4,32 @@ namespace celestrian::dsp {
 
 Vst3Slot::Vst3Slot(std::unique_ptr<juce::AudioPluginInstance> instance,
                    const juce::String& uid, const juce::String& display_name,
-                   const juce::String& file)
+                   const juce::String& file, bool is_instrument)
     : instance_(std::move(instance)),
+      is_instrument_(is_instrument),
       uid_(uid),
       display_name_(display_name),
       file_(file) {}
 
 Vst3Slot::Vst3Slot(const juce::String& uid, const juce::String& display_name,
-                   const juce::String& file, const juce::MemoryBlock& state)
-    : uid_(uid), display_name_(display_name), file_(file), state_(state) {}
+                   const juce::String& file, const juce::MemoryBlock& state,
+                   bool is_instrument)
+    : is_instrument_(is_instrument),
+      uid_(uid),
+      display_name_(display_name),
+      file_(file),
+      state_(state) {}
 
 void Vst3Slot::doPrepare(double sample_rate) {
   if (instance_ == nullptr) return;  // placeholder: nothing to prepare
-  // Stereo in/out (Q-V1) at the engine's block ceiling; processing
-  // shorter blocks than prepared is legal.
-  instance_->setPlayConfigDetails(2, 2, sample_rate, kMaxBlockSize);
+  // Stereo out (Q-V1) at the engine's block ceiling; instruments take
+  // no audio input (synths generate). Processing shorter blocks than
+  // prepared is legal.
+  instance_->setPlayConfigDetails(is_instrument_ ? 0 : 2, 2, sample_rate,
+                                  kMaxBlockSize);
   instance_->prepareToPlay(sample_rate, kMaxBlockSize);
+  // The MIDI scratch must never grow on the audio thread.
+  midi_scratch_.ensureSize(4096);
 }
 
 void Vst3Slot::process(float* x, int sample_count) {
@@ -39,6 +49,20 @@ void Vst3Slot::processStereo(float* l, float* r, int sample_count) {
   instance_->processBlock(buffer, midi_scratch_);
 }
 
+void Vst3Slot::processStereoMidi(float* l, float* r, int sample_count,
+                                 const juce::MidiBuffer& midi) {
+  if (instance_ == nullptr) return;
+  if (sample_count > kMaxBlockSize) return;
+  float* channels[] = {l, r};
+  juce::AudioBuffer<float> buffer(channels, 2, sample_count);
+  // Copy into the preallocated scratch: processBlock takes a mutable
+  // buffer (it may consume the events or produce its own), and the
+  // caller's buffer is shared by every armed-path slot this block.
+  midi_scratch_.clear();
+  midi_scratch_.addEvents(midi, 0, sample_count, 0);
+  instance_->processBlock(buffer, midi_scratch_);
+}
+
 bool Vst3Slot::setParam(const juce::String& key, double value) {
   // VST3 parameters belong to the plugin's editor (owner ruling
   // 2026-08-15); the bridge's key/value surface is built-ins only.
@@ -51,6 +75,7 @@ void Vst3Slot::fillParams(juce::DynamicObject& out) const {
   out.setProperty("uid", uid_);
   out.setProperty("file", file_);
   out.setProperty("missing", isMissing());
+  out.setProperty("isInstrument", is_instrument_);
   out.setProperty("latency", latencySamples());
 }
 

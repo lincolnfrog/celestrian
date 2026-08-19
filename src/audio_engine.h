@@ -11,6 +11,7 @@
 #include "clip_node.h"
 #include "dsp/vst3_slot.h"
 #include "edit.h"
+#include "midi_input_queue.h"
 #include "graph_snapshot.h"
 #include "session_io.h"
 #include "stack_node.h"
@@ -38,6 +39,7 @@
  * engine deterministic under test.
  */
 class AudioEngine : public juce::AudioIODeviceCallback,
+                    public juce::MidiInputCallback,
                     public celestrian::GraphReclaimer {
  public:
   AudioEngine();
@@ -300,6 +302,29 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setOnSessionLoaded(std::function<void()> hook) {
     on_session_loaded_ = std::move(hook);
   }
+
+  // --- Live MIDI (docs/vst3.md §8, phase 4) ---
+  /**
+   * Arms `uuid` as THE live play-through target (its chain's
+   * instrument slot receives incoming MIDI) — single-armed: every
+   * other node's flag clears first. `on` false disarms. A monitoring
+   * gesture like solo: not undoable, not persisted. Message thread.
+   */
+  void setMidiArmed(const juce::String& uuid, bool on);
+  /**
+   * Opens every available MIDI input through the device manager and
+   * (once) registers this engine as the all-devices callback. Called
+   * by the app shell at startup and on its heartbeat so hot-plugged
+   * keyboards join without a restart. NOT called by the engine itself:
+   * headless tests stay device-free. Message thread.
+   */
+  void refreshMidiInputs();
+  /** {devices: [name], dropped: n} for the UI's diagnostics readout. */
+  juce::var getMidiInputs() const;
+  /** MidiInputCallback (the OS MIDI thread): push into the lock-free
+   * queue; the audio callback drains it once per block. */
+  void handleIncomingMidiMessage(juce::MidiInput* source,
+                                 const juce::MidiMessage& message) override;
   /** Panel open/closed: gates ALL scope capture + telemetry for a node. */
   void setEffectScope(const juce::String& uuid, bool active);
 
@@ -396,6 +421,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
  private:
   std::function<void()> on_session_loaded_;
+
+  // Live MIDI (phase 4): the OS-thread → audio-thread mailbox and the
+  // per-block buffer the context points at. The buffer is ensureSize'd
+  // at construction (message thread) so the drain never allocates.
+  celestrian::MidiInputQueue midi_input_queue_;
+  juce::MidiBuffer live_midi_buffer_;
+  bool midi_callback_registered_ = false;
   /**
    * Runs every pending deleter. Only call when no audio callback can be in
    * flight (device stopped, or after removeAudioCallback in the dtor).

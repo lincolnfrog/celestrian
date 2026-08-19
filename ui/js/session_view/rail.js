@@ -120,6 +120,15 @@ export function patchRail(row, lane, vm) {
         fxBtn.classList.toggle('on', lane.fxCount > 0);
     }
 
+    // MIDI arm (docs/vst3.md §8): visible only with an instrument slot
+    // in the chain; lit while this lane is THE play-through target.
+    const midiBtn = row.querySelector('.midi-btn');
+    if (midiBtn) {
+        const show = lane.hasInstrument ? '' : 'none';
+        if (midiBtn.style.display !== show) midiBtn.style.display = show;
+        midiBtn.classList.toggle('on', !!lane.midiArmed);
+    }
+
     // Period-source toggle (Q5): ↺ = loop, 1× = one-shot.
     const ps = row.querySelector('.oneshot-btn');
     if (ps) {
