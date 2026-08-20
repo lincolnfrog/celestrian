@@ -91,6 +91,7 @@ export const BRIDGE_METHODS = [
     { name: 'setSequence', params: ['uuid', 'sequence'] },
     // The sequence's jam toggle (bypass) — the loop-window twin.
     { name: 'toggleSequence', params: ['uuid'] },
+    { name: 'auditionStep', params: ['uuid', 'step'] },
 
     // Hardware
     // getInputList returns only ACTIVE input channels, in callback order —

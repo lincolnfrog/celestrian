@@ -332,6 +332,88 @@ class ClipNode : public AudioNode {
     return displaced;
   }
 
+  // --- TAKES ARE UNDOABLE (owner ruling 2026-08-20, docs/sequencer.md
+  // §11.5; edit.h Kind::Take / Untake) ---
+  /** Everything a committed take IS, detachable as one value: the
+   * content (audio buffer and/or note sequence — moved, not copied)
+   * plus the recorded facts. The caller (an edit) OWNS the content. */
+  struct TakeState {
+    std::unique_ptr<juce::AudioBuffer<float>> buffer;
+    std::unique_ptr<MidiSequence> midi;
+    int64_t origin = 0, duration = 0, base = 0, recorded = 0;
+    int64_t context_cycle = 0, loop_start = 0, loop_end = 0;
+    int content_kind = 0;
+    bool cap_hit = false;
+  };
+  /** Strip the committed take: the clip returns to EMPTY (idle, silent,
+   * no duration, no origin) and the take's content + facts come back
+   * as a value for the undo log to own. Message thread, Idle clip only
+   * (the caller gates). Atomic-swap discipline: an in-flight render may
+   * still read the old buffer this block — the returned content must
+   * not be freed inline (the log keeps it for as long as it matters). */
+  TakeState stripTake() {
+    TakeState s;
+    s.origin = origin_samples.load();
+    s.duration = duration_samples.load();
+    s.base = content_base_.load();
+    s.recorded = write_position.load();
+    s.context_cycle = take_context_cycle_.load();
+    s.loop_start = loop_start_samples.load();
+    s.loop_end = loop_end_samples.load();
+    s.content_kind = content_kind_.load();
+    s.cap_hit = cap_hit_.load();
+    // Silence first (render reads duration/is_playing before content).
+    is_playing.store(false);
+    duration_samples.store(0);
+    auto empty = std::make_unique<juce::AudioBuffer<float>>(
+        1, std::max(1, (int)sample_rate));
+    empty->clear();
+    s.buffer = std::move(content_owned_);
+    content_owned_ = std::move(empty);
+    content_.store(content_owned_.get());
+    auto empty_midi = std::make_unique<MidiSequence>(0);
+    s.midi = std::move(midi_owned_);
+    midi_owned_ = std::move(empty_midi);
+    midi_.store(midi_owned_.get());
+    content_kind_.store((int)ContentKind::Audio);
+    origin_samples.store(0);
+    content_base_.store(0);
+    write_position.store(0);
+    take_context_cycle_.store(0);
+    cap_hit_.store(false);
+    setLoopPoints(0, 0);
+    rec_state_.store((int)RecState::Idle);
+    return s;
+  }
+  /** Reinstall a stripped take (redo). Returns the DISPLACED empty
+   * placeholders for the caller to retire (an in-flight render may read
+   * them this block). Message thread, Idle empty clip only. */
+  std::pair<std::unique_ptr<juce::AudioBuffer<float>>,
+            std::unique_ptr<MidiSequence>>
+  restoreTake(TakeState&& s) {
+    std::pair<std::unique_ptr<juce::AudioBuffer<float>>,
+              std::unique_ptr<MidiSequence>>
+        displaced;
+    displaced.first = std::move(content_owned_);
+    content_owned_ = std::move(s.buffer);
+    content_.store(content_owned_.get());
+    displaced.second = std::move(midi_owned_);
+    midi_owned_ = std::move(s.midi);
+    midi_.store(midi_owned_.get());
+    content_kind_.store(s.content_kind);
+    content_base_.store(s.base);
+    write_position.store((int)s.recorded);
+    take_context_cycle_.store(s.context_cycle);
+    cap_hit_.store(s.cap_hit);
+    origin_samples.store(s.origin);
+    setLoopPoints(s.loop_start, s.loop_end);
+    rec_state_.store((int)RecState::Idle);
+    // Content last, then sound (the commit publication order).
+    duration_samples.store(s.duration);
+    is_playing.store(true);
+    return displaced;
+  }
+
   /**
    * Restore a committed take on session load (session_io): copies `audio`
    * into the buffer, marks it playable, and sets the recorded facts that

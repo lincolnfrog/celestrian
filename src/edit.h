@@ -3,6 +3,7 @@
 #include <juce_core/juce_core.h>
 
 #include <memory>
+#include <vector>
 
 #include "audio_node.h"
 #include "midi_sequence.h"
@@ -84,6 +85,14 @@ struct Edit {
                    // the RAW old sequence (bypassed geometry survives
                    // undo, like Segments).
     SequenceBypass,  // b1 = bypassed (the jam toggle — LoopBypass twin)
+    Take,            // TAKES ARE UNDOABLE (owner ruling 2026-08-20,
+                     // docs/sequencer.md §11.5): forward = reinstall the
+                     // committed take(s) in `takes` (redo); inverse Untake
+    Untake,          // strip the take(s) named in `takes` back to empty
+                     // clips (undo), the inverse OWNING their content.
+                     // A group take (Q7) is ONE entry. Island (Q, epoch)
+                     // ride along via setsIsland: the first take's
+                     // establishment and any growth re-base undo with it.
   };
   // Effect enable/param edits are deliberately NOT undoable in this pass
   // (non-destructive knobs; slider drags would flood the log without
@@ -118,6 +127,10 @@ struct Edit {
   // audio flows. The inverse captures the old origin the same way.
   bool setsOrigin = false;
   int64_t iorg = 0;  // clip origin to set
+  // S16 window domain (docs/sequencer.md §11.8), LoopPoints/Segments on
+  // a STACK: −1 = derive from whether the sequence is active (forward
+  // edits), 0/1 = set explicitly (inverses restore the old stamp).
+  int window_domain = -1;
 
   // Multi-segment map payload (phase 3): the map value for Segments
   // edits, and the override a LoopPoints undo reinstalls (setsMap).
@@ -132,6 +145,23 @@ struct Edit {
   // Sequence edits (docs/sequencer.md): the full new value (forward)
   // or the captured old one (inverse). Null = no sequence.
   std::unique_ptr<celestrian::Sequence> seq;
+
+  // TAKE payloads (Kind::Take / Kind::Untake): one per clip of the
+  // performance. Take owns the content to reinstall; Untake names the
+  // clips to strip (its inverse then owns what was stripped). Content
+  // lifetimes follow the CollapseTake precedent: owned by the log,
+  // retired (never freed inline) when displaced.
+  struct TakePayload {
+    juce::String uuid;
+    std::unique_ptr<juce::AudioBuffer<float>> buffer;  // audio content
+    std::unique_ptr<MidiSequence> midi;                // note content
+    int64_t origin = 0, duration = 0, base = 0, recorded = 0;
+    int64_t context_cycle = 0;
+    int64_t loop_start = 0, loop_end = 0;
+    int content_kind = 0;  // ClipNode::ContentKind
+    bool cap_hit = false;
+  };
+  std::vector<TakePayload> takes;
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

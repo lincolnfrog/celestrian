@@ -425,6 +425,23 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   return inv;
 }
 
+namespace {
+/** S16 (docs/sequencer.md §11.8): a window edit on a STACK stamps the
+ * window's domain — sequence when authored over an active sequence
+ * timeline (explicit on inverses) — and the inverse captures the old
+ * stamp. Clips have no sequence: no-op. */
+void stampWindowDomain(celestrian::AudioNode* node, const celestrian::Edit& e,
+                       celestrian::Edit& inv) {
+  auto* stack = dynamic_cast<celestrian::StackNode*>(node);
+  if (stack == nullptr) return;
+  inv.window_domain = (int)stack->windowDomain();
+  const int fresh = e.window_domain >= 0
+                        ? e.window_domain
+                        : (stack->activeSequence() != nullptr ? 1 : 0);
+  stack->setWindowDomain((celestrian::StackNode::WindowDomain)fresh);
+}
+}  // namespace
+
 celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
   using celestrian::AudioNode;
   using celestrian::StackNode;
@@ -634,6 +651,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           retireOwned(prev);
         }
       }
+      stampWindowDomain(node, e, inv);
       // Q13 re-trim: if the forward edit carries an island re-establishment
       // (built by setLoopPoints when the target is the sole committed
       // clip), apply it and capture the old (Q, epoch) into the inverse so
@@ -745,6 +763,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         inv.tmap = celestrian::timing::TimeMap::single(node->getLoopStart(),
                                                        node->getLoopEnd());
       }
+      stampWindowDomain(node, e, inv);
       if (e.tmap.n >= 2) {
         const auto* fresh = new celestrian::timing::TimeMap(e.tmap);
         if (const auto* old = node->exchangeMapOverride(fresh)) {
@@ -790,8 +809,96 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       }
       const celestrian::Sequence* fresh =
           e.seq ? new celestrian::Sequence(*e.seq) : nullptr;
+      // The step audition names a step by INDEX: it follows a resize
+      // (same count) but cannot survive a shape change (a delete
+      // would silently re-aim it at the neighbour) — clear it then.
+      {
+        const int before = inv.seq ? inv.seq->numSteps() : 0;
+        const int after = fresh ? fresh->numSteps() : 0;
+        if (before != after) stack->setAuditionStep(-1);
+      }
       if (const celestrian::Sequence* old = stack->exchangeSequence(fresh)) {
         retireOwned(old);
+      }
+      return inv;
+    }
+    case K::Take:
+    case K::Untake: {
+      // TAKES ARE UNDOABLE (docs/sequencer.md §11.5). Untake strips the
+      // named clips to empty, the inverse Take OWNING their content;
+      // Take reinstalls it. Island (Q, epoch) ride via setsIsland in
+      // both directions (the first take's establishment, a growth
+      // re-base), captured into the inverse. An optional sequence rider
+      // (`seq` + `b1`, the step-record auto-gate) swaps with the same
+      // copy-swap-retire discipline so take + gates undo as one.
+      if (root_node->hasActiveTake()) return {};  // never under a live take
+      const bool strip = e.kind == K::Untake;
+      Edit inv(strip ? K::Take : K::Untake);
+      // Every named clip must exist and be idle, or the edit is a Nop
+      // (a deleted clip's take is gone with it — Remove owns that).
+      std::vector<celestrian::ClipNode*> clips;
+      for (const auto& tp : e.takes) {
+        auto* clip = dynamic_cast<celestrian::ClipNode*>(find(tp.uuid));
+        if (!clip || clip->isArmedOrRecording()) return {};
+        if (strip && clip->duration_samples.load() <= 0) return {};
+        if (!strip && clip->duration_samples.load() > 0) return {};
+        clips.push_back(clip);
+      }
+      // Island facts: capture current, then set the payload's.
+      inv.setsIsland = true;
+      inv.iq = root_node->getQuantum();
+      inv.iepoch = root_node->getEpoch();
+      for (size_t i = 0; i < clips.size(); ++i) {
+        Edit::TakePayload out;
+        out.uuid = e.takes[i].uuid;
+        if (strip) {
+          celestrian::ClipNode::TakeState s = clips[i]->stripTake();
+          out.buffer = std::move(s.buffer);
+          out.midi = std::move(s.midi);
+          out.origin = s.origin;
+          out.duration = s.duration;
+          out.base = s.base;
+          out.recorded = s.recorded;
+          out.context_cycle = s.context_cycle;
+          out.loop_start = s.loop_start;
+          out.loop_end = s.loop_end;
+          out.content_kind = s.content_kind;
+          out.cap_hit = s.cap_hit;
+        } else {
+          celestrian::ClipNode::TakeState s;
+          s.buffer = std::move(e.takes[i].buffer);
+          s.midi = std::move(e.takes[i].midi);
+          s.origin = e.takes[i].origin;
+          s.duration = e.takes[i].duration;
+          s.base = e.takes[i].base;
+          s.recorded = e.takes[i].recorded;
+          s.context_cycle = e.takes[i].context_cycle;
+          s.loop_start = e.takes[i].loop_start;
+          s.loop_end = e.takes[i].loop_end;
+          s.content_kind = e.takes[i].content_kind;
+          s.cap_hit = e.takes[i].cap_hit;
+          if (!s.buffer) return {};
+          auto displaced = clips[i]->restoreTake(std::move(s));
+          retireOwned(displaced.first.release());
+          retireOwned(displaced.second.release());
+        }
+        inv.takes.push_back(std::move(out));
+      }
+      if (e.setsIsland) root_node->setQuantum(e.iq, e.iepoch);
+      // The sequence rider (auto-gate).
+      if (e.b1 && e.uuid.isNotEmpty()) {
+        if (auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid))) {
+          inv.b1 = true;
+          inv.uuid = e.uuid;
+          if (const celestrian::Sequence* old = stack->sequencePtr()) {
+            inv.seq = std::make_unique<celestrian::Sequence>(*old);
+          }
+          const celestrian::Sequence* fresh =
+              e.seq ? new celestrian::Sequence(*e.seq) : nullptr;
+          if (const celestrian::Sequence* old = stack->exchangeSequence(fresh)) {
+            retireOwned(old);
+          }
+        }
       }
       return inv;
     }
@@ -907,6 +1014,11 @@ void AudioEngine::retireEdit(celestrian::Edit&& e) {
   retireOwned(std::move(e.buffer));
   retireOwned(std::move(e.node));
   retireOwned(std::move(e.node2));
+  // Take content (Kind::Take payloads) rides the same grace.
+  for (auto& tp : e.takes) {
+    retireOwned(std::move(tp.buffer));
+    retireOwned(std::move(tp.midi));
+  }
   // A chain slot rides the same grace: the chain that referenced it was
   // itself just retired, so an in-flight callback may still process the
   // slot. The deleter holds the shared_ptr until the grace passes.
@@ -924,6 +1036,7 @@ void AudioEngine::clearHistory() {
   for (auto& e : undo_) retireEdit(std::move(e));
   undo_.clear();
   clearRedo();
+  pending_takes_.clear();
 }
 
 void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
@@ -936,6 +1049,7 @@ void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
 }
 
 void AudioEngine::record(celestrian::Edit forward) {
+  reconcileTakes();  // a settled take logs BEFORE any later edit
   celestrian::Edit inv = applyEdit(std::move(forward));
   if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
   if (!undo_.empty() && editsCoalesce(undo_.back(), inv)) {
@@ -945,8 +1059,25 @@ void AudioEngine::record(celestrian::Edit forward) {
   pushUndo(std::move(inv));
 }
 
+namespace {
+bool isTakeEdit(const celestrian::Edit& e) {
+  return e.kind == celestrian::Edit::Kind::Take ||
+         e.kind == celestrian::Edit::Kind::Untake;
+}
+}  // namespace
+
 void AudioEngine::undo() {
+  reconcileTakes();
   if (undo_.empty()) return;
+  // A take edit moves island facts (Q, epoch, the committed cycle):
+  // never under a live take. Refuse and KEEP the entry (a Nop would
+  // drop it from the log).
+  if (isTakeEdit(undo_.back()) && root_node->hasActiveTake()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::undo refused - a take is armed/recording (finish or "
+        "cancel it first)");
+    return;
+  }
   celestrian::Edit inv = std::move(undo_.back());
   undo_.pop_back();
   celestrian::Edit fwd = applyEdit(std::move(inv));
@@ -954,7 +1085,14 @@ void AudioEngine::undo() {
 }
 
 void AudioEngine::redo() {
+  reconcileTakes();
   if (redo_.empty()) return;
+  if (isTakeEdit(redo_.back()) && root_node->hasActiveTake()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::redo refused - a take is armed/recording (finish or "
+        "cancel it first)");
+    return;
+  }
   celestrian::Edit fwd = std::move(redo_.back());
   redo_.pop_back();
   celestrian::Edit inv = applyEdit(std::move(fwd));
@@ -1148,7 +1286,15 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
     }
     if (mapping != nullptr && root_node->getQuantum() > 0) {
       const int64_t period = mapping->activeTimeMap().period();
-      const int64_t C = std::max(mapping->getIntrinsicDuration(), period);
+      // S18 (ruled 2026-08-20, docs/sequencer.md §11.4): under an
+      // ACTIVE SEQUENCE on the mapping node the take is a STEP-SIZED
+      // PART — C = the map period, no silence inserted ("we should not
+      // be in the business of inserting silence"); the gate decides
+      // where it plays. Without a sequence the phase-2 rule stands:
+      // the mapping node's full inner cycle, dense.
+      const int64_t C = mapping->activeSequenceLen() > 0
+                            ? period
+                            : std::max(mapping->getIntrinsicDuration(), period);
       if (C > celestrian::ClipNode::kMaxTakeSamples / 2) {
         juce::Logger::writeToLog(
             "AudioEngine: record refused — the mapped cycle is too "
@@ -1177,6 +1323,134 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
       if (!target->midi_armed.load()) setMidiArmed(target->getUuid(), true);
       break;
     }
+  }
+
+  // TAKES ARE UNDOABLE: register the performance; reconcileTakes logs
+  // it once every member has settled (see PendingTake).
+  {
+    PendingTake p;
+    for (auto* target : targets) p.uuids.push_back(target->getUuid());
+    p.q_before = root_node->getQuantum();
+    p.epoch_before = root_node->getEpoch();
+    // Aimed at a looping step? The nearest auditioning ancestor that is
+    // the DIRECT parent of a target (§11.5) names the auto-gate.
+    for (auto* target : targets) {
+      auto* parent = dynamic_cast<celestrian::StackNode*>(target->getParent());
+      if (parent != nullptr && parent->auditionActive()) {
+        p.gate_stack = parent->getUuid();
+        p.gate_step = parent->auditionStep();
+        break;
+      }
+    }
+    pending_takes_.push_back(std::move(p));
+  }
+}
+
+void AudioEngine::reconcileTakes() {
+  // See PendingTake (audio_engine.h). Message thread only.
+  for (size_t i = 0; i < pending_takes_.size();) {
+    PendingTake& p = pending_takes_[i];
+    bool settled = true;
+    std::vector<celestrian::ClipNode*> committed;
+    for (const auto& u : p.uuids) {
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(
+          findNodeByUuid(root_node.get(), u));
+      if (clip == nullptr) continue;  // deleted/cancelled: nothing to log
+      if (clip->isArmedOrRecording()) {
+        settled = false;
+        break;
+      }
+      if (clip->duration_samples.load() > 0) committed.push_back(clip);
+    }
+    if (!settled) {
+      ++i;
+      continue;
+    }
+    PendingTake done = std::move(p);
+    pending_takes_.erase(pending_takes_.begin() + (long)i);
+    if (committed.empty()) continue;  // the whole performance cancelled
+
+    // The log entry is the INVERSE (Untake): it names the clips and
+    // carries the island facts as they were BEFORE the performance, so
+    // undo restores the grid with the content. applyEdit on Untake
+    // builds the forward Take (owning the stripped content) for redo.
+    celestrian::Edit inv(celestrian::Edit::Kind::Untake);
+    for (auto* clip : committed) {
+      celestrian::Edit::TakePayload tp;
+      tp.uuid = clip->getUuid();
+      inv.takes.push_back(std::move(tp));
+    }
+    inv.setsIsland = true;
+    inv.iq = done.q_before;
+    inv.iepoch = done.epoch_before;
+    pushUndo(std::move(inv));
+    clearRedo();  // a new performance invalidates the redo branch
+    juce::Logger::writeToLog(
+        "AudioEngine: take logged (undoable) - " +
+        juce::String((int)committed.size()) + " clip(s)");
+
+    // STEP-RECORD AUTO-GATE (docs/sequencer.md §11.5, S19): the take
+    // was aimed at a looping step — gate each committed DIRECT child of
+    // the auditioning stack ON in that step, OFF elsewhere, as ONE
+    // Edit::Sequence that COALESCES with the take's entry, so one ⌘Z
+    // removes take + gates together.
+    if (done.gate_stack.isNotEmpty() && done.gate_step >= 0) {
+      applyAutoGate(done.gate_stack, done.gate_step, committed);
+    }
+  }
+}
+
+void AudioEngine::applyAutoGate(
+    const juce::String& stack_uuid, int step,
+    const std::vector<celestrian::ClipNode*>& committed) {
+  auto* stack = dynamic_cast<celestrian::StackNode*>(
+      findNodeByUuid(root_node.get(), stack_uuid));
+  if (stack == nullptr) return;
+  const celestrian::Sequence* cur = stack->sequencePtr();
+  if (cur == nullptr || step >= cur->numSteps()) return;
+  auto fresh = std::make_unique<celestrian::Sequence>(*cur);
+  bool changed = false;
+  for (auto* clip : committed) {
+    // Direct children only (§11.5): a deeper take must not gate its
+    // whole group off in every other section.
+    if (clip->getParent() != stack) continue;
+    const uint64_t mask = 1ull << step;
+    bool found = false;
+    for (auto& row : fresh->gates) {
+      if (row.uuid == clip->getUuid()) {
+        row.mask = mask;
+        found = true;
+      }
+    }
+    if (!found) {
+      celestrian::Sequence::GateRow row;
+      row.uuid = clip->getUuid();
+      row.mask = mask;
+      fresh->gates.push_back(std::move(row));
+    }
+    changed = true;
+  }
+  if (!changed) {
+    juce::Logger::writeToLog(
+        "AudioEngine: step-take landed ungated (not a direct child of the "
+        "looping stack) - gate it by hand");
+    return;
+  }
+  fresh->finalize();
+  celestrian::Edit e(celestrian::Edit::Kind::Sequence);
+  e.uuid = stack_uuid;
+  e.seq = std::move(fresh);
+  e.b1 = true;  // auto-gate marker: coalesces onto the take's log entry
+  celestrian::Edit inv = applyEdit(std::move(e));
+  if (inv.kind == celestrian::Edit::Kind::Nop) return;
+  // Compose: the Untake entry on top of the log absorbs the gate
+  // inverse — undo applies the sequence restore, then the strip.
+  if (!undo_.empty() && undo_.back().kind == celestrian::Edit::Kind::Untake) {
+    undo_.back().seq = std::move(inv.seq);
+    undo_.back().uuid = stack_uuid;
+    undo_.back().b1 = true;
+  } else {
+    pushUndo(std::move(inv));
   }
 }
 
@@ -1213,6 +1487,11 @@ juce::var AudioEngine::getGraphState() const {
   // Forward any log lines queued by the audio thread (UI polls this
   // every ~50 ms, so this doubles as the RtLog drain point).
   celestrian::RtLog::instance().drain();
+  // The poll is also where settled takes enter the undo log (see
+  // PendingTake): message-thread bookkeeping on a const read path —
+  // the one sanctioned const_cast, for the same reason the RtLog drain
+  // lives here.
+  const_cast<AudioEngine*>(this)->reconcileTakes();
 
   // Cycle view of the monotonic clock (kernel.md step 3): the engine
   // never wraps its transport; the UI-facing masterPos is derived here.
@@ -2119,6 +2398,40 @@ void AudioEngine::setSequence(const juce::String& uuid,
     // badged in the UI; the frame-health warning is display machinery.
   }
   record(std::move(e));
+}
+
+void AudioEngine::auditionStep(const juce::String& uuid, int step) {
+  // THE STEP AUDITION (docs/sequencer.md §11.2): "loop this step". A
+  // monitoring gesture, not an edit — nothing is recorded, nothing
+  // persists. The derived window appears through activeTimeMap() on
+  // the stack; −1 clears it. Refused while a take is live in the
+  // subtree: the window IS the take's heard frame (the mid-take
+  // map-edit refusal, inherited).
+  auto* stack = dynamic_cast<celestrian::StackNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (stack == nullptr) {
+    juce::Logger::writeToLog(
+        "AudioEngine::auditionStep refused — target is not a stack");
+    return;
+  }
+  if (stack->isArmedOrRecording()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::auditionStep refused — a take is armed/recording "
+        "in this subtree (finish or cancel it first)");
+    return;
+  }
+  if (step >= 0) {
+    const celestrian::Sequence* s = stack->activeSequence();
+    if (s == nullptr || step >= s->numSteps()) {
+      juce::Logger::writeToLog(
+          "AudioEngine::auditionStep refused — no such step in an active "
+          "sequence");
+      return;
+    }
+  }
+  stack->setAuditionStep(step < 0 ? -1 : step);
+  juce::Logger::writeToLog("AudioEngine: audition step " + juce::String(step) +
+                           " on " + uuid);
 }
 
 void AudioEngine::toggleSequence(const juce::String& uuid) {

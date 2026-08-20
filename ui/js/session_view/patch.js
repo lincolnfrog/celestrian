@@ -59,8 +59,14 @@ export function patchSessionView(vm, aux) {
     const rootSeqBtn = document.getElementById('root-seq-btn');
     if (rootSeqBtn) {
         const s = vm.rootSeq;
-        setText(rootSeqBtn, s ? 'seq·' + fmtQ(s.totalQ) + 'Q' : 'seq');
+        const looping = !!(s && s.auditionStep >= 0);
+        setText(rootSeqBtn, s
+            ? (looping ? '⟲ step ' + (s.auditionStep + 1)
+                       : 'seq·' + fmtQ(s.totalQ) + 'Q')
+            : 'seq');
         rootSeqBtn.classList.toggle('on', !!(s && !s.bypassed));
+        rootSeqBtn.classList.toggle('looping', looping);
+        rootSeqBtn.classList.toggle('drift', !!(s && s.drift));
         rootSeqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
         rootSeqBtn.classList.toggle('open',
             vm.lanes.length > 0 && vm.lanes[0].kind === 'seq' &&

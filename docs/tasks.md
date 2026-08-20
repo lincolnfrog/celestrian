@@ -2,7 +2,9 @@
 
 > Status: **tracker**. Overhauled 2026-07-16 around the unification
 > audit (`unification_audit.md`, owner-endorsed) — tiers now follow its
-> recommended order. Previous version (2026-03-05 audit) is condensed
+> recommended order. Audited 2026-08-20 (stale lines closed: VST3
+> phases 1–5, stereo rack, selective recording; March Stacks/UI
+> backlog flagged for re-ruling; S18/S19 added). Previous version (2026-03-05 audit) is condensed
 > into the archive at the bottom; completed items keep one line each.
 
 Tasks are ordered by leverage: the rational-time ruling gates the rest;
@@ -498,7 +500,12 @@ with kernel.md:
     group ● arms all (Q7); R-on-empty spark). Suites after: C++ 31
     suites green (sandbox: stereo_pan env-excluded), JS units 25
     files green, Playwright 47/47.
-- [ ] **Selective Recording** — record into specific nodes.
+- [x] **Selective Recording** — ✅ SUBSUMED 2026-08-12/20: "record
+  into specific nodes" is Q7 group arm + the `R` key (below); "record
+  into a specific STEP" is Sequencer step 2 (Tier 4b). What remains of
+  the original idea is **takes** (re-record a committed clip —
+  alternate content buffers sharing one origin/period), tracked under
+  Tier 5.
 - [x] **Group arm (Q7 ruling)** — ✅ done 2026-08-12: the ENGINE owns
   the cascade — `startRecordingInNode`/`stopRecordingInNode` accept any
   node; a stack target resolves every EMPTY Idle clip beneath it and
@@ -533,20 +540,39 @@ with kernel.md:
   session-view keyboard dispatcher (no-modifier, not-typing gate,
   like the zoom/teleport keys); handler in app.js `onRecordKey`.
 
-### Stacks / UI
-- [ ] Cache invalidation optimization (composite waveform).
-- [ ] Collapsed composite waveform rendering.
-- [ ] Multi-select → "Combine into Stack".
+### Stacks / UI (pre-audit backlog, 2026-03 — owner to re-rule)
+> Untouched since the March round and written before the unification
+> audit; kept as candidates, not commitments. Composite waveform
+> rendering was rewritten by D13 (audible-content composite) and the
+> heard-frame lanes; "Combine into Stack" exists as drag-combine
+> (Edit::Combine) — multi-select is the missing half; drill-in/ZUI is
+> Tier 5.
+- [ ] Cache invalidation optimization (composite waveform) — revisit
+  only if the perf meters show it.
+- [ ] Multi-select → "Combine into Stack" (drag-combine + templates
+  cover the single case today).
 - [ ] Drill-in mode (double-click) + keyboard navigation + quick
-  expand/collapse shortcut.
+  expand/collapse shortcut → folded into Tier 5 "ZUI navigation".
 - [ ] Ghost coordinate mismatch for stack children (drag & drop);
-  verify drag-drop end-to-end.
+  verify drag-drop end-to-end (e2e drag specs exist since 2026-08-13 —
+  confirm the ghost case is covered, then close).
 
 ### Effects
-- [ ] **VST3 hosting** — replaces the fixed rack's internals with a
-  dynamic chain; bridge surface designed to survive.
-- [ ] **Stereo rack** — lands with Mono→Stereo (see the Tier 3 output
-  stage: one bus abstraction first).
+- [x] **VST3 hosting** — ✅ phases 1–5 DONE (2026-08-15 / 2026-08-18,
+  docs/vst3.md §8/§10): dynamic FxChain, VST3 effect + instrument
+  slots, editor windows, MIDI input, MIDI takes as a ClipNode content
+  kind. Owner-committed (`75fad92`).
+  - [ ] **Phase 6 — polish**: all-notes-off on stop/mute/solo-silence
+    (sound-off to the instrument, not event starvation — more pressing
+    now that mute rings tails through the S7 gate), instrument state in
+    take undo entries, piano-roll-ish MIDI lane rendering, SysEx, a
+    note held across the take's start boundary, out-of-process
+    scanning, AU. PDC stays deferred indefinitely (Q-V2).
+  - [x] vst3.md §8 prose updated 2026-08-20 (mute = the S7 pre-fx gate).
+- [x] **Stereo rack** — ✅ delivered by the 2026-07-27 stereo work + the
+  Tier 3 output stage (stereo fx accumulator, Q-V1 promotion in
+  FxChain::run, pan post-chain). Mono→Stereo *recording* remains a
+  Tier 5 item.
 - [x] **Effect tails on mute** — ✅ RESOLVED 2026-08-20 by the S7
   smoothness law (docs/sequencer.md §5/§9): mute is now a ramped
   PRE-FX gate (~10 ms), the rack keeps running, tails ring out.
@@ -616,33 +642,56 @@ in docs/sequencer.md §0/§9. Build order as ruled:
   root's grid as the first row over the top-level tracks — no
   grouping required (`#root-seq-btn`, vm.rootSeq/rootId; pinned by
   the ROOT e2e + the root-grid-row unit test).
-- [ ] **2. Step recording + section audition** — the S9 composition
-  law (sequence → time-map, fixed order): a step window over the song
-  timeline; record-into-a-step = through-map recording, commit
-  auto-gates. UX gesture spec pending (S17).
+- [x] **2. Step recording + section audition** — ✅ BUILT 2026-08-20
+  (docs/sequencer.md §11 design, §11.10 record): the step audition as
+  a DERIVED window (`StackNode::audition_step_` → virtual
+  `activeTimeMap`; `auditionStep` bridged 3-place + mock; grid header
+  ⟲, Esc, ruler brackets for the root, chips), through-map record
+  into it with **S18 = a step-sized part** (C = map period under an
+  active sequence — no silence insertion, ruled), **TAKES ARE
+  UNDOABLE** (Edit::Take/Untake, PendingTake reconciled on the message
+  thread, group take = one step, refused while live), the **S19
+  auto-gate** folded into the take's one undo step (direct children
+  only), **S16** window domain (suspended, never deleted), and the
+  **song-rides-the-epoch** re-base fix found en route. Tests:
+  sequencer_tests.cc (+5 sections), tests/take_undo_tests.cc, JS
+  audition/take_undo/frame_health units, 2 new e2e. Suites after: C++
+  all green (sandbox, stereo_pan env-excluded), JS 32 files,
+  Playwright 58/58 ×2. Owner commits.
 - [ ] **3. Nested sequences in UI** (engine gets them free via
   fractality).
 - [ ] **4. Cue steps** — per-step epoch re-base = the Q6 serial
   primitive (`cue` reserved in the step format now, S11).
 - [ ] **5. Successor graphs + the seed** — branch-with-chance /
   radio; root-only stochastic, seed stored as data (S12).
-- [ ] **Frame-health badge** (S10) — ONE warning component for
-  parent-LCM blowups (coprime sibling periods — also closes open
-  question 5 below) and the drifting-pass badge (seqLen not a
-  multiple of the inner cycle).
+- [x] **Frame-health badge** (S10) — ✅ BUILT 2026-08-20 with step 2:
+  `ui/js/frame_health.js` (pure; golden `frame_health_cases`), two
+  faces (blowup > 4× largest member, attributed to the knob-bearing
+  member whose removal heals the scope; drift = seqLen mod inner ≠ 0),
+  shown on the responsible lane's chip, the grid footer (one-click
+  snap, delta on the last step), the grip's live readout, and the seq
+  chips. Closes open question 5 below.
 - [ ] **Per-step fade control** (S13 future work, owner-requested) —
   `fadeInQ`/`fadeOutQ` on the step format ("fade this part out over a
   few seconds"); the anti-pop micro-fade ships in Core.
-- [ ] **S16** — window-domain tagging (a window authored over a
-  sequence timeline auto-bypasses when the sequence is bypassed).
+- [x] **S16** — ✅ RULED + BUILT 2026-08-20: `window_domain_` stamped
+  by the LoopPoints/Segments appliers; a sequence-domain window is
+  SUSPENDED while the sequence is off (metadata `windowSuspended`,
+  dashed dim brackets + chip), returns with it, persisted additively.
 - [x] **S15** — ✅ RULED 2026-08-20: the pad grid is the ONE control at
   every depth (root included — the root stack's rail chip); lanes are
   display (period law), not a second editor. Mockups:
   docs/mockups/sequencer_ux.html (round 1) / sequencer_ux2.html
   (round 2 — grid chrome, S17 flow, fractal drum demo).
-- [ ] **S17** — Mode-2 record gesture spec: proposed in round 2 (step
-  header ⟲ = loop the step → arm → record → commit auto-gates; Esc
-  exits). Awaiting owner sign-off with round 2.
+- [x] **S17** — ✅ RULED + BUILT 2026-08-20 as proposed (⟲ → R →
+  commit auto-gates → Esc); sequencer.md §11.3.
+- [x] **S18** — ✅ RULED 2026-08-20: (a) EVERYWHERE — a step-take is a
+  step-sized part; no silence insertion, ever (the (b) branch is
+  dropped). Built.
+- [x] **S19** — ✅ RULED 2026-08-20: takes ARE undoable (owner: "it's
+  weird they aren't" — an accident of the July undo log, not a
+  design); the auto-gate composes into the take's one undo step.
+  Built (edit.h Take/Untake, tests/take_undo_tests.cc).
 
 ## Tier 5: Advanced Engine & Vision (unchanged)
 
@@ -671,6 +720,10 @@ in docs/sequencer.md §0/§9. Build order as ruled:
   growth during recording, stepped zoom, depth indicators, copy/paste.
 - [ ] **Disable auto-quantize toggle** (revives design_language Q3).
 - [ ] **Mono → Stereo** recording.
+- [ ] **Takes** — re-record a committed clip: alternate content buffers
+  sharing one origin/period (the Q7 companion; was "Selective
+  Recording"). Take commits ARE undo entries now (2026-08-20,
+  sequencer.md §11.10) — the alternate-buffers half remains.
 
 ---
 
@@ -684,7 +737,7 @@ in docs/sequencer.md §0/§9. Build order as ruled:
 | 2 | Quantum mismatches between connected islands? | open — implementation.md |
 | 3 | "Breaking out" a stack from an island — UX + implementation? | open — implementation.md |
 | 4 | Connecting stacks after Q established — polyrhythmic interaction? | open — recording.md |
-| 5 | Warning UX for very large LCMs (coprime durations)? | open — Q2 resolved the model question; the UX remains |
+| 5 | Warning UX for very large LCMs (coprime durations)? | ✅ CLOSED 2026-08-20 — the frame-health badge (sequencer.md §11.6/§11.10): amber on the responsible lane, grid-footer snap offer, live grip readout |
 | 6 | **Rational time (D-T1…D-T5)** — ✅ RULED 2026-07-16 (design_language.md Q12): QTime rational, adopt now; subsumes Q9 | unification_audit.md §4 |
 | 7 | Record on a composite — ✅ resolved (Q7): group arm, empty clips only; takes/templates as companions | design_language.md Q7 |
 | 8 | Stop/play policy — **implemented default (2026-07-16): pause/resume** (stop freezes, play continues the phase). The old reset only restarted "from the top" when the epoch happened to be 0. If restart-from-top is wanted, it's a root time-map + congruent epoch handling, not a clock reset — owner preference pending field use | audio_engine.cc togglePlayback |

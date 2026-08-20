@@ -14,11 +14,25 @@ let rulerKey = '';
 /** Rebuild the ruler's ticks + labels when the frame changed. ↺ marks
  * the SETTLED cycle; a growing frame ends provisionally (…). */
 export function patchRuler(vm) {
+    const rw = vm.rootWindow;
     const key = vm.cycleQ + ':' + vm.frameExtended + ':' +
-        tickSetSig(vm.ruler.ticks);
+        tickSetSig(vm.ruler.ticks) + ':' +
+        (rw ? rw.startQ + '-' + rw.endQ + '-' + rw.step : '');
     if (key === rulerKey) return;
     rulerKey = key;
     ctx.els.ruler.textContent = '';
+    // THE ROOT'S LOOPING STEP (docs/sequencer.md §11.2): the root has no
+    // lane, so its derived window's brackets live on the ruler.
+    if (rw) {
+        const span = el('div', 'ruler-root-window');
+        span.style.left = pct(rw.startQ, vm.cycleQ);
+        span.style.width = pct(rw.endQ - rw.startQ, vm.cycleQ);
+        span.title = 'Looping step ' + (rw.step + 1) + ' · ' +
+            fmtQ(rw.startQ) + 'Q–' + fmtQ(rw.endQ) + 'Q (Esc stops)';
+        span.appendChild(el('span', 'ruler-root-window-label mono',
+            { textContent: '⟲ ' + fmtQ(rw.startQ) + 'Q–' + fmtQ(rw.endQ) + 'Q' }));
+        ctx.els.ruler.appendChild(span);
+    }
     vm.ruler.ticks.forEach(t => {
         const tick = el('div', 'tick' + (t.major ? ' major' : ''));
         tick.style.left = pct(t.q, vm.cycleQ);

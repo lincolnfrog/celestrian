@@ -2104,3 +2104,83 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 #root-seq-btn.bypassed { text-decoration: line-through; }
 #root-seq-btn.open { box-shadow: inset 0 0 0 1px var(--map-amber); }
+
+/* --- THE STEP AUDITION (docs/sequencer.md §11.2): ⟲ on the step header
+   loops that step. Hidden until hover (the cut-band hover grammar), lit
+   cyan while looping — the loop-region colour, because it IS one. --- */
+.seq-loop {
+    width: auto;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 0.6rem;
+    color: var(--cyan);
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+.seq-hcell:hover .seq-loop, .seq-loop.on { opacity: 1; }
+.seq-loop.on {
+    border-color: var(--cyan);
+    background: color-mix(in srgb, var(--cyan) 18%, transparent);
+}
+.seq-hcell.looping {
+    border-color: var(--cyan);
+    border-bottom-color: var(--cyan);
+    box-shadow: inset 0 -12px 16px -14px var(--cyan);
+}
+.rail-btn.seq-btn.looping, #root-seq-btn.looping {
+    color: var(--cyan);
+    border-color: var(--cyan);
+}
+/* The root's looping step on the ruler (the root has no lane). */
+.ruler-root-window {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    box-sizing: border-box;
+    border-left: 2px solid var(--cyan);
+    border-right: 2px solid var(--cyan);
+    background: color-mix(in srgb, var(--cyan) 10%, transparent);
+    pointer-events: auto;
+}
+.ruler-root-window-label {
+    position: absolute;
+    left: 4px;
+    top: 1px;
+    font-size: 0.58rem;
+    color: var(--cyan);
+    white-space: nowrap;
+}
+
+/* --- THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6): amber for the
+   blowup face (a length that explodes the parent frame), a cooler amber
+   ↯ for the drifting pass. Shown only when warranted. --- */
+.seq-health {
+    font-size: 0.62rem;
+    white-space: nowrap;
+}
+.seq-health-blowup { color: var(--map-amber); }
+.seq-health-drift { color: var(--amber-bright); opacity: 0.85; }
+.seq-health-fix {
+    width: auto;
+    padding: 0 7px;
+    border-radius: 4px;
+    font-size: 0.6rem;
+    color: var(--map-amber);
+    border-color: var(--map-amber-45);
+}
+.seq-health-fix:hover { background: color-mix(in srgb, var(--map-amber) 18%, transparent); }
+.rail-sub.health-warn {
+    color: var(--map-amber);
+    text-shadow: 0 0 6px var(--map-amber-40);
+    cursor: help;
+}
+.rail-btn.seq-btn.drift::after, #root-seq-btn.drift::after {
+    content: ' ↯';
+    color: var(--amber-bright);
+}
+/* S16 (docs/sequencer.md §11.8): a window authored over a sequence
+   timeline, suspended while the sequence is off — dimmed like bypass,
+   cool-tinted so it reads as "waiting", not "off". */
+.lane-body.win-suspended .win-bracket { opacity: 0.3; border-style: dashed; }
+.lane-body.win-suspended .win-chip { color: var(--cyan-dim); }

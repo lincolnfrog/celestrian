@@ -599,6 +599,15 @@ MainComponent::MainComponent()
                                                  args[0].toString());
                                            }))
               .withNativeFunction(
+                  "auditionStep",
+                  voidCall("auditionStep", 2,
+                           [this](const auto& args) {
+                             // args[1] = step index, −1 = stop looping
+                             // (docs/sequencer.md §11.2).
+                             audio_engine.auditionStep(args[0].toString(),
+                                                       (int)args[1]);
+                           }))
+              .withNativeFunction(
                   "startLatencyCalibration",
                   voidCall("startLatencyCalibration", 0,
                            [this](const auto&) {

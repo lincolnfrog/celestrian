@@ -209,6 +209,7 @@ target_sources(CelestrianTests PRIVATE
     tests/one_shot_tests.cc
     tests/callback_edge_tests.cc
     tests/group_arm_tests.cc
+    tests/take_undo_tests.cc
     tests/solo_tests.cc
     tests/track_template_tests.cc
     tests/plugin_host_tests.cc

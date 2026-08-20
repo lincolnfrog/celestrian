@@ -11,7 +11,7 @@
  * can read `state.masterPos` / `state.islandQ` without `|| 0` guards.
  */
 
-import { singleSegment } from '../time_map.js';
+import { singleSegment, mapActive } from '../time_map.js';
 import { lcm } from '../math_utils.js';
 
 // In-memory state
@@ -23,6 +23,7 @@ export const state = {
     islandEpoch: 0,   // the island frame origin (P0-3 stored fact)
     islandQ: 0,       // the STORED island quantum (0 = unestablished)
     masterGain: 1,    // the root output stage — the master fader
+    rootAuditionStep: -1,  // the root's step audition (§11.2), −1 = none
 };
 
 // Generate unique IDs
@@ -132,6 +133,55 @@ export function isQ13SoleDefiner(node) {
 export function nodeMap(n) {
     if (n.segments && n.segments.length >= 2) return { segs: n.segments };
     return singleSegment(n.loopStart || 0, n.loopEnd || 0);
+}
+
+// The node's ACTIVE map (engine parity: StackNode::activeTimeMap): a
+// stack's step audition (docs/sequencer.md §11.2) is a DERIVED window
+// that wins over the authored one; otherwise the authored window iff
+// not bypassed. Returns null when no map applies. (Defined here, the
+// shared query layer, so cycles/publish/recording all agree.)
+export function activeMapOf(n) {
+    if (n.type === 'stack') {
+        const a = auditionMapOf(n);
+        if (a) return a;
+        if (windowSuspendedOf(n)) return null;  // S16
+    }
+    if (n.loopBypassed) return null;
+    const m = nodeMap(n);
+    return mapActive(m) ? m : null;
+}
+
+// S16 (docs/sequencer.md §11.8): a sequence-domain window is SUSPENDED
+// while the sequence is off (bypassed/cleared) — never deleted.
+export function windowSuspendedOf(n) {
+    if (n.type !== 'stack' || n.windowDomain !== 'sequence') return false;
+    const seqOn = !n.sequenceBypassed && n.sequence &&
+        (n.sequence.steps || []).some(s => s.len > 0);
+    if (seqOn) return false;
+    return !n.loopBypassed && mapActive(nodeMap(n));
+}
+
+// Lazy twin of mock/sequence.js auditionMap (no import cycle: sequence.js
+// imports state.js). Kept minimal and in lockstep.
+export function auditionMapOf(holder) {
+    const i = holder.auditionStep;
+    if (!(i >= 0) || holder.sequenceBypassed) return null;
+    const steps = holder.sequence && holder.sequence.steps;
+    if (!steps || i >= steps.length) return null;
+    let b = 0;
+    for (let k = 0; k < i; k++) b += steps[k].len > 0 ? Math.round(steps[k].len) : 0;
+    const len = steps[i].len > 0 ? Math.round(steps[i].len) : 0;
+    return len > 0 ? { segs: [[b, b + len]] } : null;
+}
+
+// The ROOT's active map (the root's audition — the root has no authored
+// window in the mock).
+export function rootActiveMap() {
+    return auditionMapOf({
+        auditionStep: state.rootAuditionStep ?? -1,
+        sequenceBypassed: state.rootSequenceBypassed,
+        sequence: state.rootSequence,
+    });
 }
 
 // Intrinsic composite duration (clip: duration; stack: LCM of children).

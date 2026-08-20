@@ -15,6 +15,7 @@ import {
 import { popUndoForRefusal } from './undo.js';
 import { lcm } from '../math_utils.js';
 import { effectivePeriodOf } from './cycles.js';
+import { activeSeqLen } from './sequence.js';
 
 /** PHASE-PRESERVING RE-ANCHOR (engine parity, 2026-07-25h/i): origin'
  * such that the buffer position sounding right now keeps sounding when
@@ -119,6 +120,15 @@ export const applyTwoAnchorContinuity = applyMapEditRiders;
  *    origin and rides the epoch (see continuityOrigin above).
  *  - Refusals pop the dispatch's pre-pushed undo snapshot.
  */
+/** S16 (docs/sequencer.md §11.8, engine parity stampWindowDomain): a
+ * window edit on a STACK stamps its domain — 'sequence' when authored
+ * over an active sequence timeline, else 'intrinsic'. Undo restores the
+ * stamp with the snapshot. */
+function stampWindowDomain(node) {
+    if (node.type !== 'stack') return;
+    node.windowDomain = activeSeqLen(node) > 0 ? 'sequence' : 'intrinsic';
+}
+
 export function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
     if (!node) return;
@@ -163,6 +173,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
     node.loopStart = loopStart;
     node.loopEnd = loopEnd;
+    stampWindowDomain(node);
     // Clamp to the recorded material (engine parity): a fractional-Q
     // drag rounded past the take's end must not window silence.
     if (node.type === 'clip' && (node.duration || 0) > 0) {
@@ -285,6 +296,7 @@ export function setSegments(id, flat) {
     // map before mutating for the phase-preserving re-anchor.
     const oldMap = node.loopBypassed ? { segs: [] } : nodeMap(node);
     node.segments = segs;
+    stampWindowDomain(node);
     if (isQ13SoleDefiner(node)) {
         const map = { segs };
         const period = mapPeriod(map);

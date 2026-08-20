@@ -24,6 +24,7 @@ import {
     nextStopBoundary, timelineLcm,
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
+import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
 import { flatSegPeriod } from './time_map.js';
 
 // Q-space float tolerance for exact-position comparisons (tile identity,
@@ -67,6 +68,9 @@ function windowOf(node, quantum) {
         endQ: node.loopEnd / quantum,
         bypassed: !!node.loopBypassed,
         active: !!node.windowActive,
+        // S16 (docs/sequencer.md §11.8): authored over a sequence that
+        // is now off — drawn dimmed with a chip saying why.
+        suspended: !!node.windowSuspended,
     };
 }
 
@@ -94,6 +98,7 @@ function mapOf(node, quantum) {
             endQ: segs[segs.length - 1][1],
             bypassed: !!node.loopBypassed,
             active: !!node.windowActive,
+            suspended: !!node.windowSuspended,
         };
     }
     const win = windowOf(node, quantum);
@@ -332,6 +337,8 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
         bypassed: !!(s && s.bypassed),
         steps,
         totalQ: steps.reduce((t, x) => t + x.lenQ, 0),
+        // The step audition (§11.2): which step loops, −1 = none.
+        auditionStep: auditionStepOf(s),
         // The append/creation default: one inner cycle (S2 —
         // cycle-multiple snapping is the default concept).
         innerCycleQ: Math.max(1, Math.round(innerCycleQ)),
@@ -401,6 +408,67 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             lane.seqDims = { periodQ: totalQ, offSegsQ: offSegs };
         }
     }
+}
+
+/**
+ * THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6) — post-pass, VM-pure
+ * projection over the built lanes. For every scope (root + each group):
+ * the BLOWUP face marks the RESPONSIBLE child's lane (`lane.health`) and,
+ * when that child is a sequenced stack, its grid row (`row.health.blowup`
+ * with the snap offer); the DRIFT face marks sequenced stacks' rows and
+ * chips (`row.health.drift`, `lane.seq.drift`). Grid rows also learn
+ * their parent-scope facts (`parentOthersQ` / `parentLargestQ`) so the
+ * grip can warn LIVE while a step is dragged.
+ */
+function scopeMembers(children, quantum) {
+    return (children || []).map(c => ({
+        id: c.id,
+        periodQ: effectivePeriod(c) / quantum,
+        knob: c.type === 'stack' && activeSeqSamples(c) > 0 ? 'sequence'
+            : (c.windowActive ? 'window' : null),
+    })).filter(m => m.periodQ > 0);
+}
+
+function attachFrameHealth(lanes, state, nodes, quantum, qEstablished) {
+    if (!qEstablished) return;
+    const byId = new Map();
+    lanes.forEach(l => { if (l.kind === 'clip' || l.kind === 'group') byId.set(l.id, l); });
+    const rowOf = new Map();
+    lanes.forEach(l => { if (l.kind === 'seq') rowOf.set(l.ownerId, l); });
+
+    const visitScope = (ownerId, holder, children) => {
+        const members = scopeMembers(children, quantum);
+        const blow = assessBlowup(members, 1);
+        if (blow) {
+            const lane = byId.get(blow.responsibleId);
+            if (lane) lane.health = { ...blow, scopeId: ownerId };
+            const row = rowOf.get(blow.responsibleId);
+            if (row) row.health = { ...(row.health || {}), blowup: { ...blow, scopeId: ownerId } };
+        }
+        // Every sequenced child row learns its parent-scope facts.
+        members.forEach(m => {
+            const row = rowOf.get(m.id);
+            if (!row) return;
+            row.parentOthersQ = lcmAll(members.filter(x => x !== m).map(x => x.periodQ), 1);
+            row.parentLargestQ = Math.max(0, ...members.filter(x => x !== m).map(x => x.periodQ));
+        });
+        // The DRIFT face for THIS scope's own sequence.
+        const s = seqOf(holder);
+        if (s && !s.bypassed) {
+            const innerQ = lcmAll(members.map(m => m.periodQ), 1);
+            const drift = assessDrift(seqTotalSamples(s) / quantum, innerQ);
+            if (drift) {
+                const row = rowOf.get(ownerId);
+                if (row) row.health = { ...(row.health || {}), drift };
+                const lane = byId.get(ownerId);
+                if (lane && lane.seq) lane.seq.drift = drift;
+            }
+        }
+        (children || []).forEach(c => {
+            if (c.type === 'stack') visitScope(c.id, c, c.nodes);
+        });
+    };
+    visitScope(state.id || '', state, nodes);
 }
 
 /** A live take anywhere below (drives the group lane's map cue). */
@@ -588,6 +656,12 @@ function seqOf(holder) {
     const s = holder && holder.sequence;
     if (!s || !Array.isArray(s.steps) || !s.steps.length) return null;
     return s;
+}
+
+/** The published step audition index of a sequence (−1 = none). */
+function auditionStepOf(s) {
+    const i = s && Number.isInteger(s.auditionStep) ? s.auditionStep : -1;
+    return i >= 0 && s && i < s.steps.length ? i : -1;
 }
 
 /** Total sequence length in samples (steps CONCATENATE — S10). */
@@ -829,7 +903,13 @@ function buildRulerTicks(qEstablished, cycleQ) {
 function pushGroupLane(node, depth, mapCtx, ctx) {
     const { quantum, cycleQ, qEstablished, fxOpen, lanes, state } = ctx;
     const periodQ = displayPeriodQ(node, quantum);
-    const gwin = mapOf(node, quantum);
+    // A STEP AUDITION on this group (§11.2) publishes a DERIVED window
+    // in SONG coordinates; group lanes tile at their intrinsic period,
+    // so those brackets/dims would land in the wrong frame. The grid's
+    // looping header + the lane chip carry the state instead; the
+    // authored window (if any) is hidden underneath for the duration.
+    const seqAudition = auditionStepOf(seqOf(node)) >= 0;
+    const gwin = seqAudition ? null : mapOf(node, quantum);
     const lane = Object.assign(laneCommon(node, state), {
         kind: 'group',
         depth,
@@ -852,12 +932,13 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
         window: gwin && gwin.multi ? null : gwin,
         mapSegs: gwin && gwin.multi ? gwin.segs : null,
         mapBypassed: !!(gwin && gwin.bypassed),
+        mapSuspended: !!(gwin && gwin.suspended),  // S16
         mapChipQ: gwin && gwin.multi ? gwin.periodQ : 0,
         // Heard-time cursor inside an active window (engine
         // publishes the window phase on `playhead`). Kept OUT of
         // the window object: it changes every poll and must not
         // churn the overlay's reconcile key.
-        windowPhase: node.windowActive ? (node.playhead || 0) : 0,
+        windowPhase: node.windowActive && !seqAudition ? (node.playhead || 0) : 0,
         folded: node.isExpanded === false,
         groupArm: groupArmState(node),
         // The map cue on the MAPPING group itself: a take is
@@ -884,7 +965,9 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
             bypassed: !!s.bypassed,
             totalQ: seqTotalSamples(s) / quantum,
             stepCount: s.steps.length,
+            auditionStep: auditionStepOf(s),
         } : null;
+
         lane.seqRecording = !!subtreeRec(node);
     }
     lanes.push(lane);
@@ -1282,6 +1365,16 @@ export function deriveViewModel(state, opts = {}) {
             ? lcm(quantum, rootSeqSamples) : rootSeqSamples;
         loopSamples = cycleSamples;
     }
+    // THE ROOT'S STEP AUDITION (docs/sequencer.md §11.2): the root
+    // publishes its DERIVED window (windowActive/loopStart/loopEnd) —
+    // the heard cycle is the step (map over sequence, S9). The FRAME
+    // stays the song (lanes keep showing the whole arrangement); the
+    // cursor is mapped into the step below, the sole-top-level-window
+    // pattern.
+    const rootWin = rootSeqSamples > 0 && state.windowActive &&
+        (state.loopEnd || 0) > (state.loopStart || 0)
+        ? { start: state.loopStart, end: state.loopEnd } : null;
+    if (rootWin) loopSamples = rootWin.end - rootWin.start;
 
     // Provisional Q-definer: frame the FULL recorded buffer (not the Q
     // cycle). cycleQ = duration/quantum and the selection brackets are
@@ -1341,7 +1434,16 @@ export function deriveViewModel(state, opts = {}) {
         defSelStartQ, qEstablished, nodes, quantum, loopSamples,
     });
     playheadQ = mapped.playheadQ;
-    const loopStartQ = mapped.loopStartQ;
+    let loopStartQ = mapped.loopStartQ;
+    if (rootWin && !anyRecording && qEstablished && !provisionalDefiner) {
+        // Root audition cursor honesty: the transport sweeps [0, step)
+        // (the engine wraps masterPos on the heard cycle); show it at
+        // the step's place in the song.
+        const wsQ = rootWin.start / quantum;
+        const lenQ = (rootWin.end - rootWin.start) / quantum;
+        loopStartQ = wsQ;
+        playheadQ = wsQ + (((playheadQ % lenQ) + lenQ) % lenQ);
+    }
 
     // Q11: the arm target is always the next Q boundary in the epoch
     // frame (the cycle top is just the next boundary in the final Q).
@@ -1392,6 +1494,8 @@ export function deriveViewModel(state, opts = {}) {
         }));
     }
 
+    attachFrameHealth(lanes, state, nodes, quantum, qEstablished);
+
     const ticks = buildRulerTicks(qEstablished, cycleQ);
 
     return {
@@ -1416,11 +1520,23 @@ export function deriveViewModel(state, opts = {}) {
         rootId,
         rootSeq: (() => {
             const s = seqOf(state);
-            return s ? {
+            if (!s) return null;
+            const members = scopeMembers(nodes, quantum);
+            return {
                 bypassed: !!s.bypassed,
                 totalQ: seqTotalSamples(s) / quantum,
                 stepCount: s.steps.length,
-            } : null;
+                auditionStep: auditionStepOf(s),
+                drift: s.bypassed ? null : assessDrift(
+                    seqTotalSamples(s) / quantum, lcmAll(members.map(m => m.periodQ), 1)),
+            };
         })(),
+        // The root's audition window in frame Q (ruler brackets; the
+        // root has no lane to carry them) — null when not looping.
+        rootWindow: rootWin ? {
+            startQ: rootWin.start / quantum,
+            endQ: rootWin.end / quantum,
+            step: auditionStepOf(seqOf(state)),
+        } : null,
     };
 }

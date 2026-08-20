@@ -42,7 +42,7 @@ import {
     saveTrackTemplate, listTrackTemplates, createFromTrackTemplate,
 } from './mock/track_templates.js';
 import { setLoopPoints, setSegments, toggleLoopWindow } from './mock/maps.js';
-import { setSequence, toggleSequence } from './mock/sequence.js';
+import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
 import { startRecordingInNode, stopRecordingInNode } from './mock/recording.js';
 import { togglePlayback } from './mock/transport.js';
 import { getState } from './mock/publish.js';
@@ -140,6 +140,8 @@ export const handlers = {
     // The SEQUENCER (docs/sequencer.md) — engine parity, undoable.
     setSequence,
     toggleSequence,
+    // The step audition (§11.2): a monitoring gesture — NOT undoable.
+    auditionStep,
     // Track templates (Q17): createFrom is UNDOABLE as one step (see
     // mock/undo.js); save writes the LIBRARY, not the graph. togglePlay
     // is GONE (Q16: per-node play superseded).

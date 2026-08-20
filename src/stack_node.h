@@ -222,6 +222,56 @@ class StackNode : public AudioNode {
     return s != nullptr ? s->total : 0;
   }
 
+  // --- THE STEP AUDITION (docs/sequencer.md §11.2, build step 2) ---
+  // "Loop this step": a MONITORING gesture (the solo / midi_armed
+  // class — not undoable, not persisted). While set and the sequence
+  // is active, the stack's time-map IS the step's span, DERIVED from
+  // the sequence: it follows a step resize, cannot outlive the
+  // sequence (bypass it and the audition is simply gone), and leaves
+  // any authored window untouched underneath (I9: Esc restores it
+  // exactly). Recording through it is the phase-2 through-map path
+  // aimed at the step — "record into a step" (§4 Mode 2).
+  int auditionStep() const { return audition_step_.load(); }
+  void setAuditionStep(int step) { audition_step_.store(step); }
+  /** The audition's derived map, or none when no audition applies
+   * (no step set, sequence inactive, or the index no longer exists). */
+  timing::TimeMap auditionMap() const {
+    const int i = audition_step_.load();
+    if (i < 0) return timing::TimeMap::none();
+    const Sequence* s = activeSequence();
+    if (s == nullptr || i >= s->numSteps()) return timing::TimeMap::none();
+    return timing::TimeMap::single(s->bounds[i], s->bounds[i + 1]);
+  }
+  bool auditionActive() const { return auditionMap().active(); }
+
+  // --- S16: THE WINDOW DOMAIN (docs/sequencer.md §11.8) ---
+  // A window AUTHORED over a sequence timeline (the S9 composition:
+  // the map selects spans of the song) loses its meaning when the
+  // sequence is bypassed — [8Q, 16Q) of an 8Q jam is nonsense. The
+  // authoring edit stamps the domain; a sequence-domain window is
+  // SUSPENDED (reads as no map, never deleted — I9) while the sequence
+  // is off, and returns with it. Message thread writes, audio reads.
+  enum class WindowDomain : int { Intrinsic = 0, Sequence = 1 };
+  WindowDomain windowDomain() const {
+    return (WindowDomain)window_domain_.load();
+  }
+  void setWindowDomain(WindowDomain d) { window_domain_.store((int)d); }
+  /** The authored window is suspended: sequence-domain, sequence off. */
+  bool windowSuspended() const {
+    return windowDomain() == WindowDomain::Sequence &&
+           activeSequence() == nullptr && AudioNode::isLoopWindowActive();
+  }
+  timing::TimeMap activeTimeMap() const override {
+    if (const timing::TimeMap a = auditionMap(); a.active()) return a;
+    if (windowDomain() == WindowDomain::Sequence && activeSequence() == nullptr)
+      return timing::TimeMap::none();  // suspended (S16)
+    return AudioNode::activeTimeMap();
+  }
+  bool isLoopWindowActive() const override {
+    return auditionActive() ||
+           (!windowSuspended() && AudioNode::isLoopWindowActive());
+  }
+
  private:
   // Ownership: message thread only. The audio thread traverses the
   // WHOLE-GRAPH snapshot (graph_snapshot.h) — never this vector.
@@ -353,6 +403,10 @@ class StackNode : public AudioNode {
   // it exactly like loop_window_bypassed_ gates the map.
   std::atomic<const Sequence*> sequence_{nullptr};
   std::atomic<bool> sequence_bypassed_{false};
+  // The step audition (§11.2): −1 = none. Monitoring state, like solo.
+  std::atomic<int> audition_step_{-1};
+  // S16 window domain (§11.8): stamped by the authoring edit.
+  std::atomic<int> window_domain_{0};
 
   // Take lifecycle: count of armed/capturing takes in this island, and
   // two cycle snapshots taken when the first of them armed: the

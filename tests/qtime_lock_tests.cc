@@ -380,6 +380,12 @@ class QTimeLockTests : public juce::UnitTest {
                    "splice: origin = the epoch (anchoring law)");
       expect(!segsOf(c1).isArray(), "splice: map consumed");
 
+      // TAKES ARE UNDOABLE (2026-08-20): the first undo removes take 2
+      // itself (the log reads: CollapseTake, Take 2); the second
+      // un-splices the definer.
+      engine.undo();
+      expectEquals(clipProp(engine, c1, "duration"), q0 / 2,
+                   "first undo strips take 2; the splice stands");
       engine.undo();
       expectEquals(clipProp(engine, c1, "duration"), q0,
                    "un-splice: full material returns");

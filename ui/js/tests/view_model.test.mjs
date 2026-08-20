@@ -566,7 +566,7 @@ test('a BYPASSED window changes nothing about the cycle', () => {
     // Phase 3: the window descriptor is the map superset (segs/periodQ/
     // multi ride along; single windows carry their one segment).
     assert.deepEqual(k.window, {
-        startQ: 1, endQ: 2, bypassed: true, active: false,
+        startQ: 1, endQ: 2, bypassed: true, active: false, suspended: false,
         segs: [[1, 2]], periodQ: 1, multi: false,
     });
 });

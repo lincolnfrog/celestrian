@@ -45,6 +45,24 @@ juce::var StackNode::getMetadata() const {
   // the cycle top (field confusion, 2026-07-09).
   obj->setProperty("quantum", (double)quantum_samples_.load());
   obj->setProperty("epoch", (double)epoch_samples_.load());
+  // Under a step audition the DERIVED window is the one the UI must
+  // draw (brackets, cursor honesty, frame): publish it over the base
+  // fields. The authored window survives untouched in the atomics and
+  // returns to the metadata the moment the audition ends (I9).
+  if (const timing::TimeMap a = auditionMap(); a.active()) {
+    obj->setProperty("loopStart", (double)a.segs[0].start);
+    obj->setProperty("loopEnd", (double)a.segs[0].end);
+    obj->setProperty("loopBypassed", false);
+    obj->setProperty("windowActive", true);
+    obj->removeProperty("segments");
+  }
+  // S16 (§11.8): the authored window's domain, and whether it is
+  // suspended right now (sequence-domain, sequence off) — the UI draws
+  // suspended brackets dimmed with a chip saying why.
+  obj->setProperty("windowDomain",
+                   windowDomain() == WindowDomain::Sequence ? "sequence"
+                                                             : "intrinsic");
+  obj->setProperty("windowSuspended", windowSuspended());
   // The sequence (docs/sequencer.md), published RAW like segments —
   // bypassed geometry survives in the UI (I9; the VM derives active).
   // Steps in samples like every metadata length; gates as uuid → one
@@ -67,6 +85,10 @@ juce::var StackNode::getMetadata() const {
       gateso->setProperty(row.uuid, bits);
     }
     so->setProperty("gates", juce::var(gateso));
+    // The step audition (§11.2): which step is looping, −1 = none. The
+    // derived window itself publishes through the base fields
+    // (windowActive/loopStart/loopEnd) like any map.
+    so->setProperty("auditionStep", auditionActive() ? audition_step_.load() : -1);
     obj->setProperty("sequence", juce::var(so));
   }
   juce::Array<juce::var> childData;
@@ -174,12 +196,24 @@ void StackNode::takeCommitted(int64_t origin, int64_t intrinsic_after) {
   //   - Polyrhythmic growth: previously "keep the old epoch" (the
   //     cursor-sails-on ruling, which predates the recording view
   //     shift); now the WATCHED cursor is what sails on.
-  const int64_t before = lcm_before_take_.load();
+  int64_t before = lcm_before_take_.load();
   if (before <= 0) return;  // first take: epoch was established at arm
 
   // Passed in (snapshot space) — this event fires on the AUDIO thread,
   // and the stack's own traversal is message-thread-only (Step 3).
-  const int64_t after = timing::lcm(quantum_samples_.load(), intrinsic_after);
+  int64_t after = timing::lcm(quantum_samples_.load(), intrinsic_after);
+  // THE SONG RIDES THE EPOCH (docs/sequencer.md §11, found building
+  // step 2): an active sequence's steps are positioned from the cycle
+  // epoch, so a whole-old-cycle re-base that is NOT a whole number of
+  // songs would shift every section (a 4Q part recorded into an 8Q
+  // song re-based the epoch by 4Q — the chorus became the intro).
+  // The sequence length joins both sides of the growth comparison:
+  // shifts happen in whole songs or not at all. (Sequence edits are
+  // refused mid-take, so the length here is the one the take heard.)
+  if (const int64_t seq_len = activeSequenceLen(); seq_len > 0) {
+    before = timing::lcm(before, seq_len);
+    after = timing::lcm(after, seq_len);
+  }
   if (after <= before) return;
 
   const int64_t epoch = epoch_samples_.load();

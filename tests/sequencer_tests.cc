@@ -19,6 +19,12 @@
  *     the song as its heard cycle (record-over-the-song).
  *   VERBS: setSequence/toggleSequence are undoable, refuse mid-take,
  *     publish in metadata, and round-trip through session save/load.
+ *   THE STEP AUDITION (§11.2, build step 2): auditionStep derives a
+ *     one-segment map from the sequence (follows a resize, overrides
+ *     the authored window, gone with the sequence), publishes it, is
+ *     not undoable; S18: a take recorded INTO the looping step is a
+ *     step-sized part (C = the step), and the song rides the epoch (no
+ *     part-sized re-base shifts the sections).
  *
  * Twin: ui/js/tests/sequence.test.mjs (mock + view-model parity).
  */
@@ -29,6 +35,7 @@
 #include <memory>
 #include <vector>
 
+#include "../src/audio_engine.h"
 #include "../src/clip_node.h"
 #include "../src/graph_snapshot.h"
 #include "../src/sequence.h"
@@ -107,6 +114,8 @@ class SequencerTests : public juce::UnitTest {
     testHeardFrame();
     testEngineVerbs();
     testSaveLoad();
+    testAudition();
+    testWindowDomain();
   }
 
  private:
@@ -497,6 +506,332 @@ class SequencerTests : public juce::UnitTest {
                   .isObject(),
              "refused while a take is armed/recording");
       engine.stopRecordingInNode(clipId);
+    }
+  }
+
+  void testAudition() {
+    beginTest("AUDITION: derived map, precedence over the authored window");
+    {
+      StackNode root("island");
+      root.addChild(makeDcClip("a", 0.1f));
+      root.setQuantum(kLen, 0);
+      root.setLoopPoints(0, kLen);  // an authored window underneath
+      delete root.exchangeSequence(makeSeq(2 * kLen, 4 * kLen, {}));
+      expectEquals(root.activeTimeMap().period(), (int64_t)kLen,
+                   "authored window wins with no audition");
+      root.setAuditionStep(1);
+      const timing::TimeMap a = root.activeTimeMap();
+      expect(a.active(), "audition map active");
+      expectEquals(a.segs[0].start, (int64_t)(2 * kLen), "step 1 top");
+      expectEquals(a.segs[0].end, (int64_t)(6 * kLen), "step 1 end");
+      expectEquals(root.getEffectivePeriod(), (int64_t)(4 * kLen),
+                   "effective period = the step (map over sequence, S9)");
+      expect(root.isLoopWindowActive(), "windowActive publishes true");
+      // Follows a resize (same count), not a shape change.
+      delete root.exchangeSequence(makeSeq(2 * kLen, 6 * kLen, {}));
+      expectEquals(root.activeTimeMap().segs[0].end, (int64_t)(8 * kLen),
+                   "derived: follows the step resize");
+      // Gone with the sequence; the authored window returns (I9).
+      root.setSequenceBypassed(true);
+      expectEquals(root.activeTimeMap().period(), (int64_t)kLen,
+                   "sequence bypassed: audition gone, authored window back");
+      root.setSequenceBypassed(false);
+      root.setAuditionStep(-1);
+      expectEquals(root.activeTimeMap().period(), (int64_t)kLen, "-1 stops");
+      // Out-of-range index = none.
+      root.setAuditionStep(7);
+      expectEquals(root.activeTimeMap().period(), (int64_t)kLen,
+                   "no such step: no audition");
+      // Metadata: auditionStep + the derived window over the base fields.
+      root.setAuditionStep(0);
+      const juce::var md = root.getMetadata();
+      const juce::var sq = md.getProperty("sequence", juce::var());
+      expectEquals((int)sq.getProperty("auditionStep", -1), 0,
+                   "auditionStep published");
+      expectEquals((int64_t)(double)md.getProperty("loopStart", -1.0),
+                   (int64_t)0, "loopStart = step top");
+      expectEquals((int64_t)(double)md.getProperty("loopEnd", -1.0),
+                   (int64_t)(2 * kLen), "loopEnd = step end");
+      expect((bool)md.getProperty("windowActive", false), "windowActive");
+      root.setAuditionStep(-1);
+      expectEquals((int)root.getMetadata()
+                       .getProperty("sequence", juce::var())
+                       .getProperty("auditionStep", 0),
+                   -1, "none publishes -1");
+    }
+
+    beginTest("AUDITION: the engine verb (not undoable; mid-take refusal)");
+    {
+      AudioEngine engine;
+      const juce::String rootId =
+          engine.getGraphState().getProperty("id", "").toString();
+      // Q must exist for a real sequence to matter to the frame, but the
+      // verb itself only needs an active sequence.
+      auto* payload = new juce::DynamicObject();
+      {
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "a");
+        s1->setProperty("len", 1000.0);
+        steps.add(juce::var(s1));
+        auto* s2 = new juce::DynamicObject();
+        s2->setProperty("name", "b");
+        s2->setProperty("len", 2000.0);
+        steps.add(juce::var(s2));
+        payload->setProperty("steps", steps);
+      }
+      engine.setSequence(rootId, juce::var(payload));
+      const bool canUndoBefore =
+          (bool)engine.getGraphState().getProperty("canUndo", false);
+      engine.auditionStep(rootId, 1);
+      juce::var st = engine.getGraphState();
+      expectEquals((int)st.getProperty("sequence", juce::var())
+                       .getProperty("auditionStep", -1),
+                   1, "audition set through the engine");
+      expect((bool)st.getProperty("windowActive", false),
+             "root publishes the derived window");
+      expectEquals((int64_t)(double)st.getProperty("loopStart", -1.0),
+                   (int64_t)1000, "loopStart");
+      expect((bool)st.getProperty("canUndo", !canUndoBefore) == canUndoBefore,
+             "not an edit: undo log untouched");
+      engine.auditionStep(rootId, 5);
+      expectEquals((int)engine.getGraphState()
+                       .getProperty("sequence", juce::var())
+                       .getProperty("auditionStep", -1),
+                   1, "out-of-range refused, previous kept");
+      // A shape change clears it (delete a step).
+      auto* one = new juce::DynamicObject();
+      {
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "a");
+        s1->setProperty("len", 1000.0);
+        steps.add(juce::var(s1));
+        one->setProperty("steps", steps);
+      }
+      engine.setSequence(rootId, juce::var(one));
+      expectEquals((int)engine.getGraphState()
+                       .getProperty("sequence", juce::var())
+                       .getProperty("auditionStep", 0),
+                   -1, "shape change clears the audition");
+      engine.auditionStep(rootId, 0);
+      engine.auditionStep(rootId, -1);
+      expect(!(bool)engine.getGraphState().getProperty("windowActive", true),
+             "-1 stops");
+    }
+
+    beginTest("S18: record INTO a looping step = a step-sized part; "
+              "the song rides the epoch");
+    {
+      AudioEngine engine;
+      const int BLOCK = 512;
+      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
+      auto process = [&](int total) {
+        float* ins[] = {inBuf.data()};
+        float outL[512], outR[512];
+        float* outs[] = {outL, outR};
+        int remaining = total;
+        while (remaining > 0) {
+          const int n = std::min(remaining, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          remaining -= n;
+        }
+      };
+      auto topId = [&](int k) {
+        const juce::var st = engine.getGraphState();
+        const juce::var nodes = st.getProperty("nodes", {});
+        return (*nodes.getArray())[k]
+            .getDynamicObject()
+            ->getProperty("id")
+            .toString();
+      };
+      auto prop = [&](const juce::String& id, const char* key) {
+        const juce::var st = engine.getGraphState();
+        const juce::var nodes = st.getProperty("nodes", {});
+        for (auto& n : *nodes.getArray()) {
+          if (n.getProperty("id", "").toString() == id) {
+            return (int64_t)(double)n.getProperty(key, 0.0);
+          }
+        }
+        return (int64_t)-1;
+      };
+      const juce::String rootId =
+          engine.getGraphState().getProperty("id", "").toString();
+
+      // Take A establishes Q (~1 s); take B = 2Q.
+      engine.createNode("clip");
+      const juce::String aId = topId(0);
+      engine.startRecordingInNode(aId);
+      process(100);
+      process(44100);
+      engine.stopRecordingInNode(aId);
+      for (int i = 0; i < 200 && prop(aId, "isRecording") != 0; ++i) {
+        process(512);
+      }
+      const int64_t Q = prop(aId, "duration");
+      expect(Q > 0, "Q established");
+      engine.createNode("clip");
+      const juce::String bId = topId(1);
+      engine.startRecordingInNode(bId);
+      process((int)(2 * Q) - 200);
+      engine.stopRecordingInNode(bId);
+      for (int i = 0; i < 400 && prop(bId, "isRecording") != 0; ++i) {
+        process(512);
+      }
+      expectEquals(prop(bId, "duration"), (int64_t)(2 * Q), "B = 2Q");
+      const int64_t epochBefore =
+          (int64_t)(double)engine.getGraphState().getProperty("islandEpoch", 0.0);
+
+      // The song: intro 2Q | chorus 4Q | out 2Q = 8Q. Loop the chorus.
+      auto* payload = new juce::DynamicObject();
+      {
+        juce::Array<juce::var> steps;
+        const char* names[] = {"intro", "chorus", "out"};
+        const double lens[] = {2.0 * Q, 4.0 * Q, 2.0 * Q};
+        for (int i = 0; i < 3; ++i) {
+          auto* s = new juce::DynamicObject();
+          s->setProperty("name", names[i]);
+          s->setProperty("len", lens[i]);
+          steps.add(juce::var(s));
+        }
+        payload->setProperty("steps", steps);
+      }
+      engine.setSequence(rootId, juce::var(payload));
+      engine.auditionStep(rootId, 1);
+
+      // Record C into the chorus: never stop — the one-period cap
+      // commits it at exactly the step.
+      engine.createNode("clip");
+      const juce::String cId = topId(2);
+      engine.startRecordingInNode(cId);
+      process((int)(8 * Q));
+      for (int i = 0; i < 400 && (prop(cId, "isRecording") != 0 ||
+                                  prop(cId, "isPendingStart") != 0);
+           ++i) {
+        process(512);
+      }
+      expectEquals(prop(cId, "isRecording"), (int64_t)0, "C committed");
+      expectEquals(prop(cId, "duration"), (int64_t)(4 * Q),
+                   "S18: C = the STEP length, not the 8Q song");
+      const int64_t epochAfter =
+          (int64_t)(double)engine.getGraphState().getProperty("islandEpoch", 0.0);
+      expectEquals(epochAfter, epochBefore,
+                   "no re-base: a 4Q part in an 8Q song is not a whole song");
+      const int64_t rel = ((prop(cId, "origin") - epochAfter) % (8 * Q) +
+                           8 * Q) % (8 * Q);
+      expect(rel >= 2 * Q && rel < 6 * Q,
+             "origin inside the chorus in song coordinates (got " +
+                 juce::String(rel / (double)Q) + "Q)");
+      expectEquals(rel % Q, (int64_t)0, "on the Q grid");
+      expectEquals((int)engine.getGraphState()
+                       .getProperty("sequence", juce::var())
+                       .getProperty("auditionStep", -1),
+                   1, "the loop stays on after the commit");
+      // The frame: still the song (no silence-padded 8Q clip).
+      expectEquals(
+          (int64_t)(double)engine.getGraphState().getProperty("loopEnd", 0.0),
+          (int64_t)(6 * Q), "derived window still published");
+    }
+  }
+
+  void testWindowDomain() {
+    beginTest("S16: a window authored over the song suspends with the sequence");
+    {
+      AudioEngine engine;
+      const juce::String rootId =
+          engine.getGraphState().getProperty("id", "").toString();
+      engine.createNode("stack");
+      juce::String sId;
+      {
+        const juce::var st = engine.getGraphState();
+        sId = (*st.getProperty("nodes", {}).getArray())[0]
+                  .getProperty("id", "")
+                  .toString();
+      }
+      auto* stack = dynamic_cast<StackNode*>(engine.findNodeByUuidForTest(sId));
+      expect(stack != nullptr, "stack found");
+      // A window with NO sequence: intrinsic domain, stays active.
+      engine.setLoopPoints(sId, 0, 1000);
+      expect(stack->windowDomain() == StackNode::WindowDomain::Intrinsic,
+             "no sequence: intrinsic domain");
+      // Now a sequence, then a window authored over it: sequence domain.
+      auto* payload = new juce::DynamicObject();
+      {
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "a");
+        s1->setProperty("len", 4000.0);
+        steps.add(juce::var(s1));
+        payload->setProperty("steps", steps);
+      }
+      engine.setSequence(sId, juce::var(payload));
+      engine.setLoopPoints(sId, 1000, 3000);
+      expect(stack->windowDomain() == StackNode::WindowDomain::Sequence,
+             "authored over the song: sequence domain");
+      expect(stack->activeTimeMap().active(), "active while the sequence is on");
+      expect(!stack->windowSuspended(), "not suspended");
+      // Bypass the sequence: SUSPENDED (no map, geometry kept).
+      engine.toggleSequence(sId);
+      expect(!stack->activeTimeMap().active(), "suspended: reads as no map");
+      expect(stack->windowSuspended(), "windowSuspended");
+      expectEquals(stack->getLoopStart(), (int64_t)1000, "geometry kept (I9)");
+      {
+        const juce::var st = engine.getGraphState();
+        const juce::var n = (*st.getProperty("nodes", {}).getArray())[0];
+        expect((bool)n.getProperty("windowSuspended", false),
+               "metadata: windowSuspended");
+        expect(!(bool)n.getProperty("windowActive", true),
+               "metadata: windowActive false while suspended");
+        expectEquals(n.getProperty("windowDomain", "").toString(),
+                     juce::String("sequence"), "metadata: windowDomain");
+      }
+      // Reactivate: it returns.
+      engine.toggleSequence(sId);
+      expect(stack->activeTimeMap().active(), "returns with the sequence");
+      // Undo the window edit: the stamp reverts to intrinsic.
+      engine.undo();  // the second toggle
+      engine.undo();  // the first toggle
+      engine.undo();  // the sequence-domain window edit
+      expect(stack->windowDomain() == StackNode::WindowDomain::Intrinsic,
+             "undo restores the old stamp");
+      engine.redo();
+      expect(stack->windowDomain() == StackNode::WindowDomain::Sequence,
+             "redo re-stamps");
+    }
+    beginTest("S16: the domain survives save/load");
+    {
+      AudioEngine engine;
+      engine.createNode("stack");
+      juce::String sId;
+      {
+        const juce::var st = engine.getGraphState();
+        sId = (*st.getProperty("nodes", {}).getArray())[0]
+                  .getProperty("id", "")
+                  .toString();
+      }
+      auto* payload = new juce::DynamicObject();
+      {
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "a");
+        s1->setProperty("len", 4000.0);
+        steps.add(juce::var(s1));
+        payload->setProperty("steps", steps);
+      }
+      engine.setSequence(sId, juce::var(payload));
+      engine.setLoopPoints(sId, 1000, 3000);
+      const juce::File dir = juce::File::getSpecialLocation(
+                                 juce::File::tempDirectory)
+                                 .getChildFile("cel_s16_" + juce::String(
+                                     juce::Random::getSystemRandom().nextInt()));
+      expect(engine.saveSession(dir.getFullPathName()), "saved");
+      AudioEngine fresh;
+      expect(fresh.loadSession(dir.getFullPathName()), "loaded");
+      const juce::var st = fresh.getGraphState();
+      const juce::var n = (*st.getProperty("nodes", {}).getArray())[0];
+      expectEquals(n.getProperty("windowDomain", "").toString(),
+                   juce::String("sequence"), "domain round-trips");
+      dir.deleteRecursively();
     }
   }
 

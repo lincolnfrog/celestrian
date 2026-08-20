@@ -44,6 +44,8 @@ function resolve(id) {
                 set sequence(v) { state.rootSequence = v; },
                 get sequenceBypassed() { return state.rootSequenceBypassed; },
                 set sequenceBypassed(v) { state.rootSequenceBypassed = v; },
+                get auditionStep() { return state.rootAuditionStep ?? -1; },
+                set auditionStep(v) { state.rootAuditionStep = v; },
             },
             recording: anyNodeRecording(),
         };
@@ -67,6 +69,7 @@ export function setSequence(id, payload) {
     }
     if (!payload || !Array.isArray(payload.steps) || !payload.steps.length) {
         t.holder.sequence = null;  // clear (bypass flag survives, engine parity)
+        t.holder.auditionStep = -1;
         console.log('[MockBackend] Sequence cleared on', id);
         return;
     }
@@ -82,9 +85,69 @@ export function setSequence(id, payload) {
     for (const [uuid, bits] of Object.entries(payload.gates || {})) {
         gates[uuid] = steps.map((_, i) => !!(bits && bits[i]));
     }
+    // A shape change clears the audition (engine parity: the index
+    // follows a resize, never a delete).
+    const before = t.holder.sequence ? t.holder.sequence.steps.length : 0;
+    if (before !== steps.length) t.holder.auditionStep = -1;
     t.holder.sequence = { steps, gates };
     console.log('[MockBackend] Sequence set on', id, '-', steps.length,
         'steps,', seqTotal(t.holder.sequence), 'samples');
+}
+
+/**
+ * THE STEP AUDITION (docs/sequencer.md §11.2), mock twin of
+ * AudioEngine::auditionStep: a MONITORING gesture (not undoable, not
+ * persisted) — `holder.auditionStep` (−1 = none; the root stores
+ * state.rootAuditionStep). While set and the sequence is active, the
+ * holder's time-map IS the step's span, derived (see auditionMap).
+ */
+export function auditionStep(id, step) {
+    const t = resolve(id);
+    if (!t) {
+        console.log('[MockBackend] auditionStep refused — not a stack:', id);
+        return;
+    }
+    if (t.recording) {
+        console.log('[MockBackend] auditionStep refused — take armed/recording');
+        return;
+    }
+    const n = Number(step);
+    if (n >= 0) {
+        const seq = activeSeqLen(t.holder) > 0 ? t.holder.sequence : null;
+        if (!seq || n >= seq.steps.length) {
+            console.log('[MockBackend] auditionStep refused — no such step');
+            return;
+        }
+    }
+    t.holder.auditionStep = n >= 0 ? Math.floor(n) : -1;
+    console.log('[MockBackend] audition step', t.holder.auditionStep, 'on', id);
+}
+
+/** Step bounds (samples) of a stored sequence: [b0, b1, ..., bn]. */
+export function seqBounds(seq) {
+    const b = [0];
+    (seq && seq.steps || []).forEach(s => b.push(b[b.length - 1] + (s.len > 0 ? Math.round(s.len) : 0)));
+    return b;
+}
+
+/** The DERIVED audition map of a holder (node or the root holder), or
+ * null when no audition applies (engine parity: StackNode::auditionMap). */
+export function auditionMap(holder) {
+    const i = holder.auditionStep;
+    if (!(i >= 0)) return null;
+    if (activeSeqLen(holder) <= 0) return null;
+    const b = seqBounds(holder.sequence);
+    if (i + 1 >= b.length) return null;
+    return { segs: [[b[i], b[i + 1]]] };
+}
+
+/** The root as a sequence holder (state.rootSequence & co.). */
+export function rootHolder() {
+    return {
+        get sequence() { return state.rootSequence; },
+        get sequenceBypassed() { return state.rootSequenceBypassed; },
+        get auditionStep() { return state.rootAuditionStep ?? -1; },
+    };
 }
 
 export function toggleSequence(id) {

@@ -15,7 +15,10 @@
  * row-name click = whole-row toggle · header dblclick = rename ·
  * header grip drag = resize (cycle-multiple snap default, ⌥ = whole-Q)
  * · header right-click = delete step · footer ＋ = append (one inner
- * cycle) · footer chip = bypass toggle (the jam comes back).
+ * cycle) · footer chip = bypass toggle (the jam comes back) · header ⟲
+ * = LOOP THIS STEP (the step audition, docs/sequencer.md §11.2: the
+ * song folds to the step — audition it, or arm a track and record INTO
+ * it; click ⟲ again or Esc to stop).
  *
  * One setSequence per finished gesture = one undo step (engine-side).
  * The grid REBUILDS when its shape signature changes and only patches
@@ -24,6 +27,8 @@
 
 import { ctx } from './context.js';
 import { el, setText, fmtQ } from './sv_util.js';
+import { kBlowupRatio, cycleMinutes, fmtDuration } from '../frame_health.js';
+import { lcm } from '../math_utils.js';
 
 /** Build the synthetic grid row once; content renders in patch. */
 export function buildSeqGrid(row, lane) {
@@ -74,14 +79,16 @@ function commit(row, mutate) {
 export function patchSeqGrid(row, lane, vm) {
     row._lane = lane;
     row._quantum = vm.quantum;
+    row._sampleRate = vm.sampleRate || 44100;
     row.classList.toggle('bypassed', !!lane.bypassed);
     row.classList.toggle('locked', !lane.editable);
 
     const sig = JSON.stringify({
         s: lane.steps, b: lane.bypassed, e: lane.editable,
         c: lane.children.map(c => [c.id, c.name, c.gates]),
-        q: lane.qEstablished,
+        q: lane.qEstablished, a: lane.auditionStep, h: lane.health || null,
     });
+    row.classList.toggle('auditioning', lane.auditionStep >= 0);
     if (row._seqSig !== sig) {
         row._seqSig = sig;
         rebuild(row, lane);
@@ -177,7 +184,25 @@ function rebuild(row, lane) {
                    '⌥ = whole Q)' });
         grip.appendChild(el('span', 'seq-grip-bar'));
         wireGrip(grip, row, i);
-        cell.append(nm, len, grip);
+        // ⟲ — the STEP AUDITION (§11.2): loop this step. Visible on
+        // hover; lit while looping. Not undoable (monitoring).
+        const looping = lane.auditionStep === i;
+        const loop = el('button', 'seq-loop mono', {
+            textContent: looping ? '⟲ looping' : '⟲',
+            title: looping
+                ? 'Looping this step — click (or Esc) to stop'
+                : 'Loop this step: audition it, or arm a track and ' +
+                  'record into it (Esc stops)',
+        });
+        loop.classList.toggle('on', looping);
+        loop.addEventListener('click', e => {
+            e.stopPropagation();
+            const l = row._lane;
+            if (!l.editable && l.auditionStep !== i) return;
+            ctx.cb.onAuditionStep(l.ownerId, looping ? -1 : i);
+        });
+        cell.classList.toggle('looping', looping);
+        cell.append(nm, len, loop, grip);
         cell.addEventListener('contextmenu', e => {
             e.preventDefault();
             deleteStep(row, i);
@@ -238,6 +263,58 @@ function rebuild(row, lane) {
     if (!row._lane.editable) {
         foot.appendChild(el('span', 'seq-lock',
             { textContent: '● recording — sequence locked' }));
+    }
+    // THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6): only when an
+    // edit warrants it — the blowup face (this song's length explodes
+    // the parent frame) and the drift face (passes differ). Each offer
+    // is one click: the delta lands on the LAST step (the append unit
+    // in reverse), one setSequence, undoable.
+    if (lane.health) {
+        const h = lane.health;
+        const snapTo = totalTargetQ => {
+            const delta = totalTargetQ - lane.totalQ;
+            commit(row, p => {
+                const last = p.steps[p.steps.length - 1];
+                last.len = Math.max(row._quantum,
+                    Math.round((last.len / row._quantum + delta) * row._quantum));
+            });
+        };
+        if (h.blowup) {
+            const b = h.blowup;
+            const mins = fmtDuration(cycleMinutes(
+                b.cycleQ, row._quantum, row._sampleRate || 44100));
+            const badge = el('span', 'seq-health seq-health-blowup', {
+                textContent: '⚠ ' + fmtQ(b.responsiblePeriodQ) + 'Q → parent ×' +
+                    fmtQ(b.cycleQ) + ' (' + mins + ')',
+                title: 'This song\'s length makes the enclosing frame ' +
+                    fmtQ(b.cycleQ) + 'Q — ' + Math.round(b.ratio) +
+                    '× its largest member (coprime lengths LCM)' });
+            foot.appendChild(badge);
+            if (b.offerQ) {
+                const fix = el('button', 'seq-health-fix', {
+                    textContent: 'snap to ' + fmtQ(b.offerQ) + 'Q',
+                    title: 'Resize the last step so the song agrees with its siblings' });
+                fix.addEventListener('click', () => snapTo(b.offerQ));
+                foot.appendChild(fix);
+            }
+        }
+        if (h.drift) {
+            const d = h.drift;
+            const badge = el('span', 'seq-health seq-health-drift', {
+                textContent: '↯ drifting · ' + fmtQ(d.seqLenQ) + 'Q over ' +
+                    fmtQ(d.innerQ) + 'Q',
+                title: 'The song is not a whole number of inner cycles: each ' +
+                    'pass frames different bars (deliberate? fine — it is ' +
+                    'badged, never silent)' });
+            foot.appendChild(badge);
+            d.offers.filter(Boolean).forEach(q => {
+                const fix = el('button', 'seq-health-fix', {
+                    textContent: 'snap to ' + fmtQ(q) + 'Q',
+                    title: 'Resize the last step so every pass repeats identically' });
+                fix.addEventListener('click', () => snapTo(q));
+                foot.appendChild(fix);
+            });
+        }
     }
     const right = el('span', 'seq-foot-right');
     const add = el('button', 'seq-addstep', {
@@ -354,7 +431,19 @@ function wireGrip(grip, row, i) {
                 c.style.width =
                     'calc(' + (stepsQ[k] / newTotal * 100) + '% - 4px)';
             });
-            setText(cell.querySelector('.seq-hlen'), fmtQ(liveLenQ) + 'Q');
+            // LIVE frame-health readout (§11.6): warn as soon as the
+            // provisional song length would blow up the parent frame
+            // (⚠) or drift against the inner cycle (↯).
+            let warn = '';
+            if (lane.parentOthersQ > 0) {
+                const cyc2 = lcm(Math.round(lane.parentOthersQ), Math.round(newTotal));
+                const largest = Math.max(lane.parentLargestQ || 0, newTotal);
+                if (cyc2 > kBlowupRatio * largest) warn += ' ⚠';
+            }
+            if (lane.innerCycleQ > 0 && Math.round(newTotal) % lane.innerCycleQ !== 0) {
+                warn += ' ↯';
+            }
+            setText(cell.querySelector('.seq-hlen'), fmtQ(liveLenQ) + 'Q' + warn);
         };
         const onUp = ev => {
             grip.releasePointerCapture(e.pointerId);

@@ -39,9 +39,16 @@ let undoPushedForCall = false;
 
 /** Push a pre-edit snapshot (a fresh action invalidates the redo branch). */
 export function pushUndo() {
-    undoStack.push(serializeGraph());
+    pushUndoSnapshot(serializeGraph());
+}
+
+/** Push a snapshot taken EARLIER (takes: captured at arm, logged at
+ * commit — engine parity, reconcileTakes). */
+export function pushUndoSnapshot(snap) {
+    undoStack.push(snap);
     if (undoStack.length > 128) undoStack.shift();
     redoStack = [];  // a fresh action invalidates the redo branch
+    lastUndoable = { method: null, arg0: null };  // break coalescing
 }
 
 /**
@@ -97,7 +104,13 @@ export function clearUndoHistory() {
     undoStack = [];
     redoStack = [];
     lastUndoable = { method: null, arg0: null };
+    historyClearedHooks.forEach(fn => fn());
 }
+
+// Modules holding history-adjacent state (recording.js' pending takes)
+// register here; no import cycle (recording imports undo).
+const historyClearedHooks = [];
+export function onHistoryCleared(fn) { historyClearedHooks.push(fn); }
 
 export function canUndo() { return undoStack.length > 0; }
 export function canRedo() { return redoStack.length > 0; }

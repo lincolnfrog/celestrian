@@ -458,7 +458,7 @@ class AudioNode {
   void setLoopWindowBypassed(bool bypassed) {
     loop_window_bypassed_.store(bypassed);
   }
-  bool isLoopWindowActive() const {
+  virtual bool isLoopWindowActive() const {
     return !loop_window_bypassed_.load() &&
            (map_override_.load() != nullptr ||
             loop_end_samples.load() > loop_start_samples.load());
@@ -475,9 +475,12 @@ class AudioNode {
    * bypassed/invalid (the bypass flag gates BOTH forms). Consumers must
    * be segment-general — use period()/mapOffset()/seamDistance(), never
    * the raw loop atomics. Audio-thread safe: one atomic pointer load /
-   * atomic scalar loads into a POD value.
+   * atomic scalar loads into a POD value. VIRTUAL for one reason: a
+   * StackNode's STEP AUDITION (docs/sequencer.md §11.2) derives a
+   * one-segment map from its sequence and overrides the authored
+   * window while it is on — every consumer sees an ordinary map.
    */
-  timing::TimeMap activeTimeMap() const {
+  virtual timing::TimeMap activeTimeMap() const {
     if (loop_window_bypassed_.load()) return timing::TimeMap::none();
     if (const timing::TimeMap* m = map_override_.load()) return *m;
     return timing::TimeMap::single(loop_start_samples.load(),

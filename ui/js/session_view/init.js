@@ -82,6 +82,8 @@ function wireKeyboard() {
         if (e.key === 'Escape') {
             clearSelection();
             if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
+            // Esc drops any step audition (§11.3: "esc exits the loop").
+            if (ctx.cb.onEscapeAudition) ctx.cb.onEscapeAudition();
             closeInputMenus();
             closeCreationMenu();
             return;

@@ -199,5 +199,40 @@
         { "h": 1000, "inner": 1000, "seam": 1000 },
         { "h": 1500, "inner": 1500, "seam": 500 }
       ] }
-  ]
+  ],
+  "frame_health_cases": {
+    "description": "The frame-health badge (docs/sequencer.md 11.6): blowup = lcm(members) > 4x the largest member, attributed to the member whose removal shrinks the cycle most, with the nearest agreeing length as the offer (only for members with a length knob); drift = seqLen mod inner != 0 with the two nearest multiples. All values in Q.",
+    "blowup": [
+      { "name": "11Q sequenced beside a 12Q loop: 132Q, snap to 12Q",
+        "members": [{ "id": "seq", "periodQ": 11, "knob": "sequence" }, { "id": "loop", "periodQ": 12, "knob": null }],
+        "expect": { "cycleQ": 132, "responsibleId": "seq", "othersQ": 12, "offerQ": 12 } },
+      { "name": "coprime TAKES (7Q beside 5Q = 35Q, 5x): no knob, so badge, no offer",
+        "members": [{ "id": "a", "periodQ": 7, "knob": null }, { "id": "b", "periodQ": 5, "knob": null }],
+        "expect": { "cycleQ": 35, "responsibleId": "a", "othersQ": 5, "offerQ": null } },
+      { "name": "7Q beside 4Q = 28Q = exactly 4x: healthy (the threshold is strict)",
+        "members": [{ "id": "a", "periodQ": 7, "knob": null }, { "id": "b", "periodQ": 4, "knob": null }],
+        "expect": null },
+      { "name": "4Q + 8Q + 2Q: healthy (ratio 1)",
+        "members": [{ "id": "a", "periodQ": 4, "knob": null }, { "id": "b", "periodQ": 8, "knob": "sequence" }, { "id": "c", "periodQ": 2, "knob": null }],
+        "expect": null },
+      { "name": "threshold edge: 3Q beside 4Q = 12Q = exactly 3x the largest (healthy)",
+        "members": [{ "id": "a", "periodQ": 3, "knob": "window" }, { "id": "b", "periodQ": 4, "knob": null }],
+        "expect": null },
+      { "name": "5Q window beside a 6Q loop = 30Q = 5x: blowup; the window snaps to 6Q",
+        "members": [{ "id": "a", "periodQ": 5, "knob": "window" }, { "id": "b", "periodQ": 6, "knob": null }],
+        "expect": { "cycleQ": 30, "responsibleId": "a", "othersQ": 6, "offerQ": 6 } },
+      { "name": "9Q song beside 4Q + 2Q: lcm 36 = exactly 4x9, healthy",
+        "members": [{ "id": "s", "periodQ": 9, "knob": "sequence" }, { "id": "a", "periodQ": 4, "knob": null }, { "id": "b", "periodQ": 2, "knob": null }],
+        "expect": null },
+      { "name": "13Q song beside 4Q + 2Q: 52Q = 4x13 (healthy) -- but 13Q beside 5Q + 2Q: lcm 130 = 10x, blowup, snap to 10Q",
+        "members": [{ "id": "s", "periodQ": 13, "knob": "sequence" }, { "id": "a", "periodQ": 5, "knob": null }, { "id": "b", "periodQ": 2, "knob": null }],
+        "expect": { "cycleQ": 130, "responsibleId": "s", "othersQ": 10, "offerQ": 10 } }
+    ],
+    "drift": [
+      { "name": "28Q over a 12Q inner cycle: drifting, snap to 24Q / 36Q", "seqLenQ": 28, "innerQ": 12, "expect": { "phaseQ": 4, "offers": [24, 36] } },
+      { "name": "24Q over 12Q: identical passes", "seqLenQ": 24, "innerQ": 12, "expect": null },
+      { "name": "7Q over 8Q: shorter than the inner cycle, drifting, only the up offer", "seqLenQ": 7, "innerQ": 8, "expect": { "phaseQ": 7, "offers": [null, 8] } },
+      { "name": "23Q over 1Q (the 11+12 song over 1Q loops): no drift", "seqLenQ": 23, "innerQ": 1, "expect": null }
+    ]
+  }
 }

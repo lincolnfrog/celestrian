@@ -318,9 +318,10 @@ new is capture, storage, and rendering.
   instrument down; **any content discontinuity** (loop seam, map seam,
   one-shot rest, transport stop, duration truncation) releases the
   notes the content had sounding (`HeldNotes`) — the "hanging notes
-  closed at the seam" rule, general. Mute is gain 0 at the output stage
-  even here: a silenced MIDI clip keeps feeding its instrument (unmute
-  resumes mid-phrase, nothing hangs). Live play-through and content
+  closed at the seam" rule, general. Mute is the ramped PRE-FX gate
+  (S7, 2026-08-20 — output-stage gain 0 when this shipped): either way
+  a silenced MIDI clip keeps feeding its instrument (unmute resumes
+  mid-phrase, nothing hangs). Live play-through and content
   share the one chain run; a release tail (4 s) keeps the chain running
   after the last event so envelopes ring out. Record on a MIDI track
   auto-MIDI-arms it (`AudioEngine::startRecordingInNode`). Waveform

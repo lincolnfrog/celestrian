@@ -96,6 +96,13 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     o->setProperty("periodSource", "context");
   o->setProperty("loopBypassed",
                  opts.strip_performances ? false : node.isLoopWindowBypassed());
+  // S16 window domain (docs/sequencer.md §11.8) — additive; absent =
+  // intrinsic. Stacks only; stripped with the window on templates.
+  if (!opts.strip_performances && node.getNodeType() == NodeType::Stack) {
+    const auto& stack = static_cast<const StackNode&>(node);
+    if (stack.windowDomain() == StackNode::WindowDomain::Sequence)
+      o->setProperty("windowDomain", "sequence");
+  }
   // Window segments are musical (QTime): stored device-independently.
   // Templates strip them (a window is a fact about a performance).
   const int64_t ws = opts.strip_performances ? 0 : node.getLoopStart();
@@ -331,6 +338,11 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     delete node->exchangeMapOverride(new timing::TimeMap(m));
   }
   node->setLoopWindowBypassed((bool)o->getProperty("loopBypassed"));
+  if (auto* stack = dynamic_cast<StackNode*>(node.get());
+      stack != nullptr &&
+      o->getProperty("windowDomain").toString() == "sequence") {
+    stack->setWindowDomain(StackNode::WindowDomain::Sequence);  // S16
+  }
   applyEffects(*node, o->getProperty("effects"), sr, nullptr);
   return node;
 }

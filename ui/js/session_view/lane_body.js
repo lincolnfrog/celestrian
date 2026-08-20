@@ -220,6 +220,7 @@ export function patchLaneBody(row, lane, vm, aux) {
 
     // State classes (idempotent via classList.toggle)
     body.classList.toggle('win-bypassed', !!(lane.window && lane.window.bypassed));
+    body.classList.toggle('win-suspended', !!(lane.window && lane.window.suspended));
     body.classList.toggle('one-shot', !!lane.oneShot);
     body.classList.toggle('is-recording', !!lane.recording);
     body.classList.toggle('armed-empty',
@@ -368,7 +369,8 @@ export function patchLaneBody(row, lane, vm, aux) {
         reconcileMarkers(overlay, heardKey, o => {
             const chip = el('div', 'win-chip win-open-chip toggle', {
                 title: 'Inspect the whole take (editing works right here)',
-                textContent: (lane.mapMulti ? 'map ' : 'window ') +
+                textContent: (lane.mapSuspended ? 'map · suspended (sequence off) · ' : '') +
+                    (lane.mapMulti ? 'map ' : 'window ') +
                     fmtQ(lane.windowChipQ) + 'Q' });
             chip.addEventListener('click', () => ctx.cb.onWindowEdit(lane.id, true));
             o.appendChild(chip);
@@ -503,8 +505,15 @@ export function patchLaneBody(row, lane, vm, aux) {
                     chip.className = 'win-chip' +
                         (anchorQ + endQ >= cycleQ ? ' at-end' : '');
                     chip.style.left = pct(anchorQ + endQ, cycleQ);
-                    chip.textContent = bypassed ? 'window · bypassed'
+                    chip.textContent = win.suspended
+                        ? 'window · suspended (sequence off)'
+                        : bypassed ? 'window · bypassed'
                         : active ? 'window · active' : 'window';
+                    if (win.suspended) {
+                        chip.title = 'This window was drawn over the ' +
+                            'sequence timeline; it returns when the ' +
+                            'sequence is active again';
+                    }
                 }
                 o.appendChild(chip);
                 if (lane.windowEditing) {

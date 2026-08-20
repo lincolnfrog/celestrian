@@ -88,6 +88,19 @@ export function patchRail(row, lane, vm) {
         setText(sub, 'empty');
     }
     sub.classList.toggle('recording', !!lane.recording || clipArmed);
+    // THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6), blowup face: this
+    // lane's period is what explodes its scope's frame. Amber chip + a
+    // tooltip naming the figure; the fix (if any) lives on the grid.
+    const hb = lane.health || null;
+    sub.classList.toggle('health-warn', !!hb);
+    if (hb) {
+        setTitle(sub, '⚠ ' + fmtQ(hb.responsiblePeriodQ) + 'Q beside ' +
+            fmtQ(hb.othersQ) + 'Q makes the frame ' + fmtQ(hb.cycleQ) + 'Q (' +
+            Math.round(hb.ratio) + '× the largest part)' +
+            (hb.offerQ ? ' — snap to ' + fmtQ(hb.offerQ) + 'Q in the grid' : ''));
+    } else if (sub.title) {
+        setTitle(sub, '');
+    }
 
     const status = row.querySelector('.rail-status');
     // "A map is shaping time" (time_maps.md ruling 5): through-map
@@ -127,8 +140,14 @@ export function patchRail(row, lane, vm) {
     const seqBtn = row.querySelector('.seq-btn');
     if (seqBtn) {
         const s = lane.seq;
-        setText(seqBtn, s ? 'seq·' + fmtQ(s.totalQ) + 'Q' : 'seq');
+        const looping = !!(s && s.auditionStep >= 0);
+        setText(seqBtn, s
+            ? (looping ? '⟲ step ' + (s.auditionStep + 1)
+                       : 'seq·' + fmtQ(s.totalQ) + 'Q')
+            : 'seq');
         seqBtn.classList.toggle('on', !!(s && !s.bypassed));
+        seqBtn.classList.toggle('looping', looping);
+        seqBtn.classList.toggle('drift', !!(s && s.drift));
         seqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
         setTitle(seqBtn, s
             ? (s.bypassed

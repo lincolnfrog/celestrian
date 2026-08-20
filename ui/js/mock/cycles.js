@@ -7,8 +7,8 @@
  */
 
 import { lcm } from '../math_utils.js';
-import { state, nodeMap } from './state.js';
-import { mapActive, mapPeriod } from '../time_map.js';
+import { state, activeMapOf, rootActiveMap } from './state.js';
+import { mapPeriod } from '../time_map.js';
 import { activeSeqLen } from './sequence.js';
 
 /** LCM of committed clip durations (the engine's calculateTimelineLength). */
@@ -38,8 +38,9 @@ export function effectivePeriodOf(node) {
     // One-shots contribute nothing to the fold (Q5 exclusion — engine
     // parity: snapEffectivePeriod skips periodFromContext children).
     if (node.periodSource === 'context') return 0;
-    if (!node.loopBypassed && mapActive(nodeMap(node))) {
-        return Math.round(mapPeriod(nodeMap(node)));
+    {
+        const m = activeMapOf(node);  // audition-aware (§11.2)
+        if (m) return Math.round(mapPeriod(m));
     }
     // THE PERIOD LAW (docs/sequencer.md §2, engine parity
     // snapEffectivePeriod): an active SEQUENCE sets a stack's effective
@@ -61,6 +62,15 @@ export function effectiveCycle(Q) {
     // The ROOT's own sequence wins the whole frame (period law at the
     // island root — engine parity: snapEffectivePeriod(0) short-
     // circuits before consulting children).
+    // The root's STEP AUDITION (§11.2): its derived window is the
+    // heard cycle (map over sequence — the S9 composition law).
+    {
+        const m = rootActiveMap();
+        if (m) {
+            const p = Math.round(mapPeriod(m));
+            return Q > 0 ? lcm(Q, p) : p;
+        }
+    }
     const rootLen = activeSeqLen({
         sequence: state.rootSequence,
         sequenceBypassed: state.rootSequenceBypassed,

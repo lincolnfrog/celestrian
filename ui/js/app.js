@@ -128,6 +128,7 @@ function indexNodes(nodes, map = new Map()) {
 
 let lastNodesById = new Map(); // refreshed every poll, used by arm handlers
 let lastRootId = '';           // island root uuid (move-to-top target)
+let auditionOwner = null;      // the stack whose step is looping (Esc target)
 
 /* ---------- record & arm (Q7: arm targets emptiness) ---------- */
 function clipsUnder(node, out = []) {
@@ -867,6 +868,24 @@ function initApp() {
         onToggleSequenceBypass: id =>
             call('toggleSequence', [id],
                 'sequence toggled (⌘Z to undo)'),
+        // THE STEP AUDITION (docs/sequencer.md §11.2): loop one step
+        // (−1 = stop). A monitoring gesture — not undoable, so it goes
+        // straight to the bridge. Remember the looping owner so Esc
+        // can drop it without a VM lookup.
+        onAuditionStep: (id, step) => {
+            auditionOwner = step >= 0 ? id : null;
+            callNative('auditionStep', id, step);
+            setLogLine(step >= 0
+                ? 'looping step ' + (step + 1) + ' — R records into it · Esc stops'
+                : 'loop released — the song resumes whole');
+        },
+        onEscapeAudition: () => {
+            if (auditionOwner == null) return;
+            const id = auditionOwner;
+            auditionOwner = null;
+            callNative('auditionStep', id, -1);
+            setLogLine('loop released — the song resumes whole');
+        },
         onSetSlotEnabled: (id, slotUuid, enabled, label) =>
             call('setSlotEnabled', [id, slotUuid, enabled],
                 `${label || 'fx'} ${enabled ? 'on' : 'off'}`),

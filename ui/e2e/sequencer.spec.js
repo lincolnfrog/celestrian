@@ -169,6 +169,153 @@ test.describe('Sequencer (docs/sequencer.md)', () => {
         await expect(chip).toHaveText(/seq·\d/);
     });
 
+    test('STEP AUDITION (§11): ⟲ loops a step, R records into it, Esc releases', async ({ page }) => {
+        // The S17 chain on the ROOT: hover a step header → ⟲ (the song
+        // folds to the step; the ruler brackets it) → record a loose
+        // take (through the step: a step-sized part, S18) → Esc.
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("Empty Canvas")');
+        await page.evaluate(async () => {
+            const t = window.celestrian;
+            const rec = async (len, first) => {
+                const id = await t.callNative('createNode', 'clip', '');
+                await t.callNative('startRecordingInNode', id);
+                t.advanceBy(first ? len : len - 100);
+                await t.callNative('stopRecordingInNode', id);
+                if (!first) t.advanceBy(200);
+            };
+            await rec(44100, true);      // the 1Q definer
+            await rec(2 * 44100, false); // a 2Q take
+        });
+        const Q = 44100;
+        const st0 = await page.evaluate(() =>
+            window.celestrian.callNative('getGraphState'));
+        // intro 2Q | chorus 4Q | out 2Q
+        await page.evaluate(async ([rootId, Q]) => {
+            await window.celestrian.callNative('setSequence', rootId, {
+                steps: [{ name: 'intro', len: 2 * Q },
+                        { name: 'chorus', len: 4 * Q },
+                        { name: 'out', len: 2 * Q }],
+                gates: {},
+            });
+        }, [st0.id, Q]);
+        const chip = page.locator('#root-seq-btn');
+        await expect(chip).toHaveText(/seq·8Q/);
+        await chip.click();
+        const grid = page.locator('.lane-seq');
+        await expect(grid.locator('.seq-hcell')).toHaveCount(3);
+
+        // Hover the chorus header → ⟲ appears → click it.
+        const chorus = grid.locator('.seq-hcell').nth(1);
+        await chorus.hover();
+        const loop = chorus.locator('.seq-loop');
+        await expect(loop).toBeVisible();
+        await loop.click();
+        await expect(loop).toHaveText('⟲ looping');
+        await expect(chorus).toHaveClass(/looping/);
+        await expect(chip).toHaveText('⟲ step 2');
+        // The root has no lane: the ruler brackets the looping step.
+        const rw = page.locator('.ruler-root-window');
+        await expect(rw).toHaveCount(1);
+        await expect(rw).toHaveText(/2Q–6Q/);
+        // The engine-shaped state: the derived window over the root.
+        await expect.poll(async () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            return [st.windowActive, st.loopStart, st.loopEnd,
+                    st.sequence.auditionStep].join(',');
+        })).toBe(['true', 2 * Q, 6 * Q, 1].join(','));
+        // Not undoable: the undo button state is whatever it was.
+        // The readout still shows the SONG frame (8Q) — the frame is
+        // the song; the cursor loops inside the step.
+        await expect(page.locator('#position-readout')).toContainText('8Q');
+
+        // R records the selected track INTO the step: create a loose
+        // track, select it, press R, advance past one step, stop.
+        await page.evaluate(async () => {
+            const t = window.celestrian;
+            const id = await t.callNative('createNode', 'clip', '');
+            await t.callNative('startRecordingInNode', id);
+            t.advanceBy(6 * 44100);   // well past one 4Q step: the cap commits
+            t.advanceBy(512);
+        });
+        await expect.poll(async () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            const c = st.nodes[st.nodes.length - 1];
+            return c.isRecording ? 'rec' : String(c.duration);
+        }), { timeout: 5000 }).toBe(String(4 * Q));
+        // S19 AUTO-GATE: the new track's row is ON in the chorus only,
+        // and the grid shows it.
+        await expect.poll(async () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            const c = st.nodes[st.nodes.length - 1];
+            return (st.sequence.gates[c.id] || []).join(',');
+        })).toBe('false,true,false');
+        const newRow = grid.locator('.seq-grid-row').nth(3);  // 3rd child
+        await expect(newRow.locator('.seq-pad.on')).toHaveCount(1);
+        // ONE undo removes take + gates together.
+        await page.keyboard.press('Control+z');
+        await expect.poll(async () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            const c = st.nodes[st.nodes.length - 1];
+            return [c.duration, st.sequence.gates[c.id] ? 'gated' : 'free'].join(',');
+        })).toBe('0,free');
+        await page.keyboard.press('Control+Shift+z');
+        await expect.poll(async () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            const c = st.nodes[st.nodes.length - 1];
+            return [c.duration, (st.sequence.gates[c.id] || []).join('|')].join(',');
+        })).toBe(4 * Q + ',false|true|false');
+        // The loop stays on after the commit; Esc releases it.
+        await expect(chorus).toHaveClass(/looping/);
+        await page.keyboard.press('Escape');
+        await expect(page.locator('.ruler-root-window')).toHaveCount(0);
+        await expect(chip).toHaveText(/seq·8Q/);
+        await expect.poll(async () => page.evaluate(async () => {
+            const st = await window.celestrian.callNative('getGraphState');
+            return st.windowActive;
+        })).toBe(false);
+    });
+
+    test('FRAME-HEALTH BADGE (§11.6): the drift face + its one-click snap', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("Empty Canvas")');
+        await page.evaluate(async () => {
+            const t = window.celestrian;
+            const rec = async (len, first) => {
+                const id = await t.callNative('createNode', 'clip', '');
+                await t.callNative('startRecordingInNode', id);
+                t.advanceBy(first ? len : len - 100);
+                await t.callNative('stopRecordingInNode', id);
+                if (!first) t.advanceBy(200);
+            };
+            await rec(44100, true);      // 1Q
+            await rec(2 * 44100, false); // 2Q → inner cycle 2Q
+        });
+        const Q = 44100;
+        const st0 = await page.evaluate(() =>
+            window.celestrian.callNative('getGraphState'));
+        // A 3Q song over a 2Q cycle: drifting (3 mod 2 ≠ 0).
+        await page.evaluate(async ([rootId, Q]) => {
+            await window.celestrian.callNative('setSequence', rootId, {
+                steps: [{ name: 'a', len: 3 * Q }], gates: {},
+            });
+        }, [st0.id, Q]);
+        const chip = page.locator('#root-seq-btn');
+        await expect(chip).toHaveClass(/drift/);
+        await chip.click();
+        const grid = page.locator('.lane-seq');
+        const badge = grid.locator('.seq-health-drift');
+        await expect(badge).toHaveText(/↯ drifting · 3Q over 2Q/);
+        // Offers: 2Q and 4Q. Snap up: the last (only) step becomes 4Q.
+        await grid.locator('.seq-health-fix', { hasText: 'snap to 4Q' }).click();
+        await expect(grid.locator('.seq-hlen')).toHaveText('4Q');
+        await expect(grid.locator('.seq-health-drift')).toHaveCount(0);
+        await expect(chip).not.toHaveClass(/drift/);
+        await expect(chip).toHaveText(/seq·4Q/);
+    });
+
     test('rename a step inline; delete via right-click; last delete clears', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
         const group = page.locator('.lane[data-kind="group"]').first();

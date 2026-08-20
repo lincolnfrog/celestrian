@@ -7,7 +7,8 @@
 
 import { posMod } from '../math_utils.js';
 import { mapPeriod, mapActive, mapOffset } from '../time_map.js';
-import { state, nodeMap, someNode } from './state.js';
+import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
+         windowSuspendedOf } from './state.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
@@ -37,15 +38,29 @@ export function enrichNodes(nodes) {
         // active iff valid and not bypassed, published for clips and
         // stacks alike; `playhead` carries the window phase while
         // active: (masterPos − epoch) mod len.
-        const bypassed = !!node.loopBypassed;
-        const windowActive = !bypassed && mapActive(nodeMap(node));
+        // A stack's STEP AUDITION (§11.2) publishes its DERIVED window
+        // over the base fields (engine parity: StackNode::getMetadata).
+        const audition = node.type === 'stack' ? auditionMapOf(node) : null;
+        const auditionOn = !!audition;
+        const bypassed = auditionOn ? false : !!node.loopBypassed;
+        const windowActive = auditionOn ||
+            (!bypassed && mapActive(nodeMap(node)) && !windowSuspendedOf(node));
+        if (auditionOn) {
+            updatedNode.loopStart = audition.segs[0][0];
+            updatedNode.loopEnd = audition.segs[0][1];
+            delete updatedNode.segments;
+        }
         // Multi-segment map publish (engine parity: flat samples array,
         // present only with an override).
-        if (node.segments && node.segments.length >= 2) {
+        if (!auditionOn && node.segments && node.segments.length >= 2) {
             updatedNode.segments = node.segments.flat();
         }
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
+        if (node.type === 'stack') {
+            updatedNode.windowDomain = node.windowDomain === 'sequence' ? 'sequence' : 'intrinsic';
+            updatedNode.windowSuspended = windowSuspendedOf(node);
+        }
         // Effect chain state publishes on EVERY node (engine parity:
         // AudioNode::getMetadata always carries `effects` = {chain,
         // scope?}). ensureEffects INSTALLS the default chain on the
@@ -61,6 +76,7 @@ export function enrichNodes(nodes) {
                 steps: node.sequence.steps.map(s => ({ ...s })),
                 gates: Object.fromEntries(Object.entries(
                     node.sequence.gates || {}).map(([k, v]) => [k, [...v]])),
+                auditionStep: auditionMapOf(node) ? node.auditionStep : -1,
             };
         }
         // Mixer + period-source facts publish on EVERY node (engine
@@ -114,7 +130,7 @@ export function enrichNodes(nodes) {
             };
         }
         if (windowActive) {
-            const m = nodeMap(node);
+            const m = activeMapOf(node);
             const loopLen = mapPeriod(m);
             // Engine parity: a STACK's map phase is island-aligned
             // ((t − epoch) mod period); a CLIP's anchors at
@@ -190,8 +206,18 @@ export function getState() {
                 gates: Object.fromEntries(Object.entries(
                     state.rootSequence.gates || {})
                     .map(([k, v]) => [k, [...v]])),
+                auditionStep: rootActiveMap() ? state.rootAuditionStep : -1,
             },
         } : {}),
+        // The root's DERIVED audition window (§11.2) — engine parity:
+        // the root StackNode publishes windowActive/loopStart/loopEnd
+        // top-level like any node.
+        ...(() => {
+            const m = rootActiveMap();
+            return m ? { windowActive: true, loopBypassed: false,
+                         loopStart: m.segs[0][0], loopEnd: m.segs[0][1] }
+                     : { windowActive: false };
+        })(),
         nodes: enrichNodes(state.nodes),
         // Mirrors AudioEngine::makePerfState so calibration-aware UI
         // (e.g. the calibrate button label) behaves in mock mode.

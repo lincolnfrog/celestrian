@@ -172,11 +172,19 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void redo();
   bool canUndo() const { return !undo_.empty(); }
   bool canRedo() const { return !redo_.empty(); }
+  /** TEST/TOOLING: whether a performance is still waiting to settle
+   * into the log (see PendingTake). */
+  bool hasPendingTakes() const { return !pending_takes_.empty(); }
 
   /** TEST-ONLY: the currently published whole-graph snapshot (pins the
    * publish discipline in graph_snapshot_tests). */
   const celestrian::GraphSnapshot* currentGraphSnapshotForTest() const {
     return graph_snapshot_.load();
+  }
+  /** TEST-ONLY: a node by uuid (message thread), for asserting node
+   * facts that metadata summarizes. */
+  celestrian::AudioNode* findNodeByUuidForTest(const juce::String& uuid) {
+    return findNodeByUuid(root_node.get(), uuid);
   }
 
   // --- Save / Load (edits-as-events, Step 2). Message thread only.
@@ -224,6 +232,16 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /** The sequence's jam toggle (bypass), the loop-window twin:
    * bypassed = today's everything-sounds behavior, geometry kept. */
   void toggleSequence(const juce::String& uuid);
+
+  /**
+   * THE STEP AUDITION (docs/sequencer.md §11.2): loop step `step` of
+   * the stack's active sequence (−1 = stop). A monitoring gesture —
+   * not undoable, not persisted; the stack's time-map becomes the
+   * step's span (derived) for as long as it is on. Recording under it
+   * is Mode-2 "record into a step". Refused mid-take and for a step
+   * that does not exist in an active sequence.
+   */
+  void auditionStep(const juce::String& uuid, int step);
 
   /**
    * Returns a list of available hardware audio inputs.
@@ -498,6 +516,28 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::vector<celestrian::Edit> undo_;
   std::vector<celestrian::Edit> redo_;
   static constexpr size_t kUndoDepth = 128;
+
+  // --- TAKES ARE UNDOABLE (owner ruling 2026-08-20, docs/sequencer.md
+  // §11.5). Commit is an AUDIO-thread event, so a take cannot be logged
+  // where it happens; instead every arm registers a PENDING performance
+  // here (one entry per startRecordingInNode call — a Q7 group take is
+  // one performance, one undo step) and the message thread RECONCILES
+  // it into the log as soon as every member has settled (committed or
+  // cancelled): at the top of every getGraphState poll and before any
+  // log operation, so ⌘Z right after a take undoes THAT take.
+  struct PendingTake {
+    std::vector<juce::String> uuids;
+    int64_t q_before = 0, epoch_before = 0;  // island facts at arm
+    // Step-record auto-gate (docs/sequencer.md §11.5, S19): the
+    // auditioning DIRECT parent + its step, when the arm was aimed at
+    // a looping step; empty = plain take.
+    juce::String gate_stack;
+    int gate_step = -1;
+  };
+  std::vector<PendingTake> pending_takes_;
+  void reconcileTakes();
+  void applyAutoGate(const juce::String& stack_uuid, int step,
+                     const std::vector<celestrian::ClipNode*>& committed);
 
   /**
    * The AUDIBLE island cycle (E-C): the LCM of clip periods where a
