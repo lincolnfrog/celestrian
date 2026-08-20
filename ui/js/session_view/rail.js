@@ -8,6 +8,7 @@ import { setText, setTitle, fmtQ } from './sv_util.js';
 import { selection } from './selection.js';
 import { setGainDial, setPanDial } from './dials.js';
 import { patchFxRow } from './fx_row.js';
+import { patchSeqGrid } from './seq_grid.js';
 
 /* The recording sub-line prints one decimal below this, whole Qs above
  * ("12.3Q…" outgrew the slot). */
@@ -22,6 +23,7 @@ const REC_LEN_DECIMAL_MAX_Q = 9.95;
 export function patchRail(row, lane, vm) {
     if (lane.kind === 'add') return; // affordance row: nothing to patch
     if (lane.kind === 'fx') return patchFxRow(row, lane);
+    if (lane.kind === 'seq') return patchSeqGrid(row, lane, vm);
     row._lane = lane; // current lane snapshot for click handlers
     const railEl = row.querySelector('.lane-rail');
     if (railEl) railEl.classList.toggle('selected', selection.has(lane.id));
@@ -118,6 +120,22 @@ export function patchRail(row, lane, vm) {
     if (fxBtn) {
         setText(fxBtn, lane.fxCount > 0 ? 'fx·' + lane.fxCount : 'fx');
         fxBtn.classList.toggle('on', lane.fxCount > 0);
+    }
+
+    // The sequencer chip (docs/sequencer.md §9): 'seq' ghost when none,
+    // 'seq·NQ' when one exists; lit while active, struck while bypassed.
+    const seqBtn = row.querySelector('.seq-btn');
+    if (seqBtn) {
+        const s = lane.seq;
+        setText(seqBtn, s ? 'seq·' + fmtQ(s.totalQ) + 'Q' : 'seq');
+        seqBtn.classList.toggle('on', !!(s && !s.bypassed));
+        seqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
+        setTitle(seqBtn, s
+            ? (s.bypassed
+                ? 'Sequencer (bypassed — the jam): click to open the grid'
+                : 'Sequencer: ' + s.stepCount + ' step' +
+                  (s.stepCount > 1 ? 's' : '') + ' · click to open the grid')
+            : 'Sequencer: gate this group’s tracks over steps (the song grid)');
     }
 
     // Period-source toggle (Q5): ↺ = loop, 1× = one-shot.

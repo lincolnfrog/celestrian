@@ -547,8 +547,10 @@ with kernel.md:
   dynamic chain; bridge surface designed to survive.
 - [ ] **Stereo rack** — lands with Mono→Stereo (see the Tier 3 output
   stage: one bus abstraction first).
-- [ ] **Effect tails on mute** — muted clip freezes echo/reverb rather
-  than ringing out; revisit if it reads as a bug.
+- [x] **Effect tails on mute** — ✅ RESOLVED 2026-08-20 by the S7
+  smoothness law (docs/sequencer.md §5/§9): mute is now a ramped
+  PRE-FX gate (~10 ms), the rack keeps running, tails ring out.
+  Pinned in sequencer_tests.cc ("MUTE rides the same gate").
 
 ### Clip manipulation (Segment 5)
 - [ ] Move clips in 2D space; resize durations via UI handles.
@@ -575,6 +577,73 @@ with kernel.md:
   "stop boundary is picked by the AUDIO thread" (audit 2026-08-12
   found the tracker line stale, not the test).
 
+## Tier 4b: The Sequencer (docs/sequencer.md — direction ratified 2026-08-19)
+
+The fractal per-stack Sequence (steps + gates); rulings S1–S14 recorded
+in docs/sequencer.md §0/§9. Build order as ruled:
+
+- [x] **1. Core** — ✅ done 2026-08-20: `src/sequence.h` (steps ≤ 64,
+  uint64 gate masks, the PURE gate envelope — schedule-derived, so
+  render output never depends on block splits), storage on StackNode
+  (atomic pointer, `map_override_` discipline, bypass flag separate),
+  gate playback per S7 (pre-fx: the parent hands each child exact
+  (g0, g1) envelope endpoints — forEachSeamRun splits blocks at
+  envelope corners; mute/solo moved onto the SAME ramped pre-fx gate,
+  so tails RING through a closed gate — the "effect tails on mute"
+  item below is resolved), period law (StackNode::getEffectivePeriod +
+  snapEffectivePeriod twins; sequence context_loop/context_cycle for
+  record-over-the-song), `Edit::Sequence`/`Edit::SequenceBypass`
+  (copy-swap-retire, raw-state inverses), bridge in all 3 places
+  (`setSequence`/`toggleSequence`), mock twin (mock/sequence.js +
+  cycles/publish/undo/state), session save/load (additive `sequence`
+  block, lenQ as QTime), track templates carry sequences (S14 —
+  lenQ counts, gates re-keyed by child index like inputs), VM (period
+  law in frame math, `seqDims` lane projection, `seq:` grid rows), UI
+  (rail `seq` chip on group lanes + the pad grid per the ruled
+  grammar: pad toggle/paint, row toggle, step rename/resize/delete/
+  append, bypass footer, playing-column highlight). Pinned by
+  tests/sequencer_tests.cc (envelope math, period law + snapshot twin,
+  concatenation, fractal gates, I1 entrance phase, S7 ramps +
+  block-split purity + ringing tails incl. mute, heard frame, engine
+  verbs/undo/mid-take gate, session + template round trips),
+  ui/js/tests/sequence.test.mjs (mock twin, 7 tests), e2e
+  sequencer.spec.js (grid lifecycle with real input, period law in
+  the readout, rename/delete). Suites after: C++ all green (solo/
+  output-stage/midi mute pins updated to settled-fade reads), JS units
+  29 files green, Playwright 56/56. The ROOT sequencer ships too
+  (same day, after the owner's loose-clips field report): a
+  transport-bar `seq` chip beside the odometer opens the session
+  root's grid as the first row over the top-level tracks — no
+  grouping required (`#root-seq-btn`, vm.rootSeq/rootId; pinned by
+  the ROOT e2e + the root-grid-row unit test).
+- [ ] **2. Step recording + section audition** — the S9 composition
+  law (sequence → time-map, fixed order): a step window over the song
+  timeline; record-into-a-step = through-map recording, commit
+  auto-gates. UX gesture spec pending (S17).
+- [ ] **3. Nested sequences in UI** (engine gets them free via
+  fractality).
+- [ ] **4. Cue steps** — per-step epoch re-base = the Q6 serial
+  primitive (`cue` reserved in the step format now, S11).
+- [ ] **5. Successor graphs + the seed** — branch-with-chance /
+  radio; root-only stochastic, seed stored as data (S12).
+- [ ] **Frame-health badge** (S10) — ONE warning component for
+  parent-LCM blowups (coprime sibling periods — also closes open
+  question 5 below) and the drifting-pass badge (seqLen not a
+  multiple of the inner cycle).
+- [ ] **Per-step fade control** (S13 future work, owner-requested) —
+  `fadeInQ`/`fadeOutQ` on the step format ("fade this part out over a
+  few seconds"); the anti-pop micro-fade ships in Core.
+- [ ] **S16** — window-domain tagging (a window authored over a
+  sequence timeline auto-bypasses when the sequence is bypassed).
+- [x] **S15** — ✅ RULED 2026-08-20: the pad grid is the ONE control at
+  every depth (root included — the root stack's rail chip); lanes are
+  display (period law), not a second editor. Mockups:
+  docs/mockups/sequencer_ux.html (round 1) / sequencer_ux2.html
+  (round 2 — grid chrome, S17 flow, fractal drum demo).
+- [ ] **S17** — Mode-2 record gesture spec: proposed in round 2 (step
+  header ⟲ = loop the step → arm → record → commit auto-gates; Esc
+  exits). Awaiting owner sign-off with round 2.
+
 ## Tier 5: Advanced Engine & Vision (unchanged)
 
 - [ ] **Warp (Segment 8)** — WSOLA time-stretch, BPM discovery,
@@ -589,7 +658,9 @@ with kernel.md:
   pressure (currently <1% DSP load).
 - [ ] **Connections between boxes (Segment 9)** — serial composition =
   concatenation time-map (Q6 provisional ruling); branch-with-chance;
-  transitions.
+  transitions. **Largely subsumed by the Sequencer (Tier 4b)**: serial
+  = cue steps; branch-with-chance = weighted successors; transitions =
+  step fades.
 - [ ] **ZUI navigation** — dive/exit, transitions.
 - [ ] **Islands & multi-stack** — island as first-class object
   (Q, epoch, exchange rate); inherit-vs-new-song; one active island for

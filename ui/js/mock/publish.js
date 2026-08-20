@@ -52,6 +52,17 @@ export function enrichNodes(nodes) {
         // node — slot uuids must be STABLE across polls (a fresh chain
         // per publish would orphan every slot-keyed edit in flight).
         updatedNode.effects = ensureEffects(node);
+        // The SEQUENCE (docs/sequencer.md), engine parity with
+        // StackNode::getMetadata: published RAW (bypassed geometry
+        // survives — I9; the VM derives active).
+        if (node.type === 'stack' && node.sequence) {
+            updatedNode.sequence = {
+                bypassed: !!node.sequenceBypassed,
+                steps: node.sequence.steps.map(s => ({ ...s })),
+                gates: Object.fromEntries(Object.entries(
+                    node.sequence.gates || {}).map(([k, v]) => [k, [...v]])),
+            };
+        }
         // Mixer + period-source facts publish on EVERY node (engine
         // parity: metadata always carries them; hand-written scenario
         // fixtures predate the fields, so normalize at the boundary).
@@ -170,6 +181,17 @@ export function getState() {
         quantum: state.islandQ,
         canUndo: canUndo(),
         canRedo: canRedo(),
+        // The ROOT's sequence (docs/sequencer.md) — engine parity: the
+        // root StackNode's metadata carries it top-level.
+        ...(state.rootSequence ? {
+            sequence: {
+                bypassed: !!state.rootSequenceBypassed,
+                steps: state.rootSequence.steps.map(s => ({ ...s })),
+                gates: Object.fromEntries(Object.entries(
+                    state.rootSequence.gates || {})
+                    .map(([k, v]) => [k, [...v]])),
+            },
+        } : {}),
         nodes: enrichNodes(state.nodes),
         // Mirrors AudioEngine::makePerfState so calibration-aware UI
         // (e.g. the calibrate button label) behaves in mock mode.

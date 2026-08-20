@@ -166,6 +166,33 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     const auto& stack = static_cast<const StackNode&>(node);
     o->setProperty("x", node.x_pos.load());
     o->setProperty("y", node.y_pos.load());
+    // The SEQUENCE (docs/sequencer.md) — additive block. Step lengths
+    // are musical facts (QTime on the island exchange rate, D-T3);
+    // gates key the children's uuids, which the session preserves.
+    // Stripped with performances: a sequence references committed
+    // takes' children and lengths in Q — meaningless pre-Q.
+    if (!opts.strip_performances && q > 0) {
+      if (const Sequence* s = stack.sequencePtr()) {
+        auto* so = new juce::DynamicObject();
+        so->setProperty("bypassed", stack.isSequenceBypassed());
+        juce::Array<juce::var> steps;
+        for (const auto& st : s->steps) {
+          auto* stepo = new juce::DynamicObject();
+          stepo->setProperty("name", st.name);
+          stepo->setProperty("lenQ", qvar(timing::fromSamples(st.len, q)));
+          steps.add(juce::var(stepo));
+        }
+        so->setProperty("steps", steps);
+        auto* gateso = new juce::DynamicObject();
+        for (const auto& row : s->gates) {
+          juce::Array<juce::var> bits;
+          for (int i = 0; i < s->numSteps(); ++i) bits.add(s->on(row.mask, i));
+          gateso->setProperty(row.uuid, bits);
+        }
+        so->setProperty("gates", juce::var(gateso));
+        o->setProperty("sequence", juce::var(so));
+      }
+    }
     juce::Array<juce::var> kids;
     for (const auto& child : stack.ownedChildren())
       kids.add(serializeNode(*child, q, epoch, audioDir, opts));
@@ -197,6 +224,38 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     // addChild transiently established on this detached subtree — the
     // engine forces the island values on the real root after attaching.
     stack->setQuantum(0, 0);
+    // The SEQUENCE (docs/sequencer.md): rebuild from the additive
+    // block. Pre-graph node — no old pointer, no retire needed.
+    if (auto* so = o->getProperty("sequence").getDynamicObject()) {
+      auto seq = std::make_unique<Sequence>();
+      if (auto* steps = so->getProperty("steps").getArray()) {
+        for (const auto& sv : *steps) {
+          if ((int)seq->steps.size() >= Sequence::kMaxSteps) break;
+          Sequence::Step st;
+          st.len = timing::toSamples(qread(sv.getProperty("lenQ", {})), q);
+          st.name = sv.getProperty("name", {}).toString();
+          if (st.len > 0) seq->steps.push_back(std::move(st));
+        }
+      }
+      if (auto* g = so->getProperty("gates").getDynamicObject()) {
+        for (const auto& p : g->getProperties()) {
+          Sequence::GateRow row;
+          row.uuid = p.name.toString();
+          row.mask = 0;
+          if (auto* bits = p.value.getArray()) {
+            for (int i = 0; i < bits->size() && i < Sequence::kMaxSteps; ++i) {
+              if ((bool)(*bits)[i]) row.mask |= (1ull << i);
+            }
+          }
+          seq->gates.push_back(std::move(row));
+        }
+      }
+      if (!seq->steps.empty()) {
+        seq->finalize();
+        delete stack->exchangeSequence(seq.release());
+      }
+      stack->setSequenceBypassed((bool)so->getProperty("bypassed"));
+    }
     node = std::move(stack);
   } else {
     auto clip = std::make_unique<ClipNode>(name, sr);

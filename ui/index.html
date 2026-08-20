@@ -77,7 +77,15 @@
         <div id="session">
             <div id="grid-area">
                 <div id="ruler-row">
-                    <div class="rail-spacer"></div>
+                    <div class="rail-spacer">
+                        <!-- THE SEQUENCER (docs/sequencer.md): the
+                             SESSION's own song — this is the root
+                             stack's "rail", so its chip lives here,
+                             above the track rails. Groups carry their
+                             own seq chips on their rails (fractal). -->
+                        <button id="root-seq-btn" class="mono"
+                            title="Sequencer: arrange your tracks into a song (steps + gates)">seq</button>
+                    </div>
                     <div id="ruler"></div>
                 </div>
                 <div id="lanes"></div>

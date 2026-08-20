@@ -122,6 +122,15 @@ struct ProcessContext {
   const MidiHistory* midi_history = nullptr;
   int midi_latency = 0;
 
+  // --- Sequencer gate (docs/sequencer.md, S7 smoothness law) ---
+  // The parent stack's per-child dry-gain ramp for this block: linear
+  // endpoints, exact because the parent splits blocks at envelope
+  // corners (Sequence::cornerDistance). 1,1 when no sequence gates the
+  // node. Applied by the child PRE-FX (composed with its own mute/solo
+  // gate in gateEndpoints) so effect tails ring through a closed gate.
+  float gate_g0 = 1.0f;
+  float gate_g1 = 1.0f;
+
   // The innermost enclosing ACTIVE map (empty when none): set by a
   // mapping stack in childContext for its whole subtree, alongside
   // map_heard_epoch — the RECEIVED frame's cycle top at that stack,
@@ -550,6 +559,50 @@ class AudioNode {
     return getIntrinsicDuration();
   }
 
+  /** The node's ACTIVE sequence length (docs/sequencer.md §2, the
+   * period law) — 0 everywhere except a StackNode with an active
+   * sequence. Lives on the base so the snapshot twins
+   * (graph_snapshot.h) can ask without a cast. Audio-thread safe. */
+  virtual int64_t activeSequenceLen() const { return 0; }
+
+  // --- The PRE-FX audibility gate (docs/sequencer.md S7, ruled
+  // 2026-08-19: "all transitions smooth as much as possible") ---
+  //
+  // Mute, solo-loss, and sequence gates all resolve to ONE dry-signal
+  // gain applied BEFORE the node's fx chain: edges fade over ~10 ms
+  // (never a hard cut — speaker pops), and the chain keeps running, so
+  // echo/reverb tails RING OUT through a closed gate. This supersedes
+  // the freeze-tails mute (mute as output-stage gain 0 + skipped rack)
+  // — one mechanism for every audibility verb, resolving the standing
+  // "effect tails on mute" question (tasks.md).
+  //
+  // The mute/solo half is a smoothed per-node ramp (user gestures are
+  // not schedulable); the sequence half arrives as exact (g0, g1)
+  // endpoints in the context (schedule-derived — see sequence.h). The
+  // ramp state seeds AT its first observed target, so a freshly built
+  // graph starts silent-or-audible with no phantom fade (deterministic
+  // for tests and loads).
+
+  /** Compose this block's dry-gain endpoints: the smoothed mute/solo
+   * ramp toward `audible`, times the context's sequence envelope.
+   * Advances the ramp state (render-phase DSP scratch). */
+  void gateEndpoints(const ProcessContext& context, bool audible, float& g0,
+                     float& g1) const {
+    const float target = audible ? 1.0f : 0.0f;
+    float s = user_gate_;
+    if (s < 0.0f) s = target;  // unseeded: snap, no phantom fade
+    float e = target;
+    const double fade = context.sample_rate * 0.010;
+    if (fade > 0.0 && s != target) {
+      const float step = (float)((double)context.num_samples / fade);
+      const float d = target - s;
+      e = (d > step) ? s + step : ((d < -step) ? s - step : target);
+    }
+    user_gate_ = e;
+    g0 = s * context.gate_g0;
+    g1 = e * context.gate_g1;
+  }
+
   // Quantum Logic
   virtual int64_t getIntrinsicDuration() const = 0;
   virtual int64_t getEffectiveQuantum() const {
@@ -579,6 +632,10 @@ class AudioNode {
   // for the UI, not musical state — the sanctioned exception to render
   // purity, hence `mutable`.
   mutable std::atomic<double> playhead_pos{0.0};  // 0.0 to 1.0 (normalized)
+  // The mute/solo gate ramp state (see gateEndpoints): −1 = unseeded.
+  // Render-phase DSP scratch (§2.3 sanctioned mutable) — the audio
+  // thread alone advances it.
+  mutable float user_gate_{-1.0f};
   std::atomic<int64_t> duration_samples{0};       // Length of the loop
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
   std::atomic<int64_t> loop_start_samples{0};

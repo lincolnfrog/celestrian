@@ -2,6 +2,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cmath>
 #include <memory>
 
 #include "clip_node.h"
@@ -33,10 +34,18 @@ namespace celestrian::track_templates {
 
 /** Serialize `node`'s structure + names + inputs to a var tree:
  *  { type: 'clip'|'stack', name, inputChannel?, inputChannelR?,
- *    children?: [...] }. Performance facts (audio, durations, origins,
- *  windows) are never captured — a template is pre-Q by construction,
- *  like its whole-session cousin. */
-inline juce::var capture(const AudioNode& node) {
+ *    children?: [...], sequence?: {...} }. Performance facts (audio,
+ *  durations, origins, windows) are never captured — a template is
+ *  pre-Q by construction, like its whole-session cousin.
+ *
+ *  SEQUENCES are the ruled exception (S14, docs/sequencer.md §9): a
+ *  song's shape is a saved decision, not saved music. Step lengths are
+ *  stored as Q COUNTS (`lenQ`, double — device- and tempo-portable)
+ *  and gates are keyed by CHILD INDEX (build stamps fresh uuids, so
+ *  uuid keys would dangle — the input-rekey precedent). Pass the
+ *  capturing island's `q_samples`; with no Q established the sequence
+ *  is skipped (its lengths would be meaningless). */
+inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
   auto* o = new juce::DynamicObject();
   o->setProperty("name", node.getName());
   if (auto* clip = dynamic_cast<const ClipNode*>(&node)) {
@@ -49,9 +58,41 @@ inline juce::var capture(const AudioNode& node) {
     // getChild is non-const; capture walks a const tree — go through
     // the const child list accessor instead.
     for (int i = 0; i < stack->getNumChildren(); ++i) {
-      kids.add(capture(*const_cast<StackNode*>(stack)->getChild(i)));
+      kids.add(capture(*const_cast<StackNode*>(stack)->getChild(i), q_samples));
     }
     o->setProperty("children", kids);
+    if (const Sequence* s = stack->sequencePtr(); s != nullptr && q_samples > 0) {
+      auto* so = new juce::DynamicObject();
+      so->setProperty("bypassed", stack->isSequenceBypassed());
+      juce::Array<juce::var> steps;
+      for (const auto& st : s->steps) {
+        auto* stepo = new juce::DynamicObject();
+        stepo->setProperty("name", st.name);
+        stepo->setProperty("lenQ", (double)st.len / (double)q_samples);
+        steps.add(juce::var(stepo));
+      }
+      so->setProperty("steps", steps);
+      // Gates by child INDEX: [{child: i, bits: [0/1...]}].
+      juce::Array<juce::var> gates;
+      auto* mutableStack = const_cast<StackNode*>(stack);
+      for (int i = 0; i < stack->getNumChildren(); ++i) {
+        const juce::String uuid = mutableStack->getChild(i)->getUuid();
+        bool has_row = false;
+        for (const auto& row : s->gates) {
+          if (row.uuid == uuid) has_row = true;
+        }
+        if (!has_row) continue;  // absent = inherit ON (stays absent)
+        const uint64_t m = s->maskFor(uuid);
+        auto* g = new juce::DynamicObject();
+        g->setProperty("child", i);
+        juce::Array<juce::var> bits;
+        for (int k = 0; k < s->numSteps(); ++k) bits.add(s->on(m, k));
+        g->setProperty("bits", bits);
+        gates.add(juce::var(g));
+      }
+      so->setProperty("gates", gates);
+      o->setProperty("sequence", juce::var(so));
+    }
   }
   return juce::var(o);
 }
@@ -61,7 +102,8 @@ inline juce::var capture(const AudioNode& node) {
  *  nullptr on an unrecognized shape. `sample_rate` seeds the clip
  *  buffers exactly like AudioEngine::createNode (P0-5). */
 inline std::unique_ptr<AudioNode> build(const juce::var& v,
-                                        double sample_rate) {
+                                        double sample_rate,
+                                        int64_t q_samples = 0) {
   const auto type = v.getProperty("type", juce::var()).toString();
   const auto name = v.getProperty("name", juce::var()).toString();
   if (type == "clip") {
@@ -76,9 +118,54 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
         name.isEmpty() ? juce::String("New Stack") : name);
     if (auto* kids = v.getProperty("children", juce::var()).getArray()) {
       for (const auto& k : *kids) {
-        if (auto child = build(k, sample_rate)) {
+        if (auto child = build(k, sample_rate, q_samples)) {
           stack->addChild(std::move(child));
         }
+      }
+    }
+    // SEQUENCE (S14): materialize lenQ against the DESTINATION island's
+    // Q, re-keying index gates onto the freshly stamped child uuids.
+    // With no Q established yet the sequence is skipped (logged) — its
+    // lengths have no exchange rate to land on.
+    if (auto* so = v.getProperty("sequence", juce::var()).getDynamicObject()) {
+      if (q_samples > 0) {
+        auto seq = std::make_unique<Sequence>();
+        if (auto* steps = so->getProperty("steps").getArray()) {
+          for (const auto& sv : *steps) {
+            if ((int)seq->steps.size() >= Sequence::kMaxSteps) break;
+            Sequence::Step st;
+            st.len = (int64_t)std::llround(
+                (double)sv.getProperty("lenQ", 0.0) * (double)q_samples);
+            st.name = sv.getProperty("name", juce::var()).toString();
+            if (st.len > 0) seq->steps.push_back(std::move(st));
+          }
+        }
+        if (auto* gates = so->getProperty("gates").getArray()) {
+          for (const auto& gv : *gates) {
+            const int child = (int)gv.getProperty("child", -1);
+            if (child < 0 || child >= stack->getNumChildren()) continue;
+            Sequence::GateRow row;
+            row.uuid = stack->getChild(child)->getUuid();
+            row.mask = 0;
+            if (auto* bits = gv.getProperty("bits", juce::var()).getArray()) {
+              for (int i = 0; i < bits->size() && i < Sequence::kMaxSteps;
+                   ++i) {
+                if ((bool)(*bits)[i]) row.mask |= (1ull << i);
+              }
+            }
+            seq->gates.push_back(std::move(row));
+          }
+        }
+        if (!seq->steps.empty()) {
+          seq->finalize();
+          delete stack->exchangeSequence(seq.release());
+          stack->setSequenceBypassed(
+              (bool)so->getProperty("bypassed"));
+        }
+      } else {
+        juce::Logger::writeToLog(
+            "track_templates::build — template carries a sequence but the "
+            "island has no Q yet; sequence skipped");
       }
     }
     return stack;

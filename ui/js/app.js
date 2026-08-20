@@ -30,6 +30,7 @@ const livePeaks = new Map();        // clip id → peak array
 const peakDurations = new Map();    // clip id → duration the peaks were fetched at
 const fxOpen = new Set();           // lane ids with the effects panel expanded (view state)
 const windowEdit = new Set();       // lanes expanded into the window editor
+const seqOpen = new Set();          // stacks with the sequencer grid expanded (view state)
 
 /* ---------- small helpers ---------- */
 
@@ -514,7 +515,7 @@ async function startPolling() {
                     }
                 }
                 const vm = deriveViewModel(state,
-                    { fxOpen, windowEdit, pinFrameQ: mapDragPinQ(),
+                    { fxOpen, windowEdit, seqOpen, pinFrameQ: mapDragPinQ(),
                       pinFoldQ: mapDragPinFoldQ() });
                 patchSessionView(vm, {
                     livePeaks,
@@ -852,6 +853,20 @@ function initApp() {
                 : 'Looping again (⌘Z to undo)');
         },
         onToggleFx,
+        // THE SEQUENCER (docs/sequencer.md §9): grid-open is pure view
+        // state (the fxOpen pattern); the sequence itself is a musical
+        // fact — one setSequence per finished gesture, undoable.
+        onToggleSeqGrid: id => {
+            if (seqOpen.has(id)) seqOpen.delete(id);
+            else seqOpen.add(id);
+        },
+        onSetSequence: (id, payload) =>
+            call('setSequence', [id, payload],
+                payload ? 'sequence updated (⌘Z to undo)'
+                        : 'sequence cleared (⌘Z to undo)'),
+        onToggleSequenceBypass: id =>
+            call('toggleSequence', [id],
+                'sequence toggled (⌘Z to undo)'),
         onSetSlotEnabled: (id, slotUuid, enabled, label) =>
             call('setSlotEnabled', [id, slotUuid, enabled],
                 `${label || 'fx'} ${enabled ? 'on' : 'off'}`),
@@ -871,6 +886,18 @@ function initApp() {
         onRecordKey,
     });
     wireStatusStrip();
+    // The ROOT sequencer chip (docs/sequencer.md): the session's song.
+    // The root has no rail, so its grid toggles from the transport.
+    {
+        const rsb = document.getElementById('root-seq-btn');
+        if (rsb) {
+            rsb.addEventListener('click', () => {
+                if (!lastRootId) return;
+                if (seqOpen.has(lastRootId)) seqOpen.delete(lastRootId);
+                else seqOpen.add(lastRootId);
+            });
+        }
+    }
     // Master fader → the island root's output-stage gain (stacks apply
     // gain·pan at their output, so the root's fader IS the master).
     initMasterFader(v => { if (lastRootId) callNative('setNodeGain', lastRootId, v); });

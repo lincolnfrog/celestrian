@@ -583,6 +583,22 @@ MainComponent::MainComponent()
                                                  args[0].toString());
                                            }))
               .withNativeFunction(
+                  "setSequence",
+                  voidCall("setSequence", 2,
+                           [this](const auto& args) {
+                             // args[1] = {steps: [{name, len}], gates:
+                             // {uuid: [0/1...]}} (docs/sequencer.md);
+                             // void/empty clears.
+                             audio_engine.setSequence(args[0].toString(),
+                                                      args[1]);
+                           }))
+              .withNativeFunction("toggleSequence",
+                                  voidCall("toggleSequence", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.toggleSequence(
+                                                 args[0].toString());
+                                           }))
+              .withNativeFunction(
                   "startLatencyCalibration",
                   voidCall("startLatencyCalibration", 0,
                            [this](const auto&) {

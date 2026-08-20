@@ -115,6 +115,12 @@ inline int64_t snapEffectivePeriod(const GraphSnapshot& s, int idx) {
   if (const timing::TimeMap map = e.node->activeTimeMap(); map.active()) {
     return map.period();
   }
+  // THE PERIOD LAW (docs/sequencer.md §2): an active sequence sets the
+  // stack's effective period to the sequence length (the node-side
+  // twin lives in StackNode::getEffectivePeriod — keep in lockstep).
+  if (const int64_t seq_len = e.node->activeSequenceLen(); seq_len > 0) {
+    return seq_len;
+  }
   if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
   int64_t composite = 0;
   for (int k = 0; k < e.childCount; ++k) {

@@ -6,6 +6,7 @@
 
 #include "audio_node.h"
 #include "midi_sequence.h"
+#include "sequence.h"
 
 namespace celestrian {
 
@@ -76,6 +77,13 @@ struct Edit {
     RemoveSlot,    // detach chain slot s1 (VST3 only for now — the UI
                    // offers removal on plugin chips alone). Inverse:
                    // AddSlot owning the slot at its old index.
+    Sequence,      // install/replace/clear a stack's sequence
+                   // (docs/sequencer.md): `seq` is the full new value
+                   // (null = clear). Applied by copy-swap-retire (the
+                   // Segments discipline); the inverse owns a copy of
+                   // the RAW old sequence (bypassed geometry survives
+                   // undo, like Segments).
+    SequenceBypass,  // b1 = bypassed (the jam toggle — LoopBypass twin)
   };
   // Effect enable/param edits are deliberately NOT undoable in this pass
   // (non-destructive knobs; slider drags would flood the log without
@@ -120,6 +128,10 @@ struct Edit {
   // AddSlot (and RemoveSlot's inverse) own the chain slot to insert.
   // shared_ptr because chains share slot objects by design (D4).
   std::shared_ptr<dsp::FxSlot> slot;
+
+  // Sequence edits (docs/sequencer.md): the full new value (forward)
+  // or the captured old one (inverse). Null = no sequence.
+  std::unique_ptr<celestrian::Sequence> seq;
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

@@ -264,10 +264,19 @@ class MidiRecordTests : public juce::UnitTest {
       expect(!synth->note_held, "stop released the held note");
       expectWithinAbsoluteError(left[0], 0.0f, 1e-9f, "silent after stop");
 
-      // Muted: the instrument keeps being fed (mute is gain 0 at the
-      // output stage) but nothing sums.
+      // Muted: the instrument keeps being fed (an unmute resumes
+      // mid-phrase) but nothing sums. The mute edge FADES now (~10 ms,
+      // S7 — sequencer.md §9), so settle one fade-length block first.
       ctx.is_playing = true;
       clip.is_muted.store(true);
+      {
+        std::vector<float> settleL(441, 0.0f), settleR(441, 0.0f);
+        float* const settleOuts[] = {settleL.data(), settleR.data()};
+        ProcessContext settle = ctx;
+        settle.master_pos = 3072 - 441;
+        settle.num_samples = 441;
+        clip.process(nullptr, settleOuts, 0, 2, settle);
+      }
       ctx.master_pos = 3072;  // fourth pass top: note 60 at 10 again
       std::fill(left.begin(), left.end(), 0.0f);
       clip.process(nullptr, outs, 0, 2, ctx);

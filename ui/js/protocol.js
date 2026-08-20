@@ -85,6 +85,12 @@ export const BRIDGE_METHODS = [
     // Loop window activation is data, not view state (docs/time_maps.md):
     // toggles a stack's window between active and bypassed.
     { name: 'toggleLoopWindow', params: ['uuid'] },
+    // The SEQUENCER (docs/sequencer.md): install/replace/clear a stack's
+    // sequence — { steps: [{name, len}], gates: {uuid: [0/1 per step]} },
+    // lengths in samples; null/void clears. Undoable; refused mid-take.
+    { name: 'setSequence', params: ['uuid', 'sequence'] },
+    // The sequence's jam toggle (bypass) — the loop-window twin.
+    { name: 'toggleSequence', params: ['uuid'] },
 
     // Hardware
     // getInputList returns only ACTIVE input channels, in callback order —

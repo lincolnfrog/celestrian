@@ -310,6 +310,99 @@ function fxRow(node, depth) {
     };
 }
 
+/**
+ * The SEQUENCER GRID row for a stack whose sequence panel is expanded
+ * (view state: opts.seqOpen — the fx-row pattern; docs/sequencer.md
+ * §9 S15: the pad grid is the ONE control, at every depth). Rows =
+ * the stack's direct children, columns = steps, pads = gates.
+ */
+function buildSeqRow({ holder, ownerId, children, depth, quantum,
+                       qEstablished, innerCycleQ, editable }) {
+    const s = seqOf(holder);
+    const steps = s ? s.steps.map(st => ({
+        name: st.name || '',
+        lenQ: (st.len > 0 ? Math.round(st.len) : 0) / quantum,
+    })) : [];
+    return {
+        kind: 'seq',
+        id: 'seq:' + ownerId,
+        ownerId,
+        name: '',
+        depth,
+        bypassed: !!(s && s.bypassed),
+        steps,
+        totalQ: steps.reduce((t, x) => t + x.lenQ, 0),
+        // The append/creation default: one inner cycle (S2 —
+        // cycle-multiple snapping is the default concept).
+        innerCycleQ: Math.max(1, Math.round(innerCycleQ)),
+        qEstablished,
+        // The mid-take gate, surfaced so the grid disables itself while
+        // a take records in this subtree (the engine refuses anyway).
+        editable,
+        children: (children || []).map(c => ({
+            id: c.id,
+            name: c.name || '',
+            kind: c.type === 'stack' ? 'group' : 'clip',
+            // Absent uuid = inherit ON (engine parity).
+            gates: steps.map((_, i) => {
+                const row = s && s.gates && s.gates[c.id];
+                return row ? !!row[i] : true;
+            }),
+        })),
+    };
+}
+
+function seqRow(node, depth, quantum, qEstablished) {
+    return buildSeqRow({
+        holder: node,
+        ownerId: node.id,
+        children: node.nodes,
+        depth,
+        quantum,
+        qEstablished,
+        innerCycleQ: intrinsicPeriodQ(node, quantum),
+        editable: !subtreeRec(node),
+    });
+}
+
+/**
+ * Post-pass: project a stack's ACTIVE sequence onto the lanes of its
+ * children (docs/sequencer.md §9 — the lanes are the DISPLAY, the grid
+ * is the editor): each direct child's gated-OFF spans become dim
+ * overlays (`seqDims`), applied to the child's whole subtree span
+ * (gates are fractal). Lanes tile the spans every seq period.
+ */
+function attachSeqDims(lanes, from, to, children, seq, quantum) {
+    const stepsQ = seq.steps.map(
+        st => (st.len > 0 ? Math.round(st.len) : 0) / quantum);
+    const totalQ = stepsQ.reduce((a, b) => a + b, 0);
+    if (!(totalQ > 0)) return;
+    const childIds = new Set((children || []).map(c => c.id));
+    let offSegs = null;  // the CURRENT direct child's off spans
+    for (let i = from; i < to; i++) {
+        const lane = lanes[i];
+        if (childIds.has(lane.id)) {
+            const bits = seq.gates ? seq.gates[lane.id] : null;
+            offSegs = [];
+            let pos = 0, runStart = null;
+            stepsQ.forEach((lenQ, k) => {
+                const on = bits ? !!bits[k] : true;
+                if (!on && runStart === null) runStart = pos;
+                if (on && runStart !== null) {
+                    offSegs.push([runStart, pos]);
+                    runStart = null;
+                }
+                pos += lenQ;
+            });
+            if (runStart !== null) offSegs.push([runStart, totalQ]);
+            if (!offSegs.length) offSegs = null;
+        }
+        if (offSegs && (lane.kind === 'clip' || lane.kind === 'group')) {
+            lane.seqDims = { periodQ: totalQ, offSegsQ: offSegs };
+        }
+    }
+}
+
 /** A live take anywhere below (drives the group lane's map cue). */
 function subtreeRec(n) {
     return (n.nodes || []).some(c => c.isRecording || subtreeRec(c));
@@ -477,24 +570,51 @@ function computeCycleSamples(nodes, quantum) {
     nodes.forEach(n => {
         if (n.isRecording) return;
         if (n.periodSource === 'context') return;  // Q5: one-shots excluded
-        periods.push(n.type === 'stack'
-            ? calculateStackLCM(n.nodes, quantum)  // commensurate inside
-            : clipCycleContribution(n, quantum));
+        // THE PERIOD LAW (docs/sequencer.md §2): a stack with an ACTIVE
+        // sequence contributes the song's length — steps concatenate,
+        // never LCM; the frame shows the whole song.
+        const seqLen = n.type === 'stack' ? activeSeqSamples(n) : 0;
+        periods.push(seqLen > 0 ? seqLen
+            : n.type === 'stack'
+                ? calculateStackLCM(n.nodes, quantum)  // commensurate inside
+                : clipCycleContribution(n, quantum));
     });
     return timelineLcm(periods, quantum);
 }
 
+/** The published sequence of a holder (a stack node, or the state for
+ * the island root), normalized; null when absent/empty. */
+function seqOf(holder) {
+    const s = holder && holder.sequence;
+    if (!s || !Array.isArray(s.steps) || !s.steps.length) return null;
+    return s;
+}
+
+/** Total sequence length in samples (steps CONCATENATE — S10). */
+function seqTotalSamples(s) {
+    return s.steps.reduce((t, x) => t + (x.len > 0 ? Math.round(x.len) : 0), 0);
+}
+
+/** The ACTIVE sequence length in samples (0 = none/bypassed). */
+function activeSeqSamples(holder) {
+    const s = seqOf(holder);
+    return s && !s.bypassed ? seqTotalSamples(s) : 0;
+}
+
 /**
  * A node's EFFECTIVE period in samples (recursive; mirrors the engine's
- * effective-cycle walk): an active map shortens it, one-shots and
- * recording lanes contribute nothing, and a stack composites its
- * children's effective periods by LCM.
+ * effective-cycle walk): an active map shortens it, an active SEQUENCE
+ * sets a stack's period to the song (the period law, docs/sequencer.md
+ * §2), one-shots and recording lanes contribute nothing, and a stack
+ * composites its children's effective periods by LCM.
  */
 function effectivePeriod(node) {
     if (node.isRecording) return 0;
     if (node.periodSource === 'context') return 0;  // Q5 exclusion
     const p = node.windowActive ? nodeMapPeriod(node) : 0;
     if (p > 0) return p;
+    const seqLen = activeSeqSamples(node);
+    if (seqLen > 0) return seqLen;
     if (node.type !== 'stack') return node.duration || 0;
     let composite = 0;
     (node.nodes || []).forEach(c => {
@@ -756,7 +876,21 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
         lane.bandEditable = qEstablished && totalQ >= 2 &&
             !subtreeRec(node);
     }
+    // The SEQUENCER (docs/sequencer.md): the rail chip's facts, and the
+    // grid row when expanded (view state, the fx-row pattern).
+    {
+        const s = seqOf(node);
+        lane.seq = s ? {
+            bypassed: !!s.bypassed,
+            totalQ: seqTotalSamples(s) / quantum,
+            stepCount: s.steps.length,
+        } : null;
+        lane.seqRecording = !!subtreeRec(node);
+    }
     lanes.push(lane);
+    if (ctx.seqOpen && ctx.seqOpen.has(node.id)) {
+        lanes.push(seqRow(node, depth + 1, quantum, qEstablished));
+    }
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
     // The nearest enclosing active map wins (engine parity).
     // segs + the group's cycle ride along so child lanes can
@@ -773,8 +907,19 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
     // unrolls them against the island cycle; revisit when the
     // shell renders windowed groups interactively.
     if (!lane.folded) {
+        const childFrom = lanes.length;
         (node.nodes || []).forEach(c =>
             pushLane(c, depth + 1, ownMap || mapCtx, ctx));
+        // An ACTIVE sequence projects its gates onto the child lanes as
+        // dims (the display side of the period law — sequencer.md §9:
+        // you READ the song on the lanes, you EDIT it in the grid).
+        {
+            const s = seqOf(node);
+            if (s && !s.bypassed) {
+                attachSeqDims(lanes, childFrom, lanes.length,
+                    node.nodes, s, quantum);
+            }
+        }
         // Synthetic affordance row: "+ add track" at the bottom of
         // the open group (field-preferred placement, 2026-07-09)
         lanes.push({
@@ -1120,6 +1265,23 @@ export function deriveViewModel(state, opts = {}) {
 
     let cycleSamples = computeCycleSamples(nodes, quantum);
     let loopSamples = computeAudibleLoop(nodes, quantum);
+    // The island's INTRINSIC cycle in Q, captured BEFORE the sequence
+    // reframes anything: the root grid's one-cycle unit (append/create
+    // defaults). Reading the post-override lcmQ here made every "+"
+    // add one CURRENT SONG length — steps doubled 2, 4, 8, 16 (owner
+    // field report 2026-08-20b).
+    const intrinsicCycleQ = cycleSamples / quantum;
+
+    // THE PERIOD LAW at the island ROOT (docs/sequencer.md §2): an
+    // active root sequence IS the frame — the song. The engine wraps
+    // masterPos on it (snapEffectiveCycle short-circuits at the root);
+    // the display frame must agree or the cursor lies.
+    const rootSeqSamples = activeSeqSamples(state);
+    if (rootSeqSamples > 0) {
+        cycleSamples = quantum > 1
+            ? lcm(quantum, rootSeqSamples) : rootSeqSamples;
+        loopSamples = cycleSamples;
+    }
 
     // Provisional Q-definer: frame the FULL recorded buffer (not the Q
     // cycle). cycleQ = duration/quantum and the selection brackets are
@@ -1197,8 +1359,38 @@ export function deriveViewModel(state, opts = {}) {
         state, lanes, maxDepth, fxOpen, windowEdit, quantum,
         epochSamples, shiftQ, qEstablished, cycleQ, lcmQ,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
+        // Stacks whose sequencer grid is expanded (view state, the
+        // fxOpen pattern — docs/sequencer.md §9 S15).
+        seqOpen: opts.seqOpen || null,
     };
     nodes.forEach(n => pushLane(n, 0, null, ctx));
+    // The ROOT's active sequence projects onto the top-level lanes
+    // (engine root = the song when tracks live loose at the top).
+    {
+        const s = seqOf(state);
+        if (s && !s.bypassed) {
+            attachSeqDims(lanes, 0, lanes.length, nodes, s, quantum);
+        }
+    }
+    // THE ROOT SEQUENCER GRID (the session's own song — the root has
+    // no rail, so its chip lives in the transport bar and the grid
+    // renders as the FIRST row, over the top-level tracks).
+    const rootId = state.id || '';
+    if (ctx.seqOpen && rootId && ctx.seqOpen.has(rootId) &&
+        nodes.length > 0) {
+        lanes.unshift(buildSeqRow({
+            holder: state,
+            ownerId: rootId,
+            children: nodes,
+            depth: 0,
+            quantum,
+            qEstablished,
+            // The INTRINSIC island cycle — never the sequence-inflated
+            // frame (the "+ step doubles" field bug, 2026-08-20b).
+            innerCycleQ: intrinsicCycleQ,
+            editable: !anyRecording,
+        }));
+    }
 
     const ticks = buildRulerTicks(qEstablished, cycleQ);
 
@@ -1219,5 +1411,16 @@ export function deriveViewModel(state, opts = {}) {
         armAtQ,
         ruler: { cycleQ, ticks },
         lanes,
+        // The root sequencer's transport-chip facts (docs/sequencer.md):
+        // rootId targets setSequence/toggleSequence at the session root.
+        rootId,
+        rootSeq: (() => {
+            const s = seqOf(state);
+            return s ? {
+                bypassed: !!s.bypassed,
+                totalQ: seqTotalSamples(s) / quantum,
+                stepCount: s.steps.length,
+            } : null;
+        })(),
     };
 }

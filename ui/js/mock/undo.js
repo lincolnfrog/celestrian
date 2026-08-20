@@ -29,6 +29,9 @@ const UNDOABLE = new Set([
     // arrives and departs the undo log whole (engine: single Insert
     // edit). saveTrackTemplate is a LIBRARY write, deliberately absent.
     'createFromTrackTemplate',
+    // The SEQUENCER (docs/sequencer.md): both verbs are musical facts
+    // (engine parity: Edit::Sequence / Edit::SequenceBypass).
+    'setSequence', 'toggleSequence',
 ]);
 
 let lastUndoable = { method: null, arg0: null };

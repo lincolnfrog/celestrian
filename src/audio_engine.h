@@ -212,6 +212,20 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void toggleLoopWindow(const juce::String& uuid);
 
   /**
+   * Install/replace/clear a stack's SEQUENCE (docs/sequencer.md).
+   * `payload` is the bridge shape: { steps: [{name, len}], gates:
+   * {uuid: [0/1 per step]} } — lengths in samples; a void/empty
+   * payload clears. Undoable (Edit::Sequence); refused while a take is
+   * armed/recording in the subtree (the mid-take gate) and on
+   * malformed payloads (0 or >64 steps, non-positive lengths).
+   */
+  void setSequence(const juce::String& uuid, const juce::var& payload);
+
+  /** The sequence's jam toggle (bypass), the loop-window twin:
+   * bypassed = today's everything-sounds behavior, geometry kept. */
+  void toggleSequence(const juce::String& uuid);
+
+  /**
    * Returns a list of available hardware audio inputs.
    */
   juce::var getInputList() const;

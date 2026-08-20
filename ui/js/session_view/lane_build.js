@@ -13,6 +13,7 @@ import { buildNavDock } from './teleport.js';
 import { toggleInputMenu } from './input_menu.js';
 import { openCreationMenu } from './creation_menu.js';
 import { buildFxRow } from './fx_row.js';
+import { buildSeqGrid } from './seq_grid.js';
 
 /**
  * Build one lane row for the vm lane: synthetic fx/add rows get their
@@ -28,6 +29,10 @@ export function buildLane(lane) {
 
     // Synthetic effects-panel row (built once; values patch in place)
     if (lane.kind === 'fx') return buildFxRow(row, lane);
+
+    // Synthetic SEQUENCER GRID row (docs/sequencer.md §9 S15 — the
+    // fx-row expansion pattern; content renders in patchSeqGrid)
+    if (lane.kind === 'seq') return buildSeqGrid(row, lane);
 
     // Synthetic add-track row at the bottom of an open group. Since
     // Q17 the + opens the creation menu (template picker) targeting
@@ -187,6 +192,18 @@ export function buildLane(lane) {
         title: 'Effects: EQ · Compressor · Echo · Reverb' });
     fx.addEventListener('click', () => ctx.cb.onToggleFx(lane.id));
     foot.appendChild(fx);
+
+    // THE SEQUENCER chip (docs/sequencer.md §9 S15) — stacks only: the
+    // ONE control, expanded from the rail like the fx row. Rows =
+    // children, columns = steps, pads = gates.
+    if (lane.kind === 'group') {
+        const seq = el('button', 'rail-btn seq-btn mono', {
+            textContent: 'seq',
+            title: 'Sequencer: gate this group’s tracks over steps ' +
+                   '(the song grid)' });
+        seq.addEventListener('click', () => ctx.cb.onToggleSeqGrid(lane.id));
+        foot.appendChild(seq);
+    }
 
     // Recording input picker — clips only (Q7: group record captures
     // each child from ITS OWN input; a group has no input of its own)

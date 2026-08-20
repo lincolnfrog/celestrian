@@ -189,6 +189,16 @@ class StackNodeTests : public juce::UnitTest {
       clip1Ptr->is_soloed.store(true);
       playCtx.any_solo = true;
 
+      // Settle the S7 fade (~10 ms — sequencer.md §9): solo edges ramp
+      // now; one 441-sample block consumes the whole fade.
+      {
+        float settleL[441] = {}, settleR[441] = {};
+        float* const settleOuts[] = {settleL, settleR};
+        ProcessContext settle = playCtx;
+        settle.num_samples = 441;
+        root.process(nullptr, settleOuts, 0, 2, settle);
+      }
+
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 0.3f) < 0.0001f,
              "With clip1 soloed, only clip1 should play.");

@@ -205,7 +205,9 @@ function makeDoneChip(laneId, title) {
  * under an active drag (the captured node would orphan the gesture).
  */
 export function patchLaneBody(row, lane, vm, aux) {
-    if (lane.kind === 'add' || lane.kind === 'fx') return;
+    if (lane.kind === 'add' || lane.kind === 'fx' || lane.kind === 'seq') {
+        return;
+    }
     const body = row.querySelector('.lane-body');
     // Per-lane scale (law 13 amendment): a window-EDITING lane shows its
     // full raw take on its own horizontal frame — an inspector, not a
@@ -240,6 +242,12 @@ export function patchLaneBody(row, lane, vm, aux) {
             g.appendChild(d);
         });
     });
+
+    // SEQUENCE DIMS (docs/sequencer.md §9 — the lanes are the DISPLAY):
+    // an enclosing sequence's gated-off spans dim this lane, tiled every
+    // pass. A dedicated layer, so the three overlay paths below stay
+    // untouched by the sequencer entirely.
+    patchSeqDims(body, lane, cycleQ);
 
     // Reps layer: RECONCILE — reuse divs, update geometry in place.
     // The bar anchors at its Q boundary; in the first-take frame there
@@ -621,4 +629,40 @@ function lanePeaks(lane, aux) {
         excludeIds: aux.pendingFetch,
         epochSamples: aux.epochSamples || 0,
     });
+}
+
+/**
+ * SEQUENCE DIMS (docs/sequencer.md §9): the display projection of an
+ * enclosing sequence's gates — gated-off spans render as dim overlays,
+ * tiled across the frame every sequence pass. Keyed rebuild; the layer
+ * is created/removed on demand and never touches the marker overlay.
+ */
+function patchSeqDims(body, lane, cycleQ) {
+    let layer = body.querySelector(':scope > .seq-dims');
+    const want = lane.seqDims && lane.seqDims.periodQ > 0 &&
+        !lane.windowEditing;
+    if (!want) {
+        if (layer) layer.remove();
+        return;
+    }
+    if (!layer) {
+        layer = el('div', 'seq-dims');
+        body.appendChild(layer);
+    }
+    const key = JSON.stringify([lane.seqDims, cycleQ]);
+    if (layer._key === key) return;
+    layer._key = key;
+    layer.textContent = '';
+    const P = lane.seqDims.periodQ;
+    for (let base = 0; base < cycleQ; base += P) {
+        for (const [s, e] of lane.seqDims.offSegsQ) {
+            const from = base + s;
+            const to = Math.min(base + e, cycleQ);
+            if (to - from <= 1e-9) continue;
+            const d = el('div', 'seq-dim');
+            d.style.left = pct(from, cycleQ);
+            d.style.width = pct(to - from, cycleQ);
+            layer.appendChild(d);
+        }
+    }
 }

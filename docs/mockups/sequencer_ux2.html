@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Celestrian — Sequencer UX round 2: one control, every depth (S15)</title>
+<style>
+:root {
+    --chassis-face: linear-gradient(180deg, #2d3035, #232529);
+    --chassis-raised: linear-gradient(180deg, #33363c, #26282c);
+    --chassis-panel: linear-gradient(180deg, #33363c, #2a2d31);
+    --chassis-btn: linear-gradient(180deg, #4a4e55, #33363c);
+    --chassis-border: #131417;
+    --btn-border: #17181b;
+    --bevel-hi: rgba(255,255,255,0.07);
+    --walnut: #3d2415;
+    --hairline: #3a3e44;
+    --amber: #e8a13c;
+    --amber-bright: #f3c877;
+    --amber-group: #f2d78f;
+    --amber-dim: #8a744d;
+    --cyan: #5fc9d8;
+    --cyan-dim: #3f7d8c;
+    --record: #b93e24;
+    --record-hi: #e06248;
+    --map-amber: #e4b45a;
+    --map-amber-40: rgba(228,180,90,0.4);
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --lane: #16181b;
+    --lane-line: #131417;
+    --text: #d7dce2;
+    --text-dim: #8b929c;
+    --grid: #2b2e33;
+    --playhead: #eef2f7;
+    --rail-w: 190px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 28px 40px 80px; background: #1b1c1f;
+    color: var(--text); font-size: 15px; line-height: 1.5;
+    font-family: Archivo, "Avenir Next", "Segoe UI", system-ui, sans-serif; }
+h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+h2 { font-size: 17px; margin: 46px 0 4px; color: var(--amber-bright); }
+p.note { color: var(--text-dim); max-width: 880px; margin: 6px 0 14px; }
+.mono { font-family: var(--font-mono); }
+.tag { font-family: var(--font-mono); font-size: 11px; color: var(--cyan);
+    border: 1px solid var(--cyan-dim); border-radius: 3px; padding: 1px 6px;
+    margin-left: 8px; vertical-align: 2px; }
+.deck { background: var(--chassis-face); border: 1px solid var(--chassis-border);
+    border-left: 10px solid var(--walnut); border-right: 10px solid var(--walnut);
+    border-radius: 8px; padding: 14px 16px 16px; max-width: 1040px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.45); }
+.ann { max-width: 1040px; margin: 10px 0 0; padding: 10px 14px;
+    border-left: 3px solid var(--cyan-dim); background: #202226;
+    border-radius: 0 6px 6px 0; font-size: 13.5px; color: var(--text-dim); }
+.ann b { color: var(--text); font-weight: 600; }
+kbd { font-family: var(--font-mono); font-size: 11px; background: #0e0f11;
+    border: 1px solid var(--hairline); border-radius: 3px; padding: 0 4px; }
+
+/* lanes (display) */
+.lane { display: flex; height: 44px; margin-top: 4px; }
+.rail { width: var(--rail-w); flex: none; background: var(--chassis-raised);
+    border: 1px solid var(--chassis-border); border-radius: 5px 0 0 5px;
+    padding: 4px 8px; box-shadow: inset 0 1px 0 var(--bevel-hi); }
+.rail .nm { font-size: 12.5px; }
+.rail .sub { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); }
+.seqchip { font-family: var(--font-mono); font-size: 10px; color: var(--map-amber);
+    border: 1px solid var(--map-amber-40); border-radius: 3px; padding: 0 4px;
+    margin-left: 6px; cursor: pointer; background: rgba(228,180,90,.06); }
+.seqchip.open { background: rgba(228,180,90,.18); }
+.body { flex: 1; display: flex; background: var(--lane);
+    border: 1px solid var(--lane-line); border-left: none;
+    border-radius: 0 5px 5px 0; overflow: hidden; position: relative; }
+.span { position: relative; border-right: 1px dashed rgba(58,62,68,.5); }
+.span:last-child { border-right: none; }
+.span .wf { position: absolute; inset: 6px 3px;
+    background:
+      repeating-linear-gradient(90deg, rgba(232,161,60,.95) 0 2px, transparent 2px 5px),
+      repeating-linear-gradient(90deg, transparent 0 1px, rgba(232,161,60,.35) 1px 3px, transparent 3px 9px);
+    -webkit-mask: linear-gradient(180deg, transparent 0, #000 18%, #000 82%, transparent 100%);
+            mask: linear-gradient(180deg, transparent 0, #000 18%, #000 82%, transparent 100%);
+    border-radius: 2px; }
+.span.off .wf { opacity: .12; filter: saturate(.35); }
+.playline { position: absolute; top: 0; bottom: 0; width: 2px;
+    background: var(--playhead); opacity: .9; z-index: 6; left: 0;
+    animation: sweep 26s linear infinite; pointer-events: none; }
+@keyframes sweep { from { left: 0 } to { left: 100% } }
+.ruler { display: flex; height: 16px; margin-left: var(--rail-w);
+    border-bottom: 1px solid var(--hairline);
+    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); }
+.ruler div { border-left: 1px solid var(--grid); padding: 0 0 0 4px; }
+
+/* THE GRID (the one control) */
+.grid { margin-left: var(--rail-w); background: var(--chassis-panel);
+    border: 1px solid var(--hairline); border-top: none;
+    border-radius: 0 0 6px 6px; padding: 6px 10px 8px; }
+.grow { display: flex; gap: 4px; align-items: stretch; }
+.grow .rn { width: 108px; flex: none; font-size: 12px; color: var(--text);
+    display: flex; align-items: center; }
+.grow .rn .sub { font-family: var(--font-mono); font-size: 9px;
+    color: var(--text-dim); margin-left: 5px; }
+.hcell { position: relative; padding: 2px 6px 3px; border-radius: 4px 4px 0 0;
+    background: #26282c; border: 1px solid var(--hairline); border-bottom: none;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--text); }
+.hcell .len { color: var(--map-amber); margin-left: 5px; }
+.hcell .grip { position: absolute; right: -1px; top: 0; bottom: 0; width: 6px;
+    cursor: ew-resize; border-right: 2px solid var(--map-amber-40); }
+.hcell:hover .grip { border-right-color: var(--map-amber); }
+.hcell .loopverb { color: var(--cyan); margin-left: 7px; opacity: 0; cursor: pointer; }
+.hcell:hover .loopverb { opacity: 1; }
+.hcell.playing { box-shadow: inset 0 -3px 0 var(--map-amber); }
+.hcell.looped { outline: 2px solid var(--cyan); outline-offset: -1px;
+    color: var(--cyan); }
+.hcell.looped .loopverb { opacity: 1; }
+.addcol { width: 30px; flex: none; display: flex; align-items: center;
+    justify-content: center; color: var(--text-dim); border: 1px dashed var(--hairline);
+    border-radius: 4px; cursor: pointer; font-size: 14px; }
+.addcol:hover { color: var(--map-amber); border-color: var(--map-amber); }
+.pad { height: 26px; border-radius: 4px; cursor: pointer; flex: 1;
+    background: #202226; border: 1px solid var(--btn-border);
+    box-shadow: inset 0 1px 0 var(--bevel-hi); }
+.pad.on { background: linear-gradient(180deg, #eab35a, #c98a2e);
+    border-color: #6b5220;
+    box-shadow: 0 0 10px rgba(232,161,60,.35), inset 0 1px 0 rgba(255,255,255,.35); }
+.pad.rec { background: linear-gradient(180deg, #d0553a, #9c3520);
+    border-color: #5e2012; box-shadow: 0 0 12px rgba(224,98,72,.5);
+    animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { filter: brightness(1.25); } }
+.col.playing .pad { outline: 1px solid rgba(228,180,90,.5); }
+.col.looped .pad { outline: 1px solid var(--cyan-dim); }
+.gfoot { display: flex; align-items: center; gap: 10px; margin-top: 7px;
+    font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); }
+.gfoot .total { color: var(--amber-bright); }
+.gfoot .warn { color: var(--map-amber); border: 1px solid var(--map-amber-40);
+    border-radius: 3px; padding: 0 5px; }
+.gfoot .bypass { margin-left: auto; color: var(--cyan); cursor: pointer;
+    border: 1px solid var(--cyan-dim); border-radius: 3px; padding: 0 6px; }
+.transport { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.transport .play { width: 34px; height: 30px; border-radius: 5px;
+    background: var(--chassis-btn); border: 1px solid var(--btn-border);
+    box-shadow: inset 0 1px 0 var(--bevel-hi); color: var(--text);
+    text-align: center; line-height: 30px; font-size: 13px; }
+.odo { font-family: var(--font-mono); font-size: 13px; color: var(--amber-bright);
+    background: #0e0f11; border: 1px solid #050506; border-radius: 4px;
+    padding: 4px 10px; }
+.odo small { color: var(--amber-dim); }
+.winbracket { position: absolute; top: 0; bottom: 0; border-left: 2px solid var(--cyan);
+    z-index: 5; } .winbracket.end { border-left: none; border-right: 2px solid var(--cyan); }
+</style>
+</head>
+<body>
+
+<h1>Sequencer UX — round 2: one control, every depth <span class="tag">S15</span></h1>
+<p class="note"><b>Ruling absorbed:</b> B won; A and C are retired. And the
+top-level question answers itself — <b>the root stack already exists</b>
+("Main Stack" owns the top rail today), so the root's sequence hangs off
+its rail chip like any other stack's. There is exactly ONE control: the
+<b>pad grid</b>, expanded from a stack's <span class="mono seqchip">seq · NQ</span>
+chip. What round 1 called "Variant A" was two things tangled together:
+a redundant second control (dead, rightly) and <b>the display consequence
+of the period law</b> — which isn't optional and isn't a control (§2
+below). Pads are clickable and drag-paintable here; try it.</p>
+
+<!-- ============ 1. THE CONTROL ============ -->
+<h2>1. The control — the grid, expanded from the root stack's rail</h2>
+<p class="note">Main Stack's rail carries the chip; clicking it expands
+the grid directly under the stack header (the fx-row pattern). Column
+widths ∝ lenQ. Everything about steps lives on the column headers:
+name, length chip, resize grip, hover <span class="mono"
+style="color:var(--cyan)">⟲</span> (loop the step — §3), ＋ appends.</p>
+
+<div class="deck">
+  <div class="transport">
+    <div class="play">▶</div>
+    <div class="odo">13.1Q / <b>28Q</b> <small>· groove</small></div>
+  </div>
+  <div class="lane" style="margin-top:0">
+    <div class="rail"><div class="nm">Main Stack
+      <span class="seqchip open">seq · 28Q ▾</span></div>
+      <div class="sub">4 tracks · Q = 1.9 s</div></div>
+    <div class="body" style="background:var(--chassis-panel)"></div>
+  </div>
+  <div class="grid">
+    <!-- header row -->
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn"></div>
+      <div class="hcell" style="flex:4">intro<span class="len">4Q</span><span class="grip"></span><span class="loopverb">⟲</span></div>
+      <div class="hcell playing" style="flex:4">groove<span class="len">4Q</span><span class="grip"></span><span class="loopverb">⟲</span></div>
+      <div class="hcell" style="flex:8">full<span class="len">8Q</span><span class="grip"></span><span class="loopverb">⟲</span></div>
+      <div class="hcell" style="flex:4">breakdown<span class="len">4Q</span><span class="grip"></span><span class="loopverb">⟲</span></div>
+      <div class="hcell" style="flex:8">out<span class="len">8Q</span><span class="grip"></span><span class="loopverb">⟲</span></div>
+      <div class="addcol">＋</div>
+    </div>
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn">Bass<span class="sub">1Q</span></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad on"></div></div>
+      <div class="col playing" style="flex:4;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn">Drums<span class="sub">seq · 4Q</span></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col playing" style="flex:4;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn">Guitar<span class="sub">4Q</span></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col playing" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="grow">
+      <div class="rn">Vocals<span class="sub">8Q</span></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col playing" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="gfoot">
+      <span class="total">seq · 28Q · 1:52</span>
+      <span>cycle 4Q · 7 passes</span>
+      <span class="warn" title="frame-health badge appears only when an edit would blow up an ancestor frame — hidden otherwise">⚠ example: 11Q → parent ×132</span>
+      <span class="bypass">⟳ active · click to bypass</span>
+    </div>
+  </div>
+</div>
+<div class="ann"><b>Step grammar</b> (all on the header, the cut-band
+vocabulary): grip drag = resize, whole-Q snap, cycle-multiple default,
+<kbd>⌥</kbd> free + ⚠ · double-click name = rename · drag header = reorder ·
+double-click empty header space = split · right-click = merge/delete ·
+＋ = append. <b>Pad grammar:</b> click = toggle · drag across = paint ·
+row-name click = whole-row toggle. The footer owns the totals, the
+bypass toggle (the jam comes back), and the frame-health badge when —
+and only when — an edit needs the warning.</div>
+
+<!-- ============ 2. THE DISPLAY ============ -->
+<h2>2. Not a control — what the LANES do when a sequence is active</h2>
+<p class="note">This is the part of old "Variant A" that survives, and it
+was never optional: the period law says an active sequence makes the
+stack's period the song (28Q), so the session view — a pure projection —
+<i>must</i> re-frame to it. Lanes tile their loops across the song with
+gated-off spans dimmed; the one playhead sweeps it; the ruler picks up
+step ticks. You <b>read</b> the song here; you <b>edit</b> it in the
+grid. One edit surface, no duplicate control.</p>
+
+<div class="deck">
+  <div class="ruler">
+    <div style="flex:4">0Q</div><div style="flex:4">4Q</div>
+    <div style="flex:8">8Q</div><div style="flex:4">16Q</div>
+    <div style="flex:8">20Q</div>
+  </div>
+  <div class="lane"><div class="rail"><div class="nm">Bass</div><div class="sub">1Q · in 2</div></div>
+    <div class="body"><div class="playline"></div>
+      <div class="span" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:8"><div class="wf"></div></div>
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:8"><div class="wf"></div></div>
+    </div></div>
+  <div class="lane"><div class="rail"><div class="nm">Drums</div><div class="sub">group · 3 tracks</div></div>
+    <div class="body"><div class="playline"></div>
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:8"><div class="wf"></div></div>
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:8"><div class="wf"></div></div>
+    </div></div>
+  <div class="lane"><div class="rail"><div class="nm">Guitar</div><div class="sub">4Q · in 3</div></div>
+    <div class="body"><div class="playline"></div>
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:8"><div class="wf"></div></div>
+      <div class="span" style="flex:4"><div class="wf"></div></div>
+      <div class="span off" style="flex:8"><div class="wf"></div></div>
+    </div></div>
+</div>
+<div class="ann"><b>Why the lanes can't be the editor too:</b> lane
+spans already own a dense gesture set (trim grips, cut bands, seam
+handles, double-click cell cuts) — overloading "click a span" with gate
+toggling would collide with all of it. The grid is 26 px tall per row
+and two clicks away. If field use later begs for in-lane toggling, it
+can ride a modifier without moving the design.</div>
+
+<!-- ============ 3. RECORD INTO A STEP ============ -->
+<h2>3. The S17 flow — "record the solo over the breakdown"</h2>
+<p class="note">The step header's <span class="mono"
+style="color:var(--cyan)">⟲</span> loops that step: it sets a one-segment
+window over the song (the S9 composition law — same object as any loop
+region, cyan brackets on the lanes). While it loops you're auditioning.
+Arm a track and record: through-map recording into the step, take capped
+at the step length, commit auto-gates it ON here, OFF elsewhere. Undo
+removes take + gates as one edit.</p>
+
+<div class="deck">
+  <div class="grid" style="border-top:1px solid var(--hairline);border-radius:6px">
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn"></div>
+      <div class="hcell" style="flex:4">intro<span class="len">4Q</span></div>
+      <div class="hcell" style="flex:4">groove<span class="len">4Q</span></div>
+      <div class="hcell" style="flex:8">full<span class="len">8Q</span></div>
+      <div class="hcell looped" style="flex:4">breakdown<span class="len">4Q</span><span class="loopverb">⟲ looping</span></div>
+      <div class="hcell" style="flex:8">out<span class="len">8Q</span></div>
+      <div class="addcol">＋</div>
+    </div>
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn">Guitar<span class="sub">● armed</span></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:4;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad on"></div></div>
+      <div class="col looped" style="flex:4;display:flex"><div class="pad rec" title="recording into this step"></div></div>
+      <div class="col" style="flex:8;display:flex"><div class="pad"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="gfoot">
+      <span style="color:var(--cyan)">⟲ looping breakdown · 16Q–20Q</span>
+      <span style="color:var(--record-hi)">● Guitar recording · 2.3Q / ≤4Q</span>
+      <span class="bypass">esc exits the loop</span>
+    </div>
+  </div>
+  <div style="height:8px"></div>
+  <div class="lane"><div class="rail"><div class="nm">Guitar</div><div class="sub">● rec · through step</div></div>
+    <div class="body">
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span off" style="flex:4"><div class="wf"></div></div>
+      <div class="span" style="flex:8"><div class="wf"></div></div>
+      <div class="span" style="flex:4"><div class="wf" style="background:repeating-linear-gradient(90deg, rgba(224,98,72,.9) 0 2px, transparent 2px 5px)"></div><div class="winbracket" style="left:0"></div><div class="winbracket end" style="right:0"></div></div>
+      <div class="span off" style="flex:8"><div class="wf"></div></div>
+    </div></div>
+</div>
+<div class="ann"><b>One gesture chain:</b> hover breakdown → <span
+class="mono" style="color:var(--cyan)">⟲</span> (the song folds to that
+4Q loop — the playhead and every lane wrap it, exactly like today's loop
+regions because it IS one) → <kbd>R</kbd> arms the selected track →
+play → stop → the take lands gated into the step. <kbd>Esc</kbd> drops
+the window; the song resumes whole. No new record machinery — this is
+the existing through-map path aimed by a window.</div>
+
+<!-- ============ 4. FRACTALITY ============ -->
+<h2>4. Same control, two floors down — the drum pattern</h2>
+<p class="note">The Drums group has its own <span class="mono seqchip">seq
+· 4Q</span> chip. Expand it: same grid, 1Q steps over the kit — and at
+this scale the control simply <i>is</i> a drum machine. Nothing was
+added to make this work; it's the fractal identity. (The root's steps
+gate Drums as one row; inside, Drums sequences its own children.)</p>
+
+<div class="deck">
+  <div class="lane" style="margin-top:0">
+    <div class="rail"><div class="nm">Drums
+      <span class="seqchip open">seq · 4Q ▾</span></div>
+      <div class="sub">group · 3 tracks</div></div>
+    <div class="body" style="background:var(--chassis-panel)"></div>
+  </div>
+  <div class="grid">
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn"></div>
+      <div class="hcell playing" style="flex:1">1<span class="len">1Q</span><span class="grip"></span></div>
+      <div class="hcell" style="flex:1">2<span class="len">1Q</span><span class="grip"></span></div>
+      <div class="hcell" style="flex:1">3<span class="len">1Q</span><span class="grip"></span></div>
+      <div class="hcell" style="flex:1">4<span class="len">1Q</span><span class="grip"></span></div>
+      <div class="addcol">＋</div>
+    </div>
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn">Kick</div>
+      <div class="col playing" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="grow" style="margin-bottom:4px">
+      <div class="rn">Snare</div>
+      <div class="col playing" style="flex:1;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="grow">
+      <div class="rn">Hat</div>
+      <div class="col playing" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div class="col" style="flex:1;display:flex"><div class="pad on"></div></div>
+      <div style="width:30px;flex:none"></div>
+    </div>
+    <div class="gfoot">
+      <span class="total">seq · 4Q</span>
+      <span>Drums contributes 4Q to the island frame (period law)</span>
+      <span class="bypass">⟳ active</span>
+    </div>
+  </div>
+</div>
+<div class="ann"><b>Note the composition:</b> the root song gates Drums
+per section; inside those sections, Drums' own 4Q sequence keeps
+cycling its pattern (mute-shaped, S1 — phase sails on). A stack is a
+drum machine to its children and a track to its parent. That sentence
+is the whole feature.</div>
+
+<script>
+/* Pad feel: click toggles; press-drag paints. Display only. */
+let painting = null;
+document.querySelectorAll('.pad').forEach(p => {
+    if (p.classList.contains('rec')) return;
+    p.addEventListener('pointerdown', e => {
+        painting = !p.classList.contains('on');
+        p.classList.toggle('on', painting);
+        e.preventDefault();
+    });
+    p.addEventListener('pointerenter', () => {
+        if (painting !== null) p.classList.toggle('on', painting);
+    });
+});
+document.addEventListener('pointerup', () => painting = null);
+</script>
+</body>
+</html>

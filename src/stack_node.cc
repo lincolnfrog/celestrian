@@ -17,7 +17,12 @@ StackNode::StackNode(juce::String node_name) : AudioNode(std::move(node_name)) {
   fx_accum_.setSize(kMaxExpectedChannels, kMaxExpectedBlockSize);
 }
 
-StackNode::~StackNode() = default;
+StackNode::~StackNode() {
+  // Same lifetime argument as map_override_/chain_ (AudioNode's dtor):
+  // nodes only die via the reclaimer's grace, so no in-flight audio can
+  // still be reading the sequence here.
+  delete sequence_.load();
+}
 
 // (The per-stack snapshot machinery — render_children_ +
 // republishChildren + the reclaimer plumbed through every stack — is
@@ -40,6 +45,30 @@ juce::var StackNode::getMetadata() const {
   // the cycle top (field confusion, 2026-07-09).
   obj->setProperty("quantum", (double)quantum_samples_.load());
   obj->setProperty("epoch", (double)epoch_samples_.load());
+  // The sequence (docs/sequencer.md), published RAW like segments —
+  // bypassed geometry survives in the UI (I9; the VM derives active).
+  // Steps in samples like every metadata length; gates as uuid → one
+  // 0/1 per step (UI-friendly; absent uuid = inherit ON).
+  if (const Sequence* s = sequence_.load()) {
+    auto* so = new juce::DynamicObject();
+    so->setProperty("bypassed", (bool)sequence_bypassed_.load());
+    juce::Array<juce::var> steps;
+    for (const auto& st : s->steps) {
+      auto* stepo = new juce::DynamicObject();
+      stepo->setProperty("name", st.name);
+      stepo->setProperty("len", (double)st.len);
+      steps.add(juce::var(stepo));
+    }
+    so->setProperty("steps", steps);
+    auto* gateso = new juce::DynamicObject();
+    for (const auto& row : s->gates) {
+      juce::Array<juce::var> bits;
+      for (int i = 0; i < s->numSteps(); ++i) bits.add(s->on(row.mask, i));
+      gateso->setProperty(row.uuid, bits);
+    }
+    so->setProperty("gates", juce::var(gateso));
+    obj->setProperty("sequence", juce::var(so));
+  }
   juce::Array<juce::var> childData;
   for (const auto& child : kids) {
     childData.add(child->getMetadata());
@@ -70,6 +99,14 @@ int64_t StackNode::getEffectivePeriod() const {
   // E-C: an active map on this stack IS the period (base class).
   if (const timing::TimeMap map = activeTimeMap(); map.active()) {
     return map.period();
+  }
+  // THE PERIOD LAW (docs/sequencer.md §2): an active sequence sets the
+  // stack's effective period to the sequence length — the song is what
+  // the stack IS from outside (steps concatenate; they never LCM).
+  // Composition order per the S9 law: a map on this same node selects
+  // spans OF the sequence timeline, which is why it won above.
+  if (const int64_t seq_len = activeSequenceLen(); seq_len > 0) {
+    return seq_len;
   }
   // Otherwise LCM of children's EFFECTIVE periods — windowed children
   // contribute their window length, so nested windows shorten the
@@ -252,6 +289,12 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // still sounds once per the enclosing cycle.
   if (map.active()) {
     child_context.context_cycle = map.period();
+  } else if (const Sequence* seq = activeSequence()) {
+    // Under an active SEQUENCE the scope cycle is the song (period
+    // law): a one-shot child fires once per pass of the whole
+    // sequence, and takes recorded over it hear the song as their
+    // frame (docs/sequencer.md §4, record-over-the-song).
+    child_context.context_cycle = seq->total;
   } else {
     int64_t fold = 0;
     const GraphSnapshot* snap = context.snap;
@@ -317,6 +360,11 @@ void StackNode::controlChildren(const float* const* input_channels,
   // sibling cycle.
   if (const timing::TimeMap own_map = activeTimeMap(); own_map.active()) {
     child_context.context_loop = own_map.period();
+  } else if (const Sequence* seq = activeSequence()) {
+    // Record over the song (docs/sequencer.md §4): children listen to
+    // the sequence, so it is their context loop — takes wrap/stop
+    // against the song's grid, and contextCycle snapshots the song.
+    child_context.context_loop = seq->total;
   } else {
     child_context.context_loop = longest_committed;
   }
@@ -372,24 +420,29 @@ void StackNode::renderChildren(float* const* output_channels,
   const int child_count = kids.count();
 
   // With the effect rack ON — or the group's OUTPUT STAGE not at unity
-  // (panned, fader below 1, or muted) — children sum into the fx
-  // accumulator first: the rack shapes the GROUP's summed signal (a
-  // stack reverb wets the whole kit), and the output-stage gains scale
-  // the group as one. The accumulator is STEREO: children may render
-  // panned/stereo signals, so folding channel 0 alone would collapse
-  // their image (the pre-stereo rack's documented limitation).
+  // (panned, fader below 1) — or its GATE below unity — children sum
+  // into the fx accumulator first: the rack shapes the GROUP's summed
+  // signal (a stack reverb wets the whole kit), and the output-stage
+  // gains scale the group as one. The accumulator is STEREO: children
+  // may render panned/stereo signals, so folding channel 0 alone would
+  // collapse their image (the pre-stereo rack's documented limitation).
   //
-  // MUTE (D1 fixed, unification_audit §2.4/§3): resolved by the output
-  // stage as gain 0 — children still render (playhead telemetry keeps
-  // flowing), the group just contributes nothing. The rack is skipped
-  // while muted so echo/reverb tails FREEZE rather than ring out — the
-  // same semantics a muted clip has (its rack sees no signal).
+  // MUTE = THE PRE-FX GATE (S7 smoothness law, docs/sequencer.md §9 —
+  // supersedes the output-stage-zero + frozen-tails model): the group's
+  // mute and any parent-sequence gate (context.gate_*) resolve to one
+  // ramped dry gain applied to the children's SUM before the rack, so
+  // edges fade (~10 ms, no pops) and the rack keeps running — echo and
+  // reverb tails RING OUT through a closed gate. Children still render
+  // (their own tails and playhead telemetry keep flowing).
   const float group_pan = pan.load();
   const bool muted = is_muted.load();
-  const float group_gain = muted ? 0.0f : gain.load();
-  const bool use_fx = fxIsLive() && !muted;
+  float gate_g0 = 1.0f, gate_g1 = 1.0f;
+  gateEndpoints(context, !muted, gate_g0, gate_g1);
+  const bool gate_unity = gate_g0 >= 1.0f && gate_g1 >= 1.0f;
+  const float group_gain = gain.load();
+  const bool use_fx = fxIsLive();
   const bool use_accum =
-      use_fx || muted || group_pan != 0.0f || group_gain != 1.0f;
+      use_fx || !gate_unity || group_pan != 0.0f || group_gain != 1.0f;
   const int accum_ch = std::min(2, std::max(1, num_output_channels));
   if (use_accum) {
     if (fx_accum_.getNumSamples() < context.num_samples ||
@@ -401,10 +454,33 @@ void StackNode::renderChildren(float* const* output_channels,
     fx_accum_.clear();
   }
 
+  // THE SEQUENCE GATES (docs/sequencer.md §1): per child, the dry-gain
+  // envelope endpoints for this block — exact, because forEachSeamRun
+  // split the block at envelope corners. The sequence phase is the
+  // CHILD clock relative to this stack's received frame top (the S9
+  // composition law: a map on this node selects song positions, and
+  // the step lookup happens there).
+  const Sequence* seq = activeSequence();
+  const int64_t gate_fade = Sequence::fadeSamples(context.sample_rate);
+  const int64_t seq_rel0 =
+      seq != nullptr
+          ? seq->fold(child_context.master_pos - context.cycle_epoch)
+          : 0;
+
   for (int k = 0; k < child_count; ++k) {
     const AudioNode* child = kids.nodeAt(k);
     // Clear mix buffer for this specific child
     mix_buffer.clear();
+
+    if (seq != nullptr) {
+      const uint64_t m = seq->maskFor(child->getUuid());
+      child_context.gate_g0 = seq->gainAt(m, seq_rel0, gate_fade);
+      child_context.gate_g1 =
+          seq->gainAt(m, seq_rel0 + context.num_samples, gate_fade);
+    } else {
+      child_context.gate_g0 = 1.0f;
+      child_context.gate_g1 = 1.0f;
+    }
 
     // Child renders into our mix_buffer.
     child_context.self = kids.entryAt(k);
@@ -430,6 +506,14 @@ void StackNode::renderChildren(float* const* output_channels,
   }
 
   if (use_accum) {
+    // THE GATE (pre-rack): the group's mute ramp × any parent-sequence
+    // envelope, applied to the summed dry signal — the rack below then
+    // rings the tail out naturally.
+    if (!gate_unity) {
+      for (int ch = 0; ch < accum_ch; ++ch) {
+        fx_accum_.applyGainRamp(ch, 0, context.num_samples, gate_g0, gate_g1);
+      }
+    }
     if (use_fx) {
       // Armed groups hand the block's live MIDI to their chain (phase
       // 4): the stack's fx pass runs every block over the summed group
@@ -446,14 +530,14 @@ void StackNode::renderChildren(float* const* output_channels,
                   /*stereo_in=*/false, liveMidiFor(context));
       }
     }
-    // The group's output stage: gain·pan (balance law), mute = gain 0.
-    // Channel 0 is L, channel 1 is R; any channels past the stereo pair
-    // get the fader-scaled unpanned channel-0 signal (the historical
-    // duplicate-mono behavior).
+    // The group's output stage: gain·pan (balance law). Mute is the
+    // PRE-FX gate above now (S7) — the fader here is always `gain`, so
+    // a muted group's rack tail still reaches the parent while it
+    // rings out. Channel 0 is L, channel 1 is R; any channels past the
+    // stereo pair get the fader-scaled unpanned channel-0 signal (the
+    // historical duplicate-mono behavior).
     float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-    outputStageGains(group_pan, gain.load(),
-                     muted ? MuteState::MUTED : MuteState::AUDIBLE, gl, gr,
-                     fader);
+    outputStageGains(group_pan, group_gain, MuteState::AUDIBLE, gl, gr, fader);
     for (int ch = 0; ch < num_output_channels; ++ch) {
       if (output_channels[ch] == nullptr) continue;
       const int src = std::min(ch, accum_ch - 1);

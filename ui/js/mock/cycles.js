@@ -1,13 +1,15 @@
 /**
  * mock/cycles.js — island cycle math shared by transport (view wrap) and
  * recording (commit/re-base): the committed LCM and the AUDIBLE
- * (window-aware) effective cycle. Lives in its own module so transport
- * and recording can both import it without importing each other.
+ * (window-aware, sequence-aware) effective cycle. Lives in its own
+ * module so transport and recording can both import it without
+ * importing each other.
  */
 
 import { lcm } from '../math_utils.js';
 import { state, nodeMap } from './state.js';
 import { mapActive, mapPeriod } from '../time_map.js';
+import { activeSeqLen } from './sequence.js';
 
 /** LCM of committed clip durations (the engine's calculateTimelineLength). */
 export function committedCycle(Q) {
@@ -39,6 +41,13 @@ export function effectivePeriodOf(node) {
     if (!node.loopBypassed && mapActive(nodeMap(node))) {
         return Math.round(mapPeriod(nodeMap(node)));
     }
+    // THE PERIOD LAW (docs/sequencer.md §2, engine parity
+    // snapEffectivePeriod): an active SEQUENCE sets a stack's effective
+    // period to the sequence length — steps concatenate, never LCM.
+    {
+        const seqLen = activeSeqLen(node);
+        if (seqLen > 0) return seqLen;
+    }
     if (node.type !== 'stack') return node.duration > 0 ? Math.round(node.duration) : 0;
     let composite = 0;
     (node.nodes || []).forEach(c => {
@@ -49,6 +58,14 @@ export function effectivePeriodOf(node) {
 }
 
 export function effectiveCycle(Q) {
+    // The ROOT's own sequence wins the whole frame (period law at the
+    // island root — engine parity: snapEffectivePeriod(0) short-
+    // circuits before consulting children).
+    const rootLen = activeSeqLen({
+        sequence: state.rootSequence,
+        sequenceBypassed: state.rootSequenceBypassed,
+    });
+    if (rootLen > 0) return Q > 0 ? lcm(Q, rootLen) : rootLen;
     let cycle = Q > 0 ? Q : 0;
     state.nodes.forEach(n => {
         const p = effectivePeriodOf(n);

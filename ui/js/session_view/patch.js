@@ -52,6 +52,25 @@ export function patchSessionView(vm, aux) {
             (aux.sampleRate / 1000) + ' kHz');
     }
 
+    // THE ROOT SEQUENCER chip (docs/sequencer.md): the session's own
+    // song lives on the root stack, which has no rail — its chip sits
+    // in the transport and its grid opens as the first row. Hidden
+    // until there is anything to sequence.
+    const rootSeqBtn = document.getElementById('root-seq-btn');
+    if (rootSeqBtn) {
+        const s = vm.rootSeq;
+        setText(rootSeqBtn, s ? 'seq·' + fmtQ(s.totalQ) + 'Q' : 'seq');
+        rootSeqBtn.classList.toggle('on', !!(s && !s.bypassed));
+        rootSeqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
+        rootSeqBtn.classList.toggle('open',
+            vm.lanes.length > 0 && vm.lanes[0].kind === 'seq' &&
+            vm.lanes[0].ownerId === vm.rootId);
+        const show = vm.lanes.length && vm.qEstablished ? '' : 'none';
+        if (rootSeqBtn.style.display !== show) {
+            rootSeqBtn.style.display = show;
+        }
+    }
+
     patchRuler(vm);
 
     // Lanes: keyed reconciliation in VM order
@@ -131,7 +150,8 @@ export function patchSessionView(vm, aux) {
             ctx.els.playhead.style.left = newLeft + 'px';
         }
         const audioRows = [...ctx.els.lanes.children].filter(r =>
-            !r.classList.contains('lane-add') && !r.classList.contains('lane-fx'));
+            !r.classList.contains('lane-add') && !r.classList.contains('lane-fx') &&
+            !r.classList.contains('lane-seq'));
         const last = audioRows[audioRows.length - 1];
         if (last) {
             const h = last.offsetTop + last.offsetHeight;

@@ -99,6 +99,12 @@ class SoloTests : public juce::UnitTest {
                         b1->is_soloed.load() || A->is_soloed.load() ||
                         root.is_soloed.load();
       }
+      // Two passes, read the second: solo edges FADE now (~10 ms, S7
+      // smoothness law — sequencer.md §9; N = 441 = exactly one fade),
+      // and these pins assert the SETTLED audibility resolution.
+      root.process(nullptr, outs, 0, 2, play);
+      std::fill(outL.begin(), outL.end(), 0.0f);
+      std::fill(outR.begin(), outR.end(), 0.0f);
       root.process(nullptr, outs, 0, 2, play);
       return outL[(size_t)(N / 2)];  // DC content: any mid sample works
     };

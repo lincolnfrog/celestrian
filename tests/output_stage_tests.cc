@@ -28,7 +28,10 @@ std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
   return clip;
 }
 
-/** Peak absolute sample over both channels after one rendered block. */
+/** Peak absolute sample over both channels of a SETTLED block: mute
+ * and solo edges FADE now (~10 ms, S7 smoothness law — sequencer.md
+ * §9), so the block carrying a toggle is a ramp; these pins assert the
+ * settled state, so render once to consume the fade, then measure. */
 float renderPeak(AudioNode& node, int n = 4410, int64_t master_pos = 0) {
   std::vector<float> outL((size_t)n, 0.0f), outR((size_t)n, 0.0f);
   float* outs[] = {outL.data(), outR.data()};
@@ -36,6 +39,9 @@ float renderPeak(AudioNode& node, int n = 4410, int64_t master_pos = 0) {
   play.num_samples = n;
   play.is_playing = true;
   play.master_pos = master_pos;
+  node.process(nullptr, outs, 0, 2, play);
+  std::fill(outL.begin(), outL.end(), 0.0f);
+  std::fill(outR.begin(), outR.end(), 0.0f);
   node.process(nullptr, outs, 0, 2, play);
   float peak = 0.0f;
   for (int i = 0; i < n; ++i) {

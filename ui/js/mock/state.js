@@ -178,7 +178,11 @@ export function effectiveQuantumForState() {
  */
 export function serializeGraph() {
     return JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch,
-                            islandQ: state.islandQ });
+                            islandQ: state.islandQ,
+                            // The root's sequence (docs/sequencer.md) —
+                            // node-level sequences ride state.nodes.
+                            rootSequence: state.rootSequence || null,
+                            rootSequenceBypassed: !!state.rootSequenceBypassed });
 }
 
 /** Restore a serializeGraph() string into the live state singleton. */
@@ -187,4 +191,6 @@ export function restoreGraph(snap) {
     state.nodes = o.nodes;
     state.islandEpoch = o.islandEpoch;
     state.islandQ = o.islandQ || 0;
+    state.rootSequence = o.rootSequence || null;
+    state.rootSequenceBypassed = !!o.rootSequenceBypassed;
 }

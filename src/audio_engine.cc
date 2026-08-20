@@ -776,6 +776,34 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       }
       return inv;
     }
+    case K::Sequence: {
+      // The SEQUENCER (docs/sequencer.md): install/replace/clear the
+      // stack's sequence by copy-swap-retire (the Segments/map
+      // discipline). The inverse owns a copy of the RAW old sequence —
+      // bypassed geometry survives undo, like Segments.
+      auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid));
+      if (!stack) return {};
+      Edit inv(K::Sequence);
+      inv.uuid = e.uuid;
+      if (const celestrian::Sequence* old = stack->sequencePtr()) {
+        inv.seq = std::make_unique<celestrian::Sequence>(*old);
+      }
+      const celestrian::Sequence* fresh =
+          e.seq ? new celestrian::Sequence(*e.seq) : nullptr;
+      if (const celestrian::Sequence* old = stack->exchangeSequence(fresh)) {
+        retireOwned(old);
+      }
+      return inv;
+    }
+    case K::SequenceBypass: {
+      auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid));
+      if (!stack) return {};
+      Edit inv(K::SequenceBypass);
+      inv.uuid = e.uuid;
+      inv.b1 = stack->isSequenceBypassed();
+      stack->setSequenceBypassed(e.b1);
+      return inv;
+    }
     case K::Input: {
       auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
       if (!clip) return {};
@@ -1319,7 +1347,8 @@ juce::var AudioEngine::captureTrackTemplate(const juce::String& uuid) const {
   // The island root is a session, not a track — that is what
   // whole-session templates (projects.md) are for.
   if (node == nullptr || node == root_node.get()) return {};
-  return celestrian::track_templates::capture(*node);
+  // Q rides along so a group's SEQUENCE captures as Q counts (S14).
+  return celestrian::track_templates::capture(*node, root_node->getQuantum());
 }
 
 bool AudioEngine::insertTrackTemplate(const juce::var& tpl,
@@ -1335,8 +1364,8 @@ bool AudioEngine::insertTrackTemplate(const juce::var& tpl,
   }
   if (!target_stack) return false;
 
-  auto built =
-      celestrian::track_templates::build(tpl, cached_sample_rate_.load());
+  auto built = celestrian::track_templates::build(
+      tpl, cached_sample_rate_.load(), root_node->getQuantum());
   if (!built) return false;
 
   built->setParent(target_stack);
@@ -2023,6 +2052,91 @@ void AudioEngine::toggleLoopWindow(const juce::String& uuid) {
     record(std::move(e));
   }
 }
+
+void AudioEngine::setSequence(const juce::String& uuid,
+                              const juce::var& payload) {
+  auto* stack = dynamic_cast<celestrian::StackNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (stack == nullptr) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setSequence refused — target is not a stack");
+    return;
+  }
+  // MID-TAKE GATE (docs/sequencer.md §9 S5 / the setSegments precedent):
+  // a take recording in this subtree hears the sequence as its frame —
+  // editing it mid-take would change the heard world under the recorder.
+  if (stack->isArmedOrRecording()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setSequence refused — a take is armed/recording "
+        "in this subtree (finish or cancel it first)");
+    return;
+  }
+
+  celestrian::Edit e(celestrian::Edit::Kind::Sequence);
+  e.uuid = uuid;
+
+  // A void/empty payload clears the sequence (e.seq stays null).
+  if (auto* o = payload.getDynamicObject()) {
+    auto seq = std::make_unique<celestrian::Sequence>();
+    if (auto* steps = o->getProperty("steps").getArray()) {
+      for (const auto& sv : *steps) {
+        if ((int)seq->steps.size() >= celestrian::Sequence::kMaxSteps) {
+          juce::Logger::writeToLog(
+              "AudioEngine::setSequence refused — more than 64 steps");
+          return;
+        }
+        celestrian::Sequence::Step st;
+        st.len = (int64_t)(double)sv.getProperty("len", {});
+        st.name = sv.getProperty("name", {}).toString();
+        if (st.len <= 0) {
+          juce::Logger::writeToLog(
+              "AudioEngine::setSequence refused — non-positive step length");
+          return;
+        }
+        seq->steps.push_back(std::move(st));
+      }
+    }
+    if (auto* g = o->getProperty("gates").getDynamicObject()) {
+      for (const auto& p : g->getProperties()) {
+        celestrian::Sequence::GateRow row;
+        row.uuid = p.name.toString();
+        row.mask = 0;
+        if (auto* bits = p.value.getArray()) {
+          for (int i = 0;
+               i < bits->size() && i < celestrian::Sequence::kMaxSteps; ++i) {
+            if ((bool)(*bits)[i]) row.mask |= (1ull << i);
+          }
+        }
+        seq->gates.push_back(std::move(row));
+      }
+    }
+    if (!seq->steps.empty()) {
+      seq->finalize();
+      e.seq = std::move(seq);
+    }
+    // NOTE (S10, ruled): step lengths are NOT gated on Q coherence —
+    // steps CONCATENATE (never LCM), free lengths are deliberate and
+    // badged in the UI; the frame-health warning is display machinery.
+  }
+  record(std::move(e));
+}
+
+void AudioEngine::toggleSequence(const juce::String& uuid) {
+  auto* stack = dynamic_cast<celestrian::StackNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (stack == nullptr) return;
+  if (stack->isArmedOrRecording()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::toggleSequence refused — a take is armed/recording "
+        "in this subtree (finish or cancel it first)");
+    return;
+  }
+  celestrian::Edit e(celestrian::Edit::Kind::SequenceBypass);
+  e.uuid = uuid;
+  e.b1 = !stack->isSequenceBypassed();
+  record(std::move(e));
+}
+
 void AudioEngine::audioDeviceIOCallbackWithContext(
     const float* const* input_channel_data, int num_input_channels,
     float* const* output_channel_data, int num_output_channels, int num_samples,

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "audio_node.h"
+#include "sequence.h"
 
 namespace celestrian {
 
@@ -185,6 +186,8 @@ class StackNode : public AudioNode {
 
   /**
    * E-C, recursive: an active window on THIS stack wins (base class);
+   * else an active SEQUENCE contributes its total length (the period
+   * law, docs/sequencer.md §2 — composition order: map over sequence);
    * otherwise the LCM of the children's EFFECTIVE periods — a windowed
    * child contributes its window length, so nested windows shorten the
    * audible cycle all the way up. Message thread only — the audio
@@ -192,6 +195,32 @@ class StackNode : public AudioNode {
    * graph_snapshot.h).
    */
   int64_t getEffectivePeriod() const override;
+
+  // --- The SEQUENCE (docs/sequencer.md — the fractal sequencer) ---
+  // One atomic pointer, the map_override_/FxChain discipline: the
+  // message thread swaps immutable Sequence objects (finalize()d) and
+  // retires predecessors through the engine reclaimer; the audio
+  // thread only loads. The bypass flag is the jam toggle (bypassed =
+  // today's everything-sounds behavior; geometry survives, I9).
+  const Sequence* sequencePtr() const { return sequence_.load(); }
+  /** Swap in `fresh` (heap-owned, or null to clear); returns the OLD
+   * pointer, which the caller must retire — never delete inline. */
+  const Sequence* exchangeSequence(const Sequence* fresh) {
+    return sequence_.exchange(fresh);
+  }
+  bool isSequenceBypassed() const { return sequence_bypassed_.load(); }
+  void setSequenceBypassed(bool b) { sequence_bypassed_.store(b); }
+  /** The sequence iff it is ACTIVE (present, non-empty, not bypassed).
+   * Audio-thread safe: one pointer load + one flag load. */
+  const Sequence* activeSequence() const {
+    if (sequence_bypassed_.load()) return nullptr;
+    const Sequence* s = sequence_.load();
+    return (s != nullptr && s->total > 0) ? s : nullptr;
+  }
+  int64_t activeSequenceLen() const override {
+    const Sequence* s = activeSequence();
+    return s != nullptr ? s->total : 0;
+  }
 
  private:
   // Ownership: message thread only. The audio thread traverses the
@@ -264,17 +293,33 @@ class StackNode : public AudioNode {
   void forEachSeamRun(Ch* const* channels, int channel_count,
                       const ProcessContext& context, Body&& body) const {
     const timing::TimeMap own_map = activeTimeMap();
-    if (!own_map.active() || context.num_samples <= 0) {
+    // The SEQUENCE splits blocks too (docs/sequencer.md S7): gate
+    // envelopes are piecewise linear, so runs are cut at envelope
+    // corners — the (g0, g1) endpoints renderChildren hands each child
+    // are then exact, and output never depends on block boundaries.
+    const Sequence* seq = activeSequence();
+    if ((!own_map.active() && seq == nullptr) || context.num_samples <= 0) {
       body(channels, channel_count, context);
       return;
     }
-    const int64_t period = own_map.period();
+    const int64_t period = own_map.active() ? own_map.period() : 0;
+    const int64_t fade = Sequence::fadeSamples(context.sample_rate);
     int64_t rel = context.master_pos - context.cycle_epoch;
-    rel = ((rel % period) + period) % period;
+    if (period > 0) rel = ((rel % period) + period) % period;
     int done = 0;
     while (done < context.num_samples) {
-      const int run = (int)std::min<int64_t>(context.num_samples - done,
-                                             own_map.seamDistance(rel));
+      int64_t dist = context.num_samples - done;
+      if (period > 0) {
+        dist = std::min<int64_t>(dist, own_map.seamDistance(rel));
+      }
+      if (seq != nullptr) {
+        // Corner distance in the CHILD clock (composition law: the map
+        // selects song positions; the sequence is looked up there).
+        const int64_t crel = period > 0 ? own_map.mapOffset(rel) : rel;
+        dist = std::min<int64_t>(dist,
+                                 seq->cornerDistance(seq->fold(crel), fade));
+      }
+      const int run = (int)std::min<int64_t>(context.num_samples - done, dist);
       Ch* shifted[kMaxSplitChannels];
       Ch* const* run_channels = channels;
       int run_channel_count = channel_count;
@@ -292,7 +337,7 @@ class StackNode : public AudioNode {
       sub.input_clock = context.input_clock + done;
       body(run_channels, run_channel_count, sub);
       done += run;
-      rel = (rel + run) % period;
+      rel = period > 0 ? (rel + run) % period : rel + run;
     }
   }
 
@@ -301,6 +346,13 @@ class StackNode : public AudioNode {
   // 0 = no quantum established in this scope yet.
   std::atomic<int64_t> quantum_samples_{0};
   std::atomic<int64_t> epoch_samples_{0};
+
+  // The sequence (docs/sequencer.md): immutable object behind ONE
+  // atomic pointer (map_override_ discipline — message thread swaps +
+  // reclaimer retirement; audio thread loads). The bypass flag gates
+  // it exactly like loop_window_bypassed_ gates the map.
+  std::atomic<const Sequence*> sequence_{nullptr};
+  std::atomic<bool> sequence_bypassed_{false};
 
   // Take lifecycle: count of armed/capturing takes in this island, and
   // two cycle snapshots taken when the first of them armed: the

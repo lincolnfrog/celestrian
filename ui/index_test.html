@@ -57,7 +57,10 @@
         <div id="session">
             <div id="grid-area">
                 <div id="ruler-row">
-                    <div class="rail-spacer"></div>
+                    <div class="rail-spacer">
+                        <button id="root-seq-btn" class="mono"
+                            title="Sequencer: arrange your tracks into a song (steps + gates)">seq</button>
+                    </div>
                     <div id="ruler"></div>
                 </div>
                 <div id="lanes"></div>
@@ -115,7 +118,7 @@
         // window.celestrian is set below and select the JUCE-bridge path.
         // app.js is dynamically imported at the bottom for the same reason.
         import { callNative, log, getState, loadScenario as loadBackendScenario,
-         setMasterPos, setIsPlaying, SIMULATED_SAMPLES_PER_SECOND }
+         setMasterPos, setIsPlaying, advanceBy, SIMULATED_SAMPLES_PER_SECOND }
     from './js/mock_backend.js';
 
         // Make loadScenario available globally for buttons
@@ -139,6 +142,9 @@
             getState,
             setMasterPos,
             setIsPlaying,
+            // Recording drives (sequencer e2e records loose takes —
+            // every scenario fixture wraps its clips in a stack).
+            advanceBy,
             // Simulated audio per wall-clock second — real-time specs
             // size their sampling window from it (mock/transport.js).
             SIMULATED_SAMPLES_PER_SECOND

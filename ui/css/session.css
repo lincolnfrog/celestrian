@@ -1869,3 +1869,238 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .loop-top-chip { opacity: 0.85; }
 .win-bracket.latent.trim-grip.paired { opacity: 0.55; }
 .lane-body:hover .win-bracket.latent.trim-grip.paired { opacity: 0.8; }
+
+/* ===== 22. Sequencer (docs/sequencer.md - the fractal pad grid) ===== */
+/* The rail chip: ghost 'seq' until a sequence exists; lit map-amber
+   while active; struck while bypassed (the jam). */
+.rail-btn.seq-btn {
+    width: auto;
+    min-width: 30px;
+    padding: 0 6px;
+    font-size: 0.65rem;
+    font-weight: 600;
+}
+.rail-btn.seq-btn.on {
+    color: var(--map-amber);
+    border-color: var(--map-amber);
+    background: var(--panel-2);
+}
+.rail-btn.seq-btn.bypassed {
+    color: var(--text-dim);
+    text-decoration: line-through;
+}
+
+/* The synthetic `.lane.lane-seq` row (grid template from .lane): a
+   SEQUENCER label rail + the grid body. Rows = children, columns =
+   steps (flex-grow proportional to lenQ), pads = gates. */
+/* TIME-HONEST LAYOUT (owner feedback 2026-08-20): pads span the FULL
+   body column — step boundaries sit on the shared time axis. The rail
+   column mirrors the body's rows at the same fixed heights (label
+   beside the header, one name beside each pad row); the append verb
+   lives in the footer, so nothing non-temporal steals timeline width. */
+.seq-rail {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;               /* mirrors .seq-body's row gap exactly */
+    padding: 8px 10px 0 0;  /* mirrors .seq-body's top padding */
+}
+.seq-rail-label {
+    height: 26px;
+    display: flex;
+    align-items: center;
+    font-size: 0.62rem;
+    letter-spacing: 0.14em;
+    color: var(--map-amber);
+}
+.lane-seq.bypassed .seq-rail-label { color: var(--text-dim); }
+.seq-body {
+    background: var(--panel);
+    border-radius: 12px;
+    /* NO horizontal padding on the row area: pads must sit on the
+       shared time axis (the lane bodies draw edge-to-edge). */
+    padding: 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.lane-seq.locked .seq-body { opacity: 0.55; pointer-events: none; }
+/* Rows position their cells ABSOLUTELY by time percent (the pct()
+   idiom) — flex would skew step boundaries by per-cell padding. */
+.seq-grid-row { position: relative; height: 26px; }
+.seq-rowname {
+    height: 26px;
+    max-width: calc(var(--rail-w) - 16px);
+    font-size: 0.72rem;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.seq-rowname:hover { color: var(--map-amber); }
+.seq-hcell {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    box-sizing: border-box;
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    padding: 2px 10px 3px 6px;
+    border-radius: 6px 6px 0 0;
+    background: var(--panel-2);
+    border: 1px solid var(--hairline);
+    border-bottom: 2px solid var(--map-amber-40);
+    font-size: 0.66rem;
+    overflow: hidden;
+}
+.seq-hcell.playing {
+    border-bottom-color: var(--map-amber);
+    box-shadow: inset 0 -12px 16px -14px var(--map-amber);
+}
+.lane-seq.bypassed .seq-hcell { border-bottom-color: var(--hairline); }
+.seq-hname { color: var(--text); }
+.seq-hname-input {
+    width: 70px;
+    font: inherit;
+    color: var(--text);
+    background: var(--lane);
+    border: 1px solid var(--map-amber);
+    border-radius: 3px;
+}
+.seq-hlen { color: var(--map-amber); }
+/* The step-resize grip: a VISIBLE bracket-style handle (was a 3px
+   hairline nobody discovered — owner field report 2026-08-20b). Wide
+   hit area; the bar brightens on hover like the loop brackets. */
+.seq-grip {
+    position: absolute;
+    right: -2px; top: 0; bottom: 0;
+    width: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    cursor: ew-resize;
+    touch-action: none;
+}
+.seq-grip-bar {
+    width: 5px;
+    height: 70%;
+    border-radius: 2px;
+    background: var(--map-amber-45);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.seq-grip:hover .seq-grip-bar,
+.seq-hcell:hover .seq-grip-bar {
+    background: var(--map-amber);
+    box-shadow: 0 0 6px var(--map-amber-40);
+}
+.seq-addstep {
+    width: auto;
+    padding: 1px 8px;
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 0.62rem;
+}
+.seq-addstep:hover { color: var(--map-amber); border-color: var(--map-amber); }
+.seq-col {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    box-sizing: border-box;
+    display: flex;
+}
+.seq-col.playing .seq-pad { outline: 1px solid var(--map-amber-40); }
+.seq-pad {
+    flex: 1;
+    height: 24px;
+    border-radius: 5px;
+    background: #202226;
+    border: 1px solid var(--btn-border);
+    box-shadow: inset 0 1px 0 var(--bevel-hi);
+    touch-action: none;
+}
+.seq-pad.on {
+    background: linear-gradient(180deg, #eab35a, #c98a2e);
+    border-color: #6b5220;
+    box-shadow: 0 0 8px rgba(232, 161, 60, 0.3),
+                inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.lane-seq.bypassed .seq-pad.on { filter: saturate(0.25) brightness(0.8); }
+.seq-foot {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    padding: 2px 10px 0;
+}
+.seq-foot-right {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.seq-total { color: var(--amber-bright); }
+.seq-lock { color: var(--record-hi); }
+.seq-bypass {
+    width: auto;
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-size: 0.62rem;
+    color: var(--cyan);
+}
+.seq-start {
+    width: auto;
+    align-self: flex-start;
+    margin-left: 10px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px dashed var(--hairline);
+    background: none;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+}
+.seq-start:hover { color: var(--map-amber); border-color: var(--map-amber); }
+
+/* Lane display projection: gated-off spans dim the lane (the lanes
+   are the DISPLAY; the grid is the editor). Slightly cooler than
+   win-dim so map dims and sequence dims read apart. */
+.seq-dims { position: absolute; inset: 0; pointer-events: none; }
+.seq-dim {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(16, 22, 25, 0.68);
+    animation: dimfade 160ms ease;
+}
+@media (prefers-reduced-motion: reduce) {
+    .seq-dim { animation: none; }
+}
+
+/* The ROOT sequencer chip: the session's own song. It lives in the
+   ruler row's rail spacer — the root stack's "rail" — right above the
+   track rails, so the transport bar never crowds (the odometer is the
+   row's designated shrinker and must keep its numbers). */
+#ruler-row .rail-spacer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding-right: 4px;
+}
+#root-seq-btn {
+    width: auto;
+    min-width: 34px;
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 5px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+#root-seq-btn.on {
+    color: var(--map-amber);
+    border-color: var(--map-amber);
+    background: var(--panel-2);
+}
+#root-seq-btn.bypassed { text-decoration: line-through; }
+#root-seq-btn.open { box-shadow: inset 0 0 0 1px var(--map-amber); }

@@ -448,8 +448,17 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
     const int64_t dur = map.period();
 
     if (dur > 0) {
-      // Solo/mute audibility (Q16 canon) — see isSilencedThisBlock.
-      const bool isSilenced = isSilencedThisBlock(context);
+      // THE PRE-FX GATE (S7 smoothness law, docs/sequencer.md §9):
+      // mute/solo-loss (Q16 canon — isSilencedThisBlock) resolve to a
+      // ~10 ms ramp, composed with any parent-sequence envelope from
+      // the context. Applied to the DRY signal below, BEFORE the fx
+      // pass — so gate edges never pop and the chain keeps running
+      // while anything rings (a muted clip's echo tail decays audibly
+      // instead of freezing; supersedes the skip-render mute).
+      float gate_g0 = 1.0f, gate_g1 = 1.0f;
+      gateEndpoints(context, !isSilencedThisBlock(context), gate_g0, gate_g1);
+      const bool fully_off = gate_g0 <= 0.0f && gate_g1 <= 0.0f;
+      const bool isSilenced = fully_off && !fxIsLive();
 
       // Audio Memory Principle — the kernel playback equation
       // (docs/kernel.md §2), generalized through the map (phase 3, the
@@ -504,10 +513,15 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
                 : dur;
         // Run-split at map seams (bounded, allocation-free — the stack
         // splitter's discipline inside the clip loop): each run is a
-        // contiguous read.
+        // contiguous read. A fully-closed gate skips the read and
+        // feeds the chain silence — the tail rings, the buffer rests.
         for (int c = 0; c < (stereo ? 2 : 1); ++c) {
           const float* data = buffer.getReadPointer(c);
           float* scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
+          if (fully_off) {
+            std::fill(scratch, scratch + context.num_samples, 0.0f);
+            continue;
+          }
           int i = 0;
           while (i < context.num_samples) {
             int64_t h = (context.master_pos + i - org - a0) % cyc;
@@ -527,6 +541,20 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
               scratch[(size_t)(i + k)] = data[(base + p0 + k) % cap];
             }
             i += run;
+          }
+        }
+        // THE GATE, pre-fx (S7): linear g0→g1 across the block — exact
+        // (the parent split the block at envelope corners; the mute
+        // ramp advances at most one fade-step per block).
+        if (!fully_off && !(gate_g0 >= 1.0f && gate_g1 >= 1.0f)) {
+          const float dg =
+              (gate_g1 - gate_g0) / (float)std::max(1, context.num_samples);
+          for (int c = 0; c < (stereo ? 2 : 1); ++c) {
+            float* scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
+            float g = gate_g0;
+            for (int i = 0; i < context.num_samples; ++i, g += dg) {
+              scratch[(size_t)i] *= g;
+            }
           }
         }
         // fxIsLive: enabled slots OR an open panel watching the scope
@@ -760,10 +788,21 @@ void ClipNode::renderMidi(float* const* output_channels,
   fxProcess(fx_scratch_.data(), fx_scratch2_.data(), n, /*stereo_in=*/false,
             &render_midi_);
 
-  // Mute IS gain 0 at the output stage (unification_audit §2.4): a
-  // silenced MIDI clip still FEEDS its instrument (so an unmute resumes
-  // mid-phrase and no note hangs) — the output just does not sum.
-  if (isSilencedThisBlock(context)) return;
+  // Mute gates the OUTPUT here (a silenced MIDI clip still FEEDS its
+  // instrument, so an unmute resumes mid-phrase and no note hangs) —
+  // ramped per S7 (no pops), composed with any parent-sequence
+  // envelope from the context.
+  float gate_g0 = 1.0f, gate_g1 = 1.0f;
+  gateEndpoints(context, !isSilencedThisBlock(context), gate_g0, gate_g1);
+  if (gate_g0 <= 0.0f && gate_g1 <= 0.0f) return;
+  if (!(gate_g0 >= 1.0f && gate_g1 >= 1.0f)) {
+    const float dg = (gate_g1 - gate_g0) / (float)std::max(1, n);
+    for (int c = 0; c < 2; ++c) {
+      float* scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
+      float g = gate_g0;
+      for (int i = 0; i < n; ++i, g += dg) scratch[(size_t)i] *= g;
+    }
+  }
   float gl = 1.0f, gr = 1.0f, fader = 1.0f;
   outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr, fader);
   for (int ch = 0; ch < num_output_channels; ++ch) {
