@@ -598,26 +598,61 @@ function collectTreeFacts(nodes) {
  *   defSelEndQ: number,           // selection end (Q)
  * }}
  */
-function resolveProvisionalDefiner(committedClips, anyTakeActive, quantum) {
-    const soleQDefinerId = committedClips.length === 1 ? committedClips[0].id : null;
+function resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
+                                   nodes) {
+    // The sole clip, or — Q13 FOR GROUPS (owner ruling 2026-08-21,
+    // the fractal twin) — the DEFINER STACK: the stack whose direct
+    // clip children are the island's only committed content, recorded
+    // as one take (N mics). Engine parity: AudioEngine definerStack.
+    const definer = committedClips.length === 1 ? committedClips[0]
+        : committedClips.length >= 2 ? definerStackOf(nodes) : null;
+    const soleQDefinerId = definer ? definer.id : null;
     // The window must not be BYPASSED for the trim view: a bypassed
     // window plays the full take, so the selection isn't the audible
     // loop and the mapping below would lie. (The definer chip offers no
     // bypass toggle, so this only guards imported/odd states.)
-    const provisionalDefiner = !!soleQDefinerId && !anyTakeActive &&
-        !committedClips[0].loopBypassed;
-    const definerNode = provisionalDefiner ? committedClips[0] : null;
+    const provisionalDefiner = !!definer && !anyTakeActive &&
+        !definer.loopBypassed;
+    const definerNode = provisionalDefiner ? definer : null;
     // The definer's selection in Q units (Q = selection length, so the
     // selection is exactly 1Q wide and starts at loopStart/quantum).
     // The engine commits every clip with loop [0, duration); a fixture
-    // without loop points means the same thing — the whole buffer.
+    // without loop points means the same thing — the whole buffer (a
+    // stack's: its inner cycle).
     const defHasSel = !!definerNode && definerNode.loopEnd > definerNode.loopStart;
     const defSelStartQ = defHasSel ? definerNode.loopStart / quantum : 0;
     const defSelEndQ = !definerNode ? 0
         : defHasSel ? definerNode.loopEnd / quantum
-            : (definerNode.duration || 0) / quantum;
+            : intrinsicPeriodQ(definerNode, quantum);
     return { soleQDefinerId, provisionalDefiner, definerNode,
              defSelStartQ, defSelEndQ };
+}
+
+/** The island's definer stack (see resolveProvisionalDefiner), walking
+ * from the top-level list: the one stack holding every committed clip
+ * as a direct child, all one take (same origin + duration), ≥ 2 of
+ * them. Null otherwise. */
+function definerStackOf(nodes, owner = null) {
+    let direct = 0, origin = 0, duration = 0, nested = null;
+    for (const n of nodes || []) {
+        if (n.type === 'clip') {
+            if (n.isRecording || !(n.duration > 0)) continue;
+            if (direct === 0) { origin = n.origin || 0; duration = n.duration; }
+            else if ((n.origin || 0) !== origin || n.duration !== duration) return null;
+            direct++;
+        } else if (n.type === 'stack' && subtreeHasCommitted(n)) {
+            if (nested || direct > 0) return null;
+            nested = n;
+        }
+    }
+    if (nested) return direct === 0 ? definerStackOf(nested.nodes, nested) : null;
+    return direct >= 2 ? owner : null;
+}
+
+function subtreeHasCommitted(n) {
+    return (n.nodes || []).some(c =>
+        (c.type === 'clip' && !c.isRecording && c.duration > 0) ||
+        (c.type === 'stack' && subtreeHasCommitted(c)));
 }
 
 /**
@@ -926,6 +961,40 @@ function buildRulerTicks(qEstablished, cycleQ) {
  */
 function pushGroupLane(node, depth, mapCtx, ctx) {
     const { quantum, cycleQ, qEstablished, fxOpen, lanes, state } = ctx;
+    if (ctx.provisionalDefiner && node.id === ctx.soleQDefinerId) {
+        // Q13 FOR GROUPS: the definer stack renders the same trim view
+        // a sole clip does — the whole take with the selection over it
+        // — and its children show their whole takes beneath (no map
+        // context: the selection is Q being defined, not a part).
+        pushDefinerLane(node, depth, ctx);
+        if (!(node.isExpanded === false)) {
+            // The mics draw in the same BUFFER frame as the definer
+            // lane above them (one full tile from 0 — the trim view
+            // ignores the epoch, which the re-trim moves under them);
+            // tiling them on the epoch grid drew the take shifted by
+            // the fold offset, half a Q off the composite over it.
+            (node.nodes || []).forEach(c => {
+                if (c.type === 'clip' && !c.isRecording && c.duration > 0) {
+                    const fullQ = intrinsicPeriodQ(c, quantum);
+                    lanes.push(Object.assign(laneCommon(c, state), {
+                        kind: 'clip', depth: depth + 1,
+                        periodQ: fullQ, intrinsicQ: fullQ,
+                        reps: [{ startQ: 0, endQ: fullQ, ghost: false }],
+                        takeStartQ: 0, window: null, windowPhase: 0,
+                        armable: false, bandEditable: false,
+                        inputChannel: c.inputChannel ?? -1,
+                        definerMember: true,
+                    }));
+                    if (fxOpen && fxOpen.has(c.id)) lanes.push(fxRow(c, depth + 2));
+                } else {
+                    pushLane(c, depth + 1, null, ctx);
+                }
+            });
+            lanes.push({ kind: 'add', id: 'add:' + node.id, groupId: node.id,
+                         name: '', depth: depth + 1 });
+        }
+        return;
+    }
     const periodQ = displayPeriodQ(node, quantum);
     // A STEP AUDITION on this group (§11.2) publishes a DERIVED window
     // in SONG coordinates; group lanes tile at their intrinsic period,
@@ -1073,9 +1142,11 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
  */
 function pushDefinerLane(node, depth, ctx) {
     const { quantum, fxOpen, lanes, state, defSelStartQ, defSelEndQ } = ctx;
-    const fullQ = (node.duration || 0) / quantum;
+    // A clip's buffer, or — Q13 for groups — the definer stack's inner
+    // cycle (the composite of its one take).
+    const fullQ = intrinsicPeriodQ(node, quantum);
     lanes.push(Object.assign(laneCommon(node, state), {
-        kind: 'clip',
+        kind: node.type === 'stack' ? 'group' : 'clip',
         depth,
         periodQ: fullQ,
         intrinsicQ: fullQ,          // drag/dim extent = the whole buffer
@@ -1091,6 +1162,8 @@ function pushDefinerLane(node, depth, ctx) {
         armable: false,
         inputChannel: node.inputChannel ?? -1,
         isQDefiner: true,
+        folded: node.type === 'stack' && node.isExpanded === false,
+        groupArm: node.type === 'stack' ? groupArmState(node) : undefined,
     }));
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
 }
@@ -1525,7 +1598,8 @@ export function deriveViewModel(state, opts = {}) {
             maxRecordingDuration } = collectTreeFacts(nodes);
     const { soleQDefinerId, provisionalDefiner, definerNode,
             defSelStartQ, defSelEndQ } =
-        resolveProvisionalDefiner(committedClips, anyTakeActive, quantum);
+        resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
+                                  nodes);
 
     // The island epoch is published explicitly (getGraphState
     // "islandEpoch"): commit RE-BASES it on simple extensions, and the
@@ -1574,8 +1648,8 @@ export function deriveViewModel(state, opts = {}) {
     // cycle). cycleQ = duration/quantum and the selection brackets are
     // both ÷quantum, so as the drag changes Q nothing rescales — the
     // waveform fills the frame and the selection moves within it.
-    if (provisionalDefiner && (definerNode.duration || 0) > 0) {
-        cycleSamples = definerNode.duration;
+    if (provisionalDefiner && intrinsicPeriod(definerNode, quantum) > 0) {
+        cycleSamples = intrinsicPeriod(definerNode, quantum);
     }
 
     // First-take frame: before any Q exists there is no cycle — the only

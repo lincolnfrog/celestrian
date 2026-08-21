@@ -209,3 +209,132 @@ test('a clip RECORDING (armed 2nd take) suspends the provisional view', () => {
     assert.equal(vm.soleQDefinerId, 'c1', 'c1 still the sole committed clip');
     assert.equal(vm.provisionalDefiner, false, 'suspended while recording');
 });
+
+/* ---------- Q13 FOR GROUPS (owner ruling 2026-08-21) ----------
+ * The fractal twin of the sole-clip definer: a stack whose direct clip
+ * children are the island's only committed content and were recorded as
+ * ONE take (N mics) is the DEFINER STACK. Its window re-establishes (Q,
+ * epoch) like a sole clip's; the window stays on the stack (it IS the
+ * part under the window law), the children stay whole, and the view
+ * model renders the same trim view. Field origin: "started with drums"
+ * — a first take recorded as a group could not be trimmed at all. */
+
+import { MOCK_Q, nodeById } from './helpers.mjs';
+
+async function recordGroupTake(n, lenQ) {
+    const stackId = await callNative('createNode', 'stack', '');
+    const ids = [];
+    for (let i = 0; i < n; ++i) ids.push(await callNative('createNode', 'clip', stackId));
+    await callNative('startRecordingInNode', stackId);
+    advanceBy(lenQ * MOCK_Q);
+    await callNative('stopRecordingInNode', stackId);
+    return { stackId, ids };
+}
+const find = id => nodeById(id, getState().nodes);
+
+test('GROUPS: a first group take is the Q-definer — its window re-defines Q', async () => {
+    loadScenario('empty');
+    const { stackId, ids } = await recordGroupTake(2, 4);
+    const D = find(ids[0]).duration;
+    assert.equal(getState().quantum, D, 'the whole take is 1Q (first take)');
+    assert.equal(find(ids[1]).duration, D, 'one take, both mics');
+
+    // The VM offers the trim view on the GROUP lane, full take framed.
+    let vm = deriveViewModel(getState());
+    assert.equal(vm.soleQDefinerId, stackId, 'the stack is the definer');
+    const g = vm.lanes.find(l => l.id === stackId);
+    assert.equal(g.kind, 'group');
+    assert.equal(g.isQDefiner, true, 'trim view on the group lane');
+    assert.equal(vm.cycleQ, 1, 'frame = the whole take (1Q before any trim)');
+    assert.deepEqual([g.window.startQ, g.window.endQ, g.window.active], [0, 1, true]);
+    // Children render whole beneath it — no map context, no chips.
+    for (const id of ids) {
+        const c = vm.lanes.find(l => l.id === id);
+        assert.equal(c.underMap, undefined, 'no under-map slicing');
+        assert.equal(c.reps.length, 1);
+    }
+
+    // Trim the GROUP to the middle half: a fractional-Q window would be
+    // refused anywhere else — here it re-establishes Q := len.
+    await callNative('setLoopPoints', stackId, D / 4, (3 * D) / 4);
+    const st = getState();
+    assert.equal(st.quantum, D / 2, 'Q := window length');
+    const s = find(stackId);
+    assert.deepEqual([s.loopStart, s.loopEnd], [D / 4, (3 * D) / 4], 'window on the stack');
+    for (const id of ids) {
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D],
+            'children untouched (whole takes)');
+        assert.equal(find(id).origin, 0, 'no origin re-anchor');
+    }
+    // The frame: the whole take is now 2Q; the selection is the 1Q
+    // part [0.5Q, 1.5Q).
+    vm = deriveViewModel(getState());
+    assert.equal(vm.cycleQ, 2, 'trim view frames the whole take (2 new-Q)');
+    const g2 = vm.lanes.find(l => l.id === stackId);
+    assert.deepEqual([g2.window.startQ, g2.window.endQ], [0.5, 1.5]);
+    assert.equal(g2.isQDefiner, true);
+});
+
+test('GROUPS: the definer trim is phase-preserving (sounding inner position holds)', async () => {
+    loadScenario('empty');
+    const { stackId } = await recordGroupTake(2, 4);
+    const D = getState().quantum;
+    setMasterPos(D * 0.65);
+    const mod = (a, m) => ((a % m) + m) % m;
+    // Heard inner position before: (t0 − epoch) mod D.
+    const s0 = getState();
+    const p0 = mod(s0.masterPos - (s0.islandEpoch || 0), D);
+    const ls = D / 4, len = D / 2;
+    await callNative('setLoopPoints', stackId, ls, ls + len);
+    const s1 = getState();
+    // After: start + ((t0 − epoch') mod len) — the VM's definer mapping.
+    const p1 = ls + mod(s1.masterPos, len);
+    assert.ok(Math.abs(p1 - (ls + mod(p0 - ls, len))) < 1e-9,
+        'position continuous (folded into the new window)');
+});
+
+test('GROUPS: a second take LOCKS Q; the stack window stays as the 1Q part (no collapse)', async () => {
+    loadScenario('empty');
+    const { stackId, ids } = await recordGroupTake(2, 4);
+    const D = getState().quantum;
+    await callNative('setLoopPoints', stackId, D / 4, (3 * D) / 4);
+    assert.equal(getState().quantum, D / 2);
+    // Take 2 on a new top-level track: arms against Q = D/2.
+    const t2 = await callNative('createNode', 'clip', '');
+    await callNative('startRecordingInNode', t2);
+    advanceBy(D / 2);
+    await callNative('stopRecordingInNode', t2);
+    advanceBy(D / 2);
+    assert.equal(find(t2).isRecording, false, 'take 2 committed');
+    assert.equal(getState().quantum, D / 2, 'Q locked at the trimmed length');
+    // The stack window survives untouched; the children are whole.
+    assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4]);
+    for (const id of ids) assert.equal(find(id).duration, D, 'no collapse');
+    // Locked: the definer view is gone; the group rests HEARD as a 1Q
+    // part and a 1.5Q trim is now refused (coherence is categorical).
+    const vm = deriveViewModel(getState());
+    assert.equal(vm.soleQDefinerId, null, 'no definer once Q is locked');
+    const g = vm.lanes.find(l => l.id === stackId);
+    assert.equal(g.windowChipQ, 1, 'heard view: the 1Q part');
+    assert.equal(vm.cycleQ, 1);
+    await callNative('setLoopPoints', stackId, 0, (3 * D) / 4);
+    assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4],
+        'incoherent trim refused after lock');
+});
+
+test('GROUPS: two takes in one stack are NOT a definer (different origins)', async () => {
+    loadScenario('empty');
+    const { stackId } = await recordGroupTake(2, 2);
+    const D = getState().quantum;
+    // A third mic recorded later inside the same stack: a second take.
+    const c3 = await callNative('createNode', 'clip', stackId);
+    await callNative('startRecordingInNode', c3);
+    advanceBy(D);
+    await callNative('stopRecordingInNode', c3);
+    advanceBy(D);
+    assert.equal(find(c3).isRecording, false);
+    const vm = deriveViewModel(getState());
+    assert.equal(vm.soleQDefinerId, null, 'three clips, two takes: locked');
+    await callNative('setLoopPoints', stackId, 0, D * 1.5);
+    assert.notEqual(find(stackId).loopEnd, D * 1.5, 'incoherent window refused');
+});

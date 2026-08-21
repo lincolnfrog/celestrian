@@ -478,6 +478,26 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   amber cursor. (c) Re-trim is gated on `!hasActiveTake()` — a
   performing take already plays against the grid, so a drag mid-take
   is an ordinary window edit, not a Q change.
+- **Q13 FOR GROUPS (owner ruling 2026-08-21 — the fractal twin, from
+  the field: "I started with drums" and a first take recorded as a
+  group could not be trimmed at all):** a stack whose direct clip
+  children are the island's ONLY committed content and were recorded
+  as ONE take (identical origin and duration — N mics, ≥ 2 of them; a
+  single clip keeps the clip path wherever it lives) is the island's
+  **definer stack**, and its window re-establishes (Q, epoch) exactly
+  as a sole clip's does (`AudioEngine definerStack`; mock
+  `definerStackNode`; VM `definerStackOf`). Differences forced by the
+  structure, not the law: the window lives on the STACK (it IS the
+  part under the window law, ui_overhaul.md law 13) and the children
+  stay whole — no origin re-anchor (the epoch alone is solved for
+  phase continuity: `pos(t) = start + ((t − epoch) mod len)`), and
+  **no lock-collapse** at the second arm: a stack window of length Q
+  is coherent by construction, so after lock it is simply a 1Q part
+  and obeys the ordinary coherence guard. The trim view renders on the
+  group lane (the composite, brackets, "sets tempo"); the mics draw
+  whole beneath it in the same buffer frame. Lock remains derived:
+  another take anywhere (a third mic recorded later, a new track)
+  ends the definer state.
 - **LOCK-COLLAPSE (owner ruling 2026-07-19b — the unifying
   simplification):** the trim is a PRE-LOCK affordance, nothing more.
   The moment a second take ARMS, the definer's window **becomes the

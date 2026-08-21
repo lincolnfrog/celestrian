@@ -285,9 +285,10 @@ test('a window reframes the timeline honestly (reverses field bug 2026-07-11)', 
     // (the engine wraps the transport there) and the lane shows the
     // heard 1Q — the raw 2Q is one grab away (the edit view), which is
     // what the 2026-07-11 "hidden content" concern actually needed.
-    // (Two children: a SOLE committed clip is the Q13 provisional
-    // definer, whose trim view frames the raw buffer by design.)
-    const active = stack([clip(2), clip(2)], {
+    // (Two DIFFERENT children: a sole committed clip — or one group
+    // take, same origin + duration — is the Q13 provisional definer,
+    // whose trim view frames the raw buffer by design.)
+    const active = stack([clip(2), clip(1)], {
         loopStart: 0, loopEnd: 1 * Q, windowActive: true,
     });
     const vmA = deriveViewModel(state([active]));
@@ -301,7 +302,7 @@ test('a window reframes the timeline honestly (reverses field bug 2026-07-11)', 
     assert.equal(gE.frameQ, 2);
     assert.deepEqual([gE.window.startQ, gE.window.endQ], [0, 1]);
 
-    const bypassed = stack([clip(2), clip(2)], {
+    const bypassed = stack([clip(2), clip(1)], {
         loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
     });
     const vmB = deriveViewModel(state([bypassed]));
@@ -408,7 +409,7 @@ test('loopCycleQ: the audible cycle IS the frame (windows are part lengths)', ()
     // Lone 2Q stack windowed to 1Q: the transport wraps at 1Q (the
     // playhead must never sail past the window — field 2026-07-11),
     // and since 2026-08-21 the display frame agrees: one cycle.
-    const grp = stack([clip(2), clip(2)], {
+    const grp = stack([clip(2), clip(1)], {
         loopStart: 0, loopEnd: 1 * Q, windowActive: true,
     });
     const vm = deriveViewModel(state([grp], { masterPos: 0.5 * Q }));
@@ -416,7 +417,7 @@ test('loopCycleQ: the audible cycle IS the frame (windows are part lengths)', ()
     assert.equal(vm.loopCycleQ, 1);
 
     // Bypassed: back to the raw length, frame and loop alike
-    const byp = stack([clip(2), clip(2)], {
+    const byp = stack([clip(2), clip(1)], {
         loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
     });
     const vmB = deriveViewModel(state([byp]));

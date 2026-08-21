@@ -10,7 +10,7 @@ import { posMod } from '../math_utils.js';
 import { mapPeriod, mapOffset, mapActive, heardOffsetOf } from '../time_map.js';
 import {
     state, findNode, nodeMap, intrinsicOfNode, subtreeRecording,
-    anyNodeRecording, isQ13SoleDefiner,
+    anyNodeRecording, isQ13SoleDefiner, isQ13DefinerStack,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 import { lcm } from '../math_utils.js';
@@ -124,6 +124,17 @@ export const applyTwoAnchorContinuity = applyMapEditRiders;
  * window edit on a STACK stamps its domain — 'sequence' when authored
  * over an active sequence timeline, else 'intrinsic'. Undo restores the
  * stamp with the snapshot. */
+/** A stack's INNER cycle (engine StackNode::getIntrinsicDuration): the
+ * LCM of its children's effective periods, one-shots excluded. */
+function stackInnerCycle(node) {
+    let composite = 0;
+    (node.nodes || []).forEach(c => {
+        const p = effectivePeriodOf(c);
+        if (p > 0) composite = composite > 0 ? lcm(composite, p) : p;
+    });
+    return composite;
+}
+
 function stampWindowDomain(node) {
     if (node.type !== 'stack') return;
     node.windowDomain = activeSeqLen(node) > 0 ? 'sequence' : 'intrinsic';
@@ -148,7 +159,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         const cs = Math.max(0, loopStart);
         const ce = node.type === 'clip' && (node.duration || 0) > 0
             ? Math.min(loopEnd, node.duration) : loopEnd;
-        const q13 = ce > cs && isQ13SoleDefiner(node);
+        const q13 = ce > cs && (isQ13SoleDefiner(node) || isQ13DefinerStack(node));
         const q = state.islandQ;
         const len = ce - cs;
         // Coherent = whole multiple of Q, or an exact divisor of it
@@ -171,6 +182,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     // Pre-edit window (the phase-preserve math below needs it).
     const oldLs = node.loopStart || 0;
     const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
+    const oldLs0 = node.loopStart || 0;   // unclamped (stacks have no duration)
+    const oldLe0 = node.loopEnd || 0;
     node.loopStart = loopStart;
     node.loopEnd = loopEnd;
     stampWindowDomain(node);
@@ -201,6 +214,31 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         state.islandQ = len;
         state.islandEpoch = node.origin + loopStart;
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
+    } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
+        // Q13 FOR GROUPS (engine parity, AudioEngine::setLoopPoints
+        // stack branch, 2026-08-21): the definer STACK's window
+        // re-establishes the island — Q := window length, epoch solved
+        // so the inner position sounding now does not move (pos(t) =
+        // start + ((t − epoch) mod len)). The window stays on the stack
+        // (it IS the part); children untouched, no later collapse.
+        const inner = stackInnerCycle(node);
+        loopStart = Math.max(0, loopStart);
+        if (inner > 0) loopEnd = Math.min(loopEnd, inner);
+        node.loopStart = loopStart;
+        node.loopEnd = loopEnd;
+        if (loopEnd > loopStart && inner > 0) {
+            const t0 = state.masterPos;
+            const epoch0 = state.islandEpoch || 0;
+            const len = loopEnd - loopStart;
+            const oldLen = oldLe0 - oldLs0;
+            const p0 = (!node.loopBypassed && oldLen > 0)
+                ? oldLs0 + posMod(t0 - epoch0 - oldLs0, oldLen)
+                : posMod(t0 - epoch0, inner);
+            const pT = loopStart + posMod(p0 - loopStart, len);
+            state.islandQ = len;
+            state.islandEpoch = t0 - (pT - loopStart);
+            console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
+        }
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
                !anyNodeRecording()) {
         // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders).

@@ -620,7 +620,7 @@ function latentWindow(lane, vm) {
     // 2026-08-21) frames the parent's slice, not its own take — a
     // latent drag here would author a window in the wrong coordinates.
     // The parent owns the chrome.
-    if (lane.underMap) return null;
+    if (lane.underMap || lane.definerMember) return null;
     const maxQ = Math.round(lane.intrinsicQ || 0);
     // (The Q-definer never reaches here: its lane always carries a
     // window — the provisional branch builds the selection explicitly.)

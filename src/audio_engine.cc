@@ -257,6 +257,43 @@ int countCommittedClips(const celestrian::AudioNode* node) {
   return n;
 }
 
+/**
+ * Q13 FOR GROUPS (owner ruling 2026-08-21, the fractal twin of the sole
+ * clip definer): the island's DEFINER STACK — a stack whose direct clip
+ * children are the island's ONLY committed content and were recorded
+ * as ONE take (identical origin and duration), two or more of them (a
+ * single committed clip keeps the clip-definer path, whatever holds
+ * it). Its window then re-establishes (Q, epoch) exactly as a sole
+ * clip's does. Null otherwise. Message thread.
+ */
+celestrian::StackNode* definerStack(celestrian::AudioNode* node) {
+  if (node->getNodeType() != celestrian::NodeType::Stack) return nullptr;
+  auto* stack = static_cast<celestrian::StackNode*>(node);
+  // Every committed clip below must be a DIRECT child of one stack.
+  int direct = 0;
+  int64_t origin = 0, duration = 0;
+  celestrian::StackNode* nested = nullptr;
+  for (const auto& child : stack->ownedChildren()) {
+    if (child->getNodeType() == celestrian::NodeType::Clip) {
+      auto* c = static_cast<celestrian::ClipNode*>(child.get());
+      if (c->getIntrinsicDuration() <= 0) continue;
+      if (direct == 0) {
+        origin = c->origin_samples.load();
+        duration = c->getIntrinsicDuration();
+      } else if (c->origin_samples.load() != origin ||
+                 c->getIntrinsicDuration() != duration) {
+        return nullptr;  // two takes, not one
+      }
+      ++direct;
+    } else if (countCommittedClips(child.get()) > 0) {
+      if (nested != nullptr || direct > 0) return nullptr;
+      nested = static_cast<celestrian::StackNode*>(child.get());
+    }
+  }
+  if (nested != nullptr) return direct == 0 ? definerStack(nested) : nullptr;
+  return direct >= 2 ? stack : nullptr;
+}
+
 celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
   if (node->getNodeType() == celestrian::NodeType::Clip) {
     return node->getIntrinsicDuration() > 0
@@ -2116,9 +2153,15 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     int64_t c_end = end;
     auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
     if (clip != nullptr) c_end = std::min(end, clip->getIntrinsicDuration());
-    const bool q13_retrim = clip != nullptr && c_end > c_start &&
-                            clip->getIntrinsicDuration() > 0 &&
-                            islandCommittedClipCount() == 1 &&
+    const bool clip_definer = clip != nullptr &&
+                              clip->getIntrinsicDuration() > 0 &&
+                              islandCommittedClipCount() == 1;
+    // Q13 for groups (2026-08-21): the definer STACK's window
+    // re-establishes Q too.
+    const bool stack_definer =
+        clip == nullptr && definerStack(root_node.get()) == target;
+    const bool q13_retrim = c_end > c_start &&
+                            (clip_definer || stack_definer) &&
                             !root_node->hasActiveTake();
     const int64_t q = target->getEffectiveQuantum();
     const int64_t len = c_end - c_start;
@@ -2194,6 +2237,43 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
                               ? celestrian::timing::TimeMap::single(start, end)
                               : celestrian::timing::TimeMap::none(),
                           root_node->getEffectiveQuantum());
+    }
+  } else if (auto* stack = dynamic_cast<celestrian::StackNode*>(
+                 findNodeByUuid(root_node.get(), uuid));
+             stack != nullptr && definerStack(root_node.get()) == stack &&
+             !root_node->hasActiveTake()) {
+    // Q13 FOR GROUPS (owner ruling 2026-08-21): the definer STACK's
+    // window re-establishes the island exactly as a sole clip's does —
+    // Q := window length, epoch := the performance moment of the
+    // trimmed loop's top — but the window lives on the STACK (it IS
+    // the part, per the window law) and the children stay whole: no
+    // origin re-anchor, no lock-collapse later (a 1Q-long stack window
+    // is coherent by construction once Q = its length). PHASE-
+    // PRESERVING like the clip path: the inner position sounding right
+    // now folds into the new window, and the epoch is solved so that
+    // position does not move: pos(t) = start + ((t − epoch) mod len).
+    const int64_t inner = stack->getIntrinsicDuration();
+    start = std::max((int64_t)0, start);
+    if (inner > 0) end = std::min(end, inner);
+    e.d1 = (double)start;
+    e.d2 = (double)end;
+    if (end > start && inner > 0) {
+      const int64_t t0 = global_transport_pos.load();
+      const int64_t epoch0 = root_node->getEpoch();
+      const int64_t len = end - start;
+      const celestrian::timing::TimeMap old_map = stack->activeTimeMap();
+      int64_t p0;
+      if (old_map.active() && old_map.n == 1) {
+        const int64_t os = old_map.segs[0].start;
+        const int64_t ol = old_map.period();
+        p0 = ol > 0 ? os + (((t0 - epoch0 - os) % ol) + ol) % ol : start;
+      } else {
+        p0 = (((t0 - epoch0) % inner) + inner) % inner;
+      }
+      const int64_t pT = start + (((p0 - start) % len) + len) % len;
+      e.setsIsland = true;
+      e.iq = len;
+      e.iepoch = t0 - (pT - start);
     }
   }
   record(std::move(e));

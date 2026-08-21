@@ -37,6 +37,44 @@ int64_t clipProp(AudioEngine& e, const juce::String& uuid, const char* prop) {
 int64_t clipOrigin(AudioEngine& e, const juce::String& uuid) {
   return clipProp(e, uuid, "origin");
 }
+
+// Q13 FOR GROUPS helpers (2026-08-21): walk the published tree.
+juce::var findVar(const juce::var& node, const juce::String& id) {
+  if (node.getProperty("id", "").toString() == id) return node;
+  if (auto* kids = node.getProperty("nodes", juce::var()).getArray()) {
+    for (auto& k : *kids) {
+      juce::var hit = findVar(k, id);
+      if (!hit.isVoid()) return hit;
+    }
+  }
+  return {};
+}
+void clipIdsUnder(const juce::var& node, juce::StringArray& out) {
+  if (node.getProperty("type", "").toString() == "clip") {
+    out.add(node.getProperty("id", "").toString());
+    return;
+  }
+  if (auto* kids = node.getProperty("nodes", juce::var()).getArray()) {
+    for (auto& k : *kids) clipIdsUnder(k, out);
+  }
+}
+juce::String lastTopLevelId(AudioEngine& e) {
+  const juce::var state = e.getGraphState();
+  auto* nodes = nodesOf(state);
+  if (nodes == nullptr || nodes->isEmpty()) return {};
+  return nodes->getLast().getProperty("id", "").toString();
+}
+double deepProp(AudioEngine& e, const juce::String& id, const char* prop) {
+  const juce::var state = e.getGraphState();
+  const juce::var node = findVar(state, id);
+  return node.isVoid() ? 0.0 : (double)node.getProperty(prop, 0.0);
+}
+bool deepCommitted(AudioEngine& e, const juce::String& id) {
+  const juce::var state = e.getGraphState();
+  const juce::var node = findVar(state, id);
+  return !node.isVoid() && !(bool)node.getProperty("isRecording", false) &&
+         (double)node.getProperty("duration", 0.0) > 0.0;
+}
 }  // namespace
 
 class QTimeLockTests : public juce::UnitTest {
@@ -390,6 +428,130 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(clipProp(engine, c1, "duration"), q0,
                    "un-splice: full material returns");
       expect(segsOf(c1).isArray(), "un-splice: the cell map returns");
+    }
+
+    // ---- Q13 FOR GROUPS (owner ruling 2026-08-21) ----
+    // The fractal twin of the sole-clip definer: a first take recorded
+    // as a GROUP (N mics, one origin, one duration) is the island's
+    // definer; the STACK's window re-establishes (Q, epoch). The window
+    // stays on the stack (it IS the part under the window law), the
+    // children stay whole, and no lock-collapse follows.
+    beginTest("GROUPS: a first group take is the Q-definer; its window re-defines Q");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      expectEquals(ids.size(), 2, "two mics");
+      engine.startRecordingInNode(stack_id);
+      process(4 * Q);
+      engine.stopRecordingInNode(stack_id);
+      for (int i = 0; i < 40; ++i) {
+        if (deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1])) break;
+        process(512);
+      }
+      expect(deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1]),
+             "group take committed");
+      const int64_t D = (int64_t)deepProp(engine, ids[0], "duration");
+      const int64_t q0 = islandQ(engine), ep0 = islandEp(engine);
+      expectEquals(q0, D, "the whole take is 1Q (first take)");
+      process(12345);  // settle the recording view; phase somewhere nonzero
+
+      // A fractional-Q window on the STACK: refused anywhere else, here
+      // it re-establishes Q := len.
+      const int64_t ws = D / 4, len = D / 2;
+      // The inner position sounding NOW (masterPos is published wrapped
+      // on the audible cycle = D before the trim).
+      const int64_t p0 =
+          (int64_t)(double)engine.getGraphState().getProperty("masterPos", 0);
+      engine.setLoopPoints(stack_id, ws, ws + len);
+      expectEquals(islandQ(engine), len, "Q := the group window length");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "window lives on the stack");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), ws + len,
+                   "window end on the stack");
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), D,
+                     "children stay whole");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D,
+                     "children windows untouched (full span)");
+      }
+      // PHASE CONTINUITY: the position sounding now folds into the new
+      // window and does not move — heard = ws + masterPos' (wrapped on
+      // len now) must equal ws + ((p0 - ws) mod len).
+      {
+        const int64_t mp1 =
+            (int64_t)(double)engine.getGraphState().getProperty("masterPos", 0);
+        const int64_t pT = ws + (((p0 - ws) % len) + len) % len;
+        expectEquals(ws + mp1, pT,
+                     "epoch solved for continuity (pos(t) = start + ((t - epoch) mod len))");
+      }
+
+      engine.undo();
+      expectEquals(islandQ(engine), q0, "undo restores the old Q");
+      expectEquals(islandEp(engine), ep0, "undo restores the old epoch");
+      engine.redo();
+      expectEquals(islandQ(engine), len, "redo re-applies");
+
+      // Take 2 on a new top-level track: Q locks at len; the stack
+      // window survives (no collapse); an incoherent trim is refused.
+      engine.createNode("clip");
+      const juce::String t2 = lastTopLevelId(engine);
+      engine.startRecordingInNode(t2);
+      process(2 * len);  // the arm pends to the next Q boundary, then 1Q
+      engine.stopRecordingInNode(t2);
+      for (int i = 0; i < 8 && !deepCommitted(engine, t2); ++i) process(len);
+      expect(deepCommitted(engine, t2), "take 2 committed");
+      expectEquals(islandQ(engine), len, "Q locked at the trimmed length");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "stack window survives the lock (no collapse)");
+      engine.setLoopPoints(stack_id, 0, ws + len);  // 3/4 D = 1.5Q: incoherent
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "locked: incoherent group trim refused");
+      engine.setLoopPoints(stack_id, 0, len);  // 1Q: coherent, ordinary edit
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), (int64_t)0,
+                   "locked: a coherent group trim lands");
+      expectEquals(islandQ(engine), len, "and leaves Q alone");
+    }
+
+    beginTest("GROUPS: two takes in one stack are not a definer");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      engine.startRecordingInNode(stack_id);
+      process(2 * Q);
+      engine.stopRecordingInNode(stack_id);
+      process(4096);
+      const int64_t D = islandQ(engine);
+      expect(D > 0, "Q established");
+      // A third mic later: a second take inside the same stack.
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      const juce::String c3 = ids[ids.size() - 1];
+      engine.startRecordingInNode(c3);
+      process(D);
+      engine.stopRecordingInNode(c3);
+      for (int i = 0; i < 80 && !deepCommitted(engine, c3); ++i) process(512);
+      expect(deepCommitted(engine, c3), "third mic committed");
+      engine.setLoopPoints(stack_id, 0, (3 * D) / 2);  // 1.5Q: incoherent
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), (int64_t)0,
+                   "not a definer: incoherent window refused");
+      expectEquals(islandQ(engine), D, "Q untouched");
     }
   }
 };

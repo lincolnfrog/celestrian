@@ -127,6 +127,51 @@ export function isQ13SoleDefiner(node) {
         committedClipCount() === 1 && !anyNodeRecording();
 }
 
+function committedClipCountIn(nodes) {
+    let n = 0;
+    (function visit(list) {
+        (list || []).forEach(node => {
+            if (node.type === 'clip' && !node.isRecording && (node.duration || 0) > 0) n++;
+            if (node.nodes) visit(node.nodes);
+        });
+    })(nodes);
+    return n;
+}
+
+/** True when `node` IS the island's definer stack and no take is in
+ * flight — the state in which its window re-establishes Q. */
+export function isQ13DefinerStack(node) {
+    if (!node || node.type !== 'stack' || anyNodeRecording()) return false;
+    const d = definerStackNode();
+    return d === node;
+}
+
+/**
+ * Q13 FOR GROUPS (owner ruling 2026-08-21, engine parity
+ * `definerStack`): the island's DEFINER STACK — the stack whose direct
+ * clip children are the island's ONLY committed content and were
+ * recorded as ONE take (identical origin and duration), two or more of
+ * them (a single committed clip keeps the clip-definer path). Its
+ * window re-establishes (Q, epoch) exactly as a sole clip's does.
+ * Walks from the root's child list; returns the stack node or null.
+ */
+export function definerStackNode(nodes = state.nodes, owner = null) {
+    let direct = 0, origin = 0, duration = 0, nested = null;
+    for (const n of nodes || []) {
+        if (n.type === 'clip') {
+            if (n.isRecording || !(n.duration > 0)) continue;
+            if (direct === 0) { origin = n.origin || 0; duration = n.duration; }
+            else if ((n.origin || 0) !== origin || n.duration !== duration) return null;
+            direct++;
+        } else if (n.type === 'stack' && committedClipCountIn(n.nodes) > 0) {
+            if (nested || direct > 0) return null;
+            nested = n;
+        }
+    }
+    if (nested) return direct === 0 ? definerStackNode(nested.nodes, nested) : null;
+    return direct >= 2 ? owner : null;
+}
+
 // A node's RAW map geometry (phase 3): the multi-segment override when
 // installed, else the single window. Callers gate on loopBypassed
 // themselves (parity with activeTimeMap's split responsibilities).
