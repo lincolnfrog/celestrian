@@ -165,7 +165,7 @@ test('the ROOT grid row: seqOpen on the root emits it FIRST, over the '
     assert.equal(vm.rootSeq.bypassed, false);
     // The gated-off span projects onto track a's LANE as a dim.
     const laneA = vm.lanes.find(l => l.id === a);
-    assert.deepEqual(laneA.seqDims.offSegsQ, [[2, 4]],
+    assert.deepEqual(laneA.seqDims[0].offSegsQ, [[2, 4]],
         'off step dims the lane');
     const laneB = vm.lanes.find(l => l.id === b);
     assert.equal(laneB.seqDims, undefined, 'inherit-ON lane undimmed');
@@ -192,4 +192,39 @@ test('malformed payloads refuse; null clears', async () => {
         'zero-length step refused, previous sequence kept');
     await callNative('setSequence', 'mock-root', null);
     assert.equal(getState().sequence, undefined, 'null clears');
+});
+
+test('STEP 3 (§12): nested sequences — period law on the group lane, layered dims, one-shot echoes', async () => {
+    loadScenario('fractal-drums');
+    const st = getState();
+    const vm = deriveViewModel(st, { ...opts, seqOpen: new Set(['drums']) });
+    assert.equal(vm.cycleQ, 8, 'the root song frames everything');
+    const drums = vm.lanes.find(l => l.id === 'drums');
+    assert.equal(drums.periodQ, 4, 'the sequenced group tiles at its song length');
+    assert.deepEqual(drums.reps.map(r => [r.startQ, r.endQ, r.ghost]),
+        [[0, 4, false], [4, 8, true]], 'one pass per 4Q');
+    assert.deepEqual(drums.seqDims, [{ periodQ: 8, offSegsQ: [[0, 4]] }],
+        'the root gates Drums off in the intro');
+    const kick = vm.lanes.find(l => l.id === 'kick');
+    assert.deepEqual(kick.seqDims, [
+        { periodQ: 8, offSegsQ: [[0, 4]] },
+        { periodQ: 4, offSegsQ: [[1, 2], [3, 4]] },
+    ], 'layers compose: the root pass outermost, the kit pattern inside');
+    assert.deepEqual(kick.reps.map(r => [r.startQ, r.endQ, r.ghost]),
+        [[0, 1, false], [4, 5, true]], 'a one-shot echoes once per kit pass');
+    const hat = vm.lanes.find(l => l.id === 'hat');
+    assert.deepEqual(hat.seqDims, [{ periodQ: 8, offSegsQ: [[0, 4]] }],
+        'an inherit-ON row gets only the outer layer');
+    const grid = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === 'drums');
+    assert.equal(grid.innerCycleQ, 1, 'an all-one-shot kit appends 1Q steps (the drum-machine scale)');
+    assert.deepEqual(grid.children.map(c => c.gates.map(Number).join('')),
+        ['1010', '0101', '1111']);
+    // Bypass the kit's pattern: the group lane falls back to its
+    // intrinsic tiling and the inner layer disappears (I9).
+    await callNative('toggleSequence', 'drums');
+    const vm2 = deriveViewModel(getState(), opts);
+    assert.equal(vm2.lanes.find(l => l.id === 'drums').periodQ, 1,
+        'bypassed: intrinsic period again');
+    assert.deepEqual(vm2.lanes.find(l => l.id === 'kick').seqDims,
+        [{ periodQ: 8, offSegsQ: [[0, 4]] }], 'only the root layer remains');
 });

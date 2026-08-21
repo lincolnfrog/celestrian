@@ -648,8 +648,12 @@ function lanePeaks(lane, aux) {
  */
 function patchSeqDims(body, lane, cycleQ) {
     let layer = body.querySelector(':scope > .seq-dims');
-    const want = lane.seqDims && lane.seqDims.periodQ > 0 &&
-        !lane.windowEditing;
+    // LAYERS (docs/sequencer.md §12.2): every enclosing sequence that
+    // gates this lane contributes one tiled layer; the lane reads as
+    // silent where ANY of them silences it.
+    const layers = Array.isArray(lane.seqDims) ? lane.seqDims
+        : (lane.seqDims ? [lane.seqDims] : []);
+    const want = layers.some(d => d.periodQ > 0) && !lane.windowEditing;
     if (!want) {
         if (layer) layer.remove();
         return;
@@ -658,20 +662,24 @@ function patchSeqDims(body, lane, cycleQ) {
         layer = el('div', 'seq-dims');
         body.appendChild(layer);
     }
-    const key = JSON.stringify([lane.seqDims, cycleQ]);
+    const key = JSON.stringify([layers, cycleQ]);
     if (layer._key === key) return;
     layer._key = key;
     layer.textContent = '';
-    const P = lane.seqDims.periodQ;
-    for (let base = 0; base < cycleQ; base += P) {
-        for (const [s, e] of lane.seqDims.offSegsQ) {
-            const from = base + s;
-            const to = Math.min(base + e, cycleQ);
-            if (to - from <= 1e-9) continue;
-            const d = el('div', 'seq-dim');
-            d.style.left = pct(from, cycleQ);
-            d.style.width = pct(to - from, cycleQ);
-            layer.appendChild(d);
+    layers.forEach((dims, li) => {
+        const P = dims.periodQ;
+        if (!(P > 0)) return;
+        for (let base = 0; base < cycleQ; base += P) {
+            for (const [s, e] of dims.offSegsQ) {
+                const from = base + s;
+                const to = Math.min(base + e, cycleQ);
+                if (to - from <= 1e-9) continue;
+                const d = el('div', 'seq-dim');
+                d.dataset.layer = String(li);
+                d.style.left = pct(from, cycleQ);
+                d.style.width = pct(to - from, cycleQ);
+                layer.appendChild(d);
+            }
         }
-    }
+    });
 }

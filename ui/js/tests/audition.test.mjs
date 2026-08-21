@@ -152,7 +152,11 @@ test('a group stack audition: derived window on the group, not undoable', async 
     const vm = deriveViewModel(getState(), opts);
     const lane = vm.lanes.find(l => l.id === g.id);
     assert.equal(lane.seq.auditionStep, 1, 'lane chip fact');
-    assert.equal(lane.window, null, 'no song-frame brackets on an intrinsic-frame lane');
+    // Step 3 (§12.2): the group lane tiles in SONG coordinates now, so
+    // the derived brackets land where they mean.
+    assert.equal(lane.periodQ, 4, 'the group lane tiles at its song length');
+    assert.deepEqual([lane.window.startQ, lane.window.endQ, lane.window.active],
+        [2, 4, true], 'nested audition brackets drawn at the step');
     await callNative('auditionStep', g.id, -1);
     assert.equal(nodeById(g.id, getState().nodes).windowActive, false);
 });

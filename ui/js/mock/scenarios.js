@@ -56,6 +56,8 @@ const IDLE_FLAGS = { isRecording: false, isPlaying: false,
  *  - 'nested-stacks'             — stack inside a stack
  *  - '1q-3q-loop-bug'            — loop region bug repro (collapse + trim)
  *  - 'recording-1q-plus-growing' — live take growing past 2.5Q
+ *  - 'fractal-drums'             — root song over bass + a sequenced
+ *                                  one-shot drum kit (sequencer.md §12)
  */
 export function loadScenario(name) {
     console.log('[MockBackend] Loading scenario:', name);
@@ -79,6 +81,9 @@ export function loadScenario(name) {
     state.islandEpoch = 0;
     state.islandQ = 0;  // fresh session: Q re-establishes per scenario
     state.masterGain = 1;  // master fader back to unity (test isolation)
+    state.rootSequence = null;        // the root song (sequencer.md)
+    state.rootSequenceBypassed = false;
+    state.rootAuditionStep = -1;
     // Loading a scenario is a fresh session — undo history does not carry
     // across it (test isolation + mirrors constructing a fresh engine).
     clearUndoHistory();
@@ -431,6 +436,46 @@ export function loadScenario(name) {
                 ],
             })];
             state.nextId = 3;
+            break;
+
+        case 'fractal-drums':
+            // THE FRACTAL DRUM DEMO (docs/sequencer.md §12, mockup round
+            // 2 §4): a root song (intro 4Q | full 4Q) over a 4Q bass and
+            // a sequenced Drums kit — three 1Q one-shot hits under the
+            // kit's own 4 × 1Q pattern. The root gates Drums off in the
+            // intro. "A stack is a drum machine to its children and a
+            // track to its parent."
+            state.islandQ = Q;
+            state.isPlaying = true;
+            state.nodes = [
+                makeClip({
+                    id: 'bass', name: 'Bass', duration: 4 * Q, origin: 0,
+                    effectiveQuantum: Q, ...IDLE_FLAGS, isPlaying: true,
+                    loopStart: 0, loopEnd: 4 * Q, contextCycle: 4 * Q,
+                }),
+                makeStack({
+                    id: 'drums', name: 'Drums', w: 700, h: 350,
+                    sequence: {
+                        steps: [1, 2, 3, 4].map(i => ({ name: String(i), len: Q })),
+                        gates: { kick: [true, false, true, false],
+                                 snare: [false, true, false, true] },
+                    },
+                    sequenceBypassed: false,
+                    nodes: ['kick', 'snare', 'hat'].map((id, i) => makeClip({
+                        id, name: id[0].toUpperCase() + id.slice(1), y: 120 * i,
+                        duration: Q, origin: 0, effectiveQuantum: Q,
+                        ...IDLE_FLAGS, isPlaying: true,
+                        loopStart: 0, loopEnd: Q, periodSource: 'context',
+                        contextCycle: 4 * Q,
+                    })),
+                }),
+            ];
+            state.rootSequence = {
+                steps: [{ name: 'intro', len: 4 * Q }, { name: 'full', len: 4 * Q }],
+                gates: { drums: [false, true] },
+            };
+            state.rootSequenceBypassed = false;
+            state.nextId = 10;
             break;
 
         case 'recording-1q-plus-growing':

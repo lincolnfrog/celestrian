@@ -123,6 +123,16 @@ function mapOf(node, quantum) {
  */
 function displayPeriodQ(node, quantum) {
     if (node.isRecording) return 0;
+    // THE PERIOD LAW on a GROUP lane (docs/sequencer.md §2, §12.2):
+    // a stack with an active sequence IS a part of the song's length
+    // from outside — its lane tiles one pass per seqLen, its chip reads
+    // the song. (A windowed group keeps its intrinsic display, per the
+    // 2026-07-11 ruling: windows are view-of-time, a sequence is the
+    // part's length.)
+    if (node.type === 'stack') {
+        const seqLen = activeSeqSamples(node);
+        if (seqLen > 0) return seqLen / quantum;
+    }
     return intrinsicPeriodQ(node, quantum);
 }
 
@@ -405,7 +415,12 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             if (!offSegs.length) offSegs = null;
         }
         if (offSegs && (lane.kind === 'clip' || lane.kind === 'group')) {
-            lane.seqDims = { periodQ: totalQ, offSegsQ: offSegs };
+            // LAYERS compose (§12.2): inner scopes attach first (during
+            // the recursion), outer scopes after — prepend so the list
+            // reads outermost first. A lane is silent where ANY
+            // enclosing sequence silences it (the fractal gate).
+            lane.seqDims = [{ periodQ: totalQ, offSegsQ: offSegs },
+                            ...(lane.seqDims || [])];
         }
     }
 }
@@ -469,6 +484,22 @@ function attachFrameHealth(lanes, state, nodes, quantum, qEstablished) {
         });
     };
     visitScope(state.id || '', state, nodes);
+}
+
+/**
+ * The cycle a scope's children HEAR (engine parity, StackNode::
+ * childContext context_cycle): the song when the scope is sequenced;
+ * else the lcm of its looping members' effective periods; else the
+ * enclosing scope's cycle (an all-one-shot group fires once per the
+ * outer cycle). In Q.
+ */
+function scopeCycleQOf(holder, quantum, inheritedQ) {
+    const seqLen = activeSeqSamples(holder);
+    if (seqLen > 0) return seqLen / quantum;
+    const members = scopeMembers(holder.nodes, quantum)
+        .filter(m => m.periodQ > 0);
+    const inner = lcmAll(members.map(m => m.periodQ), 1);
+    return inner > 0 ? inner : (inheritedQ || 0);
 }
 
 /** A live take anywhere below (drives the group lane's map cue). */
@@ -908,8 +939,10 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
     // so those brackets/dims would land in the wrong frame. The grid's
     // looping header + the lane chip carry the state instead; the
     // authored window (if any) is hidden underneath for the duration.
-    const seqAudition = auditionStepOf(seqOf(node)) >= 0;
-    const gwin = seqAudition ? null : mapOf(node, quantum);
+    // (Step 3, §12.2: a sequenced group lane now tiles in SONG
+    // coordinates, so a nested audition's derived brackets land where
+    // they mean — the step-2 carve-out is gone.)
+    const gwin = mapOf(node, quantum);
     const lane = Object.assign(laneCommon(node, state), {
         kind: 'group',
         depth,
@@ -938,7 +971,7 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
         // publishes the window phase on `playhead`). Kept OUT of
         // the window object: it changes every poll and must not
         // churn the overlay's reconcile key.
-        windowPhase: node.windowActive && !seqAudition ? (node.playhead || 0) : 0,
+        windowPhase: node.windowActive ? (node.playhead || 0) : 0,
         folded: node.isExpanded === false,
         groupArm: groupArmState(node),
         // The map cue on the MAPPING group itself: a take is
@@ -982,7 +1015,9 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
     const ownMap = gwin && gwin.active
         ? { periodQ: gwin.periodQ, startQ: gwin.segs[0][0],
             segs: gwin.segs,
-            groupCycleQ: intrinsicPeriodQ(node, quantum) }
+            // The map's coordinates: the group's SONG when sequenced
+            // (S9 — the map selects song positions), else its cycle.
+            groupCycleQ: periodQ > 0 ? periodQ : intrinsicPeriodQ(node, quantum) }
         : null;
     // TODO(phase 3): children of a group with an ACTIVE window
     // live in the window's re-based inner frame (time_maps.md §2
@@ -991,8 +1026,14 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
     // shell renders windowed groups interactively.
     if (!lane.folded) {
         const childFrom = lanes.length;
+        // The SCOPE CYCLE the children hear (engine: context_cycle —
+        // the song when sequenced, else the lcm of the looping
+        // members, else inherited). One-shot lanes echo at it (§12.2).
+        const prevScope = ctx.scopeCycleQ;
+        ctx.scopeCycleQ = scopeCycleQOf(node, quantum, prevScope);
         (node.nodes || []).forEach(c =>
             pushLane(c, depth + 1, ownMap || mapCtx, ctx));
+        ctx.scopeCycleQ = prevScope;
         // An ACTIVE sequence projects its gates onto the child lanes as
         // dims (the display side of the period law — sequencer.md §9:
         // you READ the song on the lanes, you EDIT it in the grid).
@@ -1192,6 +1233,24 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
     // styling rides lane.oneShot in the patch layer.
     if (node.periodSource === 'context') {
         reps = reps.filter(r => !r.ghost);
+        // …except under a SEQUENCED (or otherwise shorter) scope cycle
+        // (§12.2): the hit fires once per pass of that cycle, so its
+        // echoes tile at the scope period — what sounds, shown.
+        const scopeQ = ctx.scopeCycleQ || 0;
+        const take = reps[0];
+        if (take && scopeQ > 0 && scopeQ < cycleQ - EPS &&
+            cycleQ / scopeQ <= MAX_TILES) {
+            const lenQ = Math.min(lanePeriodQ, scopeQ);
+            const first = posMod(take.startQ, scopeQ);
+            for (let s = first; s < cycleQ; s += scopeQ) {
+                if (Math.abs(s - take.startQ) < EPS) continue;
+                const endQ = Math.min(cycleQ, s + lenQ);
+                if (endQ - s <= EPS) continue;
+                reps.push({ startQ: s, endQ, ghost: true,
+                            wrapped: endQ !== s + lenQ });
+            }
+            reps.sort((a, b) => a.startQ - b.startQ);
+        }
     }
     lanes.push(Object.assign(laneCommon(node, state), {
         kind: 'clip',
@@ -1464,6 +1523,10 @@ export function deriveViewModel(state, opts = {}) {
         // Stacks whose sequencer grid is expanded (view state, the
         // fxOpen pattern — docs/sequencer.md §9 S15).
         seqOpen: opts.seqOpen || null,
+        // The cycle top-level lanes hear (§12.2): the root song when
+        // sequenced, else the audible loop.
+        scopeCycleQ: rootSeqSamples > 0 ? rootSeqSamples / quantum
+                                        : loopSamples / quantum,
     };
     nodes.forEach(n => pushLane(n, 0, null, ctx));
     // The ROOT's active sequence projects onto the top-level lanes

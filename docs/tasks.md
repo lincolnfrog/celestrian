@@ -658,8 +658,13 @@ in docs/sequencer.md §0/§9. Build order as ruled:
   audition/take_undo/frame_health units, 2 new e2e. Suites after: C++
   all green (sandbox, stereo_pan env-excluded), JS 32 files,
   Playwright 58/58 ×2. Owner commits.
-- [ ] **3. Nested sequences in UI** (engine gets them free via
-  fractality).
+- [x] **3. Nested sequences in UI** — ✅ BUILT 2026-08-20 (docs/
+  sequencer.md §12): the period law on GROUP lanes (a sequenced group
+  tiles at its song length; chip reads it), seq dims as COMPOSED
+  LAYERS (outer scope over inner — `lane.seqDims[]`), one-shot echoes
+  at the scope cycle, nested audition brackets restored, the "Fractal
+  Drums" mock scenario + harness button; sequence.test.mjs + e2e
+  "NESTED". JS 32 files green, Playwright 59/59. Owner commits.
 - [ ] **4. Cue steps** — per-step epoch re-base = the Q6 serial
   primitive (`cue` reserved in the step format now, S11).
 - [ ] **5. Successor graphs + the seed** — branch-with-chance /

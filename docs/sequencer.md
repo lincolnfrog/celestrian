@@ -15,7 +15,9 @@
 > landed 2026-08-20 — see §10 and tasks.md Tier 4b. Step 2 (the step
 > audition, record-into-a-step, TAKES UNDOABLE + the auto-gate, the
 > frame-health badge, the window domain) BUILT 2026-08-20, same day —
-> design §11, rulings S16–S19 + implementation record §11.10.
+> design §11, rulings S16–S19 + implementation record §11.10. Step 3
+> (nested sequences in the UI) BUILT 2026-08-20 — §12. Next: step 4
+> (cue steps).
 
 ---
 
@@ -771,6 +773,80 @@ What landed, and the three things building it taught:
   folder (the already-open orphan-pruning item); the mock's undo
   snapshots carry `auditionStep` on stacks (monitoring state the
   engine's log never touches) — harmless, noted.
+
+---
+
+## 12. Build step 3 — nested sequences in the UI (2026-08-20)
+
+> Status: **built** same day (owner: "let's go for step 3"). The
+> engine has had nested sequences since step 1 (fractality); this step
+> makes the DISPLAY honest about them. No new rulings were needed —
+> every line below is the period law (§2), "ghosts show what sounds"
+> (Q10), and S15 ("lanes are display") applied one level down.
+
+### 12.1 What was dishonest (the fractal drum demo, mockup round 2 §4)
+
+A Drums group with its own 4 × 1Q sequence over one-shot hits, inside
+an 8Q root song that gates Drums off in the intro:
+
+- The **Drums lane tiled at its intrinsic period** (lcm of the kit —
+  1Q, or nothing at all when every child is a one-shot), though from
+  outside the group IS a 4Q part (period law).
+- The **kit lanes showed only the root's dims** — `attachSeqDims` ran
+  once per scope and the outer scope's pass overwrote the inner one,
+  so Kick's own "off in steps 2 and 4" never drew.
+- A **one-shot hit drew once per root frame** though it fires once
+  per Drums pass (context cycle = the group's song, §4) — the Q5 "no
+  ghost repetitions" rule was written for a one-shot whose scope
+  cycle IS the frame.
+- A **nested audition hid its brackets** (step 2 deferral): the
+  group lane's frame was intrinsic, so song coordinates had nowhere
+  to land.
+
+### 12.2 The four projections
+
+1. **Group lanes obey the period law.** `displayPeriodQ` of a stack
+   with an active sequence is its seqLen; the lane tiles one take
+   tile + ghosts per pass across the frame. The rail's period chip
+   reads the song length; the composite waveform (child peaks) tiles
+   with it. Bypass the sequence and the lane returns to its intrinsic
+   tiling (I9).
+2. **Dims COMPOSE.** `lane.seqDims` is now a LIST of layers
+   `[{periodQ, offSegsQ}, …]`, outermost first: the root's pass dims
+   the whole Drums subtree over 8Q, the Drums pass dims Kick over 4Q;
+   `patchSeqDims` tiles every layer. A lane reads as silent where ANY
+   enclosing sequence silences it — exactly the engine's fractal
+   gate.
+3. **One-shots echo at their scope cycle.** A one-shot under a
+   sequenced scope fires once per pass of that scope's song; its lane
+   shows ghost tiles at that period (dashed, the one-shot tone) when
+   the scope cycle is shorter than the frame. The Q5 rule survives
+   unchanged where scope cycle = frame.
+4. **Nested auditions draw.** With the group lane in song
+   coordinates, the derived window's brackets land where they mean
+   (first tile), and the children's `parentMapSegs` dims (the
+   excluded song regions) are already in that frame — the step-2
+   `gwin = null` carve-out is gone.
+
+### 12.3 The nested grid
+
+Unchanged by design (S15: one control, every depth): the group's
+rail chip opens the same grid one row down; "+ step" = one inner
+cycle, which for an all-one-shot kit is 1Q (the drum-machine scale);
+the playing column is `playheadQ mod totalQ` because a nested
+sequence is anchored at the same cycle top as its parent (the S9
+composition passes mapped time down; under a root audition the
+playhead is already mapped into the song).
+
+### 12.4 Record
+
+Built in `view_model.js` (displayPeriodQ, attachSeqDims → layers,
+one-shot echoes, the audition carve-out removed), `lane_body.js`
+(`patchSeqDims` over layers), the mock gained the **"Fractal Drums"**
+scenario (root song over bass + a sequenced Drums kit of one-shots)
+for the harness; tests in `sequence.test.mjs` (layers, period law on
+the group lane, one-shot echoes) and e2e `sequencer.spec.js`
+("NESTED: the fractal drum kit").
 
 ---
 

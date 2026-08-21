@@ -316,6 +316,42 @@ test.describe('Sequencer (docs/sequencer.md)', () => {
         await expect(chip).toHaveText(/seq·4Q/);
     });
 
+    test('NESTED (§12): the fractal drum kit — two grids, layered dims, song-length group lane', async ({ page }) => {
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("Fractal Drums")');
+        await page.waitForSelector('.lane[data-kind="group"]');
+        const drums = page.locator('.lane[data-id="drums"]');
+        // The group lane reads its SONG length, not the kit's lcm.
+        await expect(drums.locator('.rail-sub')).toHaveText('4Q');
+        await expect(drums.locator('.seq-btn')).toHaveText('seq·4Q');
+        // Layered dims: Drums carries the root's intro dim; Kick carries
+        // the root's AND its own pattern (layers 0 and 1).
+        await expect(drums.locator('.seq-dim')).toHaveCount(1);
+        const kick = page.locator('.lane[data-id="kick"]');
+        await expect(kick.locator('.seq-dim[data-layer="0"]')).toHaveCount(1);
+        await expect(kick.locator('.seq-dim[data-layer="1"]')).toHaveCount(4);
+        const hat = page.locator('.lane[data-id="hat"]');
+        await expect(hat.locator('.seq-dim')).toHaveCount(1);
+        // Two grids at once: the root's (transport chip) and the kit's.
+        await page.locator('#root-seq-btn').click();
+        await drums.locator('.seq-btn').click();
+        const grids = page.locator('.lane-seq');
+        await expect(grids).toHaveCount(2);
+        const kitGrid = page.locator('.lane-seq[data-id="seq:drums"]');
+        await expect(kitGrid.locator('.seq-hcell')).toHaveCount(4);
+        await expect(kitGrid.locator('.seq-addstep')).toHaveText(/1Q/);
+        // Paint the hat off in step 1: its lane gains the inner layer.
+        await kitGrid.locator('.seq-grid-row').nth(3).locator('.seq-pad').nth(0).click();
+        await expect(hat.locator('.seq-dim[data-layer="1"]')).toHaveCount(2);
+        // Bypass the kit's pattern from its footer: the group lane
+        // falls back to the intrinsic 1Q tiling; the root layer stays.
+        await kitGrid.locator('.seq-bypass').click();
+        await expect(drums.locator('.rail-sub')).toHaveText('1Q');
+        await expect(kick.locator('.seq-dim[data-layer="1"]')).toHaveCount(0);
+        await expect(kick.locator('.seq-dim[data-layer="0"]')).toHaveCount(1);
+    });
+
     test('rename a step inline; delete via right-click; last delete clears', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
         const group = page.locator('.lane[data-kind="group"]').first();
