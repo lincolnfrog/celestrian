@@ -121,6 +121,38 @@ async function dragBracket(page, bracket, body, targetQ, cycleQ) {
 // Stack" with committed clips named Clip A/B/C).
 test.describe('Session shell', () => {
 
+    test('SPACE stops recording too: the take lands at its boundary, then the transport pauses', async ({ page }) => {
+        // Owner request 2026-08-21 (R stays the record key). Real-time
+        // mock transport: a 1Q definer, then a second track recording.
+        await loadHarness(page, 'Single Clip');
+        const ids = await page.evaluate(async () => {
+            const c = window.celestrian;
+            const t2 = await c.callNative('createNode', 'clip', '');
+            if (!c.getState().isPlaying) await c.callNative('togglePlayback');
+            await c.callNative('startRecordingInNode', t2);
+            return { t2 };
+        });
+        const clip = () => page.evaluate(id =>
+            window.celestrian.getState().nodes.find(n => n.id === id), ids.t2);
+        await expect.poll(async () => (await clip()).isRecording, { timeout: 8000 })
+            .toBe(true);
+        // Let some audio land, then SPACE on the page body.
+        await page.waitForTimeout(300);
+        await page.keyboard.press('Space');
+        // The take finishes to its boundary (never cut short)…
+        await expect.poll(async () => {
+            const c = await clip();
+            return !c.isRecording && c.duration > 0;
+        }, { timeout: 15000 }).toBe(true);
+        // …and THEN the transport pauses — not before.
+        await expect.poll(() => page.evaluate(() =>
+            window.celestrian.getState().isPlaying), { timeout: 3000 }).toBe(false);
+        // Space again: plain resume.
+        await page.keyboard.press('Space');
+        await expect.poll(() => page.evaluate(() =>
+            window.celestrian.getState().isPlaying)).toBe(true);
+    });
+
     test('boots the harness and renders the island as lanes', async ({ page }) => {
         await loadHarness(page, '1Q + 4Q + 3Q (LCM=12)');
         // group + 3 clips + the add-track affordance row

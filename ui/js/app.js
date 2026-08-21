@@ -506,6 +506,7 @@ async function startPolling() {
                 refreshPeaks(state.nodes, (state.perf && state.perf.sampleRate) || 44100);
                 lastNodesById = indexNodes(state.nodes);
                 lastRootId = state.id || '';
+                settlePendingPause(state);
                 // Committed clips whose real waveform hasn't landed yet:
                 // composites must not blend their live meter peaks
                 const pendingFetch = new Set();
@@ -747,12 +748,48 @@ function isTypingTarget(t) {
         t.tagName === 'SELECT' || t.isContentEditable;
 }
 
+/* SPACE = STOP EVERYTHING (owner request 2026-08-21: "space bar stops
+ * playback but not recording, it should do both"; R stays the record
+ * key). With a take rolling, Space requests the stop — the take finishes
+ * to its next boundary like every stop (owner ruling 2026-07-10: stops
+ * always pad forward) — and the transport PAUSES the moment it lands
+ * (pausing the clock first would strand the take awaiting a boundary
+ * that never comes). An armed-not-yet-capturing take is cancelled and
+ * the pause follows on the next poll. A second Space before the take
+ * lands pauses at once (the user insists; the take resumes with play).
+ * Without a hot take, Space is the plain pause/resume toggle. */
+let pauseWhenTakeLands = false;
+
+async function onSpace() {
+    const anyHot = [...lastNodesById.values()].some(isHotClip);
+    if (anyHot && !pauseWhenTakeLands) {
+        pauseWhenTakeLands = true;
+        if (lastRootId) await callNative('stopRecordingInNode', lastRootId);
+        setLogLine('Stopping recording at the boundary, then pausing');
+        return;
+    }
+    pauseWhenTakeLands = false;
+    callNative('togglePlayback');
+}
+
+/** Poll hook: the deferred pause from onSpace, once nothing is hot. */
+function settlePendingPause(state) {
+    if (!pauseWhenTakeLands) return;
+    const anyHot = [...lastNodesById.values()].some(isHotClip);
+    if (anyHot) return;
+    pauseWhenTakeLands = false;
+    if (state.isPlaying) {
+        callNative('togglePlayback');
+        setLogLine('Recording stopped — paused');
+    }
+}
+
 function wireKeyboard() {
     window.addEventListener('keydown', e => {
         if (isTypingTarget(e.target)) return;
         if (e.code === 'Space') {
             e.preventDefault();
-            callNative('togglePlayback');
+            onSpace();
             return;
         }
         // Undo / redo (edits-as-events, §2.2 Step 1). Cmd/Ctrl+Z undoes;

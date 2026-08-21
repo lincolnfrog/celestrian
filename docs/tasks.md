@@ -539,6 +539,14 @@ with kernel.md:
   top-level lane → that lane (＋ Track → `r`, no click). Wired in the
   session-view keyboard dispatcher (no-modifier, not-typing gate,
   like the zoom/teleport keys); handler in app.js `onRecordKey`.
+- [x] **Space stops recording too** — ✅ done 2026-08-21 (field: "space
+  bar stops playback but not recording, it should do both"; `r` stays
+  the record key). With a take rolling, Space requests the stop (the
+  take finishes to its boundary — stops always pad forward) and the
+  transport pauses the moment it lands; pausing the clock first would
+  strand the take. A second Space before it lands pauses at once.
+  Without a hot take: plain pause/resume. app.js `onSpace` +
+  `settlePendingPause` (poll hook); e2e "SPACE stops recording too".
 
 ### Stacks / UI (pre-audit backlog, 2026-03 — owner to re-rule)
 > Untouched since the March round and written before the unification
