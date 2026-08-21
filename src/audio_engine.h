@@ -211,6 +211,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * recursive. Drives provisional-Q mutability (Q13 non-sticky) and the
    * project-birth trigger (ProjectManager). Message thread. */
   int islandCommittedClipCount() const;
+  /** Set the island (Q, epoch) from an edit applier AND keep every
+   * sequence musically true (owner ruling 2026-08-21, sequences track
+   * Q): Q → Q' rescales step lengths by Q'/Q; Q → 0 (empty island)
+   * clears them, capturing each into `inv.seq_riders` so the inverse
+   * reinstalls them. Message thread; the one path appliers use. */
+  void setIslandQuantum(int64_t q, int64_t epoch, celestrian::Edit& inv);
+  /** Reinstall sequences an inverse carries (undo of a clearing
+   * revert). */
+  void reinstallSequenceRiders(celestrian::Edit& e);
 
   /**
    * Toggles a stack's loop window between active and bypassed

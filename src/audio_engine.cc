@@ -447,6 +447,61 @@ int AudioEngine::islandCommittedClipCount() const {
   return root_node ? countCommittedClips(root_node.get()) : 0;
 }
 
+namespace {
+void forEachStack(celestrian::AudioNode* node,
+                  const std::function<void(celestrian::StackNode&)>& f) {
+  if (node->getNodeType() != celestrian::NodeType::Stack) return;
+  auto* stack = static_cast<celestrian::StackNode*>(node);
+  f(*stack);
+  for (const auto& child : stack->ownedChildren()) forEachStack(child.get(), f);
+}
+}  // namespace
+
+void AudioEngine::setIslandQuantum(int64_t q, int64_t epoch,
+                                   celestrian::Edit& inv) {
+  const int64_t old_q = root_node->getQuantum();
+  root_node->setQuantum(q, epoch);
+  if (q == old_q) return;
+  // SEQUENCES TRACK Q (owner ruling 2026-08-21): a step is "5Q", not
+  // "220500 samples" — re-establishing Q (a definer trim) keeps every
+  // step's Q value; reverting to an empty island (q == 0) clears the
+  // sequences (a song over nothing has no meaning — and keeping it
+  // produced a 6.52Q step when the next take set a new Q, field
+  // 2026-08-21). Cleared sequences ride the inverse for undo.
+  forEachStack(root_node.get(), [&](celestrian::StackNode& stack) {
+    const celestrian::Sequence* cur = stack.sequencePtr();
+    if (cur == nullptr) return;
+    if (q <= 0) {
+      celestrian::Edit::SeqRider r;
+      r.uuid = stack.getUuid();
+      r.seq = std::make_unique<celestrian::Sequence>(*cur);
+      inv.seq_riders.push_back(std::move(r));
+      stack.setAuditionStep(-1);
+      if (const auto* old = stack.exchangeSequence(nullptr)) retireOwned(old);
+      return;
+    }
+    if (old_q <= 0) return;  // nothing musical to scale from
+    auto* fresh = new celestrian::Sequence(*cur);
+    for (auto& st : fresh->steps) {
+      st.len = (int64_t)std::llround((double)st.len * (double)q / (double)old_q);
+    }
+    fresh->finalize();
+    if (const auto* old = stack.exchangeSequence(fresh)) retireOwned(old);
+  });
+}
+
+void AudioEngine::reinstallSequenceRiders(celestrian::Edit& e) {
+  for (auto& r : e.seq_riders) {
+    auto* stack = dynamic_cast<celestrian::StackNode*>(
+        findNodeByUuid(root_node.get(), r.uuid));
+    if (stack == nullptr || !r.seq) continue;
+    auto* fresh = new celestrian::Sequence(*r.seq);
+    fresh->finalize();
+    if (const auto* old = stack->exchangeSequence(fresh)) retireOwned(old);
+  }
+  e.seq_riders.clear();
+}
+
 celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   using K = celestrian::Edit::Kind;
   const K kind = e.kind;
@@ -501,7 +556,11 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // Restore the island grid this insert carries (undo of a
       // provisional-Q-revert delete). The Remove inverse re-derives the
       // revert on redo, so it needs no island payload.
-      if (restoreIsland) root_node->setQuantum(iq, iepoch);
+      Edit inv(K::Remove);
+      inv.uuid = uid;
+      if (restoreIsland) setIslandQuantum(iq, iepoch, inv);
+      // Undo of a clearing revert: the sequences come back with the clip.
+      reinstallSequenceRiders(e);
       // Undo of a RE-OPENING delete (uuid2 = the definer that delete
       // uncollapsed): re-collapse it so the locked island is exactly as
       // it was. Same derivation as the forward CollapseTake; redo's
@@ -517,8 +576,6 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           }
         }
       }
-      Edit inv(K::Remove);
-      inv.uuid = uid;
       return inv;
     }
     case K::Remove: {
@@ -541,7 +598,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
         inv.iepoch = root_node->getEpoch();
-        root_node->setQuantum(0, 0);
+        setIslandQuantum(0, 0, inv);  // + clears sequences into inv
       }
       // RE-OPEN ⟹ UNCOLLAPSE (companion of collapse-at-arm, owner
       // ruling 2026-07-19b): if this delete brought the island back down
@@ -697,7 +754,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
         inv.iepoch = root_node->getEpoch();
-        root_node->setQuantum(e.iq, e.iepoch);
+        setIslandQuantum(e.iq, e.iepoch, inv);
       }
       // Phase-preserving trim: the re-anchored origin rides the same
       // edit (see setLoopPoints); the inverse restores the old one.
@@ -823,7 +880,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
         inv.iepoch = root_node->getEpoch();
-        root_node->setQuantum(e.iq, e.iepoch);
+        setIslandQuantum(e.iq, e.iepoch, inv);
       }
       if (e.setsOrigin) {
         inv.setsOrigin = true;
@@ -921,7 +978,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         }
         inv.takes.push_back(std::move(out));
       }
-      if (e.setsIsland) root_node->setQuantum(e.iq, e.iepoch);
+      if (e.setsIsland) setIslandQuantum(e.iq, e.iepoch, inv);
       // The sequence rider (auto-gate).
       if (e.b1 && e.uuid.isNotEmpty()) {
         if (auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid))) {

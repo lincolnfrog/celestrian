@@ -12,6 +12,7 @@ import {
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 import { quantumSamples } from './rate.js';
+import { retimeSequences } from './sequence.js';
 
 // createNode(type, parentId)
 export function createNode(type, parentId = null) {
@@ -72,6 +73,7 @@ export function deleteNode(id) {
     // unestablished. Undo restores them via the snapshot. A 2→1 delete
     // touches nothing (mutability is derived from the count).
     if (state.islandQ > 0 && committedClipCount() === 0) {
+        retimeSequences(state.islandQ, 0);  // sequences track Q: cleared
         state.islandQ = 0;
         state.islandEpoch = 0;
         console.log('[MockBackend] Q13 revert: island (Q, epoch) → unestablished');

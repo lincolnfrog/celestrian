@@ -15,7 +15,7 @@ import {
 import { popUndoForRefusal } from './undo.js';
 import { lcm } from '../math_utils.js';
 import { effectivePeriodOf } from './cycles.js';
-import { activeSeqLen } from './sequence.js';
+import { activeSeqLen, retimeSequences } from './sequence.js';
 
 /** PHASE-PRESERVING RE-ANCHOR (engine parity, 2026-07-25h/i): origin'
  * such that the buffer position sounding right now keeps sounding when
@@ -211,6 +211,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             : loopStart;
         const pT = loopStart + posMod(p0 - loopStart, len);
         node.origin = t0 - pT;
+        retimeSequences(state.islandQ, len);  // sequences track Q
         state.islandQ = len;
         state.islandEpoch = node.origin + loopStart;
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
@@ -235,6 +236,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
                 ? oldLs0 + posMod(t0 - epoch0 - oldLs0, oldLen)
                 : posMod(t0 - epoch0, inner);
             const pT = loopStart + posMod(p0 - loopStart, len);
+            retimeSequences(state.islandQ, len);  // sequences track Q
             state.islandQ = len;
             state.islandEpoch = t0 - (pT - loopStart);
             console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
@@ -353,6 +355,7 @@ export function setSegments(id, flat) {
             }
         }
         node.origin = t0 - a0 - hNew;
+        retimeSequences(state.islandQ, period);  // sequences track Q
         state.islandQ = period;
         state.islandEpoch = node.origin + a0;
         console.log('[MockBackend] Q13 segments re-trim → Q =', period);

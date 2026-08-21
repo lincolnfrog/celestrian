@@ -553,6 +553,74 @@ class QTimeLockTests : public juce::UnitTest {
                    "not a definer: incoherent window refused");
       expectEquals(islandQ(engine), D, "Q untouched");
     }
+
+    // ---- SEQUENCES TRACK Q (owner ruling 2026-08-21) ----
+    // Step lengths are musical facts: a definer re-trim RESCALES them
+    // (5Q stays 5Q); a revert to an empty island CLEARS them (field:
+    // a surviving 5Q step read 6.52Q against the next take's Q).
+    beginTest("SEQUENCES TRACK Q: re-trim rescales steps; empty island clears; undo restores");
+    {
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      auto c1 = recordClip(engine, process, Q);  // 1Q take, Q := its length
+      const int64_t q0 = islandQ(engine);
+      expect(q0 > 0, "Q established");
+      const juce::String rootId =
+          engine.getGraphState().getProperty("id", "").toString();
+      auto stepLens = [&]() {
+        juce::Array<int64_t> out;
+        const juce::var st = engine.getGraphState();
+        const juce::var seq = st.getProperty("sequence", juce::var());
+        if (auto* steps = seq.getProperty("steps", juce::var()).getArray())
+          for (auto& x : *steps)
+            out.add((int64_t)(double)x.getProperty("len", 0.0));
+        return out;
+      };
+      {
+        auto* payload = new juce::DynamicObject();
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "A");
+        s1->setProperty("len", (double)(2 * q0));
+        steps.add(juce::var(s1));
+        auto* s2 = new juce::DynamicObject();
+        s2->setProperty("name", "B");
+        s2->setProperty("len", (double)(3 * q0));
+        steps.add(juce::var(s2));
+        payload->setProperty("steps", steps);
+        payload->setProperty("gates", juce::var(new juce::DynamicObject()));
+        engine.setSequence(rootId, juce::var(payload));
+      }
+      expectEquals(stepLens().size(), 2, "two steps (2Q + 3Q)");
+
+      // Definer re-trim: Q := q0/2. The steps keep their Q values.
+      engine.setLoopPoints(c1, 0, q0 / 2);
+      expectEquals(islandQ(engine), q0 / 2, "Q re-established");
+      {
+        auto l = stepLens();
+        expectEquals(l.size(), 2, "steps survive the re-trim");
+        expectEquals(l[0], (int64_t)(2 * (q0 / 2)), "A is still 2Q");
+        expectEquals(l[1], (int64_t)(3 * (q0 / 2)), "B is still 3Q");
+      }
+      engine.undo();
+      expectEquals(islandQ(engine), q0, "undo restores Q");
+      {
+        auto l = stepLens();
+        expectEquals(l[0], (int64_t)(2 * q0), "undo scales A back (2Q)");
+        expectEquals(l[1], (int64_t)(3 * q0), "undo scales B back (3Q)");
+      }
+
+      // Empty the island: the sequence clears with Q; undo brings both.
+      engine.deleteNode(c1);
+      expectEquals(islandQ(engine), (int64_t)0, "island reverted");
+      expectEquals(stepLens().size(), 0, "sequence cleared on an empty island");
+      engine.undo();
+      expectEquals(islandQ(engine), q0, "undo restores Q with the clip");
+      expectEquals(stepLens().size(), 2, "undo restores the sequence");
+      expectEquals(stepLens()[1], (int64_t)(3 * q0), "with its step lengths");
+      engine.redo();
+      expectEquals(stepLens().size(), 0, "redo clears again");
+    }
   }
 };
 

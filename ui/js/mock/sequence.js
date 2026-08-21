@@ -162,3 +162,36 @@ export function toggleSequence(id) {
     console.log('[MockBackend] Sequence', id,
         t.holder.sequenceBypassed ? 'bypassed (jam)' : 'active');
 }
+
+/**
+ * SEQUENCES TRACK Q (owner ruling 2026-08-21, engine parity
+ * AudioEngine::setIslandQuantum): step lengths are musical facts. Call
+ * wherever the mock re-establishes Q from an edit: Q → Q' rescales every
+ * sequence's steps by Q'/Q (a 5Q step stays 5Q); Q → 0 (empty island)
+ * CLEARS them. Undo is the snapshot (it holds the old sequences).
+ */
+export function retimeSequences(oldQ, newQ) {
+    if (oldQ === newQ) return;
+    const holders = [resolve('mock-root').holder];
+    (function visit(nodes) {
+        (nodes || []).forEach(n => {
+            if (n.type === 'stack') { holders.push(n); visit(n.nodes); }
+        });
+    })(state.nodes);
+    holders.forEach(h => {
+        if (!h || !h.sequence) return;
+        if (!(newQ > 0)) {
+            h.sequence = null;
+            h.auditionStep = -1;
+            console.log('[MockBackend] sequences cleared: empty island');
+            return;
+        }
+        if (!(oldQ > 0)) return;
+        h.sequence = {
+            ...h.sequence,
+            steps: h.sequence.steps.map(st => ({
+                ...st, len: Math.round(st.len * newQ / oldQ),
+            })),
+        };
+    });
+}

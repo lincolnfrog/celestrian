@@ -338,3 +338,34 @@ test('GROUPS: two takes in one stack are NOT a definer (different origins)', asy
     await callNative('setLoopPoints', stackId, 0, D * 1.5);
     assert.notEqual(find(stackId).loopEnd, D * 1.5, 'incoherent window refused');
 });
+
+/* ---------- SEQUENCES TRACK Q (owner ruling 2026-08-21) ---------- */
+
+test('SEQUENCES TRACK Q: a definer re-trim rescales steps; an empty island clears them', async () => {
+    loadScenario('empty');
+    await callNative('setSequence', 'mock-root', null);
+    const c1 = await callNative('createNode', 'clip', '');
+    await callNative('startRecordingInNode', c1);
+    advanceBy(MOCK_Q);
+    await callNative('stopRecordingInNode', c1);
+    const q0 = getState().quantum;
+    assert.ok(q0 > 0);
+    await callNative('setSequence', 'mock-root', {
+        steps: [{ name: 'A', len: 2 * q0 }, { name: 'B', len: 3 * q0 }], gates: {},
+    });
+    const lens = () => (getState().sequence ? getState().sequence.steps.map(s => s.len) : []);
+    assert.deepEqual(lens(), [2 * q0, 3 * q0]);
+
+    await callNative('setLoopPoints', c1, 0, q0 / 2);   // Q := q0/2
+    assert.equal(getState().quantum, q0 / 2);
+    assert.deepEqual(lens(), [q0, 1.5 * q0], 'A stays 2Q, B stays 3Q');
+    await callNative('undo');
+    assert.equal(getState().quantum, q0);
+    assert.deepEqual(lens(), [2 * q0, 3 * q0], 'undo scales back');
+
+    await callNative('deleteNode', c1);
+    assert.equal(getState().quantum, 0, 'island reverted');
+    assert.deepEqual(lens(), [], 'sequence cleared on an empty island');
+    await callNative('undo');
+    assert.deepEqual(lens(), [2 * q0, 3 * q0], 'undo restores the sequence with the clip');
+});

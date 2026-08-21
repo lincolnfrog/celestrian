@@ -145,6 +145,16 @@ struct Edit {
   // Sequence edits (docs/sequencer.md): the full new value (forward)
   // or the captured old one (inverse). Null = no sequence.
   std::unique_ptr<celestrian::Sequence> seq;
+  // SEQUENCES TRACK Q (owner ruling 2026-08-21): step lengths are
+  // musical facts. A Q re-establishment RESCALES every sequence's
+  // steps in place (reversible by the inverse's own re-establishment);
+  // a revert to an EMPTY island CLEARS them — the cleared sequences
+  // ride the inverse (Insert) here and are reinstalled on undo.
+  struct SeqRider {
+    juce::String uuid;  // the owning stack
+    std::unique_ptr<celestrian::Sequence> seq;
+  };
+  std::vector<SeqRider> seq_riders;
 
   // TAKE payloads (Kind::Take / Kind::Untake): one per clip of the
   // performance. Take owns the content to reinstall; Untake names the

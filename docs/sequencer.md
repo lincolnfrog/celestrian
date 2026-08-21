@@ -669,6 +669,19 @@ that means in practice, since a sequence *does* affect the LCM:
 - S18(a) keeps step-takes from changing the unit; S18(b) would not.
 - Empty stack / no Q: no chip (unchanged).
 
+### 11.7b Sequences track Q (ruled 2026-08-21)
+
+Step lengths are MUSICAL facts stored physically (samples). When the
+island's Q is re-established by a definer trim (Q13, clip or group),
+every sequence's steps RESCALE by Q'/Q so a 5Q step stays 5Q; when the
+island reverts to unestablished (last committed clip deleted) every
+sequence CLEARS — a song over nothing has no meaning, and a surviving
+one read "6.52Q" against the next take's Q (field 2026-08-21). Both
+ride the edit that moved Q (`AudioEngine::setIslandQuantum`; cleared
+sequences travel on the inverse Insert as `Edit::seq_riders`), so ⌘Z
+restores the grid AND the song together. Mock twin:
+`retimeSequences`.
+
 ### 11.8 S16 — window domain (needs a ruling; small)
 
 Only MANUAL windows on sequenced stacks need it (the audition is
