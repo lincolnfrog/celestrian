@@ -100,18 +100,96 @@ test('FRACTAL: the view-model hands groups the same handle-UI fields', async () 
     const lane = vm.lanes.find(l => l.id === g);
     assert.equal(lane.kind, 'group');
     // The fields the cut bands / nav dock / [ ] teleport build from —
-    // identical shape to a clip lane's (bandState reads these).
+    // identical shape to a clip lane's (bandState reads these). An
+    // active map on a group renders the HEARD view (the 2026-08-21
+    // ruling — groups exactly as clips): seams over the heard period,
+    // the cut geometry indexed over the raw inner cycle.
     assert.deepEqual(lane.bandSegs, [[0, 1], [2, 3]],
         'group lane carries the cut geometry in Q');
-    assert.equal(lane.bandTotalQ, 4, 'over its intrinsic period');
+    assert.equal(lane.bandTotalQ, 4, 'over its inner cycle');
+    assert.equal(lane.bandHeard, true, 'heard view: cuts are seams');
+    assert.equal(lane.bandPeriodQ, 2, 'over the heard period');
     assert.equal(lane.bandEditable, true, 'editable in place');
 
-    // Single-window form: the group grows bracket geometry, same as a
-    // clip's window — the dock's outer ticks and ⇤ ⇥ jumps feed here.
+    // Single-window form: the same heard-view chip/grip fields a
+    // windowed clip grows — no brackets on the lane (the tile IS the
+    // window), the chip reads the part length.
     await callNative('setSegments', g, [1000, 3000]);
     const vm2 = deriveViewModel(getState());
     const lane2 = vm2.lanes.find(l => l.id === g);
-    assert.ok(lane2.window && lane2.window.startQ === 1 &&
-        lane2.window.endQ === 3,
-        'group single-window brackets present for the dock/teleport');
+    assert.equal(lane2.window, null, 'heard view: no brackets');
+    assert.equal(lane2.windowChipQ, 2, 'the chip reads the part length');
+    assert.deepEqual(lane2.bandSegs, [[1, 3]], 'the grips edit this span');
+});
+
+/* ---------- THE PARITY PIN (owner, 2026-08-21): a windowed group and a
+ * windowed clip of the same shape are the SAME lane — chip, period,
+ * reps, seams, LCM contribution. Two builders, one law; this test is
+ * what keeps them from drifting again (the July heard-view amendment
+ * landed on the clip builder only, and a 52Q group windowed to a few Q
+ * kept a 52Q chip, a 52Q "+ step" and a 104Q song in the field). */
+
+// (takeStartQ / srcTopFrac are deliberately NOT compared: they are the
+// loop's heard-top ROTATION, and the two anchor differently by ENGINE
+// law — a clip's map anchors at origin + loopStart (the anchoring law),
+// a group's at the island epoch. Same view, different phase; the
+// published windowPhase follows the same anchors.)
+const LANE_PARITY_FIELDS = [
+    'periodQ', 'intrinsicQ', 'window', 'windowChipQ',
+    'mapMulti', 'bandSegs', 'bandTotalQ', 'bandHeard', 'bandPeriodQ',
+    'bandEditable', 'frameQ', 'windowEditing',
+];
+
+function laneShape(lane) {
+    const o = {};
+    for (const k of LANE_PARITY_FIELDS) o[k] = lane[k] ?? null;
+    o.reps = lane.reps.map(r => [r.startQ, r.endQ, !!r.ghost,
+        r.srcSegs || null]);
+    return o;
+}
+
+test('PARITY: a windowed group IS a windowed clip to the view-model', async () => {
+    // Two 4Q parts over a 1Q definer: a loose clip and a group holding
+    // one 4Q clip. Window both to [1Q, 3Q).
+    loadScenario('empty');
+    await recordTake('', 1000, { stopEarly: 0, settle: 0 });
+    const c = await recordTake('', 4000, { stopEarly: 200, settle: 600 });
+    const g = await callNative('createNode', 'stack');
+    const gc = await recordTake(g, 4000, { stopEarly: 200, settle: 4200 });
+    assert.equal(nodeById(gc).isRecording, false, 'group take committed');
+    await callNative('setLoopPoints', c, 1000, 3000);
+    await callNative('setLoopPoints', g, 1000, 3000);
+
+    const vm = deriveViewModel(getState());
+    const clipLane = vm.lanes.find(l => l.id === c);
+    const groupLane = vm.lanes.find(l => l.id === g);
+    assert.equal(clipLane.kind, 'clip');
+    assert.equal(groupLane.kind, 'group');
+    assert.deepEqual(laneShape(groupLane), laneShape(clipLane),
+        'heard view: identical lane shape');
+    assert.equal(groupLane.periodQ, 2, 'the window sets the part length');
+    assert.equal(vm.cycleQ, 2, 'the frame is the audible cycle (2Q parts over 1Q)');
+    assert.equal(vm.loopCycleQ, vm.cycleQ, 'frame == audible loop');
+
+    // The EDIT view: the same inspector for both.
+    const vmE = deriveViewModel(getState(), { windowEdit: new Set([c, g]) });
+    const clipE = vmE.lanes.find(l => l.id === c);
+    const groupE = vmE.lanes.find(l => l.id === g);
+    assert.equal(groupE.windowEditing, true);
+    assert.deepEqual(laneShape(groupE), laneShape(clipE),
+        'edit view: identical lane shape');
+    assert.equal(groupE.frameQ, 4, 'the inspector frames the raw extent');
+
+    // Bypass both: both fall back to the raw-framed lane with brackets.
+    await callNative('toggleLoopWindow', c);
+    await callNative('toggleLoopWindow', g);
+    const vmB = deriveViewModel(getState());
+    const clipB = vmB.lanes.find(l => l.id === c);
+    const groupB = vmB.lanes.find(l => l.id === g);
+    assert.equal(vmB.cycleQ, 4, 'bypassed: the parts are 4Q again');
+    assert.equal(groupB.periodQ, 4);
+    assert.deepEqual([groupB.window.startQ, groupB.window.endQ, groupB.window.bypassed],
+        [1, 3, true], 'bypassed brackets on the group');
+    assert.deepEqual([clipB.window.startQ, clipB.window.endQ, clipB.window.bypassed],
+        [1, 3, true], 'bypassed brackets on the clip');
 });

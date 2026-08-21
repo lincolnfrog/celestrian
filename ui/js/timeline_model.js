@@ -175,13 +175,73 @@ export function calculateStackLCM(stackNodes, effectiveQ) {
             stackLCM = lcm(Math.round(stackLCM), p);
             maxDuration = Math.max(maxDuration, p);
         } else if (child.type === 'stack' && child.nodes) {
-            const childLCM = calculateStackLCM(child.nodes, effectiveQ);
+            // A nested stack contributes its EFFECTIVE period — its
+            // window, its sequence, or its inner LCM — exactly as a
+            // clip child contributes its window (commensuratePeriod).
+            // Fractal (I5): the 2026-08-21 ruling.
+            const childLCM = stackEffectivePeriod(child, effectiveQ);
             stackLCM = lcm(Math.round(stackLCM), Math.round(childLCM));
             maxDuration = Math.max(maxDuration, childLCM);
         }
     });
 
     return Math.max(stackLCM, maxDuration);
+}
+
+/**
+ * The ACTIVE sequence length of a node in samples (0 = none/bypassed/
+ * empty) — the period law's input (docs/sequencer.md §2), read off the
+ * published `sequence` metadata.
+ */
+export function activeSequenceSamples(node) {
+    const s = node && node.sequence;
+    if (!s || s.bypassed || !Array.isArray(s.steps)) return 0;
+    return s.steps.reduce((t, x) => t + (x.len > 0 ? Math.round(x.len) : 0), 0);
+}
+
+/**
+ * Whether a stack's published window is the STEP AUDITION's derived
+ * map (docs/sequencer.md §11.2) rather than an authored window: a
+ * monitoring gesture over the song, not a part length. The frame keeps
+ * the song while it is on (the root's pattern); only the audible loop
+ * follows it.
+ */
+export function isAuditionWindow(node) {
+    const s = node && node.sequence;
+    return !!(s && !s.bypassed && Number.isInteger(s.auditionStep) &&
+              s.auditionStep >= 0 && Array.isArray(s.steps) &&
+              s.auditionStep < s.steps.length);
+}
+
+/**
+ * A stack's EFFECTIVE period in samples — what it IS as a part of its
+ * parent's cycle. The JS twin of StackNode::getEffectivePeriod, in the
+ * same order: an ACTIVE window on the stack wins (its whole-Q length —
+ * "a window sets the part's length", owner ruling 2026-08-21, groups
+ * exactly as clips); else an active SEQUENCE is the part (the period
+ * law); else the LCM of the children's effective periods (nested
+ * windows shorten it all the way up). `windowActive` is the engine's
+ * verdict (it folds S16 suspension); states that predate the field
+ * fall back to the bypass flag + a valid span. `audible: true` counts
+ * a step-audition window too (the engine's wrap), see isAuditionWindow.
+ */
+export function stackEffectivePeriod(node, effectiveQ, { audible = false } = {}) {
+    const q = Math.round(effectiveQ || 0);
+    const on = node.windowActive ??
+        (!node.loopBypassed && (node.loopEnd || 0) > (node.loopStart || 0));
+    // The step audition's derived window is a monitoring loop over the
+    // song, not the part's length: the FRAME reads the song (audible:
+    // false, the default); the audible-loop math reads the step.
+    if (on && (audible || !isAuditionWindow(node))) {
+        let p = (node.segments && node.segments.length >= 4)
+            ? flatSegPeriod(node.segments)
+            : (node.loopEnd || 0) - (node.loopStart || 0);
+        p = Math.round(p);
+        if (p > 0 && (q <= 1 || p % q === 0)) return p;
+    }
+    const seqLen = activeSequenceSamples(node);
+    if (seqLen > 0) return seqLen;
+    return calculateStackLCM(node.nodes, effectiveQ);
 }
 
 /**

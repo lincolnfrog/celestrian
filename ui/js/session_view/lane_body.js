@@ -616,6 +616,11 @@ function latentWindow(lane, vm) {
     // edge grip) — a latent full-span drag here would reinterpret the
     // collapsed coordinates as raw loop points.
     if (lane.windowChipQ) return null;
+    // A child shown THROUGH an enclosing map (the child heard unroll,
+    // 2026-08-21) frames the parent's slice, not its own take — a
+    // latent drag here would author a window in the wrong coordinates.
+    // The parent owns the chrome.
+    if (lane.underMap) return null;
     const maxQ = Math.round(lane.intrinsicQ || 0);
     // (The Q-definer never reaches here: its lane always carries a
     // window — the provisional branch builds the selection explicitly.)

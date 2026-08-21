@@ -341,22 +341,31 @@ test.describe('Loop window brackets (phase 3)', () => {
         }, endSamples);
     }
 
-    test('chip click toggles active ↔ bypassed; brackets stay visible', async ({ page }) => {
+    test('an ACTIVE group window rests HEARD; the bypass chip brings the brackets back', async ({ page }) => {
+        // 2026-08-21 (groups exactly as clips): an active window IS the
+        // lane's material — the chip names the part length and opens the
+        // inspector; "window · active" text lives on raw-framed lanes only.
         await loadHarness(page, '1Q + 3Q (Loop)');
-        await setWindow(page); // active [0, 2Q): cycle shortens to 2Q (E-C)
+        const id = await setWindow(page); // active [0, 2Q): the stack IS 2Q (E-C)
         const group = page.locator('.lane[data-kind="group"]').first();
-        const chip = group.locator('.win-chip');
-        await expect(chip).toHaveText(/active/);
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        // No selection brackets on the lane — only the edge TRIM GRIPS
+        // (the same `.win-bracket.latent.trim-grip` a heard clip grows).
+        await expect(group.locator('.win-bracket:not(.trim-grip)')).toHaveCount(0);
+        await expect(group.locator('.trim-grip')).toHaveCount(2);
 
-        await chip.click();
+        // Bypass through the engine verb: the raw 3Q frame returns with
+        // the toggle chip + brackets (no dims — bypassed plays it all).
+        await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
+        const chip = group.locator('.win-chip');
         await expect(chip).toHaveText(/bypassed/);
         expect((await stackState(page)).loopBypassed).toBe(true);
-        // Bypassed: no dimming, brackets remain editable/visible
         await expect(group.locator('.win-dim')).toHaveCount(0);
         await expect(group.locator('.win-bracket.start')).toBeVisible();
 
+        // That chip IS the bypass toggle: click → active → heard again.
         await chip.click();
-        await expect(chip).toHaveText(/active/);
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
         expect((await stackState(page)).loopBypassed).toBe(false);
     });
 
@@ -392,38 +401,39 @@ test.describe('Loop window brackets (phase 3)', () => {
         expect((await stackState(page)).loopEnd).toBe(2 * await mockQ(page));
     });
 
-    test('an ACTIVE window never compresses the timeline (field 2026-07-11)', async ({ page }) => {
+    test('a window SETS THE PART\'S LENGTH: the frame follows it (2026-08-21)', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
         const id = await setWindow(page); // ACTIVE [0, 2Q)
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-chip')).toHaveText(/active/);
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
 
-        // The frame stays the intrinsic 3Q; the window dims [2Q, 3Q)
-        await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
-        await expect(group.locator('.win-dim')).toHaveCount(1);
+        // The frame IS the audible cycle: lcm(1Q, 2Q) = 2Q. No dims —
+        // the lane shows only what sounds.
+        await expect(page.locator('#ruler .tick-label').last()).toHaveText('2Q ↺');
+        await expect(group.locator('.win-dim')).toHaveCount(0);
 
-        // Toggling bypass ↔ active must never reframe (it once breathed
-        // 1Q ↔ 2Q per toggle); only the dims come and go
-        await group.locator('.win-chip').click();
+        // Bypass: the part is 3Q again, the frame follows honestly.
+        await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
-        await expect(group.locator('.win-dim')).toHaveCount(0);
         await group.locator('.win-chip').click();
-        await expect(group.locator('.win-chip')).toHaveText(/active/);
-        await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
-        await expect(group.locator('.win-dim')).toHaveCount(1);
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(page.locator('#ruler .tick-label').last()).toHaveText('2Q ↺');
     });
 
     test('drag feedback: handle follows the pointer; a snap ghost previews the landing', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
-        await setWindow(page); // [0, 2Q) of a 3Q lane
+        const id = await setWindow(page); // [0, 2Q) of a 3Q lane
+        // Bypassed: the raw 3Q frame with in-place brackets (an ACTIVE
+        // window rests heard and edits through its grips/inspector).
+        await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         const group = page.locator('.lane[data-kind="group"]').first();
         const body = group.locator('.lane-body');
         // Wait for the REAL window's overlay (chip only exists once the
         // poll echoes it) — grabbing the transient latent bracket at
         // 100% made the pointerdown miss the settled bracket at 66.7%
-        await expect(group.locator('.win-chip')).toHaveText(/active/);
+        await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
         const endBracket = group.locator('.win-bracket.end:not(.latent)');
         await expect(endBracket).toBeVisible();
 
@@ -493,14 +503,23 @@ test.describe('Loop window brackets (phase 3)', () => {
         expect((await clip3qState()).loopBypassed).toBe(false);
     });
 
-    test('window cursor: the heard-time playhead loops inside the brackets', async ({ page }) => {
+    test('window cursor: the heard lane has ONE cursor; the inspector carries the amber one', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // stack window [0, 2Q), ACTIVE
         const group = page.locator('.lane[data-kind="group"]').first();
+        // Heard view: the white playhead is honest on the lane — no
+        // amber cursor (the "two cursors" the field saw on 2026-08-21).
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-cursor')).toHaveCount(0);
+
+        // Open the inspector: the raw 3Q on its own scale, brackets at
+        // [0, 2Q), and the amber cursor carrying heard time.
+        await group.locator('.win-open-chip').click();
+        await expect(group.locator('.win-done-chip')).toHaveCount(1);
         await expect(group.locator('.win-cursor')).toBeVisible();
 
         // masterPos 1.5Q → window phase (1.5 mod 2)/2 = 0.75 → heard
-        // position 1.5Q of the 3Q frame = 50%
+        // position 1.5Q of the 3Q inspector = 50%
         await page.evaluate(Q => window.celestrian.setMasterPos(1.5 * Q),
             await mockQ(page));
         await expect.poll(() => page.evaluate(() =>
@@ -509,8 +528,7 @@ test.describe('Loop window brackets (phase 3)', () => {
             parseFloat(document.querySelector('.win-cursor').style.left))).toBeLessThan(51);
 
         // Raw transport past the window: the VIEW wraps at the audible
-        // cycle (E-C) — both clocks land at 0.5Q (16.7%); with a sole
-        // windowed lane, white and amber coincide by construction
+        // cycle (E-C) — 0.5Q of the 3Q inspector (16.7%)
         await page.evaluate(Q => window.celestrian.setMasterPos(2.5 * Q),
             await mockQ(page));
         await expect.poll(() => page.evaluate(() =>
@@ -527,22 +545,23 @@ test.describe('Loop window brackets (phase 3)', () => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // [0, 2Q) of the sole 3Q stack
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-chip')).toHaveText(/active/);
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
 
         // Raw transport at 2.5Q: the published view wraps at the AUDIBLE
-        // cycle (2Q) → 0.5Q. The readout explains the early wrap.
+        // cycle (2Q) → 0.5Q — and since 2026-08-21 the frame IS that
+        // cycle, so the readout needs no "loop" explanation.
         await page.evaluate(Q => window.celestrian.setMasterPos(2.5 * Q),
             await mockQ(page));
         await expect(page.locator('#position-readout'))
-            .toHaveText(/0\.5Q \/ 3Q ↺ · loop 2Q/);
-        // Playhead sits at 0.5Q of the 3Q frame (~16.7%), inside the window
+            .toHaveText(/0\.5Q \/ 2Q ↺(?! · loop)/);
+        // Playhead sits at 0.5Q of the 2Q frame (25%)
         await expect.poll(() => page.evaluate(() => {
             const phX = document.getElementById('playhead').getBoundingClientRect().x;
             const r = document.getElementById('ruler').getBoundingClientRect();
             return (phX - r.x) / r.width;
-        })).toBeLessThan(0.67); // never past the 2Q bracket
+        })).toBeLessThan(0.3);
 
-        // Bypass: full 3Q cycle again, loop note gone
+        // Bypass: full 3Q cycle again
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         await expect(page.locator('#position-readout'))
             .toHaveText(/2\.5Q \/ 3Q ↺(?! · loop)/);
@@ -550,7 +569,7 @@ test.describe('Loop window brackets (phase 3)', () => {
 
     test('the playhead sweep TOUCHES the loop end before wrapping (dead-reckoning)', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
-        await setWindow(page); // audible cycle 2Q of a 3Q frame (Q = 1s)
+        await setWindow(page); // audible cycle 2Q — and the frame (Q = 1s)
         // Real-time transport: scenario loads isPlaying but not
         // auto-advancing; toggle off and on so the mock transport runs
         await page.evaluate(async () => {
@@ -574,12 +593,12 @@ test.describe('Loop window brackets (phase 3)', () => {
             (function tick() {
                 const r = document.getElementById('ruler').getBoundingClientRect();
                 const x = document.getElementById('playhead').getBoundingClientRect().x;
-                out.push((x - r.x) / r.width); // fraction of the 3Q frame
+                out.push((x - r.x) / r.width); // fraction of the 2Q frame
                 if (performance.now() - t0 < windowMs) requestAnimationFrame(tick);
                 else res(out);
             })();
         }), Math.round(loopMs * 1.3));
-        const boundary = 2 / 3; // the 2Q loop end in the 3Q frame
+        const boundary = 1; // the 2Q loop end IS the frame end (2026-08-21)
         // The sweep must REACH the loop end (was wrapping ~5% early)…
         expect(Math.max(...samples)).toBeGreaterThan(boundary - 0.05);
         // …never pass it…
@@ -609,9 +628,10 @@ test.describe('Loop window brackets (phase 3)', () => {
         await expect.poll(async () => (await stackState(page)).loopEnd)
             .toBe(2 * await mockQ(page));
         expect((await stackState(page)).windowActive).toBe(true);
-        // The settled overlay shows a real (non-latent) window + chip
-        await expect(group.locator('.win-bracket.start:not(.latent)')).toHaveCount(1);
-        await expect(group.locator('.win-chip')).toHaveText(/active/);
+        // The settled lane rests HEARD (2026-08-21): the chip names the
+        // part length; the brackets live in the inspector now.
+        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-bracket:not(.trim-grip)')).toHaveCount(0);
     });
 });
 

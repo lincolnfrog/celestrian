@@ -228,3 +228,53 @@ test('STEP 3 (§12): nested sequences — period law on the group lane, layered 
     assert.deepEqual(vm2.lanes.find(l => l.id === 'kick').seqDims,
         [{ periodQ: 8, offSegsQ: [[0, 4]] }], 'only the root layer remains');
 });
+
+/* ---------- THE FIELD BUG (owner, 2026-08-21): a 52Q group windowed to
+ * a few Q kept a 52Q chip and a 52Q "+ step" — the root seeded 52Q steps
+ * and the song ran 104Q around a 4Q groove. §11.7 says the append unit
+ * counts "a windowed child as its window"; the ruling makes the window
+ * the part's length everywhere (chip, frame, transport, + step). */
+test('"+ step" unit and the group chip follow a windowed group (2026-08-21)', async () => {
+    loadScenario('empty');
+    await callNative('setSequence', 'mock-root', null);
+    const a = await recordTake('', 1000, { stopEarly: 0, settle: 0 });
+    const g = await callNative('createNode', 'stack');
+    const take = await recordTake(g, 8000, { stopEarly: 200, settle: 8200 });
+    assert.equal(getState().nodes.find(n => n.id === g).nodes[0].isRecording,
+        false, 'group take committed');
+    const Q = getState().quantum;
+    assert.equal(Q, 1000);
+
+    // Before the window: the 8Q group IS 8Q, the unit is 8Q.
+    let vm = deriveViewModel(getState(),
+        { ...opts, seqOpen: new Set(['mock-root']) });
+    assert.equal(vm.cycleQ, 8);
+    assert.equal(vm.lanes[0].kind, 'seq');
+    assert.equal(vm.lanes[0].innerCycleQ, 8, 'unit = lcm(1Q, 8Q)');
+
+    // Window the group to [4Q, 6Q): it is a 2Q part now — everywhere.
+    await callNative('setLoopPoints', g, 4 * Q, 6 * Q);
+    vm = deriveViewModel(getState(),
+        { ...opts, seqOpen: new Set(['mock-root']) });
+    const lane = vm.lanes.find(l => l.id === g);
+    assert.equal(lane.periodQ, 2, 'the group lane IS the window');
+    assert.equal(lane.windowChipQ, 2, 'the chip reads 2Q');
+    assert.equal(vm.cycleQ, 2, 'the frame = lcm(1Q, 2Q)');
+    assert.equal(vm.loopCycleQ, 2, 'the transport wraps there too');
+    assert.equal(vm.lanes[0].innerCycleQ, 2, '"+ step" appends a 2Q step');
+
+    // The nested grid's unit is the group's INNER cycle (its own
+    // children's parts) — the window selects over it.
+    const vmG = deriveViewModel(getState(),
+        { ...opts, seqOpen: new Set([g]) });
+    const grid = vmG.lanes.find(l => l.kind === 'seq' && l.ownerId === g);
+    assert.equal(grid.innerCycleQ, 8, 'inside the group: the 8Q take');
+    // And once the root sequence exists, the frame is the song built
+    // from 2Q parts, not 8Q ones.
+    await callNative('setSequence', 'mock-root', {
+        steps: [{ name: 'A', len: 2 * Q }, { name: 'B', len: 2 * Q }], gates: {},
+    });
+    vm = deriveViewModel(getState(), opts);
+    assert.equal(vm.cycleQ, 4, 'the song: two 2Q steps');
+    void a; void take;
+});

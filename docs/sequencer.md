@@ -645,6 +645,14 @@ unit-tested), projected into existing chrome:
 
 ### 11.7 "+ step" default = one intrinsic cycle (ruled) — the interactions
 
+> **2026-08-21 (field, owner-ruled):** this section was right and the
+> code was not — the root grid's unit came from an intrinsic LCM that
+> ignored windows (and a nested stack's window/sequence inside
+> `calculateStackLCM`), so a 52Q group windowed to a few Q seeded and
+> appended 52Q steps. The unit now reads the EFFECTIVE inner cycle
+> (`stackEffectivePeriod`), per the paragraph below and the general
+> law in ui_overhaul.md law 13: a window sets the part's length.
+
 The append unit is the stack's **inner cycle**: lcm of its children's
 EFFECTIVE periods (a child that is itself a sequenced stack counts as
 its seqLen; a windowed child as its window), captured before the

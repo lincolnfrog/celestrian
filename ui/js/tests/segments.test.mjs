@@ -109,10 +109,26 @@ test('view model: multi-segment group lane — dims data, chip, no brackets', ()
     };
     const vm = deriveViewModel(state);
     const g = vm.lanes.find(l => l.id === 'g');
+    // An ACTIVE multi map on a group rests in HEARD time exactly like
+    // a clip's (2026-08-21): srcSegs on every tile, seams for the cuts.
     assert.equal(g.window, null, 'no bracket window for a multi map');
-    assert.deepEqual(g.mapSegs, [[0, 1], [2, 3]], 'segments in Q');
-    assert.equal(g.mapChipQ, 2, 'chip period = Σ cells');
-    assert.equal(g.mapBypassed, false, 'bypass state exposed');
+    assert.equal(g.periodQ, 2, 'heard period = the map period');
+    assert.equal(g.mapMulti, true, 'multi flag for the chip label');
+    assert.equal(g.windowChipQ, 2, 'chip period = Σ cells');
+    assert.deepEqual(g.bandSegs, [[0, 1], [2, 3]], 'segments in Q');
+    assert.equal(g.bandHeard, true, 'cuts render as seams');
+    assert.deepEqual(g.reps[0].srcSegs, [[0, 0.25], [0.5, 0.75]],
+        'the tile draws the cells of the 4Q composite');
+    // BYPASSED: the raw-framed lane with dims data + the bypass chip.
+    state.nodes[0].windowActive = false;
+    state.nodes[0].loopBypassed = true;
+    const vmB = deriveViewModel(state);
+    const gB = vmB.lanes.find(l => l.id === 'g');
+    assert.equal(gB.window, null, 'no bracket window for a multi map');
+    assert.deepEqual(gB.mapSegs, [[0, 1], [2, 3]], 'segments in Q');
+    assert.equal(gB.mapChipQ, 2, 'chip period = Σ cells');
+    assert.equal(gB.mapBypassed, true, 'bypass state exposed');
+    assert.equal(gB.periodQ, 4, 'raw inner cycle');
 });
 
 test('view model: multi-segment CLIP lane rests in heard time (srcSegs)', () => {
@@ -259,13 +275,25 @@ test('view model: enclosing map projects excluded regions onto children', () => 
         }],
     };
     const vm = deriveViewModel(state);
+    // 2026-08-21: children under an ACTIVE map show the slice the map
+    // selects of them (the child heard unroll) — no dims needed, the
+    // lane IS what sounds. Parent period 3Q; A (4Q) reads [0,1)+[2,4);
+    // B (2Q) reads [0,1), then [0,2) (its second pass under [2,4)).
     const a = vm.lanes.find(l => l.id === 'a');
-    assert.deepEqual(a.parentMapSegs, [[0, 1], [2, 4]],
-        'child carries the enclosing map\'s covered set');
-    assert.equal(a.parentMapPeriodQ, 4, 'tiled per the group cycle');
+    assert.equal(a.parentMapSegs, null, 'no projection dims on a heard child');
+    assert.equal(a.periodQ, 3, 'the part under the map');
+    assert.deepEqual(a.reps[0].srcSegs, [[0, 0.25], [0.5, 1]]);
     const b = vm.lanes.find(l => l.id === 'b');
-    assert.deepEqual(b.parentMapSegs, [[0, 1], [2, 4]],
-        'every child, regardless of its own period');
+    assert.deepEqual(b.reps[0].srcSegs, [[0, 0.5], [0, 1]],
+        'every child, through its own period');
+    // BYPASSED map: the raw-framed children carry the covered set as
+    // dims data (the phase-3 projection, for the bypassed chip state).
+    state.nodes[0].windowActive = false;
+    state.nodes[0].loopBypassed = true;
+    const vmB = deriveViewModel(state);
+    const aB = vmB.lanes.find(l => l.id === 'a');
+    assert.equal(aB.parentMapSegs, null, 'a bypassed map projects nothing');
+    assert.equal(aB.periodQ, 4);
 });
 
 test('multi-segment definer re-trim: Q := period, epoch := origin\' + mapOffset(0)', async () => {

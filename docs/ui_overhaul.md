@@ -331,7 +331,35 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
     once poisoned the whole grid after re-base); stops enter
     awaiting-stop and commit at `nextStopBoundary` while the rail shows
     "finishing…" (owner ruling 2026-07-10: stops always pad forward).
-13. **Windows never reframe the timeline** (owner ruling 2026-07-11).
+13. **A window sets the part's length — for groups exactly as for
+    clips** (owner ruling 2026-08-21, REVERSING the 2026-07-11 law
+    below). A lane's default material is what is HEARD: an active
+    window's content tiled at the window length (the heard view, one
+    shared `heardViewFields` for clip and group builders); its chip and
+    every cycle it feeds — the island frame, the transport readout, the
+    root and nested "+ step" units and the seed step — read the
+    EFFECTIVE period, the engine's `getEffectivePeriod` mirrored
+    (`timeline_model.stackEffectivePeriod`: window, else sequence, else
+    the children's effective LCM, nested windows shortening it all the
+    way up). The raw extent is one grab away: dragging a grip expands
+    the lane into the edit view and collapses on release; clicking the
+    chip pins it open with a "done" chip (`windowEditLane`, shared too).
+    Children under an active group map show the slice the map selects
+    of them (`childSrcSegsUnderMap`) — no projection dims, no chrome;
+    the parent owns the edit. Bypass restores the raw-framed lane with
+    its brackets, and the frame follows honestly (the part IS its raw
+    length again). Only a STEP AUDITION's derived window keeps the
+    old frame-stays-the-song behavior (a monitoring loop, not a part
+    length — `isAuditionWindow`; the cursor maps into the step).
+    FIELD ORIGIN: a 52Q drum group windowed to a few Q kept a 52Q chip,
+    a 52Q "+ step", seeded 52Q root steps (a 104Q song around a 4Q
+    groove) and showed two cursors — the heard-view amendment of
+    2026-07-19k had landed on the CLIP builder only. Owner: "Celestrian
+    is supposed to be fractal at a deep level." Parity is now pinned
+    (`map_coherence.test.mjs` PARITY; `view_model.test.mjs`;
+    `sequence.test.mjs` "+ step" follows a windowed group).
+    HISTORY — the superseded law, kept for the record:
+    ~~**Windows never reframe the timeline** (owner ruling 2026-07-11).~~
     The display frame and every lane period derive from INTRINSIC
     periods (`displayPeriodQ`); an active window renders as brackets +
     outside-dims repeated per period tile — a visual subset, never a

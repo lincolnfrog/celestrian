@@ -159,10 +159,11 @@ test('view model: bypassed map → no cue', () => {
     assert.equal(g.mapRecording, false, 'group cue off');
 });
 
-test('view model: sole stack window maps the ONE playhead into the brackets', () => {
-    // Extension-2 (sweep-vs-bracket): audible cycle = the window pass
-    // (2000), transport publishes [0, 2000) — the cursor must sweep
-    // [1Q, 3Q), the bracket span, not the intrinsic frame's dead air.
+test('view model: a windowed group is the frame; the ONE playhead sweeps it', () => {
+    // 2026-08-21 (a window sets the part's length): the audible cycle
+    // = the window pass (2000) IS the display frame; the group lane
+    // shows the window's content from 0, so island phase IS lane
+    // position — no remap, no second cursor.
     // (Two committed clips so the Q13 provisional view stays out.)
     const state = {
         quantum: 1000, islandEpoch: 0, masterPos: 500, isPlaying: true, perf,
@@ -172,9 +173,22 @@ test('view model: sole stack window maps the ONE playhead into the brackets', ()
         ] })],
     };
     const vm = deriveViewModel(state);
-    assert.equal(vm.loopStartQ, 1, 'loop region starts at the window');
-    assert.ok(Math.abs(vm.playheadQ - 1.5) < 1e-9,
-        'cursor = window start + island phase');
+    assert.equal(vm.cycleQ, 2, 'the frame is the window');
+    assert.equal(vm.loopStartQ, 0, 'no remap');
+    assert.ok(Math.abs(vm.playheadQ - 0.5) < 1e-9, 'cursor = island phase');
+    const g = vm.lanes.find(l => l.id === 'g');
+    assert.equal(g.periodQ, 2);
+    assert.equal(g.windowPhase, 0, 'no amber cursor on the heard lane');
+    assert.deepEqual(g.reps[0].srcSegs, [[0.25, 0.75]],
+        'the group tile draws the [1Q, 3Q) slice of its 4Q composite');
+    // THE CHILD HEARD UNROLL: the children show the same slice — A
+    // (4Q, at 0) its [1Q, 3Q); B (2Q, at 0) its [1Q, 2Q) then [0, 1Q).
+    const a = vm.lanes.find(l => l.id === 'a');
+    const b = vm.lanes.find(l => l.id === 'b');
+    assert.equal(a.periodQ, 2, 'child period = the part under the map');
+    assert.deepEqual(a.reps[0].srcSegs, [[0.25, 0.75]]);
+    assert.deepEqual(b.reps[0].srcSegs, [[0.5, 1], [0, 0.5]]);
+    assert.equal(a.parentMapSegs, null, 'no dims: the lane shows only what sounds');
 });
 
 test('view model: committed through-map take tiles at its inner anchor', () => {
@@ -195,7 +209,18 @@ test('view model: committed through-map take tiles at its inner anchor', () => {
     };
     const vm = deriveViewModel(state);
     const c = vm.lanes.find(l => l.id === 'c');
-    assert.equal(c.periodQ, 4, 'lane period = the dense inner cycle');
+    // Under the group's active [1Q, 3Q) map the lane shows the slice
+    // the map selects of C (2026-08-21): C tiles at 4Q from its inner
+    // anchor 2Q, so inner [1Q, 3Q) reads C's content [3Q, 4Q) + [0, 1Q).
+    assert.equal(c.periodQ, 2, 'lane period = the part under the map');
     assert.ok(c.reps.length > 0, 'take tiles render');
-    assert.equal(c.takeStartQ, 2, 'take marks at its inner anchor (2Q)');
+    assert.deepEqual(c.reps[0].srcSegs, [[0.75, 1], [0, 0.25]],
+        'the take is read through its inner anchor (2Q)');
+    // The raw-framed truth survives with the map bypassed.
+    state.nodes[0].windowActive = false;
+    state.nodes[0].loopBypassed = true;
+    const vmB = deriveViewModel(state);
+    const cB = vmB.lanes.find(l => l.id === 'c');
+    assert.equal(cB.periodQ, 4, 'lane period = the dense inner cycle');
+    assert.equal(cB.takeStartQ, 2, 'take marks at its inner anchor (2Q)');
 });
