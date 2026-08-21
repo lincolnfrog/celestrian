@@ -1502,3 +1502,122 @@ test.describe('Project menu (docs/projects.md)', () => {
             .toBeVisible();
     });
 });
+
+// Q13 FOR GROUPS (owner ruling 2026-08-21): the definer trim view on a
+// GROUP take must behave exactly like the sole clip's — the frame is the
+// whole take and stays put, the brackets land where the pointer went
+// (free, sub-Q), and the far bracket never moves on its own. Field
+// 2026-08-21: "it suddenly zooms way in… moving both ends chaotically".
+test.describe('Q-definer trim on a group take', () => {
+
+    async function loadEmpty(page) {
+        await applyRate(page);
+        await page.goto('/index_test.html');
+        await page.waitForSelector('#test-controls', { timeout: 5000 });
+        await page.click('button:has-text("Empty Canvas")');
+        await page.waitForTimeout(200);
+    }
+    async function recordGroupTake(page, seconds) {
+        const sr = await mockQ(page);
+        return page.evaluate(async ([secs, rate]) => {
+            const c = window.celestrian;
+            const s = await c.callNative('createNode', 'stack', '');
+            await c.callNative('createNode', 'clip', s);
+            await c.callNative('createNode', 'clip', s);
+            await c.callNative('startRecordingInNode', s);
+            c.advanceBy(secs * rate);
+            await c.callNative('stopRecordingInNode', s);
+            return s;
+        }, [seconds, sr]);
+    }
+    const stackOf = (page, id) => page.evaluate(i =>
+        window.celestrian.getState().nodes.find(n => n.id === i), id);
+    const quantum = page => page.evaluate(() => window.celestrian.getState().quantum);
+
+    async function dragToFrac(page, bracket, body, frac) {
+        const box = await body.boundingBox();
+        await dragTo(page, bracket, box.x + box.width * frac,
+            box.y + box.height / 2, 8);
+    }
+
+    test('dragging one bracket moves ONLY that bracket; the frame stays the whole take', async ({ page }) => {
+        await loadEmpty(page);
+        const s = await recordGroupTake(page, 4);
+        await page.waitForFunction(() => document.querySelectorAll('.lane').length > 1);
+        const D = await quantum(page);
+        expect(D).toBeGreaterThan(0);
+        const group = page.locator('.lane[data-kind="group"]').first();
+        const body = group.locator('.lane-body');
+        await expect(group.locator('.win-chip')).toContainText('sets tempo');
+        const ruler = page.locator('#ruler .tick-label').last();
+        await expect(ruler).toHaveText('1Q ↺');
+
+        // 1. Start bracket → 50%: selection [D/2, D), Q := D/2; the frame
+        //    is still the whole take (now 2 new-Q).
+        await dragToFrac(page, group.locator('.win-bracket.start'), body, 0.5);
+        await expect.poll(async () => (await stackOf(page, s)).loopStart)
+            .toBeGreaterThan(D * 0.45);
+        let st = await stackOf(page, s);
+        expect(st.loopStart).toBeLessThan(D * 0.55);
+        expect(st.loopEnd).toBe(D);                       // the END did not move
+        expect(await quantum(page)).toBe(st.loopEnd - st.loopStart);
+        await expect(ruler).toHaveText('2Q ↺');
+        // The bracket sits where the pointer left it (50% of the lane).
+        const startPct = async () => parseFloat(await group.locator('.win-bracket.start')
+            .evaluate(el => el.style.left));
+        expect(Math.abs(await startPct() - 50)).toBeLessThan(3);
+
+        // 2. Start bracket → 25%: the selection GROWS leftward, the end
+        //    still holds, the frame is still the whole take (now 4/3 Q).
+        await dragToFrac(page, group.locator('.win-bracket.start'), body, 0.25);
+        await expect.poll(async () => (await stackOf(page, s)).loopStart)
+            .toBeLessThan(D * 0.3);
+        st = await stackOf(page, s);
+        expect(st.loopStart).toBeGreaterThan(D * 0.2);
+        expect(st.loopEnd).toBe(D);
+        expect(await quantum(page)).toBe(st.loopEnd - st.loopStart);
+        expect(Math.abs(await startPct() - 25)).toBeLessThan(3);
+        // The frame is STILL the whole take: 4/3 new-Q, bracket at
+        // loopStart/D of the lane — not 2Q with the bracket at 16.7%
+        // (the zoom the field saw).
+        // (A fractional frame draws no Q ruler — the tile says it.)
+        expect(await group.locator('.rep').first().evaluate(el => el.style.width))
+            .toBe('100%');
+        expect(Math.abs(await startPct() - 100 * st.loopStart / D)).toBeLessThan(1);
+
+        // 3. End bracket → 75%: only the end moves.
+        await dragToFrac(page, group.locator('.win-bracket.end'), body, 0.75);
+        await expect.poll(async () => (await stackOf(page, s)).loopEnd)
+            .toBeLessThan(D * 0.8);
+        const st3 = await stackOf(page, s);
+        expect(st3.loopEnd).toBeGreaterThan(D * 0.7);
+        expect(st3.loopStart).toBe(st.loopStart);         // the START did not move
+        expect(await quantum(page)).toBe(st3.loopEnd - st3.loopStart);
+    });
+
+    test('PARITY: the sole CLIP definer trim behaves the same way', async ({ page }) => {
+        await loadEmpty(page);
+        const sr = await mockQ(page);
+        const id = await page.evaluate(async rate => {
+            const c = window.celestrian;
+            const t = await c.callNative('createNode', 'clip', '');
+            await c.callNative('startRecordingInNode', t);
+            c.advanceBy(4 * rate);
+            await c.callNative('stopRecordingInNode', t);
+            return t;
+        }, sr);
+        await page.waitForFunction(() => document.querySelectorAll('.lane').length > 0);
+        const D = await quantum(page);
+        const lane = page.locator('.lane[data-kind="clip"]').first();
+        const body = lane.locator('.lane-body');
+        await expect(lane.locator('.win-chip')).toContainText('sets tempo');
+        await dragToFrac(page, lane.locator('.win-bracket.start'), body, 0.5);
+        const clip = () => page.evaluate(i =>
+            window.celestrian.getState().nodes.find(n => n.id === i), id);
+        await expect.poll(async () => (await clip()).loopStart).toBeGreaterThan(D * 0.45);
+        const c1 = await clip();
+        expect(c1.loopEnd).toBe(D);
+        expect(await quantum(page)).toBe(c1.loopEnd - c1.loopStart);
+        await expect(page.locator('#ruler .tick-label').last()).toHaveText('2Q ↺');
+    });
+});

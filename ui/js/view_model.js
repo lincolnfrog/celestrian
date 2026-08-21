@@ -51,9 +51,34 @@ const MAX_TILES = 256;
  * a windowed or sequenced child counts as its part, sequencer.md §11.7).
  */
 function intrinsicPeriod(node, quantum) {
-    return node.type === 'stack'
-        ? calculateStackLCM(node.nodes, quantum)
-        : (node.duration || 0);
+    if (node.type !== 'stack') return node.duration || 0;
+    // ONE TAKE (the group-recorded kit, the Q13 definer stack): the
+    // children share one raw duration, so the inner cycle IS that
+    // duration — exactly, never commensurate-rounded. The rounding in
+    // calculateStackLCM protects a locked frame from an incommensurate
+    // buffer; applied to the definer's own extent it grew the trim view
+    // by ceil(D/Q)·Q on every sub-Q drag ("it suddenly zooms way in…
+    // moving both ends chaotically", field 2026-08-21).
+    const take = oneTakeDuration(node);
+    if (take > 0) return take;
+    return calculateStackLCM(node.nodes, quantum);
+}
+
+/** The shared raw duration of a stack's committed clip children when
+ * they are ONE take (same duration, no nested content); 0 otherwise. */
+export function oneTakeDuration(stack) {
+    let d = 0;
+    for (const c of stack.nodes || []) {
+        if (c.type === 'stack') {
+            if (subtreeHasCommitted(c)) return 0;
+            continue;
+        }
+        if (c.type !== 'clip' || c.isRecording || !(c.duration > 0)) continue;
+        if (c.periodSource === 'context') return 0;
+        if (d === 0) d = c.duration;
+        else if (c.duration !== d) return 0;
+    }
+    return d;
 }
 
 /** A node's intrinsic period in Q units (intrinsicPeriod ÷ quantum). */

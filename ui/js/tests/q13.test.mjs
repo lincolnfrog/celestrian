@@ -369,3 +369,20 @@ test('SEQUENCES TRACK Q: a definer re-trim rescales steps; an empty island clear
     await callNative('undo');
     assert.deepEqual(lens(), [2 * q0, 3 * q0], 'undo restores the sequence with the clip');
 });
+
+test('GROUPS: a sub-Q trim never grows the trim view (one take = raw extent, not commensurate)', async () => {
+    // Field 2026-08-21: dragging the start to 25% re-defined Q = 0.75·D
+    // and the frame became ceil(D/Q)·Q = 1.5·D — "zooms way in… moving
+    // both ends". The definer stack's extent is its one take, exactly.
+    loadScenario('empty');
+    const { stackId } = await recordGroupTake(2, 4);
+    const D = getState().quantum;
+    await callNative('setLoopPoints', stackId, D / 4, D);
+    const vm = deriveViewModel(getState());
+    assert.equal(getState().quantum, (3 * D) / 4);
+    assert.ok(Math.abs(vm.cycleQ - 4 / 3) < 1e-9, 'frame = the whole take = 4/3 new-Q');
+    const g = vm.lanes.find(l => l.id === stackId);
+    assert.ok(Math.abs(g.intrinsicQ - 4 / 3) < 1e-9);
+    assert.ok(Math.abs(g.window.startQ - 1 / 3) < 1e-9, 'bracket at D/4 of the take');
+    assert.ok(Math.abs(g.window.endQ - 4 / 3) < 1e-9, 'end untouched');
+});

@@ -14,6 +14,7 @@ import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ, tickSetSig } from '.
 import { drawWaveform } from '../canvas_renderer.js';
 import { generateCompositeWaveform } from '../composite_waveform.js';
 import { calculateStackLCM } from '../timeline_model.js';
+import { oneTakeDuration } from '../view_model.js';
 import { liveBoost, PEAKS_PER_SECOND } from '../live_peaks.js';
 import { mapOffset } from '../time_map.js';
 import { correctPosition } from '../playhead_clock.js';
@@ -633,8 +634,11 @@ function lanePeaks(lane, aux) {
     if (lane.kind === 'clip') return aux.livePeaks.get(lane.id);
     const node = aux.nodesById.get(lane.id);
     if (!node || !node.nodes || node.nodes.length === 0) return null;
+    // The composite's extent = the lane's intrinsic extent (one take →
+    // its raw duration; else the commensurate LCM) — the heard view's
+    // srcSegs index into THIS, so the two must agree.
     const stackDuration = Math.max(
-        calculateStackLCM(node.nodes, aux.vmQuantum),
+        oneTakeDuration(node) || calculateStackLCM(node.nodes, aux.vmQuantum),
         node.effectiveQuantum || aux.vmQuantum);
     return generateCompositeWaveform({
         stack: node, stackDuration, effectiveQ: aux.vmQuantum,
