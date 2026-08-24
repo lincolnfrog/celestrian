@@ -1663,6 +1663,14 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: var(--text-dim);
 }
 .audio-panel .ap-note { padding: 6px 8px; color: var(--text-dim); }
+/* The plugin registry can be hundreds of rows; the popover must not
+   outgrow the window, so the list scrolls between the head and the
+   scan row. */
+.audio-panel .plugin-list {
+    max-height: min(56vh, 480px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
 .audio-panel .ap-hint {
     padding: 6px 8px;
     margin: 4px 4px 0;
