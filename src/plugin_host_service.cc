@@ -41,9 +41,12 @@ PluginHostService::PluginHostService(const juce::File& data_directory)
   loadKnownPlugins();
   // Crash recovery: a pedal file with content is the fingerprint of a
   // scan that died mid-probe. Blacklist the culprit so the next scan
-  // walks past it instead of crashing the app again.
+  // walks past it instead of crashing the app again. Persist at once:
+  // the next scan erases the culprit from the pedal file when it skips
+  // it, so an in-memory blacklist would not survive a second crash.
   juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal(
       known_plugins_, pedalFile());
+  if (pedalFile().loadFileAsString().trim().isNotEmpty()) saveKnownPlugins();
 }
 
 PluginHostService::~PluginHostService() {
