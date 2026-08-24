@@ -1,6 +1,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include "main_component.h"
+#include "plugin_scan_worker.h"
 
 class CelestrianApplication : public juce::JUCEApplication {
  public:
@@ -11,6 +12,11 @@ class CelestrianApplication : public juce::JUCEApplication {
   bool moreThanOneInstanceAllowed() override { return true; }
 
   void initialise(const juce::String& commandLine) override {
+    // Scanner-subprocess launch (docs/vst3.md §4): probe plugins for
+    // the parent app and quit; no window, no logger, no state.
+    if ((scanWorker = celestrian::maybeStartScanWorker(commandLine)))
+      return;
+
     // Set up file logger - overwrites each run
     auto logFile = juce::File::getCurrentWorkingDirectory().getChildFile(
         "celestrian_debug.log");
@@ -63,6 +69,7 @@ class CelestrianApplication : public juce::JUCEApplication {
  private:
   std::unique_ptr<MainWindow> mainWindow;
   std::unique_ptr<juce::FileLogger> fileLogger;
+  std::unique_ptr<celestrian::PluginScanWorker> scanWorker;
 };
 
 START_JUCE_APPLICATION(CelestrianApplication)

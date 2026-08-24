@@ -77,7 +77,7 @@ async function render() {
     panel.innerHTML =
         '<div class="ap-head">Plugins</div>' +
         (plugins.length
-            ? rows
+            ? '<div class="plugin-list">' + rows + '</div>'
             : '<div class="ap-note">No plugins known yet — scan to find ' +
               'the VST3 plugins installed on this machine.</div>') +
         '<div class="ap-row">' +

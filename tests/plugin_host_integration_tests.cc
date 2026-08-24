@@ -66,7 +66,8 @@ class PluginHostIntegrationTests : public juce::UnitTest {
                           .getChildFile("celestrian_plugin_integration");
       data_dir.deleteRecursively();
       PluginHostService service(data_dir);
-      service.startScan(bundle.getParentDirectory().getFullPathName());
+      service.startScan(bundle.getParentDirectory().getFullPathName(),
+                        /*include_defaults=*/false);
       // The scan runs on its own thread; bounded wait.
       for (int i = 0; i < 600 && service.isScanning(); ++i)
         juce::Thread::sleep(50);

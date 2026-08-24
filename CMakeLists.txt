@@ -118,6 +118,8 @@ target_sources(Celestrian PRIVATE
     src/project_manager.cc
     src/plugin_host_service.h
     src/plugin_host_service.cc
+    src/plugin_scan_worker.h
+    src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
@@ -215,6 +217,7 @@ target_sources(CelestrianTests PRIVATE
     tests/plugin_host_tests.cc
     tests/vst3_slot_tests.cc
     tests/plugin_host_integration_tests.cc
+    tests/plugin_scan_crash_tests.cc
     tests/midi_tests.cc
     tests/midi_record_tests.cc
     tests/sequencer_tests.cc
@@ -224,6 +227,7 @@ target_sources(CelestrianTests PRIVATE
     src/session_io.cc
     src/project_manager.cc
     src/plugin_host_service.cc
+    src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
@@ -247,6 +251,9 @@ target_compile_definitions(CelestrianTests PRIVATE
     JUCE_PLUGINHOST_VST3=1
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    # The scan-worker mode of this binary pumps the message loop by
+    # hand (runDispatchLoopUntil); see tests/test_runner.cc.
+    JUCE_MODAL_LOOPS_PERMITTED=1
 )
 
 celestrian_enable_asio(CelestrianTests)
@@ -286,11 +293,43 @@ if (CELESTRIAN_BUILD_TEST_PLUGIN)
         JUCE_VST3_CAN_REPLACE_VST2=0
     )
 
-    # The integration test hosts the freshly built bundle: build it
-    # first, and tell the test where the binary landed (the test walks
-    # up from there to the .vst3 bundle root).
-    add_dependencies(CelestrianTests CelestrianTestGain_VST3)
+    # "Celestrian Test Crash": a hostile VST3 that calls abort() in a
+    # static initializer, so any process that loads it dies. The scan
+    # crash-isolation test (tests/plugin_scan_crash_tests.cc) scans it
+    # and asserts the host survives. VST3_AUTO_MANIFEST FALSE keeps the
+    # build's manifest helper from loading (and dying with) it.
+    juce_add_plugin(CelestrianTestCrash
+        PRODUCT_NAME "Celestrian Test Crash"
+        COMPANY_NAME "Celestrian"
+        BUNDLE_ID "com.celestrian.testcrash"
+        PLUGIN_MANUFACTURER_CODE Cele
+        PLUGIN_CODE Ctc1
+        FORMATS VST3
+        IS_SYNTH FALSE
+        NEEDS_MIDI_INPUT FALSE
+        NEEDS_MIDI_OUTPUT FALSE
+        COPY_PLUGIN_AFTER_BUILD FALSE
+        VST3_AUTO_MANIFEST FALSE
+    )
+    target_sources(CelestrianTestCrash PRIVATE
+        test_plugin/test_crash_plugin.cc
+    )
+    target_link_libraries(CelestrianTestCrash PRIVATE
+        juce::juce_audio_processors
+        juce::juce_audio_utils
+    )
+    target_compile_definitions(CelestrianTestCrash PUBLIC
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        JUCE_VST3_CAN_REPLACE_VST2=0
+    )
+
+    # The integration tests host the freshly built bundles: build them
+    # first, and tell the tests where the binaries landed (each test
+    # walks up from there to the .vst3 bundle root).
+    add_dependencies(CelestrianTests CelestrianTestGain_VST3 CelestrianTestCrash_VST3)
     target_compile_definitions(CelestrianTests PRIVATE
         CELESTRIAN_TEST_GAIN_VST3_BINARY_DIR="$<TARGET_FILE_DIR:CelestrianTestGain_VST3>"
+        CELESTRIAN_TEST_CRASH_VST3_BINARY_DIR="$<TARGET_FILE_DIR:CelestrianTestCrash_VST3>"
     )
 endif()

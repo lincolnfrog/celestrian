@@ -35,6 +35,22 @@ const scanDiscovery = {
     isInstrument: true,
 };
 
+/* Page override (the rate.js pattern): seed N extra synthetic plugins
+ * for layout tests — set window.__celestrianMockPluginCount before the
+ * app's modules evaluate. */
+const seedCount =
+    typeof globalThis.__celestrianMockPluginCount !== 'undefined'
+        ? Number(globalThis.__celestrianMockPluginCount) : 0;
+for (let i = 0; i < seedCount; i++) {
+    initialPlugins.push({
+        name: `Seeded Plugin ${String(i).padStart(3, '0')}`,
+        uid: `VST3-seeded-${i}`,
+        file: `/Library/Audio/Plug-Ins/VST3/Seeded${i}.vst3`,
+        maker: 'Mocksound', category: 'Fx', version: '1.0',
+        isInstrument: false,
+    });
+}
+
 let known = [...initialPlugins];
 let scanning = false;
 let pollsRemaining = 0;
