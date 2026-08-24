@@ -121,6 +121,32 @@ class PluginHostTests : public juce::UnitTest {
              "blacklist survives the round trip");
     }
 
+    beginTest("pedal blacklist is durable without a completed scan");
+    {
+      // Prior bug (seen live 2026-08-19): crash on Kontakt 7, relaunch,
+      // crash on Supercharger, relaunch — and Kontakt was probed AGAIN.
+      // The constructor applied the pedal blacklist in memory only;
+      // saveKnownPlugins() ran only after a clean scan. The next scan
+      // removed the skipped culprit from the pedal file, so a later
+      // crash erased the only durable record of it. With two or more
+      // crashing plugins, recovery ping-pongs instead of converging.
+      const auto dir = freshDataDir("pedal_durable");
+      const auto crashed_path = juce::String("/fake/CrashyPlugin.vst3");
+      dir.createDirectory();
+      dir.getChildFile(celestrian::PluginHostService::kPedalFileName)
+          .replaceWithText(crashed_path + "\n");
+      { celestrian::PluginHostService service(dir); }
+      // Simulate what the next scan does when it walks past the
+      // blacklisted file: JUCE's scanner drops it from the pedal.
+      dir.getChildFile(celestrian::PluginHostService::kPedalFileName)
+          .deleteFile();
+      celestrian::PluginHostService reborn(dir);
+      expect(reborn.knownPlugins().getBlacklistedFiles().contains(
+                 crashed_path),
+             "constructor must persist the pedal blacklist, not hold it "
+             "in memory until a clean scan");
+    }
+
     beginTest("scan status var shape (idle)");
     {
       celestrian::PluginHostService service(freshDataDir("status"));
