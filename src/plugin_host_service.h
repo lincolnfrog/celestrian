@@ -54,9 +54,12 @@ class PluginHostService {
    * Starts a background scan of the default VST3 directories plus
    * `extra_path` when non-empty. No-op while a scan is running.
    * Already-known files are not re-probed; the completed scan persists
-   * the list (including any new blacklistings).
+   * the list (including any new blacklistings). Tests pass
+   * `include_defaults = false` to stay off the machine's real plugin
+   * directories.
    */
-  void startScan(const juce::String& extra_path = juce::String());
+  void startScan(const juce::String& extra_path = juce::String(),
+                 bool include_defaults = true);
 
   bool isScanning() const { return scanning_.load(); }
 

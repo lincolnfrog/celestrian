@@ -103,14 +103,16 @@ juce::var PluginHostService::getKnownPluginsVar() const {
   return juce::var(list);
 }
 
-void PluginHostService::startScan(const juce::String& extra_path) {
+void PluginHostService::startScan(const juce::String& extra_path,
+                                  bool include_defaults) {
   if (scanning_.load()) return;
   if (scan_thread_ != nullptr) scan_thread_->stopThread(5000);
 
   auto* format = vst3Format();
   if (format == nullptr) return;
 
-  juce::FileSearchPath search_path = format->getDefaultLocationsToSearch();
+  juce::FileSearchPath search_path;
+  if (include_defaults) search_path = format->getDefaultLocationsToSearch();
   if (extra_path.isNotEmpty()) search_path.add(juce::File(extra_path));
 
   data_directory_.createDirectory();  // the pedal file needs a home
