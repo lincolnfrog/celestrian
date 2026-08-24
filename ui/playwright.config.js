@@ -1,5 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// E2E_PORT escapes machines where something else owns 8080 (a firewall
+// or forwarder that RESETS the port reads as a phantom "server", so the
+// suite fails with ERR_CONNECTION_RESET instead of starting its own).
+const PORT = Number(process.env.E2E_PORT) || 8080;
+
 export default defineConfig({
     testDir: './e2e',
     timeout: 30000,
@@ -13,8 +18,13 @@ export default defineConfig({
     workers: process.env.CI ? 1 : undefined,
     reporter: 'html',
     use: {
-        baseURL: 'http://localhost:8080',
+        baseURL: `http://localhost:${PORT}`,
         trace: 'on-first-retry',
+        // The bundled-chromium download can stall on a slow network.
+        // E2E_CHROME_CHANNEL=chrome runs the suite in the installed
+        // system Chrome instead (the E2E_MOCK_RATE pattern).
+        ...(process.env.E2E_CHROME_CHANNEL
+            ? { channel: process.env.E2E_CHROME_CHANNEL } : {}),
     },
     projects: [
         {
@@ -24,8 +34,11 @@ export default defineConfig({
     ],
     // Local web server for ES module support (file:// URLs have CORS issues)
     webServer: {
-        command: 'npx serve . -p 8080',
-        port: 8080,
+        // serve falls back to a random port WITHOUT FAILING when the
+        // requested port is unavailable; playwright then waits on the
+        // configured port until timeout. Hence E2E_PORT above.
+        command: `npx serve . -l ${PORT}`,
+        port: PORT,
         reuseExistingServer: !process.env.CI,
     },
 });
