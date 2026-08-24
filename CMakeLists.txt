@@ -118,6 +118,8 @@ target_sources(Celestrian PRIVATE
     src/project_manager.cc
     src/plugin_host_service.h
     src/plugin_host_service.cc
+    src/plugin_scan_worker.h
+    src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
@@ -225,6 +227,7 @@ target_sources(CelestrianTests PRIVATE
     src/session_io.cc
     src/project_manager.cc
     src/plugin_host_service.cc
+    src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
@@ -248,6 +251,9 @@ target_compile_definitions(CelestrianTests PRIVATE
     JUCE_PLUGINHOST_VST3=1
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    # The scan-worker mode of this binary pumps the message loop by
+    # hand (runDispatchLoopUntil); see tests/test_runner.cc.
+    JUCE_MODAL_LOOPS_PERMITTED=1
 )
 
 celestrian_enable_asio(CelestrianTests)

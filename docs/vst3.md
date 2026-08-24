@@ -175,13 +175,20 @@ MainComponent or the engine — placement per ui.md's bridge rules):
 - `juce::AudioPluginFormatManager` with `VST3PluginFormat` registered.
   (Format-generic by construction; AU later is one `addFormat` call.)
 - `juce::KnownPluginList`, persisted as XML in the app data dir
-  (`userApplicationDataDirectory/Celestrian/known_plugins.xml`), plus the
-  standard **dead-man's-pedal** file: before scanning a file, write its
-  path; on clean completion, clear it. A scan that crashes the app leaves
-  the pedal file naming the culprit, which is blacklisted on next launch.
-  This is the pragmatic middle ground until out-of-process scanning
-  (explicitly deferred; JUCE 8 supports a scanner child process when we
-  want it).
+  (`userApplicationDataDirectory/Celestrian/known_plugins.xml`).
+- **Out-of-process probing** (src/plugin_scan_worker.h, after the
+  2026-08-19 field crashes): every file is probed in a scanner
+  subprocess (the app binary relaunched with a handshake flag, per
+  JUCE's AudioPluginHost pattern). A plugin that crashes or hangs while
+  it loads kills only the subprocess; the file is blacklisted and the
+  scan walks on. The subprocess probes on ITS message thread, which
+  also satisfies plugins that call main-thread-only macOS APIs during
+  load (the NI/TSM crash class).
+- The standard **dead-man's-pedal** file stays as the second line of
+  defense: before probing a file, write its path; on clean completion,
+  clear it. If the app itself dies mid-scan, the next launch blacklists
+  the named file and persists the blacklist at once (an in-memory
+  blacklist would be lost to a second crash).
 - Scanning runs on a background thread (`PluginDirectoryScanner`) over
   the platform default VST3 directories + a user-added list; progress and
   results stream to the UI over the existing event channel.

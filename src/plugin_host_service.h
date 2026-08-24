@@ -22,11 +22,13 @@ namespace celestrian {
  *    directory (the same directory audio_device.xml lives in; tests
  *    pass a temp directory instead).
  *  - Background scan of the platform default VST3 locations plus an
- *    optional user path, with the DEAD-MAN'S-PEDAL crash blacklist:
- *    the scanner writes each file's path before probing it; a probe
- *    that crashes the app leaves the pedal file naming the culprit,
- *    which is blacklisted on the next launch (docs/vst3.md §4 — the
- *    pragmatic middle ground until out-of-process scanning).
+ *    optional user path. Every probe runs OUT OF PROCESS in a scanner
+ *    subprocess (plugin_scan_worker.h): a plugin that crashes while it
+ *    loads kills the subprocess, gets blacklisted, and the scan walks
+ *    on (docs/vst3.md §4). The DEAD-MAN'S-PEDAL file stays as the
+ *    second line of defense: it names the in-flight file if the app
+ *    itself dies mid-scan, and that file is blacklisted (and the
+ *    blacklist persisted) on the next launch.
  *
  * Licensing note: JUCE bundles the VST3 SDK headers under the SDK's
  * GPLv3 option, which combines with this project's AGPLv3 exactly as
@@ -85,6 +87,7 @@ class PluginHostService {
 
  private:
   class ScanThread;
+  class OutOfProcessScanner;
 
   void loadKnownPlugins();
   /** The VST3 format instance owned by the format manager. */
@@ -93,6 +96,9 @@ class PluginHostService {
   juce::File data_directory_;
   juce::AudioPluginFormatManager format_manager_;
   juce::KnownPluginList known_plugins_;
+  // Owned by known_plugins_ (setCustomScanner); the raw pointer lets
+  // the destructor unblock an in-flight out-of-process probe.
+  OutOfProcessScanner* oop_scanner_ = nullptr;
 
   // Scan machinery. The scanner is created on the message thread by
   // startScan and consumed by the thread; `current_name_` is the only

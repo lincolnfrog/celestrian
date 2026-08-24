@@ -1,6 +1,9 @@
 #include <juce_core/juce_core.h>
+#include <juce_events/juce_events.h>
 
 #include <iostream>
+
+#include "../src/plugin_scan_worker.h"
 
 namespace {
 /** Prints test progress/failures to stdout. JUCE's default runner logs
@@ -18,7 +21,22 @@ class ConsoleRunner : public juce::UnitTestRunner {
  * A simple console application that runs all registered juce::UnitTests.
  */
 int main(int argc, char* argv[]) {
-  juce::ignoreUnused(argc, argv);
+  // Scanner-subprocess launch: the out-of-process scan tests make this
+  // binary its own scan worker (the app binary does the same in
+  // production). Probe plugins until the coordinator disconnects.
+  if (argc > 1) {
+    const juce::ScopedJuceInitialiser_GUI juce_runtime;
+    if (auto worker = celestrian::maybeStartScanWorker(argv[1])) {
+      // A console binary has no NSApplication, so runDispatchLoop
+      // ([NSApp run] on macOS) returns at once. Pump the run loop
+      // directly instead; the worker stops it when the coordinator
+      // disconnects.
+      auto* message_manager = juce::MessageManager::getInstance();
+      while (!message_manager->hasStopMessageBeenSent())
+        message_manager->runDispatchLoopUntil(100);
+      return 0;
+    }
+  }
 
   ConsoleRunner runner;
   runner.setAssertOnFailure(false);
