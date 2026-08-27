@@ -37,6 +37,15 @@ struct Sequence {
     int64_t len = 0;  // samples (whole-Q by UI construction; engine
                       // accepts free lengths — S10: permitted, badged)
     juce::String name;
+    // CUE (docs/sequencer.md §3; S11 reserved, ruled + built 2026-08-27
+    // with S20-S22 — the Q6 serial primitive): a cued step re-bases the
+    // subtree's received frame to the step top — children hear
+    // t' = epoch + (songRel - stepStart), so a cued child starts from
+    // its own top on every entrance (verse-box then chorus-box; the
+    // radio's song-after-song). Playback-only here: the envelope below
+    // treats cued-step edges as hard cuts (S20); the re-base itself
+    // lives in StackNode::childContext.
+    bool cue = false;
   };
   struct GateRow {
     juce::String uuid;      // a DIRECT child of the owning stack
@@ -50,16 +59,48 @@ struct Sequence {
   // before the object is published (the audio thread never writes).
   int64_t total = 0;                    // Σ len
   int64_t bounds[kMaxSteps + 1] = {0};  // bounds[i] = start of step i
+  bool any_cue = false;                 // fast-path guard (audio thread)
 
   /** Compute total + step bounds. Call exactly once, before publish. */
   void finalize() {
     total = 0;
+    any_cue = false;
     const int n = numSteps();
     for (int i = 0; i < n; ++i) {
       bounds[i] = total;
       total += steps[(size_t)i].len > 0 ? steps[(size_t)i].len : 0;
+      if (steps[(size_t)i].cue) any_cue = true;
     }
     bounds[n] = total;
+  }
+
+  /** Whether step i is CUED (bounds-checked; out of range = false). */
+  bool cueAt(int i) const {
+    return i >= 0 && i < numSteps() && steps[(size_t)i].cue;
+  }
+
+  /**
+   * S20: the boundary between ADJACENT steps a -> b (b = (a+1) mod n,
+   * including the loop wrap) is a HARD CUT when either side is cued —
+   * the child clock jumps there (re-base in or out), so the gate
+   * envelope must dip through zero (the ~10 ms anti-pop micro-fade)
+   * even for a child gated ON across it. Musical crossfades between
+   * cued children stay S13 future work.
+   */
+  bool cutBetween(int a, int b) const { return cueAt(a) || cueAt(b); }
+
+  /**
+   * THE CUE MAP (docs/sequencer.md §3): song position -> content
+   * position. Identity on plain steps; a cued step selects the song
+   * TOP span [0, len) — the per-step epoch re-base, i.e. exactly the
+   * time-map Q6's provisional ruling names ("a serial group is a
+   * composite whose time-map routes each child a sub-range of the
+   * cycle"). `rel` is folded internally.
+   */
+  int64_t songToContent(int64_t rel) const {
+    rel = fold(rel);
+    const int i = stepAt(rel);
+    return cueAt(i) ? rel - bounds[i] : rel;
   }
 
   int numSteps() const {
@@ -114,15 +155,24 @@ struct Sequence {
     if (n <= 0 || total <= 0) return 1.0f;
     rel = fold(rel);
     const uint64_t full = n >= 64 ? ~0ull : ((1ull << n) - 1ull);
-    if ((m & full) == full) return 1.0f;  // all on: constant (no run edges)
-    if ((m & full) == 0) return 0.0f;     // all off: constant silence
+    // All on: constant 1 — UNLESS a cued step exists (S20): its edges
+    // are hard cuts the envelope must still dip through.
+    if ((m & full) == full && !any_cue) return 1.0f;
+    if ((m & full) == 0) return 0.0f;  // all off: constant silence
     const int i = stepAt(rel);
     if (!on(m, i)) return 0.0f;
     // Run edges: walk to the first/last on-step of this run (wrapping).
+    // A cue boundary (cutBetween) BREAKS the run even when the mask is
+    // on across it — the S20 micro-fade dip at every cue seam. The walk
+    // terminates: with no cued step the all-on mask took the fast path
+    // above; with one, its edges are cuts.
     int first = i;
-    while (on(m, (first + n - 1) % n)) first = (first + n - 1) % n;
+    while (on(m, (first + n - 1) % n) &&
+           !cutBetween((first + n - 1) % n, first))
+      first = (first + n - 1) % n;
     int last = i;
-    while (on(m, (last + 1) % n)) last = (last + 1) % n;
+    while (on(m, (last + 1) % n) && !cutBetween(last, (last + 1) % n))
+      last = (last + 1) % n;
     const int64_t run_start = bounds[first];
     int64_t run_len = 0;
     for (int k = first;; k = (k + 1) % n) {

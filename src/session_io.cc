@@ -187,6 +187,7 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
           auto* stepo = new juce::DynamicObject();
           stepo->setProperty("name", st.name);
           stepo->setProperty("lenQ", qvar(timing::fromSamples(st.len, q)));
+          if (st.cue) stepo->setProperty("cue", true);  // additive
           steps.add(juce::var(stepo));
         }
         so->setProperty("steps", steps);
@@ -241,6 +242,7 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
           Sequence::Step st;
           st.len = timing::toSamples(qread(sv.getProperty("lenQ", {})), q);
           st.name = sv.getProperty("name", {}).toString();
+          st.cue = (bool)sv.getProperty("cue", false);
           if (st.len > 0) seq->steps.push_back(std::move(st));
         }
       }

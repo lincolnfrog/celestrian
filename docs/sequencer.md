@@ -16,8 +16,10 @@
 > audition, record-into-a-step, TAKES UNDOABLE + the auto-gate, the
 > frame-health badge, the window domain) BUILT 2026-08-20, same day —
 > design §11, rulings S16–S19 + implementation record §11.10. Step 3
-> (nested sequences in the UI) BUILT 2026-08-20 — §12. Next: step 4
-> (cue steps).
+> (nested sequences in the UI) BUILT 2026-08-20 — §12. Step 4 (CUE
+> STEPS — the Q6 serial primitive) BUILT 2026-08-27 — rulings S20–S22
+> + implementation record §13. Next: step 5 (successor graphs + the
+> seed, S12).
 
 ---
 
@@ -163,8 +165,8 @@ they are different musical intents, not competing designs:
 - **Gate (ruled, S1 — the v1 default).** Audibility only. The child's
   phase derives from the clock as always; entrances land in-phase for
   free. Right for tracks inside a song.
-- **Cue (deferred — the serial primitive).** The step re-bases the
-  child's received frame to the step top: the child hears
+- **Cue (RULED + BUILT 2026-08-27 — the serial primitive; §13).** The
+  step re-bases the child's received frame to the step top: the child hears
   `t' = childEpoch + (t − stepStart)` — a per-step epoch re-base,
   which is to say **a time-map**, the exact object Q6's provisional
   ruling names (*"a serial group is a composite whose time-map routes
@@ -868,6 +870,83 @@ scenario (root song over bass + a sequenced Drums kit of one-shots)
 for the harness; tests in `sequence.test.mjs` (layers, period law on
 the group lane, one-shot echoes) and e2e `sequencer.spec.js`
 ("NESTED: the fractal drum kit").
+
+---
+
+## 13. Build step 4 — CUE STEPS (rulings + implementation record, 2026-08-27)
+
+Rulings (owner, 2026-08-27):
+
+- **S20 — Cue seams dip.** At every cued-step edge (both edges, the
+  song wrap included) the child clock JUMPS — the gate envelope treats
+  the boundary as a HARD CUT and dips through zero with the standard
+  ~10 ms anti-pop micro-fade, even for a child gated ON across it.
+  Musical crossfades between cued children remain S13 future work.
+- **S21 — Arm inside a cued step auto-targets it.** A Mode-1 take
+  lands at absolute positions, but cue playback re-bases the step to
+  the song top — the take would never replay where the performer heard
+  it. So arming while the playhead is inside a cued step BECOMES
+  Mode-2 record-into-that-step: the nearest sequenced ancestor's
+  audition engages on that step (an audition already active anywhere
+  wins — the performer aimed), and the S18 part + S19 auto-gate flow
+  does the rest. The implicit audition is the same monitoring gesture
+  as an explicit one; Esc releases it. Arming in a PLAIN step stays
+  honest Mode 1.
+- **S22 — The header pip.** Cue is a per-STEP property; the pad grid
+  stays the ONE control (S15): each step header carries a ⇤ pip
+  (hover-revealed like ⟲, always lit while cued, amber — the re-frame
+  colour) toggling gate-mode ↔ cue-mode. It rides setSequence: one
+  whole-object swap, one undo step.
+
+Semantics (the §3 formula, reified):
+
+- **The cue map.** Song position → content position:
+  `content(rel) = rel − stepStart(i)` on a cued step i, identity
+  elsewhere (`Sequence::songToContent`). The re-base lives in
+  `StackNode::childContext`, layered UNDER any authored/audition map
+  (the S9 composition law: the map selects SONG positions; the cue
+  maps song positions to CONTENT positions):
+  `t' = receivedEpoch + content(fold(childPos − receivedEpoch))`, and
+  the child frame's cycle top returns to the received epoch — so a
+  nested song-stack restarts from its own top on every entrance.
+  `forEachSeamRun` already splits blocks at step bounds (envelope
+  corners), so the step is constant within any one run.
+- **Gates stay on the SONG timeline.** `renderChildren` derives the
+  step lookup from the received clock through the own map alone —
+  never from the re-based child clock (else a child gated off in a
+  cued step would wrongly read step 0's gates).
+- **Record into a cued step composes.** Under an audition aimed at a
+  cued step, `childContext` hands down the COMPOSED map
+  (`single(0, stepLen)`), so the through-map arm math places the take
+  at the song top `[0, stepLen)` — exactly where cue playback reads
+  it. C = the step (S18) as before.
+- **An authored window over cued steps refuses the arm** (the
+  nested-active-maps refusal precedent): the window may span several
+  steps, so composed take placement is a multi-segment product —
+  outside this build's scope. Playback through such a window is fine
+  (the per-run re-base is exact); only the ARM refuses, with a log
+  naming the fix (audition the step to record into it).
+- **Period law unchanged.** Steps still concatenate; `total`, the
+  frame, and the chip read exactly as before. Persistence is additive
+  (`cue` per step in session, metadata, and track templates — S14
+  re-keying untouched; SEQUENCES-TRACK-Q rescaling copies it).
+- **Display honest, pure projection.** Lanes mark cued spans
+  (`seqDims[].cueSegsQ` → the amber top-hairline + ⇤ marker) on every
+  child of the scope, gated or not — the span still SOUNDS, it just
+  replays the song top.
+
+Where it lives: engine `src/sequence.h` (Step.cue, any_cue, cut
+boundaries in gainAt, songToContent), `src/stack_node.cc`
+(childContext re-base + composed audition map; gate lookup),
+`src/audio_engine.cc` (payload parse, S21 auto-target, the refusal),
+`src/session_io.cc` + `src/track_template.h` (additive persistence);
+mock twins `ui/js/mock/sequence.js` + `ui/js/mock/recording.js`; VM
+`ui/js/view_model.js` (grid steps.cue, cueSegsQ); UI
+`ui/js/session_view/seq_grid.js` (the pip) +
+`ui/js/session_view/lane_body.js` + `css/session.css`. Pinned by the
+"S20/S21/CUE" sections of `tests/sequencer_tests.cc`,
+`ui/js/tests/cue.test.mjs`, and the "CUE (S22)" e2e in
+`ui/e2e/sequencer.spec.js`.
 
 ---
 

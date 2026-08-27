@@ -1350,6 +1350,41 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
     return;
   }
 
+  // S21 AUTO-TARGET (owner ruling 2026-08-27, docs/sequencer.md §3):
+  // arming while the playhead is inside a CUED step becomes Mode-2
+  // record-into-that-step. A Mode-1 take lands at absolute positions,
+  // but cue playback RE-BASES the step to the song top — the take
+  // would never replay where the performer heard themselves play it.
+  // Engaging the step audition here routes the arm through the
+  // existing through-map path (S18 step-sized part, S19 auto-gate),
+  // which places the take exactly where cue playback reads it. The
+  // nearest sequenced ancestor of the first target answers; an
+  // audition already active anywhere in the chain means the performer
+  // already aimed (explicit Mode-2) and wins. The audition is the
+  // same monitoring gesture as an explicit one — Esc releases it.
+  if (!targets.empty()) {
+    for (auto* a = targets[0]->getParent(); a != nullptr;
+         a = a->getParent()) {
+      auto* s = dynamic_cast<celestrian::StackNode*>(a);
+      if (s == nullptr) continue;
+      if (s->auditionActive()) break;  // explicitly aimed already
+      const celestrian::Sequence* sq = s->activeSequence();
+      if (sq == nullptr) continue;  // not sequenced: keep walking up
+      if (sq->any_cue && sq->total > 0) {
+        const int64_t rel =
+            sq->fold(global_transport_pos.load() - root_node->getEpoch());
+        const int step = sq->stepAt(rel);
+        if (sq->cueAt(step)) {
+          s->setAuditionStep(step);
+          juce::Logger::writeToLog(
+              "AudioEngine: arm inside cued step " + juce::String(step) +
+              " - auto-targeting it (S21: record-into-step)");
+        }
+      }
+      break;  // nearest sequenced ancestor answers either way
+    }
+  }
+
   // THROUGH-MAP ARM (time_maps.md phase 2): an ACTIVE map on an
   // ancestor shapes each take — the take records THROUGH it (heard
   // arm math, one-period cap, dense [0, C) commit). The walk runs on
@@ -1379,6 +1414,22 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
       return;
     }
     if (mapping != nullptr && root_node->getQuantum() > 0) {
+      // An AUTHORED window over a sequence with CUED steps: the map
+      // may span several steps, so the composed take placement is a
+      // multi-segment product — outside the ratified cue scope (the
+      // nested-active-maps refusal precedent). The step AUDITION
+      // composes fine (childContext hands down the composed map);
+      // only the authored-window case refuses.
+      if (auto* ms = dynamic_cast<celestrian::StackNode*>(mapping)) {
+        const celestrian::Sequence* msq = ms->activeSequence();
+        if (msq != nullptr && msq->any_cue && !ms->auditionActive()) {
+          juce::Logger::writeToLog(
+              "AudioEngine: record refused — an authored window over a "
+              "sequence with cued steps (audition the step to record "
+              "into it)");
+          return;
+        }
+      }
       const int64_t period = mapping->activeTimeMap().period();
       // S18 (ruled 2026-08-20, docs/sequencer.md §11.4): under an
       // ACTIVE SEQUENCE on the mapping node the take is a STEP-SIZED
@@ -2504,6 +2555,7 @@ void AudioEngine::setSequence(const juce::String& uuid,
         celestrian::Sequence::Step st;
         st.len = (int64_t)(double)sv.getProperty("len", {});
         st.name = sv.getProperty("name", {}).toString();
+        st.cue = (bool)sv.getProperty("cue", false);
         if (st.len <= 0) {
           juce::Logger::writeToLog(
               "AudioEngine::setSequence refused — non-positive step length");

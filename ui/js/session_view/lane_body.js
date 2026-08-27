@@ -689,6 +689,22 @@ function patchSeqDims(body, lane, cycleQ) {
                 d.style.width = pct(to - from, cycleQ);
                 layer.appendChild(d);
             }
+            // CUED spans (docs/sequencer.md ss3): the subtree replays
+            // the SONG TOP here - marked, not dimmed (it still sounds;
+            // it just re-bases). The pip echoes the grid header's.
+            for (const [s, e] of dims.cueSegsQ || []) {
+                const from = base + s;
+                const to = Math.min(base + e, cycleQ);
+                if (to - from <= 1e-9) continue;
+                const c = el('div', 'seq-cue-span mono');
+                c.dataset.layer = String(li);
+                c.style.left = pct(from, cycleQ);
+                c.style.width = pct(to - from, cycleQ);
+                c.title = 'Cued step: replays this track from the song top';
+                c.appendChild(el('span', 'seq-cue-pip',
+                    { textContent: '\u21e4' }));
+                layer.appendChild(c);
+            }
         }
     });
 }

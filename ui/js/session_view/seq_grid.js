@@ -45,7 +45,8 @@ export function buildSeqGrid(row, lane) {
 function payloadOf(lane, quantum, mutate) {
     const p = {
         steps: lane.steps.map(s => ({
-            name: s.name, len: Math.round(s.lenQ * quantum) })),
+            name: s.name, len: Math.round(s.lenQ * quantum),
+            cue: !!s.cue })),
         gates: {},
     };
     lane.children.forEach(c => { p.gates[c.id] = c.gates.slice(); });
@@ -67,7 +68,7 @@ function commit(row, mutate) {
     // COMPOSE (a fast double-click on "+ step" adds two steps, not one
     // twice). The next poll's published state confirms and rebuilds.
     lane.steps = p.steps.map(s => ({
-        name: s.name, lenQ: s.len / row._quantum }));
+        name: s.name, lenQ: s.len / row._quantum, cue: !!s.cue }));
     lane.totalQ = lane.steps.reduce((t, x) => t + x.lenQ, 0);
     lane.children.forEach(c => {
         const bits = p.gates[c.id];
@@ -176,6 +177,26 @@ function rebuild(row, lane) {
         nm.title = 'Double-click to rename · right-click to delete step';
         nm.addEventListener('dblclick', () => renameStep(row, cell, i));
         const len = el('span', 'seq-hlen', { textContent: fmtQ(s.lenQ) + 'Q' });
+        // \u21e4 — CUE (S22, ruled 2026-08-27): a per-step pip on the
+        // header toggles gate-mode <-> cue-mode. A cued step re-bases
+        // its span to the SONG TOP (docs/sequencer.md ss3 — the serial
+        // primitive: verse-box then chorus-box). Rides setSequence
+        // (one undo step, whole-object swap).
+        const cued = !!s.cue;
+        const cue = el('button', 'seq-cue mono', {
+            textContent: '\u21e4',
+            title: cued
+                ? 'Cued: this step replays the song top - click to ' +
+                  'return it to gate mode (in-phase)'
+                : 'Cue this step: play everything from the song top on ' +
+                  'entry (chain parts like verse -> chorus)',
+        });
+        cue.classList.toggle('on', cued);
+        cue.addEventListener('click', e => {
+            e.stopPropagation();
+            commit(row, p => { p.steps[i].cue = !p.steps[i].cue; });
+        });
+        cell.classList.toggle('cued', cued);
         // The resize grip: a VISIBLE handle (the bracket vocabulary —
         // it was a 3px hairline nobody found; owner field report
         // 2026-08-20b: "we do need a way to lengthen each section").
@@ -202,7 +223,7 @@ function rebuild(row, lane) {
             ctx.cb.onAuditionStep(l.ownerId, looping ? -1 : i);
         });
         cell.classList.toggle('looping', looping);
-        cell.append(nm, len, loop, grip);
+        cell.append(nm, len, cue, loop, grip);
         cell.addEventListener('contextmenu', e => {
             e.preventDefault();
             deleteStep(row, i);

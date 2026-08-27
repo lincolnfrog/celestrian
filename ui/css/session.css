@@ -2128,6 +2128,44 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-bottom-color: var(--cyan);
     box-shadow: inset 0 -12px 16px -14px var(--cyan);
 }
+
+/* --- CUE (docs/sequencer.md §3, S22): the ⇤ pip on the step header
+   toggles gate-mode ↔ cue-mode. Amber — the map/re-frame colour,
+   because a cued step IS a derived time-map (the per-step re-base).
+   Hidden until hover like ⟲; always lit while cued. --- */
+.seq-cue {
+    width: auto;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 0.62rem;
+    color: var(--map-amber);
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+.seq-hcell:hover .seq-cue, .seq-cue.on { opacity: 1; }
+.seq-cue.on {
+    border-color: var(--map-amber);
+    background: color-mix(in srgb, var(--map-amber) 18%, transparent);
+}
+.seq-hcell.cued {
+    border-top-color: var(--map-amber);
+    box-shadow: inset 0 12px 16px -14px var(--map-amber);
+}
+
+/* The lane echo of a cued span: a top hairline + pip, NOT a dim (the
+   span still sounds — it re-bases). Display only (pure projection). */
+.seq-cue-span {
+    position: absolute; top: 0; bottom: 0;
+    border-top: 2px solid var(--map-amber);
+    pointer-events: none;
+}
+.seq-cue-span .seq-cue-pip {
+    position: absolute; top: 1px; left: 3px;
+    font-size: 0.58rem;
+    color: var(--map-amber);
+    opacity: 0.85;
+}
 .rail-btn.seq-btn.looping, #root-seq-btn.looping {
     color: var(--cyan);
     border-color: var(--cyan);

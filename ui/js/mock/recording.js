@@ -18,7 +18,7 @@ import {
 import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
 import { committedCycle, effectiveCycle } from './cycles.js';
 import { setMidiArmed } from './effects.js';
-import { activeSeqLen } from './sequence.js';
+import { activeSeqLen, stepCued, stepIndexAt, seqBounds } from './sequence.js';
 
 export const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
 
@@ -222,6 +222,43 @@ function armClip(node) {
         recView.active = true;
     }
 
+    // S21 AUTO-TARGET (owner ruling 2026-08-27, engine parity): arming
+    // while the playhead is inside a CUED step becomes Mode-2
+    // record-into-that-step — the nearest sequenced ancestor's
+    // audition engages so the take lands where cue playback reads it
+    // (the song top). An audition already active means the performer
+    // aimed explicitly and wins.
+    {
+        const rootSeqHolder = {
+            sequence: state.rootSequence,
+            sequenceBypassed: state.rootSequenceBypassed,
+        };
+        let aimed = false;
+        for (let p = findParent(id); p && !aimed; p = findParent(p.id)) {
+            if (p.type !== 'stack') continue;
+            if (auditionMapOf(p)) { aimed = true; break; }
+            if (activeSeqLen(p) > 0) {
+                const rel = state.masterPos - state.islandEpoch;
+                const i = stepIndexAt(p.sequence, rel);
+                if (stepCued(p.sequence, i)) {
+                    p.auditionStep = i;
+                    console.log('[MockBackend] arm inside cued step', i,
+                        '- auto-targeting it (S21)');
+                }
+                aimed = true;  // nearest sequenced ancestor answers
+            }
+        }
+        if (!aimed && !rootActiveMap() && activeSeqLen(rootSeqHolder) > 0) {
+            const rel = state.masterPos - state.islandEpoch;
+            const i = stepIndexAt(state.rootSequence, rel);
+            if (stepCued(state.rootSequence, i)) {
+                state.rootAuditionStep = i;
+                console.log('[MockBackend] arm inside cued ROOT step', i,
+                    '- auto-targeting it (S21)');
+            }
+        }
+    }
+
     // THROUGH-MAP ARM (time_maps.md phase 2, engine parity with
     // AudioEngine::startRecordingInNode): an ACTIVE map on an ancestor
     // group shapes this take — heard arm math on the map period's
@@ -249,14 +286,36 @@ function armClip(node) {
             // is a step-sized PART — C = the map period, no silence
             // inserted. Without a sequence, the phase-2 rule (the
             // mapping node's full inner cycle) stands.
+            const gseq = g._root ? state.rootSequence : g.sequence;
+            const gAudStep = g._root
+                ? (state.rootAuditionStep ?? -1)
+                : (auditionMapOf(g) ? g.auditionStep : -1);
             const sequenced = g._root
                 ? activeSeqLen({ sequence: state.rootSequence,
                                  sequenceBypassed: state.rootSequenceBypassed }) > 0
                 : activeSeqLen(g) > 0;
+            // CUE x AUTHORED WINDOW (engine parity, ruled 2026-08-27):
+            // an authored window over a sequence with cued steps is a
+            // multi-step composition outside the ratified scope.
+            const anyCue = sequenced && gseq &&
+                gseq.steps.some(st => !!st.cue);
+            const isAudition = g._root ? true : !!auditionMapOf(g);
+            if (anyCue && !isAudition) {
+                console.log('[MockBackend] record refused — an authored ' +
+                    'window over a sequence with cued steps');
+                return;
+            }
             const C = sequenced ? period : Math.max(intrinsicOfNode(g), period);
+            // Mode-2 into a CUED step composes the cue (engine parity,
+            // StackNode::childContext): the take lands at the SONG TOP
+            // [0, stepLen) — cue playback reads it there.
+            const cueBase = sequenced && gAudStep >= 0 &&
+                stepCued(gseq, gAudStep)
+                ? seqBounds(gseq)[gAudStep] : 0;
             // Single-level mock: the mapping group's received frame is
             // the island frame, so its heard grid anchor is the epoch.
-            mapArm = { map, period, C, heardEpoch: state.islandEpoch };
+            mapArm = { map, period, C, heardEpoch: state.islandEpoch,
+                       cueBase };
         }
     }
 
@@ -278,7 +337,11 @@ function armClip(node) {
         node._mapArm = {
             C: mapArm.C,
             period: mapArm.period,
-            innerOrigin: mapArm.heardEpoch + mapOffset(mapArm.map, tRel),
+            // The cue composition subtracts the step base: the audition
+            // map selects [stepStart, stepEnd) of the song, the cue
+            // re-bases that span to the song top (engine parity).
+            innerOrigin: mapArm.heardEpoch +
+                mapOffset(mapArm.map, tRel) - (mapArm.cueBase || 0),
         };
         node.duration = 0;
         if (at > raw) {

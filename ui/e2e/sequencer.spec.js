@@ -91,6 +91,57 @@ test.describe('Sequencer (docs/sequencer.md)', () => {
         await expect(chip).toHaveClass(/on/);
     });
 
+    test('CUE (S22): the header pip toggles, marks the lanes, undoes', async ({ page }) => {
+        await loadHarness(page, 'Stack with 3 Clips');
+        const group = page.locator('.lane[data-kind="group"]').first();
+        const groupId = await group.getAttribute('data-id');
+        await group.locator('.seq-btn').click();
+        const grid = page.locator('.lane-seq');
+        await grid.locator('.seq-start').click();
+        await grid.locator('.seq-addstep').click();
+        await expect(grid.locator('.seq-hcell')).toHaveCount(2);
+
+        const seqOf = () => page.evaluate(async id => {
+            const st = await window.celestrian.callNative('getGraphState');
+            const g = st.nodes.find(n => n.id === id);
+            return g ? g.sequence || null : null;
+        }, groupId);
+
+        // The pip lives on the header (hover-revealed like the loop
+        // glyph); clicking it cues step 2.
+        const head2 = grid.locator('.seq-hcell').nth(1);
+        await head2.hover();
+        await head2.locator('.seq-cue').click();
+        await expect(head2).toHaveClass(/cued/);
+        await expect(head2.locator('.seq-cue')).toHaveClass(/on/);
+        await expect.poll(async () => {
+            const s = await seqOf();
+            return s ? s.steps.map(st => !!st.cue).join(',') : null;
+        }).toBe('false,true');
+
+        // The lanes stay honest: every child of the scope shows the
+        // cued span marker (it still sounds - it re-bases).
+        await expect(page.locator('.lane[data-kind="clip"]').first()
+            .locator('.seq-cue-span')).toHaveCount(1);
+
+        // Click again: back to gate mode; the marker drops.
+        await head2.hover();
+        await head2.locator('.seq-cue').click();
+        await expect(head2).not.toHaveClass(/cued/);
+        await expect.poll(async () => {
+            const s = await seqOf();
+            return s ? s.steps.map(st => !!st.cue).join(',') : null;
+        }).toBe('false,false');
+
+        // Undo restores the cue (setSequence is one undo step).
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect.poll(async () => {
+            const s = await seqOf();
+            return s ? s.steps.map(st => !!st.cue).join(',') : null;
+        }).toBe('false,true');
+        await expect(grid.locator('.seq-hcell').nth(1)).toHaveClass(/cued/);
+    });
+
     test('period law in the frame: the song IS the readout cycle', async ({ page }) => {
         await loadHarness(page, 'Stack with 3 Clips');
         const group = page.locator('.lane[data-kind="group"]').first();

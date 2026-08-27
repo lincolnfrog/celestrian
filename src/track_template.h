@@ -69,6 +69,7 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
         auto* stepo = new juce::DynamicObject();
         stepo->setProperty("name", st.name);
         stepo->setProperty("lenQ", (double)st.len / (double)q_samples);
+        if (st.cue) stepo->setProperty("cue", true);  // additive
         steps.add(juce::var(stepo));
       }
       so->setProperty("steps", steps);
@@ -137,6 +138,7 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
             st.len = (int64_t)std::llround(
                 (double)sv.getProperty("lenQ", 0.0) * (double)q_samples);
             st.name = sv.getProperty("name", juce::var()).toString();
+            st.cue = (bool)sv.getProperty("cue", false);
             if (st.len > 0) seq->steps.push_back(std::move(st));
           }
         }

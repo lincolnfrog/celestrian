@@ -370,6 +370,9 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
     const steps = s ? s.steps.map(st => ({
         name: st.name || '',
         lenQ: (st.len > 0 ? Math.round(st.len) : 0) / quantum,
+        // CUE (docs/sequencer.md ss3, S22): the step re-bases the
+        // subtree to the song top - the header pip is the control.
+        cue: !!st.cue,
     })) : [];
     return {
         kind: 'seq',
@@ -427,6 +430,17 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
         st => (st.len > 0 ? Math.round(st.len) : 0) / quantum);
     const totalQ = stepsQ.reduce((a, b) => a + b, 0);
     if (!(totalQ > 0)) return;
+    // CUED spans (ss3): every child under the scope replays the song
+    // top during a cued step - the lanes mark those spans so the
+    // display stays honest about what is heard (pure projection).
+    const cueSegsQ = [];
+    {
+        let pos = 0;
+        seq.steps.forEach((st, k) => {
+            if (st.cue) cueSegsQ.push([pos, pos + stepsQ[k]]);
+            pos += stepsQ[k];
+        });
+    }
     const childIds = new Set((children || []).map(c => c.id));
     let offSegs = null;  // the CURRENT direct child's off spans
     for (let i = from; i < to; i++) {
@@ -447,12 +461,16 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             if (runStart !== null) offSegs.push([runStart, totalQ]);
             if (!offSegs.length) offSegs = null;
         }
-        if (offSegs && (lane.kind === 'clip' || lane.kind === 'group')) {
+        // A layer attaches when the child has OFF spans OR the scope
+        // has cued spans (cue re-bases everyone, gated or not).
+        if ((offSegs || cueSegsQ.length) &&
+            (lane.kind === 'clip' || lane.kind === 'group')) {
             // LAYERS compose (§12.2): inner scopes attach first (during
             // the recursion), outer scopes after — prepend so the list
             // reads outermost first. A lane is silent where ANY
             // enclosing sequence silences it (the fractal gate).
-            lane.seqDims = [{ periodQ: totalQ, offSegsQ: offSegs },
+            lane.seqDims = [{ periodQ: totalQ, offSegsQ: offSegs || [],
+                              cueSegsQ: cueSegsQ.length ? cueSegsQ : null },
                             ...(lane.seqDims || [])];
         }
     }

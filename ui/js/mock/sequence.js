@@ -80,7 +80,10 @@ export function setSequence(id, payload) {
         return;
     }
     const steps = payload.steps.map(s => ({
-        name: String(s.name || ''), len: Math.round(s.len) }));
+        name: String(s.name || ''), len: Math.round(s.len),
+        // CUE (docs/sequencer.md ss3, S11/S20-S22 ruled 2026-08-27):
+        // a cued step re-bases the subtree to the step top.
+        cue: !!s.cue }));
     const gates = {};
     for (const [uuid, bits] of Object.entries(payload.gates || {})) {
         gates[uuid] = steps.map((_, i) => !!(bits && bits[i]));
@@ -121,6 +124,24 @@ export function auditionStep(id, step) {
     }
     t.holder.auditionStep = n >= 0 ? Math.floor(n) : -1;
     console.log('[MockBackend] audition step', t.holder.auditionStep, 'on', id);
+}
+
+/** Whether step i of a stored sequence is CUED (out of range = false). */
+export function stepCued(seq, i) {
+    return !!(seq && seq.steps && seq.steps[i] && seq.steps[i].cue);
+}
+
+/** Step index at folded position rel (samples) of a stored sequence. */
+export function stepIndexAt(seq, rel) {
+    const total = seqTotal(seq);
+    if (!(total > 0)) return -1;
+    let r = ((rel % total) + total) % total;
+    for (let i = 0; i < seq.steps.length; i++) {
+        const len = seq.steps[i].len > 0 ? Math.round(seq.steps[i].len) : 0;
+        if (r < len) return i;
+        r -= len;
+    }
+    return seq.steps.length - 1;
 }
 
 /** Step bounds (samples) of a stored sequence: [b0, b1, ..., bn]. */

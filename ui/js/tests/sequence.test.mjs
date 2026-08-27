@@ -203,17 +203,19 @@ test('STEP 3 (§12): nested sequences — period law on the group lane, layered 
     assert.equal(drums.periodQ, 4, 'the sequenced group tiles at its song length');
     assert.deepEqual(drums.reps.map(r => [r.startQ, r.endQ, r.ghost]),
         [[0, 4, false], [4, 8, true]], 'one pass per 4Q');
-    assert.deepEqual(drums.seqDims, [{ periodQ: 8, offSegsQ: [[0, 4]] }],
+    assert.deepEqual(drums.seqDims,
+        [{ periodQ: 8, offSegsQ: [[0, 4]], cueSegsQ: null }],
         'the root gates Drums off in the intro');
     const kick = vm.lanes.find(l => l.id === 'kick');
     assert.deepEqual(kick.seqDims, [
-        { periodQ: 8, offSegsQ: [[0, 4]] },
-        { periodQ: 4, offSegsQ: [[1, 2], [3, 4]] },
+        { periodQ: 8, offSegsQ: [[0, 4]], cueSegsQ: null },
+        { periodQ: 4, offSegsQ: [[1, 2], [3, 4]], cueSegsQ: null },
     ], 'layers compose: the root pass outermost, the kit pattern inside');
     assert.deepEqual(kick.reps.map(r => [r.startQ, r.endQ, r.ghost]),
         [[0, 1, false], [4, 5, true]], 'a one-shot echoes once per kit pass');
     const hat = vm.lanes.find(l => l.id === 'hat');
-    assert.deepEqual(hat.seqDims, [{ periodQ: 8, offSegsQ: [[0, 4]] }],
+    assert.deepEqual(hat.seqDims,
+        [{ periodQ: 8, offSegsQ: [[0, 4]], cueSegsQ: null }],
         'an inherit-ON row gets only the outer layer');
     const grid = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === 'drums');
     assert.equal(grid.innerCycleQ, 1, 'an all-one-shot kit appends 1Q steps (the drum-machine scale)');
@@ -226,7 +228,8 @@ test('STEP 3 (§12): nested sequences — period law on the group lane, layered 
     assert.equal(vm2.lanes.find(l => l.id === 'drums').periodQ, 1,
         'bypassed: intrinsic period again');
     assert.deepEqual(vm2.lanes.find(l => l.id === 'kick').seqDims,
-        [{ periodQ: 8, offSegsQ: [[0, 4]] }], 'only the root layer remains');
+        [{ periodQ: 8, offSegsQ: [[0, 4]], cueSegsQ: null }],
+        'only the root layer remains');
 });
 
 /* ---------- THE FIELD BUG (owner, 2026-08-21): a 52Q group windowed to

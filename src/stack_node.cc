@@ -75,6 +75,7 @@ juce::var StackNode::getMetadata() const {
       auto* stepo = new juce::DynamicObject();
       stepo->setProperty("name", st.name);
       stepo->setProperty("len", (double)st.len);
+      stepo->setProperty("cue", st.cue);
       steps.add(juce::var(stepo));
     }
     so->setProperty("steps", steps);
@@ -356,6 +357,43 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
       child_context.context_cycle = context.context_cycle;
     }
   }
+
+  // === CUE STEPS (docs/sequencer.md §3 — the Q6 serial primitive;
+  // S11 ruled, built 2026-08-27 with S20-S22) ===
+  // A CUED step re-bases the subtree's received frame to the step top:
+  // children hear t' = epoch + (songRel - stepStart) — a derived
+  // per-step time-map layered UNDER any authored/audition map (the S9
+  // composition law: the map selects SONG positions; the cue maps song
+  // positions to CONTENT positions). forEachSeamRun cuts blocks at
+  // step bounds (they are envelope corners), so the step is constant
+  // within any one call here. The child frame's cycle top is the
+  // RECEIVED epoch again — the re-based content IS the song-top span,
+  // so a nested song-stack restarts from its own top on every
+  // entrance. Gate lookup is NOT affected: renderChildren derives the
+  // song position independently of this re-base (gates live on the
+  // song timeline).
+  if (const Sequence* seq = activeSequence();
+      seq != nullptr && seq->any_cue && seq->total > 0) {
+    const int64_t srel =
+        seq->fold(child_context.master_pos - context.cycle_epoch);
+    const int i = seq->stepAt(srel);
+    if (seq->cueAt(i)) {
+      const int64_t step_len = seq->bounds[i + 1] - seq->bounds[i];
+      child_context.master_pos =
+          context.cycle_epoch + (srel - seq->bounds[i]);
+      child_context.cycle_epoch = context.cycle_epoch;
+      // Mode-2 record INTO a cued step (S21): the through-map arm math
+      // places the take at context.map's inner positions — compose the
+      // audition map with the cue so the take lands where cue playback
+      // will read it (the song top, [0, stepLen)). Only the audition
+      // aimed at THIS step composes; an authored multi-step window
+      // over cued steps is refused at arm (audio_engine).
+      if (auditionStep() == i && child_context.map.active() &&
+          step_len > 0) {
+        child_context.map = timing::TimeMap::single(0, step_len);
+      }
+    }
+  }
   return child_context;
 }
 
@@ -496,10 +534,20 @@ void StackNode::renderChildren(float* const* output_channels,
   // the step lookup happens there).
   const Sequence* seq = activeSequence();
   const int64_t gate_fade = Sequence::fadeSamples(context.sample_rate);
-  const int64_t seq_rel0 =
-      seq != nullptr
-          ? seq->fold(child_context.master_pos - context.cycle_epoch)
-          : 0;
+  // The step lookup runs in SONG positions — derived from the received
+  // clock through the own map alone, NOT from child_context.master_pos:
+  // the cue re-base (childContext) moves the CHILD clock to the song
+  // top, but the gate schedule stays on the song timeline (a child
+  // gated off in a cued step is off in THAT step, not in step 0).
+  int64_t seq_rel0 = 0;
+  if (seq != nullptr) {
+    int64_t mapped = context.master_pos;
+    if (const timing::TimeMap map = activeTimeMap(); map.active()) {
+      mapped = context.cycle_epoch +
+               map.mapOffset(context.master_pos - context.cycle_epoch);
+    }
+    seq_rel0 = seq->fold(mapped - context.cycle_epoch);
+  }
 
   for (int k = 0; k < child_count; ++k) {
     const AudioNode* child = kids.nodeAt(k);

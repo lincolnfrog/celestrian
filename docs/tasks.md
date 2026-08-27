@@ -673,8 +673,18 @@ in docs/sequencer.md §0/§9. Build order as ruled:
   at the scope cycle, nested audition brackets restored, the "Fractal
   Drums" mock scenario + harness button; sequence.test.mjs + e2e
   "NESTED". JS 32 files green, Playwright 59/59. Owner commits.
-- [ ] **4. Cue steps** — per-step epoch re-base = the Q6 serial
-  primitive (`cue` reserved in the step format now, S11).
+- [x] **4. Cue steps** — ✅ BUILT 2026-08-27 (rulings S20–S22 +
+  implementation record, docs/sequencer.md §13): the per-step epoch
+  re-base in `childContext` (a derived map UNDER the authored/audition
+  map — the Q6 serial primitive), S20 micro-fade dip at cue seams
+  (hard-cut run edges in the gate envelope), S21 arm-inside-a-cued-step
+  auto-targets it (Mode-2 via the audition; authored-window-over-cue
+  refuses), S22 header ⇤ pip on the grid, additive persistence
+  (session/metadata/templates), lanes mark cued spans. Pinned in
+  sequencer_tests.cc (6 sections), cue.test.mjs, and the S22 e2e.
+  Rode along: fixed the shadowed-`line` SyntaxError in
+  plugin_panel.js pollScan (HEAD shipped with the whole UI module
+  graph failing to load).
 - [ ] **5. Successor graphs + the seed** — branch-with-chance /
   radio; root-only stochastic, seed stored as data (S12).
 - [x] **Frame-health badge** (S10) — ✅ BUILT 2026-08-20 with step 2:
