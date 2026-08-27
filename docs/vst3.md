@@ -175,16 +175,48 @@ MainComponent or the engine — placement per ui.md's bridge rules):
 - `juce::AudioPluginFormatManager` with `VST3PluginFormat` registered.
   (Format-generic by construction; AU later is one `addFormat` call.)
 - `juce::KnownPluginList`, persisted as XML in the app data dir
-  (`userApplicationDataDirectory/Celestrian/known_plugins.xml`), plus the
-  standard **dead-man's-pedal** file: before scanning a file, write its
-  path; on clean completion, clear it. A scan that crashes the app leaves
-  the pedal file naming the culprit, which is blacklisted on next launch.
-  This is the pragmatic middle ground until out-of-process scanning
-  (explicitly deferred; JUCE 8 supports a scanner child process when we
-  want it).
-- Scanning runs on a background thread (`PluginDirectoryScanner`) over
-  the platform default VST3 directories + a user-added list; progress and
-  results stream to the UI over the existing event channel.
+  (`userApplicationDataDirectory/Celestrian/known_plugins.xml`).
+- **Out-of-process scanning (2026-08-26).** The app process never loads
+  plugin code during a scan. `PluginHostService` (the coordinator, on a
+  background thread) enumerates candidate files itself — directory
+  walking only — drops the ones already listed or blacklisted, and
+  re-launches **its own executable** as `Celestrian --scan-worker <list>
+  <results>` (src/plugin_scan_worker.h; the same flag lives in
+  CelestrianTests so tests exercise the real machinery on their own
+  binary). The worker probes each file and appends `BEGIN\t<file>`,
+  `FOUND\t<base64 PluginDescription xml>`, `END\t<file>`, `DONE` lines
+  to the results file, flushing after every line; the coordinator tails
+  the file every 100 ms and watches the child's liveness. A plugin that
+  **crashes** takes down only the worker: the coordinator sees a BEGIN
+  with no END, blacklists that file, and starts a fresh worker on the
+  remainder. A plugin that **hangs** leaves the file silent past the
+  probe timeout (60 s): the worker is killed and the file treated the
+  same. A worker that exits without probing anything (broken binary) ends
+  the scan with an `error` rather than respawning forever. Results go
+  through a file, not a pipe, precisely so the coordinator can poll with
+  a timeout instead of sitting in a blocking read. The worker installs
+  crash-signal handlers that `_Exit(128+sig)` — no "quit unexpectedly"
+  dialog per bad plugin on macOS, and `juce::ChildProcess` reports exit
+  code 0 for a signal-killed child anyway, so liveness + the results file
+  are the evidence, never the exit code. On macOS the worker hides its
+  dock icon; it sets up no logger (it would wipe the parent's) and no
+  window. The status var carries `crashed` (file names excluded this
+  scan), `crashedCount`, `error`, `outOfProcess`; the plugin panel names
+  the excluded plugins in its scan-done line.
+- The older **dead-man's-pedal** (write the path before probing, clear it
+  after; a crashed scan leaves the culprit named for the next launch to
+  blacklist) remains as the in-process fallback when no worker command is
+  configured, and its leftovers are still honoured at construction — and
+  persisted at once (fix 2026-08-26: they used to live only in memory
+  until the next clean scan saved them, so two bad plugins crash-looped
+  forever). Field note: a JUCE 8 scan never even loads a bundle that
+  ships `moduleinfo.json` (descriptions come from the manifest), so the
+  plugins that can crash a scan are the ones without a manifest, or ones
+  that die on library load.
+- Scanning covers the platform default VST3 directories + a user-added
+  path (`startScan(path, include_default_locations)`; tests confine
+  themselves to one folder); progress and results reach the UI through
+  the status poll.
 - Instantiation: `createPluginInstanceAsync` on the message thread;
   the completion lambda builds the slot, prepares it, and publishes the
   successor chain (§3.2). The UI shows the slot as "loading" from the
@@ -341,7 +373,7 @@ new is capture, storage, and rendering.
   (sound-off to the instrument, not just event starvation), instrument
   state in the take undo entries, MIDI clip visualization (piano-roll-ish
   lane rendering in the existing canvas renderer), and the deferred
-  hosting items (PDC ruling Q-V2, out-of-process scanning, AU).
+  hosting items (PDC ruling Q-V2, AU; out-of-process scanning DONE 2026-08-26, §4).
 
 Open items specific to instruments are Q-V3/Q-V4 in §9 — they need
 rulings before phase 5, not before phase 1.
@@ -407,6 +439,23 @@ plugin; 5 on 2026-08-18 — see §8); phase 6 (polish) is next.
    identity must come from the registry description, or revival
    matching breaks.
    Still manual on macOS: real third-party plugins + editor windows.
+   **Owner addition (2026-08-26): the in-repo BAD plugin** —
+   test_plugin/ "Celestrian Test Crash" takes a real invalid memory
+   access the instant a host probes it (built WITHOUT a moduleinfo.json,
+   `VST3_AUTO_MANIFEST FALSE`, or the scan would never load it — and the
+   manifest generator itself would die). tests/plugin_scan_crash_tests.cc
+   scans a temp folder holding it AND Test Gain from the TEST PROCESS
+   through the ordinary `startScan` — the suite surviving is the
+   headline — then pins: Test Gain found, Test Crash excluded +
+   blacklisted + named in the status var's `crashed`, registry
+   persisted, no pedal file; a rescan launches no worker and keeps the
+   exclusion; a HUNG probe (worker test hook `CELESTRIAN_SCAN_WORKER_
+   HANG_ON`, 2 s timeout) is killed and excluded alongside the crasher;
+   a worker that cannot launch ends the scan with `error` and blames no
+   plugin. The worker protocol is pinned directly (`probeFiles` on Test
+   Gain → BEGIN/FOUND/END/DONE, FOUND decoding to its description).
+   tests/plugin_host_tests.cc pins the pedal-persistence fix and the
+   confined-scan switch without real binaries.
 4. **MIDI input + live play-through** (§8). *Tests:* FIFO timestamping
    against the input clock, all-notes-off on device stop.
 5. **Note clips + recording** (§8). ✅ DONE 2026-08-18 — MIDI takes on

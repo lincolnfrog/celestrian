@@ -172,7 +172,7 @@ export const BRIDGE_METHODS = [
     // plugin panel is open (poll-shaped, like the device panel).
     { name: 'getKnownPlugins', params: [], returns: '[{name, uid, file, maker, category, version, isInstrument}] name-sorted' },
     { name: 'scanPlugins', params: ['extraPath?'] },
-    { name: 'getPluginScanStatus', params: [], returns: '{ scanning, progress, current, count, blacklistCount }' },
+    { name: 'getPluginScanStatus', params: [], returns: '{ scanning, progress, current, count, blacklistCount, crashed: [file names excluded this scan], crashedCount, error, outOfProcess }' },
 
     // Debug
     { name: 'nativeLog', params: ['message'] },

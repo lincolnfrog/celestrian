@@ -68,6 +68,13 @@ export function getPluginScanStatus() {
         current: scanning ? scanDiscovery.file : '',
         count: known.length,
         blacklistCount: 0,
+        // Out-of-process scan bookkeeping (docs/vst3.md §4): files this
+        // scan excluded because their probe crashed or hung, and a
+        // coordinator-level error (empty = none). The mock never fails.
+        crashed: [],
+        crashedCount: 0,
+        error: '',
+        outOfProcess: true,
     };
 }
 

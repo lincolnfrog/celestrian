@@ -118,6 +118,8 @@ target_sources(Celestrian PRIVATE
     src/project_manager.cc
     src/plugin_host_service.h
     src/plugin_host_service.cc
+    src/plugin_scan_worker.h
+    src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
@@ -215,6 +217,7 @@ target_sources(CelestrianTests PRIVATE
     tests/plugin_host_tests.cc
     tests/vst3_slot_tests.cc
     tests/plugin_host_integration_tests.cc
+    tests/plugin_scan_crash_tests.cc
     tests/midi_tests.cc
     tests/midi_record_tests.cc
     tests/sequencer_tests.cc
@@ -224,6 +227,7 @@ target_sources(CelestrianTests PRIVATE
     src/session_io.cc
     src/project_manager.cc
     src/plugin_host_service.cc
+    src/plugin_scan_worker.cc
     src/dsp/effects.cc
     src/dsp/fx_chain.cc
     src/dsp/vst3_slot.cc
@@ -251,46 +255,69 @@ target_compile_definitions(CelestrianTests PRIVATE
 
 celestrian_enable_asio(CelestrianTests)
 
-# --- In-repo test VST3 plugin (docs/vst3.md phase 3) -------------------
-# "Celestrian Test Gain": a deterministic real-binary validation target
-# for the hosting path (test_plugin/test_gain_plugin.cc). The
-# integration test (tests/plugin_host_integration_tests.cc) scans,
-# instantiates, and processes the ACTUAL built .vst3 — the real-binary
-# twin of the in-tree stub. OFF for plain app builds if you want the
-# shortest compile: it only exists for validation.
+# --- In-repo test VST3 plugins (docs/vst3.md phase 3 + §4) -------------
+# Two deterministic real-binary validation targets for the hosting path,
+# neither of which is ever shipped:
+#   * "Celestrian Test Gain" (test_plugin/test_gain_plugin.cc): the
+#     well-behaved one. tests/plugin_host_integration_tests.cc scans,
+#     instantiates, and processes the ACTUAL built .vst3 — the
+#     real-binary twin of the in-tree stub.
+#   * "Celestrian Test Crash" (test_plugin/test_crash_plugin.cc): the
+#     BAD one — it takes an invalid memory access the instant a host
+#     probes it. tests/plugin_scan_crash_tests.cc scans it from a child
+#     process to prove the dead-man's-pedal recovery: the scanning
+#     process dies, the relaunch blacklists the culprit, and the scan
+#     then completes with the gain plugin found.
+# OFF for plain app builds if you want the shortest compile: they only
+# exist for validation.
 option(CELESTRIAN_BUILD_TEST_PLUGIN
-    "Build the in-repo test VST3 used by hosting validation" ON)
-if (CELESTRIAN_BUILD_TEST_PLUGIN)
-    juce_add_plugin(CelestrianTestGain
-        PRODUCT_NAME "Celestrian Test Gain"
+    "Build the in-repo test VST3s used by hosting validation" ON)
+
+# celestrian_add_test_plugin(<target> <product name> <bundle id>
+#                            <4-char plugin code> <source> <test define>
+#                            <auto manifest TRUE|FALSE>)
+# Builds one VST3 test bundle, makes CelestrianTests depend on it, and
+# tells the test binary where the plugin binary landed (tests walk up
+# from there to the .vst3 bundle root). The manifest flag matters: a
+# bundle with a moduleinfo.json is described from that file and NEVER
+# loaded by a JUCE 8 scan (the host's fast path), so the crash plugin
+# must go without one — both so the scan actually probes it and because
+# the manifest generator itself would load it and die.
+function(celestrian_add_test_plugin target product bundle_id code source define auto_manifest)
+    juce_add_plugin(${target}
+        VST3_AUTO_MANIFEST ${auto_manifest}
+        PRODUCT_NAME "${product}"
         COMPANY_NAME "Celestrian"
-        BUNDLE_ID "com.celestrian.testgain"
+        BUNDLE_ID "${bundle_id}"
         PLUGIN_MANUFACTURER_CODE Cele
-        PLUGIN_CODE Ctg1
+        PLUGIN_CODE ${code}
         FORMATS VST3
         IS_SYNTH FALSE
         NEEDS_MIDI_INPUT FALSE
         NEEDS_MIDI_OUTPUT FALSE
         COPY_PLUGIN_AFTER_BUILD FALSE
     )
-    target_sources(CelestrianTestGain PRIVATE
-        test_plugin/test_gain_plugin.cc
-    )
-    target_link_libraries(CelestrianTestGain PRIVATE
+    target_sources(${target} PRIVATE ${source})
+    target_link_libraries(${target} PRIVATE
         juce::juce_audio_processors
         juce::juce_audio_utils
     )
-    target_compile_definitions(CelestrianTestGain PUBLIC
+    target_compile_definitions(${target} PUBLIC
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0
         JUCE_VST3_CAN_REPLACE_VST2=0
     )
-
-    # The integration test hosts the freshly built bundle: build it
-    # first, and tell the test where the binary landed (the test walks
-    # up from there to the .vst3 bundle root).
-    add_dependencies(CelestrianTests CelestrianTestGain_VST3)
+    add_dependencies(CelestrianTests ${target}_VST3)
     target_compile_definitions(CelestrianTests PRIVATE
-        CELESTRIAN_TEST_GAIN_VST3_BINARY_DIR="$<TARGET_FILE_DIR:CelestrianTestGain_VST3>"
+        ${define}="$<TARGET_FILE_DIR:${target}_VST3>"
     )
+endfunction()
+
+if (CELESTRIAN_BUILD_TEST_PLUGIN)
+    celestrian_add_test_plugin(CelestrianTestGain "Celestrian Test Gain"
+        com.celestrian.testgain Ctg1 test_plugin/test_gain_plugin.cc
+        CELESTRIAN_TEST_GAIN_VST3_BINARY_DIR TRUE)
+    celestrian_add_test_plugin(CelestrianTestCrash "Celestrian Test Crash"
+        com.celestrian.testcrash Ctc1 test_plugin/test_crash_plugin.cc
+        CELESTRIAN_TEST_CRASH_VST3_BINARY_DIR FALSE)
 endif()

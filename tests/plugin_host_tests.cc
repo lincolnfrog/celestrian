@@ -121,6 +121,72 @@ class PluginHostTests : public juce::UnitTest {
              "blacklist survives the round trip");
     }
 
+    beginTest("dead-man's-pedal: blacklisting is persisted at construction");
+    {
+      // The regression (2026-08-26): the pedal blacklist used to live
+      // only in memory until the NEXT clean scan saved it. Two bad
+      // plugins then crash-looped forever: launch N blacklists A and
+      // dies on B, launch N+1 blacklists B but has forgotten A, dies on
+      // A, and so on. The constructor must persist what the pedal
+      // taught it before anything else can crash.
+      const auto dir = freshDataDir("pedal_persist");
+      dir.createDirectory();
+      const auto pedal =
+          dir.getChildFile(celestrian::PluginHostService::kPedalFileName);
+      const juce::String culprit_a = "/fake/CrashyA.vst3";
+      const juce::String culprit_b = "/fake/CrashyB.vst3";
+
+      // Launch 1 crashed on A. Launch 2: construct, do NOT save, "die"
+      // (destroy) with the pedal now naming B.
+      pedal.replaceWithText(culprit_a + "\n");
+      {
+        celestrian::PluginHostService second_launch(dir);
+        expect(second_launch.knownPlugins().getBlacklistedFiles().contains(
+                   culprit_a),
+               "launch 2 blacklists A");
+        expect(second_launch.knownPluginsFile().existsAsFile(),
+               "launch 2 wrote the registry without a scan completing");
+      }
+      pedal.replaceWithText(culprit_b + "\n");
+
+      // Launch 3 must know about BOTH — A from the persisted registry,
+      // B from the pedal.
+      celestrian::PluginHostService third_launch(dir);
+      const auto blacklist = third_launch.knownPlugins().getBlacklistedFiles();
+      expect(blacklist.contains(culprit_a),
+             "A survives a launch that never completed a scan");
+      expect(blacklist.contains(culprit_b), "B is blacklisted from the pedal");
+      expectEquals(blacklist.size(), 2, juce::String("exactly the two culprits"));
+
+      // And a construction with nothing to learn leaves the file alone
+      // (no gratuitous rewrite: same blacklist, same registry).
+      pedal.deleteFile();
+      const auto before = third_launch.knownPluginsFile().getLastModificationTime();
+      celestrian::PluginHostService quiet_launch(dir);
+      expectEquals(quiet_launch.knownPlugins().getBlacklistedFiles().size(), 2,
+                   juce::String("quiet launch keeps the persisted blacklist"));
+      expect(quiet_launch.knownPluginsFile().getLastModificationTime() == before,
+             "nothing learned, nothing rewritten");
+    }
+
+    beginTest("startScan can be confined to one directory (no defaults)");
+    {
+      // An empty directory scanned WITHOUT the platform defaults
+      // completes immediately with nothing found — the switch the
+      // crash test relies on to keep its child scans off the machine's
+      // real plugin folders.
+      const auto dir = freshDataDir("confined");
+      const auto empty = dir.getChildFile("empty_plugins");
+      empty.createDirectory();
+      celestrian::PluginHostService service(dir);
+      service.startScan(empty.getFullPathName(), /*include_default_locations=*/false);
+      for (int i = 0; i < 200 && service.isScanning(); ++i)
+        juce::Thread::sleep(10);
+      expect(!service.isScanning(), "confined scan of an empty dir finishes");
+      expectEquals(service.knownPlugins().getNumTypes(), 0,
+                   juce::String("and finds nothing"));
+    }
+
     beginTest("scan status var shape (idle)");
     {
       celestrian::PluginHostService service(freshDataDir("status"));

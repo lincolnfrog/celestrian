@@ -121,9 +121,19 @@ async function pollScan() {
         return;
     }
     stopPolling();
-    onLog('plugin scan done: ' + status.count + ' known' +
-        (status.blacklistCount
-            ? ' (' + status.blacklistCount + ' blacklisted)' : ''));
+    // The scan probes plugins out of process (docs/vst3.md §4): a
+    // plugin that crashed or hung took down only its worker and was
+    // excluded. Say WHICH, so the user knows why it is not in the list.
+    const crashed = Array.isArray(status.crashed) ? status.crashed : [];
+    let line = 'plugin scan done: ' + status.count + ' known';
+    if (crashed.length) {
+        line += '; excluded ' + crashed.length + ' that crashed or hung: ' +
+            crashed.join(', ');
+    } else if (status.blacklistCount) {
+        line += ' (' + status.blacklistCount + ' blacklisted)';
+    }
+    if (status.error) line += '; scan error: ' + status.error;
+    onLog(line);
     await render();  // re-fetch the list with the scan's discoveries
 }
 
