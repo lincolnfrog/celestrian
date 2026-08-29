@@ -102,7 +102,18 @@ if errorlevel 1 goto :failed
 
 echo.
 echo === Build complete ===
-echo Run it:  build\Celestrian_artefacts\Celestrian.exe
+REM The artefact lands under a per-config subfolder, so find it rather
+REM than hardcoding a path that only holds for one build type.
+set "EXE="
+for /f "delims=" %%f in ('dir /s /b build\Celestrian_artefacts\Celestrian.exe 2^>nul') do (
+    if not defined EXE set "EXE=%%f"
+)
+if defined EXE (
+    echo Run it:  !EXE!
+) else (
+    echo WARNING: build reported success but no Celestrian.exe was found
+    echo under build\Celestrian_artefacts.
+)
 goto :eof
 
 :failed

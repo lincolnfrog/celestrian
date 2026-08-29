@@ -33,6 +33,11 @@ An open-source Digital Audio Workstation (DAW) built with JUCE and modern web te
    ./scripts/full_build.sh
    ```
 
+   On Windows, from cmd.exe (no Git Bash needed):
+   ```
+   scripts\full_build.cmd
+   ```
+
 ### Running Unit Tests
 
 Celestrian includes a suite of unit tests built with the `juce::UnitTest` framework.
