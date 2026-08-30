@@ -590,16 +590,29 @@ void stampWindowDomain(celestrian::AudioNode* node, const celestrian::Edit& e,
  * override is left alone (its map is not a single window). */
 void applyWindowRiders(
     const std::function<celestrian::AudioNode*(const juce::String&)>& find,
+    const std::function<void(const celestrian::timing::TimeMap*)>& retire_owned,
     const celestrian::Edit& e, celestrian::Edit& inv) {
   for (const auto& r : e.windows) {
     auto* node = find(r.uuid);
-    if (node == nullptr || node->mapOverride() != nullptr) continue;
+    if (node == nullptr) continue;
     celestrian::Edit::WindowRider back;
     back.uuid = r.uuid;
     back.start = node->getLoopStart();
     back.end = node->getLoopEnd();
+    // A multi-segment override on the member is cleared (captured into
+    // the inverse rider) — a rider that skipped such members left them
+    // looping their map under the stack window (audit 2026-08-30 §3.6).
+    if (const auto* old = node->exchangeMapOverride(nullptr)) {
+      back.setsMap = true;
+      back.tmap = *old;
+      retire_owned(old);
+    }
     inv.windows.push_back(std::move(back));
     node->setLoopPoints(r.start, r.end);
+    if (r.setsMap && r.tmap.n >= 2) {
+      const auto* fresh = new celestrian::timing::TimeMap(r.tmap);
+      if (const auto* prev = node->exchangeMapOverride(fresh)) retire_owned(prev);
+    }
   }
 }
 
@@ -617,6 +630,56 @@ void applyOriginRiders(
     inv.origins.push_back(std::move(back));
     node->origin_samples.store(r.origin);
   }
+}
+
+/** The definer STACK's committed direct members (one take). */
+std::vector<celestrian::ClipNode*> stackMembers(celestrian::StackNode& stack) {
+  std::vector<celestrian::ClipNode*> out;
+  for (const auto& child : stack.ownedChildren()) {
+    auto* clip = dynamic_cast<celestrian::ClipNode*>(child.get());
+    if (clip != nullptr && clip->getIntrinsicDuration() > 0) out.push_back(clip);
+  }
+  return out;
+}
+
+/** GROUP LOCK-COLLAPSE (audit 2026-08-30 §3.5, the fractal twin of
+ * collapseToWindow): the stack's single window [s, s+len) becomes the
+ * take — every member collapses to it (content base + origin shift by
+ * s, duration := len, whole) and the stack window is consumed.
+ * Audio-neutral under the content-frame law (epoch == members' origin):
+ * heard = s + ((t − origin) mod len) before, (t − (origin + s)) mod len
+ * after. Returns false when there is nothing to collapse. */
+struct GroupCollapseFacts {
+  int64_t shift = 0, old_duration = 0, win_start = 0, win_end = 0;
+};
+bool collapseGroupNow(celestrian::StackNode& stack, GroupCollapseFacts& f) {
+  const celestrian::timing::TimeMap map = stack.activeTimeMap();
+  if (!map.active() || map.n != 1) return false;
+  const auto members = stackMembers(stack);
+  if (members.empty()) return false;
+  const int64_t D = members[0]->getIntrinsicDuration();
+  const int64_t s = std::max((int64_t)0, map.segs[0].start);
+  const int64_t e = std::min(map.segs[0].end, D);
+  const int64_t len = e - s;
+  if (len <= 0 || (s == 0 && e >= D)) return false;
+  for (auto* m : members) {
+    if (m->getIntrinsicDuration() != D) return false;  // not one take
+  }
+  for (auto* m : members) m->collapseToWindow(s, len, /*shift_origin=*/false);
+  stack.setLoopPoints(0, 0);
+  f.shift = s;
+  f.old_duration = D;
+  f.win_start = s;
+  f.win_end = e;
+  return true;
+}
+void uncollapseGroupNow(celestrian::StackNode& stack, const GroupCollapseFacts& f) {
+  for (auto* m : stackMembers(stack)) {
+    if (!m->isCollapsed()) continue;
+    m->uncollapseFromWindow(f.shift, f.old_duration);
+    m->setLoopPoints(0, f.old_duration);  // members whole; the window is the stack's
+  }
+  stack.setLoopPoints(f.win_start, f.win_end);
 }
 }  // namespace
 
@@ -660,6 +723,9 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           if (le - ls > 0 && !(ls == 0 && le >= dur)) {
             clip->collapseToWindow(ls, le - ls);
           }
+        } else if (auto* stack = asStack(e.uuid2)) {
+          GroupCollapseFacts f;
+          collapseGroupNow(*stack, f);  // the group twin re-derives
         }
       }
       return inv;
@@ -695,13 +761,32 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // sample-identical), and the user can trim LONGER again. The
       // inverse Insert carries uuid2 so undo re-collapses with the
       // re-inserted take; redo re-derives the uncollapse right here.
+      // "Was collapsed" is an explicit marker (ClipNode::isCollapsed),
+      // never the `write_position > duration` overshoot — every snapped
+      // take overshoots by up to a block, and the heuristic un-collapsed
+      // ORDINARY takes to an off-grid recorded length (audit 2026-08-30
+      // §3.1).
       if (islandCommittedClipCount() == 1) {
         if (auto* survivor = firstCommittedClip(root_node.get());
-            survivor &&
-            survivor->getWritePosition() > survivor->getIntrinsicDuration()) {
+            survivor && survivor->isCollapsed()) {
           survivor->uncollapseFromWindow(survivor->getContentBase(),
-                                         survivor->getWritePosition());
+                                         survivor->collapsedFrom());
           inv.uuid2 = survivor->getUuid();
+        }
+      }
+      // The GROUP twin: back down to a definer stack whose members were
+      // group-collapsed — restore the full takes with the old window on
+      // the stack (audio-neutral, trimming longer possible again).
+      if (auto* ds = definerStack(root_node.get()); ds != nullptr) {
+        const auto members = stackMembers(*ds);
+        if (!members.empty() && members[0]->isCollapsed()) {
+          GroupCollapseFacts f;
+          f.shift = members[0]->getContentBase();
+          f.old_duration = members[0]->collapsedFrom();
+          f.win_start = f.shift;
+          f.win_end = f.shift + members[0]->getIntrinsicDuration();
+          uncollapseGroupNow(*ds, f);
+          inv.uuid2 = ds->getUuid();
         }
       }
       return inv;
@@ -832,7 +917,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         }
       }
       stampWindowDomain(node, e, inv);
-      applyWindowRiders(find, e, inv);
+      applyWindowRiders(find, [&](const celestrian::timing::TimeMap* m) { retireOwned(m); }, e, inv);
       applyOriginRiders(find, e, inv);
       // Q13 re-trim: if the forward edit carries an island re-establishment
       // (built by setLoopPoints when the target is the sole committed
@@ -913,6 +998,30 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // (the override is present again).
       } else {
         clip->uncollapseFromWindow(e.iq, e.iepoch);
+        // inverse of the inverse: the parameterless forward re-derives.
+      }
+      return inv;
+    }
+    case K::CollapseGroup: {
+      auto* stack = asStack(e.uuid);
+      if (!stack) return {};
+      Edit inv(K::CollapseGroup);
+      inv.uuid = e.uuid;
+      if (!e.b1) {
+        GroupCollapseFacts f;
+        if (!collapseGroupNow(*stack, f)) return {};
+        inv.b1 = true;
+        inv.iq = f.shift;
+        inv.iepoch = f.old_duration;
+        inv.d1 = (double)f.win_start;
+        inv.d2 = (double)f.win_end;
+      } else {
+        GroupCollapseFacts f;
+        f.shift = e.iq;
+        f.old_duration = e.iepoch;
+        f.win_start = (int64_t)e.d1;
+        f.win_end = (int64_t)e.d2;
+        uncollapseGroupNow(*stack, f);
         // inverse of the inverse: the parameterless forward re-derives.
       }
       return inv;
@@ -1046,6 +1155,8 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           out.loop_end = s.loop_end;
           out.content_kind = s.content_kind;
           out.cap_hit = s.cap_hit;
+          out.collapsed_from = s.collapsed_from;
+          out.collapse_origin_shift = s.collapse_origin_shift;
         } else {
           celestrian::ClipNode::TakeState s;
           s.buffer = std::move(e.takes[i].buffer);
@@ -1059,6 +1170,8 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           s.loop_end = e.takes[i].loop_end;
           s.content_kind = e.takes[i].content_kind;
           s.cap_hit = e.takes[i].cap_hit;
+          s.collapsed_from = e.takes[i].collapsed_from;
+          s.collapse_origin_shift = e.takes[i].collapse_origin_shift;
           if (!s.buffer) return {};
           auto displaced = clips[i]->restoreTake(std::move(s));
           retireOwned(displaced.first.release());
@@ -1074,7 +1187,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // The group-window lift rides the take (see reconcileTakes):
       // undo puts the members' commit-time windows back and clears the
       // stack's; redo lifts again.
-      applyWindowRiders(find, e, inv);
+      applyWindowRiders(find, [&](const celestrian::timing::TimeMap* m) { retireOwned(m); }, e, inv);
       // The sequence rider (auto-gate).
       if (e.b1 && e.uuid.isNotEmpty()) {
         if (auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid))) {
@@ -1430,6 +1543,16 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
       record(std::move(e));  // no-op (not recorded) if already full-span
     }
   }
+  // The GROUP twin (audit 2026-08-30 §3.5): a trimmed definer STACK
+  // collapses to its window before any arm — its raw inner cycle would
+  // otherwise survive the lock incommensurate (inflating every LCM the
+  // arm math snapshots, the very poison the clip collapse removes).
+  if (auto* ds = definerStack(root_node.get());
+      ds != nullptr && !root_node->hasActiveTake() && ds->isLoopWindowActive()) {
+    celestrian::Edit e(celestrian::Edit::Kind::CollapseGroup);
+    e.uuid = ds->getUuid();
+    record(std::move(e));  // no-op (not recorded) if nothing to collapse
+  }
 
   // Q7 GROUP ARM: resolve the whole arm set — a clip records itself, a
   // stack records its EMPTY clip descendants — and arm it in THIS one
@@ -1772,9 +1895,17 @@ void AudioEngine::stopRecordingInNode(const juce::String& uuid) {
   // after that, the siblings would flip onto the record-to-next-boundary
   // path and run a full extra Q (one performance, one duration).
   const bool had_quantum = root_node->getQuantum() > 0;
+  // ONE PERFORMANCE, ONE STOP MOMENT (audit 2026-08-30 §3.3): a group
+  // stop parks a generation on every member and publishes it in one
+  // store, so all members flip at the same block top and compute the
+  // same boundary. A single clip (or a pre-Q immediate commit) takes
+  // the direct path.
+  const uint32_t gen =
+      (hot.size() > 1 && had_quantum) ? root_node->nextStopGeneration() : 0;
   for (auto* clip : hot) {
-    clip->stopRecording(had_quantum);
+    clip->stopRecording(had_quantum, gen);
   }
+  if (gen != 0) root_node->publishStopGeneration(gen);
 }
 
 void AudioEngine::togglePlayback() {
@@ -2673,11 +2804,11 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     // members whole) would lie. Ride them whole with this edit.
     for (const auto& child : stack->ownedChildren()) {
       auto* clip = dynamic_cast<celestrian::ClipNode*>(child.get());
-      if (clip == nullptr || clip->getIntrinsicDuration() <= 0 ||
-          clip->mapOverride() != nullptr)
-        continue;
+      if (clip == nullptr || clip->getIntrinsicDuration() <= 0) continue;
       const int64_t d = clip->getIntrinsicDuration();
-      if (clip->getLoopStart() == 0 && clip->getLoopEnd() >= d) continue;
+      if (clip->mapOverride() == nullptr && clip->getLoopStart() == 0 &&
+          clip->getLoopEnd() >= d)
+        continue;
       celestrian::Edit::WindowRider r;
       r.uuid = clip->getUuid();
       r.start = 0;
@@ -3076,14 +3207,19 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // (The scan happens below once `snap` is loaded.)
     // Cycle-top of the island frame — loop-window time-maps phase off
     // this (time_maps.md); windowed stacks re-base it for their children.
-    pc.cycle_epoch = islandEpoch();
+    // (Q, epoch) as ONE consistent fact (StackNode::readIslandFacts —
+    // a re-trim between two separate reads handed a block a mixed pair).
+    const celestrian::StackNode::IslandFacts island_facts =
+        root_node->readIslandFacts();
+    pc.cycle_epoch = island_facts.epoch;
     // Whole-graph snapshot + island facts (Tier 3 Step 3): ONE structure
     // load for the entire callback; leaves read island state from the
     // context instead of walking parents.
     pc.snap = graph_snapshot_.load(std::memory_order_acquire);
     pc.self = 0;
     pc.any_solo = pc.snap ? celestrian::snapAnySolo(*pc.snap) : false;
-    pc.quantum = root_node->getQuantum();
+    pc.quantum = island_facts.quantum;
+    pc.stop_generation = root_node->stopGeneration();
     pc.island_epoch = pc.cycle_epoch;
     pc.island = root_node.get();
     // The invariant monotonic clock (master_pos twin of island_epoch):

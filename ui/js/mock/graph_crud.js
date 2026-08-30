@@ -8,7 +8,7 @@
 
 import {
     state, generateId, findNode, findParent, removeNodeFromParent,
-    committedClipCount, findSoleCommittedClip,
+    committedClipCount, findSoleCommittedClip, definerStackNode,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 import { quantumSamples } from './rate.js';
@@ -92,6 +92,24 @@ export function deleteNode(id) {
             survivor.origin = pre.origin;
             delete survivor._precollapse;
             console.log('[MockBackend] Q13 re-open: uncollapsed', survivor.id);
+        }
+    }
+    // The GROUP twin: back down to a definer stack whose members were
+    // group-collapsed — full takes back, the trim back on the stack.
+    {
+        const ds = definerStackNode();
+        if (ds && ds._precollapse) {
+            (ds.nodes || []).forEach(m => {
+                if (m.type !== 'clip' || !m._precollapse) return;
+                m.duration = m._precollapse.dur;
+                m.loopStart = 0;
+                m.loopEnd = m._precollapse.dur;
+                delete m._precollapse;
+            });
+            ds.loopStart = ds._precollapse.ls;
+            ds.loopEnd = ds._precollapse.le;
+            delete ds._precollapse;
+            console.log('[MockBackend] Q13 re-open: group uncollapsed', ds.id);
         }
     }
     console.log('[MockBackend] Deleted node:', id);

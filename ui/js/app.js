@@ -352,7 +352,12 @@ function onWindowEdit(id, open) {
 // actually warped; the mock returns false and the drag keeps
 // its eased-capture fallback.
 async function onWarpPointer(x, y) {
-    try { return (await callNative('warpPointer', x, y)) === true; }
+    // The viewport size rides along so the native side can map CSS px
+    // to its own points exactly under any zoom / DPI scale.
+    try {
+        return (await callNative('warpPointer', x, y,
+            window.innerWidth, window.innerHeight)) === true;
+    }
     catch (_) { return false; }
 }
 

@@ -342,7 +342,7 @@ test('GROUPS: members carrying their own windows — the trim view selects their
     assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'and clears the stack window');
 });
 
-test('GROUPS: a second take LOCKS Q; the stack window stays as the 1Q part (no collapse)', async () => {
+test('GROUPS: a second take LOCKS Q and COLLAPSES the group to its window (fractal twin)', async () => {
     loadScenario('empty');
     const { stackId, ids } = await recordGroupTake(2, 4);
     const D = getState().quantum;
@@ -356,19 +356,24 @@ test('GROUPS: a second take LOCKS Q; the stack window stays as the 1Q part (no c
     advanceBy(D / 2);
     assert.equal(find(t2).isRecording, false, 'take 2 committed');
     assert.equal(getState().quantum, D / 2, 'Q locked at the trimmed length');
-    // The stack window survives untouched; the children are whole.
-    assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4]);
-    for (const id of ids) assert.equal(find(id).duration, D, 'no collapse');
-    // Locked: the definer view is gone; the group rests HEARD as a 1Q
-    // part and a 1.5Q trim is now refused (coherence is categorical).
+    // GROUP LOCK-COLLAPSE (audit 2026-08-30 §3.5): the trimmed region IS
+    // the take now — members are 1Q whole takes, the stack window is
+    // consumed, and the members' ORIGINS did not move (the group window
+    // anchored at the epoch == origin).
+    assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'stack window consumed');
+    for (const id of ids) {
+        assert.equal(find(id).duration, D / 2, 'member collapsed to the window');
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D / 2], 'member whole');
+    }
     const vm = deriveViewModel(getState());
     assert.equal(vm.soleQDefinerId, null, 'no definer once Q is locked');
-    const g = vm.lanes.find(l => l.id === stackId);
-    assert.equal(g.windowChipQ, 1, 'heard view: the 1Q part');
-    assert.equal(vm.cycleQ, 1);
-    await callNative('setLoopPoints', stackId, 0, (3 * D) / 4);
+    assert.equal(vm.cycleQ, 1, 'the group is a plain 1Q part');
+    // RE-OPEN ⟹ UNCOLLAPSE, group twin: deleting take 2 restores the
+    // full takes with the trim back on the stack.
+    await callNative('deleteNode', t2);
+    for (const id of ids) assert.equal(find(id).duration, D, 're-open: full take back');
     assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4],
-        'incoherent trim refused after lock');
+        're-open: the trim is the stack window again');
 });
 
 test('GROUPS: two takes in one stack are NOT a definer (different origins)', async () => {

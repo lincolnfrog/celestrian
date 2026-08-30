@@ -531,11 +531,30 @@ MainComponent::MainComponent()
                                         // heard→raw reflow otherwise strands
                                         // the handle away from the mouse; field
                                         // 2026-07-25d).
+                                        // CSS px → JUCE points: the page
+                                        // sends its viewport size too, so
+                                        // the mapping is exact under any
+                                        // browser zoom / DPI scale (on
+                                        // Windows a 125% display put the
+                                        // cursor off the handle, and the
+                                        // resulting delta was applied as
+                                        // a real drag — audit 2026-08-30
+                                        // §3.4). Older pages omit them:
+                                        // 1:1 as before.
+                                        double sx = 1.0, sy = 1.0;
+                                        if (args.size() >= 4) {
+                                          const double iw = (double)args[2];
+                                          const double ih = (double)args[3];
+                                          if (iw > 0 && web_browser.getWidth() > 0)
+                                            sx = web_browser.getWidth() / iw;
+                                          if (ih > 0 && web_browser.getHeight() > 0)
+                                            sy = web_browser.getHeight() / ih;
+                                        }
                                         const auto global =
                                             web_browser.localPointToGlobal(
                                                 juce::Point<float>(
-                                                    (float)(double)args[0],
-                                                    (float)(double)args[1]));
+                                                    (float)((double)args[0] * sx),
+                                                    (float)((double)args[1] * sy)));
                                         juce::Desktop::setMousePosition(
                                             global.roundToInt());
                                         return true;

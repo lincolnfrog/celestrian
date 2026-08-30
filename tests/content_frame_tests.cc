@@ -47,14 +47,15 @@ float rampAt(int64_t clock) {
  * pairs to `out` when given. `clock` is the caller's mirror of the
  * engine's monotonic transport (advances only while playing). */
 void driveRamp(AudioEngine& engine, int64_t total, int64_t& clock,
-               bool playing, std::vector<std::pair<int64_t, float>>* out) {
+               bool playing, std::vector<std::pair<int64_t, float>>* out,
+               bool silent = false) {
   std::vector<float> in((size_t)BLOCK), l((size_t)BLOCK), r((size_t)BLOCK);
   float* ins[] = {in.data()};
   float* outs[] = {l.data(), r.data()};
   int64_t remaining = total;
   while (remaining > 0) {
     const int n = (int)std::min<int64_t>(remaining, BLOCK);
-    for (int i = 0; i < n; ++i) in[(size_t)i] = rampAt(clock + i);
+    for (int i = 0; i < n; ++i) in[(size_t)i] = silent ? 0.0f : rampAt(clock + i);
     engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
     if (out != nullptr)
       for (int i = 0; i < n; ++i) out->push_back({clock + i, l[(size_t)i]});
@@ -211,6 +212,46 @@ class ContentFrameTests : public juce::UnitTest {
         return ws + mod(r0 - ws + (t - t2), len);
       });
       expectEquals(bad3, 0, "after undo: window [ws, we) selects buffer [ws, we)");
+    }
+
+    beginTest("Group lock-collapse is audio-neutral (take 2 arms against a trimmed group)");
+    {
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var s = engine.getGraphState();
+        clipIdsUnder(findVar(s, stack_id), ids);
+      }
+      engine.startRecordingInNode(stack_id);
+      driveRamp(engine, D, clock, true, nullptr);
+      engine.stopRecordingInNode(stack_id);
+      driveRamp(engine, BLOCK, clock, true, nullptr);
+      const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      const std::vector<float> table = buildTable(engine, clock, origin0, D);
+      const int64_t ws = D / 4, we = (3 * D) / 4, len = we - ws;
+      engine.setLoopPoints(stack_id, ws, we);
+      driveRamp(engine, len + 777, clock, true, nullptr);
+      // Take 2 on a new track, SILENT input: arming collapses the group.
+      engine.createNode("clip");
+      const juce::String t2 = lastTopLevelId(engine);
+      const int64_t tA = clock;
+      const int64_t hA = ws + mod(tA - rootProp(engine, "islandEpoch"), len);
+      engine.startRecordingInNode(t2);
+      expectEquals((int64_t)deepProp(engine, ids[0], "duration"), len,
+                   "members collapsed at arm");
+      std::vector<std::pair<int64_t, float>> out;
+      driveRamp(engine, 3 * len, clock, true, &out, /*silent=*/true);
+      engine.stopRecordingInNode(t2);
+      const int bad = mismatches(out, table, [&](int64_t t) {
+        return ws + mod(hA - ws + (t - tA), len);
+      });
+      expectEquals(bad, 0, "the collapsed members still play buffer[ws + phase]");
     }
 
     beginTest("Seek moves the AUDIO, not just the cursor (plain clip)");

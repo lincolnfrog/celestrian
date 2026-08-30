@@ -495,9 +495,18 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   docs/loop_region_audit.md §0: a stack window selects epoch-relative
   view positions while members read origin-relative, so solving the
   epoch alone — the 2026-08-21 form — made the trimmed loop jump by
-  `start` on every release). **No lock-collapse** at the second arm: a stack window of length Q
-  is coherent by construction, so after lock it is simply a 1Q part
-  and obeys the ordinary coherence guard. The trim view renders on the
+  `start` on every release). **Lock-collapse, the group twin (audit
+  2026-08-30 §3.5, reversing the 2026-08-21 "no collapse" line):** at
+  the second arm the definer stack collapses to its window exactly as
+  a sole clip does — every member's content base shifts by the window
+  start, duration := len, the stack window is consumed; the members'
+  ORIGINS stay (the group window anchored at the epoch == origin, so
+  moving them would shift the audio — pinned render-level by
+  `content_frame_tests`). Without it the raw inner cycle survived the
+  lock incommensurate with Q and poisoned every LCM the arm math
+  snapshots. RE-OPEN ⟹ UNCOLLAPSE has its group twin too
+  (`Edit::CollapseGroup`, `collapseGroupNow`/`uncollapseGroupNow`).
+  The trim view renders on the
   group lane (the composite, brackets, "sets tempo"); the mics draw
   whole beneath it in the same buffer frame. Lock remains derived:
   another take anywhere (a third mic recorded later, a new track)

@@ -63,6 +63,12 @@ struct Edit {
                    // needs no payload (derived from the clip's window);
                    // the inverse sets b1 with iq = shift, iepoch = the
                    // old duration, restoring buffer view + trim.
+    CollapseGroup, // Q13 lock-collapse, GROUP twin (audit 2026-08-30
+                   // §3.5): the definer STACK's window becomes the
+                   // take — every member collapses to it, the stack
+                   // window is consumed. Forward: uuid = stack, no
+                   // payload; inverse b1 with iq = shift, iepoch = the
+                   // members' old duration, d1/d2 = the stack window.
     MoveSlot,      // fx chain reorder (docs/vst3.md §6): s1 = slot
                    // uuid, index = destination. Applied by building a
                    // successor chain sharing the slot objects and
@@ -138,6 +144,10 @@ struct Edit {
   struct WindowRider {
     juce::String uuid;
     int64_t start = 0, end = 0;
+    // A member carrying a MULTI-SEGMENT override goes whole too: the
+    // rider clears the override (the inverse rider carries it back).
+    bool setsMap = false;
+    timing::TimeMap tmap{};
   };
   std::vector<WindowRider> windows;
   // ORIGIN RIDERS (2026-08-30, the content-frame law): the definer
@@ -193,6 +203,7 @@ struct Edit {
     int64_t origin = 0, duration = 0, base = 0, recorded = 0;
     int64_t context_cycle = 0;
     int64_t loop_start = 0, loop_end = 0;
+    int64_t collapsed_from = 0, collapse_origin_shift = 0;  // lock-collapse marker
     int content_kind = 0;  // ClipNode::ContentKind
     bool cap_hit = false;
   };

@@ -13,7 +13,7 @@ import {
     state, findNode, findParent, nodeMap, intrinsicOfNode, activeMapOf,
     rootActiveMap, auditionMapOf, serializeGraph,
     committedClipCount, findSoleCommittedClip, anyNodeRecording,
-    effectiveQuantumForState,
+    effectiveQuantumForState, definerStackNode,
 } from './state.js';
 import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
 import { committedCycle, effectiveCycle } from './cycles.js';
@@ -120,6 +120,41 @@ export function startRecordingInNode(id) {
                 definer.loopEnd = len;
                 console.log('[MockBackend] Q13 lock-collapse:', definer.id,
                     '→ duration =', len);
+            }
+        }
+    }
+
+    // The GROUP twin (engine parity Edit::CollapseGroup, audit
+    // 2026-08-30 §3.5): a trimmed definer STACK collapses to its
+    // window before any arm — members' duration := len, content shifts
+    // by the window start, ORIGINS STAY (the group window anchors at
+    // the epoch == the members' origin, so the origin does not move —
+    // unlike the clip collapse), stack window consumed.
+    {
+        const ds = definerStackNode();
+        if (ds && !anyNodeRecording() && !ds.loopBypassed &&
+            !(Array.isArray(ds.segments) && ds.segments.length >= 4)) {
+            const members = (ds.nodes || []).filter(c =>
+                c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
+            const D = members.length ? members[0].duration : 0;
+            const ls = Math.max(0, ds.loopStart || 0);
+            const le = Math.min(ds.loopEnd || 0, D);
+            const len = le - ls;
+            if (D > 0 && len > 0 && !(ls === 0 && le >= D) &&
+                members.every(m => m.duration === D)) {
+                pushUndo();
+                members.forEach(m => {
+                    m._precollapse = { dur: D, ls: 0, le: D, origin: m.origin || 0,
+                                       group: true };
+                    m.duration = len;
+                    m.loopStart = 0;
+                    m.loopEnd = len;
+                });
+                ds._precollapse = { ls, le };
+                ds.loopStart = 0;
+                ds.loopEnd = 0;
+                console.log('[MockBackend] Q13 group lock-collapse:', ds.id,
+                    '→ members duration =', len);
             }
         }
     }

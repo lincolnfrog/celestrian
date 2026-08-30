@@ -269,6 +269,26 @@ class QTimeLockTests : public juce::UnitTest {
                    "redo re-opens and uncollapses");
     }
 
+    beginTest("RE-OPEN leaves an ORDINARY take alone (explicit collapse marker)");
+    {
+      // Audit 2026-08-30 §3.1: "was collapsed" used to be inferred from
+      // write_position > duration — but every snapped take overshoots
+      // its duration by up to a block, so deleting down to one ordinary
+      // clip "uncollapsed" it to an off-grid recorded length.
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      auto c1 = recordClip(engine, process, Q);
+      const int64_t dur0 = clipProp(engine, c1, "duration");
+      auto c2 = recordClip(engine, process, Q + 300);  // snaps; overshoots
+      expectEquals(clipProp(engine, c1, "duration"), dur0, "untrimmed: no collapse");
+      engine.deleteNode(c2);  // 2 -> 1 with a never-trimmed survivor
+      expectEquals(clipProp(engine, c1, "duration"), dur0,
+                   "the ordinary take keeps its snapped duration");
+      expectEquals(clipProp(engine, c1, "loopStart"), (int64_t)0, "no phantom window");
+      expectEquals(clipProp(engine, c1, "loopEnd"), dur0, "whole");
+      expectEquals(islandQ(engine), dur0, "Q untouched");
+    }
+
     beginTest("phase-preserving trim: the sounding position never jumps");
     {
       // Owner report 2026-07-19c: nudging the loop region reset
@@ -510,15 +530,44 @@ class QTimeLockTests : public juce::UnitTest {
       for (int i = 0; i < 8 && !deepCommitted(engine, t2); ++i) process(len);
       expect(deepCommitted(engine, t2), "take 2 committed");
       expectEquals(islandQ(engine), len, "Q locked at the trimmed length");
-      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
-                   "stack window survives the lock (no collapse)");
-      engine.setLoopPoints(stack_id, 0, ws + len);  // 3/4 D = 1.5Q: incoherent
-      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
-                   "locked: incoherent group trim refused");
-      engine.setLoopPoints(stack_id, 0, len);  // 1Q: coherent, ordinary edit
-      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), (int64_t)0,
+      // GROUP LOCK-COLLAPSE (audit 2026-08-30 §3.5, the fractal twin of
+      // the clip's): arming take 2 made the trimmed region THE take —
+      // members are 1Q whole takes now, the stack window is consumed.
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), len,
+                     "member collapsed to the window");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), len, "member whole");
+      }
+      expect(!(deepProp(engine, stack_id, "loopEnd") > deepProp(engine, stack_id, "loopStart")),
+             "stack window consumed by the collapse");
+      engine.setLoopPoints(stack_id, 0, ws + len);  // past the inner cycle: refused
+      expect(!(deepProp(engine, stack_id, "loopEnd") > 0),
+             "locked: a window past the inner cycle is refused");
+      engine.setLoopPoints(stack_id, 0, len / 2);  // Q/2: coherent, ordinary edit
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), len / 2,
                    "locked: a coherent group trim lands");
       expectEquals(islandQ(engine), len, "and leaves Q alone");
+      // RE-OPEN ⟹ UNCOLLAPSE, group twin: deleting take 2 restores the
+      // full takes with the trim back on the stack.
+      engine.setLoopPoints(stack_id, 0, 0);
+      engine.deleteNode(t2);
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), D,
+                     "re-open: full member takes restored");
+      }
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "re-open: the trim is the stack window again");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), ws + len, "…");
+      engine.undo();  // re-insert take 2 AND re-collapse (uuid2 rider)
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), len,
+                     "undo of the delete re-collapses the group");
+      }
+      engine.redo();
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), D,
+                     "redo re-opens and uncollapses again");
+      }
     }
 
     beginTest("GROUPS: two takes in one stack are not a definer");
@@ -746,6 +795,109 @@ class QTimeLockTests : public juce::UnitTest {
                      "epoch == members' origin (window names buffer samples)");
         end_sent = (int64_t)deepProp(engine, stack_id, "loopEnd");
         process(3333);
+      }
+    }
+
+    // ---- GROUP STOP: one block top for every mic (audit 2026-08-30 §3.3) ----
+    beginTest("GROUPS: a locked-Q group stop commits one duration for every mic");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      engine.createNode("clip");
+      const juce::String a = lastTopLevelId(engine);
+      engine.startRecordingInNode(a);
+      process(Q);
+      engine.stopRecordingInNode(a);
+      process(512);
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      for (int i = 0; i < 3; ++i) engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      engine.startRecordingInNode(stack_id);
+      process(2 * Q + 300);
+      engine.stopRecordingInNode(stack_id);  // parked generation, published once
+      for (int i = 0; i < 400; ++i) {
+        bool all = true;
+        for (const auto& id : ids) all = all && deepCommitted(engine, id);
+        if (all) break;
+        process(512);
+      }
+      const int64_t D = (int64_t)deepProp(engine, ids[0], "duration");
+      expect(D > 0 && D % Q == 0, "committed on the grid");
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), D, "one duration");
+        expectEquals((int64_t)deepProp(engine, id, "origin"),
+                     (int64_t)deepProp(engine, ids[0], "origin"), "one origin");
+      }
+    }
+
+    // ---- RIDERS CLEAR A MEMBER'S SEGMENT MAP (audit 2026-08-30 §3.6) ----
+    beginTest("GROUPS: a definer re-trim wholes a member with a segment map (undoable)");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      engine.createNode("clip");
+      const juce::String a = lastTopLevelId(engine);
+      engine.startRecordingInNode(a);
+      process(Q);
+      engine.stopRecordingInNode(a);
+      process(512);
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      engine.startRecordingInNode(stack_id);
+      process(4 * Q + 4 * 512);
+      engine.stopRecordingInNode(stack_id);
+      for (int i = 0; i < 400; ++i) {
+        if (deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1])) break;
+        process(512);
+      }
+      const int64_t D = (int64_t)deepProp(engine, ids[0], "duration");
+      expect(D >= 4 * Q, "a 4Q take");
+      // A coherent two-segment map on member 0 (period 2Q), authored
+      // STOPPED: a map edit while playing re-anchors the member's
+      // origin for continuity, which by itself ends the one-take
+      // (equal origins) definer state — a separate, legitimate path.
+      engine.togglePlayback();
+      expect(!engine.isPlaying(), "stopped for the map edit");
+      celestrian::timing::TimeMap m;
+      m.n = 2;
+      m.segs[0] = {0, Q};
+      m.segs[1] = {2 * Q, 3 * Q};
+      engine.setSegments(ids[0], m);
+      {
+        const juce::var st = engine.getGraphState();
+        const juce::var n0 = findVar(st, ids[0]);
+        expect(n0.getProperty("segments", juce::var()).getArray() != nullptr,
+               "segment map landed on the member");
+      }
+      engine.togglePlayback();
+      engine.deleteNode(a);  // the stack is now the definer
+      engine.setLoopPoints(stack_id, D / 4, (3 * D) / 4);
+      expectEquals(islandQ(engine), D / 2, "definer branch ran (Q := len)");
+      {
+        const juce::var st = engine.getGraphState();
+        const juce::var n0 = findVar(st, ids[0]);
+        expect(n0.getProperty("segments", juce::var()).getArray() == nullptr,
+               "rider cleared the member's segment map");
+        expectEquals((int64_t)(double)n0.getProperty("loopEnd", 0.0), D, "member whole");
+      }
+      engine.undo();
+      {
+        const juce::var st = engine.getGraphState();
+        const juce::var n0 = findVar(st, ids[0]);
+        expect(n0.getProperty("segments", juce::var()).getArray() != nullptr,
+               "undo restores the member's segment map");
       }
     }
 

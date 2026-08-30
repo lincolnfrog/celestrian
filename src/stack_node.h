@@ -143,11 +143,36 @@ class StackNode : public AudioNode {
    * establishing clip does not change it.
    */
   void setQuantum(int64_t quantum, int64_t epoch) {
+    // SEQLOCK'D PAIR (audit 2026-08-30 §3.2): the audio thread reads
+    // (Q, epoch) as ONE fact (readIslandFacts) — two independent
+    // atomics let a re-trim land between the reads and hand one block
+    // a mixed pair (new Q, old epoch). Writers: message thread only.
+    island_seq_.fetch_add(1, std::memory_order_release);  // odd = writing
     quantum_samples_.store(quantum);
     epoch_samples_.store(epoch);
+    island_seq_.fetch_add(1, std::memory_order_release);  // even = stable
   }
   int64_t getQuantum() const { return quantum_samples_.load(); }
   int64_t getEpoch() const { return epoch_samples_.load(); }
+  struct IslandFacts {
+    int64_t quantum = 0;
+    int64_t epoch = 0;
+  };
+  /** (Q, epoch) read consistently — never a mixed pair. Audio-thread
+   * safe: the writer's critical section is two stores, so the bounded
+   * retry never spins for real; after the bound it takes what it has
+   * (a write storm that long does not exist on the message thread). */
+  IslandFacts readIslandFacts() const {
+    IslandFacts f;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+      const uint32_t s1 = island_seq_.load(std::memory_order_acquire);
+      f.quantum = quantum_samples_.load();
+      f.epoch = epoch_samples_.load();
+      const uint32_t s2 = island_seq_.load(std::memory_order_acquire);
+      if ((s1 & 1u) == 0 && s1 == s2) break;
+    }
+    return f;
+  }
 
   /**
    * Transport seek (AudioEngine::seekTransport): re-base the cycle
@@ -157,14 +182,20 @@ class StackNode : public AudioNode {
    * uses. Message thread only; the audio thread picks it up at the
    * next block top (pc.cycle_epoch = islandEpoch()).
    */
-  void seekEpochTo(int64_t epoch) { epoch_samples_.store(epoch); }
+  void seekEpochTo(int64_t epoch) { setQuantum(quantum_samples_.load(), epoch); }
+
+  /** Group-stop generation (ProcessContext::stop_generation): the
+   * engine reserves the next value, parks it on every member, then
+   * publishes it here in ONE store. Island root only. */
+  uint32_t nextStopGeneration() { return stop_generation_.load() + 1; }
+  void publishStopGeneration(uint32_t g) { stop_generation_.store(g); }
+  uint32_t stopGeneration() const { return stop_generation_.load(); }
 
   /** Establish (Q, epoch) once; q == 0 sets a provisional epoch only
    * (first-clip arm). No-op once Q is locked. */
   void establishIsland(int64_t quantum, int64_t epoch) override {
     if (quantum_samples_.load() != 0) return;
-    epoch_samples_.store(epoch);
-    if (quantum > 0) quantum_samples_.store(quantum);
+    setQuantum(quantum > 0 ? quantum : 0, epoch);
   }
 
   // --- Take lifecycle (commit as an EVENT, unification_audit.md §1.5).
@@ -405,6 +436,8 @@ class StackNode : public AudioNode {
   // child durations (deriving caused the retroactive-Q bug class).
   // 0 = no quantum established in this scope yet.
   std::atomic<int64_t> quantum_samples_{0};
+  std::atomic<uint32_t> stop_generation_{0};
+  std::atomic<uint32_t> island_seq_{0};  // seqlock for (Q, epoch)
   std::atomic<int64_t> epoch_samples_{0};
 
   // The sequence (docs/sequencer.md): immutable object behind ONE

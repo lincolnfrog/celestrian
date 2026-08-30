@@ -104,6 +104,12 @@ struct ProcessContext {
   // against THIS clock — the folded master_pos wraps every map period
   // and never crosses a target at/past the map's end.
   int64_t island_pos = 0;
+  // GROUP STOP GENERATION (audit 2026-08-30 §3.3): a group stop parks a
+  // pending generation on every member and then publishes it once at
+  // the island root; members flip to stop-requested at the block top
+  // that first sees it — all in the SAME block, so N mics compute one
+  // boundary and commit one duration. Read once per callback.
+  uint32_t stop_generation = 0;
   // Live MIDI (docs/vst3.md §8, phase 4): the block's incoming events,
   // drained once per callback by the engine from the lock-free queue.
   // Consumed ONLY by a node whose midi_armed_ flag is set (the single

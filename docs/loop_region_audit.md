@@ -136,9 +136,15 @@ idempotent on double end.
 - Definer composite raw mode / dims tiling / members' common window
   (morning session).
 
-## 3. Open RISKs (verified mechanisms, not yet fixed)
+## 3. RISKs found by the audit — all fixed in the follow-up pass (2026-08-30, later the same day)
 
-### 3.1 "RE-OPEN ⟹ UNCOLLAPSE" fires on ordinary takes (MEDIUM)
+Owner asked for the remaining items to be fixed; each is now ✅ with a
+pinning test. The original analysis is kept below the status line.
+
+### 3.1 ✅ "RE-OPEN ⟹ UNCOLLAPSE" fires on ordinary takes (MEDIUM)
+**Fixed:** `ClipNode::collapsed_from_` / `collapse_origin_shift_` are the
+explicit marker (carried through Take/Untake); Remove uncollapses only
+`isCollapsed()` survivors. Test: "RE-OPEN leaves an ORDINARY take alone".
 `applyEditImpl` Remove uses `write_position > duration` as proof of a
 lock-collapse, but a snapped take normally overshoots by up to a block
 (`finishCaptureBlock` writes the whole block, then commits at the
@@ -150,14 +156,23 @@ survives" is violated in between. *Verify:* record A, B; delete B; dump
 A's `duration` vs `recorded`. *Fix:* track the collapse explicitly
 (`content_base_ > 0` or a flag), never by overshoot.
 
-### 3.2 Q and epoch are two atomics read separately on the audio thread (LOW)
+### 3.2 ✅ Q and epoch are two atomics read separately on the audio thread (LOW)
+**Fixed:** `StackNode::setQuantum` is a seqlock write; the callback reads
+`readIslandFacts()` once (bounded retry). Residual: the origin riders are
+per-clip atomics, so a definer trim while playing can still give ONE
+block a new epoch with old member origins (~10 ms); closing that needs a
+generation-gated apply on the audio thread — noted, not done.
 `setQuantum` stores Q then epoch; the callback reads `islandEpoch()` and
 `getQuantum()` at different points. A re-trim between the reads gives one
 block a mixed pair (and the new origin riders add a third field). One
 block of misplacement at worst; a packed 128-bit pair or a generation
 counter would close it.
 
-### 3.3 Group stop is per-clip on the audio thread (LOW)
+### 3.3 ✅ Group stop is per-clip on the audio thread (LOW)
+**Fixed:** a group stop parks `stop_pending_gen_` on every member and
+publishes one `stop_generation` at the root (`ProcessContext`); members
+flip at the same block top. Test: "a locked-Q group stop commits one
+duration for every mic".
 `stop_requested_` is consumed at each clip's own block top; if a Q
 boundary falls inside the straddled block, `nextStopBoundary` differs per
 mic → different durations → not one take. Same shape as §1.4 (arm), not
@@ -165,14 +180,24 @@ fixed: the stop path has no allocation, so the window is nanoseconds; a
 per-group generation the audio thread consumes at one block top would
 make both exact.
 
-### 3.4 Windows DPI and `warpPointer` (LOW, heard-view grips only)
+### 3.4 ✅ Windows DPI and `warpPointer` (LOW, heard-view grips only)
+**Fixed:** the page sends its viewport size with the warp; the native
+side maps CSS px → JUCE points by `component size / viewport size`, exact
+under any zoom or DPI scale (protocol: `warpPointer(x, y, viewportW,
+viewportH)`; older callers stay 1:1).
 `map_bands.js` warps in CSS px; `main_component.cc` treats them as JUCE
 points. At 125/150 % scaling the cursor lands off the handle and the
 resulting sub-150 px "echo" is applied as a real delta (`|dx| < 150`
 inside 400 ms). *Verify:* `window.__mapDbg` entries with a large first
 `render` delta right after `warp {ok:true}` on a scaled display.
 
-### 3.5 No lock-collapse for a group definer (DEBT with audible edge)
+### 3.5 ✅ No lock-collapse for a group definer (DEBT with audible edge)
+**Fixed:** `Edit::CollapseGroup` — at the second arm the members
+collapse to the stack window (content base shifts, duration := len,
+origins STAY: the group window anchors at the epoch == origin), the
+stack window is consumed; RE-OPEN ⟹ UNCOLLAPSE has its group twin.
+Render-level neutrality pinned ("Group lock-collapse is audio-neutral");
+mock twin in `mock/recording.js` / `mock/graph_crud.js`.
 The sole-clip definer collapses at the second arm so no incommensurate
 buffer survives. The definer STACK keeps its raw D as the inner cycle;
 §1.3's `epochViewStep` now protects it from the riders, and
@@ -181,7 +206,10 @@ still inflates `lcm_before_take_` and the Q15 origin fold. The fractal
 answer is a group collapse (splice every member to the window, stack
 window consumed) with the group twin of RE-OPEN ⟹ UNCOLLAPSE.
 
-### 3.6 Window riders skip members with multi-segment overrides
+### 3.6 ✅ Window riders skip members with multi-segment overrides
+**Fixed:** a rider clears the member's override (captured into the
+inverse rider, `WindowRider::setsMap/tmap`). Test: "a definer re-trim
+wholes a member with a segment map (undoable)".
 A member of a definer stack with its own segment map keeps looping it
 under the stack window; the trim view lies for it. Rare (needs a
 pre-lift state plus a segment edit on a member).
@@ -274,6 +302,9 @@ by the coherence guard while a single window is accepted).
   regressed.
 - Five-mic group takes: `dumpState` and check every member's `origin`
   and `duration` are identical; if not, §1.4/§3.3 — send the dump.
+- After take 2 against a trimmed group: the members should read as 1Q
+  whole takes (collapsed), the group as a plain 1Q part; deleting take
+  2 brings the full takes and the trim back (§3.5).
 - A release that briefly snaps a bracket back then forward is §2.1
   regressed (or a hold longer than 1.5 s: bridge latency).
 

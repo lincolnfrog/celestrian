@@ -82,6 +82,16 @@ void ClipNode::control(const float* const* input_channels,
   // the audio thread, from the audio thread's own write position — the
   // old message-thread computation raced the recorder and could pick a
   // boundary already behind the write head (unification_audit.md D2).
+  // A parked GROUP stop becomes a request at the first block top whose
+  // context carries its generation (ProcessContext::stop_generation) —
+  // every member of the group sees it in this same block.
+  if (recState() == RecState::Capturing && !stop_requested_.load()) {
+    const uint32_t pending = stop_pending_gen_.load();
+    if (pending != 0 && context.stop_generation >= pending) {
+      stop_requested_.store(true);
+      stop_pending_gen_.store(0);
+    }
+  }
   if (recState() == RecState::Capturing && stop_requested_.load()) {
     // Island Q rides the context (Tier 3 Step 3 — no audio-thread parent
     // walks); the walk survives only as the node-level unit-test
@@ -1079,6 +1089,7 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
   current_max_peak.store(0.0f);
   awaiting_start_at.store(0);
   stop_requested_.store(false);
+  stop_pending_gen_.store(0);
 
   duration_samples.store(0);
   live_duration_samples.store(0);
@@ -1103,7 +1114,7 @@ void ClipNode::publishArm() {
 
 void ClipNode::stopRecording() { stopRecording(getEffectiveQuantum() > 0); }
 
-void ClipNode::stopRecording(bool island_has_quantum) {
+void ClipNode::stopRecording(bool island_has_quantum, uint32_t group_generation) {
   switch (recState()) {
     case RecState::Armed:
       // Never started capturing: stopping an armed clip is a CANCEL —
@@ -1122,7 +1133,11 @@ void ClipNode::stopRecording(bool island_has_quantum) {
         // ruling). The boundary itself is computed by the AUDIO thread
         // at the top of its next block (see process()) — computing it
         // here from a racing write position was unification_audit.md D2.
-        stop_requested_.store(true);
+        if (group_generation != 0) {
+          stop_pending_gen_.store(group_generation);  // published by the engine
+        } else {
+          stop_requested_.store(true);
+        }
         juce::Logger::writeToLog(
             "ClipNode: Stop requested — finishing to the next boundary");
       } else {

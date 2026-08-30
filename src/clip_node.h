@@ -161,7 +161,9 @@ class ClipNode : public AudioNode {
    * the record-to-next-boundary path — they'd run a full extra Q. One
    * performance must mean one committed duration, so all first takes
    * of a group stop take the immediate-commit path together. */
-  void stopRecording(bool island_has_quantum);
+  /** `group_generation` != 0 parks the stop until the island root
+   * publishes that generation (one block top for every member). */
+  void stopRecording(bool island_has_quantum, uint32_t group_generation = 0);
 
   /**
    * Opens the content-sounds gate (`is_playing`) — the internal flag
@@ -185,7 +187,8 @@ class ClipNode : public AudioNode {
     // True from the moment the user asked to stop (stop_requested_ is
     // the one-block bridge until the audio thread picks the boundary).
     return recState() == RecState::PendingStop ||
-           (recState() == RecState::Capturing && stop_requested_.load());
+           (recState() == RecState::Capturing &&
+            (stop_requested_.load() || stop_pending_gen_.load() != 0));
   }
   int64_t getCommitMasterPos() const { return commit_master_pos.load(); }
   int64_t getAwaitingStartAt() const { return awaiting_start_at.load(); }
@@ -254,21 +257,43 @@ class ClipNode : public AudioNode {
    * now reads as performed exactly; the cut material stays in the
    * buffer, unreachable except by uncollapse (undo). Message thread;
    * all-atomic (same exposure discipline as setLoopPoints). */
-  void collapseToWindow(int64_t shift, int64_t len) {
+  void collapseToWindow(int64_t shift, int64_t len, bool shift_origin = true) {
+    // EXPLICIT COLLAPSE MARKER (audit 2026-08-30 §3.1): the pre-collapse
+    // duration is remembered here, so "was this take collapsed?" is a
+    // fact, not the `write_position > duration` heuristic — every
+    // snapped take overshoots its duration by up to a block, and the
+    // heuristic "uncollapsed" ordinary takes to their raw, off-grid
+    // recorded length on a re-opening delete.
+    //
+    // `shift_origin`: a CLIP window anchors at origin + start, so its
+    // collapse moves the origin by `shift` to stay audio-neutral. A
+    // GROUP window anchors at the island epoch (== the members'
+    // origin), so a group collapse moves only the content base — the
+    // origin stays (heard = s + ((t − origin) mod len) both ways).
+    collapsed_from_.store(duration_samples.load());
+    collapse_origin_shift_.store(shift_origin ? shift : 0);
     content_base_.store(content_base_.load() + shift);
-    origin_samples.store(origin_samples.load() + shift);
+    if (shift_origin) origin_samples.store(origin_samples.load() + shift);
     duration_samples.store(len);
     setLoopPoints(0, len);
   }
   /** Inverse of collapseToWindow: restore the pre-collapse buffer view
-   * and the trim (window [shift, shift + current duration)). */
+   * and the trim (window [shift, shift + current duration)). The
+   * origin moves back by exactly what the collapse moved it. */
   void uncollapseFromWindow(int64_t shift, int64_t old_duration) {
     const int64_t len = duration_samples.load();
     content_base_.store(content_base_.load() - shift);
-    origin_samples.store(origin_samples.load() - shift);
+    origin_samples.store(origin_samples.load() - collapse_origin_shift_.load());
     duration_samples.store(old_duration);
     setLoopPoints(shift, shift + len);
+    collapsed_from_.store(0);
+    collapse_origin_shift_.store(0);
   }
+  /** True when the committed content is a lock-collapsed window of a
+   * longer recording (trimmed-away material still in the buffer). */
+  bool isCollapsed() const { return collapsed_from_.load() > 0; }
+  /** The pre-collapse duration (0 when not collapsed). */
+  int64_t collapsedFrom() const { return collapsed_from_.load(); }
 
   // --- Multi-segment lock-collapse (time_maps.md phase 3) ---
   /** The multi-segment twin of collapseToWindow: the map's kept
@@ -348,6 +373,7 @@ class ClipNode : public AudioNode {
     std::unique_ptr<MidiSequence> midi;
     int64_t origin = 0, duration = 0, base = 0, recorded = 0;
     int64_t context_cycle = 0, loop_start = 0, loop_end = 0;
+    int64_t collapsed_from = 0, collapse_origin_shift = 0;
     int content_kind = 0;
     bool cap_hit = false;
   };
@@ -368,6 +394,8 @@ class ClipNode : public AudioNode {
     s.loop_end = loop_end_samples.load();
     s.content_kind = content_kind_.load();
     s.cap_hit = cap_hit_.load();
+    s.collapsed_from = collapsed_from_.load();
+    s.collapse_origin_shift = collapse_origin_shift_.load();
     // Silence first (render reads duration/is_playing before content).
     is_playing.store(false);
     duration_samples.store(0);
@@ -387,6 +415,8 @@ class ClipNode : public AudioNode {
     write_position.store(0);
     take_context_cycle_.store(0);
     cap_hit_.store(false);
+    collapsed_from_.store(0);
+    collapse_origin_shift_.store(0);
     setLoopPoints(0, 0);
     rec_state_.store((int)RecState::Idle);
     return s;
@@ -411,6 +441,8 @@ class ClipNode : public AudioNode {
     write_position.store((int)s.recorded);
     take_context_cycle_.store(s.context_cycle);
     cap_hit_.store(s.cap_hit);
+    collapsed_from_.store(s.collapsed_from);
+    collapse_origin_shift_.store(s.collapse_origin_shift);
     origin_samples.store(s.origin);
     setLoopPoints(s.loop_start, s.loop_end);
     rec_state_.store((int)RecState::Idle);
@@ -565,6 +597,8 @@ class ClipNode : public AudioNode {
   // getContentBase). Playback/waveform/save add it; capture never does
   // (recording clips always have base 0).
   std::atomic<int64_t> content_base_{0};
+  std::atomic<int64_t> collapsed_from_{0};  // pre-collapse duration; 0 = not collapsed
+  std::atomic<int64_t> collapse_origin_shift_{0};  // what the collapse added to origin
 
   // Pre-record capture window (docs/performance.md §3). When the engine
   // provides a pre-record ring, capture no longer copies "whatever input
@@ -635,6 +669,9 @@ class ClipNode : public AudioNode {
   // Message-thread stop request; consumed by the audio thread, which
   // computes the boundary from its own write position (D2 fix).
   std::atomic<bool> stop_requested_{false};
+  // A parked group-stop generation (0 = none); becomes stop_requested_
+  // at the block top whose context carries a generation >= this.
+  std::atomic<uint32_t> stop_pending_gen_{0};
   std::atomic<bool> is_playing{false};
 
   std::atomic<int64_t> awaiting_start_at{
