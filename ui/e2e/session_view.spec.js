@@ -1686,6 +1686,55 @@ test.describe('Q-definer trim on a group take', () => {
         expect(await quantum(page)).toBe(st3.loopEnd - st3.loopStart);
     });
 
+    // Field video 2026-08-29: after a re-trim the group's dims tiled at
+    // round(intrinsicQ) — a 1.42Q take got a spurious dim over
+    // [1Q, 1.42Q) while the end bracket sat at 1.42Q (dims and brackets
+    // disagreed) — and the composite regenerated (cross-fade flicker,
+    // re-shaped) on every release because its cache key carried the
+    // window and the epoch. Pins both: the dims are exactly the
+    // selection's complement, and the composite canvas is untouched
+    // across a re-trim.
+    test('dims match the brackets on a fractional frame; the composite does not redraw on a re-trim', async ({ page }) => {
+        await loadEmpty(page);
+        const s = await recordGroupTake(page, 4);
+        await page.waitForFunction(() => document.querySelectorAll('.lane').length > 1);
+        const D = await quantum(page);
+        const group = page.locator('.lane[data-kind="group"]').first();
+        const body = group.locator('.lane-body');
+        await expect(group.locator('.rep canvas')).toHaveCount(1);
+        // Wait for the composite to land (the members' peaks arrive by
+        // fetch; before that the canvas is the empty hairline).
+        const snap = () => group.locator('.rep canvas').first()
+            .evaluate(el => el.toDataURL());
+        await expect.poll(async () => (await snap()).length, { timeout: 5000 })
+            .toBeGreaterThan(3000);
+        await page.waitForTimeout(500);
+        const canvasBefore = await snap();
+
+        // End bracket → 70%: Q := 0.7D, the take is a 1/0.7 = 1.43Q frame.
+        await dragToFrac(page, group.locator('.win-bracket.end'), body, 0.7);
+        await expect.poll(async () => (await stackOf(page, s)).loopEnd)
+            .toBeLessThan(D * 0.75);
+        const st = await stackOf(page, s);
+        expect(st.loopStart).toBe(0);
+        expect(await quantum(page)).toBe(st.loopEnd);
+        // ONE dim, from the end bracket to the take's end — nothing at
+        // the (now meaningless) 1Q grid line.
+        await expect(group.locator('.win-dim')).toHaveCount(1);
+        const dim = group.locator('.win-dim').first();
+        const left = parseFloat(await dim.evaluate(el => el.style.left));
+        const width = parseFloat(await dim.evaluate(el => el.style.width));
+        const endPct = parseFloat(await group.locator('.win-bracket.end')
+            .evaluate(el => el.style.left));
+        expect(Math.abs(left - endPct)).toBeLessThan(0.5);
+        expect(Math.abs(left + width - 100)).toBeLessThan(0.5);
+        // The composite underneath is the SAME picture: one canvas (no
+        // cross-fade pair), pixel-identical to before the trim.
+        await page.waitForTimeout(400);  // past CROSSFADE_REMOVE_MS
+        await expect(group.locator('.rep canvas')).toHaveCount(1);
+        expect(await snap()).toBe(canvasBefore);
+    });
+
     test('PARITY: the sole CLIP definer trim behaves the same way', async ({ page }) => {
         await loadEmpty(page);
         const sr = await mockQ(page);

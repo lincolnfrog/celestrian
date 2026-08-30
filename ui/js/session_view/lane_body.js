@@ -215,8 +215,8 @@ export function patchLaneBody(row, lane, vm, aux) {
     // timeline. Everything below maps through this local cycle.
     const cycleQ = lane.frameQ || vm.cycleQ;
     const { grid, reps: repsL, overlay } = layersOf(body);
-    const peaks = lanePeaks(lane, aux);
     const bodyW = body.clientWidth;
+    const peaks = lanePeaks(lane, aux, bodyW);
     const bodyH = body.clientHeight - BODY_V_INSET_PX || BODY_H_FALLBACK_PX;
 
     // State classes (idempotent via classList.toggle)
@@ -630,7 +630,7 @@ function latentWindow(lane, vm) {
 }
 
 /** Peaks for a lane: clip peaks from the store; group = composite. */
-function lanePeaks(lane, aux) {
+function lanePeaks(lane, aux, bodyW = 0) {
     if (lane.kind === 'clip') return aux.livePeaks.get(lane.id);
     const node = aux.nodesById.get(lane.id);
     if (!node || !node.nodes || node.nodes.length === 0) return null;
@@ -640,12 +640,23 @@ function lanePeaks(lane, aux) {
     const stackDuration = Math.max(
         oneTakeDuration(node) || calculateStackLCM(node.nodes, aux.vmQuantum),
         node.effectiveQuantum || aux.vmQuantum);
+    // Rasterize at least at the lane's own width: at the fixed 800 the
+    // 1000px+ lane upsampled (interpolated) the composite, so the
+    // group read softer than its children (field 2026-08-29).
+    const canvasWidth = Math.max(COMPOSITE_CANVAS_W, Math.ceil(bodyW || 0));
     return generateCompositeWaveform({
         stack: node, stackDuration, effectiveQ: aux.vmQuantum,
-        canvasWidth: COMPOSITE_CANVAS_W, livePeaks: aux.livePeaks,
+        canvasWidth, livePeaks: aux.livePeaks,
         cache: ctx.compositeCache,
         excludeIds: aux.pendingFetch,
         epochSamples: aux.epochSamples || 0,
+        // The Q-definer trim view frames the RAW take with the
+        // selection over it (pushDefinerLane); its members draw their
+        // whole takes beneath. The composite must be the same raw
+        // material — the heard mixdown (windowed slices on the epoch
+        // grid) disagreed with the children and re-shaped on every
+        // trim release (field video 2026-08-29).
+        raw: !!lane.isQDefiner,
     });
 }
 

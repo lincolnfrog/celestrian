@@ -662,10 +662,23 @@ function resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
     // The engine commits every clip with loop [0, duration); a fixture
     // without loop points means the same thing — the whole buffer (a
     // stack's: its inner cycle).
-    const defHasSel = !!definerNode && definerNode.loopEnd > definerNode.loopStart;
-    const defSelStartQ = defHasSel ? definerNode.loopStart / quantum : 0;
+    // A DEFINER STACK whose window lives on its members instead
+    // (a group take committed against a survived Q gets its commit-time
+    // loop region on each clip — states written before the engine's
+    // group-window lift, reconcileTakes 2026-08-30): the selection the
+    // ear hears is the members' common window. Without this the trim
+    // view drew the full take selected while the members looped a
+    // half of it (field dump 2026-08-29: children [0, Q/2), stack none).
+    const memberSel = definerNode && definerNode.type === 'stack' &&
+        !(definerNode.loopEnd > definerNode.loopStart)
+        ? memberCommonWindow(definerNode) : null;
+    const defHasSel = !!definerNode &&
+        (definerNode.loopEnd > definerNode.loopStart || !!memberSel);
+    const selStart = memberSel ? memberSel[0] : (definerNode ? definerNode.loopStart : 0);
+    const selEnd = memberSel ? memberSel[1] : (definerNode ? definerNode.loopEnd : 0);
+    const defSelStartQ = defHasSel ? selStart / quantum : 0;
     const defSelEndQ = !definerNode ? 0
-        : defHasSel ? definerNode.loopEnd / quantum
+        : defHasSel ? selEnd / quantum
             : intrinsicPeriodQ(definerNode, quantum);
     return { soleQDefinerId, provisionalDefiner, definerNode,
              defSelStartQ, defSelEndQ };
@@ -690,6 +703,24 @@ function definerStackOf(nodes, owner = null) {
     }
     if (nested) return direct === 0 ? definerStackOf(nested.nodes, nested) : null;
     return direct >= 2 ? owner : null;
+}
+
+/** The one ACTIVE sub-window every committed direct clip child of
+ * `stack` shares ([start, end] samples), or null when they are whole,
+ * differ, or any is bypassed. */
+function memberCommonWindow(stack) {
+    let win = null;
+    for (const c of stack.nodes || []) {
+        if (c.type !== 'clip' || c.isRecording || !(c.duration > 0)) continue;
+        const ls = c.loopStart || 0;
+        const le = Math.min(c.loopEnd || 0, c.duration);
+        const active = c.windowActive ?? (!c.loopBypassed && le > ls);
+        if (!active || c.loopBypassed || !(le > ls)) return null;
+        if (ls === 0 && le >= c.duration) return null;  // whole
+        if (!win) win = [ls, le];
+        else if (win[0] !== ls || win[1] !== le) return null;
+    }
+    return win;
 }
 
 function subtreeHasCommitted(n) {

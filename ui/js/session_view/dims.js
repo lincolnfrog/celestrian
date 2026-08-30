@@ -45,13 +45,18 @@ export function buildWindowDims(o, win, lane, cycleQ) {
     // covered set. A single window is the one-segment case.
     const segs = win.segs || [[win.startQ, win.endQ]];
     const anchorQ = lane.takeStartQ || 0;
-    if (lane.kind === 'clip') {
+    if (lane.kind === 'clip' || lane.isQDefiner) {
         // Clips render raw material in ONE place — the take tile; every
         // other tile is an audible echo of the window segment and must
         // not be dimmed as "outside the window" (ghosts show what
         // sounds, Q 2026-07-16). Use the RAW intrinsicQ (not rounded):
         // the provisional Q-definer's tile is buffer/selection, a
         // fractional number of Q, so rounding dropped its trailing dim.
+        // The DEFINER STACK (Q13 for groups) is the same trim view — one
+        // raw tile, buffer/selection long: tiling its dims at
+        // round(intrinsicQ) put a spurious dim over [1Q, 1.42Q) of a
+        // 1.42Q take while the end bracket sat at 1.42Q — the dimmed
+        // region and the brackets disagreed (field video 2026-08-29).
         dimComplementInto(o, cycleQ, segs, anchorQ, intrinsicQ);
         return;
     }

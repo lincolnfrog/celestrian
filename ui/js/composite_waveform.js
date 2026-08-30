@@ -28,10 +28,23 @@ const MAX_SEGMENT_TILES = 256;
  * @param {number} targetPeaks - Number of target peaks for the composite
  * @returns {string} A cache key string
  */
-export function buildCacheKey(stack, targetPeaks) {
+export function buildCacheKey(stack, targetPeaks, opts = {}) {
+    const { raw = false, stackDuration = 0, epochSamples = 0 } = opts;
     const cacheKeyParts = [];
     (stack.nodes || []).forEach(child => {
         if (child.type === 'clip') {
+            // RAW mode (the definer trim view): only the material's
+            // identity matters — windows, origins and the epoch are
+            // deliberately NOT in the key, so a re-trim (which moves
+            // Q, the epoch and the window every release) never
+            // regenerates the composite. A regenerated array is a new
+            // identity, and drawRepCanvas cross-fades every new
+            // identity: the definer's waveform "flickered and changed
+            // shape" on each handle release (field video 2026-08-29).
+            if (raw) {
+                cacheKeyParts.push([child.id, child.duration || 0].join(':'));
+                return;
+            }
             cacheKeyParts.push([
                 child.id,
                 child.duration || 0,
@@ -52,8 +65,13 @@ export function buildCacheKey(stack, targetPeaks) {
             ].join(':'));
         }
     });
-    return `${targetPeaks}:${stack.loopStart || 0}:${stack.loopEnd || 0}:` +
-        `${(stack.segments || []).join('.')}:${cacheKeyParts.join(',')}`;
+    // The stack's OWN window is not part of the mixdown (the composite
+    // spans the stack's intrinsic extent; the lane's srcSegs/dims apply
+    // the window over it) — it is not in the key either, so a window
+    // edit on the group never regenerates the picture underneath. The
+    // tiling inputs that DO shape the picture (extent, epoch frame) are.
+    return `${targetPeaks}:${raw ? 'raw' : 'map'}:${stackDuration}:` +
+        `${raw ? 0 : epochSamples}:${cacheKeyParts.join(',')}`;
 }
 
 /**
@@ -86,9 +104,24 @@ export function buildCacheKey(stack, targetPeaks) {
  *                                       ABSOLUTE, and segments tile at
  *                                       positions ≡ origin (mod period) in
  *                                       the EPOCH frame.
+ * @param {boolean} [opts.raw=false]   - RAW MATERIAL mode (the Q-definer
+ *                                       trim view): every child draws its
+ *                                       WHOLE take once, from 0, ignoring
+ *                                       windows, origins and the epoch —
+ *                                       the mixdown of the buffer the
+ *                                       selection brackets select over,
+ *                                       exactly what the member lanes
+ *                                       beneath draw. Field video
+ *                                       2026-08-29: the heard mixdown
+ *                                       (windowed slices tiled on the
+ *                                       epoch grid) drawn under the raw
+ *                                       selection read as a group whose
+ *                                       waveform disagreed with its
+ *                                       children and re-shaped on every
+ *                                       trim.
  * @returns {Array} Peak data array for the composite waveform
  */
-export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0 }) {
+export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0, raw = false }) {
     // If backend provides waveform data, use it directly
     if (stack.waveform && stack.waveform.length > 0) {
         return stack.waveform;
@@ -114,7 +147,8 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
     const peaksSig = (stack.nodes || [])
         .map(c => skip(c) ? 'r' : (livePeaks.get(c.id) || []).length)
         .join(',');
-    const cacheKey = buildCacheKey(stack, targetPeaks) + '|' + peaksSig;
+    const cacheKey = buildCacheKey(stack, targetPeaks,
+        { raw, stackDuration, epochSamples }) + '|' + peaksSig;
 
     // Check cache
     const cached = cache.get(stack.id);
@@ -145,12 +179,12 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // a windowed clip); otherwise the full take loops at its
         // duration. `windowActive` is the engine's published verdict;
         // the ?? fallback derives it for states that predate the field.
-        const hasMultiSeg = Array.isArray(child.segments) &&
+        const hasMultiSeg = !raw && Array.isArray(child.segments) &&
             child.segments.length >= 4;
-        const mapOn = child.windowActive ??
+        const mapOn = !raw && (child.windowActive ??
             (!child.loopBypassed &&
                 (hasMultiSeg ||
-                    (child.loopEnd || 0) > (child.loopStart || 0)));
+                    (child.loopEnd || 0) > (child.loopStart || 0))));
         const slices = []; // [innerStart, len] samples, heard order
         if (mapOn && hasMultiSeg) {
             for (let i = 0; i + 1 < child.segments.length; i += 2) {
@@ -190,6 +224,10 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
             for (let i = 0; i < n; i++) {
                 const px0 = startPx + (i / n) * widthPx;
                 const px1 = startPx + ((i + 1) / n) * widthPx;
+                // Off-canvas peaks (the wrapped predecessor tile before
+                // 0, or past the end) contribute nothing — without this
+                // every peak left of 0 max-pooled into slot 0.
+                if (px1 <= 0 || px0 >= canvasWidth) continue;
                 const t0 = Math.max(0, Math.floor((px0 / canvasWidth) * targetPeaks));
                 const t1 = Math.min(targetPeaks,
                     Math.max(t0 + 1, Math.ceil((px1 / canvasWidth) * targetPeaks)));
@@ -209,7 +247,10 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // each pass the slices land back-to-back at their heard
         // offsets, each keeping its true sample proportion — exactly
         // mapOffset's segment walk, drawn.
-        const rel = (child.origin || 0) - epochSamples;
+        // RAW mode: the buffer sits at 0 — one tile, the trim view's
+        // frame (the member lanes tile the same way: "one full tile
+        // from 0 — the trim view ignores the epoch").
+        const rel = raw ? 0 : (child.origin || 0) - epochSamples;
         const first = posMod(rel, heardLen);
         for (let s = first - heardLen; s < stackDuration; s += heardLen) {
             let heardOff = 0;

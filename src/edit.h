@@ -127,6 +127,19 @@ struct Edit {
   // audio flows. The inverse captures the old origin the same way.
   bool setsOrigin = false;
   int64_t iorg = 0;  // clip origin to set
+  // WINDOW RIDERS: further nodes whose single-window loop points this
+  // edit sets alongside its main mutation (applied after it; the
+  // inverse captures each node's old points the same way). Two
+  // builders use them (Q13 FOR GROUPS, 2026-08-30): the GROUP-WINDOW
+  // LIFT at a group take's commit (reconcileTakes — the members'
+  // commit-time loop region moves onto the definer stack, the members
+  // go whole) and the definer stack's re-trim (windowed members from a
+  // pre-lift state go whole). Riders on Take/Untake and LoopPoints.
+  struct WindowRider {
+    juce::String uuid;
+    int64_t start = 0, end = 0;
+  };
+  std::vector<WindowRider> windows;
   // S16 window domain (docs/sequencer.md §11.8), LoopPoints/Segments on
   // a STACK: −1 = derive from whether the sequence is active (forward
   // edits), 0/1 = set explicitly (inverses restore the old stamp).

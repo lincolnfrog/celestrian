@@ -46,16 +46,41 @@ test('buildCacheKey', async (t) => {
         assert.notEqual(key1, key2);
     });
 
-    await t.test('different loopStart → different key', () => {
+    // The stack's OWN window is not part of the mixdown (the composite
+    // spans the intrinsic extent; the lane's dims/srcSegs apply the
+    // window over it) — so it must NOT invalidate: every regeneration
+    // is a new array identity, and the lane cross-fades new identities,
+    // which read as flicker on each handle release (field video
+    // 2026-08-29). Pinned the other way round before that.
+    await t.test('the stack\'s own loop points do NOT change the key', () => {
         const stack1 = { loopStart: 0, loopEnd: 4 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
-        const stack2 = { loopStart: Q, loopEnd: 4 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
-        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+        const stack2 = { loopStart: Q, loopEnd: 2 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
+        assert.equal(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
-    await t.test('different loopEnd → different key', () => {
-        const stack1 = { loopStart: 0, loopEnd: 4 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
-        const stack2 = { loopStart: 0, loopEnd: 2 * Q, nodes: [{ id: 'c', type: 'clip', duration: Q }] };
-        assert.notEqual(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
+    await t.test('epoch and extent are in the key (they place the tiles)', () => {
+        const stack = { nodes: [{ id: 'c', type: 'clip', duration: Q, origin: 3 * Q }] };
+        assert.notEqual(buildCacheKey(stack, 400, { epochSamples: 0 }),
+                        buildCacheKey(stack, 400, { epochSamples: Q }));
+        assert.notEqual(buildCacheKey(stack, 400, { stackDuration: 4 * Q }),
+                        buildCacheKey(stack, 400, { stackDuration: 8 * Q }));
+    });
+
+    await t.test('RAW mode: only material identity is in the key', () => {
+        // The definer trim view draws the whole take from 0: a re-trim
+        // moves the window, the origin/epoch frame and Q on every
+        // release — none of it may regenerate the picture underneath.
+        const a = { loopStart: 0, loopEnd: Q, nodes: [{ id: 'c', type: 'clip', duration: 4 * Q,
+            origin: 0, loopStart: 0, loopEnd: 2 * Q, windowActive: true }] };
+        const b = { loopStart: Q, loopEnd: 3 * Q, nodes: [{ id: 'c', type: 'clip', duration: 4 * Q,
+            origin: 5 * Q, loopStart: Q, loopEnd: 3 * Q, windowActive: false }] };
+        assert.equal(buildCacheKey(a, 400, { raw: true, stackDuration: 4 * Q, epochSamples: 0 }),
+                     buildCacheKey(b, 400, { raw: true, stackDuration: 4 * Q, epochSamples: 7 * Q }));
+        // …but a different take is a different picture.
+        const c = { nodes: [{ id: 'c', type: 'clip', duration: 5 * Q }] };
+        assert.notEqual(buildCacheKey(a, 400, { raw: true }), buildCacheKey(c, 400, { raw: true }));
+        // and raw vs heard never share a cache entry
+        assert.notEqual(buildCacheKey(a, 400, { raw: true }), buildCacheKey(a, 400, { raw: false }));
     });
 
     await t.test('different child origin → different key', () => {
@@ -371,7 +396,7 @@ test('generateCompositeWaveform', async (t) => {
         assert.notEqual(result1, result2, 'Should be different array (cache miss)');
     });
 
-    await t.test('invalidates cache when loop points change', () => {
+    await t.test('the stack\'s own loop points do not regenerate (same array)', () => {
         const stack = makeStack([
             { id: 'clip-1', type: 'clip', duration: 4 * Q, x: 0 }
         ]);
@@ -383,7 +408,8 @@ test('generateCompositeWaveform', async (t) => {
             canvasWidth: 200, livePeaks, cache
         });
 
-        // Change loop points
+        // A window edit on the GROUP itself: the mixdown underneath is
+        // unchanged, so the SAME array comes back (no cross-fade).
         stack.loopEnd = 2 * Q;
 
         const result2 = generateCompositeWaveform({
@@ -391,7 +417,36 @@ test('generateCompositeWaveform', async (t) => {
             canvasWidth: 200, livePeaks, cache
         });
 
-        assert.notEqual(result1, result2, 'Loop point change should invalidate cache');
+        assert.equal(result1, result2, 'group window edit must not regenerate');
+    });
+
+    await t.test('RAW mode: whole takes from 0, windows/epoch ignored, stable across a re-trim', () => {
+        // Two mics, one take: 4Q long, with a commit-time sub-window
+        // [0, 2Q) on each (a survived Q can leave one) — the definer
+        // trim view must still draw the WHOLE take, from 0.
+        const peaks = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        const kid = i => ({ id: 'm' + i, type: 'clip', duration: 4 * Q, origin: 9 * Q,
+            loopStart: 0, loopEnd: 2 * Q, windowActive: true });
+        const stack = makeStack([kid(1), kid(2)]);
+        const livePeaks = new Map([['m1', peaks], ['m2', peaks]]);
+        const cache = new Map();
+        const args = { stack, stackDuration: 4 * Q, effectiveQ: Q, canvasWidth: 8,
+                       livePeaks, cache, epochSamples: 3 * Q, raw: true };
+        const raw = generateCompositeWaveform(args);
+        // 16 slots over 8 px; each peak covers 2 slots, in order, from 0.
+        for (let i = 0; i < 8; i++) {
+            assert.ok(Math.abs(raw[2 * i] - peaks[i]) < 1e-9, `slot ${2 * i} = peak ${i}`);
+            assert.ok(Math.abs(raw[2 * i + 1] - peaks[i]) < 1e-9, `slot ${2 * i + 1} = peak ${i}`);
+        }
+        // A re-trim moves the window, epoch and (for the heard mixdown)
+        // the tiling: the raw picture is the SAME array.
+        stack.loopStart = Q; stack.loopEnd = 3 * Q;
+        stack.nodes.forEach(c => { c.loopEnd = 3 * Q; c.origin = 11 * Q; });
+        const again = generateCompositeWaveform({ ...args, epochSamples: 5 * Q });
+        assert.equal(again, raw, 'raw composite stable across a re-trim');
+        // Whereas the heard mixdown of the same state is a different picture.
+        const heard = generateCompositeWaveform({ ...args, raw: false, cache: new Map() });
+        assert.notDeepEqual(Array.from(heard), Array.from(raw));
     });
 
     await t.test('invalidates cache when child is added', () => {

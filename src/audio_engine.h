@@ -561,6 +561,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   };
   std::vector<PendingTake> pending_takes_;
   void reconcileTakes();
+  /** Q13 FOR GROUPS: a group take's common commit-time loop region
+   * moves onto the definer stack (members whole); rides `inv`. */
+  void liftGroupWindow(const std::vector<celestrian::ClipNode*>& committed,
+                       celestrian::Edit& inv);
   void applyAutoGate(const juce::String& stack_uuid, int step,
                      const std::vector<celestrian::ClipNode*>& committed);
 
@@ -761,6 +765,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * ownership tree; retires the predecessor. Message thread, after any
    * structural change (applyEdit does this for structural kinds). */
   void publishGraph();
+  /** Only the session root holds (Q, epoch): clear any island facts a
+   * DETACHED assembly (Combine, undo-held subtrees) stamped onto a
+   * nested stack. Re-asserted after every structural edit. */
+  void scrubNestedIslandFacts();
 
   // Deferred destruction: retired items are freed once the callback counter
   // has advanced two callbacks past their retirement, guaranteeing no

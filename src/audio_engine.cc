@@ -512,9 +512,37 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   if (inv.kind != K::Nop &&
       (kind == K::Insert || kind == K::Remove || kind == K::Move ||
        kind == K::Combine || kind == K::Explode)) {
+    scrubNestedIslandFacts();
     publishGraph();
   }
   return inv;
+}
+
+/**
+ * ONE ISLAND, ONE OWNER OF (Q, epoch): only the session root holds
+ * island facts. A stack assembled while DETACHED (Combine builds the
+ * new stack before inserting it; a subtree held by the undo log is
+ * detached) is its own rootNode(), so addChild's establishment stamped
+ * the CHILD's duration/origin onto that stack as if it were an island.
+ * Attached, getEffectiveQuantum()/getIslandEpoch() stop at the first
+ * stored value — the subtree then ran on a private grid: after a
+ * delete-all reverted the ROOT's Q, a new group take inside such a
+ * stack committed against the stale one (loop region [0, Q_stale/2),
+ * origin on the stale grid; field dump 2026-08-29), and the UI (which
+ * reads the nested Q when the root's is 0) and the engine disagreed on
+ * Q from then on. Every structural edit re-asserts the invariant.
+ */
+void AudioEngine::scrubNestedIslandFacts() {
+  forEachStack(root_node.get(), [&](celestrian::StackNode& stack) {
+    if (&stack == root_node.get()) return;
+    if (stack.getQuantum() != 0 || stack.getEpoch() != 0) {
+      juce::Logger::writeToLog(
+          "AudioEngine: scrubbed island facts from nested stack " +
+          stack.getUuid() + " (Q=" + juce::String(stack.getQuantum()) +
+          " epoch=" + juce::String(stack.getEpoch()) + ")");
+      stack.setQuantum(0, 0);
+    }
+  });
 }
 
 namespace {
@@ -531,6 +559,25 @@ void stampWindowDomain(celestrian::AudioNode* node, const celestrian::Edit& e,
                         ? e.window_domain
                         : (stack->activeSequence() != nullptr ? 1 : 0);
   stack->setWindowDomain((celestrian::StackNode::WindowDomain)fresh);
+}
+
+/** Apply an edit's WINDOW RIDERS (Edit::windows): set each named node's
+ * single-window loop points, capturing the old ones into the inverse
+ * so the riders undo with the edit. A node with a multi-segment
+ * override is left alone (its map is not a single window). */
+void applyWindowRiders(
+    const std::function<celestrian::AudioNode*(const juce::String&)>& find,
+    const celestrian::Edit& e, celestrian::Edit& inv) {
+  for (const auto& r : e.windows) {
+    auto* node = find(r.uuid);
+    if (node == nullptr || node->mapOverride() != nullptr) continue;
+    celestrian::Edit::WindowRider back;
+    back.uuid = r.uuid;
+    back.start = node->getLoopStart();
+    back.end = node->getLoopEnd();
+    inv.windows.push_back(std::move(back));
+    node->setLoopPoints(r.start, r.end);
+  }
 }
 }  // namespace
 
@@ -746,6 +793,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         }
       }
       stampWindowDomain(node, e, inv);
+      applyWindowRiders(find, e, inv);
       // Q13 re-trim: if the forward edit carries an island re-establishment
       // (built by setLoopPoints when the target is the sole committed
       // clip), apply it and capture the old (Q, epoch) into the inverse so
@@ -979,6 +1027,10 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         inv.takes.push_back(std::move(out));
       }
       if (e.setsIsland) setIslandQuantum(e.iq, e.iepoch, inv);
+      // The group-window lift rides the take (see reconcileTakes):
+      // undo puts the members' commit-time windows back and clears the
+      // stack's; redo lifts again.
+      applyWindowRiders(find, e, inv);
       // The sequence rider (auto-gate).
       if (e.b1 && e.uuid.isNotEmpty()) {
         if (auto* stack = dynamic_cast<celestrian::StackNode*>(find(e.uuid))) {
@@ -1491,6 +1543,58 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   }
 }
 
+/**
+ * GROUP-WINDOW LIFT (Q13 FOR GROUPS, 2026-08-30). A take committed
+ * against a SURVIVED Q (the island's earlier content deleted, Q kept)
+ * whose length is off the grid commits whole but with a sub-region
+ * loop [0, floor(L/Q)·Q) — or [0, Q/2) — on each clip
+ * (commitRecording's hysteresis snap). For a sole clip that region IS
+ * the definer selection (the trim view shows it). For a GROUP take
+ * the same region landed on every member while the definer STACK,
+ * which owns the window under the window law ("children whole"), had
+ * none: the trim view drew the whole take selected while the members
+ * looped half of it, and a trim then stacked a stack window over the
+ * members' (field dump 2026-08-29: children [0, Q/2), stack none).
+ * Lift it: the members' common commit-time region becomes the stack's
+ * window; the members go whole. Rides the take's undo entry.
+ */
+void AudioEngine::liftGroupWindow(
+    const std::vector<celestrian::ClipNode*>& committed,
+    celestrian::Edit& inv) {
+  if (committed.size() < 2) return;
+  auto* stack = definerStack(root_node.get());
+  if (stack == nullptr || stack->isLoopWindowActive()) return;
+  int64_t ls = 0, le = 0;
+  for (size_t i = 0; i < committed.size(); ++i) {
+    auto* clip = committed[i];
+    if (clip->getParent() != stack || clip->mapOverride() != nullptr) return;
+    const int64_t s = clip->getLoopStart();
+    const int64_t e = std::min(clip->getLoopEnd(), clip->getIntrinsicDuration());
+    if (i == 0) {
+      ls = s;
+      le = e;
+    } else if (s != ls || e != le) {
+      return;  // no common region — not a snap artefact
+    }
+  }
+  if (!(le > ls) || (ls == 0 && le >= committed[0]->getIntrinsicDuration()))
+    return;  // whole already
+  // The undo rider: the stack goes back to no window (the members'
+  // regions come back through the Untake payload — stripTake zeroes
+  // them, restoreTake reinstalls whatever they hold now: whole).
+  celestrian::Edit::WindowRider back;
+  back.uuid = stack->getUuid();
+  back.start = stack->getLoopStart();
+  back.end = stack->getLoopEnd();
+  inv.windows.push_back(std::move(back));
+  for (auto* clip : committed)
+    clip->setLoopPoints(0, clip->getIntrinsicDuration());
+  stack->setLoopPoints(ls, le);
+  juce::Logger::writeToLog("AudioEngine: group take window lifted onto " +
+                           stack->getUuid() + " [" + juce::String(ls) + ", " +
+                           juce::String(le) + ") - members whole");
+}
+
 void AudioEngine::reconcileTakes() {
   // See PendingTake (audio_engine.h). Message thread only.
   for (size_t i = 0; i < pending_takes_.size();) {
@@ -1528,6 +1632,7 @@ void AudioEngine::reconcileTakes() {
     inv.setsIsland = true;
     inv.iq = done.q_before;
     inv.iepoch = done.epoch_before;
+    liftGroupWindow(committed, inv);
     pushUndo(std::move(inv));
     clearRedo();  // a new performance invalidates the redo branch
     juce::Logger::writeToLog(
@@ -2417,6 +2522,24 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       e.setsIsland = true;
       e.iq = len;
       e.iepoch = t0 - (pT - start);
+    }
+    // MEMBERS WHOLE (the window law for the definer stack): a member
+    // still carrying its own single window — a group take committed
+    // before the group-window lift (reconcileTakes) — would loop its
+    // slice UNDER the stack's window, and the trim view (which draws
+    // members whole) would lie. Ride them whole with this edit.
+    for (const auto& child : stack->ownedChildren()) {
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(child.get());
+      if (clip == nullptr || clip->getIntrinsicDuration() <= 0 ||
+          clip->mapOverride() != nullptr)
+        continue;
+      const int64_t d = clip->getIntrinsicDuration();
+      if (clip->getLoopStart() == 0 && clip->getLoopEnd() >= d) continue;
+      celestrian::Edit::WindowRider r;
+      r.uuid = clip->getUuid();
+      r.start = 0;
+      r.end = d;
+      e.windows.push_back(std::move(r));
     }
   }
   record(std::move(e));

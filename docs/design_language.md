@@ -498,6 +498,31 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   whole beneath it in the same buffer frame. Lock remains derived:
   another take anywhere (a third mic recorded later, a new track)
   ends the definer state.
+  - **Members whole is an invariant, kept by the engine (2026-08-30,
+    field video/dump 2026-08-29):** a group take committed against a
+    Q the island already held (commitRecording's hysteresis snap puts
+    the sub-region `[0, floor(L/Q)·Q)` — or `[0, Q/2)` — on each
+    clip) is LIFTED at settle: the members' common commit-time region
+    becomes the stack's window and the members go whole
+    (`reconcileTakes → liftGroupWindow`, riding the take's undo entry
+    as `Edit::windows`). A definer re-trim carries the same rider for
+    members that still hold a window (pre-lift states). The trim view
+    draws the RAW mixdown (composite `raw` mode: whole takes from 0,
+    no window/epoch tiling) — the picture under the selection is
+    exactly what the mics show beneath, and it never regenerates on a
+    release. The VM's selection falls back to the members' common
+    window when the stack has none, so an old state still reads what
+    the ear hears.
+  - **One island, one owner of (Q, epoch):** only the session root
+    holds island facts. A stack assembled DETACHED (Combine builds the
+    new stack before inserting it) was its own `rootNode()`, so
+    `addChild`'s establishment stamped the first committed child's
+    duration/origin onto it; attached, the subtree then ran on that
+    private grid — after a delete-all reverted the root's Q, the next
+    group take in that stack committed against the stale one (the
+    2026-08-29 dump: children `[0, Q_stale/2)`, root Q = 0, UI and
+    engine disagreeing on Q from then on). Every structural edit now
+    scrubs nested facts (`AudioEngine::scrubNestedIslandFacts`).
 - **LOCK-COLLAPSE (owner ruling 2026-07-19b — the unifying
   simplification):** the trim is a PRE-LOCK affordance, nothing more.
   The moment a second take ARMS, the definer's window **becomes the

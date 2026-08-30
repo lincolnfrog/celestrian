@@ -554,6 +554,141 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), D, "Q untouched");
     }
 
+    // ---- ONE ISLAND, ONE OWNER OF (Q, epoch) (field dump 2026-08-29) ----
+    // Combine assembles the new stack DETACHED, so addChild stamped the
+    // first committed child's duration/origin onto it as island facts.
+    // Attached, the subtree then ran on that private grid: a delete-all
+    // reverted the ROOT's Q, and the next group take inside the stack
+    // committed against the stale one (immediate stop, Instant Stop
+    // branch: loop region [0, Q_stale/2), origin on the stale grid).
+    beginTest("NESTED FACTS: combine leaves no (Q, epoch) on the stack; a later first take establishes fresh");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      // Two committed clips at the top level (A defines Q).
+      engine.createNode("clip");
+      const juce::String a = lastTopLevelId(engine);
+      engine.startRecordingInNode(a);
+      process(3 * Q);
+      engine.stopRecordingInNode(a);
+      process(512);
+      expectEquals(islandQ(engine), (int64_t)(3 * Q), "A establishes Q");
+      engine.createNode("clip");
+      const juce::String b = lastTopLevelId(engine);
+      engine.startRecordingInNode(b);
+      process(6 * Q);  // arm pends to the 3Q boundary, then a 3Q take
+      engine.stopRecordingInNode(b);
+      for (int i = 0; i < 400 && !deepCommitted(engine, b); ++i) process(512);
+      expect(deepCommitted(engine, b), "B committed");
+      const juce::String stack_id = engine.combineNodes(a, b);
+      expect(stack_id.isNotEmpty(), "combined");
+      expectEquals((int64_t)deepProp(engine, stack_id, "quantum"), (int64_t)0,
+                   "the nested stack holds no island Q");
+      expectEquals((int64_t)deepProp(engine, stack_id, "epoch"), (int64_t)0,
+                   "nor an epoch");
+      expectEquals(islandQ(engine), (int64_t)(3 * Q), "root Q untouched by the combine");
+      // Delete both takes: the island empties, Q reverts.
+      engine.deleteNode(a);
+      engine.deleteNode(b);
+      expectEquals(islandQ(engine), (int64_t)0, "delete-all reverts Q");
+      // A new group take INSIDE the emptied stack is the island's first
+      // take again: Q := its length, members whole.
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      expectEquals(ids.size(), 2, "two fresh mics");
+      engine.startRecordingInNode(stack_id);
+      process(2 * Q + 777);  // an off-grid length: nothing to snap to
+      engine.stopRecordingInNode(stack_id);
+      for (int i = 0; i < 40; ++i) {
+        if (deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1])) break;
+        process(512);
+      }
+      expect(deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1]),
+             "group take committed");
+      const int64_t L = (int64_t)deepProp(engine, ids[0], "duration");
+      expect(L >= 2 * Q + 777, "committed at its own length (first take)");
+      expectEquals(islandQ(engine), L, "Q := the take (no stale grid)");
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "loopStart"), (int64_t)0,
+                     "member window start");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), L,
+                     "member whole (no Q_stale/2 region)");
+      }
+    }
+
+    // ---- MEMBERS WHOLE under the definer stack (2026-08-30) ----
+    // A definer stack whose members carry their own windows (a group
+    // take under a locked Q, then left as the only content): the
+    // re-trim rides them whole, undoably.
+    beginTest("GROUPS: a definer re-trim makes windowed members whole (undoable riders)");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      engine.createNode("clip");
+      const juce::String a = lastTopLevelId(engine);
+      engine.startRecordingInNode(a);
+      process(Q);
+      engine.stopRecordingInNode(a);
+      process(512);
+      expectEquals(islandQ(engine), (int64_t)Q, "A establishes Q = 1Q");
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      engine.startRecordingInNode(stack_id);
+      process(2 * Q + 4 * 512);
+      engine.stopRecordingInNode(stack_id);
+      for (int i = 0; i < 400; ++i) {
+        if (deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1])) break;
+        process(512);
+      }
+      expect(deepCommitted(engine, ids[0]) && deepCommitted(engine, ids[1]),
+             "group take committed under the lock");
+      const int64_t D = (int64_t)deepProp(engine, ids[0], "duration");
+      expect(D >= 2 * Q, "a 2Q take");
+      // Coherent 1Q windows on the members (allowed under the lock).
+      for (const auto& id : ids) engine.setLoopPoints(id, 0, Q);
+      for (const auto& id : ids)
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)Q,
+                     "member window landed");
+      // A goes: the stack is now the definer, its window on its members.
+      engine.deleteNode(a);
+      expectEquals(islandQ(engine), (int64_t)Q, "Q survives (2 clips remain)");
+      const int64_t ws = D / 4, len = D / 2;
+      engine.setLoopPoints(stack_id, ws, ws + len);
+      expectEquals(islandQ(engine), len, "definer re-trim: Q := len");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "window on the stack");
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "loopStart"), (int64_t)0,
+                     "member start whole");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D,
+                     "member made whole by the rider");
+      }
+      engine.undo();
+      expectEquals(islandQ(engine), (int64_t)Q, "undo restores Q");
+      expect(!(deepProp(engine, stack_id, "loopEnd") > deepProp(engine, stack_id, "loopStart")),
+             "undo clears the stack window");
+      for (const auto& id : ids)
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)Q,
+                     "undo restores the member windows");
+      engine.redo();
+      expectEquals(islandQ(engine), len, "redo re-trims");
+      for (const auto& id : ids)
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D,
+                     "redo makes members whole again");
+    }
+
     // ---- SEQUENCES TRACK Q (owner ruling 2026-08-21) ----
     // Step lengths are musical facts: a definer re-trim RESCALES them
     // (5Q stays 5Q); a revert to an empty island CLEARS them (field:

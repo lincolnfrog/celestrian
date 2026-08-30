@@ -293,6 +293,52 @@ test('GROUPS: the definer trim is phase-preserving (sounding inner position hold
         'position continuous (folded into the new window)');
 });
 
+test('GROUPS: members carrying their own windows — the trim view selects their common window; a re-trim makes them whole', async () => {
+    // A group take committed against a LOCKED Q (a clip elsewhere held
+    // Q) gets the commit-time loop region on each member; deleting that
+    // clip then leaves a definer stack whose window lives on its
+    // members (the state the 2026-08-29 field dump showed, there via a
+    // stale nested Q). The trim view must select what the ear hears —
+    // the members' common window — and a re-trim moves the window onto
+    // the stack with the members whole (engine parity: the window
+    // riders on the stack-definer LoopPoints edit).
+    loadScenario('empty');
+    const { stackId, ids } = await recordGroupTake(2, 4);
+    const D = getState().quantum;
+    const { findNode: rawNode } = await import('../mock/state.js');
+    for (const id of ids) { const c = rawNode(id); c.loopStart = 0; c.loopEnd = D / 2; }
+
+    let vm = deriveViewModel(getState());
+    const g = vm.lanes.find(l => l.id === stackId);
+    assert.equal(g.isQDefiner, true, 'still the definer stack');
+    assert.deepEqual([g.window.startQ, g.window.endQ], [0, 0.5],
+        'the selection is the members\' common window, not the whole take');
+    for (const id of ids) {
+        const c = vm.lanes.find(l => l.id === id);
+        assert.equal(c.definerMember, true);
+        assert.equal(c.window, null, 'members draw whole beneath (no brackets)');
+    }
+
+    await callNative('setLoopPoints', stackId, D / 4, (3 * D) / 4);
+    assert.equal(getState().quantum, D / 2, 'Q := window length');
+    assert.deepEqual([find(stackId).loopStart, find(stackId).loopEnd], [D / 4, (3 * D) / 4],
+        'window on the stack');
+    for (const id of ids) {
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D],
+            'members made whole by the re-trim');
+    }
+    vm = deriveViewModel(getState());
+    const g2 = vm.lanes.find(l => l.id === stackId);
+    assert.deepEqual([g2.window.startQ, g2.window.endQ], [0.5, 1.5]);
+
+    await callNative('undo');
+    for (const id of ids) {
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D / 2],
+            'undo restores the members\' windows');
+    }
+    assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'and clears the stack window');
+});
+
 test('GROUPS: a second take LOCKS Q; the stack window stays as the 1Q part (no collapse)', async () => {
     loadScenario('empty');
     const { stackId, ids } = await recordGroupTake(2, 4);

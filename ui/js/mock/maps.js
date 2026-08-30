@@ -222,6 +222,21 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         // so the inner position sounding now does not move (pos(t) =
         // start + ((t − epoch) mod len)). The window stays on the stack
         // (it IS the part); children untouched, no later collapse.
+        // MEMBERS WHOLE (engine parity, the window riders on the
+        // stack-definer LoopPoints edit, 2026-08-30): a member still
+        // carrying its own single window (a group take committed
+        // against a locked Q, then left as the island's only content)
+        // would loop its slice under the stack's window while the trim
+        // view draws members whole. The snapshot undo restores them.
+        // (Before the inner cycle is read: the engine's inner is the
+        // members' RAW extent; whole members make the mock's agree.)
+        for (const c of node.nodes || []) {
+            if (c.type !== 'clip' || !(c.duration > 0) || c.isRecording) continue;
+            if (Array.isArray(c.segments) && c.segments.length >= 4) continue;
+            if ((c.loopStart || 0) === 0 && (c.loopEnd || 0) >= c.duration) continue;
+            c.loopStart = 0;
+            c.loopEnd = c.duration;
+        }
         const inner = stackInnerCycle(node);
         loopStart = Math.max(0, loopStart);
         if (inner > 0) loopEnd = Math.min(loopEnd, inner);
