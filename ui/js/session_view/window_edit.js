@@ -12,19 +12,27 @@
  */
 
 import { ctx } from './context.js';
-import { pct, setText, capturePointer } from './sv_util.js';
+import { pct, setText, capturePointer, guardGesture } from './sv_util.js';
 import { selectOnly } from './selection.js';
 import { buildWindowDims } from './dims.js';
 import { windowDragTarget } from '../view_model.js';
 
 /* The Q-definer drags FREE (sub-Q); this floor keeps Q positive. */
 const Q_DEFINER_MIN_LEN_Q = 0.05;
+/* After a release the overlay is HELD at the previewed geometry until
+ * the engine has answered the commit — a state poll already in flight
+ * at release still carries the OLD window and rebuilt the brackets
+ * there for a tick (the snap-back on a slow bridge, WebView2). This
+ * caps the hold if the bridge never answers. */
+const COMMIT_HOLD_MAX_MS = 1500;
 
 export function wireWindow(o, lane, vm, body, win) {
     // Multi-segment maps have no draggable brackets (phase 3): the
     // cell/punch editor owns their geometry. Bypass still toggles via
     // the map chip (wired in the mapSegs overlay branch).
     if (win.segs && win.segs.length > 1) return;
+    // A step audition's DERIVED window is shown, not edited (view_model).
+    if (win.audition) return;
     // Per-lane scale (law 13 amendment): an editing lane maps through
     // its own frame, not the shared one.
     const laneCycleQ = lane.frameQ || vm.cycleQ;
@@ -63,7 +71,9 @@ export function wireWindow(o, lane, vm, body, win) {
                 : (t.endQ - t.startQ) + 'Q window');
         }
         if (dimsLive) {
-            o.querySelectorAll('.win-dim').forEach(d => d.remove());
+            // Only THIS window's dims: the enclosing map's projection
+            // (parent-map-dim) is not ours to redraw.
+            o.querySelectorAll('.win-dim:not(.parent-map-dim)').forEach(d => d.remove());
             buildWindowDims(o, t, lane, laneCycleQ);
         }
     };
@@ -72,10 +82,14 @@ export function wireWindow(o, lane, vm, body, win) {
         const bracket = brackets[edge];
         let ghost = null;
         let grab = null;
+        let releaseGuard = null;
         bracket.addEventListener('pointerdown', e => {
             e.preventDefault();
+            if (body._winDrag) return; // one gesture at a time (a second pointer)
             selectOnly(lane.id); // grabbing a handle claims the track
             capturePointer(bracket, e);
+            if (releaseGuard) releaseGuard();
+            releaseGuard = guardGesture(bracket, () => cancel());
             body._winDrag = true;
             bracket.classList.add('dragging');
             // The snap ghost starts AT the handle (same classes → same
@@ -144,16 +158,35 @@ export function wireWindow(o, lane, vm, body, win) {
         const end = commit => e => {
             if (!body._winDrag) return;
             body._winDrag = false;
+            if (releaseGuard) { releaseGuard(); releaseGuard = null; }
             bracket.classList.remove('dragging');
-            if (bracket.hasPointerCapture(e.pointerId)) bracket.releasePointerCapture(e.pointerId);
+            if (e && bracket.hasPointerCapture(e.pointerId)) {
+                bracket.releasePointerCapture(e.pointerId);
+            }
             if (ghost) { ghost.remove(); ghost = null; }
             if (commit) {
-                ctx.cb.onSetWindow(lane.id,
+                const p = ctx.cb.onSetWindow(lane.id,
                     Math.round(cur.startQ * vm.quantum),
                     Math.round(cur.endQ * vm.quantum));
+                // HOLD until the engine answered (see COMMIT_HOLD_MAX_MS):
+                // the previewed brackets/dims already show the committed
+                // geometry; a rebuild from an in-flight OLD poll would
+                // snap them back for a tick.
+                body._winHold = true;
+                let done = false;
+                const settle = () => {
+                    if (done) return;
+                    done = true;
+                    body._winHold = false;
+                    o._key = ''; // rebuild from settled state on the next patch
+                };
+                Promise.resolve(p).then(settle, settle);
+                setTimeout(settle, COMMIT_HOLD_MAX_MS);
+            } else {
+                o._key = ''; // rebuild from settled state on the next patch
             }
-            o._key = ''; // rebuild from settled state on the next patch
         };
+        const cancel = () => end(false)(null);
         bracket.addEventListener('pointerup', end(true));
         bracket.addEventListener('pointercancel', end(false));
     });

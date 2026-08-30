@@ -140,6 +140,18 @@ struct Edit {
     int64_t start = 0, end = 0;
   };
   std::vector<WindowRider> windows;
+  // ORIGIN RIDERS (2026-08-30, the content-frame law): the definer
+  // STACK's re-trim re-anchors every member's origin together with the
+  // epoch — a stack window selects epoch-relative view positions, and
+  // members read their buffers origin-relative, so the two frames must
+  // move together or the trimmed loop re-selects content (field video
+  // 2026-08-29: the loop jumped by `start` on every release). Applied
+  // after the main mutation; the inverse captures each old origin.
+  struct OriginRider {
+    juce::String uuid;
+    int64_t origin = 0;
+  };
+  std::vector<OriginRider> origins;
   // S16 window domain (docs/sequencer.md §11.8), LoopPoints/Segments on
   // a STACK: −1 = derive from whether the sequence is active (forward
   // edits), 0/1 = set explicitly (inverses restore the old stamp).

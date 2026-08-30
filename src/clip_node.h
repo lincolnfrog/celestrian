@@ -143,6 +143,12 @@ class ClipNode : public AudioNode {
    * active-map ancestor's intrinsic duration); 0 = plain recording.
    */
   void startRecording(int64_t through_map_commit_cycle = 0);
+  /** startRecording in two halves, for atomic GROUP arms: reserve the
+   * take buffer + reset the capture facts (may be slow: 4 GB virtual
+   * reservation), then publish the Armed state. Returns false when the
+   * clip is not idle (nothing to publish). Message thread. */
+  bool prepareRecording(int64_t through_map_commit_cycle = 0);
+  void publishArm();
 
   /**
    * Signals the recording thread to stop and flush the buffer.

@@ -203,7 +203,9 @@ function makeDoneChip(laneId, title) {
  * The heard-time cursor is patched every poll OUTSIDE the keyed
  * rebuilds, and BEFORE the body._winDrag gates — a frozen overlay
  * still shows where the sound is. The overlay itself is NEVER rebuilt
- * under an active drag (the captured node would orphan the gesture).
+ * under an active drag (the captured node would orphan the gesture),
+ * nor during the post-release HOLD (body._winHold, window_edit.js)
+ * while the engine has not yet answered the commit.
  */
 export function patchLaneBody(row, lane, vm, aux) {
     if (lane.kind === 'add' || lane.kind === 'fx' || lane.kind === 'seq') {
@@ -366,7 +368,7 @@ export function patchLaneBody(row, lane, vm, aux) {
             ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
              lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
              lane.reps.map(r => [r.startQ, r.endQ])]);
-        if (body._winDrag) return;
+        if (body._winDrag || body._winHold) return;
         reconcileMarkers(overlay, heardKey, o => {
             const chip = el('div', 'win-chip win-open-chip toggle', {
                 title: 'Inspect the whole take (editing works right here)',
@@ -390,7 +392,7 @@ export function patchLaneBody(row, lane, vm, aux) {
         // The sound cursor keeps moving through a band drag (the
         // reconcile below is frozen, but the ear isn't).
         patchWinCursor(overlay, lane, vm, cycleQ);
-        if (body._winDrag) return;
+        if (body._winDrag || body._winHold) return;
         reconcileMarkers(overlay, mapKey, o => {
             if (!lane.mapBypassed) {
                 buildWindowDims(o, { segs: lane.mapSegs }, lane, cycleQ);
@@ -433,7 +435,10 @@ export function patchLaneBody(row, lane, vm, aux) {
     const overlayKey = JSON.stringify(
         [win, armedEmpty && armQ, cycleQ, anchorQ,
          lane.bandSegs || null, lane.bandEditable || false,
-         lane.windowEditing || false, lane.parentMapSegs || null]);
+         lane.windowEditing || false, lane.parentMapSegs || null,
+         // The drag closure converts frame Q → samples with vm.quantum
+         // and clamps to intrinsicQ: a change in either must rebuild.
+         vm.quantum, lane.intrinsicQ || 0, !!lane.isQDefiner]);
 
     // The heard-time WINDOW CURSOR: where in its window this lane is
     // sounding right now (the engine publishes the window phase on
@@ -447,7 +452,7 @@ export function patchLaneBody(row, lane, vm, aux) {
     // "where is the sound" line the editing view was missing (field
     // 2026-07-25).
     patchWinCursor(overlay, lane, vm, cycleQ);
-    if (body._winDrag) return;
+    if (body._winDrag || body._winHold) return;
 
     reconcileMarkers(overlay, overlayKey, o => {
         // Enclosing-map projection (phase 3): the group map's excluded

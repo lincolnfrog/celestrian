@@ -679,3 +679,17 @@ mapped-group children. (Per-segment edge dragging shipped with cut
 bands; the multi-segment heard cursor shipped seam-aware on the amber
 line — the WHITE cursor still sweeps the audible cycle linearly over
 intrinsic-frame group lanes, with the amber line as the honest one.)
+
+## Content-frame law (2026-08-30, docs/loop_region_audit.md)
+
+Clips read their buffers ORIGIN-relative on the monotonic clock; a
+stack window selects EPOCH-relative view positions of its cycle. The two
+frames agree only while `epoch ≡ origin (mod D)`, so **content-selecting
+frames move together**: a definer-stack re-trim re-anchors every
+member's origin with the epoch (`Edit::origins` riders); a transport
+seek carries every origin by the epoch delta (placement on the grid is
+invariant, the phase jumps — `seekTransport`); the map-edit epoch
+riders move only in `AudioEngine::epochViewStep` steps (lcm of Q and
+every windowed stack's inner cycle). Pinned render-level by
+`tests/content_frame_tests.cc` — which buffer sample is audible, not
+which phase is published.

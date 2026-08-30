@@ -689,6 +689,66 @@ class QTimeLockTests : public juce::UnitTest {
                      "redo makes members whole again");
     }
 
+    // ---- FIVE MICS, REPEATED LEFT-EDGE TRIMS (field 2026-08-29/30) ----
+    // The drum-kit case: five mics, one group take, then the left
+    // bracket dragged right several times. Each release re-establishes
+    // Q and re-anchors the members together; the END never moves, the
+    // members stay one take (equal origins, so the stack stays the
+    // definer and every fractional trim is accepted).
+    beginTest("GROUPS: five mics, three left-edge trims: end holds, members stay one take");
+    {
+      AudioEngine engine;
+      auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      for (int i = 0; i < 5; ++i) engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var state = engine.getGraphState();
+        clipIdsUnder(findVar(state, stack_id), ids);
+      }
+      expectEquals(ids.size(), 5, "five mics");
+      engine.startRecordingInNode(stack_id);
+      process(3 * Q + 1234);  // an off-grid first take
+      engine.stopRecordingInNode(stack_id);
+      for (int i = 0; i < 40; ++i) {
+        bool all = true;
+        for (const auto& id : ids) all = all && deepCommitted(engine, id);
+        if (all) break;
+        process(512);
+      }
+      const int64_t D = (int64_t)deepProp(engine, ids[0], "duration");
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "duration"), D, "one duration");
+        expectEquals((int64_t)deepProp(engine, id, "origin"),
+                     (int64_t)deepProp(engine, ids[0], "origin"), "one origin");
+      }
+      process(7777);
+      // Three left-edge drags, the UI's arithmetic: start = frac * D,
+      // end = the published loopEnd (D until a window exists).
+      const double fracs[] = {0.2, 0.35, 0.5};
+      int64_t end_sent = D;
+      for (double f : fracs) {
+        const int64_t start = (int64_t)std::llround(f * (double)D);
+        engine.setLoopPoints(stack_id, start, end_sent);
+        expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), start,
+                     "start landed (fractional: accepted => still the definer)");
+        expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), end_sent,
+                     "the END did not move");
+        expectEquals(islandQ(engine), end_sent - start, "Q := len");
+        for (const auto& id : ids) {
+          expectEquals((int64_t)deepProp(engine, id, "origin"),
+                       (int64_t)deepProp(engine, ids[0], "origin"),
+                       "members re-anchored together");
+          expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D, "members whole");
+        }
+        expectEquals(islandEp(engine), (int64_t)deepProp(engine, ids[0], "origin"),
+                     "epoch == members' origin (window names buffer samples)");
+        end_sent = (int64_t)deepProp(engine, stack_id, "loopEnd");
+        process(3333);
+      }
+    }
+
     // ---- SEQUENCES TRACK Q (owner ruling 2026-08-21) ----
     // Step lengths are musical facts: a definer re-trim RESCALES them
     // (5Q stays 5Q); a revert to an empty island CLEARS them (field:

@@ -1126,7 +1126,14 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
             // multi-segment maps draw dims + one chip, never
             // brackets (geometry edits live in the editor); single
             // windows keep the bracket overlay (dimmed, says why).
-            window: gwin && gwin.multi ? null : gwin,
+            // Under a STEP AUDITION the published window is DERIVED
+            // (song coordinates, §11.2): drawn, never draggable — a
+            // drag would write it back as the AUTHORED window, which
+            // returns unchanged (and surprising) when the audition
+            // ends. wireWindow skips `audition` windows.
+            window: gwin && gwin.multi ? null
+                : (gwin && isAuditionWindow(node)
+                    ? Object.assign({}, gwin, { audition: true }) : gwin),
             mapSegs: gwin && gwin.multi ? gwin.segs : null,
             mapBypassed: !!(gwin && gwin.bypassed),
             mapChipQ: gwin && gwin.multi ? gwin.periodQ : 0,

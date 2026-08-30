@@ -1018,9 +1018,13 @@ void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
 }
 
 void ClipNode::startRecording(int64_t through_map_commit_cycle) {
+  if (prepareRecording(through_map_commit_cycle)) publishArm();
+}
+
+bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
   if (recState() != RecState::Idle)
-    return;  // idempotent; keeps the
-             // island take counter exact
+    return false;  // idempotent; keeps the
+                   // island take counter exact
 
   // The take's CONTENT KIND (phase 5): an instrument slot on this
   // clip's chain makes it a MIDI track — the take records notes from
@@ -1079,7 +1083,20 @@ void ClipNode::startRecording(int64_t through_map_commit_cycle) {
   duration_samples.store(0);
   live_duration_samples.store(0);
   is_playing.store(false);
+  return true;
+}
 
+void ClipNode::publishArm() {
+  // GROUP ARM ATOMICITY (2026-08-30): the take-buffer reservation
+  // above can cost milliseconds on platforms without lazy overcommit
+  // (Windows commits the 4 GB reservation eagerly); a group arm that
+  // reserved and published per mic in one loop let the audio callback
+  // land between mics, arming them in DIFFERENT blocks — different
+  // first-take origins, so the N mics were no longer ONE take
+  // (definerStack() == null: no trim view, brackets "jumping"). The
+  // engine now reserves every member first and publishes the Armed
+  // states back-to-back (nanoseconds apart, one block top sees all).
+  if (recState() != RecState::Idle) return;
   rec_state_.store((int)RecState::Armed);
   rootNode()->takeArmed();
 }

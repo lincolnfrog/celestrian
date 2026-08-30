@@ -96,7 +96,21 @@ export function seekTransport(posSamples) {
     let pos = Math.round(Number(posSamples) || 0);
     if (cycle > 0) pos = posMod(pos, cycle);
     else if (pos < 0) pos = 0;
+    const epochOld = state.islandEpoch || 0;
     state.islandEpoch = state.masterPos - pos;
+    // THE CONTENT-FRAME LAW (engine parity, 2026-08-30): a seek is a
+    // phase jump of the whole island — every clip origin rides the
+    // epoch delta, so placement on the grid (origin − epoch) is
+    // unchanged and playback lands at the requested phase (clips are
+    // origin-anchored; the epoch alone moved only the cursor).
+    const delta = state.islandEpoch - epochOld;
+    if (delta !== 0) {
+        const ride = nodes => (nodes || []).forEach(n => {
+            if (n.type === 'clip') n.origin = (n.origin || 0) + delta;
+            else ride(n.nodes);
+        });
+        ride(state.nodes);
+    }
     console.log(`[MockBackend] seekTransport → rel=${pos} (epoch=${state.islandEpoch})`);
     return true;
 }

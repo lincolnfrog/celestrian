@@ -68,6 +68,30 @@ export const capturePointer = (node, ev) => {
     try { node.setPointerCapture(ev.pointerId); } catch (_) {}
 };
 
+/** GESTURE SAFETY NET (2026-08-30): `onLost()` fires ONCE if the
+ * pointer capture is lost before the gesture's own end handler ran
+ * (WebView2 drops captures on focus loss / Alt-Tab; a synthetic
+ * pointer may never deliver pointerup) or the window blurs. Without
+ * it a lost capture left `body._winDrag` latched forever — the overlay
+ * never rebuilt and the stale gesture closure kept answering. Returns
+ * release(): call it from the normal end path. */
+export const guardGesture = (node, onLost) => {
+    let armed = true;
+    const cleanup = () => {
+        node.removeEventListener('lostpointercapture', lost);
+        window.removeEventListener('blur', lost);
+    };
+    const lost = () => {
+        if (!armed) return;
+        armed = false;
+        cleanup();
+        onLost();
+    };
+    node.addEventListener('lostpointercapture', lost);
+    window.addEventListener('blur', lost);
+    return () => { armed = false; cleanup(); };
+};
+
 /** True when the key event targets a text-entry control — global
  * hotkeys (zoom, teleport) must never fire while the user types. */
 export const isTypingTarget = e => {

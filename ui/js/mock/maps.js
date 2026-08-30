@@ -90,13 +90,33 @@ export function applyMapEditRiders(node, oldMap, newMap) {
     if (q > 0) others = others > 0 ? lcm(others, q) : q;
     const definer = newPeriod > 0 && (others <= 0 || newPeriod % others === 0);
     const topOffFrame = definer && posMod(top - epoch, newPeriod) !== 0;
-    if (q > 0 && topOffFrame && posMod(top - epoch, q) === 0) {
+    // Content-frame law (engine parity epochViewStep, 2026-08-30): the
+    // epoch moves only in steps that keep every windowed group's
+    // content selection (its map is epoch-relative).
+    const step = epochViewStep(q);
+    if (step > 0 && topOffFrame && posMod(top - epoch, step) === 0) {
         state.islandEpoch = top;
         return;
     }
-    if (delta !== 0 && q > 0 && delta % q === 0) {
+    if (delta !== 0 && step > 0 && delta % step === 0) {
         state.islandEpoch = epoch + delta;
     }
+}
+
+/** lcm(Q, the inner cycle of every stack with an active map) — the
+ * epoch-move granularity that keeps windowed groups' content. */
+function epochViewStep(q) {
+    let step = q > 0 ? q : 0;
+    const walk = nodes => (nodes || []).forEach(n => {
+        if (n.type !== 'stack') return;
+        if (!n.loopBypassed && mapActive(nodeMap(n))) {
+            const inner = stackInnerCycle(n);
+            if (inner > 0) step = step > 0 ? lcm(step, inner) : inner;
+        }
+        walk(n.nodes);
+    });
+    walk(state.nodes);
+    return step;
 }
 /** Legacy name (tests import it). */
 export const applyTwoAnchorContinuity = applyMapEditRiders;
@@ -125,11 +145,16 @@ export const applyTwoAnchorContinuity = applyMapEditRiders;
  * over an active sequence timeline, else 'intrinsic'. Undo restores the
  * stamp with the snapshot. */
 /** A stack's INNER cycle (engine StackNode::getIntrinsicDuration): the
- * LCM of its children's effective periods, one-shots excluded. */
+ * LCM of its children's INTRINSIC durations (a member's raw take, a
+ * nested stack's own inner cycle), one-shots excluded. (Folding the
+ * children's EFFECTIVE periods here — the pre-2026-08-30 form —
+ * diverged from the engine whenever a member carried a window: the
+ * mock clamped a definer trim to the member window's length.) */
 function stackInnerCycle(node) {
     let composite = 0;
     (node.nodes || []).forEach(c => {
-        const p = effectivePeriodOf(c);
+        if (c.periodSource === 'context') return;
+        const p = intrinsicOfNode(c);
         if (p > 0) composite = composite > 0 ? lcm(composite, p) : p;
     });
     return composite;
@@ -243,17 +268,28 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         node.loopStart = loopStart;
         node.loopEnd = loopEnd;
         if (loopEnd > loopStart && inner > 0) {
+            // THE CONTENT-FRAME LAW (engine parity, 2026-08-30): the
+            // stack window selects epoch-relative view positions while
+            // members read origin-relative — the members' origins ride
+            // with the epoch (origin' := t0 − (pT − start), epoch :=
+            // origin'), the sole-clip path's math made fractal. The
+            // sounding sample is read by the ACTUAL playback equation.
             const t0 = state.masterPos;
             const epoch0 = state.islandEpoch || 0;
             const len = loopEnd - loopStart;
             const oldLen = oldLe0 - oldLs0;
+            const members = (node.nodes || []).filter(c =>
+                c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
+            const origin0 = members.length ? (members[0].origin || 0) : 0;
             const p0 = (!node.loopBypassed && oldLen > 0)
-                ? oldLs0 + posMod(t0 - epoch0 - oldLs0, oldLen)
-                : posMod(t0 - epoch0, inner);
+                ? posMod(epoch0 + oldLs0 + posMod(t0 - epoch0, oldLen) - origin0, inner)
+                : posMod(t0 - origin0, inner);
             const pT = loopStart + posMod(p0 - loopStart, len);
+            const origin1 = t0 - (pT - loopStart);
+            members.forEach(c => { c.origin = origin1; });
             retimeSequences(state.islandQ, len);  // sequences track Q
             state.islandQ = len;
-            state.islandEpoch = t0 - (pT - loopStart);
+            state.islandEpoch = origin1;
             console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
         }
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&

@@ -957,6 +957,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     overflow: hidden;
     min-height: 64px;
     box-shadow: inset 0 0 0 1px var(--lane-line);
+    /* A drag must never become a text selection (a webview can hand
+       the gesture to selection otherwise; preventDefault on pointerdown
+       does not stop it). */
+    user-select: none;
+    -webkit-user-select: none;
 }
 /* INSPECTOR lanes (the raw-take edit view) run on their OWN horizontal
    scale — the global playhead's position is meaningless over them

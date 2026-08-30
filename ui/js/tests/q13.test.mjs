@@ -264,7 +264,10 @@ test('GROUPS: a first group take is the Q-definer — its window re-defines Q', 
     for (const id of ids) {
         assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D],
             'children untouched (whole takes)');
-        assert.equal(find(id).origin, 0, 'no origin re-anchor');
+        // Content-frame law (2026-08-30): the members' origins ride
+        // with the epoch so the window names BUFFER samples.
+        assert.equal(find(id).origin, getState().islandEpoch,
+            'members re-anchored together with the epoch (epoch == origin)');
     }
     // The frame: the whole take is now 2Q; the selection is the 1Q
     // part [0.5Q, 1.5Q).

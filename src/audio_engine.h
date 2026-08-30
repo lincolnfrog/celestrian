@@ -769,6 +769,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * DETACHED assembly (Combine, undo-held subtrees) stamped onto a
    * nested stack. Re-asserted after every structural edit. */
   void scrubNestedIslandFacts();
+  /** The epoch-move granularity that keeps every windowed group's
+   * content selection: lcm(Q, the inner cycle of each stack with an
+   * active map). Content-frame law, 2026-08-30. */
+  int64_t epochViewStep(int64_t quantum) const;
 
   // Deferred destruction: retired items are freed once the callback counter
   // has advanced two callbacks past their retirement, guaranteeing no

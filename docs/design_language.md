@@ -489,9 +489,13 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   `definerStackNode`; VM `definerStackOf`). Differences forced by the
   structure, not the law: the window lives on the STACK (it IS the
   part under the window law, ui_overhaul.md law 13) and the children
-  stay whole — no origin re-anchor (the epoch alone is solved for
-  phase continuity: `pos(t) = start + ((t − epoch) mod len)`), and
-  **no lock-collapse** at the second arm: a stack window of length Q
+  stay whole. The members' ORIGINS re-anchor together with the epoch
+  (`origin' := t0 − (pT − start)` for every member, `epoch := origin'`
+  — the sole-clip math made fractal; CONTENT-FRAME LAW 2026-08-30,
+  docs/loop_region_audit.md §0: a stack window selects epoch-relative
+  view positions while members read origin-relative, so solving the
+  epoch alone — the 2026-08-21 form — made the trimmed loop jump by
+  `start` on every release). **No lock-collapse** at the second arm: a stack window of length Q
   is coherent by construction, so after lock it is simply a 1Q part
   and obeys the ordinary coherence guard. The trim view renders on the
   group lane (the composite, brackets, "sets tempo"); the mics draw

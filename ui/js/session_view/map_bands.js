@@ -15,7 +15,7 @@
  */
 
 import { ctx } from './context.js';
-import { el, pct, fmtQ, capturePointer } from './sv_util.js';
+import { el, pct, fmtQ, capturePointer, guardGesture } from './sv_util.js';
 import { selectOnly } from './selection.js';
 import { pinFrame, unpinFrame } from './drag_pin.js';
 import { buildWindowDims } from './dims.js';
@@ -332,6 +332,9 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
     ev.preventDefault();
     ev.stopPropagation();
     capturePointer(ev.target, ev);
+    // Lost capture / window blur ends the gesture like a release —
+    // never leaves _winDrag + the frame pin latched (sv_util).
+    const releaseGuard = guardGesture(ev.target, () => up());
     const downX = ev.clientX;
     // THE GORDIAN CUT, simplified (owner-ruled 2026-07-25f): the bound
     // is RELATIVE — anchorQ plus accumulated pointer deltas — for the
@@ -453,7 +456,11 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
         lastClientY = mv.clientY;
         apply();
     };
+    let ended = false;
     const up = () => {
+        if (ended) return;                // pointerup + lostpointercapture
+        ended = true;
+        releaseGuard();
         ev.target.removeEventListener('pointermove', move);
         ev.target.removeEventListener('pointerup', up);
         ev.target.removeEventListener('pointercancel', up);
@@ -587,6 +594,7 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
             // refuses (or a synthetic pointer) must not kill the
             // gesture wiring below.
             capturePointer(ev.target, ev);
+            const releaseGuard = guardGesture(ev.target, () => up());
             body._winDrag = true;
             pinFrame();  // freeze the shared frame (see drag_pin.js)
             const q0 = bandContentQ(st, body, ev.clientX);
@@ -623,7 +631,11 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                     commitBandSegs(st, liveNext);
                 }
             };
+            let ended = false;
             const up = () => {
+                if (ended) return;        // pointerup + lostpointercapture
+                ended = true;
+                releaseGuard();
                 ev.target.removeEventListener('pointermove', move);
                 ev.target.removeEventListener('pointerup', up);
                 ev.target.removeEventListener('pointercancel', up);
