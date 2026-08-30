@@ -189,16 +189,15 @@ function makeDoneChip(laneId, title) {
 
 /**
  * Patch one lane's body: state classes, grid layer, reps layer, then
- * ONE of four overlay branches, checked in this order:
+ * ONE of three overlay branches, checked in this order:
  *
  *   1. heard-view chrome (lane.windowChipQ && !windowEditing): chip +
  *      trim grips + seam handles — then return.
  *   2. multi-segment map on a group (lane.mapSegs): dims + seam ticks
  *      + one bypass chip + cut bands — then return.
- *   3. window overlay (lane.window, or the latent full-span window):
- *      brackets, dims, chips, cursor, cut bands.
- *   4. (implicit in 3) no window at all: just the arm marker / cut
- *      bands over the resting take.
+ *   3. the bracket overlay: the lane's window, or the LATENT full-span
+ *      window a resting take offers (latentWindow), or — when neither
+ *      exists — just the arm marker and cut bands over the take.
  *
  * The heard-time cursor is patched every poll OUTSIDE the keyed
  * rebuilds, and BEFORE the body._winDrag gates — a frozen overlay

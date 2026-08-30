@@ -110,6 +110,15 @@ struct ProcessContext {
   // that first sees it — all in the SAME block, so N mics compute one
   // boundary and commit one duration. Read once per callback.
   uint32_t stop_generation = 0;
+  // ISLAND GENERATION (audit 2026-08-30 §3.2 closure): a message-thread
+  // edit that moves the epoch AND clip origins together (definer trim,
+  // seek) writes the origins, then the island facts, then bumps this.
+  // Clips adopt a new origin for RENDERING (origin_rt_) only at a block
+  // top whose context carries the generation the writer named — the
+  // same block top that read the new epoch — so no block ever renders
+  // a new epoch against old origins or vice versa. Read once per
+  // callback with the island facts.
+  uint32_t island_generation = 0;
   // Live MIDI (docs/vst3.md §8, phase 4): the block's incoming events,
   // drained once per callback by the engine from the lock-free queue.
   // Consumed ONLY by a node whose midi_armed_ flag is set (the single

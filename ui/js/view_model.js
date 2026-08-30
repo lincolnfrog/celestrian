@@ -642,13 +642,25 @@ function collectTreeFacts(nodes) {
  * }}
  */
 function resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
-                                   nodes) {
-    // The sole clip, or — Q13 FOR GROUPS (owner ruling 2026-08-21,
-    // the fractal twin) — the DEFINER STACK: the stack whose direct
-    // clip children are the island's only committed content, recorded
-    // as one take (N mics). Engine parity: AudioEngine definerStack.
-    const definer = committedClips.length === 1 ? committedClips[0]
-        : committedClips.length >= 2 ? definerStackOf(nodes) : null;
+                                   nodes, publishedDefinerId) {
+    // THE DEFINER IS PUBLISHED (audit 2026-08-30 §4.2): the engine
+    // states `definerId` — the sole committed clip or the definer
+    // stack — and the VM reads it rather than re-deriving with its own
+    // definition (three copies with two definitions used to be able to
+    // disagree by a sample, flipping the lane between the trim view
+    // and the heard view). The derivation survives only as the
+    // fallback for states that predate the field (fixtures, old dumps).
+    let definer = null;
+    if (typeof publishedDefinerId === 'string') {
+        definer = publishedDefinerId
+            ? findNodeInTree(nodes, publishedDefinerId) : null;
+    } else {
+        // Q13 FOR GROUPS (owner ruling 2026-08-21, the fractal twin):
+        // the DEFINER STACK is the stack whose direct clip children
+        // are the island's only committed content, one take (N mics).
+        definer = committedClips.length === 1 ? committedClips[0]
+            : committedClips.length >= 2 ? definerStackOf(nodes) : null;
+    }
     const soleQDefinerId = definer ? definer.id : null;
     // The window must not be BYPASSED for the trim view: a bypassed
     // window plays the full take, so the selection isn't the audible
@@ -721,6 +733,18 @@ function memberCommonWindow(stack) {
         else if (win[0] !== ls || win[1] !== le) return null;
     }
     return win;
+}
+
+/** A node by id anywhere in the tree (the published definerId). */
+function findNodeInTree(nodes, id) {
+    for (const n of nodes || []) {
+        if (n.id === id) return n;
+        if (n.type === 'stack') {
+            const hit = findNodeInTree(n.nodes, id);
+            if (hit) return hit;
+        }
+    }
+    return null;
 }
 
 function subtreeHasCommitted(n) {
@@ -1178,11 +1202,10 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
             groupCycleQ: activeSeqSamples(node) > 0
                 ? activeSeqSamples(node) / quantum : intrinsicQ }
         : null;
-    // TODO(phase 3): children of a group with an ACTIVE window
-    // live in the window's re-based inner frame (time_maps.md §2
-    // — the window re-bases the epoch for its children). Phase 1
-    // unrolls them against the island cycle; revisit when the
-    // shell renders windowed groups interactively.
+    // Children of a group with an ACTIVE window live in the window's
+    // re-based inner frame (time_maps.md §2): pushLane hands them the
+    // map context and they unroll the parent's slice
+    // (childSrcSegsUnderMap, `lane.underMap`, 2026-08-21).
     if (!lane.folded) {
         const childFrom = lanes.length;
         // The SCOPE CYCLE the children hear (engine: context_cycle —
@@ -1680,7 +1703,7 @@ export function deriveViewModel(state, opts = {}) {
     const { soleQDefinerId, provisionalDefiner, definerNode,
             defSelStartQ, defSelEndQ } =
         resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
-                                  nodes);
+                                  nodes, state.definerId);
 
     // The island epoch is published explicitly (getGraphState
     // "islandEpoch"): commit RE-BASES it on simple extensions, and the

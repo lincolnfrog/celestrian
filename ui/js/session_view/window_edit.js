@@ -1,5 +1,6 @@
 /**
- * Loop-window interactions (docs/ui_overhaul.md §2).
+ * Loop-window interactions (docs/ui_overhaul.md law 13 — the window
+ * sets the part; docs/time_maps.md).
  *
  * Drag a bracket to edit; click the chip to toggle active/bypassed.
  * TWO-LAYER DRAG FEEDBACK (owner request 2026-07-11, restoring the old

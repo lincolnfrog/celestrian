@@ -3,6 +3,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "audio_node.h"
+#include "take_storage.h"
 #include "midi_sequence.h"
 
 namespace celestrian {
@@ -215,17 +216,24 @@ class ClipNode : public AudioNode {
 
   // --- Take content storage (D4: NO recording wall) ---
   // The content buffer is reached through ONE atomic pointer. At ARM it
-  // becomes a huge VIRTUAL reservation (address space only — the OS
-  // commits physical pages as capture writes them), so a take's memory
-  // cost is exactly what it records and the only real limit is the
-  // machine. The reservation bound (~6.7 h at 44.1 kHz; juce sample
-  // counts are int) exists for integrity, not policy: reaching it
-  // auto-finishes CLEANLY at the last boundary that fits (never a
-  // silent zombie). After commit the engine COMPACTS: an exact-size
-  // copy swaps in atomically (safe under an actively rendering clip)
-  // and the old buffer retires through the reclaimer (Step 3 lifetime
-  // discipline).
+  // becomes a REFERRING buffer over reserved storage (take_storage.h):
+  // address space for the whole bound, pages committed ahead of the
+  // write head by the engine's grower — so a take's memory cost is
+  // what it records plus a headroom, on every platform (the old plain
+  // malloc was lazy on macOS but charged the full 4 GB per mic on
+  // Windows; audit 2026-08-30 §4.6). The reservation bound (~6.7 h at
+  // 44.1 kHz; juce sample counts are int) exists for integrity, not
+  // policy: reaching it — or the committed edge, if the grower ever
+  // starves — auto-finishes CLEANLY at the last boundary that fits
+  // (never a silent zombie). At SETTLE the engine COMPACTS: an
+  // exact-size heap copy swaps in atomically (safe under an actively
+  // rendering clip) and the old buffer + its storage retire through the
+  // reclaimer (Step 3 lifetime discipline).
   static constexpr int64_t kMaxTakeSamples = (int64_t{1} << 30);
+  /** Committed at arm and kept ahead of the write head by the engine's
+   * grower (~60 s at 48 kHz per channel): the take's real memory cost
+   * is what it recorded plus this headroom. */
+  static constexpr int64_t kArmCommitSamples = int64_t{48000} * 60;
   int64_t contentCapacity() const { return content_.load()->getNumSamples(); }
   /** Total recorded samples (the full take, ≥ duration after a
    * lock-collapse — compaction must keep it all for uncollapse). */
@@ -239,6 +247,21 @@ class ClipNode : public AudioNode {
     content_owned_ = std::move(fresh);
     content_.store(content_owned_.get());
     return old;
+  }
+  /** The reserved storage behind the current content (null = heap). */
+  TakeStorage* reservedStorage() const { return take_storage_.get(); }
+  /** Message thread: detach the reserved storage (after the referring
+   * buffer has been swapped out); the caller retires it. */
+  std::unique_ptr<TakeStorage> releaseStorage() {
+    storage_rt_.store(nullptr);
+    return std::move(take_storage_);
+  }
+  /** The samples per channel capture may write: the buffer's extent,
+   * capped by the storage's committed edge (audio thread). */
+  int64_t writableCapacity() const {
+    const int64_t cap = content_.load()->getNumSamples();
+    if (const TakeStorage* st = storage_rt_.load()) return std::min(cap, st->committed());
+    return cap;
   }
   /** TEST-ONLY: mutable content access (wall-guard simulations). */
   juce::AudioBuffer<float>& contentForTest() { return *content_.load(); }
@@ -288,6 +311,15 @@ class ClipNode : public AudioNode {
     setLoopPoints(shift, shift + len);
     collapsed_from_.store(0);
     collapse_origin_shift_.store(0);
+  }
+  /** Message thread: set the origin so that the audio thread adopts it
+   * only at a block top carrying island generation >= `gate` (the
+   * writer publishes `gate` after the epoch — origins and epoch land in
+   * the same block; audit 2026-08-30 §3.2). `gate` 0 = adopt at the
+   * next block top. */
+  void setOriginGated(int64_t origin, uint32_t gate) {
+    origin_gate_gen_.store(gate);
+    origin_samples.store(origin);
   }
   /** True when the committed content is a lock-collapsed window of a
    * longer recording (trimmed-away material still in the buffer). */
@@ -370,6 +402,7 @@ class ClipNode : public AudioNode {
    * plus the recorded facts. The caller (an edit) OWNS the content. */
   struct TakeState {
     std::unique_ptr<juce::AudioBuffer<float>> buffer;
+    std::unique_ptr<TakeStorage> storage;  // when `buffer` refers to it
     std::unique_ptr<MidiSequence> midi;
     int64_t origin = 0, duration = 0, base = 0, recorded = 0;
     int64_t context_cycle = 0, loop_start = 0, loop_end = 0;
@@ -403,6 +436,7 @@ class ClipNode : public AudioNode {
         1, std::max(1, (int)sample_rate));
     empty->clear();
     s.buffer = std::move(content_owned_);
+    s.storage = releaseStorage();  // travels with the referring buffer
     content_owned_ = std::move(empty);
     content_.store(content_owned_.get());
     auto empty_midi = std::make_unique<MidiSequence>(0);
@@ -432,6 +466,8 @@ class ClipNode : public AudioNode {
         displaced;
     displaced.first = std::move(content_owned_);
     content_owned_ = std::move(s.buffer);
+    take_storage_ = std::move(s.storage);
+    storage_rt_.store(take_storage_.get());
     content_.store(content_owned_.get());
     displaced.second = std::move(midi_owned_);
     midi_owned_ = std::move(s.midi);
@@ -543,6 +579,12 @@ class ClipNode : public AudioNode {
   // Content storage (see the D4 block above): owned on the message
   // thread, read through the atomic by both threads.
   std::unique_ptr<juce::AudioBuffer<float>> content_owned_;
+  // The live take's reserved storage (take_storage.h) when content_owned_
+  // is a REFERRING buffer over it; null for plain heap content. Swapped
+  // only for idle clips (message thread); the audio thread reads the
+  // raw pointer for its write wall.
+  std::unique_ptr<TakeStorage> take_storage_;
+  std::atomic<TakeStorage*> storage_rt_{nullptr};
   std::atomic<juce::AudioBuffer<float>*> content_{nullptr};
   // MIDI content (phase 5): the note twin of content_, same D4
   // discipline (message thread owns/swaps on idle clips, audio thread
@@ -672,6 +714,12 @@ class ClipNode : public AudioNode {
   // A parked group-stop generation (0 = none); becomes stop_requested_
   // at the block top whose context carries a generation >= this.
   std::atomic<uint32_t> stop_pending_gen_{0};
+  // The origin the AUDIO thread renders with (adopted from
+  // origin_samples at a block top, gated by origin_gate_gen_ — see
+  // ProcessContext::island_generation). Audio-thread writes of
+  // origin_samples (arm, commit) set both directly.
+  std::atomic<int64_t> origin_rt_{0};
+  std::atomic<uint32_t> origin_gate_gen_{0};
   std::atomic<bool> is_playing{false};
 
   std::atomic<int64_t> awaiting_start_at{

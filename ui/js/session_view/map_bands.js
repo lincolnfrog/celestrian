@@ -7,9 +7,12 @@
  * take → a 1Q cut on that Q cell; double-click a cut → it heals; drag
  * the chip → the cut SLIDES freely in position, length held (the
  * "exclude 1Q off the boundary" move); drag a handle → resize, length
- * ALWAYS snapping to whole Qs (owner ruling 2026-08-09: the ⌥-free
- * escape hatch is gone — the seam theorem is categorical). One
- * setSegments per finished gesture = one undo step.
+ * ALWAYS snapping to whole Qs (owner ruling 2026-08-09: the seam
+ * theorem is categorical). ⌥ survives as a MODE key only — ⌥-drag a
+ * seam handle resizes instead of sliding (`onMove(rawQ, altKey)`), and
+ * ⌥ on a window bracket free-slides the whole window (window_edit.js);
+ * neither escapes the whole-Q snap. One setSegments per finished
+ * gesture = one undo step.
  * Leading/trailing exclusions stay the WINDOW brackets' domain — bands
  * are only the INNER gaps, so the two gestures never overlap.
  */

@@ -7,6 +7,7 @@
 
 #include "audio_node.h"
 #include "midi_sequence.h"
+#include "take_storage.h"
 #include "sequence.h"
 
 namespace celestrian {
@@ -199,6 +200,7 @@ struct Edit {
   struct TakePayload {
     juce::String uuid;
     std::unique_ptr<juce::AudioBuffer<float>> buffer;  // audio content
+    std::unique_ptr<TakeStorage> storage;  // reserved storage the buffer refers to
     std::unique_ptr<MidiSequence> midi;                // note content
     int64_t origin = 0, duration = 0, base = 0, recorded = 0;
     int64_t context_cycle = 0;

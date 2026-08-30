@@ -69,6 +69,12 @@ void ClipNode::control(const float* const* input_channels,
   // A new block: last block's commit (if any) has been rendered-silent
   // once; playback proceeds from this block on.
   committed_this_block_.store(false);
+  // Adopt the rendering origin (island-generation gate, audio_node.h):
+  // a pending origin lands at the block top that also read the epoch
+  // it belongs with.
+  if (context.island_generation >= origin_gate_gen_.load()) {
+    origin_rt_.store(origin_samples.load());
+  }
 
   // === Armed: choose/reach the arm target (state machine, kernel.md §3;
   // re-evaluated every block — deliberate: the latency-compensated clock
@@ -128,7 +134,10 @@ void ClipNode::control(const float* const* input_channels,
     // is ~hours, but IF capture ever nears it, finish CLEANLY at the
     // last boundary that fits instead of silently dropping audio.
     if (recState() == RecState::Capturing && !stop_requested_.load()) {
-      const int64_t cap = buffer.getNumSamples();
+      // The wall is the COMMITTED edge of the reserved storage (the
+      // grower keeps a headroom ahead; only a stalled message thread
+      // reaches it), else the buffer's extent.
+      const int64_t cap = writableCapacity();
       const int64_t wp = write_position.load();
       const int64_t Q =
           context.quantum > 0 ? context.quantum : getEffectiveQuantum();
@@ -484,7 +493,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       // equation. Later segments shift earlier by the removed time —
       // punch semantics; groove-transparent when cuts are kQ (seam
       // theorem).
-      const int64_t org = origin_samples.load();
+      const int64_t org = origin_rt_.load();
       const int64_t a0 = map.mapOffset(0);
 
       if (!isSilenced) {
@@ -710,7 +719,7 @@ void ClipNode::renderMidi(float* const* output_channels,
     const int64_t dur = map.period();
     if (dur > 0) {
       content_active = true;
-      const int64_t org = origin_samples.load();
+      const int64_t org = origin_rt_.load();
       const int64_t a0 = map.mapOffset(0);
       const int64_t base = content_base_.load();
       const int64_t cyc =
@@ -859,6 +868,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     // captured as data at the root (the clock is never reset,
     // kernel.md); commit stores Q + epoch together with the same value.
     origin_samples.store(compensated_pos);
+    origin_rt_.store(compensated_pos);
     island->establishIsland(0, compensated_pos);
     beginCapture(context, compensated_pos, compensated_pos);
     RtLog::instance().post(
@@ -894,6 +904,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
         context.map_heard_epoch + context.map.mapOffset(t_rel);
 
     origin_samples.store(origin);
+    origin_rt_.store(origin);
     awaiting_start_at.store(heard_target);
 
     const bool reached =
@@ -969,6 +980,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     }
   }
   origin_samples.store(origin);
+  origin_rt_.store(origin);
   awaiting_start_at.store(target);
 
   // Start when the compensated clock is at/near the target, or when the
@@ -1056,18 +1068,37 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
   // the only thing that should). Nothing ever reads past
   // write_position, so the uninitialized tail is unreachable.
   if (!midi_take) {
-    auto& buffer = *content_.load();
     // The take's channel count is fixed HERE (a stereo pair of inputs
     // captures two channels): the audio thread reads capture_channels_
     // only after observing the Armed state stored below.
     capture_channels_ = isStereoInput() ? 2 : 1;
     const int want = (int)std::min<int64_t>(
         kMaxTakeSamples, std::numeric_limits<int>::max() - 64);
-    if (buffer.getNumSamples() < want ||
-        buffer.getNumChannels() != capture_channels_) {
-      buffer.setSize(capture_channels_, want, /*keepExistingContent=*/false,
-                     /*clearExtraSpace=*/false, /*avoidReallocating=*/false);
+    // RESERVED STORAGE (take_storage.h, audit 2026-08-30 §4.6): the
+    // address space is reserved, pages commit ahead of the write head
+    // (the engine's grower) — a mic costs what it has recorded plus a
+    // headroom, on every platform, and the reservation is instant. The
+    // clip is idle and empty here (arm targets emptiness), so the
+    // previous content can be dropped in place — the old setSize did
+    // the same reallocation.
+    if (take_storage_ == nullptr || take_storage_->channels() != capture_channels_ ||
+        take_storage_->capacity() < want) {
+      storage_rt_.store(nullptr);
+      take_storage_ = TakeStorage::reserve(capture_channels_, want);
+      if (take_storage_ != nullptr) {
+        take_storage_->commitTo(kArmCommitSamples);
+        content_owned_ = std::make_unique<juce::AudioBuffer<float>>(
+            take_storage_->channelArray(), capture_channels_, want);
+        content_.store(content_owned_.get());
+        storage_rt_.store(take_storage_.get());
+      } else {
+        // The OS refused the reservation: the plain heap path (as before).
+        auto& buffer = *content_.load();
+        buffer.setSize(capture_channels_, want, /*keepExistingContent=*/false,
+                       /*clearExtraSpace=*/false, /*avoidReallocating=*/false);
+      }
     }
+    auto& buffer = *content_.load();
     // THROUGH-MAP take (time_maps.md phase 2, ruling 2): the commit is
     // a dense [0, C) buffer with LITERAL SILENCE in unvisited regions —
     // zero exactly that span now (message thread, clip idle; an

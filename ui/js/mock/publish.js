@@ -8,7 +8,8 @@
 import { posMod } from '../math_utils.js';
 import { mapPeriod, mapActive, mapOffset } from '../time_map.js';
 import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
-         windowSuspendedOf } from './state.js';
+         windowSuspendedOf, committedClipCount, findSoleCommittedClip,
+         definerStackNode } from './state.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
@@ -164,6 +165,15 @@ function mockMasterVu(phase) {
     return Math.max(0, Math.min(1, lv)) * state.masterGain;
 }
 
+function publishedDefinerId() {
+    if (committedClipCount() === 1) {
+        const c = findSoleCommittedClip();
+        return c ? c.id : '';
+    }
+    const ds = definerStackNode();
+    return ds ? ds.id : '';
+}
+
 export function getState() {
     // Auto-advance transport if running (simulates real-time playback/recording)
     advanceTransport();
@@ -191,6 +201,9 @@ export function getState() {
         // Island epoch (mirrors getGraphState): the UI's frame origin.
         // Commit re-bases it to the newest origin on simple extensions.
         islandEpoch: state.islandEpoch,
+        // The definer (engine parity, audit 2026-08-30 §4.2): the sole
+        // committed clip or the definer stack; '' when none.
+        definerId: publishedDefinerId(),
         // The STORED island quantum (mirrors the root stack's `quantum`
         // metadata). 0 for scenario fixtures that predate the field —
         // the VM then falls back to its min-over-nodes derivation.

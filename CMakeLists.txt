@@ -113,6 +113,7 @@ target_sources(Celestrian PRIVATE
     src/audio_engine.cc
     src/timing.h
     src/clip_node.cc
+    src/take_storage.cc
     src/stack_node.cc
     src/session_io.cc
     src/project_manager.cc
@@ -224,6 +225,7 @@ target_sources(CelestrianTests PRIVATE
     tests/midi_record_tests.cc
     tests/sequencer_tests.cc
     src/clip_node.cc
+    src/take_storage.cc
     src/stack_node.cc
     src/audio_engine.cc
     src/session_io.cc

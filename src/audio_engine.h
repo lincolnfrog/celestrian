@@ -223,6 +223,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * material (atomic content swap + reclaimer retire). Message thread;
    * driven by the app heartbeat (ProjectManager::tick) and tests. */
   void compactIdleTakes();
+  /** Shrink one idle clip's content to an exact heap copy and retire
+   * the old buffer + its reserved storage (take_storage.h). */
+  void compactClipToHeap(celestrian::ClipNode& clip);
+  /** Keep committed pages ahead of every live take's write head
+   * (take_storage.h); called from the state poll. */
+  void growLiveTakes();
   /** Number of COMMITTED clips in the island (ClipNode, duration>0),
    * recursive. Drives provisional-Q mutability (Q13 non-sticky) and the
    * project-birth trigger (ProjectManager). Message thread. */
@@ -232,7 +238,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * Q): Q → Q' rescales step lengths by Q'/Q; Q → 0 (empty island)
    * clears them, capturing each into `inv.seq_riders` so the inverse
    * reinstalls them. Message thread; the one path appliers use. */
-  void setIslandQuantum(int64_t q, int64_t epoch, celestrian::Edit& inv);
+  void setIslandQuantum(int64_t q, int64_t epoch, celestrian::Edit& inv,
+                        uint32_t generation = 0);
   /** Reinstall sequences an inverse carries (undo of a clearing
    * revert). */
   void reinstallSequenceRiders(celestrian::Edit& e);

@@ -157,11 +157,13 @@ A's `duration` vs `recorded`. *Fix:* track the collapse explicitly
 (`content_base_ > 0` or a flag), never by overshoot.
 
 ### 3.2 ✅ Q and epoch are two atomics read separately on the audio thread (LOW)
-**Fixed:** `StackNode::setQuantum` is a seqlock write; the callback reads
-`readIslandFacts()` once (bounded retry). Residual: the origin riders are
-per-clip atomics, so a definer trim while playing can still give ONE
-block a new epoch with old member origins (~10 ms); closing that needs a
-generation-gated apply on the audio thread — noted, not done.
+**Fixed:** `StackNode::setIslandFacts` is a seqlock write of (Q, epoch,
+generation); the callback reads `readIslandFacts()` once. **Residual
+closed (round 2):** clips render from `origin_rt_`, adopted at a block
+top only when the context's island generation reaches the gate the
+writer named (`ClipNode::setOriginGated`); a definer trim or a seek
+writes gated origins, then the facts with the new generation — one
+block top adopts both or neither.
 `setQuantum` stores Q then epoch; the callback reads `islandEpoch()` and
 `getQuantum()` at different points. A re-trim between the reads gives one
 block a mixed pair (and the new origin riders add a third field). One
@@ -216,7 +218,17 @@ pre-lift state plus a segment edit on a member).
 
 ## 4. Tech debt / over-complication (ranked by leverage)
 
-### 4.1 One playback equation, restated by hand in six places
+Round 2 (2026-08-30, later): 4.1 ✅, 4.2 ✅, 4.3 partial ✅ (period law
+in `periodExcluding`; the mock's inner cycle now intrinsic), 4.6 ✅, 4.7
+✅ (stale comments). Open: 4.4 gesture runner, 4.5 DOM latches, 4.8
+duplicated constants / `setSegments` stack-definer twin, the rest of
+4.3.
+
+### 4.1 ✅ One playback equation, restated by hand in six places
+**Done:** `src/heard_index.h` — `clipHeardIndex`, `memberHeardIndex`,
+`foldIntoWindow`, `originForHeard`; the Q13 clip trim, the definer-stack
+trim, the multi-segment trim and `continuityOrigin` all read it. Golden
+test "heard_index.h equals the render" pins it against the audio thread.
 The phase-preserving solvers (`setLoopPoints` clip branch, stack branch,
 `setSegments`, `attachMapEditRiders`/`continuityOrigin`, and the mock's
 twins) each re-derive "which sample sounds now" from their own idea of
@@ -227,7 +239,10 @@ equation (it exists implicitly in the audio path), used by every solver
 and by a golden test. The mock imports the same math from
 `time_map.js`.
 
-### 4.2 Definer detection lives in three places with two definitions
+### 4.2 ✅ Definer detection lives in three places with two definitions
+**Done:** `getGraphState` publishes `definerId` (sole clip or definer
+stack); `resolveProvisionalDefiner` reads it and derives only when the
+field is absent (old dumps, fixtures); the mock publishes the same.
 `AudioEngine::definerStack` (origin + duration), `view_model.definerStackOf`
 (same) **and** `view_model.oneTakeDuration` (duration only — used for the
 composite extent and `intrinsicPeriod`), plus `mock/state.js`. A
@@ -267,7 +282,13 @@ with its own failure mode (§2.2 was one). A per-lane view-state object
 keyed by lane id would make "what is frozen and why" inspectable and
 would survive node replacement.
 
-### 4.6 The 4 GB per-clip reservation (D4) assumes lazy overcommit
+### 4.6 ✅ The 4 GB per-clip reservation (D4) assumes lazy overcommit
+**Done:** `src/take_storage.{h,cc}` reserves address space
+(`VirtualAlloc MEM_RESERVE` / `mmap MAP_NORESERVE`) and commits ahead of
+the write head in 4 MB chunks (`AudioEngine::growLiveTakes`, every poll;
+60 s headroom); the audio thread's wall is the committed edge; a settled
+take compacts to its material at settle (not at the next save). Five
+mics now cost ~5 × (recorded + 60 s) instead of 20 GB of commit charge.
 `kMaxTakeSamples = 2^30` × channels × float = 4 GB virtual per armed
 clip, "deliberately not cleared". On Windows `malloc` commits, so a
 five-mic arm is a 20 GB commit charge, slow (§1.4) and at the mercy of

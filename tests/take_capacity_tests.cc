@@ -70,11 +70,15 @@ class TakeCapacityTests : public juce::UnitTest {
       const int64_t dur =
           (int64_t)(double)clipVar(engine, c1).getProperty("duration", 0);
       expect(dur > (int64_t)(65.0 * 44100), "committed well past the old wall");
-      expect(
-          clipPtr(engine, c1)->contentCapacity() >= ClipNode::kMaxTakeSamples,
-          "arm-time virtual reservation in place");
-
-      // Compaction: reservation returns, audio identical.
+      // RESERVED STORAGE (take_storage.h, 2026-08-30): the settled take
+      // has already compacted to its material — the reservation is a
+      // LIVE-take fact now (asserted in the next test), and a later
+      // compaction pass is a no-op.
+      expectEquals(clipPtr(engine, c1)->contentCapacity(),
+                   clipPtr(engine, c1)->recordedLength(),
+                   "settled take: capacity == recorded material");
+      expect(clipPtr(engine, c1)->reservedStorage() == nullptr,
+             "settled take: reservation returned");
       const auto peaksBefore =
           juce::JSON::toString(engine.getWaveform(c1, 200));
       engine.compactIdleTakes();
@@ -83,6 +87,57 @@ class TakeCapacityTests : public juce::UnitTest {
                    "capacity == recorded material after compaction");
       expectEquals(juce::JSON::toString(engine.getWaveform(c1, 200)),
                    peaksBefore, "audio identical through the swap");
+    }
+
+    beginTest("a LIVE take records into reserved storage, committed ahead of the head");
+    {
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      engine.createNode("clip");
+      const juce::String id = [&] {
+        auto state = engine.getGraphState();
+        return (*state.getDynamicObject()->getProperty("nodes").getArray())[0]
+            .getDynamicObject()->getProperty("id").toString();
+      }();
+      engine.startRecordingInNode(id);
+      auto* clip = clipPtr(engine, id);
+      expect(clip->reservedStorage() != nullptr, "armed: reserved storage in place");
+      expect(clip->contentCapacity() >= ClipNode::kMaxTakeSamples,
+             "the address-space reservation is the old bound (record indefinitely)");
+      expect(clip->writableCapacity() >= ClipNode::kArmCommitSamples,
+             "at least the arm headroom is writable");
+      process(3 * 44100);
+      engine.getGraphState();  // the poll runs the grower
+      expect(clip->writableCapacity() >= clip->recordedLength() + ClipNode::kArmCommitSamples ||
+                 clip->writableCapacity() >= clip->contentCapacity(),
+             "the grower keeps a headroom ahead of the write head");
+      engine.stopRecordingInNode(id);
+      process(BLOCK);
+      engine.getGraphState();  // settle → compaction
+      expect(clip->reservedStorage() == nullptr, "settled: reservation returned");
+      expectEquals(clip->contentCapacity(), clip->recordedLength(),
+                   "settled: exact-size heap content");
+    }
+
+    beginTest("TakeStorage: reserve, commit ahead, clamp at capacity");
+    {
+      auto st = TakeStorage::reserve(2, 5 * TakeStorage::kChunkSamples + 17);
+      expect(st != nullptr, "reservation succeeds");
+      expectEquals(st->channels(), 2, "two channels");
+      expectEquals(st->capacity(), 5 * TakeStorage::kChunkSamples + 17, "capacity");
+      const int64_t c0 = st->committed();
+      const int64_t c1 = st->commitTo(TakeStorage::kChunkSamples / 2);
+      expect(c1 >= std::min(st->capacity(), TakeStorage::kChunkSamples), "commits at least a chunk");
+      expect(c1 >= c0, "monotone");
+      const int64_t c2 = st->commitTo(st->capacity() * 3);
+      expectEquals(c2, st->capacity(), "clamped at the capacity");
+      // Writable end to end within the committed range.
+      for (int c = 0; c < 2; ++c) {
+        st->channelArray()[c][0] = 1.0f;
+        st->channelArray()[c][(size_t)(c2 - 1)] = 2.0f;
+      }
+      expect(st->channelArray()[1][0] == 1.0f && st->channelArray()[0][(size_t)(c2 - 1)] == 2.0f,
+             "pages are backed");
     }
 
     beginTest("the reservation bound finishes CLEANLY (integrity guard)");

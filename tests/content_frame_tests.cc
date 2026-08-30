@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "../src/audio_engine.h"
+#include "../src/heard_index.h"
 #include "test_utils.h"
 
 using celestrian::test_utils::nodesOf;
@@ -252,6 +253,69 @@ class ContentFrameTests : public juce::UnitTest {
         return ws + mod(hA - ws + (t - tA), len);
       });
       expectEquals(bad, 0, "the collapsed members still play buffer[ws + phase]");
+    }
+
+    beginTest("heard_index.h equals the render (windowed clip, windowed group)");
+    {
+      // THE SOLVER IS THE RENDER: every phase-preserving edit computes
+      // "which sample sounds now" through heard_index.h; this pins that
+      // statement against the audio thread's actual output.
+      AudioEngine engine;
+      int64_t clock = 0;
+      // A windowed sole clip (Q13 clip trim re-anchors its origin).
+      engine.createNode("clip");
+      const juce::String c = lastTopLevelId(engine);
+      engine.startRecordingInNode(c);
+      driveRamp(engine, D, clock, true, nullptr);
+      engine.stopRecordingInNode(c);
+      driveRamp(engine, BLOCK, clock, true, nullptr);
+      const int64_t origin0 = (int64_t)deepProp(engine, c, "origin");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      const std::vector<float> table = buildTable(engine, clock, origin0, D);
+      engine.setLoopPoints(c, D / 5, (4 * D) / 5);
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(engine.findNodeByUuidForTest(c));
+      expect(clip != nullptr, "clip node");
+      std::vector<std::pair<int64_t, float>> out;
+      driveRamp(engine, D, clock, true, &out);
+      int bad = 0;
+      for (const auto& [t, v] : out) {
+        const int64_t idx = celestrian::heard::clipHeardIndex(*clip, t);
+        if (std::abs(table[(size_t)idx] - v) > 1e-6f) ++bad;
+      }
+      expectEquals(bad, 0, "clipHeardIndex(t) names the rendered sample");
+    }
+    {
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var s = engine.getGraphState();
+        clipIdsUnder(findVar(s, stack_id), ids);
+      }
+      engine.startRecordingInNode(stack_id);
+      driveRamp(engine, D, clock, true, nullptr);
+      engine.stopRecordingInNode(stack_id);
+      driveRamp(engine, BLOCK, clock, true, nullptr);
+      const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      const std::vector<float> table = buildTable(engine, clock, origin0, D);
+      engine.setLoopPoints(stack_id, D / 3, (2 * D) / 3);
+      auto* stack = dynamic_cast<celestrian::StackNode*>(engine.findNodeByUuidForTest(stack_id));
+      auto* member = dynamic_cast<celestrian::ClipNode*>(engine.findNodeByUuidForTest(ids[0]));
+      expect(stack != nullptr && member != nullptr, "nodes");
+      std::vector<std::pair<int64_t, float>> out;
+      driveRamp(engine, D, clock, true, &out);
+      const int64_t epoch = rootProp(engine, "islandEpoch");
+      int bad = 0;
+      for (const auto& [t, v] : out) {
+        const int64_t idx = celestrian::heard::memberHeardIndex(*stack, *member, t, epoch);
+        if (std::abs(table[(size_t)idx] - v) > 1e-6f) ++bad;
+      }
+      expectEquals(bad, 0, "memberHeardIndex(t) names the rendered sample");
     }
 
     beginTest("Seek moves the AUDIO, not just the cursor (plain clip)");
