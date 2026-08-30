@@ -149,6 +149,16 @@ class StackNode : public AudioNode {
   int64_t getQuantum() const { return quantum_samples_.load(); }
   int64_t getEpoch() const { return epoch_samples_.load(); }
 
+  /**
+   * Transport seek (AudioEngine::seekTransport): re-base the cycle
+   * epoch so the monotonic clock reads as a chosen phase. The clock
+   * itself is never reset (kernel.md); moving the epoch is how the
+   * island's phase moves — the same lever takeCommitted's re-base
+   * uses. Message thread only; the audio thread picks it up at the
+   * next block top (pc.cycle_epoch = islandEpoch()).
+   */
+  void seekEpochTo(int64_t epoch) { epoch_samples_.store(epoch); }
+
   /** Establish (Q, epoch) once; q == 0 sets a provisional epoch only
    * (first-clip arm). No-op once Q is locked. */
   void establishIsland(int64_t quantum, int64_t epoch) override {

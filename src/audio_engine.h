@@ -56,6 +56,22 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   bool isPlaying() const { return is_playing_global; }
 
+  /**
+   * Seeks the transport to `pos_samples` — a position in the SAME
+   * domain the published masterPos wraps in: relative to the island
+   * epoch, folded on the audible cycle (E-C; under a root audition
+   * that cycle IS the step). The monotonic clock is never touched
+   * (kernel.md): a seek RE-BASES the island epoch so the current
+   * clock reads as the requested phase — the same lever the commit
+   * re-base uses, applied as a transport gesture. Works stopped or
+   * playing; NOT undoable (a monitoring gesture, like auditionStep).
+   *
+   * Refused (returns false) while any take is live or armed: takes
+   * place audio by this clock, and moving it mid-take would corrupt
+   * the take's placement (owner ruling 2026-08-27, ruler scrub).
+   */
+  bool seekTransport(double pos_samples);
+
   // Node Recording
   /**
    * Enables recording mode for a specific clip node.

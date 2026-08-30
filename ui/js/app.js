@@ -830,6 +830,12 @@ function wireKeyboard() {
 function initApp() {
     initSessionView({
         onTogglePlay: () => callNative('togglePlayback'),
+        // Ruler scrub (owner ruling 2026-08-27): target in the
+        // published-masterPos domain, samples. Streams while dragging
+        // (cheap epoch re-base engine-side); NOT undoable — a
+        // monitoring gesture, like auditionStep. The engine refuses
+        // mid-take (the UI locks the gesture too).
+        onSeek: samples => callNative('seekTransport', samples),
         onFold: id => callNative('toggleStackExpand', id),
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),

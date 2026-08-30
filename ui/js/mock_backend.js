@@ -44,7 +44,7 @@ import {
 import { setLoopPoints, setSegments, toggleLoopWindow } from './mock/maps.js';
 import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
 import { startRecordingInNode, stopRecordingInNode } from './mock/recording.js';
-import { togglePlayback } from './mock/transport.js';
+import { togglePlayback, seekTransport } from './mock/transport.js';
 import { getState } from './mock/publish.js';
 import { getWaveform } from './mock/waveform.js';
 import {
@@ -93,6 +93,9 @@ export const handlers = {
     duplicateProject,
     ping: () => 'pong',
     togglePlayback,
+    // Ruler scrub — transport phase, engine parity; NOT undoable
+    // (a monitoring gesture, like auditionStep).
+    seekTransport,
     startRecordingInNode,
     stopRecordingInNode,
     getGraphState: getState,

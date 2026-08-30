@@ -488,6 +488,29 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 #ruler .tick-label.cycle-end { transform: translateX(-100%); }
 
+/* Ruler scrub (owner ruling 2026-08-27): the ruler is the transport's
+   seek surface — click teleports, drag scrubs. ew-resize says
+   "horizontal", matching the gesture; while a take is live or armed
+   the gesture is refused (engine rule) and the cursor says so. */
+#ruler.seekable { cursor: ew-resize; }
+#ruler.seek-locked { cursor: not-allowed; }
+/* Scrub drags must not select tick labels — and the gesture must NOT
+   preventDefault (that would suppress the focus change that blurs an
+   open rename editor), so selection is disarmed here instead. */
+#ruler { user-select: none; -webkit-user-select: none; }
+/* The hover line: where a click would land (clamped into the audible
+   loop — it stops at an audition's bracket edges). Dimmer than the
+   playhead: a preview, not a position. */
+#ruler .seek-hover {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 1px;
+    background: var(--playhead);
+    opacity: 0.35;
+    pointer-events: none;
+    display: none;
+}
+
 /* ===== 9. Lane rows & handle nav dock ===== */
 #lanes { display: flex; flex-direction: column; gap: 10px; }
 .lane {
@@ -1486,6 +1509,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     top: 0; left: -5px;
     border: 6px solid transparent;
     border-top-color: var(--playhead);
+}
+/* Stopped (ruler scrub, 2026-08-27): the line stays visible so a seek
+   has somewhere to land — dimmed, a resting cursor rather than a
+   sweeping one. */
+#playhead.idle {
+    opacity: 0.45;
+    box-shadow: none;
 }
 
 /* ===== 18. Create row & empty state ===== */

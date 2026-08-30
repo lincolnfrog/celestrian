@@ -398,6 +398,30 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
     [0, len) while the brackets sit elsewhere — the amber cursor is the
     honest line there; revisit with time-maps phase 2.
 
+14. **The ruler is the seek surface** (owner ruling 2026-08-27). Click
+    teleports the transport; press-and-drag scrubs continuously (no Q
+    snap — the pointer is the truth). One inverse mapping serves every
+    view (`ruler_seek.seekTargetFromFrac`, unit-tested): the audible
+    loop occupies [loopStartQ, loopStartQ + loopCycleQ) of the display
+    frame, a click CLAMPS into that span (an audition's bracket is a
+    boundary, never an exit — clicking outside it scrubs to its edge),
+    and the engine target is the offset into the loop, in the published
+    masterPos domain. Engine side, a seek RE-BASES the island epoch
+    (`AudioEngine::seekTransport` → `StackNode::seekEpochTo`): the
+    monotonic clock is never touched (kernel.md), islandPos teleports
+    with the epoch, and the dead-reckoner (law 10) classifies the jump
+    as a teleport, never velocity. NOT undoable (a monitoring gesture,
+    like auditionStep). REFUSED while any take is live or armed — takes
+    place audio by the clock — mirrored in the UI as a locked cursor
+    (`seek-locked`). Corollary: the playhead is now VISIBLE WHILE
+    STOPPED (dimmed, `#playhead.idle`) once Q is established — a seek
+    needs somewhere to land, and the resting line says where playback
+    will resume. The gesture must not preventDefault (it would suppress
+    the focus change that blurs an open rename editor); tick-label
+    selection is disarmed in CSS instead. A dim hover line previews the
+    (clamped) landing spot. Pinned by `seek_tests.cc`,
+    `ruler_seek.test.mjs`, and the "Ruler scrub (seek)" e2e block.
+
 ## 7. Open items (design when reached)
 
 - **Long-cycle display: the px-per-Q floor** (ratified direction

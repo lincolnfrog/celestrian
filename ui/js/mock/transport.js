@@ -79,6 +79,35 @@ export function pauseTransport() {
     console.log('[MockBackend] Transport paused');
 }
 
+/**
+ * Ruler scrub (engine parity: AudioEngine::seekTransport). The target
+ * arrives in the published-masterPos domain — epoch-relative samples,
+ * folded on the audible cycle. The mock's clock is monotonic like the
+ * engine's (kernel.md), so a seek RE-BASES islandEpoch rather than
+ * touching masterPos: epoch := raw − pos, and viewMasterPos then reads
+ * exactly the requested phase. Refused (false) while any take is live
+ * or armed — takes place audio by the clock. NOT undoable (a
+ * monitoring gesture — keep it out of mock/undo.js's intercept set).
+ */
+export function seekTransport(posSamples) {
+    if (recView.active || anyClipHot(state.nodes)) return false;
+    const Q = effectiveQuantumForState();
+    const cycle = effectiveCycle(Q);
+    let pos = Math.round(Number(posSamples) || 0);
+    if (cycle > 0) pos = posMod(pos, cycle);
+    else if (pos < 0) pos = 0;
+    state.islandEpoch = state.masterPos - pos;
+    console.log(`[MockBackend] seekTransport → rel=${pos} (epoch=${state.islandEpoch})`);
+    return true;
+}
+
+/** Any clip live or armed anywhere in the graph (the engine's
+ * hasActiveTake ∨ isArmedOrRecording twin). */
+function anyClipHot(nodes) {
+    return (nodes || []).some(n =>
+        n.isRecording || n.isPendingStart || anyClipHot(n.nodes));
+}
+
 // Deterministic advance by exact sample count (for reliable test assertions)
 export function advanceBy(samples) {
     state.masterPos = state.masterPos + samples;

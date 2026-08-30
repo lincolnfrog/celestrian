@@ -14,6 +14,7 @@ import { patchLaneBody } from './lane_body.js';
 import { updateNavDock } from './teleport.js';
 import { animatorPoll, stopAnimator } from './animator.js';
 import { ensureDefaultSelection } from './selection.js';
+import { noteSeekVm } from './ruler_seek.js';
 
 /* A recording playhead moving backwards by more than this many px is a
  * commit jump — snap, never sweep backwards. */
@@ -127,11 +128,34 @@ export function patchSessionView(vm, aux) {
     // stylesheet's grid when lanes return.
     ctx.els.rulerRow.style.display = vm.lanes.length ? '' : 'none';
 
+    // Ruler scrub (owner ruling 2026-08-27): feed the seek module the
+    // frame facts this patch rendered, and lock it while recording.
+    noteSeekVm(vm, anyRecording);
+
     // The one playhead (I8): a single line from the ruler through the
     // last audio lane — never through the add-track affordance below.
-    if (vm.isPlaying && vm.lanes.length) {
+    // Visible while STOPPED too since the ruler scrub (owner ruling
+    // 2026-08-27): a seek needs somewhere to land visibly, and the
+    // dimmed line says where playback will resume. Pre-Q there is no
+    // frame, so the stopped line waits for Q like the ruler does.
+    const showPlayhead = vm.lanes.length > 0 &&
+        (vm.isPlaying || (vm.qEstablished && !anyRecording));
+    if (showPlayhead) {
         ctx.els.playhead.style.display = 'block';
-        if (!anyRecording && vm.qEstablished) {
+        ctx.els.playhead.classList.toggle('idle', !vm.isPlaying);
+        if (!vm.isPlaying) {
+            // STOPPED: no sweep to dead-reckon — draw the frozen
+            // (or freshly sought) position each poll, snapping (a
+            // 140ms glide would sweep a teleport).
+            stopAnimator();
+            if (ctx.els.playhead.style.transition !== 'none') {
+                ctx.els.playhead.style.transition = 'none';
+            }
+            const timelineW = ctx.els.ruler.clientWidth;
+            const newLeft = (vm.playheadQ / vm.cycleQ) * timelineW;
+            ctx.els.playhead._left = newLeft;
+            ctx.els.playhead.style.left = newLeft + 'px';
+        } else if (!anyRecording && vm.qEstablished) {
             // Idle/playing: the animator draws at 60fps and wraps
             // exactly at the audible cycle; the poll only corrects it
             if (ctx.els.playhead.style.transition !== 'none') {

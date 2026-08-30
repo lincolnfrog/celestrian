@@ -19,6 +19,12 @@ export const BRIDGE_METHODS = [
 
     // Transport
     { name: 'togglePlayback', params: [] },
+    // Ruler scrub (owner ruling 2026-08-27): seek to a position in the
+    // SAME domain the published masterPos wraps in — epoch-relative
+    // samples, folded on the audible cycle. NOT undoable (a monitoring
+    // gesture, like auditionStep). Refused while any take is live or
+    // armed (returns false): takes place audio by the clock.
+    { name: 'seekTransport', params: ['posSamples'], returns: 'true when applied; false refused (take live/armed)' },
 
     // Recording
     { name: 'startRecordingInNode', params: ['uuid'] },

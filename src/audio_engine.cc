@@ -1628,6 +1628,41 @@ void AudioEngine::togglePlayback() {
   is_playing_global = !is_playing_global.load();
 }
 
+bool AudioEngine::seekTransport(double pos_samples) {
+  // Refused while any take is live or armed: takes place audio by
+  // this clock (arm targets, origins, commit boundaries all read it),
+  // so a mid-take phase jump would corrupt the take's placement. The
+  // UI mirrors the refusal (ruler shows a locked cursor), but the
+  // engine owns the rule.
+  if (root_node == nullptr) return false;
+  if (root_node->hasActiveTake() || root_node->isArmedOrRecording()) {
+    return false;
+  }
+
+  // The target arrives in the published-masterPos domain: epoch-
+  // relative, folded on the audible cycle (E-C — under a root
+  // audition that cycle IS the step, since the derived window is an
+  // active map and getEffectivePeriod lets maps win). Fold
+  // defensively so an out-of-range target lands where the playhead
+  // would show it rather than teleporting the phase off-cycle.
+  const int64_t cycle = calculateEffectiveCycleLength();
+  int64_t pos = (int64_t)std::llround(pos_samples);
+  if (cycle > 0) {
+    pos = ((pos % cycle) + cycle) % cycle;
+  } else if (pos < 0) {
+    pos = 0;
+  }
+
+  // The seek itself: epoch := t - pos, so rel = t - epoch reads as
+  // exactly the requested phase from the next block/poll on. The
+  // monotonic clock is untouched (kernel.md); islandPos teleports
+  // with the epoch, and the UI's dead-reckoner classifies the jump
+  // as a TELEPORT, never velocity (playhead_clock.js).
+  const int64_t t = global_transport_pos.load();
+  root_node->seekEpochTo(t - pos);
+  return true;
+}
+
 juce::var AudioEngine::getGraphState() const {
   // Forward any log lines queued by the audio thread (UI polls this
   // every ~50 ms, so this doubles as the RtLog drain point).

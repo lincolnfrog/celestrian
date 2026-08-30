@@ -220,9 +220,13 @@ test.describe('Session shell', () => {
 
     test('play button and playhead: one line, in the timeline column', async ({ page }) => {
         await loadHarness(page, '1Q + 4Q (LCM=4)');
-        // Scenario loads playing; stop first to assert the hidden state
+        // Scenario loads playing; stop first. STOPPED shows the DIMMED
+        // playhead since the ruler scrub (owner ruling 2026-08-27) —
+        // a seek needs somewhere to land, so the old hidden state is
+        // now visible + .idle.
         await page.evaluate(() => window.celestrian.setIsPlaying(false));
-        await expect(page.locator('#playhead')).toBeHidden();
+        await expect(page.locator('#playhead')).toBeVisible();
+        await expect(page.locator('#playhead')).toHaveClass(/idle/);
 
         // The play button round-trips through the backend
         await page.click('#play-btn');
@@ -1448,6 +1452,93 @@ test.describe('Creation menu (Q17)', () => {
         const ps = await body.locator('.trim-grip.start').boundingBox();
         const pe = await body.locator('.trim-grip.end').boundingBox();
         expect(ps.x).toBeGreaterThan(pe.x + pe.width + 8);   // "] end · start ["
+    });
+
+});
+
+// Ruler scrub (owner ruling 2026-08-27): the ruler is the transport's
+// seek surface — click teleports, drag scrubs, clamped into the
+// audible loop; refused while a take is live or armed. Runs through
+// the REAL mock backend (seekTransport re-bases the epoch).
+test.describe('Ruler scrub (seek)', () => {
+
+    test.beforeEach(async ({ page }) => {
+        await applyRate(page);
+        await page.goto('/?mock=true');
+        await page.waitForFunction(
+            () => typeof window.__celestrianTest?.loadScenario === 'function',
+            { timeout: 5000 });
+    });
+
+
+    test('RULER SEEK: click teleports the transport; stopped shows the dimmed playhead', async ({ page }) => {
+        const Q = await mockQ(page);
+        await page.evaluate(() => {
+            window.__celestrianTest.loadScenario('example-1q-4q');
+            window.__celestrianTest.setIsPlaying(false);
+        });
+        const ruler = page.locator('#ruler');
+        await expect(ruler).toBeVisible();
+
+        // STOPPED: the playhead is now visible (dimmed) — a seek needs
+        // somewhere to land (owner ruling 2026-08-27).
+        await expect(page.locator('#playhead')).toBeVisible();
+        await expect(page.locator('#playhead')).toHaveClass(/idle/);
+
+        // Click mid-ruler: 50% of a 4Q frame = 2Q.
+        const box = await ruler.boundingBox();
+        await ruler.click({ position: { x: box.width / 2, y: box.height - 4 } });
+        await expect.poll(async () => page.evaluate(async () => {
+            const s = await window.__celestrianTest.callNative('getGraphState');
+            return s.masterPos;
+        })).toBeGreaterThan(1.9 * Q);
+        const pos = await page.evaluate(async () => {
+            const s = await window.__celestrianTest.callNative('getGraphState');
+            return s.masterPos;
+        });
+        expect(Math.abs(pos - 2 * Q)).toBeLessThan(0.1 * Q);
+
+        // The dimmed playhead lands under the click within a poll.
+        await expect.poll(async () => {
+            const left = await page.locator('#playhead').evaluate(
+                el => parseFloat(el.style.left));
+            return Math.abs(left - box.width / 2);
+        }).toBeLessThan(8);
+    });
+
+    test('RULER SEEK: drag scrubs; the release position lands', async ({ page }) => {
+        const Q = await mockQ(page);
+        await page.evaluate(() => {
+            window.__celestrianTest.loadScenario('example-1q-4q');
+            window.__celestrianTest.setIsPlaying(false);
+        });
+        const ruler = page.locator('#ruler');
+        await expect(ruler).toBeVisible();
+        const box = await ruler.boundingBox();
+        const y = box.y + box.height - 4;
+
+        // Press at 25%, scrub to 75%, release: the final target (3Q)
+        // must land even through the throttled sender.
+        await page.mouse.move(box.x + box.width * 0.25, y);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width * 0.5, y, { steps: 4 });
+        await page.mouse.move(box.x + box.width * 0.75, y, { steps: 4 });
+        await page.mouse.up();
+        await expect.poll(async () => page.evaluate(async () => {
+            const s = await window.__celestrianTest.callNative('getGraphState');
+            return s.masterPos;
+        })).toBeGreaterThan(2.9 * Q);
+    });
+
+    test('RULER SEEK: locked while recording (engine refusal mirrored)', async ({ page }) => {
+        await page.evaluate(() =>
+            window.__celestrianTest.loadScenario('recording-1q-plus-growing'));
+        // The gesture surface says so...
+        await expect(page.locator('#ruler')).toHaveClass(/seek-locked/);
+        // ...and the backend enforces it regardless of the UI.
+        const refused = await page.evaluate(async () =>
+            window.__celestrianTest.callNative('seekTransport', 1000));
+        expect(refused).toBe(false);
     });
 });
 

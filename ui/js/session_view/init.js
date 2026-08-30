@@ -14,6 +14,7 @@ import { teleportToHandle, wireNavScroll } from './teleport.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
 import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
     from './creation_menu.js';
+import { wireRulerSeek } from './ruler_seek.js';
 
 export function initSessionView(callbacks) {
     initCtx(callbacks);
@@ -67,6 +68,9 @@ export function initSessionView(callbacks) {
     });
 
     wireZoom();
+    // Ruler scrub (owner ruling 2026-08-27): click/drag the ruler to
+    // seek — the callback is onSeek (app.js → seekTransport).
+    wireRulerSeek();
     wireNavScroll();
     wireMenuDismiss();
     wireCreationMenuDismiss();

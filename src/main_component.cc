@@ -125,6 +125,17 @@ MainComponent::MainComponent()
                                            [this](const auto&) {
                                              audio_engine.togglePlayback();
                                            }))
+              // Ruler scrub (owner ruling 2026-08-27): target in the
+              // published-masterPos domain, samples. Returns false
+              // when refused (a take is live or armed).
+              .withNativeFunction(
+                  "seekTransport",
+                  valueCall(
+                      "seekTransport", 1,
+                      [this](const auto& args) {
+                        return audio_engine.seekTransport((double)args[0]);
+                      },
+                      juce::var(false)))
               .withNativeFunction("startRecordingInNode",
                                   voidCall("startRecordingInNode", 1,
                                            [this](const auto& args) {
