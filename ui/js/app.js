@@ -46,6 +46,50 @@ function setLogLine(msg) {
     if (line) line.textContent = msg;
 }
 
+/* ---------- landed-state verification (audit 2026-08-31 U9) --------
+ * The engine refuses window/map edits silently behind several guards
+ * (coherence, mid-take, non-definer bounds, wrapper warps). The UI
+ * used to announce success regardless, and the next poll snapped the
+ * brackets back with no explanation. After a geometry commit settles,
+ * ONE debounced state read compares what landed to what was asked —
+ * an honest refusal message, or the success + its undo hint.
+ * Debounced per node: live splices stream through the same callback
+ * (~11/s) and only the final state deserves a verdict. */
+const verifyTimers = new Map();  // node id → pending verification timer
+function scheduleVerify(id, check, okMsg, refusedMsg) {
+    clearTimeout(verifyTimers.get(id));
+    verifyTimers.set(id, setTimeout(async () => {
+        verifyTimers.delete(id);
+        try {
+            const state = getState !== null
+                ? getState() : await callNative('getGraphState');
+            if (!state) return;
+            let n = null;
+            (function findIn(nodes) {
+                for (const c of nodes || []) {
+                    if (c.id === id) { n = c; return; }
+                    findIn(c.children);
+                    if (n) return;
+                }
+            })(state.nodes);
+            if (!n) return;  // node gone: a refusal message would lie
+            setLogLine(check(n) ? okMsg : refusedMsg);
+        } catch (_) { /* the poll will tell the story */ }
+    }, 250));
+}
+
+/** Did a single-window request land on this node (engine clamps
+ * honored: start floors at 0, a clip's end at its material)? */
+function windowLanded(n, startSamples, endSamples) {
+    const s = Math.round(n.loopStart || 0);
+    const e = Math.round(n.loopEnd || 0);
+    if (endSamples <= startSamples) return e <= s;  // a clear, landed cleared
+    const wantS = Math.max(0, startSamples);
+    const dur = n.duration || 0;
+    const wantE = dur > 0 ? Math.min(endSamples, dur) : endSamples;
+    return Math.abs(s - wantS) <= 1 && Math.abs(e - wantE) <= 1;
+}
+
 /**
  * callNative + status line in one step: awaits `method(...args)`, then
  * logs `okMsg` — or `failMsg`, when provided and the result is falsy.
@@ -870,13 +914,36 @@ function initApp() {
             call('renameNode', [id, name], `Renamed to "${name}"`),
         // Loop windows (time_maps.md): the region is data (setLoopPoints),
         // activation is a toggle between active and bypassed
-        onSetWindow: (id, startSamples, endSamples) =>
-            call('setLoopPoints', [id, startSamples, endSamples], 'Loop window set'),
+        onSetWindow: async (id, startSamples, endSamples) => {
+            const r = await callNative('setLoopPoints', id, startSamples,
+                                       endSamples);
+            scheduleVerify(id, n => windowLanded(n, startSamples, endSamples),
+                'Loop window set — ⌘Z to undo',
+                'Loop window refused by the engine — geometry unchanged');
+            return r;
+        },
         onToggleWindow: id => callNative('toggleLoopWindow', id),
         // Multi-segment maps (phase 3, the sequencer): one commit per
         // editor gesture — flat [s0,e0,...] in samples.
-        onSetSegments: (id, flatSegments) =>
-            call('setSegments', [id, flatSegments], 'Map updated'),
+        onSetSegments: async (id, flatSegments) => {
+            const r = await callNative('setSegments', id, flatSegments);
+            scheduleVerify(id, n => {
+                if (flatSegments.length >= 4) {
+                    const got = n.segments || [];
+                    return got.length === flatSegments.length &&
+                        got.every((v, i) =>
+                            Math.abs(v - flatSegments[i]) <= 1);
+                }
+                // n ≤ 1 delegates to the single-window path inside the
+                // engine; judge it by the same law.
+                if (flatSegments.length < 2) {
+                    return !(n.segments && n.segments.length >= 4);
+                }
+                return windowLanded(n, flatSegments[0], flatSegments[1]);
+            }, 'Map updated — ⌘Z to undo',
+               'Map refused by the engine — unchanged');
+            return r;
+        },
         onWarpPointer,
         getInputs,
         onSetInput: (id, channelIndex) =>

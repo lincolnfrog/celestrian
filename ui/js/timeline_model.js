@@ -16,7 +16,7 @@
 
 import { lcm } from './math_utils.js';
 import { qtime, toSamples, fromSamples } from './qtime.js';
-import { flatSegPeriod, mapOffset } from './time_map.js';
+import { flatSegPeriod, mapOffset, nodeWindowActive } from './time_map.js';
 
 // Re-exported for consumers that fold periods on top of this module's
 // cycle math (view_model.js); the canonical home is math_utils.js.
@@ -227,8 +227,7 @@ export function isAuditionWindow(node) {
  */
 export function stackEffectivePeriod(node, effectiveQ, { audible = false } = {}) {
     const q = Math.round(effectiveQ || 0);
-    const on = node.windowActive ??
-        (!node.loopBypassed && (node.loopEnd || 0) > (node.loopStart || 0));
+    const on = nodeWindowActive(node);
     // The step audition's derived window is a monitoring loop over the
     // song, not the part's length: the FRAME reads the song (audible:
     // false, the default); the audible-loop math reads the step.

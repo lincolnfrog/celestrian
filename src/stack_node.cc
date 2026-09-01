@@ -180,8 +180,15 @@ void StackNode::takeArmed() {
 }
 
 void StackNode::takeCommitted(int64_t origin, int64_t intrinsic_after) {
+  // Re-base FIRST, decrement LAST (audit 2026-08-31 E5): active_takes_
+  // is the message thread's "island settled" signal (hasActiveTake);
+  // decrementing before the epoch store opened a window where an edit
+  // observed a settled island whose epoch re-base had not landed yet.
+  rebaseEpochOnGrowth(origin, intrinsic_after);
   active_takes_.fetch_sub(1);
+}
 
+void StackNode::rebaseEpochOnGrowth(int64_t origin, int64_t intrinsic_after) {
   // Epoch re-base on cycle growth (recording.md "LCM Expansion Snap",
   // completed 2026-07-16): the cycle top moves to the HEARD top the
   // take was performed against — its origin floored to a whole multiple
@@ -220,7 +227,16 @@ void StackNode::takeCommitted(int64_t origin, int64_t intrinsic_after) {
   const int64_t epoch = epoch_samples_.load();
   int64_t rel = origin - epoch;
   if (rel < 0) rel = 0;
-  epoch_samples_.store(epoch + (rel / before) * before);
+  // Through the seqlock (audit 2026-08-31 E5): a raw epoch store here
+  // bypassed setIslandFacts, so a block reading (Q, epoch) mid-commit
+  // could take a mixed pair. Same generation — the re-base is a whole-
+  // old-cycle move, phase-neutral for every committed clip's origin-
+  // relative render, so no origin gating rides it. (Concurrent-writer
+  // note: the only audio-thread writer is this commit event; message-
+  // thread fact writers are refused under a live take, so the seqlock's
+  // single-writer discipline holds.)
+  setIslandFacts(quantum_samples_.load(), epoch + (rel / before) * before,
+                 islandGeneration());
 }
 
 void StackNode::addChild(std::unique_ptr<AudioNode> child) {

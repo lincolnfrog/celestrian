@@ -7,7 +7,7 @@
 
 import { posMod } from '../math_utils.js';
 import { mapPeriod, mapActive, mapOffset } from '../time_map.js';
-import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
+import { isQ13SoleDefiner, activeGeometryOutside, state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
          windowSuspendedOf, committedClipCount, findSoleCommittedClip,
          definerStackNode } from './state.js';
 import { canUndo, canRedo } from './undo.js';
@@ -168,10 +168,13 @@ function mockMasterVu(phase) {
 function publishedDefinerId() {
     if (committedClipCount() === 1) {
         const c = findSoleCommittedClip();
-        return c ? c.id : '';
+        // Publish through the same gates the edits use (engine parity:
+        // wrappedInWarp in attachTransportState) — isQ13SoleDefiner
+        // carries the ancestor-warp walk.
+        return c && isQ13SoleDefiner(c) ? c.id : '';
     }
     const ds = definerStackNode();
-    return ds ? ds.id : '';
+    return ds && !activeGeometryOutside(ds) ? ds.id : '';
 }
 
 export function getState() {

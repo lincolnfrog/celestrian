@@ -9,7 +9,7 @@
 import { posMod, lcm } from '../math_utils.js';
 import { launchPointFor, nextStopBoundary, armTarget } from '../timeline_model.js';
 import { mapPeriod, mapOffset, mapActive } from '../time_map.js';
-import {
+import { activeGeometryOutside,
     state, findNode, findParent, nodeMap, intrinsicOfNode, activeMapOf,
     rootActiveMap, auditionMapOf, serializeGraph,
     committedClipCount, findSoleCommittedClip, anyNodeRecording,
@@ -103,7 +103,7 @@ export function startRecordingInNode(id) {
     if (committedClipCount() === 1) {
         const definer = findSoleCommittedClip();
         if (definer && !targets.some(t => t.id === definer.id) &&
-            !definer.loopBypassed) {
+            !definer.loopBypassed && !activeGeometryOutside(definer)) {
             const ls = definer.loopStart || 0;
             const le = Math.min(definer.loopEnd || 0, definer.duration);
             const len = le - ls;
@@ -132,8 +132,9 @@ export function startRecordingInNode(id) {
     // unlike the clip collapse), stack window consumed.
     {
         const ds = definerStackNode();
-        if (ds && !anyNodeRecording() && !ds.loopBypassed &&
-            !(Array.isArray(ds.segments) && ds.segments.length >= 4)) {
+        if (ds && !activeGeometryOutside(ds) &&
+            !anyNodeRecording() && !ds.loopBypassed &&
+            !(Array.isArray(ds.segments) && ds.segments.length >= 2)) {
             const members = (ds.nodes || []).filter(c =>
                 c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
             const D = members.length ? members[0].duration : 0;
@@ -227,6 +228,11 @@ function applyAutoGate(p, committed) {
 function armClip(node) {
     const id = node.id;
     console.log('[MockBackend] startRecordingInNode', id);
+
+    // STALE GEOMETRY DIES AT ARM (audit 2026-08-31 F-A, engine parity:
+    // exchangeMapOverride at arm): a map override surviving a take
+    // strip on the now-empty clip would warp the NEW take.
+    delete node.segments;
 
     // FIRST CLIP SNAP LOGIC (Simulation)
     // If this is the "first clip" (no effective quantum established globally yet),
@@ -408,6 +414,13 @@ function armClip(node) {
             console.log('[MockBackend] Pending start at raw', node.pendingStartAt);
             return;
         }
+    } else {
+        // FIRST-CLIP ARM ESTABLISHES THE PROVISIONAL EPOCH (audit
+        // 2026-08-31 F-B, engine parity: establishIsland(0, epoch) —
+        // "q == 0 sets a provisional epoch only"). The mock left the
+        // stale epoch standing until commit, so pre-commit projections
+        // (recording view, ghost tiles) ran in the wrong frame.
+        state.islandEpoch = raw;
     }
     node.recordingStartPos = raw;
 }
@@ -480,6 +493,38 @@ function stopClipRecording(node, islandHasQuantum) {
 }
 
 /** Commit a recording at exactly `duration` (mirrors commitRecording). */
+/** Q ESTABLISHMENT SCRUB (audit 2026-08-31, engine parity
+ * AudioEngine::scrubIncoherentGeometry): pre-Q authored windows/maps
+ * whose period cannot live on the just-established grid are cleared.
+ * Committed clips' full-span windows are commit furniture, untouched. */
+function scrubIncoherentGeometry(q) {
+    if (!(q > 0)) return;
+    const coherent = p => p > 0 && (p % q === 0 || q % p === 0);
+    const visit = nodes => (nodes || []).forEach(n => {
+        if (Array.isArray(n.segments) && n.segments.length >= 2) {
+            // Internal form: an array of [start, end] PAIRS.
+            const p = n.segments.reduce((acc, sg) => acc + (sg[1] - sg[0]), 0);
+            if (!coherent(p)) {
+                delete n.segments;
+                n.loopStart = 0;
+                n.loopEnd = 0;
+                console.log('[MockBackend] cleared pre-Q map on', n.id);
+            }
+        } else {
+            const ls = n.loopStart || 0, le = n.loopEnd || 0;
+            const fullSpanClip = n.type === 'clip' && ls <= 0 &&
+                (n.duration || 0) > 0 && le >= n.duration;
+            if (le > ls && !fullSpanClip && !coherent(le - ls)) {
+                n.loopStart = 0;
+                n.loopEnd = 0;
+                console.log('[MockBackend] cleared pre-Q window on', n.id);
+            }
+        }
+        if (n.type === 'stack') visit(n.nodes);
+    });
+    visit(state.nodes);
+}
+
 export function commitClip(node, duration) {
     // Q BEFORE committing, so the stopping clip cannot define its own
     // quantum (mirrors C++ commit order)
@@ -499,6 +544,9 @@ export function commitClip(node, duration) {
     node.isAwaitingStop = false;
     const loopEnd = duration;
 
+    // Commit resets geometry whole (F-A): no stale multi-segment map
+    // may outlive the material it selected.
+    delete node.segments;
     node.duration = duration;
     node.isPlaying = true;
     node.loopStart = 0;
@@ -507,7 +555,8 @@ export function commitClip(node, duration) {
     // First committed take ESTABLISHES Q (design_language.md Q1: the DNA
     // of the scratch track) — STORED island state (P0-3), plus the
     // per-node declaration legacy consumers still read.
-    if (Q <= 0 && duration > 0) {
+    const establishing = Q <= 0 && duration > 0;
+    if (establishing) {
         state.islandQ = duration;
         node.effectiveQuantum = duration;
         console.log('[MockBackend] First take establishes Q =', duration);
@@ -569,6 +618,13 @@ export function commitClip(node, duration) {
     // Launch point is its projection, kept for UI compatibility.
     node.origin = foldedOrigin;
     node.launchPoint = launchPointFor(node.origin, duration);
+    // First commit: (Q, epoch) establish TOGETHER (audit 2026-08-31
+    // F-B, engine parity establishIsland(d, origin)) — the epoch is
+    // the first take's origin, not whatever the arm left behind.
+    if (establishing) {
+        state.islandEpoch = foldedOrigin;
+        scrubIncoherentGeometry(state.islandQ);
+    }
 
     console.log(`[MockBackend] Committed ${node.id}: Dur=${duration} (Q=${Q})`);
     reconcileTakes();

@@ -215,6 +215,7 @@ target_sources(CelestrianTests PRIVATE
     tests/group_arm_tests.cc
     tests/take_undo_tests.cc
     tests/content_frame_tests.cc
+    tests/audit_regression_tests.cc
     tests/solo_tests.cc
     tests/track_template_tests.cc
     tests/plugin_host_tests.cc

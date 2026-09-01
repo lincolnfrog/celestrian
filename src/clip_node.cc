@@ -1084,6 +1084,11 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
     if (take_storage_ == nullptr || take_storage_->channels() != capture_channels_ ||
         take_storage_->capacity() < want) {
       storage_rt_.store(nullptr);
+      // Keep the outgoing storage alive until nothing refers to it
+      // (audit 2026-08-31 E9): the installed content buffer may be a
+      // REFERRING view over these pages — a direct reassignment
+      // munmapped them under it.
+      auto stranded = std::move(take_storage_);
       take_storage_ = TakeStorage::reserve(capture_channels_, want);
       if (take_storage_ != nullptr) {
         take_storage_->commitTo(kArmCommitSamples);
@@ -1092,10 +1097,13 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
         content_.store(content_owned_.get());
         storage_rt_.store(take_storage_.get());
       } else {
-        // The OS refused the reservation: the plain heap path (as before).
-        auto& buffer = *content_.load();
-        buffer.setSize(capture_channels_, want, /*keepExistingContent=*/false,
-                       /*clearExtraSpace=*/false, /*avoidReallocating=*/false);
+        // The OS refused the reservation: the plain heap path. Replace
+        // the (possibly referring) buffer with an OWNED allocation
+        // rather than resizing a view over the stranded storage; the
+        // stranded reservation then releases at scope exit.
+        content_owned_ = std::make_unique<juce::AudioBuffer<float>>(
+            capture_channels_, want);
+        content_.store(content_owned_.get());
       }
     }
     auto& buffer = *content_.load();

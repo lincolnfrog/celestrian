@@ -36,6 +36,7 @@ const UNDOABLE = new Set([
 
 let lastUndoable = { method: null, arg0: null };
 let undoPushedForCall = false;
+let redoSavedForCall = null;  // the redo branch, restorable on refusal
 
 /** Push a pre-edit snapshot (a fresh action invalidates the redo branch). */
 export function pushUndo() {
@@ -67,6 +68,13 @@ export function interceptUndoableCall(method, arg0) {
             lastUndoable.method === 'setSegments' &&
             lastUndoable.arg0 === arg0;
         if (!coalesce) {
+            // Save the redo branch BEFORE the push clears it (audit
+            // 2026-08-31 F-C): a REFUSED edit mutates nothing, so it
+            // must not destroy the user's redo either — engine parity
+            // (AudioEngine::record clears redo only for edits that
+            // actually apply). pushUndoSnapshot replaces the array, so
+            // the saved reference survives intact.
+            redoSavedForCall = redoStack;
             pushUndo();
             undoPushedForCall = true;
         }
@@ -89,8 +97,12 @@ export function wasPushedThisCall() {
 export function popUndoForRefusal() {
     if (undoPushedForCall) {
         undoStack.pop();
+        // Restore the redo branch the dispatch's push cleared — a
+        // refusal is a no-op, and no-ops keep redo (F-C).
+        if (redoSavedForCall) redoStack = redoSavedForCall;
         undoPushedForCall = false;
     }
+    redoSavedForCall = null;
     lastUndoable = { method: null, arg0: null };
 }
 

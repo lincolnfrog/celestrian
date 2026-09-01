@@ -225,6 +225,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void compactIdleTakes();
   /** Shrink one idle clip's content to an exact heap copy and retire
    * the old buffer + its reserved storage (take_storage.h). */
+  void scrubIncoherentGeometry(int64_t q);
   void compactClipToHeap(celestrian::ClipNode& clip);
   /** Keep committed pages ahead of every live take's write head
    * (take_storage.h); called from the state poll. */
@@ -780,6 +781,11 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * content selection: lcm(Q, the inner cycle of each stack with an
    * active map). Content-frame law, 2026-08-30. */
   int64_t epochViewStep(int64_t quantum) const;
+  /** A seek re-frames every absolute time in the session; the undo and
+   * redo logs (which store absolute origins/epochs) ride the same
+   * delta so undo restores PLACEMENT, not stale absolutes (fresh audit
+   * 2026-08-31 #3). */
+  void shiftHistoryAbsolutes(int64_t delta);
 
   // Deferred destruction: retired items are freed once the callback counter
   // has advanced two callbacks past their retirement, guaranteeing no

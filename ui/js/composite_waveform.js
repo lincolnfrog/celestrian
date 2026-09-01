@@ -14,6 +14,7 @@
  */
 
 import { posMod } from './math_utils.js';
+import { nodeWindowActive } from './time_map.js';
 
 // Degenerate-frame guard (mirrors unrollReps' maxTiles): a segment so
 // short relative to the stack cycle that it would tile more than this
@@ -181,10 +182,9 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // the ?? fallback derives it for states that predate the field.
         const hasMultiSeg = !raw && Array.isArray(child.segments) &&
             child.segments.length >= 4;
-        const mapOn = !raw && (child.windowActive ??
-            (!child.loopBypassed &&
-                (hasMultiSeg ||
-                    (child.loopEnd || 0) > (child.loopStart || 0))));
+        // One activity verdict (time_map.nodeWindowActive) — the
+        // engine's published field, else its exact derivation.
+        const mapOn = !raw && nodeWindowActive(child);
         const slices = []; // [innerStart, len] samples, heard order
         if (mapOn && hasMultiSeg) {
             for (let i = 0; i + 1 < child.segments.length; i += 2) {

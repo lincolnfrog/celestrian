@@ -60,7 +60,8 @@ export function createNode(type, parentId = null) {
 
 export function deleteNode(id) {
     const node = findNode(id);
-    if (!node) return;
+    // Unknown node = a refusal (F-C): drop the dispatch's snapshot.
+    if (!node) { popUndoForRefusal(); return; }
     if (node.isRecording) {
         // cancel is the verb for takes — a refused delete records
         // nothing (drop the dispatch's pre-pushed undo snapshot).
@@ -125,7 +126,7 @@ export function renameNode(id, newName) {
 
 export function reorderNode(nodeId, newParentId, newIndex) {
     const node = findNode(nodeId);
-    if (!node) return;
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
 
     // Remove from current parent
     removeNodeFromParent(nodeId);
@@ -190,9 +191,11 @@ export function combineNodes(draggedId, targetId) {
         w: Math.max(targetNode.w || 400, draggedNode.w || 400),
         h: 300,
         isExpanded: true,
-        // Fixture fallback for targets that predate the field: 1 s of
-        // audio at the mock's rate (was the literal 44100).
-        effectiveQuantum: targetNode.effectiveQuantum || quantumSamples(),
+        // No fabricated Q (audit 2026-08-31 F-B): the island quantum
+        // is STORED state (state.islandQ) — combining empty clips used
+        // to declare a bogus 1 s Q here that effectiveQuantumForState's
+        // legacy scan then picked up.
+        effectiveQuantum: targetNode.effectiveQuantum || 0,
         nodes: [targetNode, draggedNode]  // Target first, then dragged
     };
 

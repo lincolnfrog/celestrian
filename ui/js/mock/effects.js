@@ -10,6 +10,7 @@
  * are stable per node (engine parity: reorders preserve identity).
  */
 
+import { popUndoForRefusal } from './undo.js';
 import { findNode, state } from './state.js';
 import { getKnownPlugins } from './plugins.js';
 
@@ -67,7 +68,7 @@ export function setSlotParam(id, slotUuid, key, value) {
 /** Chain STRUCTURE (undoable, unlike the knobs — see mock/undo.js). */
 export function moveChainSlot(id, slotUuid, newIndex) {
     const node = findNode(id);
-    if (!node) return;
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
     const chain = ensureEffects(node).chain;
     const from = chain.findIndex(s => s.slot === slotUuid);
     const to = Math.max(0, Math.min(chain.length - 1, newIndex | 0));
@@ -83,7 +84,7 @@ export function moveChainSlot(id, slotUuid, newIndex) {
  * chain publishes it". Arrives ENABLED, like the engine's. */
 export function addPluginToChain(id, pluginUid, index) {
     const node = findNode(id);
-    if (!node) return;
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
     const known = getKnownPlugins().find(p => p.uid === pluginUid);
     if (!known) {
         console.log('[MockBackend] addPluginToChain: unknown uid', pluginUid);
@@ -110,7 +111,7 @@ export function addPluginToChain(id, pluginUid, index) {
 /** VST3-only removal (engine parity: built-ins are the fixed cards). */
 export function removeChainSlot(id, slotUuid) {
     const node = findNode(id);
-    if (!node) return;
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
     const chain = ensureEffects(node).chain;
     const at = chain.findIndex(s => s.slot === slotUuid && s.type === 'vst3');
     if (at < 0) return;

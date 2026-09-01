@@ -6,6 +6,7 @@
  * deterministic).
  */
 
+import { isGestureLive } from './gesture.js';
 import { initCtx, ctx } from './context.js';
 import { parseDropIds, isTypingTarget } from './sv_util.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
@@ -84,6 +85,10 @@ export function initSessionView(callbacks) {
 function wireKeyboard() {
     document.addEventListener('keydown', e => {
         if (e.key === 'Escape') {
+            // A live drag owns Escape (gesture.js cancels it in the
+            // capture phase and stops propagation; this guard is the
+            // belt to that suspender — audit 2026-08-31 U6).
+            if (isGestureLive()) return;
             clearSelection();
             if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
             // Esc drops any step audition (§11.3: "esc exits the loop").

@@ -25,14 +25,23 @@ export function noteFrame(frameQ, foldQ) {
     lastFoldQ = foldQ;
 }
 
+let pins = 0;  // refcount (audit 2026-08-31 U1): the first of two
+               // overlapping pins must not release the frame under the
+               // second — the exact hazard the freeze counters close.
+
 /** Freeze the shared frame at its last-patched value (gesture start). */
 export function pinFrame() {
-    dragPinQ = lastFrameQ;
-    dragPinFoldQ = lastFoldQ;
+    if (pins++ === 0) {
+        dragPinQ = lastFrameQ;
+        dragPinFoldQ = lastFoldQ;
+    }
 }
 
-/** Release the pin — the frame settles once, on the next patch. */
+/** Release the pin — the frame settles once, when the LAST holder lets
+ * go (paired with pinFrame; the gesture runner pairs them for you). */
 export function unpinFrame() {
-    dragPinQ = null;
-    dragPinFoldQ = null;
+    if (pins > 0 && --pins === 0) {
+        dragPinQ = null;
+        dragPinFoldQ = null;
+    }
 }

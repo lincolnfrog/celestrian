@@ -215,6 +215,55 @@ class ContentFrameTests : public juce::UnitTest {
       expectEquals(bad3, 0, "after undo: window [ws, we) selects buffer [ws, we)");
     }
 
+    beginTest("Definer stack MULTI-SEGMENT re-trim: the map selects buffer segments");
+    {
+      // The punch/cell twin of the window trim (audit 2026-08-30 §4.8):
+      // a two-segment map on the definer stack re-establishes Q := its
+      // period and — content-frame law — the members' origins ride, so
+      // the segments name BUFFER material and the walk is exact.
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var s = engine.getGraphState();
+        clipIdsUnder(findVar(s, stack_id), ids);
+      }
+      engine.startRecordingInNode(stack_id);
+      driveRamp(engine, D, clock, true, nullptr);
+      engine.stopRecordingInNode(stack_id);
+      driveRamp(engine, BLOCK, clock, true, nullptr);
+      const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      const std::vector<float> table = buildTable(engine, clock, origin0, D);
+
+      celestrian::timing::TimeMap m;
+      m.n = 2;
+      m.segs[0] = {5000, 15000};
+      m.segs[1] = {20000, 30000};
+      const int64_t P = 20000;
+      engine.setSegments(stack_id, m);
+      expectEquals(rootProp(engine, "quantum"), P, "Q := the map period");
+      const int64_t epoch1 = rootProp(engine, "islandEpoch");
+      for (const auto& id : ids) {
+        expectEquals((int64_t)deepProp(engine, id, "origin"), epoch1,
+                     "members' origins ride with the epoch");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D, "members whole");
+      }
+      std::vector<std::pair<int64_t, float>> out;
+      driveRamp(engine, 2 * P, clock, true, &out);
+      const int bad = mismatches(out, table, [&](int64_t t) {
+        const int64_t h = mod(t - epoch1, P);
+        return h < 10000 ? 5000 + h : 20000 + (h - 10000);
+      });
+      expectEquals(bad, 0, "heard walks the segments in buffer coordinates");
+      // Continuity at the edit is covered by heardOffsetOf/fold; the
+      // walk itself is the law being pinned here.
+    }
+
     beginTest("Group lock-collapse is audio-neutral (take 2 arms against a trimmed group)");
     {
       AudioEngine engine;

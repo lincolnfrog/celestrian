@@ -281,20 +281,21 @@ class ClipNode : public AudioNode {
    * buffer, unreachable except by uncollapse (undo). Message thread;
    * all-atomic (same exposure discipline as setLoopPoints). */
   void collapseToWindow(int64_t shift, int64_t len, bool shift_origin = true) {
-    // EXPLICIT COLLAPSE MARKER (audit 2026-08-30 §3.1): the pre-collapse
-    // duration is remembered here, so "was this take collapsed?" is a
-    // fact, not the `write_position > duration` heuristic — every
-    // snapped take overshoots its duration by up to a block, and the
-    // heuristic "uncollapsed" ordinary takes to their raw, off-grid
-    // recorded length on a re-opening delete.
+    // EXPLICIT COLLAPSE MARKERS (audit 2026-08-30 §3.1; NESTING per the
+    // fresh audit 2026-08-31 #2 — collapse → cancel take → re-trim →
+    // arm again is a legal second collapse): `collapsed_from_` keeps
+    // the ORIGINAL duration (set only on the first level) and
+    // `collapse_origin_shift_` ACCUMULATES what the collapses added to
+    // the origin, exactly mirroring content_base_ — so the re-opening
+    // restore (which unwinds ALL levels from the markers) stays exact.
     //
     // `shift_origin`: a CLIP window anchors at origin + start, so its
     // collapse moves the origin by `shift` to stay audio-neutral. A
     // GROUP window anchors at the island epoch (== the members'
     // origin), so a group collapse moves only the content base — the
     // origin stays (heard = s + ((t − origin) mod len) both ways).
-    collapsed_from_.store(duration_samples.load());
-    collapse_origin_shift_.store(shift_origin ? shift : 0);
+    if (collapsed_from_.load() == 0) collapsed_from_.store(duration_samples.load());
+    collapse_origin_shift_.fetch_add(shift_origin ? shift : 0);
     content_base_.store(content_base_.load() + shift);
     if (shift_origin) origin_samples.store(origin_samples.load() + shift);
     duration_samples.store(len);
@@ -302,15 +303,25 @@ class ClipNode : public AudioNode {
   }
   /** Inverse of collapseToWindow: restore the pre-collapse buffer view
    * and the trim (window [shift, shift + current duration)). The
-   * origin moves back by exactly what the collapse moved it. */
-  void uncollapseFromWindow(int64_t shift, int64_t old_duration) {
+   * origin moves back by `origin_shift` — the caller says how much this
+   * particular unwind contributed: an explicit CollapseTake undo passes
+   * its own level's shift; the marker-driven re-open passes the FULL
+   * accumulated shift (origin_shift < 0 = "all of it"). */
+  void uncollapseFromWindow(int64_t shift, int64_t old_duration,
+                            int64_t origin_shift = -1) {
     const int64_t len = duration_samples.load();
+    const int64_t o =
+        origin_shift < 0 ? collapse_origin_shift_.load() : origin_shift;
     content_base_.store(content_base_.load() - shift);
-    origin_samples.store(origin_samples.load() - collapse_origin_shift_.load());
+    origin_samples.store(origin_samples.load() - o);
     duration_samples.store(old_duration);
     setLoopPoints(shift, shift + len);
-    collapsed_from_.store(0);
-    collapse_origin_shift_.store(0);
+    collapse_origin_shift_.fetch_sub(o);
+    // Fully unwound (the content view is back at 0) → not collapsed.
+    if (content_base_.load() == 0) {
+      collapsed_from_.store(0);
+      collapse_origin_shift_.store(0);
+    }
   }
   /** Message thread: set the origin so that the audio thread adopts it
    * only at a block top carrying island generation >= `gate` (the

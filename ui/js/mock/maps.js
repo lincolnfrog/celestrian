@@ -167,14 +167,31 @@ function stampWindowDomain(node) {
 
 export function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
-    if (!node) return;
+    // Unknown node = a refusal too (F-C): the dispatch pre-pushed a
+    // snapshot; leaving it made a no-op undo step (and ate the redo).
+    if (!node) { popUndoForRefusal(); return; }
     // MID-TAKE MAP-EDIT GATE (engine parity, owner-ruled): a take
     // recording through this stack's map froze its geometry at arm —
     // refuse window edits until it commits. Siblings stay editable.
-    if (node.type === 'stack' && subtreeRecording(node)) {
-        console.log('[MockBackend] setLoopPoints refused — take recording in subtree');
+    if (node.isRecording || (node.type === 'stack' && subtreeRecording(node))) {
+        console.log('[MockBackend] setLoopPoints refused — take recording here');
         popUndoForRefusal();  // a refused edit records nothing
         return;
+    }
+    // A NON-DEFINER stack window selects over its INNER cycle: an end
+    // past it is malformed — refused, as the engine refuses (parity
+    // with audit 2026-08-30 §1.5; the definer branch clamps instead).
+    // (An EMPTY stack accepts freely — pre-authored parts are legal;
+    // the Q-establishment scrub clears what the grid cannot carry.)
+    if (node.type === 'stack' && !isQ13DefinerStack(node) &&
+        loopEnd > loopStart) {
+        const inner = stackInnerCycle(node);
+        if (inner > 0 && loopEnd > inner) {
+            console.log('[MockBackend] setLoopPoints refused — window end ' +
+                loopEnd + ' is past the stack inner cycle ' + inner);
+            popUndoForRefusal();  // a refused edit records nothing
+            return;
+        }
     }
     // COHERENCE GUARD (owner ruling 2026-08-09, engine parity): a
     // window length off the Q grid is refused — categorical, both
@@ -182,8 +199,23 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     // sole-definer re-trim below) or clears the window.
     {
         const cs = Math.max(0, loopStart);
-        const ce = node.type === 'clip' && (node.duration || 0) > 0
-            ? Math.min(loopEnd, node.duration) : loopEnd;
+        // Clamp to material even when there is NONE (F-A): an empty
+        // clip's window clamps to end 0 — i.e. clears — instead of
+        // storing a window over nothing.
+        const ce = node.type === 'clip'
+            ? Math.min(loopEnd, node.duration || 0) : loopEnd;
+        // IDENTITY EDITS RECORD NOTHING (audit 2026-08-31 U3, engine
+        // parity): re-committing the stored window is a no-op — no
+        // undo step, and the redo branch survives. An installed
+        // override still applies (the edit supersedes it).
+        const storedLs = node.loopStart || 0;
+        const storedLe = node.loopEnd || 0;
+        const sameCleared = !(ce > cs) && !(storedLe > storedLs);
+        if (!(Array.isArray(node.segments) && node.segments.length >= 2) &&
+            (sameCleared || (cs === storedLs && ce === storedLe))) {
+            popUndoForRefusal();  // a no-op records nothing
+            return;
+        }
         const q13 = ce > cs && (isQ13SoleDefiner(node) || isQ13DefinerStack(node));
         const q = state.islandQ;
         const len = ce - cs;
@@ -213,10 +245,12 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     node.loopEnd = loopEnd;
     stampWindowDomain(node);
     // Clamp to the recorded material (engine parity): a fractional-Q
-    // drag rounded past the take's end must not window silence.
-    if (node.type === 'clip' && (node.duration || 0) > 0) {
+    // drag rounded past the take's end must not window silence. Even
+    // when there is NO material (F-A): an empty clip's window clamps
+    // to end 0 — cleared, never a window over nothing.
+    if (node.type === 'clip') {
         loopStart = Math.max(0, loopStart);
-        loopEnd = Math.min(loopEnd, node.duration);
+        loopEnd = Math.min(loopEnd, node.duration || 0);
         node.loopStart = loopStart;
         node.loopEnd = loopEnd;
     }
@@ -240,6 +274,15 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         state.islandQ = len;
         state.islandEpoch = node.origin + loopStart;
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
+    } else if (!(loopEnd > loopStart) && isQ13SoleDefiner(node) &&
+               (node.duration || 0) > 0) {
+        // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (audit 2026-08-31
+        // E8, engine parity): the definer's window was Q — clearing it
+        // restores the full take as the part: Q := D, epoch := origin.
+        retimeSequences(state.islandQ, node.duration);
+        state.islandQ = node.duration;
+        state.islandEpoch = node.origin || 0;
+        console.log('[MockBackend] Q13 window clear → Q =', state.islandQ);
     } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
         // Q13 FOR GROUPS (engine parity, AudioEngine::setLoopPoints
         // stack branch, 2026-08-21): the definer STACK's window
@@ -257,7 +300,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         // members' RAW extent; whole members make the mock's agree.)
         for (const c of node.nodes || []) {
             if (c.type !== 'clip' || !(c.duration > 0) || c.isRecording) continue;
-            if (Array.isArray(c.segments) && c.segments.length >= 4) continue;
+            if (Array.isArray(c.segments) && c.segments.length >= 2) continue;
             if ((c.loopStart || 0) === 0 && (c.loopEnd || 0) >= c.duration) continue;
             c.loopStart = 0;
             c.loopEnd = c.duration;
@@ -291,6 +334,17 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             state.islandQ = len;
             state.islandEpoch = origin1;
             console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
+        } else if (!(loopEnd > loopStart) && inner > 0) {
+            // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (E8, group
+            // twin): Q := the members' whole take, epoch := their
+            // common origin.
+            const members = (node.nodes || []).filter(c =>
+                c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
+            retimeSequences(state.islandQ, inner);
+            state.islandQ = inner;
+            if (members.length) state.islandEpoch = members[0].origin || 0;
+            console.log('[MockBackend] Q13 group window clear → Q =',
+                state.islandQ);
         }
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
                !anyNodeRecording()) {
@@ -346,6 +400,14 @@ export function setSegments(id, flat) {
     // Structural sanity (engine parity): ordered, disjoint, non-empty,
     // within the inner cycle.
     const intrinsic = intrinsicOfNode(node);
+    // An EMPTY clip has no material for a map to select (audit
+    // 2026-08-31 F-A, engine parity): refuse. Empty STACKS accept —
+    // pre-authored parts are legal; the Q-establishment scrub clears
+    // what the grid cannot carry.
+    if (segs.length >= 2 && intrinsic <= 0 && node.type === 'clip') {
+        refuse('nothing committed here to map (record a take first)');
+        return;
+    }
     let prev = 0;
     for (const [s, e] of segs) {
         if (e <= s || s < prev || (intrinsic > 0 && e > intrinsic)) {
@@ -370,7 +432,7 @@ export function setSegments(id, flat) {
     // is the Q13 sole-definer re-trim below, where the period
     // *re-establishes* Q rather than fighting it.
     {
-        const q13 = isQ13SoleDefiner(node);
+        const q13 = isQ13SoleDefiner(node) || isQ13DefinerStack(node);
         const q = state.islandQ;
         const p = segs.reduce((n, [s, e]) => n + (e - s), 0);
         // Coherent = whole multiple of Q, or an exact divisor of it
@@ -410,6 +472,42 @@ export function setSegments(id, flat) {
         state.islandQ = period;
         state.islandEpoch = node.origin + a0;
         console.log('[MockBackend] Q13 segments re-trim → Q =', period);
+    } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
+        // Q13 FOR GROUPS, multi-segment (engine parity, audit
+        // 2026-08-30 §4.8): Q := period; the stack map anchors at the
+        // EPOCH, so epoch' = t0 − heardOffsetOf(pT) and the members'
+        // origins ride (origin' := epoch'), members whole.
+        const map = { segs };
+        const period = mapPeriod(map);
+        const t0 = state.masterPos;
+        const epoch0 = state.islandEpoch || 0;
+        const members = (node.nodes || []).filter(c =>
+            c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
+        if (period > 0 && members.length) {
+            const inner = intrinsicOfNode(node);
+            const origin0 = members[0].origin || 0;
+            const oldActive = mapActive(oldMap) && mapPeriod(oldMap) > 0;
+            const p0 = oldActive
+                ? posMod(epoch0 + mapOffset(oldMap, posMod(t0 - epoch0,
+                      mapPeriod(oldMap))) - origin0, inner)
+                : posMod(t0 - origin0, inner);
+            let h = heardOffsetOf(map, p0);
+            if (h < 0) {
+                const oldH = oldActive ? posMod(t0 - epoch0, mapPeriod(oldMap)) : 0;
+                h = posMod(oldH, period);
+            }
+            const epoch1 = t0 - h;
+            members.forEach(c => {
+                c.origin = epoch1;
+                c.loopStart = 0;
+                c.loopEnd = c.duration;
+                delete c.segments;
+            });
+            retimeSequences(state.islandQ, period);  // sequences track Q
+            state.islandQ = period;
+            state.islandEpoch = epoch1;
+            console.log('[MockBackend] Q13 group segments re-trim → Q =', period);
+        }
     } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
                !anyNodeRecording()) {
         // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders).
@@ -422,6 +520,7 @@ export function toggleLoopWindow(id) {
     // Fractal (I5, engine parity): clips toggle their single-segment
     // window exactly like stacks toggle their time-map.
     const node = findNode(id);
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
     if (node) {
         // MID-TAKE MAP-EDIT GATE (see setLoopPoints).
         if (node.type === 'stack' && subtreeRecording(node)) {

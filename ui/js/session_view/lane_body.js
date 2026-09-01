@@ -23,6 +23,7 @@ import { buildWindowDims, dimComplementInto } from './dims.js';
 import { wireBandCreate, appendCutBands, appendTrimGrips }
     from './map_bands.js';
 import { wireWindow } from './window_edit.js';
+import { isOverlayFrozen } from './gesture.js';
 
 /* Surplus rep tiles fade out over this long before removal (instant
  * removal mid-morph left a momentary gap — the commit "squish"). */
@@ -200,11 +201,11 @@ function makeDoneChip(laneId, title) {
  *      exists — just the arm marker and cut bands over the take.
  *
  * The heard-time cursor is patched every poll OUTSIDE the keyed
- * rebuilds, and BEFORE the body._winDrag gates — a frozen overlay
+ * rebuilds, and BEFORE the isOverlayFrozen gates — a frozen overlay
  * still shows where the sound is. The overlay itself is NEVER rebuilt
  * under an active drag (the captured node would orphan the gesture),
- * nor during the post-release HOLD (body._winHold, window_edit.js)
- * while the engine has not yet answered the commit.
+ * nor during the post-release HOLD (gesture.js holdOverlay) while
+ * the engine has not yet answered the commit.
  */
 export function patchLaneBody(row, lane, vm, aux) {
     if (lane.kind === 'add' || lane.kind === 'fx' || lane.kind === 'seq') {
@@ -367,7 +368,7 @@ export function patchLaneBody(row, lane, vm, aux) {
             ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
              lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
              lane.reps.map(r => [r.startQ, r.endQ])]);
-        if (body._winDrag || body._winHold) return;
+        if (isOverlayFrozen(body)) return;
         reconcileMarkers(overlay, heardKey, o => {
             const chip = el('div', 'win-chip win-open-chip toggle', {
                 title: 'Inspect the whole take (editing works right here)',
@@ -391,7 +392,7 @@ export function patchLaneBody(row, lane, vm, aux) {
         // The sound cursor keeps moving through a band drag (the
         // reconcile below is frozen, but the ear isn't).
         patchWinCursor(overlay, lane, vm, cycleQ);
-        if (body._winDrag || body._winHold) return;
+        if (isOverlayFrozen(body)) return;
         reconcileMarkers(overlay, mapKey, o => {
             if (!lane.mapBypassed) {
                 buildWindowDims(o, { segs: lane.mapSegs }, lane, cycleQ);
@@ -451,7 +452,7 @@ export function patchLaneBody(row, lane, vm, aux) {
     // "where is the sound" line the editing view was missing (field
     // 2026-07-25).
     patchWinCursor(overlay, lane, vm, cycleQ);
-    if (body._winDrag || body._winHold) return;
+    if (isOverlayFrozen(body)) return;
 
     reconcileMarkers(overlay, overlayKey, o => {
         // Enclosing-map projection (phase 3): the group map's excluded

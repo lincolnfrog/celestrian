@@ -122,9 +122,37 @@ export function findSoleCommittedClip(nodes = state.nodes) {
  * in which its window/map edits re-establish Q rather than obey it.
  * (Shared by the setLoopPoints / setSegments guards and re-trims.)
  */
+/**
+ * ONLY GEOMETRY WINS (audit 2026-08-31, engine parity
+ * hasActiveGeometryOutside): true when any node OUTSIDE `exclude`'s
+ * subtree carries an active window or map override. A Q13
+ * re-establishment under such geometry would strand it permanently
+ * incoherent with the new grid; ancestor warps are covered too (they
+ * are outside the subtree). A committed clip's full-span [0, D)
+ * window is commit furniture, not geometry.
+ */
+export function activeGeometryOutside(exclude, nodes = state.nodes) {
+    for (const n of nodes || []) {
+        if (n === exclude) continue;
+        if (Array.isArray(n.segments) && n.segments.length >= 2 &&
+            !n.loopBypassed) return true;
+        const ls = n.loopStart || 0, le = n.loopEnd || 0;
+        const fullSpanClip = n.type === 'clip' && ls <= 0 &&
+            (n.duration || 0) > 0 && le >= n.duration;
+        if (le > ls && !fullSpanClip && !n.loopBypassed) return true;
+        if (n.type === 'stack' && activeGeometryOutside(exclude, n.nodes)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 export function isQ13SoleDefiner(node) {
-    return node.type === 'clip' && (node.duration || 0) > 0 &&
-        committedClipCount() === 1 && !anyNodeRecording();
+    if (!(node.type === 'clip' && (node.duration || 0) > 0 &&
+          committedClipCount() === 1 && !anyNodeRecording())) return false;
+    // ONLY GEOMETRY WINS (see activeGeometryOutside; subsumes the
+    // ancestor-warp guard — ancestors are outside the subtree).
+    return !activeGeometryOutside(node);
 }
 
 function committedClipCountIn(nodes) {
@@ -142,8 +170,16 @@ function committedClipCountIn(nodes) {
  * flight — the state in which its window re-establishes Q. */
 export function isQ13DefinerStack(node) {
     if (!node || node.type !== 'stack' || anyNodeRecording()) return false;
+    // A live step audition derives its own window over the stack — its
+    // geometry is not the definer's to re-establish (audit 2026-08-31
+    // E7, engine parity: !ds->auditionActive()).
+    if (typeof node.auditionStep === 'number' && node.auditionStep >= 0) {
+        return false;
+    }
     const d = definerStackNode();
-    return d === node;
+    if (d !== node) return false;
+    // ONLY GEOMETRY WINS (engine parity: definerStack's outside scan).
+    return !activeGeometryOutside(node);
 }
 
 /**
@@ -160,6 +196,10 @@ export function definerStackNode(nodes = state.nodes, owner = null) {
     for (const n of nodes || []) {
         if (n.type === 'clip') {
             if (n.isRecording || !(n.duration > 0)) continue;
+            // A one-shot member reads its period from CONTEXT — not
+            // "one take looping as one part" (audit 2026-08-31 U4;
+            // engine definerStack and VM definerStackOf agree).
+            if (n.periodSource === 'context') return null;
             if (direct === 0) { origin = n.origin || 0; duration = n.duration; }
             else if ((n.origin || 0) !== origin || n.duration !== duration) return null;
             direct++;
@@ -168,7 +208,21 @@ export function definerStackNode(nodes = state.nodes, owner = null) {
             nested = n;
         }
     }
-    if (nested) return direct === 0 ? definerStackNode(nested.nodes, nested) : null;
+    if (nested) {
+        if (direct !== 0) return null;
+        // WRAPPER WARP GUARD (audit 2026-08-31 E7, engine parity): a
+        // stack on the path that remaps time — an active override or
+        // its own engaged window — sits between the island clock and
+        // the definer. No definer through a warp.
+        const wrapper = owner || null;
+        if (wrapper && ((Array.isArray(wrapper.segments) &&
+                         wrapper.segments.length >= 2) ||
+                        (!wrapper.loopBypassed &&
+                         (wrapper.loopEnd || 0) > (wrapper.loopStart || 0)))) {
+            return null;
+        }
+        return definerStackNode(nested.nodes, nested);
+    }
     return direct >= 2 ? owner : null;
 }
 

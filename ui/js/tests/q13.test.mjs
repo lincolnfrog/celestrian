@@ -376,6 +376,24 @@ test('GROUPS: a second take LOCKS Q and COLLAPSES the group to its window (fract
         're-open: the trim is the stack window again');
 });
 
+test('GROUPS: a multi-segment map on the definer stack re-establishes Q (the punch twin)', async () => {
+    loadScenario('empty');
+    const { stackId, ids } = await recordGroupTake(2, 4);
+    const D = getState().quantum;
+    // Two cells kept: [D/8, 3D/8) + [D/2, 3D/4) — period 3D/8.
+    await callNative('setSegments', stackId,
+        [D / 8, 3 * D / 8, D / 2, 3 * D / 4]);
+    const P = (3 * D) / 8 - D / 8 + (3 * D) / 4 - D / 2;
+    assert.equal(getState().quantum, P, 'Q := the map period');
+    for (const id of ids) {
+        assert.equal(find(id).origin, getState().islandEpoch,
+            'members ride with the epoch (content-frame law)');
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D], 'members whole');
+    }
+    const segs = find(stackId).segments;
+    assert.deepEqual(segs, [D / 8, 3 * D / 8, D / 2, 3 * D / 4], 'map on the stack');
+});
+
 test('GROUPS: two takes in one stack are NOT a definer (different origins)', async () => {
     loadScenario('empty');
     const { stackId } = await recordGroupTake(2, 2);

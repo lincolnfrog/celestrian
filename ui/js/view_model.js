@@ -30,7 +30,7 @@ import {
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
-import { flatSegPeriod } from './time_map.js';
+import { flatSegPeriod, nodeWindowActive } from './time_map.js';
 
 // Q-space float tolerance for exact-position comparisons (tile identity,
 // boundary snaps). Q values are small integers/rationals, so 1e-9 sits
@@ -654,6 +654,16 @@ function resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
     if (typeof publishedDefinerId === 'string') {
         definer = publishedDefinerId
             ? findNodeInTree(nodes, publishedDefinerId) : null;
+        // PAST ITS OWN GATES (audit 2026-08-31 U4): the trim-view math
+        // below leans on oneTakeDuration for a stack definer (the
+        // intrinsic-period exactness rule) — a published id whose
+        // stack no longer reads as one take here (a member became a
+        // one-shot, durations drifted mid-poll) must not open a trim
+        // view whose geometry the VM cannot compute.
+        if (definer && definer.type === 'stack' &&
+            !(oneTakeDuration(definer) > 0)) {
+            definer = null;
+        }
     } else {
         // Q13 FOR GROUPS (owner ruling 2026-08-21, the fractal twin):
         // the DEFINER STACK is the stack whose direct clip children
@@ -705,6 +715,10 @@ function definerStackOf(nodes, owner = null) {
     for (const n of nodes || []) {
         if (n.type === 'clip') {
             if (n.isRecording || !(n.duration > 0)) continue;
+            // A one-shot member reads its period from CONTEXT — the
+            // stack is not "one take looping as one part" (U4; matches
+            // oneTakeDuration and the engine's definerStack).
+            if (n.periodSource === 'context') return null;
             if (direct === 0) { origin = n.origin || 0; duration = n.duration; }
             else if ((n.origin || 0) !== origin || n.duration !== duration) return null;
             direct++;
@@ -726,8 +740,7 @@ function memberCommonWindow(stack) {
         if (c.type !== 'clip' || c.isRecording || !(c.duration > 0)) continue;
         const ls = c.loopStart || 0;
         const le = Math.min(c.loopEnd || 0, c.duration);
-        const active = c.windowActive ?? (!c.loopBypassed && le > ls);
-        if (!active || c.loopBypassed || !(le > ls)) return null;
+        if (!nodeWindowActive(c) || c.loopBypassed || !(le > ls)) return null;
         if (ls === 0 && le >= c.duration) return null;  // whole
         if (!win) win = [ls, le];
         else if (win[0] !== ls || win[1] !== le) return null;
@@ -997,8 +1010,12 @@ function mapPlayheadToDisplay({ playheadQ, frameQ, anyRecording,
 
     // Q13 provisional frame: the timeline shows BUFFER time but the
     // transport publishes ISLAND time, wrapped on the trimmed loop —
-    // [0, 1Q), where island phase 0 is the selection's top (epoch =
-    // origin + loopStart, and clip playback anchors there). Map the ONE
+    // [0, 1Q), where island phase 0 is the selection's top (the trim
+    // re-establishes the epoch at the performance moment of the window
+    // top, and the origins ride with it — the content-frame law,
+    // docs/time_maps.md; the pre-2026-08-30 "epoch = origin +
+    // loopStart" identity holds only at the moment of the trim). Map
+    // the ONE
     // playhead (I8) into the buffer frame: heard position = selection
     // start + island phase. The cursor sweeps exactly the selection —
     // the dead air on either side is never audible time, so the cursor

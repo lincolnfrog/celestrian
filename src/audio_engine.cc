@@ -39,9 +39,14 @@ void AudioEngine::compactClipToHeap(celestrian::ClipNode& clip) {
        (int64_t)clip.getSampleRate()});
   const int chans = std::max(1, clip.getAudioBuffer().getNumChannels());
   auto fresh = std::make_unique<juce::AudioBuffer<float>>(chans, (int)keep);
+  // keep can exceed the source (duration/sample-rate floors above) and
+  // AudioBuffer does not zero on construction — clear the tail past the
+  // copied region or it plays garbage (audit 2026-08-31 E9).
+  const int64_t have =
+      std::min<int64_t>(keep, clip.getAudioBuffer().getNumSamples());
   for (int c = 0; c < chans; ++c) {
-    fresh->copyFrom(c, 0, clip.getAudioBuffer(), c, 0,
-                    (int)std::min<int64_t>(keep, clip.getAudioBuffer().getNumSamples()));
+    fresh->copyFrom(c, 0, clip.getAudioBuffer(), c, 0, (int)have);
+    if (have < keep) fresh->clear(c, (int)have, (int)(keep - have));
   }
   retireOwned(clip.swapContent(std::move(fresh)));
   if (auto st = clip.releaseStorage()) retireOwned(std::move(st));
@@ -307,7 +312,10 @@ int countCommittedClips(const celestrian::AudioNode* node) {
  * it). Its window then re-establishes (Q, epoch) exactly as a sole
  * clip's does. Null otherwise. Message thread.
  */
-celestrian::StackNode* definerStack(celestrian::AudioNode* node) {
+bool hasActiveGeometryOutside(celestrian::AudioNode* node,
+                              celestrian::AudioNode* exclude);
+
+celestrian::StackNode* definerStackImpl(celestrian::AudioNode* node) {
   if (node->getNodeType() != celestrian::NodeType::Stack) return nullptr;
   auto* stack = static_cast<celestrian::StackNode*>(node);
   // Every committed clip below must be a DIRECT child of one stack.
@@ -318,6 +326,11 @@ celestrian::StackNode* definerStack(celestrian::AudioNode* node) {
     if (child->getNodeType() == celestrian::NodeType::Clip) {
       auto* c = static_cast<celestrian::ClipNode*>(child.get());
       if (c->getIntrinsicDuration() <= 0) continue;
+      // A one-shot member reads its period from CONTEXT (Q5) — the
+      // stack is not "one take looping as one part", so it cannot
+      // re-establish Q (audit 2026-08-31 U4; the VM's oneTakeDuration
+      // and definerStackOf agree).
+      if (c->period_from_context_.load()) return nullptr;
       if (direct == 0) {
         origin = c->origin_samples.load();
         duration = c->getIntrinsicDuration();
@@ -331,8 +344,59 @@ celestrian::StackNode* definerStack(celestrian::AudioNode* node) {
       nested = static_cast<celestrian::StackNode*>(child.get());
     }
   }
-  if (nested != nullptr) return direct == 0 ? definerStack(nested) : nullptr;
+  if (nested != nullptr) {
+    if (direct != 0) return nullptr;
+    // WRAPPER WARP GUARD (audit 2026-08-31 E7): a stack on the path
+    // that remaps time — an active map override or its own engaged
+    // window — sits between the island clock and the definer, so the
+    // definer's window would re-establish (Q, epoch) through a warp
+    // the Q13 equation ignores. No definer through a warp.
+    if (stack->mapOverride() != nullptr ||
+        (!stack->isLoopWindowBypassed() &&
+         stack->getLoopEnd() > stack->getLoopStart())) {
+      return nullptr;
+    }
+    return definerStackImpl(nested);
+  }
   return direct >= 2 ? stack : nullptr;
+}
+
+celestrian::StackNode* definerStack(celestrian::AudioNode* root) {
+  auto* ds = definerStackImpl(root);
+  // ONLY GEOMETRY WINS (see hasActiveGeometryOutside): a sibling's
+  // authored window — even a coherent one on an empty stack — would be
+  // stranded off-grid by this definer's re-establishment.
+  if (ds != nullptr && hasActiveGeometryOutside(root, ds)) return nullptr;
+  return ds;
+}
+
+/**
+ * ONLY GEOMETRY WINS (audit 2026-08-31, fuzz find): a Q13
+ * re-establishment moves the grid under every OTHER authored window or
+ * map in the island — geometry that was coherent with the old Q is
+ * stranded permanently incoherent with the new one. So the definer
+ * re-establishes only while its own geometry is the island's ONLY
+ * geometry. Walks the island skipping the definer's subtree; a
+ * committed clip's full-span [0, D) window is commit furniture, not
+ * geometry.
+ */
+bool hasActiveGeometryOutside(celestrian::AudioNode* node,
+                              celestrian::AudioNode* exclude) {
+  if (node == exclude) return false;
+  if (node->mapOverride() != nullptr) return true;
+  const int64_t ls = node->getLoopStart();
+  const int64_t le = node->getLoopEnd();
+  const int64_t D = node->getIntrinsicDuration();
+  const bool restricting = le > ls && !(ls <= 0 && D > 0 && le >= D &&
+                                        node->getNodeType() ==
+                                            celestrian::NodeType::Clip);
+  if (restricting && !node->isLoopWindowBypassed()) return true;
+  if (auto* stack = dynamic_cast<celestrian::StackNode*>(node)) {
+    for (const auto& child : stack->ownedChildren()) {
+      if (hasActiveGeometryOutside(child.get(), exclude)) return true;
+    }
+  }
+  return false;
 }
 
 celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
@@ -700,13 +764,19 @@ struct GroupCollapseFacts {
   int64_t shift = 0, old_duration = 0, win_start = 0, win_end = 0;
 };
 bool collapseGroupNow(celestrian::StackNode& stack, GroupCollapseFacts& f) {
-  const celestrian::timing::TimeMap map = stack.activeTimeMap();
-  if (!map.active() || map.n != 1) return false;
+  // RAW atomics only (fresh audit 2026-08-31 #4): activeTimeMap() is
+  // overridden by a STEP AUDITION's derived map — collapsing to that
+  // would make a monitoring gesture the take and destroy the authored
+  // window. The sole-clip path reads the raw atomics for the same
+  // reason; so does this one. A multi-segment override is not a single
+  // window: nothing to collapse here.
+  if (stack.isLoopWindowBypassed() || stack.mapOverride() != nullptr)
+    return false;
   const auto members = stackMembers(stack);
   if (members.empty()) return false;
   const int64_t D = members[0]->getIntrinsicDuration();
-  const int64_t s = std::max((int64_t)0, map.segs[0].start);
-  const int64_t e = std::min(map.segs[0].end, D);
+  const int64_t s = std::max((int64_t)0, stack.getLoopStart());
+  const int64_t e = std::min(stack.getLoopEnd(), D);
   const int64_t len = e - s;
   if (len <= 0 || (s == 0 && e >= D)) return false;
   for (auto* m : members) {
@@ -723,7 +793,9 @@ bool collapseGroupNow(celestrian::StackNode& stack, GroupCollapseFacts& f) {
 void uncollapseGroupNow(celestrian::StackNode& stack, const GroupCollapseFacts& f) {
   for (auto* m : stackMembers(stack)) {
     if (!m->isCollapsed()) continue;
-    m->uncollapseFromWindow(f.shift, f.old_duration);
+    // A group collapse never shifted the origin (it anchors at the
+    // epoch) — unwind the buffer view only.
+    m->uncollapseFromWindow(f.shift, f.old_duration, /*origin_shift=*/0);
     m->setLoopPoints(0, f.old_duration);  // members whole; the window is the stack's
   }
   stack.setLoopPoints(f.win_start, f.win_end);
@@ -787,7 +859,16 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       Edit inv(K::Insert);
       inv.parentUuid = parent->getUuid();
       inv.index = idx;
+      const int committed_before = islandCommittedClipCount();
       inv.node = parent->removeChild(idx);  // non-retiring detach; owned here
+      // A RE-OPEN happens only when this delete actually REMOVED
+      // committed content and no take is in flight (fresh audit
+      // 2026-08-31 #1: deleting an unrelated EMPTY clip mid-take
+      // uncollapsed the definer under the recorder — the arm-time
+      // cycle snapshots and the live take's placement ran against a
+      // buffer whose intrinsic length just changed).
+      const bool reopened = islandCommittedClipCount() < committed_before &&
+                            !root_node->hasActiveTake();
       // Provisional Q revert (Q13 non-sticky): if this delete emptied the
       // island of committed content, Q is no longer defined by anything —
       // revert it, carrying the old (Q, epoch) so undo restores the grid
@@ -813,7 +894,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // take overshoots by up to a block, and the heuristic un-collapsed
       // ORDINARY takes to an off-grid recorded length (audit 2026-08-30
       // §3.1).
-      if (islandCommittedClipCount() == 1) {
+      if (reopened && islandCommittedClipCount() == 1) {
         if (auto* survivor = firstCommittedClip(root_node.get());
             survivor && survivor->isCollapsed()) {
           survivor->uncollapseFromWindow(survivor->getContentBase(),
@@ -824,7 +905,8 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // The GROUP twin: back down to a definer stack whose members were
       // group-collapsed — restore the full takes with the old window on
       // the stack (audio-neutral, trimming longer possible again).
-      if (auto* ds = definerStack(root_node.get()); ds != nullptr) {
+      if (auto* ds = reopened ? definerStack(root_node.get()) : nullptr;
+          ds != nullptr) {
         const auto members = stackMembers(*ds);
         if (!members.empty() && members[0]->isCollapsed()) {
           GroupCollapseFacts f;
@@ -965,9 +1047,25 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       }
       stampWindowDomain(node, e, inv);
       applyWindowRiders(find, [&](const celestrian::timing::TimeMap* m) { retireOwned(m); }, e, inv);
-      // Origins and epoch land in the SAME block (island generation).
-      const uint32_t gen = e.origins.empty() ? 0 : root_node->nextIslandGeneration();
+      // Origins and epoch land in the SAME block (island generation) —
+      // a setsOrigin re-anchor gates the same way (audit 2026-08-31 E9).
+      const uint32_t gen = (e.origins.empty() && !e.setsOrigin)
+                               ? 0
+                               : root_node->nextIslandGeneration();
       applyOriginRiders(find, e, inv, gen);
+      if (e.setsOrigin) {
+        inv.setsOrigin = true;
+        inv.iorg = node->origin_samples.load();
+        // GATED like the riders (audit 2026-08-31 E9): a raw store
+        // AFTER the facts publish let one block render the new epoch
+        // against the old origin. Set the gated origin FIRST, then
+        // publish the facts naming its generation (below).
+        if (auto* oc = dynamic_cast<celestrian::ClipNode*>(node)) {
+          oc->setOriginGated(e.iorg, gen);
+        } else {
+          node->origin_samples.store(e.iorg);
+        }
+      }
       // Q13 re-trim: if the forward edit carries an island re-establishment
       // (built by setLoopPoints when the target is the sole committed
       // clip), apply it and capture the old (Q, epoch) into the inverse so
@@ -981,13 +1079,6 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // Origins moved without the epoch: publish the generation so
         // the gated origins are adopted at the next block top.
         root_node->setIslandFacts(root_node->getQuantum(), root_node->getEpoch(), gen);
-      }
-      // Phase-preserving trim: the re-anchored origin rides the same
-      // edit (see setLoopPoints); the inverse restores the old one.
-      if (e.setsOrigin) {
-        inv.setsOrigin = true;
-        inv.iorg = node->origin_samples.load();
-        node->origin_samples.store(e.iorg);
       }
       return inv;
     }
@@ -1053,7 +1144,9 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // Inverse of the inverse: the parameterless forward re-derives
         // (the override is present again).
       } else {
-        clip->uncollapseFromWindow(e.iq, e.iepoch);
+        // Level undo: this collapse shifted the origin by exactly its
+        // own window start (e.iq) — unwind that level only.
+        clip->uncollapseFromWindow(e.iq, e.iepoch, e.iq);
         // inverse of the inverse: the parameterless forward re-derives.
       }
       return inv;
@@ -1127,18 +1220,35 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         }
       }
       // Q13 riders (multi-segment definer re-trim): identical shape to
-      // LoopPoints — the grid and the phase re-anchor undo atomically
-      // with the map.
+      // LoopPoints — the grid, the members and the phase re-anchor undo
+      // atomically with the map (window/origin riders serve the
+      // DEFINER-STACK twin, audit 2026-08-30 §4.8).
+      applyWindowRiders(find, [&](const celestrian::timing::TimeMap* m) { retireOwned(m); }, e, inv);
+      const uint32_t seg_gen = (e.origins.empty() && !e.setsOrigin)
+                                   ? 0
+                                   : root_node->nextIslandGeneration();
+      applyOriginRiders(find, e, inv, seg_gen);
+      if (e.setsOrigin) {
+        inv.setsOrigin = true;
+        inv.iorg = node->origin_samples.load();
+        // GATED like the riders (audit 2026-08-31 E9): a raw store
+        // AFTER the facts publish let one block render the new epoch
+        // against the old origin. Set the gated origin FIRST, then
+        // publish the facts naming its generation (below).
+        if (auto* oc = dynamic_cast<celestrian::ClipNode*>(node)) {
+          oc->setOriginGated(e.iorg, seg_gen);
+        } else {
+          node->origin_samples.store(e.iorg);
+        }
+      }
       if (e.setsIsland) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
         inv.iepoch = root_node->getEpoch();
-        setIslandQuantum(e.iq, e.iepoch, inv);
-      }
-      if (e.setsOrigin) {
-        inv.setsOrigin = true;
-        inv.iorg = node->origin_samples.load();
-        node->origin_samples.store(e.iorg);
+        setIslandQuantum(e.iq, e.iepoch, inv, seg_gen);
+      } else if (seg_gen != 0) {
+        root_node->setIslandFacts(root_node->getQuantum(),
+                                  root_node->getEpoch(), seg_gen);
       }
       return inv;
     }
@@ -1379,6 +1489,14 @@ void AudioEngine::retireEdit(celestrian::Edit&& e) {
   for (auto& tp : e.takes) {
     retireOwned(std::move(tp.buffer));
     retireOwned(std::move(tp.midi));
+    // TakeStorage rides the same grace (audit 2026-08-31 E6): dropping
+    // it inline munmap/VirtualFree-s pages an in-flight callback may
+    // still be reading through storage_rt_.
+    if (tp.storage != nullptr) {
+      // shared_ptr wrapper: retire() takes a copyable std::function.
+      retire([st = std::shared_ptr<celestrian::TakeStorage>(
+                  std::move(tp.storage))] {});
+    }
   }
   // A chain slot rides the same grace: the chain that referenced it was
   // itself just retired, so an in-flight callback may still process the
@@ -1421,9 +1539,18 @@ void AudioEngine::record(celestrian::Edit forward) {
 }
 
 namespace {
-bool isTakeEdit(const celestrian::Edit& e) {
+// Any edit that moves island facts — (Q, epoch), origins, or the
+// windows that select against them — is refused under a live take
+// (audit 2026-08-31 E5): the performer is recording against that grid,
+// and a mid-take undo of a trim (window + origin riders, or a
+// lock-collapse) shifts the cycle under the take exactly like a take
+// edit would. Previously only Take/Untake were gated.
+bool movesIslandFacts(const celestrian::Edit& e) {
   return e.kind == celestrian::Edit::Kind::Take ||
-         e.kind == celestrian::Edit::Kind::Untake;
+         e.kind == celestrian::Edit::Kind::Untake ||
+         e.kind == celestrian::Edit::Kind::CollapseTake ||
+         e.kind == celestrian::Edit::Kind::CollapseGroup || e.setsIsland ||
+         e.setsOrigin || !e.origins.empty() || !e.windows.empty();
 }
 }  // namespace
 
@@ -1433,10 +1560,10 @@ void AudioEngine::undo() {
   // A take edit moves island facts (Q, epoch, the committed cycle):
   // never under a live take. Refuse and KEEP the entry (a Nop would
   // drop it from the log).
-  if (isTakeEdit(undo_.back()) && root_node->hasActiveTake()) {
+  if (movesIslandFacts(undo_.back()) && root_node->hasActiveTake()) {
     juce::Logger::writeToLog(
-        "AudioEngine::undo refused - a take is armed/recording (finish or "
-        "cancel it first)");
+        "AudioEngine::undo refused - it would move the cycle a take is "
+        "recording against (finish or cancel the take first)");
     return;
   }
   celestrian::Edit inv = std::move(undo_.back());
@@ -1448,10 +1575,10 @@ void AudioEngine::undo() {
 void AudioEngine::redo() {
   reconcileTakes();
   if (redo_.empty()) return;
-  if (isTakeEdit(redo_.back()) && root_node->hasActiveTake()) {
+  if (movesIslandFacts(redo_.back()) && root_node->hasActiveTake()) {
     juce::Logger::writeToLog(
-        "AudioEngine::redo refused - a take is armed/recording (finish or "
-        "cancel it first)");
+        "AudioEngine::redo refused - it would move the cycle a take is "
+        "recording against (finish or cancel the take first)");
     return;
   }
   celestrian::Edit fwd = std::move(redo_.back());
@@ -1595,7 +1722,7 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   if (islandCommittedClipCount() == 1) {
     if (auto* definer = firstCommittedClip(root_node.get());
         definer && definer->getUuid() != uuid &&
-        definer->isLoopWindowActive()) {
+        definer->isLoopWindowActive() && !hasActiveGeometryOutside(root_node.get(), definer)) {
       celestrian::Edit e(celestrian::Edit::Kind::CollapseTake);
       e.uuid = definer->getUuid();
       record(std::move(e));  // no-op (not recorded) if already full-span
@@ -1606,7 +1733,9 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   // otherwise survive the lock incommensurate (inflating every LCM the
   // arm math snapshots, the very poison the clip collapse removes).
   if (auto* ds = definerStack(root_node.get());
-      ds != nullptr && !root_node->hasActiveTake() && ds->isLoopWindowActive()) {
+      ds != nullptr && !root_node->hasActiveTake() && !ds->auditionActive() &&
+      !ds->isLoopWindowBypassed() && ds->mapOverride() == nullptr &&
+      ds->getLoopEnd() > ds->getLoopStart()) {
     celestrian::Edit e(celestrian::Edit::Kind::CollapseGroup);
     e.uuid = ds->getUuid();
     record(std::move(e));  // no-op (not recorded) if nothing to collapse
@@ -1739,6 +1868,14 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   // them different first-take origins (see ClipNode::publishArm).
   std::vector<bool> prepared(targets.size(), false);
   for (size_t i = 0; i < targets.size(); ++i) {
+    // STALE GEOMETRY DIES AT ARM (audit 2026-08-31 F-A): arm targets
+    // emptiness, but a map override can survive a take strip (undo of
+    // a take) on the now-empty clip — and would warp the NEW take's
+    // playback with the OLD take's segments. Retire it through the
+    // reclaimer (an in-flight callback may still read it).
+    if (const auto* stale = targets[i]->exchangeMapOverride(nullptr)) {
+      retireOwned(stale);
+    }
     prepared[i] = targets[i]->prepareRecording(through_map_cycles[i]);
   }
   for (size_t i = 0; i < targets.size(); ++i) {
@@ -1877,6 +2014,15 @@ void AudioEngine::reconcileTakes() {
     juce::Logger::writeToLog(
         "AudioEngine: take logged (undoable) - " +
         juce::String((int)committed.size()) + " clip(s)");
+    // Q ESTABLISHMENT SCRUB (audit 2026-08-31, fuzz find): geometry is
+    // legal to author PRE-Q (the nested-maps arm refusal is pinned on
+    // it), but a window/map whose length was free while Q was
+    // unestablished can be INCOHERENT with the Q this very take just
+    // established — permanently, since the coherence guard only judges
+    // future edits. Clear what cannot live on the new grid, with a log.
+    if (done.q_before <= 0 && root_node->getQuantum() > 0) {
+      scrubIncoherentGeometry(root_node->getQuantum());
+    }
 
     // STEP-RECORD AUTO-GATE (docs/sequencer.md §11.5, S19): the take
     // was aimed at a looping step — gate each committed DIRECT child of
@@ -1887,6 +2033,50 @@ void AudioEngine::reconcileTakes() {
       applyAutoGate(done.gate_stack, done.gate_step, committed);
     }
   }
+}
+
+void AudioEngine::scrubIncoherentGeometry(int64_t q) {
+  // Message thread. Clears any authored window or map override whose
+  // period is neither a whole multiple nor an exact divisor of Q —
+  // pre-Q authored geometry that the just-established grid cannot
+  // carry (an incoherent active map LCM-explodes the effective cycle:
+  // field video 2026-08-08). Committed clips' full-span windows are
+  // commit furniture and never touched.
+  const std::function<void(celestrian::AudioNode*)> visit =
+      [&](celestrian::AudioNode* node) {
+        const auto coherent = [q](int64_t p) {
+          return p > 0 && (p % q == 0 || q % p == 0);
+        };
+        if (const auto* m = node->mapOverride();
+            m != nullptr && !coherent(m->period())) {
+          if (const auto* old = node->exchangeMapOverride(nullptr)) {
+            retireOwned(old);
+          }
+          node->setLoopPoints(0, 0);
+          juce::Logger::writeToLog(
+              "AudioEngine: cleared a pre-Q map on " + node->getUuid() +
+              " - its period cannot live on the established Q " +
+              juce::String(q));
+        } else if (node->mapOverride() == nullptr) {
+          const int64_t ls = node->getLoopStart();
+          const int64_t le = node->getLoopEnd();
+          const int64_t D = node->getIntrinsicDuration();
+          const bool full_span_clip =
+              node->getNodeType() == celestrian::NodeType::Clip &&
+              ls <= 0 && D > 0 && le >= D;
+          if (le > ls && !full_span_clip && !coherent(le - ls)) {
+            node->setLoopPoints(0, 0);
+            juce::Logger::writeToLog(
+                "AudioEngine: cleared a pre-Q window on " + node->getUuid() +
+                " - its length cannot live on the established Q " +
+                juce::String(q));
+          }
+        }
+        if (auto* stack = dynamic_cast<celestrian::StackNode*>(node)) {
+          for (const auto& child : stack->ownedChildren()) visit(child.get());
+        }
+      };
+  visit(root_node.get());
 }
 
 void AudioEngine::applyAutoGate(
@@ -2039,7 +2229,43 @@ bool AudioEngine::seekTransport(double pos_samples) {
   // Origins first (gated), then the epoch with the generation: one
   // block top adopts both or neither.
   root_node->seekEpochTo(epoch_new, gen);
+  // THE HISTORY RIDES TOO (fresh audit 2026-08-31 #3): the undo/redo
+  // logs store ABSOLUTE origins and epochs, and a seek re-frames every
+  // absolute in the session. An inverse restoring pre-seek absolutes
+  // for a SUBSET of clips (a two-anchor rider, a take payload) would
+  // shift that subset against everything else — undo audibly moved a
+  // clip the edit never touched. Shift every absolute in both logs by
+  // the same delta, so undo after a seek restores the same PLACEMENT
+  // it always did.
+  if (delta != 0) shiftHistoryAbsolutes(delta);
   return true;
+}
+
+void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
+  const std::function<void(celestrian::AudioNode*)> shiftSubtree =
+      [&](celestrian::AudioNode* node) {
+        if (node == nullptr) return;
+        if (node->getNodeType() == celestrian::NodeType::Clip) {
+          node->origin_samples.store(node->origin_samples.load() + delta);
+          return;
+        }
+        auto* stack = static_cast<celestrian::StackNode*>(node);
+        for (const auto& child : stack->ownedChildren())
+          shiftSubtree(child.get());
+      };
+  auto shiftEdit = [&](celestrian::Edit& e) {
+    // setsIsland's iepoch is a real epoch on every kind that sets it
+    // (CollapseTake/CollapseGroup reuse iq/iepoch as shift/duration but
+    // never with setsIsland).
+    if (e.setsIsland) e.iepoch += delta;
+    if (e.setsOrigin) e.iorg += delta;
+    for (auto& r : e.origins) r.origin += delta;
+    for (auto& tp : e.takes) tp.origin += delta;
+    shiftSubtree(e.node.get());
+    shiftSubtree(e.node2.get());
+  };
+  for (auto& e : undo_) shiftEdit(e);
+  for (auto& e : redo_) shiftEdit(e);
 }
 
 juce::var AudioEngine::getGraphState() const {
@@ -2111,7 +2337,10 @@ void AudioEngine::attachTransportState(juce::DynamicObject& state,
   {
     juce::String definer;
     if (islandCommittedClipCount() == 1) {
-      if (auto* c = firstCommittedClip(root_node.get())) definer = c->getUuid();
+      if (auto* c = firstCommittedClip(root_node.get());
+          c != nullptr && !hasActiveGeometryOutside(root_node.get(), c)) {
+        definer = c->getUuid();
+      }
     } else if (auto* ds = definerStack(root_node.get())) {
       definer = ds->getUuid();
     }
@@ -2668,12 +2897,14 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
   // change time under the recorder. Refuse until the take commits.
   // Sibling windows stay editable (they don't shape this recorder's
   // clock; their heard-cycle effect was snapshotted at arm).
+  // The gate covers the recording TARGET itself too (audit 2026-08-31
+  // fuzz: a window authored on the clip being recorded survived to its
+  // commit as incoherent geometry). Sibling windows stay editable.
   if (auto* target = findNodeByUuid(root_node.get(), uuid);
-      target && target->getNodeType() == celestrian::NodeType::Stack &&
-      target->isArmedOrRecording()) {
+      target && target->isArmedOrRecording()) {
     juce::Logger::writeToLog(
         "AudioEngine::setLoopPoints refused — a take is recording "
-        "through this window (finish or cancel it first)");
+        "here (finish or cancel it first)");
     return;
   }
   // COHERENCE GUARD (owner ruling 2026-08-09): a window length off the
@@ -2689,6 +2920,20 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     int64_t c_end = end;
     auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
     if (clip != nullptr) c_end = std::min(end, clip->getIntrinsicDuration());
+    // IDENTITY EDITS RECORD NOTHING (audit 2026-08-31 U3, engine side):
+    // a zero-movement bracket click re-committed the stored window —
+    // a no-op undo step that also destroyed the redo branch (and, on a
+    // definer, churned the origin by a whole window length). An
+    // installed override still applies: this edit supersedes it.
+    {
+      const bool same_cleared = c_end <= c_start &&
+                                target->getLoopEnd() <= target->getLoopStart();
+      if (target->mapOverride() == nullptr &&
+          (same_cleared || (c_start == target->getLoopStart() &&
+                            c_end == target->getLoopEnd()))) {
+        return;
+      }
+    }
     // A stack window selects over its INNER cycle: a window past it is
     // malformed — refused, as setSegments refuses (audit 2026-08-30:
     // non-definer stacks stored `end` verbatim and the guard judged the
@@ -2696,7 +2941,8 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     // UI clamps to the raw extent; the two agree).
     const bool stack_definer_early =
         clip == nullptr && definerStack(root_node.get()) == target &&
-        !root_node->hasActiveTake();
+        !root_node->hasActiveTake() &&
+        !static_cast<celestrian::StackNode*>(target)->auditionActive();
     if (clip == nullptr && !stack_definer_early &&
         target->getIntrinsicDuration() > 0 && end > target->getIntrinsicDuration()) {
       juce::Logger::writeToLog(
@@ -2707,11 +2953,13 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     }
     const bool clip_definer = clip != nullptr &&
                               clip->getIntrinsicDuration() > 0 &&
-                              islandCommittedClipCount() == 1;
+                              islandCommittedClipCount() == 1 &&
+                              !hasActiveGeometryOutside(root_node.get(), clip);
     // Q13 for groups (2026-08-21): the definer STACK's window
     // re-establishes Q too.
     const bool stack_definer =
-        clip == nullptr && definerStack(root_node.get()) == target;
+        clip == nullptr && definerStack(root_node.get()) == target &&
+        !static_cast<celestrian::StackNode*>(target)->auditionActive();
     const bool q13_retrim = c_end > c_start &&
                             (clip_definer || stack_definer) &&
                             !root_node->hasActiveTake();
@@ -2753,8 +3001,11 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     // against the current grid — committed-count alone would let a drag
     // re-establish Q mid-take (the count only rises at commit). While a
     // take is in flight this is an ordinary window edit.
-    if (end > start && clip->getIntrinsicDuration() > 0 &&
-        islandCommittedClipCount() == 1 && !root_node->hasActiveTake()) {
+    const bool clip_definer_q13 = clip->getIntrinsicDuration() > 0 &&
+                                  islandCommittedClipCount() == 1 &&
+                                  !root_node->hasActiveTake() &&
+                                  !hasActiveGeometryOutside(root_node.get(), clip);
+    if (end > start && clip_definer_q13) {
       // PHASE-PRESERVING TRIM (owner request 2026-07-19c): the loop must
       // keep flowing while its region is nudged. The provisional grid is
       // free (no other content depends on it), so re-anchor the clip's
@@ -2776,6 +3027,16 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       e.setsIsland = true;
       e.iq = len;
       e.iepoch = e.iorg + start;
+    } else if (clip_definer_q13) {
+      // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (audit 2026-08-31
+      // E8): the definer's window was Q — clearing it restores the full
+      // take as the part, so Q := D and epoch := origin (the content-
+      // frame identity, exactly as first commit established them).
+      // Without this the island kept the trimmed Q while the clip
+      // looped its full D — incoherent the moment D ∤ Q.
+      e.setsIsland = true;
+      e.iq = clip->getIntrinsicDuration();
+      e.iepoch = clip->origin_samples.load();
     } else if (clip->getIntrinsicDuration() > 0 && !root_node->hasActiveTake()) {
       // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (see attachMapEditRiders).
       attachMapEditRiders(e, *clip,
@@ -2788,7 +3049,7 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
                  findNodeByUuid(root_node.get(), uuid));
              stack != nullptr &&
              !(definerStack(root_node.get()) == stack &&
-               !root_node->hasActiveTake())) {
+               !root_node->hasActiveTake() && !stack->auditionActive())) {
     // Any other stack: the guard above refused an end past the inner
     // cycle; a negative start is clamped like a clip's.
     start = std::max((int64_t)0, start);
@@ -2796,7 +3057,7 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
   } else if (auto* stack = dynamic_cast<celestrian::StackNode*>(
                  findNodeByUuid(root_node.get(), uuid));
              stack != nullptr && definerStack(root_node.get()) == stack &&
-             !root_node->hasActiveTake()) {
+             !root_node->hasActiveTake() && !stack->auditionActive()) {
     // Q13 FOR GROUPS (owner ruling 2026-08-21): the definer STACK's
     // window re-establishes the island exactly as a sole clip's does —
     // Q := window length, epoch := the performance moment of the
@@ -2852,6 +3113,20 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       e.setsIsland = true;
       e.iq = len;
       e.iepoch = origin1;
+    } else if (inner > 0) {
+      // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (audit 2026-08-31
+      // E8, group twin): Q := the members' whole take, epoch := their
+      // common origin (definerStack guarantees one take, one origin).
+      int64_t org = root_node->getEpoch();
+      for (const auto& child : stack->ownedChildren()) {
+        auto* clip = dynamic_cast<celestrian::ClipNode*>(child.get());
+        if (clip == nullptr || clip->getIntrinsicDuration() <= 0) continue;
+        org = clip->origin_samples.load();
+        break;
+      }
+      e.setsIsland = true;
+      e.iq = inner;
+      e.iepoch = org;
     }
     // MEMBERS WHOLE (the window law for the definer stack): a member
     // still carrying its own single window — a group take committed
@@ -2895,6 +3170,18 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // — seam theorem; the engine owns well-formedness): ordered,
   // disjoint, each non-empty, within the node's inner cycle.
   const int64_t intrinsic = target->getIntrinsicDuration();
+  // An EMPTY clip has no material for a map to select (audit 2026-08-31
+  // F-A): with intrinsic 0 the per-segment bound check above never
+  // fires, so any segment list was accepted and its period fought Q
+  // for a clip that never joined the island. (The n ≤ 1 forms reach
+  // setLoopPoints, whose clamp-to-duration clears them.)
+  if (map.n >= 2 && intrinsic <= 0 &&
+      dynamic_cast<celestrian::ClipNode*>(target) != nullptr) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setSegments refused — nothing committed here to "
+        "map (record a take first)");
+    return;
+  }
   int64_t prev_end = 0;
   for (int i = 0; i < map.n; ++i) {
     const auto& s = map.segs[i];
@@ -2927,9 +3214,14 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // delegations above are guarded inside setLoopPoints.)
   {
     const bool q13_retrim =
-        dynamic_cast<celestrian::ClipNode*>(target) != nullptr &&
-        intrinsic > 0 && islandCommittedClipCount() == 1 &&
-        !root_node->hasActiveTake();
+        (dynamic_cast<celestrian::ClipNode*>(target) != nullptr &&
+         intrinsic > 0 && islandCommittedClipCount() == 1 &&
+         !root_node->hasActiveTake() && !hasActiveGeometryOutside(root_node.get(), target)) ||
+        // Q13 FOR GROUPS, the multi-segment twin (audit 2026-08-30
+        // §4.8): the definer STACK's map re-establishes Q too.
+        (definerStack(root_node.get()) == target &&
+         !root_node->hasActiveTake() &&
+         !static_cast<celestrian::StackNode*>(target)->auditionActive());
     const int64_t q = target->getEffectiveQuantum();
     const int64_t p = map.period();
     if (!q13_retrim && q > 0 && !isPeriodCoherentWithQuantum(p, q)) {
@@ -2956,7 +3248,7 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // cut removed it).
   if (auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
       clip != nullptr && intrinsic > 0 && islandCommittedClipCount() == 1 &&
-      !root_node->hasActiveTake()) {
+      !root_node->hasActiveTake() && !hasActiveGeometryOutside(root_node.get(), clip)) {
     const int64_t t0 = global_transport_pos.load();
     const TimeMap old_map = clip->activeTimeMap();
     const int64_t period = map.period();
@@ -2974,6 +3266,59 @@ void AudioEngine::setSegments(const juce::String& uuid,
     e.setsIsland = true;
     e.iq = period;
     e.iepoch = origin_new + a0;
+  } else if (auto* stack = dynamic_cast<celestrian::StackNode*>(target);
+             stack != nullptr && definerStack(root_node.get()) == stack &&
+             !root_node->hasActiveTake() && !stack->auditionActive() &&
+             intrinsic > 0) {
+    // Q13 FOR GROUPS, multi-segment (the punch/cell twin of the
+    // definer-stack window trim; audit 2026-08-30 §4.8): the map
+    // re-establishes Q := period, and — content-frame law — the
+    // members' origins ride with the epoch. The stack map anchors at
+    // the EPOCH (childContext: index(t) = mapOffset((t − epoch) mod
+    // P)), so epoch' = t0 − heardOffsetOf(pT) with pT the sample
+    // sounding now (folded into the new heard period when a cut
+    // removed it), and origin' := epoch' for every member.
+    const int64_t t0 = global_transport_pos.load();
+    const int64_t epoch0 = root_node->getEpoch();
+    const int64_t period = map.period();
+    std::vector<celestrian::ClipNode*> members;
+    for (const auto& child : stack->ownedChildren()) {
+      auto* c = dynamic_cast<celestrian::ClipNode*>(child.get());
+      if (c != nullptr && c->getIntrinsicDuration() > 0) members.push_back(c);
+    }
+    if (period > 0 && !members.empty()) {
+      const int64_t p0 =
+          celestrian::heard::memberHeardIndex(*stack, *members[0], t0, epoch0);
+      int64_t h = map.heardOffsetOf(p0);
+      if (h < 0) {
+        const celestrian::timing::TimeMap old_map = stack->activeTimeMap();
+        const int64_t oldP = old_map.active() ? old_map.period() : 0;
+        const int64_t old_h =
+            oldP > 0 ? (((t0 - epoch0) % oldP) + oldP) % oldP : 0;
+        h = ((old_h % period) + period) % period;
+      }
+      const int64_t epoch1 = t0 - h;
+      for (auto* c : members) {
+        celestrian::Edit::OriginRider r;
+        r.uuid = c->getUuid();
+        r.origin = epoch1;
+        e.origins.push_back(std::move(r));
+        // MEMBERS WHOLE (the definer invariant): any member window or
+        // override goes whole with the same edit.
+        const int64_t d = c->getIntrinsicDuration();
+        if (c->mapOverride() != nullptr || c->getLoopStart() != 0 ||
+            c->getLoopEnd() < d) {
+          celestrian::Edit::WindowRider w;
+          w.uuid = c->getUuid();
+          w.start = 0;
+          w.end = d;
+          e.windows.push_back(std::move(w));
+        }
+      }
+      e.setsIsland = true;
+      e.iq = period;
+      e.iepoch = epoch1;
+    }
   } else if (auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
              clip != nullptr && intrinsic > 0 && !root_node->hasActiveTake()) {
     // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (see attachMapEditRiders).

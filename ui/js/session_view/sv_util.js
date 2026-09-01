@@ -72,7 +72,7 @@ export const capturePointer = (node, ev) => {
  * pointer capture is lost before the gesture's own end handler ran
  * (WebView2 drops captures on focus loss / Alt-Tab; a synthetic
  * pointer may never deliver pointerup) or the window blurs. Without
- * it a lost capture left `body._winDrag` latched forever — the overlay
+ * it a lost capture left the overlay-freeze latch set forever — the overlay
  * never rebuilt and the stale gesture closure kept answering. Returns
  * release(): call it from the normal end path. */
 export const guardGesture = (node, onLost) => {

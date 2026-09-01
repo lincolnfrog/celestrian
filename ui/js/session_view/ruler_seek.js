@@ -27,6 +27,7 @@
  */
 
 import { ctx } from './context.js';
+import { guardGesture } from './sv_util.js';
 
 /* Send cadence: at most one in-flight target per poll interval, with a
  * trailing send so the release position always lands. */
@@ -158,6 +159,13 @@ export function wireRulerSeek() {
         // the phase-3 rename e2e). Text selection is prevented in CSS
         // (user-select: none on #ruler) instead.
         seek.dragging = true;
+        // Lost capture / window blur ends the scrub like a release —
+        // the same safety net every lane gesture has (gesture.js).
+        seek.guard = guardGesture(ruler, () => {
+            seek.dragging = false;
+            flushSend();
+            hideHover();
+        });
         ruler.setPointerCapture(e.pointerId);
         scrubTo(e);
     });
@@ -173,6 +181,7 @@ export function wireRulerSeek() {
     const end = e => {
         if (!seek.dragging) return;
         seek.dragging = false;
+        if (seek.guard) { seek.guard(); seek.guard = null; }
         try { ruler.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
         // The release position is the seek that matters — flush it.
         scrubTo(e);

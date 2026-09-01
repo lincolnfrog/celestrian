@@ -220,9 +220,29 @@ pre-lift state plus a segment edit on a member).
 
 Round 2 (2026-08-30, later): 4.1 ✅, 4.2 ✅, 4.3 partial ✅ (period law
 in `periodExcluding`; the mock's inner cycle now intrinsic), 4.6 ✅, 4.7
-✅ (stale comments). Open: 4.4 gesture runner, 4.5 DOM latches, 4.8
-duplicated constants / `setSegments` stack-definer twin, the rest of
-4.3.
+✅ (stale comments).
+
+Round 3 (2026-08-30, evening): **all remaining items closed.**
+- 4.4 ✅ `session_view/gesture.js` — `beginGesture` owns capture, the
+  lost-capture/blur net, listener bookkeeping, the overlay freeze, the
+  frame pin and an exactly-once end; brackets, cut bands, seam handles
+  and trim grips are clients (the ruler scrub keeps its persistent
+  listeners but gains the same net).
+- 4.5 ✅ the gesture LATCHES (`_winDrag`/`_winHold`) moved into
+  gesture.js module state (`isOverlayFrozen` / `holdOverlay`); per-node
+  render caches stay on their nodes deliberately — a cache keyed by the
+  thing it caches dies exactly when the node does, which is the
+  lifetime a cache wants (the latches gated other code and outlived
+  their gesture on failure paths; that is what moved).
+- 4.3-UI ✅ `time_map.nodeWindowActive` — the one copy of the
+  window-activity fallback verdict (composite, timeline period math,
+  VM member checks).
+- 4.8 ✅ `setSegments` has its DEFINER-STACK twin (multi-segment Q13:
+  Q := period, members whole + origins ride the epoch — content-frame
+  law; render-pinned in `content_frame_tests`, mock parity + guard
+  exemption); the unreachable multi-segment check in `window_edit` is
+  labeled a guard; the two minimum-length constants are documented as
+  different laws.
 
 ### 4.1 ✅ One playback equation, restated by hand in six places
 **Done:** `src/heard_index.h` — `clipHeardIndex`, `memberHeardIndex`,
@@ -339,3 +359,127 @@ by the coherence guard while a single window is accepted).
   epoch. `composite_waveform.test.mjs`: raw mode, stable cache key.
 - `ui/e2e/session_view.spec.js`: dims match brackets on a fractional
   frame; composite does not redraw on a re-trim.
+
+## 7. Fresh-eyes audit (2026-08-31): three subagent sweeps — all findings fixed
+
+Three independent fresh-context reviews (engine, UI, mock/fuzz) plus a
+seeded gesture fuzzer. Every confirmed finding below is FIXED, with a
+regression pin. Files: engine `src/audio_engine.{h,cc}`,
+`src/stack_node.{h,cc}`, `src/clip_node.{h,cc}`; UI
+`ui/js/session_view/gesture.js`, `window_edit.js`, `map_bands.js`,
+`drag_pin.js`, `init.js`, `ui/js/app.js`, `ui/js/view_model.js`; mock
+`ui/js/mock/{undo,maps,recording,state,publish,graph_crud,effects}.js`.
+
+### Engine (E1–E9 + F-A)
+- **E1 — mid-take uncollapse.** `K::Remove` re-opened (uncollapsed) the
+  definer on ANY delete — including an unrelated empty clip deleted
+  while a take recorded against the collapsed grid. Reopen now gates on
+  "committed count actually dropped AND no live take".
+- **E2 — nested collapse markers.** A second collapse overwrote
+  `collapsed_from_`/`collapse_origin_shift_`; markers now accumulate
+  (set-once + `fetch_add`) and `uncollapseFromWindow` unwinds fully,
+  clearing them only when the content base reaches 0.
+- **E3 — undo across a seek.** `seekTransport` slides every origin and
+  the epoch, but the undo/redo log's ABSOLUTE values stayed in the
+  pre-seek frame — undo after a seek moved siblings against the grid.
+  New `shiftHistoryAbsolutes(delta)` re-bases iepoch/iorg/origin-riders/
+  take payloads/owned-subtree origins across both stacks at seek.
+- **E4 — collapse math read the map.** `collapseGroupNow` and the arm
+  trigger read `activeTimeMap()` (audition/override could substitute a
+  derived window); they now read the raw window atomics and skip under
+  `auditionActive()`/`mapOverride()`.
+- **E5 — commit-event ordering.** `takeCommitted` decremented
+  `active_takes_` BEFORE the epoch re-base (a message-thread edit could
+  observe a "settled" island whose re-base hadn't landed); re-base now
+  runs first, through the seqlock (`setIslandFacts`), and undo/redo
+  refuse ANY island-fact-moving edit (setsIsland/setsOrigin/riders/
+  collapse kinds) under a live take — not just Take/Untake.
+- **E6 — TakeStorage lifetime.** `retireEdit` dropped
+  `TakePayload::storage` inline (munmap under an in-flight callback);
+  it now rides the reclaimer grace.
+- **E7 — no definer through a warp.** `definerStack` walked through
+  wrapper stacks carrying active maps/windows; wrappers with geometry
+  now disqualify, and Q13 stack branches skip under `auditionActive()`.
+- **E8 — window clear re-establishes.** Clearing the definer's window
+  left the trimmed Q standing while the full take looped. Clear now
+  re-establishes Q := D (clip) / inner (stack), epoch := origin.
+- **E9 — minors.** `setsOrigin` applier stores gated origins BEFORE the
+  facts publish (mixed epoch/origin pair closed);
+  `compactClipToHeap` zeroes the tail past the copied region;
+  `prepareRecording` keeps outgoing storage alive until nothing refers
+  to it and heap-fallback replaces the referring buffer with an owned one.
+- **F-A — stale geometry dies at arm.** `startRecordingInNode` retires
+  map overrides on arm targets; `setSegments` refuses empty clips.
+
+### Fuzz finds (engine laws, pinned in `tests/audit_regression_tests.cc`)
+- **Mid-take gate covers the TARGET.** `setLoopPoints` refused only
+  recording STACKS; a window authored on the clip being recorded
+  survived to its commit as incoherent geometry. Any armed/recording
+  target now refuses (sibling windows stay editable).
+- **ONLY GEOMETRY WINS.** A Q13 re-establishment moves the grid under
+  every OTHER authored window/map in the island, stranding it
+  permanently incoherent. Both definer paths (sole clip AND definer
+  stack — `hasActiveGeometryOutside`) now re-establish only while the
+  definer's geometry is the island's only geometry; the definerId
+  publish and lock-collapse triggers use the same gate.
+- **Q-establishment scrub.** Pre-Q authoring is legal (pinned by the
+  nested-maps arm-refusal test), but a free-length pre-Q window could
+  be incoherent with the Q the first take establishes — permanently,
+  since the coherence guard only judges future edits.
+  `scrubIncoherentGeometry` clears what the new grid cannot carry, at
+  establishment, with a log.
+- **Identity edits record nothing.** A zero-movement bracket click
+  re-committed the stored window: a no-op undo step that destroyed the
+  redo branch (and churned a definer origin by a whole window length).
+  Engine and mock now treat identity `setLoopPoints` as a no-op.
+
+### UI (U1–U10)
+- **U1** freeze/hold latches and the frame pin are now REFCOUNTED
+  (WeakMap counters, `drag_pin` count) — the first of two holds no
+  longer releases the body/frame under the second.
+- **U2** ⌥→plain transition re-lands `cur` on whole Q (length held)
+  before plain snapping resumes — mixed drags can no longer commit a
+  fractional window (e2e pin `ui/e2e/alt_mix_drag.spec.js`).
+- **U3** no-move, no-commit: a bracket click that changed nothing
+  commits nothing.
+- **U4** the VM re-checks a published definer id against its own gates
+  (`oneTakeDuration > 0` for stacks); engine/VM/mock definer
+  derivations all exclude `periodSource === 'context'` members.
+- **U5** map gestures hold the overlay until the final commit settles
+  (window_edit's `COMMIT_HOLD_MAX_MS` pattern).
+- **U6** `onEnd` honors the commit flag: a cancelled map drag restores
+  the pre-drag segments (live splices had already streamed); Escape
+  cancels the live gesture (capture-phase keydown in gesture.js;
+  init.js defers).
+- **U7** the gesture runner is a SINGLETON: a second pointer gets an
+  inert controller; callers gate on `g.live()`.
+- **U8** beginGesture blurs a focused text input before capturing.
+- **U9** `onSetWindow`/`onSetSegments` verify the LANDED state after
+  the call settles (debounced per node): honest refusal message, or
+  success + "⌘Z to undo".
+- **U10** stale "epoch = origin + loopStart" comment corrected;
+  `bandContentQ` clamps at the right edge instead of wrapping a
+  last-pixel dblclick onto the first cell.
+
+### Mock parity (F-A/B/C)
+- **F-C** unknown-node refusals pop the dispatch snapshot everywhere;
+  a refused edit RESTORES the redo branch (saved before the push).
+- **F-B** first commit establishes (Q, epoch) TOGETHER; the first-clip
+  arm sets the provisional epoch; `combineNodes` no longer fabricates
+  a declared Q.
+- **F-A** clip windows clamp to duration even when 0 (empty ⇒
+  cleared); `segments` cleared at arm and commit; non-definer stack
+  windows past the inner cycle refuse; internal `segments` checks all
+  use the pairs form (two `>= 4` flat-form slips fixed).
+
+### Tooling
+- `ui/js/tests/fuzz_loop_region.test.mjs` RE-ARMED: every
+  KNOWN_BUG_SIGS family fixed and removed; strict mode green across
+  the 20 CI seeds and deep off-CI seeds. A new violation is a new bug —
+  fix it, never re-suppress.
+- Probes converted to permanent regressions:
+  `tests/audit_regression_tests.cc` (E1, E3, scrub, only-geometry),
+  `ui/js/tests/gesture_latches.test.mjs` (U1/U6/U7/U8),
+  `ui/js/tests/noop_window_edit.test.mjs` (U3/F-C),
+  `ui/js/tests/definer_gate.test.mjs` (U4),
+  `ui/e2e/alt_mix_drag.spec.js` (U2/U9).

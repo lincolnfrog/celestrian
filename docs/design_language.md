@@ -511,6 +511,22 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   whole beneath it in the same buffer frame. Lock remains derived:
   another take anywhere (a third mic recorded later, a new track)
   ends the definer state.
+  **Two refinements (fresh audit 2026-08-31, fuzz-found —
+  docs/loop_region_audit.md §7):** (1) **ONLY GEOMETRY WINS** — a
+  re-establishment moves the grid under every OTHER authored window or
+  map in the island, stranding it permanently incoherent, so BOTH
+  definer paths engage only while the definer's geometry is the
+  island's only geometry (`hasActiveGeometryOutside`; a committed
+  clip's full-span [0, D) is commit furniture, not geometry). Clear
+  the other window and the definer power returns. (2) **the
+  Q-ESTABLISHMENT SCRUB** — authoring windows/maps pre-Q is legal
+  (parts can be authored before the first take), but a free length
+  chosen with no grid can be incoherent with the Q the first take
+  establishes; at establishment, `scrubIncoherentGeometry` clears
+  whatever the new grid cannot carry, with a log. Windows also clear
+  by re-establishing: emptying the definer's window restores Q := the
+  whole take and epoch := origin (the base facts), instead of leaving
+  the trimmed Q under a full-length loop.
   - **Members whole is an invariant, kept by the engine (2026-08-30,
     field video/dump 2026-08-29):** a group take committed against a
     Q the island already held (commitRecording's hysteresis snap puts

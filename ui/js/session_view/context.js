@@ -4,15 +4,17 @@
  * session-view module imports { ctx } instead of owning globals —
  * the one place the split's shared mutable state lives.
  *
- * CONVENTIONS THE MODULES SHARE (the expando protocol — state rides
- * the DOM node it describes, so it lives and dies with the node):
+ * CONVENTIONS THE MODULES SHARE (the expando protocol — render CACHES
+ * ride the DOM node they describe, so they live and die with the
+ * node; gesture LATCHES moved to gesture.js module state, 2026-08-30
+ * §4.5 — a latch that gates other code must be released on every
+ * failure path, which the gesture runner owns):
  *
- *   body._winDrag   — a drag holds pointer capture on an overlay
- *                     element; while set, patchLaneBody must NOT
+ *   gesture.isOverlayFrozen(body) — a drag holds pointer capture on an
+ *                     overlay element (or a commit is awaiting the
+ *                     bridge); while true, patchLaneBody must NOT
  *                     rebuild that body's overlay (replacing the
- *                     captured node would orphan the gesture). Set by
- *                     every bracket/band/seam drag; cleared on
- *                     pointerup/cancel.
+ *                     captured node would orphan the gesture).
  *   overlay._key    — reconcileMarkers' rebuild key. A gesture that
  *                     draws its own preview POISONS it (sets a value
  *                     no legitimate key equals, e.g. 'expanded-drag')

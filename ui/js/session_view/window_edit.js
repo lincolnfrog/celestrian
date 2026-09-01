@@ -8,17 +8,22 @@
  * (you see your motion), while a dashed snap-ghost bracket + the dims +
  * the chip preview the Q-SNAPPED landing position (you see what a
  * release commits). Release commits the snap via setLoopPoints. During
- * the drag the overlay is frozen (body._winDrag) — replacing the
- * captured bracket node would orphan the gesture.
+ * the drag the overlay is frozen (gesture.js isOverlayFrozen) —
+ * replacing the captured bracket node would orphan the gesture.
  */
 
 import { ctx } from './context.js';
-import { pct, setText, capturePointer, guardGesture } from './sv_util.js';
+import { pct, setText } from './sv_util.js';
 import { selectOnly } from './selection.js';
+import { beginGesture, isDragging, holdOverlay, releaseOverlay }
+    from './gesture.js';
 import { buildWindowDims } from './dims.js';
 import { windowDragTarget } from '../view_model.js';
 
-/* The Q-definer drags FREE (sub-Q); this floor keeps Q positive. */
+/* The Q-definer drags FREE (sub-Q); this floor keeps Q positive.
+ * (Deliberately distinct from map_bands' MIN_CUT_Q: this is the
+ * smallest TEMPO the definer may set; that is the smallest CUT a
+ * band may hold — different laws, different numbers.) */
 const Q_DEFINER_MIN_LEN_Q = 0.05;
 /* After a release the overlay is HELD at the previewed geometry until
  * the engine has answered the commit — a state poll already in flight
@@ -28,9 +33,9 @@ const Q_DEFINER_MIN_LEN_Q = 0.05;
 const COMMIT_HOLD_MAX_MS = 1500;
 
 export function wireWindow(o, lane, vm, body, win) {
-    // Multi-segment maps have no draggable brackets (phase 3): the
-    // cell/punch editor owns their geometry. Bypass still toggles via
-    // the map chip (wired in the mapSegs overlay branch).
+    // (Multi-segment maps never reach here: lane_body's mapSegs branch
+    // returns before the bracket overlay is built — the cell/punch
+    // editor owns their geometry. Kept as a guard only.)
     if (win.segs && win.segs.length > 1) return;
     // A step audition's DERIVED window is shown, not edited (view_model).
     if (win.audition) return;
@@ -83,30 +88,35 @@ export function wireWindow(o, lane, vm, body, win) {
         const bracket = brackets[edge];
         let ghost = null;
         let grab = null;
-        let releaseGuard = null;
+        let wasAlt = false;  // last move was an ⌥ free slide (U2)
         bracket.addEventListener('pointerdown', e => {
-            e.preventDefault();
-            if (body._winDrag) return; // one gesture at a time (a second pointer)
-            selectOnly(lane.id); // grabbing a handle claims the track
-            capturePointer(bracket, e);
-            if (releaseGuard) releaseGuard();
-            releaseGuard = guardGesture(bracket, () => cancel());
-            body._winDrag = true;
+            if (isDragging(body)) return; // one gesture at a time (a second pointer)
+            const g = beginGesture(e, {
+                node: bracket,
+                claim: lane.id, // grabbing a handle claims the track
+                onMove: mv => onDrag(mv),
+                onEnd: committed => finish(committed),
+            });
+            if (!g.live()) return;  // the runner is a singleton (U7)
+            g.freeze(body);  // the drag holds capture on this overlay
             bracket.classList.add('dragging');
+            g.defer(() => bracket.classList.remove('dragging'));
             // The snap ghost starts AT the handle (same classes → same
             // shape/transform), marking the landing position
             ghost = bracket.cloneNode(false);
             ghost.classList.remove('dragging', 'latent');
             ghost.classList.add('snap-ghost');
             o.appendChild(ghost);
+            g.defer(() => { if (ghost) { ghost.remove(); ghost = null; } });
             // ⌥ FREE SLIDE needs the grab point: the window at the grab
             // and the frame-Q under the pointer (deltas from here).
             const r0 = body.getBoundingClientRect();
             grab = { win: { ...cur },
                      q: ((e.clientX - r0.left) / r0.width) * laneCycleQ - anchorQ };
+            wasAlt = false;
         });
-        bracket.addEventListener('pointermove', e => {
-            if (!body._winDrag || !ghost) return;
+        const onDrag = e => {
+            if (!ghost) return;
             const r = body.getBoundingClientRect();
             // Frame Q under the pointer → content Q for the snap math
             const rawQ =
@@ -127,7 +137,20 @@ export function wireWindow(o, lane, vm, body, win) {
                 const other = brackets[edge === 'start' ? 'end' : 'start'];
                 if (other) other.style.left = pct(anchorQ + (edge === 'start' ? t.endQ : t.startQ), laneCycleQ);
                 previewSnap(t, edge, ghost);
+                wasAlt = true;
                 return;
+            }
+            // ⌥ RELEASED MID-DRAG (audit 2026-08-31 U2): the free slide
+            // left `cur` on a fractional grid; plain snapping computes
+            // its targets FROM cur, so the fraction survived every
+            // subsequent snap (and the commit). Re-land on whole Q
+            // first, preserving the whole-Q length the slide held.
+            if (wasAlt && !lane.isQDefiner) {
+                const len = Math.max(1, Math.round(cur.endQ - cur.startQ));
+                let s = Math.round(cur.startQ);
+                s = Math.max(0, Math.min(maxQ - len, s));
+                cur = { startQ: s, endQ: s + len };
+                wasAlt = false;
             }
             // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
             // not snapping to it. The handle position is the landing; a
@@ -155,17 +178,16 @@ export function wireWindow(o, lane, vm, body, win) {
             if (t.startQ !== cur.startQ || t.endQ !== cur.endQ) {
                 previewSnap(t, edge, ghost);
             }
-        });
-        const end = commit => e => {
-            if (!body._winDrag) return;
-            body._winDrag = false;
-            if (releaseGuard) { releaseGuard(); releaseGuard = null; }
-            bracket.classList.remove('dragging');
-            if (e && bracket.hasPointerCapture(e.pointerId)) {
-                bracket.releasePointerCapture(e.pointerId);
-            }
-            if (ghost) { ghost.remove(); ghost = null; }
-            if (commit) {
+        };
+        const finish = commit => {
+            // NO-MOVE, NO-COMMIT (audit 2026-08-31 U3): a plain click on
+            // a bracket ended with cur === the window it started at, yet
+            // still committed — a redundant engine round-trip that could
+            // land as a real (if identity) edit on the undo path.
+            const moved = grab == null ||
+                Math.abs(cur.startQ - grab.win.startQ) > 1e-9 ||
+                Math.abs(cur.endQ - grab.win.endQ) > 1e-9;
+            if (commit && moved) {
                 const p = ctx.cb.onSetWindow(lane.id,
                     Math.round(cur.startQ * vm.quantum),
                     Math.round(cur.endQ * vm.quantum));
@@ -173,12 +195,12 @@ export function wireWindow(o, lane, vm, body, win) {
                 // the previewed brackets/dims already show the committed
                 // geometry; a rebuild from an in-flight OLD poll would
                 // snap them back for a tick.
-                body._winHold = true;
+                holdOverlay(body);
                 let done = false;
                 const settle = () => {
                     if (done) return;
                     done = true;
-                    body._winHold = false;
+                    releaseOverlay(body);
                     o._key = ''; // rebuild from settled state on the next patch
                 };
                 Promise.resolve(p).then(settle, settle);
@@ -187,8 +209,5 @@ export function wireWindow(o, lane, vm, body, win) {
                 o._key = ''; // rebuild from settled state on the next patch
             }
         };
-        const cancel = () => end(false)(null);
-        bracket.addEventListener('pointerup', end(true));
-        bracket.addEventListener('pointercancel', end(false));
     });
 }

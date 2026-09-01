@@ -221,6 +221,7 @@ class StackNode : public AudioNode {
   void takeArmed() override;
   void takeCancelled() override { active_takes_.fetch_sub(1); }
   void takeCommitted(int64_t origin, int64_t intrinsic_after) override;
+  void rebaseEpochOnGrowth(int64_t origin, int64_t intrinsic_after);
   bool hasActiveTake() const override { return active_takes_.load() > 0; }
   int64_t activeTakeHeardCycle() const override {
     return heard_cycle_at_arm_.load();

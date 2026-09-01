@@ -18,9 +18,10 @@
  */
 
 import { ctx } from './context.js';
-import { el, pct, fmtQ, capturePointer, guardGesture } from './sv_util.js';
+import { el, pct, fmtQ } from './sv_util.js';
+import { beginGesture, isDragging, holdOverlay, releaseOverlay }
+    from './gesture.js';
 import { selectOnly } from './selection.js';
-import { pinFrame, unpinFrame } from './drag_pin.js';
 import { buildWindowDims } from './dims.js';
 import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
          slideCutTarget, segsPeriod, trimBoundTo,
@@ -68,6 +69,19 @@ const BADGE_EDGE_FRAC = 0.15;
 const CHIP_EDGE_Q = 0.4;
 /* The smallest cut a resize preview may show (Q). */
 const MIN_CUT_Q = 0.05;
+/* Post-commit overlay hold cap (window_edit.js twin — audit 2026-08-31
+ * U5): a poll in flight at release still carries the OLD map and
+ * snapped the seams back for a tick on a slow bridge. */
+const COMMIT_HOLD_MAX_MS = 1500;
+
+/** Hold the overlay until a final commit settles (or the cap). */
+function holdUntilSettled(body, p) {
+    holdOverlay(body);
+    let done = false;
+    const settle = () => { if (done) return; done = true; releaseOverlay(body); };
+    Promise.resolve(p).then(settle, settle);
+    setTimeout(settle, COMMIT_HOLD_MAX_MS);
+}
 
 /** Cut-length chip content: whole-Q lengths print bare, fractional
  * lengths get two decimals and the ⚠ incoherence badge. */
@@ -145,7 +159,7 @@ export function commitBandSegs(st, segsQ) {
     const flat = [];
     segsQ.forEach(([s, e]) =>
         flat.push(Math.round(s * st.quantum), Math.round(e * st.quantum)));
-    ctx.cb.onSetSegments(st.laneId, flat);
+    return ctx.cb.onSetSegments(st.laneId, flat);
 }
 
 /** Pointer x → CONTENT Q (raw-take coordinates). On a heard lane the
@@ -161,7 +175,14 @@ export function bandContentQ(st, body, clientX) {
         const h = posMod(laneQ - st.anchorQ, st.periodQ);
         return mapOffset({ segs: st.segs || [[0, st.totalQ]] }, h);
     }
-    return posMod(laneQ - st.anchorQ, st.totalQ);
+    // RIGHT-EDGE CLAMP (audit 2026-08-31 U10): a dblclick ON the take's
+    // last pixel computed rel === totalQ, and posMod wrapped it to 0 —
+    // the cut landed on the FIRST cell instead of the last. In-range
+    // positions clamp; wrapping remains for content resting mid-phase
+    // (rel outside [0, totalQ]).
+    const rel = laneQ - st.anchorQ;
+    if (rel >= 0 && rel <= st.totalQ) return Math.min(rel, st.totalQ - 1e-6);
+    return posMod(rel, st.totalQ);
 }
 
 /* Map-gesture flight recorder (field 2026-07-25g: a flicker survives
@@ -332,12 +353,6 @@ function renderRawPreview(o, st, segsPreview, active, follow) {
  * (handle snaps to the pointer, stays glued). (> ENGAGE_SLOP_PX before
  * anything happens — a sloppy grab-release must not edit.) */
 function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    capturePointer(ev.target, ev);
-    // Lost capture / window blur ends the gesture like a release —
-    // never leaves _winDrag + the frame pin latched (sv_util).
-    const releaseGuard = guardGesture(ev.target, () => up());
     const downX = ev.clientX;
     // THE GORDIAN CUT, simplified (owner-ruled 2026-07-25f): the bound
     // is RELATIVE — anchorQ plus accumulated pointer deltas — for the
@@ -382,7 +397,7 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
     // geometry flips in one patch — the lane-open ease is vertical
     // only, so there is no intermediate to ride).
     const tryWarp = () => {
-        if (warpState || !body._winDrag) return;
+        if (warpState || !g.live()) return;
         if (!ctx.cb.onWarpPointer) { warpState = 2; absolute = true; return; }
         if (!body.classList.contains('inspecting')) {
             setTimeout(tryWarp, 30);   // expansion still in flight
@@ -416,12 +431,12 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
         engaged = true;
         mapDbg('engage', {});
         clearTimeout(body._flashT);     // a drag supersedes a flash
-        body._winDrag = true;           // freeze the overlay reconcile
-        pinFrame();                     // freeze the SHARED frame + fold
+        g.freeze(body);                 // freeze the overlay reconcile
+        g.pin();                        // freeze the SHARED frame + fold
         ctx.cb.onWindowEdit(lane.id, true); // expand to the raw take
         // The raw-frame SOUND CURSOR lives through the gesture (the
         // poll keeps positioning it — patchWinCursor runs before the
-        // _winDrag gates): you hear the live splice AND see where it
+        // isOverlayFrozen gates): you hear the live splice AND see where it
         // is sounding.
         if (!o.querySelector('.win-cursor')) {
             o.appendChild(el('div', 'win-cursor'));
@@ -459,28 +474,36 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
         lastClientY = mv.clientY;
         apply();
     };
-    let ended = false;
-    const up = () => {
-        if (ended) return;                // pointerup + lostpointercapture
-        ended = true;
-        releaseGuard();
-        ev.target.removeEventListener('pointermove', move);
-        ev.target.removeEventListener('pointerup', up);
-        ev.target.removeEventListener('pointercancel', up);
-        clearTimeout(holdT);
-        if (!engaged) return;             // a click: nothing to undo
-        mapDbg('up', {});
-        body._winDrag = false;
-        unpinFrame();                     // let the frame settle once
-        const layer = o.querySelector('.drag-preview-layer');
-        if (layer) layer.remove();
-        o.classList.remove('drag-live');
-        if (last && last.segs) commitBandSegs(st, last.segs);
-        ctx.cb.onWindowEdit(lane.id, false);  // relax back to the heard view
-    };
-    ev.target.addEventListener('pointermove', move);
-    ev.target.addEventListener('pointerup', up);
-    ev.target.addEventListener('pointercancel', up);
+    // The runner owns capture, the lost-capture/blur net, the freeze +
+    // pin (released automatically), and the exactly-once end.
+    const g = beginGesture(ev, {
+        stop: true,
+        onMove: move,
+        onEnd: committed => {
+            clearTimeout(holdT);
+            if (!engaged) return;         // a click: nothing to undo
+            mapDbg('up', {});
+            const layer = o.querySelector('.drag-preview-layer');
+            if (layer) layer.remove();
+            o.classList.remove('drag-live');
+            // HONOR THE END KIND (audit 2026-08-31 U6): a cancel
+            // (Escape, lost capture, blur) restores the map the gesture
+            // began on — the live splices already streamed to the
+            // engine, so doing nothing kept the last preview as if it
+            // had been committed.
+            if (committed) {
+                if (last && last.segs) {
+                    holdUntilSettled(body, commitBandSegs(st, last.segs));
+                }
+            } else if (last && last.segs) {
+                holdUntilSettled(body, commitBandSegs(st,
+                    st.segs ? st.segs.map(sg => sg.slice())
+                            : [[0, st.totalQ]]));
+            }
+            ctx.cb.onWindowEdit(lane.id, false);  // relax back to the heard view
+        },
+    });
+    if (!g.live()) { clearTimeout(holdT); return; }  // singleton (U7)
 }
 
 /** The once-per-body dblclick wiring: create a cell-snapped 1Q cut on
@@ -537,7 +560,7 @@ export function wireBandCreate(body, lane, vm, cycleQ) {
             clearTimeout(body._flashT);
             ctx.cb.onWindowEdit(st.laneId, true);
             body._flashT = setTimeout(() => {
-                if (!body._winDrag) ctx.cb.onWindowEdit(st.laneId, false);
+                if (!isDragging(body)) ctx.cb.onWindowEdit(st.laneId, false);
             }, FLASH_EXPAND_MS);
         }
     });
@@ -590,21 +613,33 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
         // handle/chip follows the pointer, the ghost previews the snap,
         // release commits ONE setSegments.
         const startDrag = (kind, edge) => ev => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            selectOnly(lane.id); // grabbing a handle claims the track
-            // Capture keeps the drag alive off-element; a webview that
-            // refuses (or a synthetic pointer) must not kill the
-            // gesture wiring below.
-            capturePointer(ev.target, ev);
-            const releaseGuard = guardGesture(ev.target, () => up());
-            body._winDrag = true;
-            pinFrame();  // freeze the shared frame (see drag_pin.js)
+            let target = null;
+            const g = beginGesture(ev, {
+                stop: true,
+                claim: lane.id, // grabbing a handle claims the track
+                onMove: mv => move(mv),
+                onEnd: committed => {
+                    // HONOR THE END KIND (audit 2026-08-31 U6): live
+                    // splices streamed while dragging — a cancel must
+                    // restore the pre-drag map, not keep the preview.
+                    if (committed && target) {
+                        let next = healCut(st.segs, cut[0], cut[1], st.totalQ);
+                        next = applyCut(next, target.inQ, target.outQ, st.totalQ);
+                        holdUntilSettled(body, commitBandSegs(st, next));
+                    } else if (!committed && band._lastLive) {
+                        holdUntilSettled(body, commitBandSegs(st,
+                            st.segs ? st.segs.map(sg => sg.slice())
+                                    : [[0, st.totalQ]]));
+                    }
+                },
+            });
+            if (!g.live()) return;  // singleton (U7)
+            g.freeze(body);
+            g.pin();  // freeze the shared frame (see drag_pin.js)
             const q0 = bandContentQ(st, body, ev.clientX);
             // Kept-neighbourhood clamp (cutBounds): the gesture may
             // meet a neighbouring gap only at exact adjacency.
             const [loQ, hiQ] = cutBounds(st.segs, cut, st.totalQ);
-            let target = null;
             const move = mv => {
                 const q = bandContentQ(st, body, mv.clientX);
                 if (kind === 'slide') {
@@ -634,25 +669,6 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                     commitBandSegs(st, liveNext);
                 }
             };
-            let ended = false;
-            const up = () => {
-                if (ended) return;        // pointerup + lostpointercapture
-                ended = true;
-                releaseGuard();
-                ev.target.removeEventListener('pointermove', move);
-                ev.target.removeEventListener('pointerup', up);
-                ev.target.removeEventListener('pointercancel', up);
-                body._winDrag = false;
-                unpinFrame();
-                if (target) {
-                    let next = healCut(st.segs, cut[0], cut[1], st.totalQ);
-                    next = applyCut(next, target.inQ, target.outQ, st.totalQ);
-                    commitBandSegs(st, next);
-                }
-            };
-            ev.target.addEventListener('pointermove', move);
-            ev.target.addEventListener('pointerup', up);
-            ev.target.addEventListener('pointercancel', up);
         };
         chip.addEventListener('pointerdown', startDrag('slide'));
         handles.start.addEventListener('pointerdown', startDrag('resize', 'start'));
