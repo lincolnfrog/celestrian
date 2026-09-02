@@ -1,5 +1,5 @@
 /* Celestrian session view — dark tape-deck theme ("Gunmetal & walnut",
-   design handoff mockup 4a; supersedes the warm "Tape Room" palette).
+   design handoff mockup 4a).
    Matte gunmetal chassis + walnut side rails; light comes only from lit
    elements (odometer, VU faces, waveforms, lamps). Colorblind-safe
    signal pair: amber = material/active audio, cyan = echoes/monitoring/
@@ -65,7 +65,7 @@
     --amber-bright: #f3c877;   /* odometer digits, VU needle */
     --amber-group: #f2d78f;    /* group composite waveform + badge — pushed
                                   toward cream for real group-vs-track
-                                  contrast (owner feedback 2026-08-08) */
+                                  contrast */
     --amber-dim: #8a744d;      /* odometer secondary text */
     --cyan: #5fc9d8;           /* echoes / monitoring / ready lamp */
     --cyan-dim: #3f7d8c;       /* VU dial arc */
@@ -93,8 +93,8 @@
     --vu-face: linear-gradient(180deg, #0c1522, #0f1c2e);
     --playhead: #eef2f7;
 
-    /* legacy token names, remapped onto the new palette so every
-       existing rule downstream picks up the theme */
+    /* the token names the rules below use, mapped onto the palette
+       above */
     --ground: #26282c;
     --panel: #2a2d31;
     --panel-2: #33363c;
@@ -107,9 +107,9 @@
     --grid: #2b2e33;
     --grid-q4: #3a3e44;
     --line: #3a3e44;      /* hairline borders (chips, menus, bar buttons) */
-    /* 230 (was 208): the foot row must fit the live take length
-       ("12.3Q…") beside the full control set — at 208 the Q slot was
-       squeezed to a sliver while recording (owner feedback 2026-08-08b) */
+    /* the foot row must fit the live take length ("12.3Q…") beside the
+       full control set — narrower, the Q slot squeezes to a sliver
+       while recording */
     --rail-w: 230px;
 
     font-size: 16px;
@@ -151,10 +151,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     grid-template-rows: auto 1fr auto;
     /* minmax(0, 1fr), NOT the implicit `auto` column: an auto grid
        track grows to its widest row's MAX-content — a long transport
-       readout ("loop 3.07 s · sets tempo") silently widened the whole
-       app past the window, clipping everything at the right edge
-       (owner report 2026-08-08g). Capping the column at the container
-       lets the flex rows shrink/ellipsize as designed. */
+       readout ("loop 3.07 s · sets tempo") would silently widen the
+       whole app past the window, clipping everything at the right
+       edge. Capping the column at the container lets the flex rows
+       shrink/ellipsize as designed. */
     grid-template-columns: minmax(0, 1fr);
     height: 100%;
     background: var(--chassis-face);
@@ -188,20 +188,20 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 #transport .brand img { display: block; opacity: 0.9; }
 /* The play knob: machined transport verb (cel-play). The patch layer
    still sets ▶/⏸ text (tests, screen readers), but the VISIBLE glyph is
-   CSS-drawn — font symbols came from different faces per platform and
-   the pause glyph sat optically high (owner feedback 2026-08-08). */
+   CSS-drawn — font symbols come from different faces per platform and
+   the pause glyph sits optically high. */
 #play-btn {
     /* flex:none — a knob is a CIRCLE. As a shrinkable flex item the
-       transport crunch squeezed it into an ellipse (owner feedback
-       2026-08-08h); the odometer is the row's designated shrinker. */
+       transport crunch would squeeze it into an ellipse; the odometer
+       is the row's designated shrinker. */
     flex: none;
     width: 54px; height: 54px;
     border-radius: 50%;
     /* FLEX centering, not grid: the (hidden, zero-size) ▶/⏸ text node
        and the ::after glyph are separate items — grid auto-placement
-       stacked them in two ROWS, sinking the drawn glyph below center
-       (owner feedback 2026-08-08b). In a flex row they share the
-       center line and the zero-width text is harmless. */
+       would stack them in two ROWS, sinking the drawn glyph below
+       center. In a flex row they share the center line and the
+       zero-width text is harmless. */
     display: flex; align-items: center; justify-content: center;
     font-size: 0;             /* hide the text glyph; ::after draws it */
     color: var(--amber);
@@ -231,8 +231,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     filter: drop-shadow(0 0 4px rgba(232, 161, 60, 0.6));
 }
 #play-btn:hover { filter: brightness(1.1); }
-/* (No global record button — owner ruling 2026-07-19h: the track's ●
-   is the record verb. The transport carries play, position, monitor.) */
+/* (No global record button — the track's ● is the record verb. The
+   transport carries play, position, monitor.) */
 #transport .spacer { flex: 1; }
 /* Zoom cluster: the buttons make Q/E discoverable; the % is the reset */
 #zoom-level {
@@ -307,7 +307,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    gain (0..unity, the no-boost law). The grip tracks the pointer 1:1;
    double-click for unity. (A fader, not a knob: the master is a fader
    on every real deck — the per-track dials stay dials, channel-trim
-   style. Owner feedback 2026-08-08c.) */
+   style.) */
 #master-fader {
     width: 18px; height: 46px;
     flex: none;
@@ -426,10 +426,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* ===== 7. Transport responsive breakpoints ===== */
 /* Narrow windows: decoration yields first, then secondary info — the
    master monitor is an instrument, so it stays as long as possible
-   (owner feedback 2026-08-08: the app runs well under 1080 CSS px and
-   the meters must be there). The MARK is permanent at every width —
-   branding that pops in and out reads as a glitch (owner feedback
-   2026-08-08h); only the wordmark text yields. Order of sacrifice:
+   (the app runs well under 1080 CSS px and the meters must be there).
+   The MARK is permanent at every width — branding that pops in and
+   out reads as a glitch; only the wordmark text yields. Order of
+   sacrifice:
    wordmark → compact VU → odometer sub → monitor last. */
 @media (max-width: 1150px) { #transport .brand .brand-text { display: none; } }
 @media (max-width: 1000px) {
@@ -487,8 +487,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 #ruler .tick-label.cycle-end { transform: translateX(-100%); }
 
-/* Ruler scrub (owner ruling 2026-08-27): the ruler is the transport's
-   seek surface — click teleports, drag scrubs. ew-resize says
+/* Ruler scrub: the ruler is the transport's seek surface — click
+   teleports, drag scrubs. ew-resize says
    "horizontal", matching the gesture; while a take is live or armed
    the gesture is refused (engine rule) and the cursor says so. */
 #ruler.seekable { cursor: ew-resize; }
@@ -519,12 +519,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     gap: 6px 12px;
 }
 
-/* Handle nav dock — footer bar (owner pick C, 2026-08-09,
-   superseding both the hover overlay and the sticky gutter — the
-   webview's horizontal sticky landed the gutter inside the lane).
-   The mouse face of [ / ]: a slim always-visible bar in its own grid
-   row UNDER a mapped lane's body, right-aligned to the VIEWPORT by
-   updateNavDock in JS (no horizontal sticky — burned once). Unmapped
+/* Handle nav dock — footer bar (owner pick C). The mouse face of
+   [ / ]: a slim always-visible bar in its own grid row UNDER a mapped
+   lane's body, right-aligned to the VIEWPORT by updateNavDock in JS
+   (no horizontal sticky — the webview's horizontal sticky lands a
+   gutter inside the lane). Unmapped
    lanes have no footer and pay no space. ⇤ ‹ › ⇥ jump/walk handles;
    the strip is a per-track minimap: one clickable tick per handle,
    the cyan box marking the current viewport. */
@@ -720,9 +719,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .rail-name {
     /* The name NEVER collapses below a readable floor — post-record the
-       head row gains the status word + tempo chip, and the flexing name
-       was squeezed to a single letter (owner feedback 2026-08-08). The
-       chips yield instead (see .rail-status / .tempo-chip). */
+       head row gains the status word + tempo chip, and an unfloored
+       name squeezes to a single letter. The chips yield instead (see
+       .rail-status / .tempo-chip). */
     flex: 1 1 auto; min-width: 7ch;
     font-weight: 600;
     font-size: 0.95rem;
@@ -755,7 +754,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 /* While recording, the sub-line IS the record cue: the live take length
    in pulsing record-red, in the slot the period ("2Q") occupies at rest —
-   so the head row never reflows (owner feedback 2026-08-08). */
+   so the head row never reflows. */
 .rail-sub.recording {
     color: var(--record-hi);
     animation: recpulse 1.6s ease-in-out infinite;
@@ -768,10 +767,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @keyframes recpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .armed-word { color: var(--rec); }
 /* Q-definer badge: a lit "Q" LAMP in the deck's lamp vocabulary —
-   recessed bezel, glow, fixed size so it can NEVER truncate (the text
-   pill crushed to "T…" on crowded rails — owner feedback 2026-08-08e).
-   TEAL, not red: red is the record identity, and tempo is information,
-   not danger (owner feedback 2026-08-08f) — this sits in the cyan
+   recessed bezel, glow, fixed size so it can NEVER truncate (a text
+   pill crushes to "T…" on crowded rails). TEAL, not red: red is the
+   record identity, and tempo is information, not danger — this sits
+   in the cyan
    status family with the ready lamp. Lit = this take's length IS the
    tempo, still trimmable; it goes out when a second take locks it. */
 .tempo-chip {
@@ -818,9 +817,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    glanceable at rest. The gain dial is the same family (volume fader,
    0..unity over the same sweep) with a VERTICAL drag axis. */
 .pan-dial, .gain-dial {
-    /* 18px (was 22 when pan stood alone): two dials share the head row
-       now, and the flexing name pays for every pixel — group rails
-       (fold + ungroup) truncate first. */
+    /* 18px: two dials share the head row, and the flexing name pays
+       for every pixel — group rails (fold + ungroup) truncate first. */
     width: 18px; height: 18px;
     flex: none;
     border-radius: 50%;
@@ -847,7 +845,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .pan-dial.off-center .pan-tick,
 .gain-dial.off-center .pan-tick { background: var(--tape); }
 /* Arm: a small RING (state), never a big red dot (verb) — the track's
-   ● IS the record verb (owner ruling 2026-07-19h). Warm --arm tone that
+   ● IS the record verb. Warm --arm tone that
    reads by FILL, not hue (colorblind-safe design rule 1). */
 .rail-btn.arm-btn {
     border-radius: 50%;
@@ -964,7 +962,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 /* INSPECTOR lanes (the raw-take edit view) run on their OWN horizontal
    scale — the global playhead's position is meaningless over them
-   (field: "cursor decoupling", 2026-07-22). Stack the opaque body
+   (cursor decoupling). Stack the opaque body
    ABOVE the playhead (z 6) so the one honest cursor there is the
    lane's amber heard cursor; the white cursor stays visible over every
    in-frame lane. */
@@ -972,7 +970,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     z-index: 7;
     box-shadow: inset 0 0 0 1px var(--map-amber-35);
 }
-/* SMOOTH OPEN (field 2026-07-23f): entering the raw take view eases in
+/* SMOOTH OPEN: entering the raw take view eases in
    instead of snapping — the content swap reads as the lane "opening"
    to show the whole clip and its map structure. */
 @media (prefers-reduced-motion: no-preference) {
@@ -981,10 +979,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
         animation: lane-open 200ms ease-out;
     }
 }
-/* Transform ONLY — the old 0.25-opacity dip made the lane translucent
-   for 200ms on EVERY grab: the greys pulsed and the z-6 playhead bled
-   through the see-through body (owner video 2026-07-25b, "flickering
-   of greyed out sections"). The open still eases; nothing fades. */
+/* Transform ONLY — an opacity dip would make the lane translucent for
+   200ms on EVERY grab: the greys pulse and the z-6 playhead bleeds
+   through the see-through body. The open eases; nothing fades. */
 @keyframes lane-open {
     from { transform: scaleY(0.94); }
     to   { transform: scaleY(1); }
@@ -999,7 +996,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 
 /* Lane-body layers: grid under reps under overlay. Reps are RECONCILED
    (reused, not recreated), so geometry changes morph via transitions
-   instead of popping (the commit "flash" — field report 2026-07-10). */
+   instead of popping (the commit "flash"). */
 .body-layer { position: absolute; inset: 0; }
 .grid-layer, .overlay-layer { pointer-events: none; }
 
@@ -1022,9 +1019,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     .reps-layer .rep { transition: none; }
 }
 /* Canvases stack absolutely so a content swap can CROSS-FADE: the
-   live→fetched waveform replacement at commit hard-swapped two
-   different renderings of the same audio (features shift a few px) —
-   the residual "squish/stretch" in the 2026-07-10 field video */
+   live→fetched waveform replacement at commit swaps two different
+   renderings of the same audio (features shift a few px) — a hard
+   swap reads as squish/stretch */
 .rep canvas { position: absolute; left: 0; top: 0; height: 100%; }
 /* One-shot lanes (Q5): the lone take tile carries a dashed edge —
    "plays once, then rests" (recording.md Example 3). An OUTLINE, never
@@ -1047,9 +1044,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .rail-btn.oneshot-btn.on {
     color: var(--tape); border-color: var(--tape); background: var(--panel-2);
 }
-/* Ghosts slightly stronger than the old 0.16 now that waveforms are
-   display-normalized; the Q gridlines mark boundaries (a per-rep tick
-   notch read as "waveform corruption" in the field) */
+/* Ghost opacity sized for display-normalized waveforms; the Q
+   gridlines mark boundaries (a per-rep tick notch reads as waveform
+   corruption) */
 .rep.ghost { opacity: 0.22; }
 .rep.recording-bar {
     background: linear-gradient(to bottom, #322a24, #221d18);
@@ -1089,9 +1086,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     cursor: ew-resize;
     touch-action: none;
     /* The overlay layer is pointer-events:none — every interactive
-       child must OPT IN (the win-bracket rule; field 2026-07-23b:
-       without this no real mouse could grab a cut at all, and the
-       synthetic-event tests bypassed hit-testing and never noticed). */
+       child must OPT IN (the win-bracket rule). Without this no real
+       mouse can grab a cut; synthetic-event tests bypass hit-testing
+       and will not notice — verify interactive chrome with real input. */
     pointer-events: auto;
     z-index: 6;
 }
@@ -1159,14 +1156,14 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .overlay-layer.drag-live > * { opacity: 0; }
 .overlay-layer.drag-live > .drag-preview-layer { opacity: 1; }
 /* …but the sound cursor lives through the gesture: you hear the live
-   splice, so you see where it is sounding (field 2026-07-25). Above
-   the preview layer's dims. */
+   splice, so you see where it is sounding. Above the preview layer's
+   dims. */
 .overlay-layer.drag-live > .win-cursor { opacity: 1; z-index: 3; }
 /* The preview draws RAW-frame geometry; until the lane has actually
    swapped to its raw view (.inspecting lands on the next poll) those
-   dims sit over HEARD content — a wrong-space flash at every grab
-   (field 2026-07-25b "flickering of greyed out sections"). Hidden
-   until the expansion is real; reveals with the lane-open ease. */
+   dims would sit over HEARD content — a wrong-space flash at every
+   grab. Hidden until the expansion is real; reveals with the lane-open
+   ease. */
 .lane-body:not(.inspecting) .drag-preview-layer { opacity: 0; }
 .drag-preview-layer {
     position: absolute;
@@ -1189,8 +1186,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     pointer-events: none;
     z-index: 7;
     /* Hover-revealed like the latent grips it labels — at rest the
-       lane stays quiet (the ↺+][ totem read as clutter in the field
-       video, 2026-07-23g). */
+       lane stays quiet (the ↺+][ totem reads as clutter). */
     opacity: 0;
     transition: opacity 120ms ease;
 }
@@ -1494,7 +1490,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     pointer-events: none;
     display: none;
     /* Above the sticky group headers (z-index 5) — the one playhead
-       crosses EVERYTHING (I8); it hid behind the composite in the field */
+       crosses EVERYTHING (I8), never hides behind the composite */
     z-index: 6;
     /* Same timing as the recording bar's reveal edge: the two move in
        lockstep (wrap/commit jumps snap via inline override) */
@@ -1510,7 +1506,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border: 6px solid transparent;
     border-top-color: var(--playhead);
 }
-/* Stopped (ruler scrub, 2026-08-27): the line stays visible so a seek
+/* Stopped (ruler scrub): the line stays visible so a seek
    has somewhere to land — dimmed, a resting cursor rather than a
    sweeping one. */
 #playhead.idle {
@@ -1534,9 +1530,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 #create-row button:hover { border-color: var(--tape); color: var(--tape); }
 
-/* The zero-lanes marker — the BOOT state since Q17 (boot empty).
-   Deliberately WORDLESS (owner call 2026-08-13: "just having a +
-   button is pretty clear"), and nearly weightless — the ruler row
+/* The zero-lanes marker — the BOOT state (Q17, boot empty).
+   Deliberately WORDLESS (owner call: the + button is clear on its
+   own), and nearly weightless — the ruler row
    hides with it (patch.js), so the ＋ Track row sits right up top
    with no stray hairline or dead air above it. The sliver of padding
    keeps the non-zero box the e2e visibility pins read. */
@@ -1711,9 +1707,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 
 /* ===== 21. Loading overlay ===== */
-/* Boot splash (was inline styles in index.html — moved here 2026-08-11;
-   session.css is a render-blocking <link>, so timing is identical).
-   app.js hides #loading-overlay once modules land. Deliberately plain
+/* Boot splash (session.css is a render-blocking <link>, so these
+   styles apply as early as inline ones would). app.js hides
+   #loading-overlay once modules land. Deliberately plain
    sans-serif: it shows BEFORE the webfonts arrive. */
 #loading-overlay {
     position: fixed;
@@ -1890,12 +1886,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-color: var(--tape);
 }
 
-/* --- Mid-phase loop top (owner report 2026-08-18) -------------------
+/* --- Mid-phase loop top -------------------
    A window performed mid-cycle loops with its top mid-lane: the end
    grip and the start grip meet there ("] end · start [") and the wrap
    seam in the waveform looks like a cut. Name it at rest — the chip
    reads "↺ loop top" — and keep the paired grips visible so BOTH stay
-   findable (the end grip used to hide 3px behind the start). */
+   findable (coincident grips would hide one behind the other). */
 .loop-top-chip { opacity: 0.85; }
 .win-bracket.latent.trim-grip.paired { opacity: 0.55; }
 .lane-body:hover .win-bracket.latent.trim-grip.paired { opacity: 0.8; }
@@ -1923,7 +1919,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* The synthetic `.lane.lane-seq` row (grid template from .lane): a
    SEQUENCER label rail + the grid body. Rows = children, columns =
    steps (flex-grow proportional to lenQ), pads = gates. */
-/* TIME-HONEST LAYOUT (owner feedback 2026-08-20): pads span the FULL
+/* TIME-HONEST LAYOUT: pads span the FULL
    body column — step boundaries sit on the shared time axis. The rail
    column mirrors the body's rows at the same fixed heights (label
    beside the header, one name beside each pad row); the append verb
@@ -2001,9 +1997,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-radius: 3px;
 }
 .seq-hlen { color: var(--map-amber); }
-/* The step-resize grip: a VISIBLE bracket-style handle (was a 3px
-   hairline nobody discovered — owner field report 2026-08-20b). Wide
-   hit area; the bar brightens on hover like the loop brackets. */
+/* The step-resize grip: a VISIBLE bracket-style handle (a hairline is
+   not discoverable). Wide hit area; the bar brightens on hover like
+   the loop brackets. */
 .seq-grip {
     position: absolute;
     right: -2px; top: 0; bottom: 0;

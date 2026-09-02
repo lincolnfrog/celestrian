@@ -3,14 +3,13 @@
  * Scenario graphs are hand-written fixtures in the CURRENT state shape:
  * every scenario with committed content sets the STORED island Q
  * (`state.islandQ`, published as `quantum`) the way a real first
- * commit would — there is no derivation fallback any more.
+ * commit would — the mock has no derivation fallback.
  * makeClip/makeStack collapse the repeated literals.
  *
- * SAMPLE RATE: every fixture length below used to be a literal derived
- * from 44100 (1Q = 44100, 3Q = 132300, "2.5Q" = 110250 …). They are now
- * multiples of `Q` — one second of audio at the mock's rate
- * (mock/rate.js) — read at LOAD time, so a scenario keeps its musical
- * shape (1Q + 3Q, LCM 3Q, a take 2.5Q in) at any rate.
+ * SAMPLE RATE: every fixture length below is a multiple of `Q` — one
+ * second of audio at the mock's rate (mock/rate.js) — read at LOAD
+ * time, so a scenario keeps its musical shape (1Q + 3Q, LCM 3Q, a take
+ * 2.5Q in) at any rate.
  *
  * The x/y/w/h fields some older fixtures still carry are canvas-era
  * leftovers nothing renders (setNodePosition's twin); they go when the
@@ -76,9 +75,9 @@ export function loadScenario(name) {
     transport.speed = 1.0;
     transport.samplesPerTick = DEFAULT_SAMPLES_PER_TICK;  // simulation step
     recView.active = false;
-    // Scenario isolation (fix 2026-08-11): the clock resets too —
-    // isPlaying/masterPos no longer leak in from whatever the previous
-    // test left running (transport.running is already false, above).
+    // Scenario isolation: the clock resets too — isPlaying/masterPos
+    // must not leak in from whatever the previous test left running
+    // (transport.running is already false, above).
     state.isPlaying = false;
     state.masterPos = 0;
     state.islandEpoch = 0;
@@ -529,9 +528,8 @@ export function loadScenario(name) {
     settleAnchors();
 }
 
-// Boot EMPTY (Q17 parity, ruled 2026-08-13 — the launch ritual is
-// retired): the creation menu is the instrument path and `R` on an
-// empty project creates + arms the default track, so no seeded
-// "Track 1" and no auto-loaded template. Tests reset with
-// loadScenario(...) as ever.
+// Boot EMPTY (Q17 parity): the creation menu is the instrument path
+// and `R` on an empty project creates + arms the default track, so no
+// seeded "Track 1" and no auto-loaded template. Tests reset with
+// loadScenario(...).
 loadScenario('empty');

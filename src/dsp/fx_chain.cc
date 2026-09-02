@@ -6,9 +6,8 @@
 namespace celestrian::dsp {
 
 namespace {
-// Spectrum display range (moved verbatim from the rack): log-spaced
-// bins between these bounds (capped under Nyquist), normalized over the
-// top kSpectrumRangeDb decibels.
+// Spectrum display range: log-spaced bins between these bounds (capped
+// under Nyquist), normalized over the top kSpectrumRangeDb decibels.
 constexpr double kSpectrumMinHz = 40.0;
 constexpr double kSpectrumMaxHz = 16000.0;
 constexpr double kNyquistFraction = 0.45;
@@ -16,7 +15,7 @@ constexpr double kSpectrumFloor = 1.0e-9;
 constexpr double kSpectrumRangeDb = 60.0;
 }  // namespace
 
-// ===== Built-in slot params (clamps moved verbatim from the rack) =====
+// ===== Built-in slot params =====
 
 bool EqSlot::setParam(const juce::String& key, double value) {
   const float f = (float)value;

@@ -122,22 +122,21 @@ export function patchSessionView(vm, aux) {
     ctx.laneEls.forEach(row => updateNavDock(row));
 
     ctx.els.emptyState.style.display = vm.lanes.length ? 'none' : 'block';
-    // The ruler row measures LANES — with zero lanes it was just a
-    // stray hairline and 38px of dead air above the + row (owner
-    // report 2026-08-13, the boot-empty follow-up). '' restores the
+    // The ruler row measures LANES — with zero lanes it would be a
+    // stray hairline and dead air above the + row. '' restores the
     // stylesheet's grid when lanes return.
     ctx.els.rulerRow.style.display = vm.lanes.length ? '' : 'none';
 
-    // Ruler scrub (owner ruling 2026-08-27): feed the seek module the
-    // frame facts this patch rendered, and lock it while recording.
+    // Ruler scrub: feed the seek module the frame facts this patch
+    // rendered, and lock it while recording.
     noteSeekVm(vm, anyRecording);
 
     // The one playhead (I8): a single line from the ruler through the
     // last audio lane — never through the add-track affordance below.
-    // Visible while STOPPED too since the ruler scrub (owner ruling
-    // 2026-08-27): a seek needs somewhere to land visibly, and the
-    // dimmed line says where playback will resume. Pre-Q there is no
-    // frame, so the stopped line waits for Q like the ruler does.
+    // Visible while STOPPED too (the ruler scrub): a seek needs
+    // somewhere to land visibly, and the dimmed line says where
+    // playback will resume. Pre-Q there is no frame, so the stopped
+    // line waits for Q like the ruler does.
     const showPlayhead = vm.lanes.length > 0 &&
         (vm.isPlaying || (vm.qEstablished && !anyRecording));
     if (showPlayhead) {
@@ -196,10 +195,10 @@ export function patchSessionView(vm, aux) {
 }
 
 /* Suppression of the white playhead over INSPECTOR lanes, made
- * paint-order-independent (field 2026-07-25b): the z-index scheme
- * (.inspecting body z 7 over playhead z 6) relies on the lane painting
- * OPAQUELY above the line, and the webview compositor let the line
- * bleed through in stray frames mid-drag. A vertical mask carves the
+ * paint-order-independent: the z-index scheme (.inspecting body z 7
+ * over playhead z 6) relies on the lane painting OPAQUELY above the
+ * line, and the webview compositor lets the line bleed through in
+ * stray frames mid-drag. A vertical mask carves the
  * inspecting lanes' bands out of the line itself — no stacking, no
  * compositor, no bleed. */
 function maskPlayheadOverInspectors() {

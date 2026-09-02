@@ -46,8 +46,8 @@ export function paintSelection() {
     });
 }
 
-/** Programmatic single-select: grabbing a loop handle claims the track
- * (field request 2026-08-09), which is what arms the [ ] teleport. */
+/** Programmatic single-select: grabbing a loop handle claims the track,
+ * which is what arms the [ ] teleport. */
 export function selectOnly(id) {
     if (selection.size === 1 && selection.has(id)) return;
     selection.clear();
@@ -58,8 +58,8 @@ export function selectOnly(id) {
 }
 
 /** Rail-click selection: plain click selects the row (a click on the
- * sole selection keeps it — a track is always selected by default,
- * 2026-08-18; Escape / a canvas click clear); ⌘/Ctrl/Shift-click
+ * sole selection keeps it — a track is always selected by default;
+ * Escape / a canvas click clear); ⌘/Ctrl/Shift-click
  * toggles the row in and out of the additive set. */
 export function toggleSelect(row, additive) {
     const id = row._lane.id;
@@ -77,10 +77,9 @@ export function toggleSelect(row, additive) {
 }
 
 /**
- * A track is selected BY DEFAULT (owner request 2026-08-18: "make sure
- * the first track is selected by default" — with the MIDI target and
- * the [ ] teleport following selection, an empty selection is a dead
- * state). Called every patch with the lane ids in view order: prunes
+ * A track is selected BY DEFAULT (with the MIDI target and the [ ]
+ * teleport following selection, an empty selection is a dead state).
+ * Called every patch with the lane ids in view order: prunes
  * ids that vanished (deleted lanes), and when nothing is selected —
  * and the user has not just cleared it on purpose — selects the first
  * lane. A vanished selection re-arms the default (the clear was not the

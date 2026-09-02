@@ -34,16 +34,11 @@ export const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a
 /**
  * Positive modulo: wraps `x` into [0, m) even when `x` is negative.
  *
- * The `((x % m) + m) % m` idiom previously appeared inline at 20+ call
- * sites across the view model, time-map, and mock backend; this is the
- * single shared home for it.
+ * The single shared home for the `((x % m) + m) % m` idiom across the
+ * view model, time-map, and mock backend.
  *
  * @param {number} x  value to wrap (may be negative)
  * @param {number} m  period, must be > 0
  * @returns {number}  x wrapped into [0, m)
  */
 export const posMod = (x, m) => ((x % m) + m) % m;
-
-// (calculateVisualOffset was deleted 2026-07-16: dead since the session
-// view — lane x is a projection of `origin` in view_model.js, and the
-// stored anchorPhase it consumed no longer exists.)

@@ -6,9 +6,9 @@
  *
  * CONVENTIONS THE MODULES SHARE (the expando protocol — render CACHES
  * ride the DOM node they describe, so they live and die with the
- * node; gesture LATCHES moved to gesture.js module state, 2026-08-30
- * §4.5 — a latch that gates other code must be released on every
- * failure path, which the gesture runner owns):
+ * node; gesture LATCHES live in gesture.js module state — a latch that
+ * gates other code must be released on every failure path, which the
+ * gesture runner owns):
  *
  *   gesture.isOverlayFrozen(body) — a drag holds pointer capture on an
  *                     overlay element (or a commit is awaiting the

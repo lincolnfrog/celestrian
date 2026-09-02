@@ -11,16 +11,15 @@ namespace celestrian {
 
 /**
  * TakeStorage — the live take's memory: ADDRESS SPACE reserved up
- * front, pages COMMITTED ahead of the write head (audit 2026-08-30 §4.6).
+ * front, pages COMMITTED ahead of the write head.
  *
- * D4 ("no recording wall") reserved `kMaxTakeSamples` per channel with
- * a plain malloc and relied on lazy overcommit: free on macOS/Linux,
- * but Windows charges the whole reservation to the commit limit the
- * moment it is allocated — five drum mics were a 20 GB commit charge
- * before a note was played, and the allocation itself was slow enough
- * to split a group arm across audio blocks (§1.4). This class keeps
- * the reservation (record indefinitely, up to the same bound) but
- * commits memory in chunks as the take grows:
+ * A plain malloc of `kMaxTakeSamples` per channel would rely on lazy
+ * overcommit: free on macOS/Linux, but Windows charges the whole
+ * reservation to the commit limit the moment it is allocated (five
+ * drum mics = a 20 GB commit charge before a note is played), and the
+ * allocation is slow enough to split a group arm across audio blocks.
+ * So the reservation stays (record indefinitely, up to that bound) but
+ * memory is committed in chunks as the take grows:
  *
  *   - reserve(): address space only (VirtualAlloc MEM_RESERVE / mmap
  *     MAP_NORESERVE) — nothing is charged.
@@ -31,7 +30,7 @@ namespace celestrian {
  *   - committed(): the AUDIO THREAD's write wall. Capture never writes
  *     past it; reaching it (the grower starved for a whole headroom —
  *     a stalled message thread) finishes the take cleanly at the last
- *     boundary that fits, exactly like the old reservation bound.
+ *     boundary that fits.
  *
  * The juce::AudioBuffer the clip renders from REFERS to these channels
  * (the referring constructor); ownership of the storage travels with

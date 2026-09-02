@@ -38,11 +38,9 @@ StackNode::~StackNode() {
   delete sequence_.load();
 }
 
-// (The per-stack snapshot machinery — render_children_ +
-// republishChildren + the reclaimer plumbed through every stack — is
-// gone: the audio thread traverses the WHOLE-GRAPH snapshot published
-// by the engine (graph_snapshot.h, Tier 3 Step 3). Node lifetime on
-// structural edits is owned by the edit log / the engine's reclaimer.)
+// The audio thread traverses the WHOLE-GRAPH snapshot published by the
+// engine (graph_snapshot.h); node lifetime on structural edits is owned
+// by the edit log / the engine's reclaimer.
 
 juce::var StackNode::getMetadata() const {
   const auto& kids = children;  // message thread: ownership vector
@@ -54,9 +52,9 @@ juce::var StackNode::getMetadata() const {
   // AudioNode base — fractal with clips (I5). The stack's `playhead`
   // field carries the window phase fraction while the window is active.
   // Island state, for diagnosability: `origin` on clips is ABSOLUTE;
-  // the view-frame anchor is (origin − epoch) mod duration. Without the
-  // epoch in dumps, "origin = 3Q" looks wrong for a clip recorded at
-  // the cycle top (field confusion, 2026-07-09).
+  // the view-frame anchor is (origin − epoch) mod duration, so without
+  // the epoch a dump's "origin = 3Q" reads wrong for a clip recorded at
+  // the cycle top.
   obj->setProperty("quantum", (double)quantum_samples_.load());
   obj->setProperty("epoch", (double)epoch_samples_.load());
   // Under a step audition the DERIVED window is the one the UI must
@@ -116,9 +114,8 @@ juce::var StackNode::getMetadata() const {
 
 int64_t StackNode::getIntrinsicDuration() const {
   // Composite duration = LCM of children (docs/recording.md "Nested
-  // Stacks and Composite Duration"). Previously this returned the MIN
-  // child duration, which doubled as a derived quantum — both wrong;
-  // the quantum is now stored island state (P0-3).
+  // Stacks and Composite Duration"). Not a quantum: Q is stored island
+  // state, never derived from child durations.
   const auto& kids = children;  // message thread: ownership vector
   if (kids.empty()) return 0;
 
@@ -217,44 +214,40 @@ void StackNode::takeArmed() {
 }
 
 void StackNode::takeCommitted(int64_t origin, int64_t intrinsic_after) {
-  // Re-base FIRST, decrement LAST (audit 2026-08-31 E5): active_takes_
-  // is the message thread's "island settled" signal (hasActiveTake);
-  // decrementing before the epoch store opened a window where an edit
-  // observed a settled island whose epoch re-base had not landed yet.
+  // Re-base FIRST, decrement LAST: active_takes_ is the message
+  // thread's "island settled" signal (hasActiveTake); decrementing
+  // before the epoch store would let an edit observe a settled island
+  // whose epoch re-base has not landed yet.
   rebaseEpochOnGrowth(origin, intrinsic_after);
   active_takes_.fetch_sub(1);
 }
 
 void StackNode::rebaseEpochOnGrowth(int64_t origin, int64_t intrinsic_after) {
-  // Epoch re-base on cycle growth (recording.md "LCM Expansion Snap",
-  // completed 2026-07-16): the cycle top moves to the HEARD top the
-  // take was performed against — its origin floored to a whole multiple
-  // of the pre-take cycle. Whole-old-cycle moves are PHASE-NEUTRAL for
-  // every committed clip (their periods divide the old cycle), so audio
-  // alignment and I3 are untouched; what it buys is that the frame the
-  // performer WATCHED while recording (the take-anchored whole-cycle
-  // shift in the view, view_model.js) persists at commit instead of
-  // snapping back (field 2026-07-16: a 5Q take recorded from a heard
-  // cycle top displayed at 12Q–17Q of the exploded 20Q frame).
+  // Epoch re-base on cycle growth (recording.md "LCM Expansion Snap"):
+  // the cycle top moves to the HEARD top the take was performed
+  // against — its origin floored to a whole multiple of the pre-take
+  // cycle. Whole-old-cycle moves are PHASE-NEUTRAL for every committed
+  // clip (their periods divide the old cycle), so audio alignment and
+  // I3 are untouched; what it buys is that the frame the performer
+  // WATCHED while recording (the take-anchored whole-cycle shift in
+  // view_model.js) persists at commit instead of snapping back.
   //   - Simple extension armed at a top: floor(rel/before)·before = rel,
-  //     so epoch := origin — the historical rule, unchanged.
-  //   - Polyrhythmic growth: previously "keep the old epoch" (the
-  //     cursor-sails-on ruling, which predates the recording view
-  //     shift); now the WATCHED cursor is what sails on.
+  //     so epoch := origin.
+  //   - Polyrhythmic growth: the WATCHED cursor is what sails on.
   int64_t before = lcm_before_take_.load();
   if (before <= 0) return;  // first take: epoch was established at arm
 
   // Passed in (snapshot space) — this event fires on the AUDIO thread,
-  // and the stack's own traversal is message-thread-only (Step 3).
+  // and the stack's own traversal is message-thread-only.
   int64_t after = timing::lcm(quantum_samples_.load(), intrinsic_after);
-  // THE SONG RIDES THE EPOCH (docs/sequencer.md §11, found building
-  // step 2): an active sequence's steps are positioned from the cycle
-  // epoch, so a whole-old-cycle re-base that is NOT a whole number of
-  // songs would shift every section (a 4Q part recorded into an 8Q
-  // song re-based the epoch by 4Q — the chorus became the intro).
-  // The sequence length joins both sides of the growth comparison:
-  // shifts happen in whole songs or not at all. (Sequence edits are
-  // refused mid-take, so the length here is the one the take heard.)
+  // THE SONG RIDES THE EPOCH (docs/sequencer.md §11): an active
+  // sequence's steps are positioned from the cycle epoch, so a
+  // whole-old-cycle re-base that is NOT a whole number of songs would
+  // shift every section (a 4Q part recorded into an 8Q song would
+  // re-base by 4Q — the chorus becomes the intro). The sequence length
+  // joins both sides of the growth comparison: shifts happen in whole
+  // songs or not at all. (Sequence edits are refused mid-take, so the
+  // length here is the one the take heard.)
   if (const int64_t seq_len = activeSequenceLen(); seq_len > 0) {
     before = timing::lcm(before, seq_len);
     after = timing::lcm(after, seq_len);
@@ -264,14 +257,13 @@ void StackNode::rebaseEpochOnGrowth(int64_t origin, int64_t intrinsic_after) {
   const int64_t epoch = epoch_samples_.load();
   int64_t rel = origin - epoch;
   if (rel < 0) rel = 0;
-  // Through the seqlock (audit 2026-08-31 E5): a raw epoch store here
-  // bypassed setIslandFacts, so a block reading (Q, epoch) mid-commit
-  // could take a mixed pair. Same generation — the re-base is a whole-
-  // old-cycle move, phase-neutral for every committed clip's origin-
-  // relative render, so no origin gating rides it. (Concurrent-writer
-  // note: the only audio-thread writer is this commit event; message-
-  // thread fact writers are refused under a live take, so the seqlock's
-  // single-writer discipline holds.)
+  // Through the seqlock: a raw epoch store would let a block reading
+  // (Q, epoch) mid-commit take a mixed pair. Same generation — the
+  // re-base is a whole-old-cycle move, phase-neutral for every
+  // committed clip's origin-relative render, so no origin gating rides
+  // it. This commit event is the only audio-thread writer, and
+  // message-thread fact writers are refused under a live take, so the
+  // seqlock's single-writer discipline holds.
   setIslandFacts(quantum_samples_.load(), epoch + (rel / before) * before,
                  islandGeneration());
 }
@@ -354,9 +346,9 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
     // (clip_node.cc render) with the stack's origin in place of the
     // clip's. Window content sounds at its own performed moment; a
     // windowed group of mics recorded as one take renders identically
-    // to each mic windowed alone (the content-frame law by construction
-    // — it used to be enforced by origin riders). mapOffset folds by the
-    // map period, negatives included.
+    // to each mic windowed alone (the content-frame law, by
+    // construction). mapOffset folds by the map period, negatives
+    // included.
     const int64_t a0 = map.mapOffset(0);
     child_context.master_pos = O + map.mapOffset(context.master_pos - O - a0);
     // Time-map facts for the subtree (phase 2): the map, its origin, and
@@ -416,7 +408,7 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   }
 
   // === CUE STEPS (docs/sequencer.md §3 — the Q6 serial primitive;
-  // S11 ruled, built 2026-08-27 with S20-S22) ===
+  // S11, S20–S22) ===
   // A CUED step re-bases the subtree's received frame to the step top:
   // children hear t' = epoch + (songRel - stepStart) — a derived
   // per-step time-map layered UNDER any authored/audition map (the S9
@@ -476,12 +468,11 @@ void StackNode::controlChildren(const float* const* input_channels,
   const ChildView kids = childView(context);
   const int child_count = kids.count();
 
-  // Recording context, passed DOWN (P1-6): the longest committed child
+  // Recording context, passed DOWN: the longest committed child
   // duration in this scope. Recording/armed children contribute 0
   // (duration resets at arm); a nested STACK contributes its inner
-  // cycle like any other loop the performer hears (Q18 — composition.md
-  // §8 retired the "stacks contribute 0" carve-out). A CONTROL fact:
-  // render never needs it.
+  // cycle like any other loop the performer hears (Q18, composition.md
+  // §8). A CONTROL fact: render never needs it.
   int64_t longest_committed = 0;
   for (int k = 0; k < child_count; ++k) {
     const AudioNode* child = kids.nodeAt(k);
@@ -570,15 +561,15 @@ void StackNode::renderChildren(float* const* output_channels,
   // signal (a stack reverb wets the whole kit), and the output-stage
   // gains scale the group as one. The accumulator is STEREO: children
   // may render panned/stereo signals, so folding channel 0 alone would
-  // collapse their image (the pre-stereo rack's documented limitation).
+  // collapse their image.
   //
-  // MUTE = THE PRE-FX GATE (S7 smoothness law, docs/sequencer.md §9 —
-  // supersedes the output-stage-zero + frozen-tails model): the group's
-  // mute and any parent-sequence gate (context.gate_*) resolve to one
-  // ramped dry gain applied to the children's SUM before the rack, so
-  // edges fade (~10 ms, no pops) and the rack keeps running — echo and
-  // reverb tails RING OUT through a closed gate. Children still render
-  // (their own tails and playhead telemetry keep flowing).
+  // MUTE = THE PRE-FX GATE (S7 smoothness law, docs/sequencer.md §9):
+  // the group's mute and any parent-sequence gate (context.gate_*)
+  // resolve to one ramped dry gain applied to the children's SUM before
+  // the rack, so edges fade (~10 ms, no pops) and the rack keeps
+  // running — echo and reverb tails RING OUT through a closed gate.
+  // Children still render (their own tails and playhead telemetry keep
+  // flowing).
   const float group_pan = pan.load();
   const bool muted = is_muted.load();
   float gate_g0 = 1.0f, gate_g1 = 1.0f;
@@ -686,11 +677,11 @@ void StackNode::renderChildren(float* const* output_channels,
       }
     }
     // The group's output stage: gain·pan (balance law). Mute is the
-    // PRE-FX gate above now (S7) — the fader here is always `gain`, so
-    // a muted group's rack tail still reaches the parent while it
-    // rings out. Channel 0 is L, channel 1 is R; any channels past the
-    // stereo pair get the fader-scaled unpanned channel-0 signal (the
-    // historical duplicate-mono behavior).
+    // PRE-FX gate above (S7) — the fader here is always `gain`, so a
+    // muted group's rack tail still reaches the parent while it rings
+    // out. Channel 0 is L, channel 1 is R; any channels past the stereo
+    // pair get the fader-scaled unpanned channel-0 signal (duplicate
+    // mono).
     float gl = 1.0f, gr = 1.0f, fader = 1.0f;
     outputStageGains(group_pan, group_gain, gl, gr, fader);
     for (int ch = 0; ch < num_output_channels; ++ch) {
@@ -758,9 +749,9 @@ AudioNode* StackNode::findByUuid(const juce::String& uuid) {
 }
 
 bool StackNode::isArmedOrRecording() const {
-  // Virtual dispatch replaces the old per-child dynamic_cast: clips
-  // answer from their recording state machine, nested stacks recurse
-  // via their own isArmedOrRecording override.
+  // Virtual dispatch, no per-child dynamic_cast: clips answer from their
+  // recording state machine, nested stacks recurse via their own
+  // isArmedOrRecording override.
   const auto& kids = children;  // message thread: ownership vector
   for (const auto& child : kids) {
     if (child->isArmedOrRecording()) return true;

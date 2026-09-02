@@ -28,9 +28,8 @@ void Vst3Slot::doPrepare(double sample_rate) {
   instance_->setPlayConfigDetails(is_instrument_ ? 0 : 2, 2, sample_rate,
                                   kMaxBlockSize);
   instance_->prepareToPlay(sample_rate, kMaxBlockSize);
-  // The MIDI scratch must never grow on the audio thread.
-  // Sized for a dense note-clip block plus live events (phase 5), so
-  // addEvents never grows it on the audio thread.
+  // Sized for a dense note-clip block plus live events, so addEvents
+  // never grows the MIDI scratch on the audio thread.
   midi_scratch_.ensureSize(65536);
 }
 
@@ -66,8 +65,8 @@ void Vst3Slot::processStereoMidi(float* l, float* r, int sample_count,
 }
 
 bool Vst3Slot::setParam(const juce::String& key, double value) {
-  // VST3 parameters belong to the plugin's editor (owner ruling
-  // 2026-08-15); the bridge's key/value surface is built-ins only.
+  // VST3 parameters belong to the plugin's editor; the bridge's
+  // key/value surface is built-ins only.
   juce::ignoreUnused(key, value);
   return false;
 }

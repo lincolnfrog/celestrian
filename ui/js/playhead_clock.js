@@ -2,9 +2,9 @@
  * Playhead dead-reckoning clock (docs/ui_overhaul.md law 10 coda).
  *
  * The published masterPos arrives every ~50ms; drawing it with a CSS
- * glide lags the target by the transition time, so the sweep visually
- * wrapped ~5% before the loop end and restarted past zero (field
- * 2026-07-11). Instead, between polls the playhead ADVANCES at the
+ * glide lags the target by the transition time, so the sweep would
+ * visually wrap ~5% before the loop end and restart past zero.
+ * Instead, between polls the playhead ADVANCES at the
  * estimated transport velocity and wraps EXACTLY at the audible cycle;
  * each poll corrects the position. Velocity is estimated from observed
  * masterPos deltas — never assumed — so a static mock scene stays

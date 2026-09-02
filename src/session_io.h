@@ -12,16 +12,15 @@
 namespace celestrian::session_io {
 
 /**
- * Save / Load (unification_audit.md §2.2 Step 2 — tasks.md). Plain
- * message-thread serialization of the graph; no snapshots. A session is a
- * BUNDLE directory:
+ * Save / Load. Plain message-thread serialization of the graph; no
+ * snapshots. A session is a BUNDLE directory:
  *
  *   <dir>/session.json      canonical state (below)
  *   <dir>/audio/<uuid>.wav  each committed clip's buffer (32-bit float;
  *                           channel count follows the content — stereo
  *                           takes save as stereo WAVs)
  *
- * The format is device-independent (Q12-ready): every musical fact is
+ * The format is device-independent (Q12): every musical fact is
  * stored as QTime — a clip's origin as an offset from the island epoch,
  * its period, its window segments, and the take's contextCycle — through
  * the Phase A projection helpers. Physical facts (the island exchange

@@ -26,13 +26,13 @@
 
 // Dark tape theme (design handoff, theme-dark-tape.css): amber carries
 // MATERIAL. The group composite is a clearly LIGHTER, creamier gold —
-// the handoff's --amber-group read as near-identical to the track amber
-// on real screens (owner feedback 2026-08-08), so the composite pushes
-// further toward cream: same warm family (colorblind-safe: the contrast
+// a gold near the track amber reads as identical on real screens, so
+// the composite pushes toward cream: same warm family (colorblind-safe:
+// the contrast
 // is lightness, not hue), unmistakably the group's mixdown at a glance.
 export const TAPE = { top: '#f0b45a', mid: '#e8a13c', bottom: '#c9871f' };
 export const COMPOSITE = { top: '#f9ecc0', mid: '#f2d78f', bottom: '#dcbb60' };
-// Echo tone ("ghosts show what SOUNDS", 2026-07-16 + owner follow-up):
+// Echo tone ("ghosts show what SOUNDS"):
 // EVERY ghost tile is an audible repetition — of the full take or of a
 // window segment — and draws in this cool tone. Warm tape hues are
 // reserved for MATERIAL (the take tile, the live bar, the composite),

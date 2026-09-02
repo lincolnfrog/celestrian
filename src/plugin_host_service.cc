@@ -15,8 +15,8 @@ namespace celestrian {
  * Enumeration (walking directories for .vst3 bundles) runs here, in
  * this process — no plugin code is involved. Probing runs in a worker
  * process per src/plugin_scan_worker.h; this thread tails the worker's
- * results file. The in-process path (`runInProcess`) is the legacy
- * pedal-protected loop, used only when no worker command is set.
+ * results file. The in-process path (`runInProcess`) is the
+ * pedal-protected fallback, used only when no worker command is set.
  */
 class PluginHostService::ScanThread : public juce::Thread {
  public:
@@ -96,7 +96,7 @@ class PluginHostService::ScanThread : public juce::Thread {
     updateProgress();
   }
 
-  // -- legacy: probe in this process, pedal-protected ----------------------
+  // -- fallback: probe in this process, pedal-protected --------------------
 
   void runInProcess() {
     auto* format = owner_.vst3Format();
@@ -282,8 +282,8 @@ PluginHostService::PluginHostService(const juce::File& data_directory)
   // Persist the blacklisting NOW, not at the end of the next clean
   // scan: with two bad plugins, the next scan dies on the second one
   // before it ever saves, and an unsaved first culprit comes back to
-  // crash the launch after that (an endless crash loop; fixed
-  // 2026-08-26, pinned by plugin_host_tests).
+  // crash the launch after that (an endless crash loop). Pinned by
+  // plugin_host_tests.
   if (known_plugins_.getBlacklistedFiles().size() > blacklisted_before)
     saveKnownPlugins();
 

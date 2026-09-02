@@ -129,8 +129,8 @@ export function advanceBy(samples) {
  * published masterPos is a DERIVED VIEW — wrapped to the cycle when
  * idle/playing, but during recording it grows linearly from a base
  * frozen at record start, so the cursor extends past the committed LCM.
- * Consumers must NOT re-wrap it (re-wrapping caused the "looping 1Q
- * over and over" field bug, 2026-07-09).
+ * Consumers must NOT re-wrap it (re-wrapping makes a growing take loop
+ * 1Q over and over).
  */
 export function viewMasterPos() {
     const raw = state.masterPos;

@@ -1,8 +1,8 @@
 /**
  * [ / ] handle teleport + the per-lane handle nav dock.
  *
- * Field request 2026-08-09: dialing in a drum loop means zooming way in
- * on one loop marker — and then being "far" from the other one. [ and ]
+ * Dialing in a drum loop means zooming way in on one loop marker — and
+ * then being "far" from the other one. [ and ]
  * WALK the viewport left/right through the SELECTED track's handles in
  * order — loop start, every cut edge/seam, loop end — from wherever the
  * viewport currently is; on an unsplit clip that degenerates to "jump
@@ -93,7 +93,7 @@ export function teleportToHandle(dir, outer) {
     teleportToEl(row, target.el);
 }
 
-/* ---------- handle nav dock (owner pick C, 2026-08-09) --------------
+/* ---------- handle nav dock (owner pick C) --------------
  * The mouse-viable face of [ / ]: a slim always-visible FOOTER BAR in
  * its own grid row under a mapped lane's body — unmapped lanes have no
  * footer and pay no space. Right-aligned to the VIEWPORT by JS in

@@ -27,10 +27,9 @@ export function enrichNodes(nodes) {
     return nodes.map(node => {
         // NO synthetic `waveform` on stacks: the ENGINE's state metadata
         // carries no waveform field, so the UI composites stacks from
-        // child peaks (composite_waveform.js). The mock once attached
-        // count-normalized sines, which short-circuited that path AND
-        // dimmed when a silent track was added (mock/engine drift —
-        // test_harness.md gotcha 10, field 2026-07-10).
+        // child peaks (composite_waveform.js). A mock-only waveform
+        // would short-circuit that path (mock/engine drift —
+        // test_harness.md gotcha 10).
         const updatedNode = node.type === 'stack'
             ? { ...node, nodes: node.nodes ? enrichNodes(node.nodes) : [] }
             : { ...node };
@@ -88,7 +87,7 @@ export function enrichNodes(nodes) {
         }
         // Mixer + period-source facts publish on EVERY node (engine
         // parity: metadata always carries them; hand-written scenario
-        // fixtures predate the fields, so normalize at the boundary).
+        // fixtures may omit them, so normalize at the boundary).
         updatedNode.midiArmed = !!node.midiArmed;
         // Content kind (phase 5, engine parity ClipNode::isMidiClip): a
         // MIDI take, or an empty clip whose chain carries an instrument
@@ -144,7 +143,6 @@ export function enrichNodes(nodes) {
             // node's map anchors at its OWN origin + mapOffset(0) — a
             // clip's, or an anchored stack's (an unanchored stack
             // measures from its received cycle top — the empty case).
-            // The epoch-anchored stack form is retired.
             const anchor = frameOriginOf(node) + mapOffset(m, 0);
             const rel = state.masterPos - anchor;
             updatedNode.playhead = posMod(rel, loopLen) / loopLen;
@@ -209,12 +207,12 @@ export function getState() {
         // Island epoch (mirrors getGraphState): the UI's frame origin.
         // Commit re-bases it to the newest origin on simple extensions.
         islandEpoch: state.islandEpoch,
-        // The definer (engine parity, audit 2026-08-30 §4.2): the sole
-        // committed clip or the definer stack; '' when none.
+        // The definer (engine parity): the sole committed clip or the
+        // definer stack; '' when none.
         definerId: publishedDefinerId(),
         // The STORED island quantum (mirrors the root stack's `quantum`
-        // metadata). 0 for scenario fixtures that predate the field —
-        // the VM then falls back to its min-over-nodes derivation.
+        // metadata). 0 for scenario fixtures that omit it — the VM then
+        // falls back to its min-over-nodes derivation.
         quantum: state.islandQ,
         canUndo: canUndo(),
         canRedo: canRedo(),

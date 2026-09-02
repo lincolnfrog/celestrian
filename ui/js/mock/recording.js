@@ -234,17 +234,15 @@ function armClip(node) {
     const id = node.id;
     console.log('[MockBackend] startRecordingInNode', id);
 
-    // STALE GEOMETRY DIES AT ARM (audit 2026-08-31 F-A, engine parity:
-    // exchangeMapOverride at arm): a map override surviving a take
-    // strip on the now-empty clip would warp the NEW take.
+    // STALE GEOMETRY DIES AT ARM (engine parity: exchangeMapOverride at
+    // arm): a map override surviving a take strip on the now-empty
+    // clip would warp the NEW take.
     delete node.segments;
 
-    // FIRST CLIP SNAP LOGIC (Simulation)
-    // If this is the "first clip" (no effective quantum established globally yet),
-    // we reset the global transport to 0.
-    // Committed content ANYWHERE in the island counts (committedClipCount
-    // walks the full tree — the old two-level scan missed clips nested
-    // two stacks deep and reset the transport under them).
+    // FIRST CLIP: with no committed content anywhere in the island the
+    // global transport resets to 0. committedClipCount walks the FULL
+    // tree — a shallower scan would miss deeply nested clips and reset
+    // the transport under them.
     const hasExistingAudio = committedClipCount() > 0;
 
     if (!hasExistingAudio) {
@@ -268,8 +266,8 @@ function armClip(node) {
         recView.active = true;
     }
 
-    // S21 AUTO-TARGET (owner ruling 2026-08-27, engine parity): arming
-    // while the playhead is inside a CUED step becomes Mode-2
+    // S21 AUTO-TARGET (engine parity): arming while the playhead is
+    // inside a CUED step becomes Mode-2
     // record-into-that-step — the nearest sequenced ancestor's
     // audition engages so the take lands where cue playback reads it
     // (the song top). An audition already active means the performer
@@ -330,10 +328,10 @@ function armClip(node) {
             const g = activeAncestors[0];
             const map = g._root ? g._map : activeMapOf(g);  // segment-general (phase 3)
             const period = mapPeriod(map);
-            // S18 (ruled 2026-08-20): under an ACTIVE SEQUENCE the take
-            // is a step-sized PART — C = the map period, no silence
-            // inserted. Without a sequence, the phase-2 rule (the
-            // mapping node's full inner cycle) stands.
+            // S18: under an ACTIVE SEQUENCE the take is a step-sized
+            // PART — C = the map period, no silence inserted. Without
+            // a sequence, the phase-2 rule (the mapping node's full
+            // inner cycle) stands.
             const gseq = g._root ? state.rootSequence : g.sequence;
             const gAudStep = g._root
                 ? (state.rootAuditionStep ?? -1)
@@ -342,9 +340,9 @@ function armClip(node) {
                 ? activeSeqLen({ sequence: state.rootSequence,
                                  sequenceBypassed: state.rootSequenceBypassed }) > 0
                 : activeSeqLen(g) > 0;
-            // CUE x AUTHORED WINDOW (engine parity, ruled 2026-08-27):
-            // an authored window over a sequence with cued steps is a
-            // multi-step composition outside the ratified scope.
+            // CUE x AUTHORED WINDOW (engine parity): an authored window
+            // over a sequence with cued steps is a multi-step
+            // composition outside the ratified scope.
             const anyCue = sequenced && gseq &&
                 gseq.steps.some(st => !!st.cue);
             const isAudition = g._root ? true : !!auditionMapOf(g);
@@ -413,10 +411,9 @@ function armClip(node) {
 
     // Q11 (engine parity): with Q established, arming PENDS until the
     // next Q boundary in the epoch frame — recording begins there, so
-    // origins always land ON boundaries. (The mock once started
-    // instantly: a mid-Q origin made the commit re-base shift every
-    // lane's grid by a fraction — the "squash/stretch" repro was
-    // mock-tainted until this.) Exactly-on-boundary starts immediately.
+    // origins always land ON boundaries (a mid-Q origin would make the
+    // commit re-base shift every lane's grid by a fraction).
+    // Exactly-on-boundary starts immediately.
     const Q = effectiveQuantumForState();
     const raw = state.masterPos;
     if (Q > 0) {
@@ -430,11 +427,11 @@ function armClip(node) {
             return;
         }
     } else {
-        // FIRST-CLIP ARM ESTABLISHES THE PROVISIONAL EPOCH (audit
-        // 2026-08-31 F-B, engine parity: establishIsland(0, epoch) —
-        // "q == 0 sets a provisional epoch only"). The mock left the
-        // stale epoch standing until commit, so pre-commit projections
-        // (recording view, ghost tiles) ran in the wrong frame.
+        // FIRST-CLIP ARM ESTABLISHES THE PROVISIONAL EPOCH (engine
+        // parity: establishIsland(0, epoch) — q == 0 sets a provisional
+        // epoch only). A stale epoch standing until commit would run
+        // the pre-commit projections (recording view, ghost tiles) in
+        // the wrong frame.
         state.islandEpoch = raw;
     }
     node.recordingStartPos = raw;
@@ -487,8 +484,8 @@ function stopClipRecording(node, islandHasQuantum) {
         state.masterPos - (node.recordingStartPos || 0));
     node.duration = rawLen;
 
-    // ENGINE PARITY (ClipNode::stopRecording + owner ruling 2026-07-10:
-    // stops always pad FORWARD): with Q established, a stop request
+    // ENGINE PARITY (ClipNode::stopRecording; stops always pad
+    // FORWARD): with Q established, a stop request
     // enters AWAITING-STOP — recording continues to nextStopBoundary and
     // commits there (growRecordingClips). Only the first clip (no Q at
     // the moment the stop SET was resolved — the group-stop snapshot)
@@ -507,8 +504,7 @@ function stopClipRecording(node, islandHasQuantum) {
     commitClip(node, rawLen);
 }
 
-/** Commit a recording at exactly `duration` (mirrors commitRecording). */
-/** Q ESTABLISHMENT SCRUB (audit 2026-08-31, engine parity
+/** Q ESTABLISHMENT SCRUB (engine parity
  * AudioEngine::scrubIncoherentGeometry): pre-Q authored windows/maps
  * whose period cannot live on the just-established grid are cleared.
  * Committed clips' full-span windows are commit furniture, untouched. */
@@ -540,6 +536,7 @@ function scrubIncoherentGeometry(q) {
     visit(state.nodes);
 }
 
+/** Commit a recording at exactly `duration` (mirrors commitRecording). */
 export function commitClip(node, duration) {
     // Q BEFORE committing, so the stopping clip cannot define its own
     // quantum (mirrors C++ commit order)
@@ -559,8 +556,8 @@ export function commitClip(node, duration) {
     node.isAwaitingStop = false;
     const loopEnd = duration;
 
-    // Commit resets geometry whole (F-A): no stale multi-segment map
-    // may outlive the material it selected.
+    // Commit resets geometry whole: no stale multi-segment map may
+    // outlive the material it selected.
     delete node.segments;
     node.duration = duration;
     node.isPlaying = true;
@@ -568,8 +565,9 @@ export function commitClip(node, duration) {
     node.loopEnd = loopEnd;
 
     // First committed take ESTABLISHES Q (design_language.md Q1: the DNA
-    // of the scratch track) — STORED island state (P0-3), plus the
-    // per-node declaration legacy consumers still read.
+    // of the scratch track) — STORED island state, plus the per-node
+    // effectiveQuantum declaration (computeEffectiveQuantum's fallback
+    // derivation reads it).
     const establishing = Q <= 0 && duration > 0;
     if (establishing) {
         state.islandQ = duration;
@@ -597,8 +595,8 @@ export function commitClip(node, duration) {
     node.contextCycle = heardAtArm > 0 ? heardAtArm
         : (recView.lcmBefore > 0 ? recView.lcmBefore : 0);
 
-    // Commit epoch re-base (mirrors StackNode::takeCommitted,
-    // 2026-07-16): when the cycle GREW, the epoch moves to the HEARD
+    // Commit epoch re-base (mirrors StackNode::takeCommitted): when
+    // the cycle GREW, the epoch moves to the HEARD
     // top the take was performed against — its (folded) origin floored
     // to whole pre-take INTRINSIC cycles. Phase-neutral for every
     // committed lane; the frame the user watched while recording
@@ -633,9 +631,9 @@ export function commitClip(node, duration) {
     // Launch point is its projection, kept for UI compatibility.
     node.origin = foldedOrigin;
     node.launchPoint = launchPointFor(node.origin, duration);
-    // First commit: (Q, epoch) establish TOGETHER (audit 2026-08-31
-    // F-B, engine parity establishIsland(d, origin)) — the epoch is
-    // the first take's origin, not whatever the arm left behind.
+    // First commit: (Q, epoch) establish TOGETHER (engine parity
+    // establishIsland(d, origin)) — the epoch is the first take's
+    // origin, not whatever the arm left behind.
     if (establishing) {
         state.islandEpoch = foldedOrigin;
         scrubIncoherentGeometry(state.islandQ);

@@ -236,9 +236,9 @@ void FxReverb::applyParams() {
   // wet sin(θ) with θ = mix·π/2 (mix 0 = bit-exact dry, mix 1 = fully
   // wet, mix 0.5 = both at −3 dB). juce::Reverb SCALES its levels
   // internally (dry ×2, wet ×3 — Freeverb's convention, where the
-  // defaults are 0.4/0.33); passing dry = 1.0 boosted the dry signal
-  // +6 dB the moment the slot enabled (field: "reverb makes the track
-  // louder", 2026-08-18). Divide the scales back out here.
+  // defaults are 0.4/0.33); passing dry = 1.0 would boost the dry
+  // signal +6 dB the moment the slot enables. Divide the scales back
+  // out here.
   const float m = juce::jlimit(0.0f, 1.0f, mix.load());
   const float theta = m * juce::MathConstants<float>::halfPi;
   p.wetLevel = std::sin(theta) / 3.0f;

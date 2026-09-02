@@ -15,7 +15,7 @@ namespace celestrian {
  * Sink for graph objects that must outlive their removal from the audio
  * thread's view. The audio thread traverses the whole-graph snapshot
  * (graph_snapshot.h) it loaded at the top of the callback, so a removed
- * node, a swapped content buffer, a replaced fx chain or a superseded
+ * node, a swapped content buffer, a replaced fx chain or an outgoing
  * snapshot may still be read for the callback in flight when the message
  * thread replaced it; the reclaimer (the engine) defers the actual delete
  * until the audio thread has provably moved on (a two-callback grace).
@@ -38,7 +38,7 @@ class GraphReclaimer {
  * (AudioEngine::publishGraph, graph_snapshot.h); the audio thread loads
  * it once per callback (ProcessContext.snap) and control()/render()
  * iterate its integer child indices — no locks. Removed nodes and
- * superseded snapshots go through the GraphReclaimer so an in-flight
+ * replaced snapshots go through the GraphReclaimer so an in-flight
  * callback never reads freed memory. Without a snapshot (single-threaded
  * unit tests driving nodes directly) process() falls back to the
  * ownership vector, which is race-free there by construction.
@@ -135,25 +135,27 @@ class StackNode : public AudioNode {
     return children;
   }
 
-  // --- Island quantum (P0-3 / kernel.md migration step 1) ---
+  // --- Island quantum (kernel.md) ---
   /**
    * Sets the island's quantum and cycle epoch. Called when the first
    * committed clip establishes the island, and again whenever a
    * message-thread edit re-establishes the grid: a definer re-trim, a
    * revert to empty, a geometry scrub, a seek, a session load. Q survives
-   * its creator otherwise (owner ruling, design_language.md Q1): muting
-   * or deleting the establishing clip does not change it.
+   * its creator otherwise (Q1, design_language.md): muting or deleting
+   * the establishing clip does not change it.
    */
   void setQuantum(int64_t quantum, int64_t epoch) {
     setIslandFacts(quantum, epoch, island_generation_.load());
   }
-  /** SEQLOCK'D TRIPLE (audit 2026-08-30 §3.2): the audio thread reads
-   * (Q, epoch, generation) as ONE fact (readIslandFacts) — independent
-   * atomics let a re-trim land between the reads and hand one block a
-   * mixed pair. The generation gates the clips' rendering origins
+  /** SEQLOCK'D TRIPLE: the audio thread reads (Q, epoch, generation) as
+   * ONE fact (readIslandFacts) — three separate loads would let a
+   * re-trim land between them and hand one block a mixed pair. The
+   * generation gates the clips' rendering origins
    * (ClipNode::setOriginGated): a writer that moves origins with the
    * epoch names a new generation, so a block adopts the new origins
-   * iff it read the new epoch. Writers: message thread only. */
+   * iff it read the new epoch. Single writer at a time: the message
+   * thread, or the audio-thread commit re-base (rebaseEpochOnGrowth) —
+   * message-thread fact writers are refused under a live take. */
   void setIslandFacts(int64_t quantum, int64_t epoch, uint32_t generation) {
     island_seq_.fetch_add(1, std::memory_order_release);  // odd = writing
     quantum_samples_.store(quantum);
@@ -217,9 +219,9 @@ class StackNode : public AudioNode {
   }
 
   // --- Take lifecycle (commit as an EVENT, unification_audit.md §1.5).
-  // Clips report arm/cancel/commit to the island root; the engine's
-  // per-block edge detection and graph scans are gone. Counter drift on
-  // node removal is guarded in removeChild/clearChildren.
+  // Clips report arm/cancel/commit to the island root; the engine does
+  // no per-block edge detection. Counter drift on node removal is
+  // guarded in removeChild/clearChildren.
   void takeArmed() override;
   void takeCancelled() override { active_takes_.fetch_sub(1); }
   void takeCommitted(int64_t origin, int64_t intrinsic_after) override;
@@ -261,7 +263,7 @@ class StackNode : public AudioNode {
   // message thread swaps immutable Sequence objects (finalize()d) and
   // retires predecessors through the engine reclaimer; the audio
   // thread only loads. The bypass flag is the jam toggle (bypassed =
-  // today's everything-sounds behavior; geometry survives, I9).
+  // everything sounds; geometry survives, I9).
   const Sequence* sequencePtr() const { return sequence_.load(); }
   /** Swap in `fresh` (heap-owned, or null to clear); returns the OLD
    * pointer, which the caller must retire — never delete inline. */
@@ -282,7 +284,7 @@ class StackNode : public AudioNode {
     return s != nullptr ? s->total : 0;
   }
 
-  // --- THE STEP AUDITION (docs/sequencer.md §11.2, build step 2) ---
+  // --- THE STEP AUDITION (docs/sequencer.md §11.2) ---
   // "Loop this step": a MONITORING gesture (the solo / midi_armed
   // class — not undoable, not persisted). While set and the sequence
   // is active, the stack's time-map IS the step's span, DERIVED from
@@ -382,12 +384,11 @@ class StackNode : public AudioNode {
 
   /**
    * Audio-thread child lookup, shared by both phase bodies: the
-   * whole-graph snapshot when the engine supplied one (Tier 3 Step 3 —
-   * index spans, structural consistency for the whole callback), else
-   * the ownership vector (the single-threaded node-level test path,
-   * race-free by construction). entryAt() is the child's snapshot entry
-   * index for ProcessContext.self (0 in the fallback, where `self` is
-   * unused).
+   * whole-graph snapshot when the engine supplied one (index spans,
+   * structural consistency for the whole callback), else the ownership
+   * vector (the single-threaded node-level test path, race-free by
+   * construction). entryAt() is the child's snapshot entry index for
+   * ProcessContext.self (0 in the fallback, where `self` is unused).
    */
   struct ChildView {
     const GraphSnapshot* snap;
@@ -422,8 +423,8 @@ class StackNode : public AudioNode {
    * run; with no active map the body runs once with the original
    * arguments. `Ch` is `const float` on the control side and `float` on
    * the render side — the only difference between the two call sites,
-   * which is why this is a template rather than two copies (the copies
-   * had already begun to drift when they were unified).
+   * which is why this is one template rather than two copies that
+   * would drift apart.
    */
   template <typename Ch, typename Body>
   void forEachSeamRun(Ch* const* channels, int channel_count,
@@ -492,9 +493,9 @@ class StackNode : public AudioNode {
     }
   }
 
-  // Island state (P0-3): explicit, stored once — never derived from
-  // child durations (deriving caused the retroactive-Q bug class).
-  // 0 = no quantum established in this scope yet.
+  // Island state: explicit, stored once — never derived from child
+  // durations (a derived Q would change retroactively when a shorter
+  // clip commits). 0 = no quantum established in this scope yet.
   std::atomic<int64_t> quantum_samples_{0};
   std::atomic<uint32_t> stop_generation_{0};
   std::atomic<uint32_t> island_generation_{0};

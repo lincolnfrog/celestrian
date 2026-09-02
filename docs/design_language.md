@@ -268,6 +268,24 @@ in the doc that owns its feature, but each has a pointer here.
   one-shot for example."* Deletes the epoch-anchored stack law, the
   origin riders, `epochViewStep`, and the definer-stack twins of the
   Q13 paths (composition.md §8). Invariants I10–I16 are numbered there.
+- **Q19 — what a bounce renders** (2026-09-01): the island ROOT for one
+  EFFECTIVE cycle (the whole song when a sequence is active), through
+  the real render path at the device rate, letting effect tails ring
+  past the end; any node can be bounced the same way. Owner picked
+  this over an N-cycles dialog and over selection-dependent scope.
+  tasks.md B2.
+- **Q20 — software input monitoring** (2026-09-01): OFF by default,
+  a per-track toggle; the calibrated latency is shown beside it. Most
+  interfaces offer direct monitoring, so software monitoring is opt-in
+  and never doubles the signal unasked. tasks.md B1.
+- **Q21 — no metronome, no count-in** (2026-09-01): Celestrian has no
+  meter and no tempo — Q is one bar of unknown subdivision, so there is
+  no beat a click could fall on (owner: *"what is a metronome? … what
+  if my take is swung? what if it's in 3/4?"*). The scratch loop IS the
+  count-in (Q1: its DNA remains), and the arm target already waits for
+  the next boundary. The one meter-free click — a single pulse per Q
+  top — is listed as a possible later option only if field use asks
+  for it. tasks.md B3 is closed.
 
 - **S1–S22 — the Sequencer** (2026-08-19 → 08-27): sequencer.md §0
   (S1–S7), §9 (S8–S15; S17 opened), §11 (S16–S19, implementation

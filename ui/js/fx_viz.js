@@ -11,9 +11,8 @@
  *
  * Painters draw in CSS-pixel space via theme.fitCanvas: absolute values
  * (line widths, dash patterns, tap widths, margins) mean CSS pixels, so
- * they render at the designed size on retina displays. (The previous
- * local fit() left the context in device pixels — every lineWidth and
- * dash drew half-size at dpr 2.)
+ * they render at the designed size on retina displays (a context left
+ * in device pixels draws every lineWidth and dash half-size at dpr 2).
  */
 
 import { AMBER, REC, DIM, GRID, CREAM, rgbaOf, fitCanvas } from './theme.js';
@@ -150,8 +149,8 @@ export function reverbTailSeconds({ size, damp }) {
 
 /**
  * The DURABLE spectrum: a weighted HIGH-WATER-MARK over the live bins
- * (owner ruling 2026-07-12: a symmetric average let silent stretches
- * drag the line into illegibility). Asymmetric per bin: RISE fast
+ * (a symmetric average would let silent stretches drag the line into
+ * illegibility). Asymmetric per bin: RISE fast
  * toward new maxima (half the gap per poll — a new peak registers in
  * a couple of polls), FALL slowly (fall 0.01/poll ≈ a 5 s time
  * constant at the 20 Hz cadence) — so the line holds the song's tonal

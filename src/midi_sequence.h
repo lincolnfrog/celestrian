@@ -38,10 +38,11 @@ struct MidiEvent {
 
 /**
  * A take's note sequence: the MIDI twin of the clip's audio buffer
- * (Q-V4 ruling — samples in the engine content buffer, QTime only in
- * the save format).
+ * (Q-V4: samples in the engine content buffer, QTime only in the save
+ * format).
  *
- * Storage discipline mirrors D4: the clip reaches its sequence through
+ * Storage discipline mirrors the audio take buffer: the clip reaches
+ * its sequence through
  * ONE atomic pointer; the MESSAGE thread allocates a fixed-capacity
  * sequence at ARM (kMaxEvents — ~1 MiB, "hours of playing"; the wall
  * drops-and-counts instead of growing) and swaps replacements only on
@@ -51,7 +52,7 @@ struct MidiEvent {
  * construction so the shift is almost always zero) and reads during
  * render (the same thread; count_ orders the two within a callback).
  * The message thread reads only when the clip is Idle (getWaveform's
- * D3 gate) — commit's seq-cst Idle store publishes every capture write.
+ * Idle gate) — commit's seq-cst Idle store publishes every capture write.
  */
 class MidiSequence {
  public:

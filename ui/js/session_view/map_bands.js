@@ -7,12 +7,11 @@
  * take → a 1Q cut on that Q cell; double-click a cut → it heals; drag
  * the chip → the cut SLIDES freely in position, length held (the
  * "exclude 1Q off the boundary" move); drag a handle → resize, length
- * ALWAYS snapping to whole Qs (owner ruling 2026-08-09: the seam
- * theorem is categorical). ⌥ survives as a MODE key only — ⌥-drag a
- * seam handle resizes instead of sliding (`onMove(rawQ, altKey)`), and
- * ⌥ on a window bracket free-slides the whole window (window_edit.js);
- * neither escapes the whole-Q snap. One setSegments per finished
- * gesture = one undo step.
+ * ALWAYS snapping to whole Qs (the seam theorem is categorical). ⌥ is a
+ * MODE key only — ⌥-drag a seam handle resizes instead of sliding
+ * (`onMove(rawQ, altKey)`), and ⌥ on a window bracket free-slides the
+ * whole window (window_edit.js); neither escapes the whole-Q snap. One
+ * setSegments per finished gesture = one undo step.
  * Leading/trailing exclusions stay the WINDOW brackets' domain — bands
  * are only the INNER gaps, so the two gestures never overlap.
  */
@@ -69,9 +68,9 @@ const BADGE_EDGE_FRAC = 0.15;
 const CHIP_EDGE_Q = 0.4;
 /* The smallest cut a resize preview may show (Q). */
 const MIN_CUT_Q = 0.05;
-/* Post-commit overlay hold cap (window_edit.js twin — audit 2026-08-31
- * U5): a poll in flight at release still carries the OLD map and
- * snapped the seams back for a tick on a slow bridge. */
+/* Post-commit overlay hold cap (window_edit.js twin): a poll in flight
+ * at release still carries the pre-commit map and would snap the seams
+ * back for a tick on a slow bridge. */
 const COMMIT_HOLD_MAX_MS = 1500;
 
 /** Hold the overlay until a final commit settles (or the cap). */
@@ -95,8 +94,8 @@ function cutChipLabel(lenQ) {
 }
 
 /** One heal-on-contextmenu handler per cut: the explicit, timing-proof
- * path (field 2026-07-25g: dblclick near a seam is a fiddly target and
- * the drag warp can split its two clicks apart). */
+ * path (dblclick near a seam is a fiddly target and the drag warp can
+ * split its two clicks apart). */
 const makeHealMenu = (st, cut) => ev => {
     ev.preventDefault();
     ev.stopPropagation();
@@ -117,8 +116,7 @@ const makeHealMenu = (st, cut) => ev => {
  *   heard    — lane frames HEARD time (cuts render as seams, the
  *              pointer maps through the segments)
  *   periodQ  — audible period (Q): the published bandPeriodQ, or the
- *              covered-set sum when absent (computed once here — the
- *              three former call-site fallbacks collapsed into this)
+ *              covered-set sum when absent (computed once here)
  *   quantum  — samples per Q (for the setSegments flatten)
  *   cycleQ   — the lane's display frame (per-lane in edit views)
  */
@@ -145,12 +143,11 @@ export function bandState(lane, vm, cycleQ) {
  * the interval algebra: keep the previous map, commit nothing. */
 function commitBandSegs(st, segsQ) {
     if (segsQ === null) return;  // refusal: keep the previous map
-    // CATEGORICAL COHERENCE (owner ruling 2026-08-09): no gesture may
-    // commit a fractional-period map — the engine refuses them too
-    // (both sides, defense in depth). Every path above snaps periods
-    // to whole Qs; this guard exists so a future gesture bug degrades
-    // to "the edit didn't take" instead of a 66187Q cycle explosion
-    // (field video 2026-08-08).
+    // CATEGORICAL COHERENCE: no gesture may commit a fractional-period
+    // map — the engine refuses them too (both sides, defense in depth).
+    // Every path above snaps periods to whole Qs; this guard makes a
+    // gesture bug degrade to "the edit didn't take" instead of an LCM
+    // cycle explosion.
     const p = segsPeriod(segsQ, st.totalQ);
     if (Math.abs(p - Math.round(p)) > EPS_PERIOD) {
         console.warn('[map] refused incoherent period', p, segsQ);
@@ -175,21 +172,20 @@ function bandContentQ(st, body, clientX) {
         const h = posMod(laneQ - st.anchorQ, st.periodQ);
         return mapOffset({ segs: st.segs || [[0, st.totalQ]] }, h);
     }
-    // RIGHT-EDGE CLAMP (audit 2026-08-31 U10): a dblclick ON the take's
-    // last pixel computed rel === totalQ, and posMod wrapped it to 0 —
-    // the cut landed on the FIRST cell instead of the last. In-range
-    // positions clamp; wrapping remains for content resting mid-phase
-    // (rel outside [0, totalQ]).
+    // RIGHT-EDGE CLAMP: a dblclick ON the take's last pixel gives
+    // rel === totalQ, which posMod would wrap to 0 (the FIRST cell).
+    // In-range positions clamp; wrapping remains for content resting
+    // mid-phase (rel outside [0, totalQ]).
     const rel = laneQ - st.anchorQ;
     if (rel >= 0 && rel <= st.totalQ) return Math.min(rel, st.totalQ - 1e-6);
     return posMod(rel, st.totalQ);
 }
 
-/* Map-gesture flight recorder (field 2026-07-25g: a flicker survives
- * that the mock cannot reproduce). Ring of the last 400 gesture events
- * — read `window.__mapDbg` in the app's console after a repro. Also
- * warns loudly when two renders under a near-still pointer disagree on
- * the pending segments (the flicker's signature). */
+/* Map-gesture flight recorder for flickers the mock cannot reproduce.
+ * Ring of the last 400 gesture events — read `window.__mapDbg` in the
+ * app's console after a repro. Also warns loudly when two renders under
+ * a near-still pointer disagree on the pending segments (the flicker's
+ * signature). */
 const mapDbgRing = (typeof window !== 'undefined')
     ? (window.__mapDbg = []) : [];
 let mapDbgPrev = null;
@@ -210,18 +206,17 @@ function mapDbg(a, rec) {
     }
 }
 
-/* ---------- EXPANDED MAP DRAG (owner-ruled, field 2026-07-23e) -------
+/* ---------- EXPANDED MAP DRAG (owner-ruled) -------
  *
- * "When you are dragging a drag handle the clip expands to show the
- * entire clip timeline (including excluded sections)." Geometry edits
- * are RAW-frame facts; editing them in heard space made handles wrap,
- * chunks vanish off edges, and the ground shift mid-gesture. So:
- * grabbing any handle on a heard lane EXPANDS it to the raw take for
- * the duration of the drag — excluded material visible as dims, the
- * cut a real band, the trim bracket over visible content — commits
- * stream live (audible), and release collapses back to the heard view.
- * The main cursor is suppressed over the expanded lane (.inspecting);
- * the raw-frame preview is the ground truth under the pointer.
+ * Geometry edits are RAW-frame facts; editing them in heard space makes
+ * handles wrap, chunks vanish off edges, and the ground shift
+ * mid-gesture. So grabbing any handle on a heard lane EXPANDS it to the
+ * raw take for the duration of the drag — excluded material visible as
+ * dims, the cut a real band, the trim bracket over visible content —
+ * commits stream live (audible), and release collapses back to the
+ * heard view. The main cursor is suppressed over the expanded lane
+ * (.inspecting); the raw-frame preview is the ground truth under the
+ * pointer.
  */
 
 /** Absolute pointer → RAW-take Q inside the expanded lane. */
@@ -232,8 +227,8 @@ function rawQAt(st, body, clientX) {
 }
 
 /* trimBoundTo / trimBoundForPeriod / segsPeriod live in map_edit.js
- * (pure interval algebra, unit-tested there) — the period-snap law
- * they encode is the fix for the 2026-08-08 LCM-explosion video. */
+ * (pure interval algebra, unit-tested there); they encode the
+ * period-snap law that keeps the cycle LCM from exploding. */
 
 /** The raw-frame drag preview — TWO-LAYER FEEDBACK (the bracket law):
  * a pointer-attached FOLLOW element moves continuously with the mouse
@@ -243,9 +238,9 @@ function rawQAt(st, body, clientX) {
  * OWNED by the gesture). */
 function renderRawPreview(o, st, segsPreview, active, follow) {
     // NEVER wipe the overlay itself: the grabbed handle lives there and
-    // holds the pointer capture — clearing it mid-gesture killed the
-    // drag (found by real-input verification, 2026-07-23e). The preview
-    // owns a dedicated layer; the stale chrome fades via .drag-live.
+    // holds the pointer capture — clearing it mid-gesture kills the
+    // drag. The preview owns a dedicated layer; the stale chrome fades
+    // via .drag-live.
     let layer = o.querySelector('.drag-preview-layer');
     if (!layer) {
         layer = el('div', 'drag-preview-layer');
@@ -296,12 +291,10 @@ function renderRawPreview(o, st, segsPreview, active, follow) {
             (active.incoherent ? ' incoherent' : ''));
         badge.textContent = active.text;
         badge.style.left = pct(active.q, st.totalQ);
-        // Ride above the lane's midline: at center the badge text sat
-        // right on the follow bracket and the snap ghost (unreadable
-        // "loop er,d" in the field video).
+        // Ride above the lane's midline: at center the badge text would
+        // sit on the follow bracket and the snap ghost, unreadable.
         badge.style.top = '22%';
-        // Edge-aware anchoring so the text never clips off the lane
-        // ("oop start · 3Q" in the field video).
+        // Edge-aware anchoring so the text never clips off the lane.
         badge.style.transform = active.q < st.totalQ * BADGE_EDGE_FRAC
             ? 'translate(0, -50%)'
             : active.q > st.totalQ * (1 - BADGE_EDGE_FRAC)
@@ -339,30 +332,24 @@ function renderRawPreview(o, st, segsPreview, active, follow) {
  *                           dashed snap-ghost line at q.
  *   }
  *
- * EASED CAPTURE (field 2026-07-25b, replacing both earlier schemes):
- * the grab pixel lives in HEARD geometry but the expanded lane is RAW
- * geometry, so once the lane opens the pointer is genuinely NOT over
- * the thing it grabbed — a pure delta kept that offset forever (the
- * handle rode ~1 cut-width from the mouse; edge bounds unreachable),
- * and a pure absolute glue TELEPORTED the handle on the first move.
- * Resolution (owner-ruled 2026-07-25f): the bound is RELATIVE —
- * `anchorQ` (the grabbed thing's raw position) plus accumulated
- * pointer deltas — and the native cursor WARP that unifies pointer
- * and handle is purely cosmetic, so its timing can never disturb the
- * gesture. Where warping is unsupported the mode flips to ABSOLUTE
- * (handle snaps to the pointer, stays glued). (> ENGAGE_SLOP_PX before
- * anything happens — a sloppy grab-release must not edit.) */
+ * CAPTURE: the grab pixel lives in HEARD geometry but the expanded lane
+ * is RAW geometry, so once the lane opens the pointer is genuinely NOT
+ * over the thing it grabbed. The bound is therefore RELATIVE —
+ * `anchorQ` (the grabbed thing's raw position) plus accumulated pointer
+ * deltas — and the native cursor WARP that unifies pointer and handle
+ * is purely cosmetic, so its timing can never disturb the gesture.
+ * Where warping is unsupported the mode flips to ABSOLUTE (handle
+ * snaps to the pointer, stays glued). Nothing happens before
+ * ENGAGE_SLOP_PX of travel — a sloppy grab-release must not edit. */
 function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
     const downX = ev.clientX;
-    // THE GORDIAN CUT, simplified (owner-ruled 2026-07-25f): the bound
-    // is RELATIVE — anchorQ plus accumulated pointer deltas — for the
-    // whole gesture, and the warp is pure COSMETICS. Because the
-    // cursor's absolute position never feeds the bound, the warp can
-    // land early, late, or mid-flight without resetting anything: a
-    // user who grabs and immediately moves fast loses nothing. The
-    // delta filter also swallows warp echoes (CGWarp during a held
-    // button can interleave warped and un-warped event positions — the
-    // suppression-interval gotcha; any single ≥150px jump is not a
+    // The bound is RELATIVE (anchorQ plus accumulated pointer deltas)
+    // for the whole gesture, and the warp is pure COSMETICS: because
+    // the cursor's absolute position never feeds the bound, the warp
+    // can land early, late, or mid-flight without resetting anything.
+    // The delta filter also swallows warp echoes (CGWarp during a held
+    // button can interleave warped and un-warped event positions inside
+    // the suppression interval; any single ≥ WARP_ECHO_PX jump is not a
     // hand, it only rebases).
     //
     // Backends that cannot warp (the mock harness) resolve false and
@@ -412,20 +399,19 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
             if (!ok) { absolute = true; return; }  // snap-to-pointer
             // Warp echoes (warped/un-warped stream interleave) can only
             // exist inside the macOS suppression interval — arm the
-            // jump filter for just that window. Armed forever, it ate
-            // genuine fast-flick deltas and the handle fell ~1Q behind
-            // the pointer with no way to resync (owner video
-            // 2026-07-25h, "drag quickly → cursor disconnected").
+            // jump filter for just that window. Armed forever, it eats
+            // genuine fast-flick deltas and the handle falls behind the
+            // pointer with no way to resync.
             echoUntil = performance.now() + WARP_ECHO_WINDOW_MS;
         });
     };
-    // THE ENGAGE GATE (field 2026-07-25g): expansion AND warp start
-    // only once the press is a real drag — > 4px of travel or a 160ms
+    // THE ENGAGE GATE: expansion AND warp start only once the press is
+    // a real drag — > ENGAGE_SLOP_PX of travel or an ENGAGE_HOLD_MS
     // hold. A quick click(-click) never expands and never moves the
     // cursor, so double-click heal/create keeps stable geometry under
-    // both of its clicks (the immediate warp used to teleport the
-    // cursor between them, and the expansion moved the seam out from
-    // under click two — the "doubled split").
+    // both of its clicks (an immediate warp would teleport the cursor
+    // between them, and the expansion would move the seam out from
+    // under click two — a doubled split).
     const engage = () => {
         if (engaged || !body.isConnected) return;
         engaged = true;
@@ -486,11 +472,10 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
             const layer = o.querySelector('.drag-preview-layer');
             if (layer) layer.remove();
             o.classList.remove('drag-live');
-            // HONOR THE END KIND (audit 2026-08-31 U6): a cancel
-            // (Escape, lost capture, blur) restores the map the gesture
-            // began on — the live splices already streamed to the
-            // engine, so doing nothing kept the last preview as if it
-            // had been committed.
+            // HONOR THE END KIND: a cancel (Escape, lost capture, blur)
+            // restores the map the gesture began on — the live splices
+            // already streamed to the engine, so doing nothing would
+            // keep the last preview as if it had been committed.
             if (committed) {
                 if (last && last.segs) {
                     holdUntilSettled(body, commitBandSegs(st, last.segs));
@@ -503,7 +488,7 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
             ctx.cb.onWindowEdit(lane.id, false);  // relax back to the heard view
         },
     });
-    if (!g.live()) { clearTimeout(holdT); return; }  // singleton (U7)
+    if (!g.live()) { clearTimeout(holdT); return; }  // gesture singleton
 }
 
 /** The once-per-body dblclick wiring: create a cell-snapped 1Q cut on
@@ -522,10 +507,9 @@ export function wireBandCreate(body, lane, vm, cycleQ) {
         selectOnly(st.laneId); // editing a track claims it ([ ] target)
         // HEARD lanes: a cut has ZERO width (it IS the splice), so the
         // pointer can never be "inside" it — a dblclick meant to heal
-        // instead landed on adjacent content and cut ANOTHER Q, which
-        // merged into a doubled cut (field 2026-07-25g, "‖ 2Q cut").
-        // Near a seam (±12px, matching the handle's reach) the dblclick
-        // means HEAL.
+        // would land on adjacent content and cut ANOTHER Q, merging
+        // into a doubled cut. Near a seam (±SEAM_HIT_PX, matching the
+        // handle's reach) the dblclick means HEAL.
         if (st.heard && st.segs && st.segs.length > 1) {
             const br = body.getBoundingClientRect();
             const periodQ = st.periodQ;
@@ -619,9 +603,9 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                 claim: lane.id, // grabbing a handle claims the track
                 onMove: mv => move(mv),
                 onEnd: committed => {
-                    // HONOR THE END KIND (audit 2026-08-31 U6): live
-                    // splices streamed while dragging — a cancel must
-                    // restore the pre-drag map, not keep the preview.
+                    // HONOR THE END KIND: live splices streamed while
+                    // dragging — a cancel must restore the pre-drag
+                    // map, not keep the preview.
                     if (committed && target) {
                         let next = healCut(st.segs, cut[0], cut[1], st.totalQ);
                         next = applyCut(next, target.inQ, target.outQ, st.totalQ);
@@ -633,7 +617,7 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                     }
                 },
             });
-            if (!g.live()) return;  // singleton (U7)
+            if (!g.live()) return;  // gesture singleton
             g.freeze(body);
             g.pin();  // freeze the shared frame (see drag_pin.js)
             const q0 = bandContentQ(st, body, ev.clientX);
@@ -698,8 +682,8 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
     const baseQ = st.anchorQ;
     const periodQ = st.periodQ;
     // A lane position for a heard offset, WRAPPED into the frame (the
-    // content may rest mid-phase — field 2026-07-23b: an unwrapped seam
-    // landed on the frame edge, half-clipped and out of reach).
+    // content may rest mid-phase; an unwrapped seam would land on the
+    // frame edge, half-clipped and out of reach).
     const wrapQ = heardQ => posMod(baseQ + heardQ, cycleQ);
     // Passive ticks at every audible splice across the frame.
     for (const s of seams) {
@@ -737,9 +721,9 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
             commitBandSegs(st,
                 healCut(st.segs, seam.cut[0], seam.cut[1], st.totalQ));
         });
-        // Right-click = heal, explicitly (field 2026-07-25g: dblclick
-        // near a seam is a fiddly target and the drag warp can split
-        // its two clicks apart — this path has no timing to break).
+        // Right-click = heal, explicitly (dblclick near a seam is a
+        // fiddly target and the drag warp can split its two clicks
+        // apart — this path has no timing to break).
         const healMenu = makeHealMenu(st, seam.cut);
         handle.addEventListener('contextmenu', healMenu);
         chip.addEventListener('contextmenu', healMenu);
@@ -801,8 +785,8 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
     });
 }
 
-/** Live TRIM handles on a heard-view lane's outer edges (field
- * 2026-07-23: grips must DRAG, never open a mode). Dragging inward
+/** Live TRIM handles on a heard-view lane's outer edges (grips DRAG,
+ * never open a mode). Dragging inward
  * consumes kept time (whole-Q snap); outward reveals more of the take.
  * One setSegments on release — the single-window case delegates to
  * setLoopPoints inside the engine, preserving the existing semantics.
@@ -814,23 +798,23 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     const periodQ = st.periodQ;
     // The grips hug the CONTENT's heard bounds (the loop may rest
     // mid-phase — its top is the bright tile's start, not the frame
-    // edge; field 2026-07-23b).
+    // edge).
     const startPos = st.anchorQ % cycleQ;
     const endRaw = startPos + Math.min(periodQ, cycleQ);
     const endPos = endRaw <= cycleQ + 1e-9 ? Math.min(endRaw, cycleQ)
                                            : endRaw % cycleQ;
     // The LOOP TOP: when the loop rests mid-phase its start/end meet
     // mid-lane — mark the spot so the paired grips read as intentional
-    // ("loop end ][ loop start"), not noise (field 2026-07-23c).
+    // ("loop end ][ loop start"), not noise.
     const coincident = Math.abs(startPos - endPos) < 1e-6 ||
         Math.abs(Math.abs(startPos - endPos) - cycleQ) < 1e-6;
     // MID-LANE pair only: at the frame edges the two grips already sit
     // apart (start at 0%, end at 100%) — no nudge, no chip.
     const paired = coincident && startPos > 1e-6 && startPos < cycleQ - 1e-6;
     if (paired) {
-        // Named, and visible at rest (owner report 2026-08-18: the bare
-        // ][ pair mid-lane "looks like a split I never made" — a loop
-        // whose top rests mid-phase must SAY so).
+        // Named, and visible at rest: a bare ][ pair mid-lane reads as
+        // a split the user never made — a loop whose top rests
+        // mid-phase must SAY so.
         const top = el('div', 'loop-top-chip mono', {
             textContent: '↺ loop top',
             title: 'The loop\'s top: its END wraps to its START here — the ' +
@@ -863,13 +847,13 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
                 ? segs[0][0] : segs[segs.length - 1][1];
             runExpandedDrag(ev, o, lane, st, body, bound0, (rawQ, alt) => {
                 if (alt && rawQ !== null) {
-                    // ⌥ FREE SLIDE (owner request 2026-08-18): the
-                    // grabbed edge follows the pointer by ANY fractional
-                    // amount and the other end moves by the same delta
-                    // — the period is held, so Q coherence survives
-                    // (the anchoring law keeps content in place; only
-                    // which stretch is heard changes). Clamped to the
-                    // take's extent; a slide never trims.
+                    // ⌥ FREE SLIDE: the grabbed edge follows the pointer
+                    // by ANY fractional amount and the other end moves
+                    // by the same delta — the period is held, so Q
+                    // coherence survives (the anchoring law keeps
+                    // content in place; only which stretch is heard
+                    // changes). Clamped to the take's extent; a slide
+                    // never trims.
                     const { segs: next, deltaQ: delta } =
                         slideSegs(segs, rawQ - bound0, st.totalQ);
                     const edgeQ = edge === 'start'

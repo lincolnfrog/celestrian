@@ -11,17 +11,14 @@ namespace celestrian::dsp {
 /**
  * Built-in effect DSP (docs/ui_overhaul.md effects bar).
  *
- * These four classes are the DSP truth for the built-in effects. They
- * used to live behind a FIXED per-node rack (EffectRack); the rack was
- * replaced by the dynamic slot CHAIN in fx_chain.h (docs/vst3.md
- * phase 2) — exactly the migration the old rack comment predicted
- * ("the dynamic-chain complexity arrives with VST3"). Slot identity,
- * ordering, param clamps, and the scope now live there; nothing in
- * THIS file knows about slots.
+ * These four classes are the DSP truth for the built-in effects. Slot
+ * identity, ordering, param clamps, and the scope live in the dynamic
+ * slot CHAIN (fx_chain.h, docs/vst3.md phase 2); nothing in THIS file
+ * knows about slots.
  *
- * Every effect has a mono path (process — the historical rack surface)
- * and a stereo path (processStereo, the Mono→Stereo roadmap item):
- * stereo clips and panned groups carry two channels through the rack.
+ * Every effect has a mono path (process) and a stereo path
+ * (processStereo): stereo clips and panned groups carry two channels
+ * through the chain.
  * The two paths share the same atomic parameters but keep SEPARATE DSP
  * state per channel (biquads, echo lines) — interleaving one mono state
  * across channels would garble both. The compressor is stereo-LINKED:

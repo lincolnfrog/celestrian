@@ -69,7 +69,7 @@ export function removeNodeFromParent(nodeId) {
 /**
  * Depth-first "does ANY node satisfy `pred`" walk — the shared skeleton
  * behind anyNodeRecording, subtreeRecording, and the VU's any-audio
- * probe (each was a hand-rolled recursive `some` before the split).
+ * probe.
  */
 export function someNode(pred, nodes = state.nodes) {
     return (nodes || []).some(n => pred(n) || someNode(pred, n.nodes || []));
@@ -117,14 +117,8 @@ export function findSoleCommittedClip(nodes = state.nodes) {
 }
 
 /**
- * Q13 sole-definer predicate: `node` is a committed clip AND the
- * island's ONLY committed content, with no take in flight — the state
- * in which its window/map edits re-establish Q rather than obey it.
- * (Shared by the setLoopPoints / setSegments guards and re-trims.)
- */
-/**
- * ONLY GEOMETRY WINS (audit 2026-08-31, engine parity
- * hasActiveGeometryOutside): true when any node OUTSIDE `exclude`'s
+ * ONLY GEOMETRY WINS (engine parity hasActiveGeometryOutside): true
+ * when any node OUTSIDE `exclude`'s
  * subtree carries an active window or map override. A Q13
  * re-establishment under such geometry would strand it permanently
  * incoherent with the new grid; ancestor warps are covered too (they
@@ -147,6 +141,12 @@ export function activeGeometryOutside(exclude, nodes = state.nodes) {
     return false;
 }
 
+/**
+ * Q13 sole-definer predicate: `node` is a committed clip AND the
+ * island's ONLY committed content, with no take in flight — the state
+ * in which its window/map edits re-establish Q rather than obey it.
+ * (Shared by the setLoopPoints / setSegments guards and re-trims.)
+ */
 export function isQ13SoleDefiner(node) {
     if (!(node.type === 'clip' && (node.duration || 0) > 0 &&
           committedClipCount() === 1 && !anyNodeRecording())) return false;
@@ -171,8 +171,8 @@ function committedClipCountIn(nodes) {
 export function isQ13DefinerStack(node) {
     if (!node || node.type !== 'stack' || anyNodeRecording()) return false;
     // A live step audition derives its own window over the stack — its
-    // geometry is not the definer's to re-establish (audit 2026-08-31
-    // E7, engine parity: !ds->auditionActive()).
+    // geometry is not the definer's to re-establish (engine parity:
+    // !ds->auditionActive()).
     if (typeof node.auditionStep === 'number' && node.auditionStep >= 0) {
         return false;
     }
@@ -183,8 +183,8 @@ export function isQ13DefinerStack(node) {
 }
 
 /**
- * Q13 FOR GROUPS (owner ruling 2026-08-21, engine parity
- * `definerStack`): the island's DEFINER STACK — the stack whose direct
+ * Q13 FOR GROUPS (engine parity `definerStack`): the island's DEFINER
+ * STACK — the stack whose direct
  * clip children are the island's ONLY committed content and were
  * recorded as ONE take (identical origin and duration), two or more of
  * them (a single committed clip keeps the clip-definer path). Its
@@ -197,8 +197,8 @@ export function definerStackNode(nodes = state.nodes, owner = null) {
         if (n.type === 'clip') {
             if (n.isRecording || !(n.duration > 0)) continue;
             // A one-shot member reads its period from CONTEXT — not
-            // "one take looping as one part" (audit 2026-08-31 U4;
-            // engine definerStack and VM definerStackOf agree).
+            // "one take looping as one part" (engine definerStack and
+            // VM definerStackOf agree).
             if (n.periodSource === 'context') return null;
             if (direct === 0) { origin = n.origin || 0; duration = n.duration; }
             else if ((n.origin || 0) !== origin || n.duration !== duration) return null;
@@ -210,8 +210,8 @@ export function definerStackNode(nodes = state.nodes, owner = null) {
     }
     if (nested) {
         if (direct !== 0) return null;
-        // WRAPPER WARP GUARD (audit 2026-08-31 E7, engine parity): a
-        // stack on the path that remaps time — an active override or
+        // WRAPPER WARP GUARD (engine parity): a stack on the path that
+        // remaps time — an active override or
         // its own engaged window — sits between the island clock and
         // the definer. No definer through a warp.
         const wrapper = owner || null;
@@ -484,8 +484,7 @@ export function effectiveQuantumForState() {
 
 /**
  * Serialize the mutable graph + island facts to a JSON string — the
- * shared form behind undo snapshots AND the in-memory saved session
- * (they were two identical stringify sites before the split).
+ * shared form behind undo snapshots AND the in-memory saved session.
  */
 export function serializeGraph() {
     return JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch,

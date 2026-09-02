@@ -93,7 +93,7 @@ struct ProcessContext {
   // received clock, never of view state or a private counter.
   int64_t cycle_epoch = 0;
 
-  // The recording context (P1-6, context passed DOWN): the longest
+  // The recording context (passed DOWN): the longest
   // committed sibling duration in this scope — each stack overwrites it
   // for its children (recording children contribute 0 because their
   // duration resets at arm). A clip's arm math uses
@@ -114,7 +114,7 @@ struct ProcessContext {
   int prerecord_ring_channels = 0;  // valid channels in the ring
   int64_t input_clock = 0;          // arrival index of this block's sample 0
 
-  // --- Whole-graph snapshot (unification_audit §2.2, Tier 3 Step 3) ---
+  // --- Whole-graph snapshot (unification_audit.md §2.2) ---
   // The engine loads ONE snapshot per callback and passes it down; each
   // node receives its own entry index (`self`) from its parent. All
   // audio-thread structure traversal (children, ancestors) goes through
@@ -124,8 +124,8 @@ struct ProcessContext {
   const GraphSnapshot* snap = nullptr;
   int self = 0;  // this node's entry index in `snap`
 
-  // Island facts, passed DOWN so leaves never walk up (the audio-thread
-  // parent walks are gone): the island quantum (0 = unestablished), the
+  // Island facts, passed DOWN so leaves never walk up: the island
+  // quantum (0 = unestablished), the
   // INVARIANT island epoch (unlike cycle_epoch, never re-based by
   // windowed stacks on the way down), and the island root — the target
   // of take lifecycle events and establishIsland.
@@ -139,7 +139,7 @@ struct ProcessContext {
   // — falling back to the received value when the scope has no looping
   // content of its own. A one-shot node's period IS this value; it is
   // what "sounds once per cycle" means. Like context_loop this is
-  // passed DOWN (P1-6), but unlike it this is a RENDER fact.
+  // passed DOWN, but unlike it this is a RENDER fact.
   int64_t context_cycle = 0;
 
   // --- Time-map facts (time_maps.md phase 2) ---
@@ -149,13 +149,13 @@ struct ProcessContext {
   // against THIS clock — the folded master_pos wraps every map period
   // and never crosses a target at/past the map's end.
   int64_t island_pos = 0;
-  // GROUP STOP GENERATION (audit 2026-08-30 §3.3): a group stop parks a
+  // GROUP STOP GENERATION: a group stop parks a
   // pending generation on every member and then publishes it once at
   // the island root; members flip to stop-requested at the block top
   // that first sees it — all in the SAME block, so N mics compute one
   // boundary and commit one duration. Read once per callback.
   uint32_t stop_generation = 0;
-  // ISLAND GENERATION (audit 2026-08-30 §3.2 closure): a message-thread
+  // ISLAND GENERATION: a message-thread
   // edit that moves the epoch AND clip origins together (definer trim,
   // seek) writes the origins, then the island facts, then bumps this.
   // Clips adopt a new origin for RENDERING (origin_rt_) only at a block
@@ -197,7 +197,7 @@ struct ProcessContext {
   // i.e. the heard grid anchor (pass tops occur at island times
   // ≡ map_heard_epoch mod map.period()). map_count counts active maps
   // on the delivered chain: > 1 means composed maps (multi-segment
-  // product), which recording refuses until phase 3+.
+  // product), which recording refuses.
   timing::TimeMap map{};
   int64_t map_heard_epoch = 0;
   // The mapping stack's ORIGIN (Q18, composition.md §2): the map's
@@ -219,9 +219,8 @@ enum class NodeType { Clip, Stack, Unknown };
 enum class PeriodSource { OWN_LENGTH, CONTEXT_CYCLE };
 
 /**
- * Pan gains, BALANCE law: center is unity on both channels (existing
- * sessions keep their exact loudness), panning attenuates the far
- * channel only — no boost anywhere, so a full-scale take hard-panned
+ * Pan gains, BALANCE law: center is unity on both channels, panning
+ * attenuates the far channel only — no boost anywhere, so a full-scale take hard-panned
  * cannot clip the device. pan ∈ [−1 (L) .. +1 (R)].
  */
 inline void panGains(float pan, float& gain_l, float& gain_r) {
@@ -291,7 +290,7 @@ class AudioNode {
    * whole-graph phase separation: every decision in the graph settles
    * before the first sample renders, so render never observes state
    * that changes mid-pass (§2.3 "events applied between blocks").
-   * Node-level tests call it for the historical single-node behavior.
+   * Node-level tests call it directly on a single node.
    */
   void process(const float* const* input_channels,
                float* const* output_channels, int num_input_channels,
@@ -362,8 +361,8 @@ class AudioNode {
     obj->setProperty("pan", (double)pan.load());
     obj->setProperty("gain", (double)gain.load());
     // launchPoint is a PROJECTION of origin (kernel.md §2 table):
-    // derived at read time, never stored. anchorPhase was deleted
-    // outright (no consumer; the UI derives lane position from origin).
+    // derived at read time, never stored (the UI derives lane position
+    // from origin).
     obj->setProperty("launchPoint",
                      (double)timing::launchPointFor(origin_samples.load(),
                                                     duration_samples.load()));
@@ -372,7 +371,7 @@ class AudioNode {
     // draws an anchored group's take mark like a clip's.
     obj->setProperty("anchored", (bool)anchored_.load());
 
-    // Device-independent musical facts (Q12 / D-T3): the same values
+    // Device-independent musical facts (Q12): the same values
     // projected onto the island's musical frame through the ONE law
     // (timing.h). These are the canonical facts the save format
     // serializes (sample fields above stay for the UI). `qSamples` is the
@@ -442,8 +441,7 @@ class AudioNode {
   // (metadata walks, engine helpers) plus the single-threaded unit-test
   // fallback; the audio thread resolves ancestry through the
   // whole-graph snapshot (ProcessContext.snap) and receives island
-  // facts in the context — it never walks these pointers (Tier 3
-  // Step 3).
+  // facts in the context — it never walks these pointers.
   void setParent(AudioNode* p) { parent.store(p); }
   AudioNode* getParent() const { return parent.load(); }
 
@@ -466,8 +464,8 @@ class AudioNode {
   // `rootNode()` through these instead of the engine detecting edges by
   // scanning the graph every block (unification_audit.md §1.5).
   /** Establish (Q, epoch) if not yet locked; q == 0 sets a provisional
-   * epoch only (first-clip arm — the epoch capture that replaced the
-   * old transport reset). */
+   * epoch only (first-clip arm: the arm moment is the epoch — the
+   * clock itself is never reset). */
   virtual void establishIsland(int64_t quantum, int64_t epoch) {
     (void)quantum;
     (void)epoch;
@@ -551,7 +549,7 @@ class AudioNode {
   }
 
   // --- Multi-segment map storage (time_maps.md phase 3) ---
-  // The override is reached through ONE atomic pointer (the D4
+  // The override is reached through ONE atomic pointer (the
   // content-buffer discipline): null = the single-segment window in the
   // loop atomics; non-null = an immutable multi-segment TimeMap. The
   // MESSAGE thread swaps it and retires the old pointer through the
@@ -569,11 +567,11 @@ class AudioNode {
    * The node's effect chain — FRACTAL like windows: a clip's chain
    * processes its rendered playback; a stack's chain processes the
    * summed group (so a stack reverb wets the whole kit). Reached
-   * through ONE atomic pointer (the D4 discipline): the MESSAGE thread
-   * builds successors (sharing slot objects) and retires the old chain
-   * through the engine reclaimer; the audio thread loads the pointer
-   * per block and only reads. Enable/param changes are slot-internal
-   * atomics — no republish. prepare() before enable, as ever.
+   * through ONE atomic pointer (the content-buffer discipline): the
+   * MESSAGE thread builds successors (sharing slot objects) and retires
+   * the old chain through the engine reclaimer; the audio thread loads
+   * the pointer per block and only reads. Enable/param changes are
+   * slot-internal atomics — no republish. prepare() before enable.
    */
   dsp::FxChain* fxChain() const { return chain_.load(); }
   /** Swap in `fresh` (heap-owned); returns the OLD chain, which the
@@ -631,16 +629,15 @@ class AudioNode {
    * (graph_snapshot.h) can ask without a cast. Audio-thread safe. */
   virtual int64_t activeSequenceLen() const { return 0; }
 
-  // --- The PRE-FX audibility gate (docs/sequencer.md S7, ruled
-  // 2026-08-19: "all transitions smooth as much as possible") ---
+  // --- The PRE-FX audibility gate (S7, docs/sequencer.md: "all
+  // transitions smooth as much as possible") ---
   //
   // Mute, solo-loss, and sequence gates all resolve to ONE dry-signal
   // gain applied BEFORE the node's fx chain: edges fade over ~10 ms
   // (never a hard cut — speaker pops), and the chain keeps running, so
-  // echo/reverb tails RING OUT through a closed gate. This supersedes
-  // the freeze-tails mute (mute as output-stage gain 0 + skipped rack)
-  // — one mechanism for every audibility verb, resolving the standing
-  // "effect tails on mute" question (tasks.md).
+  // echo/reverb tails RING OUT through a closed gate. One mechanism for
+  // every audibility verb; mute is never an output-stage gain 0 with a
+  // skipped rack (that would freeze tails).
   //
   // The mute/solo half is a smoothed per-node ramp (user gestures are
   // not schedulable); the sequence half arrives as exact (g0, g1)
@@ -708,7 +705,7 @@ class AudioNode {
   // Loop window bypass flag (time_maps.md). Window phase is pure
   // arithmetic on the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};
-  // THE PERIOD-SOURCE KNOB (Q5 ruling / kernel.md §2 / audit D7): false
+  // THE PERIOD-SOURCE KNOB (Q5, kernel.md §2): false
   // = the node's period is its own length (a loop, the default); true =
   // its period is the CONTEXT CYCLE (ProcessContext.context_cycle) — a
   // ONE-SHOT, sounding once per scope cycle at its origin, then
@@ -724,7 +721,7 @@ class AudioNode {
 
   // The effect chain (dsp/fx_chain.h): ONE atomic pointer, message
   // thread swaps + reclaimer retirement, audio thread loads per block
-  // (D4 discipline — see fxChain above). Every node is born with the
+  // (see fxChain above). Every node is born with the
   // default four-built-in chain. The scope is a separate STABLE member
   // so chain swaps never disturb the telemetry ring; both are touched
   // from the CONST render phase as sanctioned DSP scratch (§2.3).
@@ -736,7 +733,7 @@ class AudioNode {
   // Single-armed: AudioEngine::setMidiArmed clears every other node.
   // A monitoring gesture like solo: not undoable, not persisted.
   std::atomic<bool> midi_armed{false};
-  // Solo canon (Q16, ruled 2026-08-13): island-wide, ADDITIVE, fractal.
+  // Solo canon (Q16): island-wide, ADDITIVE, fractal.
   // A per-node flag like mute; the audio thread resolves audibility per
   // callback from the snapshot (any_solo + ancestor scan), so toggling
   // never republishes structure. Not undoable (a monitoring gesture —
@@ -747,8 +744,8 @@ class AudioNode {
   // thread, deliberately not undoable (dial drags would flood the undo
   // log; same ruling as effect params).
   std::atomic<float> pan{0.0f};
-  // The volume fader (unification_audit §2.4 — the missing gain
-  // primitive), applied at the node's output stage after fx. Range
+  // The volume fader (unification_audit.md §2.4), applied at the
+  // node's output stage after fx. Range
   // [0, 1]: unity default, attenuate-only per the pan no-boost law (a
   // full mix of full-scale takes cannot clip the device; boost lives in
   // the compressor's makeup). A MIXER fact like pan: not undoable.

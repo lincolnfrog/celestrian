@@ -15,7 +15,7 @@ namespace celestrian {
  * the EDITOR only, never the instance (closing a window never touches
  * the plugin's processing). Plugins without an editor get JUCE's
  * GenericAudioProcessorEditor in the same window — the web UI grows no
- * generic parameter panel (owner ruling 2026-08-15). MESSAGE THREAD
+ * generic parameter panel. MESSAGE THREAD
  * only. Close-before-removal discipline: the bridge's removeChainSlot
  * handler calls closeFor() FIRST, so an editor never outlives its
  * slot's place in the chain (the undo entry keeps the instance alive

@@ -10,8 +10,8 @@
  * This module is DOM + geometry only. It never calls the backend;
  * interactions are injected as callbacks from app.js.
  *
- * Split into js/session_view/ (2026-08-11); this file is the public
- * barrel — the names app.js imports:
+ * The implementation lives in js/session_view/; this file is the
+ * public barrel — the names app.js imports:
  *
  *   init.js      — one-time wiring + the unified keyboard dispatcher
  *   patch.js     — patchSessionView (top-level per-poll patch)

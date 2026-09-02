@@ -31,11 +31,11 @@ function peakAbs(peaks, i) {
  * FIXED SCALE (pxPerPeak = p): column x covers peaks [x/p, (x+1)/p) — a
  * function of p ONLY, never of the peak count. Required for LIVE bars:
  * under fit mapping, W = round(n·p) makes W/n wobble as n grows, so
- * every drawn column shifted sub-pixel on every poll — the recording
- * waveform's left/right jitter (field 2026-07-10, twice: the wobble is
- * worst when p shrinks after a frame extension). With fixed scale, a
- * peak's pixels are immutable for the life of the take: new content
- * appends, old content never remaps.
+ * every drawn column would shift sub-pixel on every poll — a
+ * left/right jitter on the recording waveform, worst when p shrinks
+ * after a frame extension. With fixed scale, a peak's pixels are
+ * immutable for the life of the take: new content appends, earlier
+ * content never remaps.
  *
  * Exported for the append-stability unit test.
  */
@@ -152,8 +152,8 @@ export function drawWaveform(canvas, peaks, opts = {}) {
     const cols = poolColumns(peaks, cssW, opts.pxPerPeak);
 
     // DISPLAY NORMALIZATION: waveforms show SHAPE, meters show level —
-    // real takes at sane input gain drew as invisible hairlines when
-    // amplitude mapped linearly (field screenshot 2026-07-10). Scale the
+    // real takes at sane input gain would draw as invisible hairlines
+    // if amplitude mapped linearly. Scale the
     // clip to its own peak (boost capped at NORM_MAX_BOOST so silence
     // stays flat) with a gentle perceptual exponent to lift quiet detail.
     // LIVE bars pass fixedBoost (a smoothed ratchet, live_peaks.liveBoost)

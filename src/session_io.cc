@@ -153,8 +153,8 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     o->setProperty("contextCycleQ",
                    qvar(timing::fromSamples(
                        opts.strip_performances ? 0 : clip.contextCycle(), q)));
-    // MIDI takes (docs/vst3.md §8, phase 5 — Q-V4 ruling): the note
-    // sequence lives inline, positions as QTime on the island exchange
+    // MIDI takes (Q-V4, docs/vst3.md §8): the note sequence lives
+    // inline, positions as QTime on the island exchange
     // rate like every other musical fact: [[num, den, byte...], ...]
     // in content order (base-relative — a collapsed take saves as its
     // window, exactly like the WAV path).
@@ -184,16 +184,16 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     o->setProperty("x", node.x_pos.load());
     o->setProperty("y", node.y_pos.load());
     // THE STACK'S ORIGIN (Q18, composition.md §1) — additive: absent =
-    // unanchored, and settleAnchors re-derives from content on load
-    // (pre-Q18 sessions). Stripped with performances like a clip's.
+    // unanchored, and settleAnchors re-derives from content on load.
+    // Stripped with performances like a clip's.
     if (!opts.strip_performances && node.isAnchored()) {
       o->setProperty("anchored", true);
       o->setProperty("originQ", qvar(timing::originQ(node.origin_samples.load(),
                                                      epoch, q)));
     }
     // The SEQUENCE (docs/sequencer.md) — additive block. Step lengths
-    // are musical facts (QTime on the island exchange rate, D-T3);
-    // gates key the children's uuids, which the session preserves.
+    // are musical facts (QTime on the island exchange rate); gates key
+    // the children's uuids, which the session preserves.
     // Stripped with performances: a sequence references committed
     // takes' children and lengths in Q — meaningless pre-Q.
     if (!opts.strip_performances && q > 0) {
@@ -300,8 +300,8 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     const int64_t ctx =
         timing::toSamples(qread(o->getProperty("contextCycleQ")), q);
     clip->setInputChannel((int)o->getProperty("inputChannel"));
-    // Absent in pre-stereo sessions: juce::var() → 0 would silently arm
-    // a stereo pair, so default explicitly to −1 (mono).
+    // Absent key: juce::var() → 0 would silently arm a stereo pair, so
+    // default explicitly to −1 (mono).
     clip->setInputChannelRight(o->hasProperty("inputChannelR")
                                    ? (int)o->getProperty("inputChannelR")
                                    : -1);
@@ -341,8 +341,8 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
   node->setUuid(uuid);
   node->is_muted.store((bool)o->getProperty("muted"));
   node->pan.store((float)(double)o->getProperty("pan"));
-  // Absent key (pre-gain session) MUST default to unity — the missing-
-  // property var reads as 0.0, which would load every legacy node silent.
+  // Absent key MUST default to unity — the missing-property var reads
+  // as 0.0, which would load the node silent.
   node->gain.store(
       o->hasProperty("gain") ? (float)(double)o->getProperty("gain") : 1.0f);
   node->period_from_context_.store(o->getProperty("periodSource").toString() ==
@@ -393,8 +393,7 @@ BundleInfo readBundleInfo(const juce::File& dir) {
 // is generic: for each fx, replay enabled + every numeric field.
 void applyEffects(AudioNode& node, const juce::var& blob,
                   double sr, const std::function<void(dsp::FxChain*)>& retire) {
-  // Array form only (owner ruling 2026-08-15, no back-compat): a
-  // non-array blob — including the legacy object form — is IGNORED and
+  // Array form only (no back-compat): a non-array blob is IGNORED and
   // the node keeps its default chain, rather than erroring the load.
   auto* entries = blob.getArray();
   if (entries == nullptr || entries->isEmpty()) return;

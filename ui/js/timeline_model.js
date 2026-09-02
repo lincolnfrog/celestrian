@@ -96,9 +96,9 @@ export function armTarget(rel, quantum, contextLoop) {
         : (Math.floor(effective / quantum) + 1) * quantum;
     const loopBase = Math.floor(rel / contextLoop) * contextLoop;
     // A mark at/past the context top = the top of the NEXT cycle — the
-    // heard grid restarts there (folding % contextLoop put an unsnapped
-    // context's final-partial-Q boundary in the PAST; fixed with the
-    // through-window vectors, phase 2).
+    // heard grid restarts there (folding % contextLoop would put an
+    // unsnapped context's final-partial-Q boundary in the PAST; the
+    // through-window golden vectors pin this).
     const offset = nextVisual >= contextLoop ? contextLoop : nextVisual;
     return loopBase + offset;
 }
@@ -120,20 +120,19 @@ export function timelineLcm(durations, quantum) {
  * A clip's contribution (samples) to any whole-Q cycle math (frame LCM,
  * composite duration). Normally-committed clips have whole-Q durations
  * and contribute them unchanged. A Q13-trimmed definer's buffer is a
- * multiple of the OLD Q — incommensurate with the grid its own window
- * defined — and LCM-ing the raw duration exploded the display frame
- * ("142336Q", waveforms vanished behind the maxTiles guards; field
- * 2026-07-19b). Its whole-Q truth is the WINDOW (exactly 1Q by
- * construction); ceil-to-Q is the defensive fallback so even a bypassed
- * incommensurate clip yields a finite frame. Audio is untouched — the
- * engine wraps the transport on the EFFECTIVE cycle, which already uses
- * the window.
+ * multiple of the PRE-TRIM Q — incommensurate with the grid its own
+ * window defined — and LCM-ing the raw duration would explode the
+ * display frame (waveforms vanish behind the maxTiles guards). Its
+ * whole-Q truth is the WINDOW (exactly 1Q by construction); ceil-to-Q
+ * is the defensive fallback so even a bypassed incommensurate clip
+ * yields a finite frame. Audio is untouched — the engine wraps the
+ * transport on the EFFECTIVE cycle, which already uses the window.
  */
 export function commensuratePeriod(node, effectiveQ) {
     const d = Math.round(node.duration || 0);
     const q = Math.round(effectiveQ || 0);
     if (!(d > 0) || !(q > 1)) return d;
-    // LAW 13 AMENDED (2026-07-19k): an ACTIVE map IS the displayed
+    // LAW 13 AMENDED (ui_overhaul.md): an ACTIVE map IS the displayed
     // material, so the clip contributes the map period — the summed
     // segment lengths, or the loop window as the map's single-segment
     // form — whenever it is a real whole-Q shortening. Incommensurate
@@ -178,7 +177,7 @@ export function calculateStackLCM(stackNodes, effectiveQ) {
             // A nested stack contributes its EFFECTIVE period — its
             // window, its sequence, or its inner LCM — exactly as a
             // clip child contributes its window (commensuratePeriod).
-            // Fractal (I5): the 2026-08-21 ruling.
+            // Fractal (I5).
             const childLCM = stackEffectivePeriod(child, effectiveQ);
             stackLCM = lcm(Math.round(stackLCM), Math.round(childLCM));
             maxDuration = Math.max(maxDuration, childLCM);
@@ -217,12 +216,12 @@ export function isAuditionWindow(node) {
  * A stack's EFFECTIVE period in samples — what it IS as a part of its
  * parent's cycle. The JS twin of StackNode::getEffectivePeriod, in the
  * same order: an ACTIVE window on the stack wins (its whole-Q length —
- * "a window sets the part's length", owner ruling 2026-08-21, groups
- * exactly as clips); else an active SEQUENCE is the part (the period
- * law); else the LCM of the children's effective periods (nested
- * windows shorten it all the way up). `windowActive` is the engine's
- * verdict (it folds S16 suspension); states that predate the field
- * fall back to the bypass flag + a valid span. `audible: true` counts
+ * a window sets the part's length, groups exactly as clips); else an
+ * active SEQUENCE is the part (the period law); else the LCM of the
+ * children's effective periods (nested windows shorten it all the way
+ * up). `windowActive` is the engine's verdict (it folds S16
+ * suspension); states without the field fall back to the bypass flag
+ * + a valid span. `audible: true` counts
  * a step-audition window too (the engine's wrap), see isAuditionWindow.
  */
 export function stackEffectivePeriod(node, effectiveQ, { audible = false } = {}) {

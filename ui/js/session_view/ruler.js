@@ -2,8 +2,7 @@
  * The shared ruler above the lanes: sparse tick labels (Tape Room),
  * rebuilt only when its reconcile key changes. The key is a content
  * signature of the tick set (tickSetSig) — a re-bucketed tick set at
- * equal count/cycle can never render stale (audit 2026-08-11; the old
- * count-based key was a documented smell).
+ * equal count/cycle can never render stale.
  */
 
 import { ctx } from './context.js';

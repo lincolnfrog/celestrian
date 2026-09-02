@@ -30,6 +30,21 @@ trigger: always_on
 * Each function does one thing; detailed public API comments
 * Aim for 90%+ test coverage
 
+## Comments describe what IS (owner rule, 2026-09-01)
+* A comment states the present law: what the code does and the standing
+  constraint that makes it necessary. Never the history of how it got
+  there.
+* No dates, audit item numbers, "field video", "previously / used to /
+  the old X", "supersedes", "round N". History lives in docs/ (and
+  docs/archive/), which already carry it.
+* Cite rulings and docs by NAME and section — `(Q18, composition.md §2)`,
+  `(S7, sequencer.md §5)`, `(I5)` — never by date.
+* Keep a hazard, drop the story: "X must …, otherwise Y" stays; "Y broke
+  on 2026-08-29 when …" goes.
+* Test references are present-tense facts and stay ("pinned by
+  tests/content_frame_tests.cc").
+* Length follows subtlety: a one-line fact gets one line.
+
 ## JUCE WebView Bridge
 > [!IMPORTANT]
 > **Three-Layer Handshake**: New UI-triggered features require:

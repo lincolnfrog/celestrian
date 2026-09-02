@@ -3,12 +3,11 @@
  * sets the part; docs/time_maps.md).
  *
  * Drag a bracket to edit; click the chip to toggle active/bypassed.
- * TWO-LAYER DRAG FEEDBACK (owner request 2026-07-11, restoring the old
- * handles' feel): the handle itself follows the pointer CONTINUOUSLY
- * (you see your motion), while a dashed snap-ghost bracket + the dims +
- * the chip preview the Q-SNAPPED landing position (you see what a
- * release commits). Release commits the snap via setLoopPoints. During
- * the drag the overlay is frozen (gesture.js isOverlayFrozen) —
+ * TWO-LAYER DRAG FEEDBACK: the handle itself follows the pointer
+ * CONTINUOUSLY (you see your motion), while a dashed snap-ghost bracket
+ * + the dims + the chip preview the Q-SNAPPED landing position (you see
+ * what a release commits). Release commits the snap via setLoopPoints.
+ * During the drag the overlay is frozen (gesture.js isOverlayFrozen) —
  * replacing the captured bracket node would orphan the gesture.
  */
 
@@ -27,9 +26,9 @@ import { windowDragTarget } from '../view_model.js';
 const Q_DEFINER_MIN_LEN_Q = 0.05;
 /* After a release the overlay is HELD at the previewed geometry until
  * the engine has answered the commit — a state poll already in flight
- * at release still carries the OLD window and rebuilt the brackets
- * there for a tick (the snap-back on a slow bridge, WebView2). This
- * caps the hold if the bridge never answers. */
+ * at release still carries the pre-commit window and would rebuild the
+ * brackets there for a tick (the snap-back on a slow bridge, WebView2).
+ * This caps the hold if the bridge never answers. */
 const COMMIT_HOLD_MAX_MS = 1500;
 
 export function wireWindow(o, lane, vm, body, win) {
@@ -44,8 +43,8 @@ export function wireWindow(o, lane, vm, body, win) {
     const laneCycleQ = lane.frameQ || vm.cycleQ;
     const chip = o.querySelector('.win-chip');
     // Fractal (I5): clip and group windows toggle alike — the engine's
-    // toggleLoopWindow works on any node since 2026-07-11. The Q-definer's
-    // chip is a live readout, not a toggle (there's no window to bypass).
+    // toggleLoopWindow works on any node. The Q-definer's chip is a
+    // live readout, not a toggle (there's no window to bypass).
     if (chip && !lane.isQDefiner) {
         chip.classList.add('toggle');
         chip.title = 'Toggle window: active ↔ bypassed (brackets stay editable)';
@@ -88,7 +87,7 @@ export function wireWindow(o, lane, vm, body, win) {
         const bracket = brackets[edge];
         let ghost = null;
         let grab = null;
-        let wasAlt = false;  // last move was an ⌥ free slide (U2)
+        let wasAlt = false;  // last move was an ⌥ free slide
         bracket.addEventListener('pointerdown', e => {
             if (isDragging(body)) return; // one gesture at a time (a second pointer)
             const g = beginGesture(e, {
@@ -97,7 +96,7 @@ export function wireWindow(o, lane, vm, body, win) {
                 onMove: mv => onDrag(mv),
                 onEnd: committed => finish(committed),
             });
-            if (!g.live()) return;  // the runner is a singleton (U7)
+            if (!g.live()) return;  // the runner is a singleton
             g.freeze(body);  // the drag holds capture on this overlay
             bracket.classList.add('dragging');
             g.defer(() => bracket.classList.remove('dragging'));
@@ -121,8 +120,8 @@ export function wireWindow(o, lane, vm, body, win) {
             // Frame Q under the pointer → content Q for the snap math
             const rawQ =
                 ((e.clientX - r.left) / r.width) * laneCycleQ - anchorQ;
-            // ⌥ FREE SLIDE (owner request 2026-08-18): the grabbed edge
-            // follows the pointer by ANY fractional amount and the OTHER
+            // ⌥ FREE SLIDE: the grabbed edge follows the pointer by ANY
+            // fractional amount and the OTHER
             // end moves by the same delta — the window length is held,
             // so Q coherence survives (the anchoring law keeps content
             // in place; only which stretch is heard changes). Clamped to
@@ -140,11 +139,11 @@ export function wireWindow(o, lane, vm, body, win) {
                 wasAlt = true;
                 return;
             }
-            // ⌥ RELEASED MID-DRAG (audit 2026-08-31 U2): the free slide
-            // left `cur` on a fractional grid; plain snapping computes
-            // its targets FROM cur, so the fraction survived every
-            // subsequent snap (and the commit). Re-land on whole Q
-            // first, preserving the whole-Q length the slide held.
+            // ⌥ RELEASED MID-DRAG: the free slide leaves `cur` on a
+            // fractional grid, and plain snapping computes its targets
+            // FROM cur, so the fraction would survive every subsequent
+            // snap (and the commit). Re-land on whole Q first,
+            // preserving the whole-Q length the slide held.
             if (wasAlt && !lane.isQDefiner) {
                 const len = Math.max(1, Math.round(cur.endQ - cur.startQ));
                 let s = Math.round(cur.startQ);
@@ -155,8 +154,8 @@ export function wireWindow(o, lane, vm, body, win) {
             // Q13: the Q-definer drags FREE (sub-Q) — we're DEFINING Q,
             // not snapping to it. The handle position is the landing; a
             // small min length keeps Q positive. Clamp to the RAW
-            // fractional buffer extent: the rounded maxQ let the end
-            // handle land up to half a Q past the recorded material,
+            // fractional buffer extent: the rounded maxQ would let the
+            // end handle land up to half a Q past the recorded material,
             // making a window (and a Q) longer than the content.
             if (lane.isQDefiner) {
                 const minLen = Q_DEFINER_MIN_LEN_Q;
@@ -180,10 +179,10 @@ export function wireWindow(o, lane, vm, body, win) {
             }
         };
         const finish = commit => {
-            // NO-MOVE, NO-COMMIT (audit 2026-08-31 U3): a plain click on
-            // a bracket ended with cur === the window it started at, yet
-            // still committed — a redundant engine round-trip that could
-            // land as a real (if identity) edit on the undo path.
+            // NO-MOVE, NO-COMMIT: a plain click on a bracket ends with
+            // cur === the window it started at; committing it would be
+            // a redundant engine round-trip that could land as a real
+            // (if identity) edit on the undo path.
             const moved = grab == null ||
                 Math.abs(cur.startQ - grab.win.startQ) > 1e-9 ||
                 Math.abs(cur.endQ - grab.win.endQ) > 1e-9;
@@ -193,8 +192,8 @@ export function wireWindow(o, lane, vm, body, win) {
                     Math.round(cur.endQ * vm.quantum));
                 // HOLD until the engine answered (see COMMIT_HOLD_MAX_MS):
                 // the previewed brackets/dims already show the committed
-                // geometry; a rebuild from an in-flight OLD poll would
-                // snap them back for a tick.
+                // geometry; a rebuild from an in-flight pre-commit poll
+                // would snap them back for a tick.
                 holdOverlay(body);
                 let done = false;
                 const settle = () => {

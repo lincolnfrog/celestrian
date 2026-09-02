@@ -52,8 +52,8 @@ class RtLog {
   // Bounded: juce::Logger::writeToLog does file I/O per line, and a
   // producer posting every block can keep the FIFO permanently full —
   // an unbounded loop then never returns and wedges the message thread
-  // (field hang 2026-07: 5 armed clips × per-block underrun spam).
-  // One slot-count sweep per call keeps every UI poll O(kSlots).
+  // (e.g. several armed clips × per-block underrun spam). One
+  // slot-count sweep per call keeps every UI poll O(kSlots).
   void drain() {
     for (int drained = 0; drained < kSlots; ++drained) {
       int start1 = 0, size1 = 0, start2 = 0, size2 = 0;

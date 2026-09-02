@@ -13,8 +13,8 @@
  * Dial mapping: −48 dB … 0 dB across the −26° … +26° sweep. The engine
  * meters block PEAK (instant attack, ~400 ms release), so the needle
  * dances with transients; the wide absolute scale means quiet laptop
- * takes read mid-dial and a hot mix rides the top (the handoff's
- * −20…+3 VU range pinned everything below −20 dB — field 2026-08-08c).
+ * takes read mid-dial and a hot mix rides the top (a −20…+3 VU range
+ * would pin everything below −20 dB).
  * Peak lamp above −3 dB: a true near-clip warning.
  */
 

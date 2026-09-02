@@ -2,11 +2,9 @@
  * mock/rate.js — the mock's SAMPLE RATE, as one systemic variable.
  *
  * TEST-ONLY. The engine threads the device rate everywhere (tasks.md
- * P0-5, "found the 48 kHz field device"); the mock was left behind and
- * spelled 44100 into a dozen places — including a `perf.sampleRate` of
- * 44100 published under a device panel that claimed 48000. Every
- * rate-dependent mock value now derives from here, so there is exactly
- * one number to change and nothing can drift from it.
+ * P0-5); every rate-dependent mock value derives from here, so there
+ * is exactly one number to change and nothing can drift from it (the
+ * published `perf.sampleRate` and the device panel must agree).
  *
  * Selecting a rate (all before the first scenario load — see below):
  *   - node:    CELESTRIAN_MOCK_RATE=48000 npm test

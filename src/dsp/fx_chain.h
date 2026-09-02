@@ -12,13 +12,13 @@
 namespace celestrian::dsp {
 
 /**
- * The dynamic per-node effect chain (docs/vst3.md §3, phase 2): an
- * ordered vector of SLOTS replacing the fixed EffectRack. In this phase
- * every slot wraps one of the four built-in effects (effects.h — the
- * DSP classes are untouched); phase 3 adds VST3 slots as peers.
+ * The dynamic per-node effect chain (docs/vst3.md §3): an ordered
+ * vector of SLOTS. A slot wraps one of the four built-in effects
+ * (effects.h — the DSP classes know nothing of slots) or a VST3 plugin
+ * (vst3_slot.h) as a peer.
  *
- * Publication is the D4 content-buffer discipline verbatim
- * (performance.md §1): a node reaches its chain through ONE atomic
+ * Publication is the content-buffer discipline (performance.md §1): a
+ * node reaches its chain through ONE atomic
  * pointer; the MESSAGE thread builds a successor (sharing the untouched
  * slot objects, so DSP state survives a reorder), publishes it with one
  * exchange, and retires the predecessor through the engine reclaimer.
@@ -27,9 +27,8 @@ namespace celestrian::dsp {
  * predecessor and successor — dial drags never republish.
  *
  * Slots are identified by a stable SLOT UUID (persisted): the bridge
- * and UI address slots by uuid, never by index or type (the type-id
- * addressing died with the rack — owner ruling 2026-08-15, no
- * back-compat).
+ * and UI address slots by uuid, never by index or type (no back-compat
+ * for type-id addressing).
  */
 
 /** One slot: a stable identity + enable flag around a processor.
@@ -44,7 +43,7 @@ class FxSlot {
   void setSlotUuid(const juce::String& uuid) { slot_uuid_ = uuid; }
 
   /** The type id the save format and UI schema key on ("eq",
-   * "compressor", "echo", "reverb"; phase 3 adds "vst3"). */
+   * "compressor", "echo", "reverb", "vst3"). */
   virtual const char* typeId() const = 0;
 
   /** Message thread, before first enable at a given rate. Idempotent
@@ -184,7 +183,7 @@ class FxChain {
       "eq", "compressor", "echo", "reverb"};
 
   /** A fresh default chain: the four built-ins, canonical order, all
-   * disabled — audibly identical to the historical rack. */
+   * disabled (audibly transparent). */
   static std::unique_ptr<FxChain> makeDefault();
 
   /** A chain over existing slots (successor build / loader). */
@@ -222,8 +221,8 @@ class FxChain {
   bool run(float* l, float* r, int sample_count, bool stereo_in,
            const juce::MidiBuffer* live_midi = nullptr);
 
-  // The historical shapes, kept as thin wrappers over run() for the
-  // pure-built-in paths and the DSP tests.
+  // Thin wrappers over run() for the pure-built-in paths and the DSP
+  // tests.
   void process(float* x, int sample_count) { run(x, nullptr, sample_count, false); }
   void processStereo(float* l, float* r, int sample_count) {
     run(l, r, sample_count, true);
@@ -250,7 +249,7 @@ class FxChain {
   float compressorGainReductionDb() const;
 
   /** Sum of enabled slots' reported latency (docs/vst3.md §3.4 —
-   * report-only; compensation deferred by owner ruling 2026-08-15). */
+   * report-only; no compensation is applied). */
   int totalLatencySamples() const;
 
  private:
@@ -264,9 +263,9 @@ class FxChain {
 };
 
 /**
- * Pre-chain signal telemetry (the rack's scope, docs/ui_overhaul.md
- * effects bar), now a STABLE per-node object so chain swaps never
- * disturb it: the audio thread only COPIES the chain's input into a
+ * Pre-chain signal telemetry (the scope, docs/ui_overhaul.md effects
+ * bar): a STABLE per-node object, so chain swaps never disturb it.
+ * The audio thread only COPIES the chain's input into a
  * small ring (single writer, atomic index); all analysis (the 24-bin
  * Goertzel spectrum) runs on the MESSAGE thread at poll time inside
  * metadataVar. GATED on the UI's panel being open (setEffectScope):

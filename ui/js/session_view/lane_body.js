@@ -7,11 +7,10 @@
  * canvas a group row draws.
  *
  * RECONCILED IN LAYERS, never nuked: destroying and recreating every
- * gridline/rep/canvas on any key change made commits (and every Q
- * crossing, via armAtQ in the old whole-body key) render as a global
- * "pop" (field report 2026-07-10). Rep divs are REUSED — position
- * updates morph via CSS transitions — and canvases redraw only when
- * their own peaks/geometry change.
+ * gridline/rep/canvas on any key change would make commits render as a
+ * global "pop". Rep divs are REUSED — position updates morph via CSS
+ * transitions — and canvases redraw only when their own peaks/geometry
+ * change.
  */
 
 import { ctx } from './context.js';
@@ -31,7 +30,7 @@ import { wireWindow } from './window_edit.js';
 import { isOverlayFrozen } from './gesture.js';
 
 /* Surplus rep tiles fade out over this long before removal (instant
- * removal mid-morph left a momentary gap — the commit "squish"). */
+ * removal mid-morph leaves a momentary gap — the commit "squish"). */
 const EXIT_FADE_MS = 220;
 /* Content-swap cross-fade: the old canvas fades over the new one for
  * this long, and is removed a beat later. Intentionally longer than
@@ -118,8 +117,8 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
     // CONTENT SWAP → CROSS-FADE: a new peaks array replacing an old one
     // (live meter peaks → fetched waveform at commit; composite regen)
     // is a re-rendering of the same audio with features shifted a few
-    // px — hard-swapping it read as squish/stretch (field video
-    // 2026-07-10). The old canvas fades out over the new one.
+    // px — a hard swap reads as squish/stretch. The old canvas fades
+    // out over the new one.
     if (!live && div._peaksRef && div._peaksRef !== peaks && canvas.width > 0) {
         const old = canvas;
         old.style.transition = 'opacity ' + CROSSFADE_MS + 'ms linear';
@@ -142,7 +141,7 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
     } else {
         if (div._liveBoost !== undefined) delete div._liveBoost;
         // Pinned, like the live bar: the div's transition reveals/clips
-        // the canvas — stretching it mid-morph distorted the content
+        // the canvas — stretching it mid-morph would distort the content
         canvas.style.width = Math.round(cssWidth) + 'px';
         // Map content draws only its segment(s) — `src` is a LIST of
         // content ranges (phase 3: a multi-segment map concatenates its
@@ -233,15 +232,15 @@ export function patchLaneBody(row, lane, vm, aux) {
     body.classList.toggle('is-recording', !!lane.recording);
     body.classList.toggle('armed-empty',
         lane.kind === 'clip' && !lane.recording && lane.reps.length === 0 && lane.armed);
-    // Inspector honesty (field 2026-07-22): an edit-view lane frames
-    // its raw take on its own scale — the global playhead is suppressed
-    // over it (stacking, see .inspecting) and the amber heard cursor is
-    // its one honest cursor.
+    // Inspector honesty: an edit-view lane frames its raw take on its
+    // own scale — the global playhead is suppressed over it (stacking,
+    // see .inspecting) and the amber heard cursor is its one honest
+    // cursor.
     body.classList.toggle('inspecting', !!lane.windowEditing);
 
     // Grid layer: rebuilt only when the frame's tick set changes. The
-    // key is a content signature (tickSetSig) — count-equal re-buckets
-    // can't render stale (audit 2026-08-11); edge suppression is
+    // key is a content signature (tickSetSig), so count-equal
+    // re-buckets can't render stale; edge suppression is
     // epsilon-tolerant like the ruler's cycle-end label.
     reconcileMarkers(grid, 'g:' + cycleQ + ':' + tickSetSig(vm.ruler.ticks), g => {
         vm.ruler.ticks.forEach(t => {
@@ -261,16 +260,16 @@ export function patchLaneBody(row, lane, vm, aux) {
     // Reps layer: RECONCILE — reuse divs, update geometry in place.
     // The bar anchors at its Q boundary; in the first-take frame there
     // is no Q yet (quantum = 1 sample — rounding is meaningless and the
-    // latency wobble made the left edge vibrate), and the first take by
-    // definition starts the timeline: anchor 0.
+    // latency wobble would make the left edge vibrate), and the first
+    // take by definition starts the timeline: anchor 0.
     const wantBar = lane.recording && !lane.pendingStart;
     const barStartQ = !vm.qEstablished ? 0
         : Math.max(0, Math.round(vm.playheadQ - lane.recordingLengthQ));
     // The bar's edge is "now" (the playhead) — the written content
     // (canvas) trails inside by the latency compensation, and the bar's
     // background marks the being-written zone. Ending the bar at
-    // start+length left the playhead visibly ahead of the waveform
-    // (field screenshot 2026-07-10).
+    // start+length would leave the playhead visibly ahead of the
+    // waveform.
     const tiles = wantBar
         ? [{
             startQ: barStartQ,
@@ -281,9 +280,9 @@ export function patchLaneBody(row, lane, vm, aux) {
         : lane.reps;
 
     // Surplus tiles FADE OUT through the settle instead of vanishing:
-    // instant removal while the surviving tile is still mid-morph left a
-    // momentary gap (the group lane's "squish" at commit — the engine
-    // replay proved the state trajectory clean; this was the DOM layer)
+    // instant removal while the surviving tile is still mid-morph
+    // leaves a momentary gap (the group lane's "squish" at commit — a
+    // DOM-layer effect, not a state one).
     const live = [...repsL.children].filter(d => !d._exiting);
     for (let i = live.length - 1; i >= tiles.length; i--) {
         const d = live[i];
@@ -297,8 +296,8 @@ export function patchLaneBody(row, lane, vm, aux) {
         if (!div) {
             div = document.createElement('div');
             // A fresh tile must appear AT its geometry, never animate
-            // from width 0 ("composite collapses to zero then expands" —
-            // field 2026-07-10, when a commit changes the tile count)
+            // from width 0 (a commit that changes the tile count would
+            // otherwise collapse the composite to zero, then expand it)
             snapThenAnimate(div);
             repsL.appendChild(div);
         }
@@ -309,10 +308,10 @@ export function patchLaneBody(row, lane, vm, aux) {
         if (div.className !== cls) div.className = cls;
         // The live bar draws at a FIXED px-per-slot scale: a peak's
         // pixels are a function of its slot index only, never of the
-        // growing count — fit-to-width remapped every column each poll
-        // (the "vibrates left and right" field report; worst after a
-        // frame extension shrinks the scale). The bar div's edge still
-        // advances smoothly, ≤1 slot ahead of the canvas.
+        // growing count — fit-to-width would remap every column each
+        // poll and the bar would vibrate (worst after a frame extension
+        // shrinks the scale). The bar div's edge still advances
+        // smoothly, ≤1 slot ahead of the canvas.
         let cssW = Math.max(MIN_TILE_PX,
             bodyW * (rep.endQ - rep.startQ) / cycleQ);
         let pxPerSlot = 0;
@@ -332,10 +331,10 @@ export function patchLaneBody(row, lane, vm, aux) {
         // MORPH ONLY PURE MOVES; SNAP RE-LAYOUTS. When the canvas was
         // redrawn AND the geometry changed in the same patch (a commit
         // or frame settle), animating the container over new content
-        // reads as false motion — the composite visibly "stretched"
-        // 255→510px at every growing commit (field 2026-07-10). Since
-        // px-per-Q is preserved across the settle, snapping makes the
-        // change read as the ghost half lighting up, not movement.
+        // reads as false motion (the composite visibly stretches at a
+        // growing commit). Since px-per-Q is preserved across the
+        // settle, snapping makes the change read as the ghost half
+        // lighting up, not movement.
         const newLeft = pct(rep.startQ, cycleQ);
         const newWidth = pct(rep.endQ - rep.startQ, cycleQ);
         const geomChanged = div.style.left !== newLeft || div.style.width !== newWidth;
@@ -361,13 +360,12 @@ export function patchLaneBody(row, lane, vm, aux) {
     // that EXPAND the lane into its edit view (full raw take with the
     // selection brackets — the seed track's trim view, per lane).
     if (lane.windowChipQ && !lane.windowEditing) {
-        // HEARD-VIEW chrome, MODELESS (field 2026-07-23: "just let me
-        // manipulate the drag handles live"): the edge grips ARE trim
-        // handles (drag adjusts the outer bounds directly, whole-Q
-        // snap, commit on release); cuts render as SEAM HANDLES (drag
-        // slides the cut freely, ⌥-drag resizes, double-click heals);
-        // the chip opens the raw-take inspector for INSPECTION only —
-        // never required for editing, and it no longer eats a drag.
+        // HEARD-VIEW chrome, MODELESS: the edge grips ARE trim handles
+        // (drag adjusts the outer bounds directly, whole-Q snap, commit
+        // on release); cuts render as SEAM HANDLES (drag slides the cut
+        // freely, ⌥-drag resizes, double-click heals); the chip opens
+        // the raw-take inspector for INSPECTION only — never required
+        // for editing, and it never eats a drag.
         const heardKey = JSON.stringify(
             ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
              lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
@@ -433,8 +431,8 @@ export function patchLaneBody(row, lane, vm, aux) {
     const win = lane.window || latentWindow(lane, vm);
     // Window geometry is CONTENT-relative; the lane's content-frame
     // origin is its take tile (takeStartQ) — brackets/dims/cursor all
-    // shift by it (field 2026-07-16c: they drew a phase off for takes
-    // not anchored at the frame top).
+    // shift by it (otherwise they draw a phase off for takes not
+    // anchored at the frame top).
     const anchorQ = lane.takeStartQ || 0;
     const overlayKey = JSON.stringify(
         [win, armedEmpty && armQ, cycleQ, anchorQ,
@@ -448,13 +446,11 @@ export function patchLaneBody(row, lane, vm, aux) {
     // sounding right now (the engine publishes the window phase on
     // `playhead`). The island playhead sweeps ISLAND time — under an
     // active window the lane hears MAPPED time, and without this cursor
-    // the loop looked dead ("the loop window doesn't work anymore",
-    // field 2026-07-11). Patched every poll, OUTSIDE the keyed rebuild —
-    // and BEFORE the drag gate: during an expanded map drag this same
-    // lane frames the RAW take (per-lane scale), the phase maps through
-    // the live-committed segments, and the cursor jumps the cuts — the
-    // "where is the sound" line the editing view was missing (field
-    // 2026-07-25).
+    // the loop looks dead. Patched every poll, OUTSIDE the keyed
+    // rebuild — and BEFORE the drag gate: during an expanded map drag
+    // this same lane frames the RAW take (per-lane scale), the phase
+    // maps through the live-committed segments, and the cursor jumps
+    // the cuts — the "where is the sound" line of the editing view.
     patchWinCursor(overlay, lane, vm, cycleQ);
     if (isOverlayFrozen(body)) return;
 
@@ -499,8 +495,8 @@ export function patchLaneBody(row, lane, vm, aux) {
                 const chip = document.createElement('div');
                 if (qDef) {
                     // The Q-definer chip CENTERS over the take: pinned to
-                    // the window end it sat clipped against the lane's
-                    // right edge, unreadable (owner feedback 2026-08-08d).
+                    // the window end it would sit clipped against the
+                    // lane's right edge, unreadable.
                     chip.className = 'win-chip q-definer centered';
                     chip.style.left =
                         pct(anchorQ + (startQ + endQ) / 2, cycleQ);
@@ -536,8 +532,8 @@ export function patchLaneBody(row, lane, vm, aux) {
                     // Heard-time cursor: positioned per poll below. NOT
                     // on the Q-definer — there the MAIN playhead is
                     // mapped into the selection (vm.loopStartQ), and a
-                    // second cursor over the same span was the "two
-                    // cursors" field bug (2026-07-19).
+                    // second cursor over the same span would read as
+                    // two cursors.
                     o.appendChild(el('div', 'win-cursor'));
                 }
             }
@@ -626,10 +622,10 @@ function latentWindow(lane, vm) {
     // edge grip) — a latent full-span drag here would reinterpret the
     // collapsed coordinates as raw loop points.
     if (lane.windowChipQ) return null;
-    // A child shown THROUGH an enclosing map (the child heard unroll,
-    // 2026-08-21) frames the parent's slice, not its own take — a
-    // latent drag here would author a window in the wrong coordinates.
-    // The parent owns the chrome.
+    // A child shown THROUGH an enclosing map (the child heard unroll)
+    // frames the parent's slice, not its own take — a latent drag here
+    // would author a window in the wrong coordinates. The parent owns
+    // the chrome.
     if (lane.underMap || lane.definerMember) return null;
     const maxQ = Math.round(lane.intrinsicQ || 0);
     // (The Q-definer never reaches here: its lane always carries a
@@ -649,9 +645,9 @@ function lanePeaks(lane, aux, bodyW = 0) {
     const stackDuration = Math.max(
         oneTakeDuration(node) || calculateStackLCM(node.nodes, aux.vmQuantum),
         node.effectiveQuantum || aux.vmQuantum);
-    // Rasterize at least at the lane's own width: at the fixed 800 the
-    // 1000px+ lane upsampled (interpolated) the composite, so the
-    // group read softer than its children (field 2026-08-29).
+    // Rasterize at least at the lane's own width: a lane wider than the
+    // fixed 800 would upsample (interpolate) the composite, and the
+    // group would read softer than its children.
     const canvasWidth = Math.max(COMPOSITE_CANVAS_W, Math.ceil(bodyW || 0));
     return generateCompositeWaveform({
         stack: node, stackDuration, effectiveQ: aux.vmQuantum,
@@ -669,9 +665,9 @@ function lanePeaks(lane, aux, bodyW = 0) {
         // The Q-definer trim view frames the RAW take with the
         // selection over it (pushDefinerLane); its members draw their
         // whole takes beneath. The composite must be the same raw
-        // material — the heard mixdown (windowed slices on the epoch
-        // grid) disagreed with the children and re-shaped on every
-        // trim release (field video 2026-08-29).
+        // material — a heard mixdown (windowed slices on the epoch
+        // grid) would disagree with the children and re-shape on every
+        // trim release.
         raw: !!lane.isQDefiner,
     });
 }

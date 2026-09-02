@@ -81,8 +81,8 @@ export function setSequence(id, payload) {
     }
     const steps = payload.steps.map(s => ({
         name: String(s.name || ''), len: Math.round(s.len),
-        // CUE (docs/sequencer.md ss3, S11/S20-S22 ruled 2026-08-27):
-        // a cued step re-bases the subtree to the step top.
+        // CUE (docs/sequencer.md ss3, S11/S20-S22): a cued step
+        // re-bases the subtree to the step top.
         cue: !!s.cue }));
     const gates = {};
     for (const [uuid, bits] of Object.entries(payload.gates || {})) {
@@ -185,8 +185,8 @@ export function toggleSequence(id) {
 }
 
 /**
- * SEQUENCES TRACK Q (owner ruling 2026-08-21, engine parity
- * AudioEngine::setIslandQuantum): step lengths are musical facts. Call
+ * SEQUENCES TRACK Q (engine parity AudioEngine::setIslandQuantum):
+ * step lengths are musical facts. Call
  * wherever the mock re-establishes Q from an edit: Q → Q' rescales every
  * sequence's steps by Q'/Q (a 5Q step stays 5Q); Q → 0 (empty island)
  * CLEARS them. Undo is the snapshot (it holds the old sequences).

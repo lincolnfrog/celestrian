@@ -14,23 +14,20 @@ namespace celestrian {
 
 /**
  * An Edit is one reversible mutation of the graph (unification_audit.md
- * §2.2, staged Step 1 — tasks.md). Edits are applied on the MESSAGE
- * thread through AudioEngine::applyEdit, which performs the mutation and
- * returns the INVERSE Edit; the undo stack is a list of inverses, the
- * redo stack a list of forwards. Zero audio-thread changes: this is the
- * existing imperative bridge, refactored so every mutation records how to
- * take it back.
+ * §2.2). Edits are applied on the MESSAGE thread through
+ * AudioEngine::applyEdit, which performs the mutation and returns the
+ * INVERSE Edit; the undo stack is a list of inverses, the redo stack a
+ * list of forwards.
  *
- * Why an owned-subtree inverse is SAFE (the property the risk analysis
- * missed): there is no overdub, so a committed clip buffer is written
- * once and never mutated again. A removed subtree is therefore inert —
- * the undo stack can simply HOLD it (same uuid, buffer, origin, params)
- * and re-insert the exact node on undo. Detachment goes through the
- * existing non-retiring removeChild(index); the audio thread may read the
- * just-detached node for ≤2 more callbacks, but the undo entry only
- * stores it, never frees or mutates it, so nothing races. When an undo
- * entry that owns a subtree is finally dropped (redo cleared / depth
- * cap), the node is handed to the reclaimer, never freed inline.
+ * Why an owned-subtree inverse is SAFE: there is no overdub, so a
+ * committed clip buffer is written once and never mutated again. A
+ * removed subtree is therefore inert — the undo stack HOLDS it (same
+ * uuid, buffer, origin, params) and re-inserts the exact node on undo.
+ * Detachment goes through the non-retiring removeChild(index); the audio
+ * thread may read the just-detached node for ≤2 more callbacks, but the
+ * undo entry only stores it, never frees or mutates it, so nothing races.
+ * When an undo entry that owns a subtree is finally dropped (redo cleared
+ * / depth cap), the node is handed to the reclaimer, never freed inline.
  *
  * In-flight (armed/capturing) takes are NEVER undoable — cancel is the
  * verb (guarded in applyEdit).
@@ -64,16 +61,16 @@ struct Edit {
                    // needs no payload (derived from the clip's window);
                    // the inverse sets b1 with iq = shift, iepoch = the
                    // old duration, restoring buffer view + trim.
-    CollapseGroup, // Q13 lock-collapse, GROUP twin (audit 2026-08-30
-                   // §3.5): the definer STACK's window becomes the
-                   // take — every member collapses to it, the stack
-                   // window is consumed. Forward: uuid = stack, no
-                   // payload; inverse b1 with iq = shift, iepoch = the
-                   // members' old duration, d1/d2 = the stack window.
+    CollapseGroup, // Q13 lock-collapse, GROUP twin: the definer STACK's
+                   // window becomes the take — every member collapses
+                   // to it, the stack window is consumed. Forward: uuid
+                   // = stack, no payload; inverse b1 with iq = shift,
+                   // iepoch = the members' old duration, d1/d2 = the
+                   // stack window.
     MoveSlot,      // fx chain reorder (docs/vst3.md §6): s1 = slot
                    // uuid, index = destination. Applied by building a
                    // successor chain sharing the slot objects and
-                   // retiring the predecessor (D4); the inverse is a
+                   // retiring the predecessor; the inverse is a
                    // MoveSlot back to the old index. Chain STRUCTURE
                    // is undoable; enable/params stay non-undoable.
     AddSlot,       // insert `slot` (a VST3 slot, phase 3) into the
@@ -92,19 +89,18 @@ struct Edit {
                    // the RAW old sequence (bypassed geometry survives
                    // undo, like Segments).
     SequenceBypass,  // b1 = bypassed (the jam toggle — LoopBypass twin)
-    Take,            // TAKES ARE UNDOABLE (owner ruling 2026-08-20,
-                     // docs/sequencer.md §11.5): forward = reinstall the
-                     // committed take(s) in `takes` (redo); inverse Untake
+    Take,            // TAKES ARE UNDOABLE (docs/sequencer.md §11.5):
+                     // forward = reinstall the committed take(s) in
+                     // `takes` (redo); inverse Untake
     Untake,          // strip the take(s) named in `takes` back to empty
                      // clips (undo), the inverse OWNING their content.
                      // A group take (Q7) is ONE entry. Island (Q, epoch)
                      // ride along via setsIsland: the first take's
                      // establishment and any growth re-base undo with it.
   };
-  // Effect enable/param edits are deliberately NOT undoable in this pass
-  // (non-destructive knobs; slider drags would flood the log without
-  // coalescing) — a documented follow-up. Delete + all structural edits,
-  // the catastrophic cases, are fully covered.
+  // Effect enable/param edits are NOT undoable (non-destructive knobs;
+  // slider drags would flood the log without coalescing). Delete + all
+  // structural edits are covered.
 
   Kind kind = Kind::Nop;
   juce::String uuid;         // primary target (or dragged / created stack)
@@ -143,8 +139,8 @@ struct Edit {
   // WINDOW RIDERS: further nodes whose single-window loop points this
   // edit sets alongside its main mutation (applied after it; the
   // inverse captures each node's old points the same way). Two
-  // builders use them (Q13 FOR GROUPS, 2026-08-30): the GROUP-WINDOW
-  // LIFT at a group take's commit (reconcileTakes — the members'
+  // builders use them (Q13 for groups): the GROUP-WINDOW LIFT at a
+  // group take's commit (reconcileTakes — the members'
   // commit-time loop region moves onto the definer stack, the members
   // go whole) and the definer stack's re-trim (windowed members from a
   // pre-lift state go whole). Riders on Take/Untake and LoopPoints.
@@ -162,9 +158,7 @@ struct Edit {
   // it at the earliest descendant's origin; the last content leaving
   // un-anchors it. Captured by AudioEngine::settleAnchors into the
   // inverse so undo restores the exact stored origin, never a
-  // re-derivation. (The 2026-08-30 per-member ORIGIN riders are gone:
-  // a stack's origin now moves its subtree — setsOrigin/iorg on a stack
-  // shifts every descendant.)
+  // re-derivation.
   struct AnchorRider {
     juce::String uuid;
     bool anchored = false;
@@ -183,14 +177,14 @@ struct Edit {
   timing::TimeMap tmap{};
 
   // AddSlot (and RemoveSlot's inverse) own the chain slot to insert.
-  // shared_ptr because chains share slot objects by design (D4).
+  // shared_ptr because chains share slot objects by design.
   std::shared_ptr<dsp::FxSlot> slot;
 
   // Sequence edits (docs/sequencer.md): the full new value (forward)
   // or the captured old one (inverse). Null = no sequence.
   std::unique_ptr<celestrian::Sequence> seq;
-  // SEQUENCES TRACK Q (owner ruling 2026-08-21): step lengths are
-  // musical facts. A Q re-establishment RESCALES every sequence's
+  // SEQUENCES TRACK Q: step lengths are musical facts. A Q
+  // re-establishment RESCALES every sequence's
   // steps in place (reversible by the inverse's own re-establishment);
   // a revert to an EMPTY island CLEARS them — the cleared sequences
   // ride the inverse (Insert) here and are reinstalled on undo.
@@ -203,8 +197,8 @@ struct Edit {
   // TAKE payloads (Kind::Take / Kind::Untake): one per clip of the
   // performance. Take owns the content to reinstall; Untake names the
   // clips to strip (its inverse then owns what was stripped). Content
-  // lifetimes follow the CollapseTake precedent: owned by the log,
-  // retired (never freed inline) when displaced.
+  // is owned by the log and retired (never freed inline) when
+  // displaced, like CollapseTake's buffer.
   struct TakePayload {
     juce::String uuid;
     std::unique_ptr<juce::AudioBuffer<float>> buffer;  // audio content

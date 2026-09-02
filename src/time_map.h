@@ -4,7 +4,7 @@
 
 /**
  * The reified time-map (time_maps.md §2) — ONE implementation shared by
- * clips and stacks, and the object the phase-3 cell/punch editor edits.
+ * clips and stacks.
  *
  * A map is an ordered list of segments over a node's inner timeline:
  *
@@ -12,10 +12,10 @@
  *
  * Segments select VIEW positions of the received cycle; the mapped time
  * stays in the received frame (the caller adds the epoch — see the
- * one-frame warning in time_maps.md §2). Today's loop window is the
+ * one-frame warning in time_maps.md §2). A loop window is the
  * single-segment case (AudioNode::activeTimeMap builds it from the
- * phase-1 atomics); multi-segment storage arrives with the phase-3
- * editor, but every consumer of this type is segment-general NOW.
+ * window atomics); a multi-segment map is the node's mapOverride.
+ * Every consumer of this type is segment-general.
  *
  * Pure POD value math: no JUCE, no allocation, trivially copyable —
  * safe to carry by value in ProcessContext and to call on the audio
@@ -38,7 +38,7 @@ struct TimeMap {
 
   static TimeMap none() { return {}; }
 
-  /** Today's loop window: one segment, empty when invalid. */
+  /** A loop window: one segment, empty when invalid. */
   static TimeMap single(int64_t start, int64_t end) {
     TimeMap m;
     if (end > start) {

@@ -14,8 +14,8 @@ namespace celestrian {
  * Three cooperating pieces, each documented at its members:
  *   - the recording STATE MACHINE (RecState below) — arm targets, the
  *     capture window, stop boundaries, commit;
- *   - the CONTENT model — one buffer reached through one atomic pointer
- *     (D4): a huge virtual reservation at arm, compacted after commit,
+ *   - the CONTENT model — one buffer reached through one atomic
+ *     pointer: a huge virtual reservation at arm, compacted after commit,
  *     write-once thereafter (no overdub), with content_base_ letting a
  *     lock-collapse re-window storage without copying;
  *   - the kernel PLAYBACK equation in render() — a pure function of
@@ -26,8 +26,7 @@ namespace celestrian {
 class ClipNode : public AudioNode {
  public:
   /**
-   * The recording lifecycle (kernel.md §3 — the last piece of P0-4):
-   * ONE explicit state replaces the old five-boolean encoding, so
+   * The recording lifecycle (kernel.md §3): ONE explicit state, so
    * illegal flag combinations are unrepresentable.
    *
    *   Idle ──startRecording()──▶ Armed ──target reached──▶ Capturing
@@ -35,7 +34,7 @@ class ClipNode : public AudioNode {
    *    │◀── stopRecording() = cancel                           │
    *    │                                stopRecording(), Q>0 ──┤
    *    │◀── commit ─── PendingStop ◀── (boundary computed on   │
-   *    │               (audio thread)   the audio thread — D2) │
+   *    │               (audio thread)   the audio thread)      │
    *    └◀────────── commit (immediate: Q==0 first clip) ◀──────┘
    *
    * "Committed" is Idle-with-content. While Armed, the arm decision
@@ -54,16 +53,16 @@ class ClipNode : public AudioNode {
    * sample buffer captured from the assigned device input(s); MIDI — a
    * note sequence captured from the MIDI input, rendered through the
    * chain's instrument slot. Decided at ARM from the clip's own chain
-   * (an instrument slot makes it a MIDI track — Q-V3's MidiClipNode
-   * folded into ClipNode, because the take lifecycle is content-
-   * agnostic and lives here) and fixed for the take's lifetime; the
+   * (an instrument slot makes it a MIDI track — one class, because the
+   * take lifecycle is content-agnostic) and fixed for the take's
+   * lifetime; the
    * kernel playback equation, arm/stop/commit math, through-map fold,
    * epoch re-base and undo entries are shared verbatim.
    */
   enum class ContentKind : int { Audio = 0, Midi };
 
   // The default rate is a convenience for unit tests; the engine passes
-  // the actual device rate when creating clips (P0-5).
+  // the actual device rate when creating clips.
   ClipNode(juce::String name, double source_sample_rate = 44100.0);
   ~ClipNode() override = default;
 
@@ -127,7 +126,7 @@ class ClipNode : public AudioNode {
     return duration_samples.load() <= 0 && !isArmedOrRecording() &&
            fxChain()->hasInstrumentSlot();
   }
-  /** The note sequence (D3: message thread reads only while Idle). */
+  /** The note sequence (message thread reads only while Idle). */
   const MidiSequence& midiSequence() const { return *midi_.load(); }
   double getSampleRate() const { return sample_rate; }
   /** The take's heard frame (contextCycle) — a recorded fact that must
@@ -168,8 +167,8 @@ class ClipNode : public AudioNode {
 
   /**
    * Opens the content-sounds gate (`is_playing`) — the internal flag
-   * commit also sets. NOT a user verb since Q16 (per-node Play/Stop is
-   * superseded); tests use it to make a clip render without a full
+   * commit also sets. NOT a user verb (Q16: there is no per-node
+   * Play/Stop); tests use it to make a clip render without a full
    * record→commit pass.
    */
   void startPlayback();
@@ -214,21 +213,20 @@ class ClipNode : public AudioNode {
     return *content_.load();
   }
 
-  // --- Take content storage (D4: NO recording wall) ---
+  // --- Take content storage (NO recording wall) ---
   // The content buffer is reached through ONE atomic pointer. At ARM it
   // becomes a REFERRING buffer over reserved storage (take_storage.h):
   // address space for the whole bound, pages committed ahead of the
   // write head by the engine's grower — so a take's memory cost is
-  // what it records plus a headroom, on every platform (the old plain
-  // malloc was lazy on macOS but charged the full 4 GB per mic on
-  // Windows; audit 2026-08-30 §4.6). The reservation bound (~6.7 h at
-  // 44.1 kHz; juce sample counts are int) exists for integrity, not
-  // policy: reaching it — or the committed edge, if the grower ever
-  // starves — auto-finishes CLEANLY at the last boundary that fits
-  // (never a silent zombie). At SETTLE the engine COMPACTS: an
-  // exact-size heap copy swaps in atomically (safe under an actively
-  // rendering clip) and the old buffer + its storage retire through the
-  // reclaimer (Step 3 lifetime discipline).
+  // what it records plus a headroom, on every platform (a plain malloc
+  // is lazy on macOS but charges the full reservation per mic on
+  // Windows). The reservation bound (~6.7 h at 44.1 kHz; juce sample
+  // counts are int) exists for integrity, not policy: reaching it — or
+  // the committed edge, if the grower ever starves — auto-finishes
+  // CLEANLY at the last boundary that fits (never a silent zombie). At
+  // SETTLE the engine COMPACTS: an exact-size heap copy swaps in
+  // atomically (safe under an actively rendering clip) and the old
+  // buffer + its storage retire through the reclaimer.
   static constexpr int64_t kMaxTakeSamples = (int64_t{1} << 30);
   /** Committed at arm and kept ahead of the write head by the engine's
    * grower (~60 s at 48 kHz per channel): the take's real memory cost
@@ -267,7 +265,7 @@ class ClipNode : public AudioNode {
   juce::AudioBuffer<float>& contentForTest() { return *content_.load(); }
   bool capHit() const { return cap_hit_.load(); }
 
-  // --- Q13 lock-collapse (owner ruling 2026-07-19) ---
+  // --- Q13 lock-collapse ---
   /** Where this clip's committed content begins inside the storage
    * buffer. 0 for every normally-recorded take; a lock-collapse shifts
    * it to the trimmed window's start. Content coordinates (loop points,
@@ -281,8 +279,8 @@ class ClipNode : public AudioNode {
    * buffer, unreachable except by uncollapse (undo). Message thread;
    * all-atomic (same exposure discipline as setLoopPoints). */
   void collapseToWindow(int64_t shift, int64_t len) {
-    // EXPLICIT COLLAPSE MARKERS (audit 2026-08-30 §3.1; nesting: collapse
-    // → cancel take → re-trim → arm again is a legal second collapse):
+    // EXPLICIT COLLAPSE MARKERS (nesting: collapse → cancel take →
+    // re-trim → arm again is a legal second collapse):
     // `collapsed_from_` keeps the ORIGINAL duration (set only on the
     // first level) and `collapse_origin_shift_` ACCUMULATES what the
     // collapses added to the origin, exactly mirroring content_base_ —
@@ -396,8 +394,8 @@ class ClipNode : public AudioNode {
     return displaced;
   }
 
-  // --- TAKES ARE UNDOABLE (owner ruling 2026-08-20, docs/sequencer.md
-  // §11.5; edit.h Kind::Take / Untake) ---
+  // --- TAKES ARE UNDOABLE (docs/sequencer.md §11.5; edit.h Kind::Take
+  // / Untake) ---
   /** Everything a committed take IS, detachable as one value: the
    * content (audio buffer and/or note sequence — moved, not copied)
    * plus the recorded facts. The caller (an edit) OWNS the content. */
@@ -499,7 +497,7 @@ class ClipNode : public AudioNode {
   void loadCommitted(const juce::AudioBuffer<float>& audio,
                      int64_t context_cycle) {
     // Exact-size: a saved take is never truncated to some prior
-    // capacity (the old fixed 60 s buffer clipped long takes on load).
+    // capacity (a fixed-capacity buffer would clip long takes on load).
     // Channel count follows the audio (stereo takes reload as stereo).
     auto& buffer = *content_.load();
     const int n = audio.getNumSamples();
@@ -577,7 +575,7 @@ class ClipNode : public AudioNode {
   }
 
  private:
-  // Content storage (see the D4 block above): owned on the message
+  // Content storage (see the take-storage block above): owned on the message
   // thread, read through the atomic by both threads.
   std::unique_ptr<juce::AudioBuffer<float>> content_owned_;
   // The live take's reserved storage (take_storage.h) when content_owned_
@@ -587,7 +585,7 @@ class ClipNode : public AudioNode {
   std::unique_ptr<TakeStorage> take_storage_;
   std::atomic<TakeStorage*> storage_rt_{nullptr};
   std::atomic<juce::AudioBuffer<float>*> content_{nullptr};
-  // MIDI content (phase 5): the note twin of content_, same D4
+  // MIDI content (phase 5): the note twin of content_, same
   // discipline (message thread owns/swaps on idle clips, audio thread
   // appends during capture and reads during render).
   std::unique_ptr<MidiSequence> midi_owned_;
@@ -629,8 +627,7 @@ class ClipNode : public AudioNode {
 
   // §2.3 phase split: set when commitRecording fires, cleared at the
   // top of the next control pass. render() gates on it so the commit
-  // block stays SILENT — the historical semantics (process used to
-  // return right after commit, skipping playback for that block).
+  // block stays SILENT.
   mutable std::atomic<bool> committed_this_block_{false};
 
   std::atomic<int> write_position{0};
@@ -643,7 +640,7 @@ class ClipNode : public AudioNode {
   std::atomic<int64_t> collapse_origin_shift_{0};  // what the collapse added to origin
 
   // Pre-record capture window (docs/performance.md §3). When the engine
-  // provides a pre-record ring, capture no longer copies "whatever input
+  // provides a pre-record ring, capture does not copy "whatever input
   // arrived after recording started" — it copies the input that *arrived*
   // at the times the clip semantically covers: clip position p holds the
   // input sample that arrived at input-clock (window start + p), where the
@@ -653,7 +650,7 @@ class ClipNode : public AudioNode {
   bool capture_uses_ring_ = false;
   // Underrun log latch (audio-thread only): one line per capture, reset
   // at beginCapture — a persistent underrun otherwise posts every block
-  // and overwhelms the drain FIFO (the field-hang log storm).
+  // and overwhelms the drain FIFO.
   bool underrun_logged_ = false;
   // Channel count of the CURRENT take, fixed at arm (startRecording
   // sizes the buffer and stores this before the state flips to Armed —
@@ -709,13 +706,13 @@ class ClipNode : public AudioNode {
 
   std::atomic<int> rec_state_{(int)RecState::Idle};
   // Message-thread stop request; consumed by the audio thread, which
-  // computes the boundary from its own write position (D2 fix).
+  // computes the boundary from its own write position.
   std::atomic<bool> stop_requested_{false};
   // A parked group-stop generation (0 = none); becomes stop_requested_
   // at the block top whose context carries a generation >= this.
   std::atomic<uint32_t> stop_pending_gen_{0};
   // (origin_rt_ / origin_gate_gen_ / setOriginGated live on AudioNode
-  // since Q18 — stacks render with a gated origin too.)
+  // — stacks render with a gated origin too, Q18.)
   std::atomic<bool> is_playing{false};
 
   std::atomic<int64_t> awaiting_start_at{

@@ -62,9 +62,8 @@ export function patchRail(row, lane, vm) {
 
     // Sub-line: the period at rest; while RECORDING it becomes the live
     // take length, pulsing record-red — the period slot is the one place
-    // on the rail with reserved room, so nothing else reflows (owner
-    // feedback 2026-08-08: the head-row "recording…" word squeezed the
-    // name to an ellipsis, a weird visual fluctuation).
+    // on the rail with reserved room, so nothing else reflows (a word
+    // on the head row would squeeze the name to an ellipsis).
     const sub = row.querySelector('.rail-sub');
     const recLen = lane.recordingLengthQ;
     const clipArmed = lane.kind === 'clip' && lane.armed && !lane.recording;
@@ -76,8 +75,8 @@ export function patchRail(row, lane, vm) {
             : 'rec';
         setText(sub, len + (lane.awaitingStop ? '…' : ''));
     } else if (clipArmed) {
-        // Armed lives in the Q slot too (owner feedback 2026-08-08b) —
-        // the same reserved room, the same no-reflow guarantee. It hands
+        // Armed lives in the Q slot too — the same reserved room, the
+        // same no-reflow guarantee. It hands
         // over to the live length when audio starts flowing.
         setText(sub, 'armed');
     } else if (lane.kind === 'group') {

@@ -1,5 +1,5 @@
 /**
- * Ruler scrub (owner ruling 2026-08-27): the ruler is the transport's
+ * Ruler scrub: the ruler is the transport's
  * seek surface. Click teleports the playhead; press-and-drag scrubs
  * continuously (no Q snap — the pointer is the truth). The gesture
  * sends `seekTransport` targets in the published-masterPos domain

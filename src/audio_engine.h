@@ -68,7 +68,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    *
    * Refused (returns false) while any take is live or armed: takes
    * place audio by this clock, and moving it mid-take would corrupt
-   * the take's placement (owner ruling 2026-08-27, ruler scrub).
+   * the take's placement.
    */
   bool seekTransport(double pos_samples);
 
@@ -109,9 +109,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void createNode(const juce::String& type,
                   const juce::String& parent_uuid = "");
 
-  // (createDefaultSession was deleted with Q17's boot-empty rule — it
-  // was already call-less after the launch ritual took over, and the
-  // ritual itself is now retired. A fresh engine IS the boot state.)
+  // A fresh engine IS the boot state (Q17, boot-empty): there is no
+  // default-session builder.
 
   /**
    * Opens the hardware audio device and registers this engine as its
@@ -148,10 +147,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                             const juce::String& target_uuid);
 
   /**
-   * Flips a node's solo flag (Q16 canon: island-wide, additive,
-   * fractal — resolved per callback from the snapshot). Per-node
-   * Play/Stop was deleted with the same ruling: mute/solo + the one
-   * transport ARE the per-node play controls.
+   * Flips a node's solo flag (Q16: island-wide, additive, fractal —
+   * resolved per callback from the snapshot). There is no per-node
+   * play/stop: mute/solo + the one transport ARE the per-node play
+   * controls.
    */
   void toggleSolo(const juce::String& uuid);
   void toggleMute(const juce::String& uuid);
@@ -180,7 +179,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void deleteNode(const juce::String& uuid);
 
-  // --- Undo / redo (edits-as-events, Step 1). Message thread only.
+  // --- Undo / redo (edits-as-events). Message thread only.
   // The undo stack holds inverse edits; redo holds forwards. Structural
   // inverses OWN the detached subtree (safe: no-overdub ⇒ write-once
   // buffers). See src/edit.h.
@@ -203,12 +202,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
     return findNodeByUuid(root_node.get(), uuid);
   }
 
-  // --- Save / Load (edits-as-events, Step 2). Message thread only.
+  // --- Save / Load (edits-as-events). Message thread only.
   // A session is a bundle directory (session.json + audio/*.wav);
   // device-independent, QTime-based (src/session_io.h). Load swaps the
-  // root's contents in place through the existing safe child-snapshot
-  // path — the root node's identity never changes, so the audio thread
-  // sees no pointer race.
+  // root's CONTENTS in place (clearChildren + reclaimer retirement, then
+  // publishGraph) — the root node's identity never changes, so the
+  // audio thread sees no pointer race.
   bool saveSession(const juce::String& path);
   bool loadSession(const juce::String& path);
   /** Project-model save (docs/projects.md): options carry display name
@@ -219,13 +218,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                                         dir, opts);
   }
   bool hasActiveTake() const { return root_node->hasActiveTake(); }
-  /** D4 compaction: shrink idle committed takes to their recorded
+  /** Compaction: shrink idle committed takes to their recorded
    * material (atomic content swap + reclaimer retire). Message thread;
    * driven by the app heartbeat (ProjectManager::tick) and tests. */
   void compactIdleTakes();
+  /** Clears any authored window or map whose period is incoherent with
+   * the just-established Q (neither a multiple nor a divisor). */
+  void scrubIncoherentGeometry(int64_t q);
   /** Shrink one idle clip's content to an exact heap copy and retire
    * the old buffer + its reserved storage (take_storage.h). */
-  void scrubIncoherentGeometry(int64_t q);
   void compactClipToHeap(celestrian::ClipNode& clip);
   /** Keep committed pages ahead of every live take's write head
    * (take_storage.h); called from the state poll. */
@@ -235,8 +236,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * project-birth trigger (ProjectManager). Message thread. */
   int islandCommittedClipCount() const;
   /** Set the island (Q, epoch) from an edit applier AND keep every
-   * sequence musically true (owner ruling 2026-08-21, sequences track
-   * Q): Q → Q' rescales step lengths by Q'/Q; Q → 0 (empty island)
+   * sequence musically true (sequences track Q): Q → Q' rescales step
+   * lengths by Q'/Q; Q → 0 (empty island)
    * clears them, capturing each into `inv.seq_riders` so the inverse
    * reinstalls them. Message thread; the one path appliers use. */
   void setIslandQuantum(int64_t q, int64_t epoch, celestrian::Edit& inv,
@@ -247,8 +248,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
   /**
    * Toggles a stack's loop window between active and bypassed
-   * (time_maps.md). Activation is data, not view state: expansion no
-   * longer affects whether the window applies.
+   * (time_maps.md). Activation is data, not view state: expansion has
+   * no effect on whether the window applies (I6b).
    */
   void toggleLoopWindow(const juce::String& uuid);
 
@@ -263,7 +264,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setSequence(const juce::String& uuid, const juce::var& payload);
 
   /** The sequence's jam toggle (bypass), the loop-window twin:
-   * bypassed = today's everything-sounds behavior, geometry kept. */
+   * bypassed = everything sounds, geometry kept. */
   void toggleSequence(const juce::String& uuid);
 
   /**
@@ -422,7 +423,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * Arms an empirical round-trip latency measurement: the next callbacks
    * emit a click into the outputs while capturing the input. With a
    * loopback path in place (cable, or speaker→mic), the click's arrival
-   * offset in the capture IS the true end-to-end latency — superseding
+   * offset in the capture IS the true end-to-end latency — overriding
    * whatever the device driver claims. Message thread only.
    */
   void startLatencyCalibration();
@@ -550,14 +551,14 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::vector<celestrian::Edit> redo_;
   static constexpr size_t kUndoDepth = 128;
 
-  // --- TAKES ARE UNDOABLE (owner ruling 2026-08-20, docs/sequencer.md
-  // §11.5). Commit is an AUDIO-thread event, so a take cannot be logged
-  // where it happens; instead every arm registers a PENDING performance
-  // here (one entry per startRecordingInNode call — a Q7 group take is
-  // one performance, one undo step) and the message thread RECONCILES
-  // it into the log as soon as every member has settled (committed or
-  // cancelled): at the top of every getGraphState poll and before any
-  // log operation, so ⌘Z right after a take undoes THAT take.
+  // --- TAKES ARE UNDOABLE (docs/sequencer.md §11.5). Commit is an
+  // AUDIO-thread event, so a take cannot be logged where it happens;
+  // instead every arm registers a PENDING performance here (one entry
+  // per startRecordingInNode call — a Q7 group take is one performance,
+  // one undo step) and the message thread RECONCILES it into the log as
+  // soon as every member has settled (committed or cancelled): at the
+  // top of every getGraphState poll and before any log operation, so ⌘Z
+  // right after a take undoes THAT take.
   struct PendingTake {
     std::vector<juce::String> uuids;
     int64_t q_before = 0, epoch_before = 0;  // island facts at arm
@@ -580,11 +581,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * The AUDIBLE island cycle (E-C): the LCM of clip periods where a
    * node with an active loop window contributes its window length
    * (AudioNode::getEffectivePeriod). This is the cycle the published
-   * masterPos wraps on — the playhead must loop with what is heard
-   * (field 2026-07-11: it sailed past an active window). Commit and
-   * epoch re-base logic (now in StackNode::takeCommitted) stay on the
-   * INTRINSIC length: windows are reversible view-of-time state, not
-   * committed material.
+   * masterPos wraps on — the playhead must loop with what is heard,
+   * never sail past an active window. Commit and epoch re-base logic
+   * (StackNode::takeCommitted) stay on the INTRINSIC length: windows
+   * are reversible view-of-time state, not committed material.
    */
   int64_t calculateEffectiveCycleLength() const;
 
@@ -594,7 +594,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // the island root: owns Q, epoch, and the take-lifecycle counter).
   std::unique_ptr<celestrian::StackNode> root_node;
 
-  // Global Transport (kernel.md step 3): MONOTONIC. The clock only moves
+  // Global Transport (kernel.md): MONOTONIC. The clock only moves
   // forward while playing and is NEVER reset or rebased — not by
   // commits, not by first clips (the island epoch is captured as data
   // instead), not by stop (pause/resume). Clips align by their stored
@@ -606,8 +606,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // (t − island epoch) mod LCM; while recording, frozen base + linear
   // growth so the cursor extends past the committed LCM (recording.md
   // cursor table). The island epoch (stored on the root stack) re-bases
-  // to the newest committed origin when the cycle grows as a simple
-  // extension — the visual successor of the old transport snap, without
+  // when the cycle grows (StackNode::rebaseEpochOnGrowth) without
   // mutating the clock or the audio. Clip arm/commit math reads the same
   // epoch (AudioNode::getIslandEpoch), keeping ONE cycle frame everywhere.
   int64_t islandEpoch() const;
@@ -617,9 +616,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int64_t> view_anchor_t_{0};
   std::atomic<bool> view_recording_{false};
 
-  // (Solo state lives on the nodes themselves since Q16 — per-node
-  // atomic flags, scanned from the snapshot each callback. No resolved
-  // pointer to cache, nothing to clear on load or delete.)
+  // Solo state lives on the nodes (Q16): per-node atomic flags, scanned
+  // from the snapshot each callback — nothing engine-side to cache or
+  // clear on load or delete.
 
   // Device latencies, cached in audioDeviceAboutToStart so the callback
   // never queries the device object per block.
@@ -685,7 +684,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int> calibration_write_pos_{0};
   int calibration_click_pos_ = 0;  // written before phase flips, then const
   // Empirical round-trip latency in samples; -1 = uncalibrated. When >= 0
-  // it supersedes cached_*_latency_ in the recording compensation.
+  // it overrides cached_*_latency_ in the recording compensation.
   std::atomic<int64_t> measured_latency_samples_{-1};
 
   // --- Calibration persistence (docs/performance.md §7) ---
@@ -696,34 +695,31 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * set — the shared shape of every per-user persistence file. */
   static juce::File appDataFile(const juce::File& override_file,
                                 const juce::String& file_name);
-  /** The coherence predicate (owner ruling 2026-08-09) shared by
-   * setLoopPoints and setSegments: a map/window period may only be a
-   * whole multiple OR an exact divisor of Q (lcm(Q, Q/k) = Q, so sub-Q
-   * loops can never explode the effective cycle). False for
-   * non-positive periods; q <= 0 (no grid yet) counts as coherent. */
+  /** The coherence predicate shared by setLoopPoints and setSegments: a
+   * map/window period may only be a whole multiple OR an exact divisor
+   * of Q (lcm(Q, Q/k) = Q, so sub-Q loops can never explode the
+   * effective cycle). False for non-positive periods; q <= 0 (no grid
+   * yet) counts as coherent. */
   static bool isPeriodCoherentWithQuantum(int64_t period, int64_t quantum);
   /** TWO-ANCHOR CONTINUITY riders (see the continuityOrigin note in
    * audio_engine.cc), shared by setLoopPoints and setSegments: re-anchor
    * the clip's origin so the sounding sample keeps sounding (while
-   * playing), then place the island epoch by the CYCLE-TOP RULE
-   * (2026-08-18): if the clip DEFINES the island's cycle after the edit
-   * (its new period is a multiple of Q and of every other loop's
-   * period) and the loop's heard top (origin' + mapOffset(0)) sits a
-   * whole number of Qs from the current epoch, the epoch moves TO that
-   * top — the loop you just shaped fills the frame from its own top,
-   * exactly as a cycle-extending commit and the Q13 sole-definer
-   * re-trim already do. Otherwise (a sub-loop under someone else's
-   * cycle, or an off-grid ⌥-slid top) the two-anchor delta ride keeps
-   * the edited clip's frame position (owner ruling 2026-08-09).
-   * Nothing audible moves in either case: origins are absolute; the
-   * epoch is the visual cycle top and the arm grid, which whole-Q
-   * moves preserve.
-   * `quantum` is supplied by the caller because the two paths
-   * historically judge the delta against different scopes (setLoopPoints
-   * against the root's Q, setSegments against the TARGET's effective Q —
-   * these differ for clips inside combine-created stacks that carry
-   * their own quantum). Attaches setsOrigin/setsIsland to `e`; no-op
-   * when the origin doesn't move. */
+   * playing), then place the island epoch by the CYCLE-TOP RULE: if the
+   * clip DEFINES the island's cycle after the edit (its new period is a
+   * multiple of Q and of every other loop's period) and the loop's
+   * heard top (origin' + mapOffset(0)) sits a whole number of Qs from
+   * the current epoch, the epoch moves TO that top — the loop you just
+   * shaped fills the frame from its own top, exactly as a
+   * cycle-extending commit and the Q13 sole-definer re-trim do.
+   * Otherwise (a sub-loop under someone else's cycle, or an off-grid
+   * ⌥-slid top) the two-anchor delta ride keeps the edited clip's frame
+   * position. Nothing audible moves in either case: origins are
+   * absolute; the epoch is the visual cycle top and the arm grid, which
+   * whole-Q moves preserve.
+   * `quantum` is supplied by the caller because the two paths judge the
+   * delta against different scopes (setLoopPoints against the root's Q,
+   * setSegments against the TARGET's effective Q). Attaches
+   * setsOrigin/setsIsland to `e`; no-op when the origin doesn't move. */
   void attachMapEditRiders(celestrian::Edit& e,
                            const celestrian::AudioNode& node,
                            const celestrian::timing::TimeMap& new_map,
@@ -785,10 +781,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   juce::File audio_device_file_override_;
   juce::String device_error_;  // last open failure, surfaced to the picker
 
-  // --- Whole-graph snapshot (unification_audit §2.2, Tier 3 Step 3) ---
+  // --- Whole-graph snapshot (unification_audit.md §2.2) ---
   // The one structure the audio thread traverses: rebuilt on the message
   // thread after every structural mutation (publishGraph), loaded ONCE
-  // per callback into ProcessContext.snap. Superseded snapshots retire
+  // per callback into ProcessContext.snap. Replaced snapshots retire
   // through the reclaimer like any graph object.
   std::atomic<const celestrian::GraphSnapshot*> graph_snapshot_{nullptr};
   /** Rebuild + atomically publish the snapshot from the current
@@ -801,8 +797,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void scrubNestedIslandFacts();
   /** A seek re-frames every absolute time in the session; the undo and
    * redo logs (which store absolute origins/epochs) ride the same
-   * delta so undo restores PLACEMENT, not stale absolutes (fresh audit
-   * 2026-08-31 #3). */
+   * delta so undo restores PLACEMENT, not stale absolutes. */
   void shiftHistoryAbsolutes(int64_t delta);
 
   // Deferred destruction: retired items are freed once the callback counter

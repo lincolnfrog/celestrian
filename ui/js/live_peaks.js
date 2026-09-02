@@ -5,7 +5,7 @@
  * geometry to poll cadence: the bar's width tracks the engine's
  * `duration` (real time), so whenever polls jitter or drop, the peak
  * count and elapsed time diverge and the stretched-to-fit content
- * visibly drifts sideways while recording (field report 2026-07-10).
+ * visibly drifts sideways while recording.
  *
  * Here each sample lands at an index derived from `duration` itself
  * (PEAKS_PER_SECOND resolution), so a peak's position in the array — and

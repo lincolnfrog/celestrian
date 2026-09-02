@@ -36,7 +36,7 @@ juce::String trackTemplatesToJson(
 // ---------------------------------------------------------------------------
 // WebView bridge adapters.
 //
-// The Three-Layer Handshake (.agent/style.md) still applies: every
+// The Three-Layer Handshake (.agent/style.md) applies: every
 // UI-triggered feature needs (1) the C++ logic, (2) a registration below via
 // withNativeFunction, and (3) a JS callNative(...) call. New registrations
 // should go through voidCall/valueCall so they inherit the arity guard and
@@ -47,14 +47,14 @@ juce::String trackTemplatesToJson(
 // ---------------------------------------------------------------------------
 
 // Traces a bridge invocation, DEBUG builds only — per-call logging in
-// release builds is log spam (owner ruling). In release this compiles to
-// nothing. Functional logging (e.g. nativeLog's payload) is separate and
-// stays in all builds.
+// release builds is log spam. In release this compiles to nothing.
+// Functional logging (e.g. nativeLog's payload) is separate and stays in
+// all builds.
 //
-// The POLLS are exempt even in DEBUG (owner report 2026-08-13): the
-// 50ms graph poll and the 2s project poll are the UI's heartbeat, not
-// events — tracing them buries every real bridge call under
-// "bridge: getGraphState" spam. Event-shaped calls all still trace.
+// The POLLS are exempt even in DEBUG: the 50ms graph poll and the 2s
+// project poll are the UI's heartbeat, not events — tracing them buries
+// every real bridge call under "bridge: getGraphState" spam.
+// Event-shaped calls all trace.
 void logBridgeCall(const char* name) {
 #if JUCE_DEBUG
   const juce::String n(name);
@@ -66,8 +66,7 @@ void logBridgeCall(const char* name) {
 }
 
 // Wraps `fn` in a native-function handler that traces the call, runs
-// fn(args) only when at least `min_args` arguments arrived (the old
-// hand-written guard `args.size() > N` means min_args = N + 1), and always
+// fn(args) only when at least `min_args` arguments arrived, and always
 // completes with true.
 template <typename Fn>
 auto voidCall(const char* name, int min_args, Fn fn) {
@@ -82,7 +81,7 @@ auto voidCall(const char* name, int min_args, Fn fn) {
 
 // Same as voidCall, but completes with fn(args)'s return value; when fewer
 // than `min_args` arguments arrived it completes with `missing_args_result`
-// instead (each call site preserves its historical fallback value).
+// instead.
 template <typename Fn>
 auto valueCall(const char* name, int min_args, Fn fn,
                juce::var missing_args_result = juce::var()) {
@@ -125,9 +124,9 @@ MainComponent::MainComponent()
                                            [this](const auto&) {
                                              audio_engine.togglePlayback();
                                            }))
-              // Ruler scrub (owner ruling 2026-08-27): target in the
-              // published-masterPos domain, samples. Returns false
-              // when refused (a take is live or armed).
+              // Ruler scrub: target in the published-masterPos domain,
+              // samples. Returns false when refused (a take is live or
+              // armed).
               .withNativeFunction(
                   "seekTransport",
                   valueCall(
@@ -522,25 +521,21 @@ MainComponent::MainComponent()
                                       "warpPointer", 2,
                                       [this](const auto& args) {
                                         // Move the OS cursor to a
-                                        // webview-viewport position (CSS px ==
-                                        // JUCE points at default zoom). The
+                                        // webview-viewport position. The
                                         // expanded map drag warps the pointer
                                         // ONTO the handle it grabbed once the
                                         // raw view has opened — pointer and
                                         // geometry stay 1:1, no easing (the
                                         // heard→raw reflow otherwise strands
-                                        // the handle away from the mouse; field
-                                        // 2026-07-25d).
+                                        // the handle away from the mouse).
                                         // CSS px → JUCE points: the page
                                         // sends its viewport size too, so
                                         // the mapping is exact under any
-                                        // browser zoom / DPI scale (on
-                                        // Windows a 125% display put the
-                                        // cursor off the handle, and the
-                                        // resulting delta was applied as
-                                        // a real drag — audit 2026-08-30
-                                        // §3.4). Older pages omit them:
-                                        // 1:1 as before.
+                                        // browser zoom / DPI scale (at 125%
+                                        // display scaling a 1:1 warp lands
+                                        // off the handle and the delta is
+                                        // applied as a real drag). A call
+                                        // without the size maps 1:1.
                                         double sx = 1.0, sy = 1.0;
                                         if (args.size() >= 4) {
                                           const double iw = (double)args[2];
@@ -560,9 +555,8 @@ MainComponent::MainComponent()
                                         return true;
                                       },
                                       juce::var(false)))
-              // (togglePlay deleted with Q16: per-node Play/Stop is
-              // superseded — mute/solo + the one transport are the
-              // per-node play controls.)
+              // (No per-node togglePlay (Q16): mute/solo + the one
+              // transport are the per-node play controls.)
               .withNativeFunction(
                   "listTrackTemplates",
                   valueCall("listTrackTemplates", 0,
@@ -674,11 +668,10 @@ MainComponent::MainComponent()
                                              stateFile.getFullPathName());
                   }))) {
   audio_engine.initialiseAudioDevice();
-  // Boot EMPTY (Q17, ruled 2026-08-13 — the launch ritual is retired):
-  // the creation menu is the instrument path (+ → Guitar → ●), and `R`
-  // on an empty project creates + arms the default track, so the spark
-  // still costs one gesture. Session templates load on explicit request
-  // via the project menu.
+  // Boot EMPTY (Q17): the creation menu is the instrument path
+  // (+ → Guitar → ●), and `R` on an empty project creates + arms the
+  // default track, so the spark costs one gesture. Session templates
+  // load on explicit request via the project menu.
 
   addAndMakeVisible(web_browser);
 
@@ -872,8 +865,8 @@ std::optional<juce::WebBrowserComponent::Resource> MainComponent::getResource(
   else if (ext == ".png")
     mimeType = "image/png";
   else if (ext == ".svg")
-    // Served as text/plain, WKWebView refuses to render an <img> SVG —
-    // the brand mark showed as a broken-image icon (field 2026-08-08h).
+    // WKWebView refuses to render an <img> SVG served as text/plain (the
+    // brand mark shows as a broken-image icon).
     mimeType = "image/svg+xml";
   else if (ext == ".ico")
     mimeType = "image/x-icon";

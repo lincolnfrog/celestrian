@@ -2,7 +2,8 @@
 // origin, loop window and fx rack. This file owns
 //   - control(): the recording state machine (arm -> capture -> pending
 //     stop -> commit), capture from the pre-record ring / MIDI history
-//     with latency compensation, the D4 wall guard, through-map takes;
+//     with latency compensation, the reservation wall guard, through-map
+//     takes;
 //   - the arm math (armEvaluate / beginCapture: first-clip epoch, Q-grid
 //     targets, through-map anchors) and commitRecording (duration, loop
 //     points, island establishment, lifecycle events to the root);
@@ -28,7 +29,7 @@ namespace celestrian {
 ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
     : AudioNode(std::move(node_name)), sample_rate(source_sample_rate) {
   // Baseline: one second. The real capacity arrives at ARM as a huge
-  // virtual reservation (see the D4 block in the header) and returns
+  // virtual reservation (see the take-storage block in the header) and returns
   // to exact size at post-commit compaction — idle clips cost nothing.
   // Floor of 1: a zero-size buffer would make render's `% cap` a SIGFPE
   // (the engine can construct clips before a device reports its rate).
@@ -68,9 +69,6 @@ juce::var ClipNode::getMetadata() const {
   // event count is a plain atomic read (diagnostics / lane badge).
   obj->setProperty("contentKind", isMidiClip() ? "midi" : "audio");
   obj->setProperty("midiEvents", midi_.load()->count());
-
-  // (recordingStartPhase was deleted 2026-07-16: no consumer existed —
-  // the take's landing phase is a projection of `origin`.)
   return base;
 }
 
@@ -100,9 +98,9 @@ void ClipNode::control(const float* const* input_channels,
   }
 
   // === Stop request → PendingStop. The boundary is computed HERE, on
-  // the audio thread, from the audio thread's own write position — the
-  // old message-thread computation raced the recorder and could pick a
-  // boundary already behind the write head (unification_audit.md D2).
+  // the audio thread, from the audio thread's own write position — a
+  // message-thread computation would race the recorder and could pick
+  // a boundary already behind the write head.
   // A parked GROUP stop becomes a request at the first block top whose
   // context carries its generation (ProcessContext::stop_generation) —
   // every member of the group sees it in this same block.
@@ -114,9 +112,9 @@ void ClipNode::control(const float* const* input_channels,
     }
   }
   if (recState() == RecState::Capturing && stop_requested_.load()) {
-    // Island Q rides the context (Tier 3 Step 3 — no audio-thread parent
-    // walks); the walk survives only as the node-level unit-test
-    // fallback (single-threaded, race-free by construction).
+    // Island Q rides the context (no audio-thread parent walks); the
+    // walk is only the node-level unit-test fallback (single-threaded,
+    // race-free by construction).
     const int64_t Q =
         context.quantum > 0 ? context.quantum : getEffectiveQuantum();
     if (Q > 0) {
@@ -145,7 +143,7 @@ void ClipNode::control(const float* const* input_channels,
     // pointer only for idle clips, never mid-capture).
     juce::AudioBuffer<float>& buffer = *content_.load();
 
-    // D4 wall guard — integrity, not policy: the arm-time reservation
+    // Wall guard — integrity, not policy: the arm-time reservation
     // is ~hours, but IF capture ever nears it, finish CLEANLY at the
     // last boundary that fits instead of silently dropping audio.
     if (recState() == RecState::Capturing && !stop_requested_.load()) {
@@ -191,9 +189,8 @@ void ClipNode::control(const float* const* input_channels,
       const int64_t oldest = std::max<int64_t>(0, available_end - ring_len);
       if (src < oldest) {
         // Latched to ONE line per capture: a persistent underrun fires
-        // every block, and per-block posts kept the drain FIFO
-        // permanently full (the field hang's log storm — 860 posts/sec
-        // across five armed clips).
+        // every block, and per-block posts would keep the drain FIFO
+        // permanently full (a log storm hangs the message thread).
         if (!underrun_logged_) {
           underrun_logged_ = true;
           RtLog::instance().post(
@@ -256,8 +253,7 @@ void ClipNode::control(const float* const* input_channels,
       if (samples_to_write > 0) {
         const int ncap = std::min(capture_channels_, buffer.getNumChannels());
         // Peak tracking over the CAPTURED channels only — the meter
-        // reports the take, not the device (owner ruling 2026-08-09b;
-        // unified with the ring path, which always did this).
+        // reports the take, not the device (same as the ring path).
         float blockPeak = 0.0f;
         for (int c = 0; c < ncap; ++c) {
           const float* in = input_channels[std::clamp(
@@ -271,8 +267,8 @@ void ClipNode::control(const float* const* input_channels,
         }
         finishCaptureBlock(samples_to_write, blockPeak, context);
       }
-      // samples_to_write <= 0 means the buffer is full: the D4 wall
-      // guard at the top of this pass has already requested a clean
+      // samples_to_write <= 0 means the buffer is full: the wall guard
+      // at the top of this pass has already requested a clean
       // finish at the last boundary that fits (or committed a pre-Q
       // take at the wall), so there is nothing to do here.
     }
@@ -296,7 +292,7 @@ void ClipNode::finishCaptureBlock(int written, float block_peak,
       return;
     }
   }
-  // One-period cap wall: a full map pass auto-finishes CLEANLY (the D4
+  // One-period cap wall: a full map pass auto-finishes CLEANLY (the
   // wall-guard discipline; the pass end IS a boundary).
   if (through_map_capture_ && end_position >= take_map_.period()) {
     commit_master_pos.store(context.master_pos);
@@ -429,8 +425,8 @@ bool ClipNode::isSilencedThisBlock(const ProcessContext& context) const {
     // island, a leaf sounds iff it — or an ancestor — is soloed
     // (additive: every lit path sounds; fractal: a soloed group covers
     // its subtree). Index walk over the whole-graph snapshot — the
-    // audio thread never chases parent pointers (Tier 3 Step 3). The
-    // pointer walk survives only as the unit-test fallback. Mute wins
+    // audio thread never chases parent pointers. The pointer walk is
+    // only the unit-test fallback. Mute wins
     // over solo (the container rule pinned in output_stage_tests).
     if (context.snap) {
       silenced = !snapIsUnderSolo(*context.snap, context.self);
@@ -466,14 +462,12 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
   bool fx_pass_ran = false;
   // The kernel playback equation (§2.3 render phase): a pure function
   // of (buffer, origin, window, t). The commit block renders SILENT
-  // (committed_this_block_) — identical to the historical process(),
-  // which returned right after commit.
+  // (committed_this_block_).
   if (context.is_playing && is_playing && !committed_this_block_.load()) {
     // The clip's map, fractal (I5): a multi-segment override, or the
     // loop region as the single-segment case. BYPASSED (or invalid)
-    // maps fall back to the full take — commit sets [0, duration) on
-    // every clip, so the un-mapped path is identical to the historical
-    // behavior.
+    // maps fall back to the full take (commit sets [0, duration) on
+    // every clip).
     timing::TimeMap map = activeTimeMap();
     if (!map.active()) {
       map = timing::TimeMap::single(0, duration_samples.load());
@@ -487,7 +481,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       // the context. Applied to the DRY signal below, BEFORE the fx
       // pass — so gate edges never pop and the chain keeps running
       // while anything rings (a muted clip's echo tail decays audibly
-      // instead of freezing; supersedes the skip-render mute).
+      // instead of freezing).
       float gate_g0 = 1.0f, gate_g1 = 1.0f;
       gateEndpoints(context, !isSilencedThisBlock(context), gate_g0, gate_g1);
       const bool fully_off = gate_g0 <= 0.0f && gate_g1 <= 0.0f;
@@ -501,10 +495,10 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       //   p(t) = mapOffset((t − origin − mapOffset(0)) mod period)
       //
       // The single-segment case p(t) = start + ((t − origin − start)
-      // mod len) IS the 2026-07-19 `origin + loopStart` anchoring
-      // (window content sounds at its OWN performed moment); the
-      // un-mapped case reduces to (t − origin) mod dur, the historical
-      // equation. Later segments shift earlier by the removed time —
+      // mod len) IS the `origin + loopStart` anchoring (window content
+      // sounds at its OWN performed moment); the un-mapped case reduces
+      // to (t − origin) mod dur, the plain loop equation. Later
+      // segments shift earlier by the removed time —
       // punch semantics; groove-transparent when cuts are kQ (seam
       // theorem).
       const int64_t org = origin_rt_.load();
@@ -539,7 +533,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // scratch (so the fx rack hears it and echo/reverb tails ring
         // out naturally after the shot). P == dur (knob off, or a
         // degenerate context no longer than the content) reduces to the
-        // historical loop equation exactly.
+        // plain loop equation exactly.
         const int64_t cyc =
             period_from_context_.load() && context.context_cycle > dur
                 ? context.context_cycle
@@ -608,8 +602,8 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // The output stage (unification_audit §2.4): gain·pan resolved
         // together, post-fx. Pan (balance law, audio_node.h): output
         // channel 0 is L, channel 1 is R. Mono content pans between
-        // them (center is unity on both — the historical behavior);
-        // stereo content treats pan as balance (attenuate the far
+        // them (center is unity on both); stereo content treats pan as
+        // balance (attenuate the far
         // side). A mono OUTPUT hears the unpanned center at the fader
         // (channels ≥ 2, if any, likewise get the fader-scaled
         // unpanned mono sum). Mute short-circuited above (isSilenced),
@@ -862,9 +856,9 @@ void ClipNode::renderMidi(float* const* output_channels,
 }
 
 void ClipNode::armEvaluate(const ProcessContext& context) {
-  // Island facts ride the context (Tier 3 Step 3): quantum, invariant
-  // epoch, and the island root itself — no audio-thread parent walks.
-  // The walks survive only as the node-level unit-test fallback.
+  // Island facts ride the context: quantum, invariant epoch, and the
+  // island root itself — no audio-thread parent walks. The walks are
+  // only the node-level unit-test fallback.
   const int64_t Q =
       context.quantum > 0 ? context.quantum : getEffectiveQuantum();
   celestrian::AudioNode* island = context.island ? context.island : rootNode();
@@ -941,16 +935,15 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   }
 
   // ALL cycle-relative math happens in the ISLAND EPOCH frame — mixing
-  // absolute-frame math with the epoch-rebased view was the field bug
-  // "clip 3 anchored at 3Q instead of 0Q". The INVARIANT epoch rides
-  // the context (cycle_epoch gets re-based by windowed stacks; this one
-  // never is).
+  // absolute-frame math with the epoch-rebased view anchors a take
+  // whole cycles off. The INVARIANT epoch rides the context
+  // (cycle_epoch gets re-based by windowed stacks; this one never is).
   const int64_t epoch =
       context.island ? context.island_epoch : getIslandEpoch();
 
   // Context loop = the loop the performer was listening to: longest
   // committed sibling, min Q — computed by the PARENT and passed down
-  // (P1-6: leaves never inspect siblings).
+  // (leaves never inspect siblings).
   const int64_t context_loop = std::max(Q, context.context_loop);
 
   int64_t rel = compensated_pos - epoch;
@@ -964,14 +957,13 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // The target is the next Q boundary in the HEARD frame
   // (latency-compensated, epoch-relative): a click shortly before a
   // boundary compensates back ONTO it — "the pickup" (E-A) needs no
-  // extra machinery. The old anticipatory-window DEFERRAL is deleted
-  // (field bug 2026-07-16): it added nothing — any click before a
-  // boundary already targets that boundary — and when the compensation
-  // was small it skipped past the boundary and overshot the take to
-  // the NEXT one (clip armed before 2Q anchored at 3Q).
+  // extra machinery. There is deliberately no anticipatory-window
+  // DEFERRAL: any click before a boundary already targets that
+  // boundary, and a deferral would skip past the boundary when the
+  // compensation is small, overshooting the take to the NEXT one.
   const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
 
-  // HEARD-FRAME ORIGIN FOLD (Q15, field 2026-07-16e): when active
+  // HEARD-FRAME ORIGIN FOLD (Q15): when active
   // windows make the audible cycle SHORTER than the intrinsic one, the
   // heard world is exactly heard-cycle-periodic — so every boundary in
   // {target − k·heard} is AUDIBLY IDENTICAL as an anchor, differing
@@ -979,8 +971,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // (the cursor wraps on the heard cycle). Store the representative
   // that lands in the FIRST heard window of the intrinsic frame: the
   // take anchors where the cursor actually sweeps, instead of a
-  // die-roll among equivalent slots (field: take "started at 1Q
-  // instead of 0Q"). Capture still starts at the REAL boundary
+  // die-roll among equivalent slots. Capture still starts at the REAL boundary
   // (`target`); I1 holds exactly (playback shifts by whole heard
   // cycles); nothing else moves (no epoch change — I4). No-op in the
   // mainline (heard == intrinsic when no window is active).
@@ -1078,7 +1069,7 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
     capture_channels_ = 1;
   }
 
-  // D4: VIRTUAL reservation — address space only, deliberately not
+  // VIRTUAL reservation — address space only, deliberately not
   // cleared (touching the pages would commit them; capture writes are
   // the only thing that should). Nothing ever reads past
   // write_position, so the uninitialized tail is unreachable.
@@ -1089,20 +1080,18 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
     capture_channels_ = isStereoInput() ? 2 : 1;
     const int want = (int)std::min<int64_t>(
         kMaxTakeSamples, std::numeric_limits<int>::max() - 64);
-    // RESERVED STORAGE (take_storage.h, audit 2026-08-30 §4.6): the
-    // address space is reserved, pages commit ahead of the write head
-    // (the engine's grower) — a mic costs what it has recorded plus a
-    // headroom, on every platform, and the reservation is instant. The
-    // clip is idle and empty here (arm targets emptiness), so the
-    // previous content can be dropped in place — the old setSize did
-    // the same reallocation.
+    // RESERVED STORAGE (take_storage.h): the address space is reserved,
+    // pages commit ahead of the write head (the engine's grower) — a
+    // mic costs what it has recorded plus a headroom, on every
+    // platform, and the reservation is instant. The clip is idle and
+    // empty here (arm targets emptiness), so the previous content can
+    // be dropped in place.
     if (take_storage_ == nullptr || take_storage_->channels() != capture_channels_ ||
         take_storage_->capacity() < want) {
       storage_rt_.store(nullptr);
-      // Keep the outgoing storage alive until nothing refers to it
-      // (audit 2026-08-31 E9): the installed content buffer may be a
-      // REFERRING view over these pages — a direct reassignment
-      // munmapped them under it.
+      // Keep the outgoing storage alive until nothing refers to it: the
+      // installed content buffer may be a REFERRING view over these
+      // pages — a direct reassignment would munmap them under it.
       auto stranded = std::move(take_storage_);
       take_storage_ = TakeStorage::reserve(capture_channels_, want);
       if (take_storage_ != nullptr) {
@@ -1126,7 +1115,8 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
     // a dense [0, C) buffer with LITERAL SILENCE in unvisited regions —
     // zero exactly that span now (message thread, clip idle; an
     // audio-thread memset at commit would violate the RT contract).
-    // The reservation tail past C stays uncleared per D4.
+    // The reservation tail past C stays uncleared (touching it would
+    // commit its pages).
     if (through_map_commit_cycle > 0) {
       for (int c = 0; c < buffer.getNumChannels(); ++c) {
         buffer.clear(c, 0,
@@ -1150,15 +1140,14 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
 }
 
 void ClipNode::publishArm() {
-  // GROUP ARM ATOMICITY (2026-08-30): the take-buffer reservation
-  // above can cost milliseconds on platforms without lazy overcommit
-  // (Windows commits the 4 GB reservation eagerly); a group arm that
-  // reserved and published per mic in one loop let the audio callback
-  // land between mics, arming them in DIFFERENT blocks — different
-  // first-take origins, so the N mics were no longer ONE take
-  // (definerStack() == null: no trim view, brackets "jumping"). The
-  // engine now reserves every member first and publishes the Armed
-  // states back-to-back (nanoseconds apart, one block top sees all).
+  // GROUP ARM ATOMICITY: the take-buffer reservation can cost
+  // milliseconds on platforms without lazy overcommit; a group arm that
+  // reserved and published per mic in one loop would let the audio
+  // callback land between mics, arming them in DIFFERENT blocks —
+  // different first-take origins, so the N mics would no longer be ONE
+  // take (definerStack() == null: no trim view). The engine reserves
+  // every member first and publishes the Armed states back-to-back
+  // (one block top sees all).
   if (recState() != RecState::Idle) return;
   rec_state_.store((int)RecState::Armed);
   rootNode()->takeArmed();
@@ -1170,8 +1159,7 @@ void ClipNode::stopRecording(bool island_has_quantum, uint32_t group_generation)
   switch (recState()) {
     case RecState::Armed:
       // Never started capturing: stopping an armed clip is a CANCEL —
-      // back to Idle with no content. (Previously this wedged the clip
-      // into a phantom awaiting-stop before capture had even begun.)
+      // back to Idle with no content, never a phantom awaiting-stop.
       rec_state_.store((int)RecState::Idle);
       awaiting_start_at.store(0);
       map_commit_cycle_.store(0);
@@ -1181,10 +1169,10 @@ void ClipNode::stopRecording(bool island_has_quantum, uint32_t group_generation)
 
     case RecState::Capturing:
       if (island_has_quantum) {
-        // ALWAYS record forward to the next clean boundary (owner
-        // ruling). The boundary itself is computed by the AUDIO thread
-        // at the top of its next block (see process()) — computing it
-        // here from a racing write position was unification_audit.md D2.
+        // ALWAYS record forward to the next clean boundary. The boundary
+        // itself is computed by the AUDIO thread at the top of its next
+        // block (see control()) — computed here, from a racing write
+        // position, it could already be behind the write head.
         if (group_generation != 0) {
           stop_pending_gen_.store(group_generation);  // published by the engine
         } else {
@@ -1267,8 +1255,8 @@ void ClipNode::commitRecording(int64_t final_duration,
     duration_samples.store(duration);  // > 0 is what "committed" means
 
     // First committed clip in the island establishes Q — stored once at
-    // the island root, never derived again (P0-3; Q survives its
-    // creator per owner ruling). Epoch = this clip's origin.
+    // the island root, never derived again (Q13: Q survives its
+    // creator). Epoch = this clip's origin.
     const int64_t origin = origin_samples.load();
     if (Q == 0) {
       island->establishIsland(duration, origin);
@@ -1299,7 +1287,7 @@ void ClipNode::commitRecording(int64_t final_duration,
     island->takeCommitted(origin, intrinsic_after);
 
     // §2.3: the commit block renders silent (see render()); playback
-    // begins on the next block, as it always has.
+    // begins on the next block.
     committed_this_block_.store(true);
 
     // Through-map take state ends with the take.
@@ -1315,21 +1303,18 @@ void ClipNode::startPlayback() {
     is_playing.store(true);
   }
 }
-// (stopPlayback was deleted with Q16's togglePlay — nothing closed the
-// gate except the superseded per-node play verb.)
 
 juce::var ClipNode::getWaveform(int num_peaks) const {
-  // D3: the message thread may read clip content ONLY in Idle. A
-  // non-Idle clip has no committed content to draw (no-overdub), and
-  // the UI synthesizes its live picture from currentPeak. The state
-  // load is the publication point: commit stores Idle (seq-cst) after
-  // every capture write, so observing Idle here orders those writes
-  // before our reads — and only the message thread arms, so Idle
-  // cannot flip to Capturing under us. (The old mid-take read was
-  // bounded by write_position — an accidental release/acquire edge the
-  // through-map fold broke: its destinations scatter across [0, C)
-  // while write_position counts HEARD samples, so a bounded read could
-  // overlap an in-flight captureWrite.)
+  // The message thread may read clip content ONLY in Idle. A non-Idle
+  // clip has no committed content to draw (no-overdub), and the UI
+  // synthesizes its live picture from currentPeak. The state load is
+  // the publication point: commit stores Idle (seq-cst) after every
+  // capture write, so observing Idle here orders those writes before
+  // our reads — and only the message thread arms, so Idle cannot flip
+  // to Capturing under us. (A mid-take read bounded by write_position
+  // would not be safe: the through-map fold scatters destinations
+  // across [0, C) while write_position counts HEARD samples, so a
+  // bounded read could overlap an in-flight captureWrite.)
   if (recState() != RecState::Idle) return juce::Array<juce::var>();
   const juce::AudioBuffer<float>& buffer = *content_.load();
   juce::Array<juce::var> peaks;

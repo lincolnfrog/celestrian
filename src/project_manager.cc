@@ -49,12 +49,12 @@ void ProjectManager::tick() {
   // Transient capture state is never saved; try again next tick.
   if (engine_.hasActiveTake()) return;
 
-  // D4: return arm-time virtual reservations to exact size (idle
-  // committed takes only; cheap no-op when there is nothing to do).
+  // Return arm-time virtual reservations to exact size (idle committed
+  // takes only; cheap no-op when there is nothing to do).
   engine_.compactIdleTakes();
 
   if (!born()) {
-    // BIRTH at the first committed take (owner ruling): the moment there
+    // BIRTH at the first committed take (docs/projects.md): the moment there
     // is a performance worth keeping, it is on disk — crash-safe from
     // the seed take on. Junk sessions are a delete, not a lost save.
     if (engine_.islandCommittedClipCount() == 0) return;
@@ -118,12 +118,10 @@ juce::String ProjectManager::lastTemplateName() const {
   return v.getProperty("lastTemplate", "").toString();
 }
 
-// (ensureLaunchSession + autoLoadLastTemplate were RETIRED by Q17,
-// 2026-08-13: the app boots EMPTY. The seeded "Track 1" / auto-loaded
-// "Default" launch ritual is superseded by the creation menu — every +
-// is a template picker, and `R` on an empty project creates + arms the
-// default track, so the spark still costs one gesture. Session
-// templates remain an explicit save-as / new-from choice.)
+// The app boots EMPTY (Q17): no launch session is seeded and no template
+// auto-loads. Every + is a template picker, `R` on an empty project
+// creates + arms the default track, and session templates are an
+// explicit save-as / new-from choice.
 
 bool ProjectManager::saveAsTemplate(const juce::String& template_name) {
   const auto name = template_name.trim();

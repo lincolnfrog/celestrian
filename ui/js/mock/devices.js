@@ -6,8 +6,7 @@
  *
  * The device's sample rate is NOT stored here — it lives in mock/rate.js
  * (the mock's single rate variable), so the panel and the published
- * `perf.sampleRate` can never disagree again. They used to: this file
- * reported 48000 while publish.js published a hardcoded 44100.
+ * `perf.sampleRate` can never disagree.
  */
 
 import { getSampleRate, setSampleRate, toSeconds } from './rate.js';

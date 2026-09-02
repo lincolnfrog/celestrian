@@ -19,9 +19,9 @@ const INIT_POLL_MS = 500;      // how often initBridge probes for __JUCE__
 
 /**
  * Debug log fan-out: writes `m` to (1) the browser console and (2) the
- * C++ terminal (stdout) via the `nativeLog` bridge method. (The on-page
- * log panel this once fed is gone — the status strip's log line in
- * app.js is the user-facing surface.)
+ * C++ terminal (stdout) via the `nativeLog` bridge method. (The status
+ * strip's log line in app.js is the user-facing surface; this is
+ * developer output.)
  *
  * The nativeLog leg is failure-safe: callNative's own error path calls
  * log(), so a throwing nativeLog must be swallowed here rather than

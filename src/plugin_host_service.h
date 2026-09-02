@@ -21,16 +21,16 @@ namespace celestrian {
  *  - `juce::KnownPluginList`, persisted as XML in the app data
  *    directory (the same directory audio_device.xml lives in; tests
  *    pass a temp directory instead).
- *  - OUT-OF-PROCESS background scan (2026-08-26): this process only
- *    enumerates candidate files; every probe of not-yet-known plugin
- *    code happens in a scan worker — our own executable re-launched
- *    with `--scan-worker` (src/plugin_scan_worker.h has the protocol).
- *    A plugin that crashes or hangs kills or times out the WORKER; the
+ *  - OUT-OF-PROCESS background scan: this process only enumerates
+ *    candidate files; every probe of not-yet-known plugin code happens
+ *    in a scan worker — our own executable re-launched with
+ *    `--scan-worker` (src/plugin_scan_worker.h has the protocol). A
+ *    plugin that crashes or hangs kills or times out the WORKER; the
  *    coordinator blacklists that file, starts a fresh worker on the
  *    remainder, and the app never notices beyond a status line. The
- *    older dead-man's-pedal (crash once, blacklist on relaunch) remains
- *    as the in-process fallback when no worker command is configured,
- *    and its leftovers are still honoured at construction.
+ *    dead-man's-pedal (crash once, blacklist on relaunch) is the
+ *    in-process fallback when no worker command is configured; its
+ *    leftovers are honoured at construction.
  *
  * Licensing note: JUCE bundles the VST3 SDK headers under the SDK's
  * GPLv3 option, which combines with this project's AGPLv3 exactly as
@@ -79,13 +79,13 @@ class PluginHostService {
   juce::var getScanStatusVar() const;
 
   /** Persist the known list (+ blacklist) now. Public so mutations made
-   * through knownPlugins() (tests, later phases) can be saved
-   * explicitly; the scan thread calls it on completion. */
+   * through knownPlugins() (tests) can be saved explicitly; the scan
+   * thread calls it on completion. */
   void saveKnownPlugins() const;
 
   /** The command prefix the scan is launched with; the coordinator
    * appends `<list file> <results file>`. Empty = probe in-process
-   * (legacy pedal path). Tests point it at a broken binary to pin the
+   * (the pedal fallback). Tests point it at a broken binary to pin the
    * failure mode; the app leaves the default. Not while scanning. */
   void setScanWorkerCommand(const juce::StringArray& command);
   juce::StringArray scanWorkerCommand() const { return scan_worker_command_; }
@@ -94,8 +94,8 @@ class PluginHostService {
    * and the file treated as a crash. Default 60 s. Not while scanning. */
   void setProbeTimeoutMs(int ms) { probe_timeout_ms_ = ms; }
 
-  // Later phases (instantiation) and tests reach the underlying JUCE
-  // objects directly; both are internally locked.
+  // Instantiation (main_component.cc) and tests reach the underlying
+  // JUCE objects directly; both are internally locked.
   juce::KnownPluginList& knownPlugins() { return known_plugins_; }
   juce::AudioPluginFormatManager& formats() { return format_manager_; }
 

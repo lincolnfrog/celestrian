@@ -1,9 +1,9 @@
 /**
  * The map-gesture frame pin. While any map gesture is live, the SHARED
  * display frame is PINNED: live commits change the audible cycle, and
- * letting the frame follow re-scaled every lane + the ruler under the
- * pointer mid-drag (owner video, 2026-07-23g — the world must not
- * squirm while you hold it). The frame settles once, on release.
+ * letting the frame follow would re-scale every lane + the ruler under
+ * the pointer mid-drag (the world must not squirm while you hold it).
+ * The frame settles once, on release.
  *
  * app.js reads the pins each poll (mapDragPinQ / mapDragPinFoldQ) and
  * feeds them to the view model; patchSessionView records the latest
@@ -25,9 +25,9 @@ export function noteFrame(frameQ, foldQ) {
     lastFoldQ = foldQ;
 }
 
-let pins = 0;  // refcount (audit 2026-08-31 U1): the first of two
-               // overlapping pins must not release the frame under the
-               // second — the exact hazard the freeze counters close.
+let pins = 0;  // refcount: the first of two overlapping pins must not
+               // release the frame under the second (the same hazard
+               // gesture.js's freeze counters close).
 
 /** Freeze the shared frame at its last-patched value (gesture start). */
 export function pinFrame() {

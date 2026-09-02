@@ -61,7 +61,7 @@ export function createNode(type, parentId = null) {
 
 export function deleteNode(id) {
     const node = findNode(id);
-    // Unknown node = a refusal (F-C): drop the dispatch's snapshot.
+    // Unknown node = a refusal: drop the dispatch's snapshot.
     if (!node) { popUndoForRefusal(); return; }
     if (node.isRecording) {
         // cancel is the verb for takes — a refused delete records
@@ -82,7 +82,8 @@ export function deleteNode(id) {
     }
     // RE-OPEN ⟹ UNCOLLAPSE (engine parity): back down to the sole take
     // with a lock-collapse behind it — restore the full material with
-    // the old trim as the window, so it can be trimmed LONGER again.
+    // the pre-collapse trim as the window, so it can be trimmed LONGER
+    // again.
     // Audio-neutral; Q/epoch untouched. Undo snapshot covers.
     if (committedClipCount() === 1) {
         const survivor = findSoleCommittedClip();
@@ -137,7 +138,7 @@ export function renameNode(id, newName) {
 
 export function reorderNode(nodeId, newParentId, newIndex) {
     const node = findNode(nodeId);
-    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
 
     // Remove from current parent
     removeNodeFromParent(nodeId);
@@ -158,7 +159,7 @@ export function reorderNode(nodeId, newParentId, newIndex) {
     }
     // Q18 (engine parity applyEdit(Move) → settleAnchors): committed
     // content entering an unanchored stack anchors it at the child's
-    // origin; the last content leaving un-anchors the old parent.
+    // origin; the last content leaving un-anchors the former parent.
     settleAnchors();
 }
 
@@ -206,10 +207,9 @@ export function combineNodes(draggedId, targetId) {
         w: Math.max(targetNode.w || 400, draggedNode.w || 400),
         h: 300,
         isExpanded: true,
-        // No fabricated Q (audit 2026-08-31 F-B): the island quantum
-        // is STORED state (state.islandQ) — combining empty clips used
-        // to declare a bogus 1 s Q here that effectiveQuantumForState's
-        // legacy scan then picked up.
+        // No fabricated Q: the island quantum is STORED state
+        // (state.islandQ) — combining empty clips must not declare a
+        // bogus Q here.
         effectiveQuantum: targetNode.effectiveQuantum || 0,
         nodes: [targetNode, draggedNode]  // Target first, then dragged
     };
@@ -246,10 +246,9 @@ function toggleNodeFlag(id, key, { label, stackOnly = false }) {
     console.log(`[MockBackend] ${label}:`, id, '→', node[key]);
 }
 
-// (togglePlay was deleted with Q16: per-node Play/Stop is superseded —
-// mute/solo + the one transport are the per-node play controls. The
-// node's isPlaying survives as the content-sounds gate the engine also
-// publishes; the user verb is gone.)
+// (No per-node togglePlay (Q16): mute/solo + the one transport are the
+// per-node play controls. The node's isPlaying is the content-sounds
+// gate the engine also publishes, not a user verb.)
 
 // Solo canon (Q16): per-node flag — island-wide, ADDITIVE (multiple
 // solos sum), fractal (a soloed stack covers its subtree, resolved

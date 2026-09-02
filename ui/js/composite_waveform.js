@@ -41,8 +41,8 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
             // Q, the epoch and the window every release) never
             // regenerates the composite. A regenerated array is a new
             // identity, and drawRepCanvas cross-fades every new
-            // identity: the definer's waveform "flickered and changed
-            // shape" on each handle release (field video 2026-08-29).
+            // identity — the definer's waveform would flicker on each
+            // handle release.
             if (raw) {
                 cacheKeyParts.push([child.id, child.duration || 0].join(':'));
                 return;
@@ -82,13 +82,11 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
  * Each clip contributes peaks at its position within the LCM timeline.
  * Clips that loop within the timeline have their peaks repeated.
  *
- * Time-map honoring (2026-08-11, closing the former KNOWN LIMITATION):
- * an active multi-segment map contributes its segments' material
- * concatenated in heard order, looping at the map period — the visual
- * twin of mapOffset's walk in time_map.js, and of the per-lane heard
- * view's `srcSegs` rendering. Cut-out material never appears in the
- * mixdown. (The engine already PLAYS segments this way; only this
- * visual mixdown used to ignore them.)
+ * Time-map honoring: an active multi-segment map contributes its
+ * segments' material concatenated in heard order, looping at the map
+ * period — the visual twin of mapOffset's walk in time_map.js, and of
+ * the per-lane heard view's `srcSegs` rendering. Cut-out material
+ * never appears in the mixdown (the engine PLAYS segments this way).
  *
  * @param {Object} opts
  * @param {Object} opts.stack          - Stack node data (with .nodes children)
@@ -113,14 +111,10 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
  *                                       the mixdown of the buffer the
  *                                       selection brackets select over,
  *                                       exactly what the member lanes
- *                                       beneath draw. Field video
- *                                       2026-08-29: the heard mixdown
- *                                       (windowed slices tiled on the
- *                                       epoch grid) drawn under the raw
- *                                       selection read as a group whose
- *                                       waveform disagreed with its
- *                                       children and re-shaped on every
- *                                       trim.
+ *                                       beneath draw (a heard mixdown
+ *                                       under the raw selection would
+ *                                       disagree with the children and
+ *                                       re-shape on every trim).
  * @returns {Array} Peak data array for the composite waveform
  */
 export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0, raw = false }) {
@@ -132,17 +126,15 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
     const targetPeaks = Math.ceil(canvasWidth * 2);
     // The key must include the children's PEAKS identity: after a commit
     // the live low-res peaks are replaced by the fetched waveform, and a
-    // key without them left the composite stale until some unrelated
-    // change (e.g. add-track) invalidated it — which then read as the
-    // display "changing slightly" for no reason (field 2026-07-10).
+    // key without them would leave the composite stale until some
+    // unrelated change invalidated it.
     // RECORDING children are excluded entirely (sig + mixing): the
-    // composite is COMMITTED material — folding a growing take in
-    // regenerated it every poll and read as glitching (owner-confirmed).
+    // composite is COMMITTED material — folding a growing take in would
+    // regenerate it every poll (visible glitching).
     // Children whose REAL waveform hasn't been fetched yet (excludeIds)
     // are excluded too: blending a just-committed clip's live METER
-    // peaks (different amplitude scale) re-normalized the composite to
-    // near-zero until the fetch landed ("collapses to zero-ish when the
-    // largest clip finishes" — field 2026-07-10).
+    // peaks (different amplitude scale) would re-normalize the
+    // composite to near-zero until the fetch lands.
     const skip = c => c.isRecording || (excludeIds && excludeIds.has(c.id));
     const peaksSig = (stack.nodes || [])
         .map(c => skip(c) ? 'r' : (livePeaks.get(c.id) || []).length)
@@ -174,11 +166,10 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // The child's AUDIBLE slices on its inner timeline, in heard
         // order. An ACTIVE multi-segment map (phase 3) contributes its
         // segments concatenated; an active single window reduces to its
-        // [loopStart, loopEnd) slice (field 2026-07-16d: the composite
-        // drew the whole take — including the not-in-window half — for
-        // a windowed clip); otherwise the full take loops at its
-        // duration. `windowActive` is the engine's published verdict;
-        // the ?? fallback derives it for states that predate the field.
+        // [loopStart, loopEnd) slice (never the not-in-window half);
+        // otherwise the full take loops at its duration. `windowActive`
+        // is the engine's published verdict; nodeWindowActive derives
+        // it for states without the field.
         const hasMultiSeg = !raw && Array.isArray(child.segments) &&
             child.segments.length >= 4;
         // One activity verdict (time_map.nodeWindowActive) — the
@@ -215,9 +206,9 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         });
 
         // Map slice peaks as RANGES, not point samples: floor-indexed
-        // point writes left every other slot empty whenever targetPeaks
+        // point writes leave every other slot empty whenever targetPeaks
         // exceeds the source resolution — a sparse comb whose holes read
-        // as density collapse at some canvas widths (field 2026-07-10).
+        // as density collapse at some canvas widths.
         const mapSliceAt = (slicePeaks, startPx, widthPx) => {
             const n = slicePeaks.length;
             for (let i = 0; i < n; i++) {
@@ -240,10 +231,9 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // The map sounds at positions ≡ its origin (mod its heard
         // period), in the epoch frame — tiled across the WHOLE cycle,
         // INCLUDING the wrapped predecessor before its first full
-        // repetition. (The old forward-only tiling left everything
-        // before the offset blank once origins stopped being ~0 — "the
-        // stack is blank for the first 2Q", field 2026-07-16d.) Within
-        // each pass the slices land back-to-back at their heard
+        // repetition (forward-only tiling would leave everything before
+        // the offset blank for a non-zero origin). Within each pass the
+        // slices land back-to-back at their heard
         // offsets, each keeping its true sample proportion — exactly
         // mapOffset's segment walk, drawn.
         // RAW mode: the buffer sits at 0 — one tile, the trim view's

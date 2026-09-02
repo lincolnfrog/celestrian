@@ -1,16 +1,14 @@
 /**
  * Shared micro-helpers for the session view modules: the one Q→%
- * conversion, the idempotent-DOM-write trio, and the small extracted
+ * conversion, the idempotent-DOM-write trio, and the small shared
  * idioms (transition snap, drop-payload parse, guarded pointer
- * capture, element creation) that used to be repeated inline across
- * session_view.js before the 2026-08 split.
+ * capture, element creation).
  */
 
 export const pct = (q, cycleQ) => (q / cycleQ) * 100 + '%';
 
 /* Q labels: snap fp noise to the whole Q it means (an exactly-1Q map
- * once printed "0.9999…Q" — field 2026-07-25); honest fractions keep
- * two decimals. */
+ * must never print "0.9999…Q"); honest fractions keep two decimals. */
 export const fmtQ = q => {
     const r = Math.round(q);
     if (Math.abs(q - r) < 1e-6) return String(r);
@@ -21,10 +19,10 @@ export const fmtQ = q => {
  * Idempotent DOM writes. Assigning textContent/innerHTML REPLACES the
  * text node even when the string is identical — and WebKit (the JUCE
  * webview) swallows a click whose mousedown target node is destroyed
- * before mouseup. With a 50ms patch tick, unconditional writes made
- * most human clicks on rail buttons land in a replaced-node window
- * ("clicking collapse did nothing the first several times" — field
- * report 2026-07-09). Never write unless the value changed.
+ * before mouseup. With a 50ms patch tick, unconditional writes would
+ * make most human clicks on rail buttons land in a replaced-node
+ * window (clicks silently dropped). Never write unless the value
+ * changed.
  */
 export const setText = (el, s) => { if (el.textContent !== s) el.textContent = s; };
 export const setTitle = (el, s) => { if (el.title !== s) el.title = s; };
@@ -68,7 +66,7 @@ export const capturePointer = (node, ev) => {
     try { node.setPointerCapture(ev.pointerId); } catch (_) {}
 };
 
-/** GESTURE SAFETY NET (2026-08-30): `onLost()` fires ONCE if the
+/** GESTURE SAFETY NET: `onLost()` fires ONCE if the
  * pointer capture is lost before the gesture's own end handler ran
  * (WebView2 drops captures on focus loss / Alt-Tab; a synthetic
  * pointer may never deliver pointerup) or the window blurs. Without
@@ -109,11 +107,9 @@ export const isTypingTarget = e => {
 export const approxQ = (a, b) => Math.abs(a - b) < 1e-6;
 
 /**
- * Content signature of a ruler tick set, for reconcile keys. The old
- * keys hashed only `cycleQ + tick COUNT` — sound for today's dense
- * integer generator (buildRulerTicks fully determines the set from
- * cycleQ), but silently stale the day ticks are re-bucketed at equal
- * count (audit 2026-08-11). Keying on the rendered content itself
+ * Content signature of a ruler tick set, for reconcile keys. A key of
+ * `cycleQ + tick COUNT` would be silently stale the day ticks are
+ * re-bucketed at equal count; keying on the rendered content itself
  * (position + major flag per tick, ≤65 entries at the 50ms cadence)
  * removes that class outright.
  */

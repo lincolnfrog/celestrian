@@ -1,14 +1,12 @@
 #pragma once
 
 /**
- * Whole-graph immutable structure snapshot — unification_audit.md §2.2 /
- * tasks.md Tier 3 Step 3 ("one atomic swap replaces per-stack snapshots
- * + reclaimer plumbing").
+ * Whole-graph immutable structure snapshot.
  *
  * The message thread builds a snapshot after every STRUCTURAL mutation
  * (AudioEngine::publishGraph); the audio thread loads ONE pointer per
  * callback (ProcessContext.snap) and traverses integer indices. This
- * buys, over the old per-stack child snapshots:
+ * gives:
  *
  *   - whole-callback structural consistency (one load, not one per
  *     stack per block),
@@ -20,8 +18,8 @@
  *     2-callback grace covers any in-flight reader).
  *
  * Node OBJECTS stay mutable in place: continuous facts (durations,
- * loop points, origins, fx params) are per-node atomics, exactly as
- * before. The snapshot pins STRUCTURE, not state — so a mid-version
+ * loop points, origins, fx params) are per-node atomics. The snapshot
+ * pins STRUCTURE, not state — so a mid-version
  * commit (a clip's duration landing on the audio thread) needs no
  * republish, which is also the "live take stays outside the snapshot"
  * carve-out.
@@ -141,9 +139,10 @@ inline int64_t snapEffectiveCycle(const GraphSnapshot& s, int64_t quantum,
 }
 
 /** Solo audibility (Q16 canon — island-wide, additive, fractal): is
- * the entry, or any ancestor, soloed? Index walk over parent indices —
- * replaces the audio-thread parent-pointer chain; the per-node flag is
- * an atomic, so no republish rides a solo toggle. */
+ * the entry, or any ancestor, soloed? Index walk over parent indices
+ * (the audio thread never walks parent pointers — the message thread
+ * reparents); the per-node flag is an atomic, so no republish rides a
+ * solo toggle. */
 inline bool snapIsUnderSolo(const GraphSnapshot& s, int idx) {
   for (int i = idx; i >= 0; i = s.entries[(size_t)i].parent) {
     if (s.entries[(size_t)i].node->is_soloed.load()) return true;

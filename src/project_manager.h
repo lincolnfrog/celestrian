@@ -1,7 +1,7 @@
 #pragma once
 
 /**
- * The project model (docs/projects.md — owner-ratified 2026-07-19f).
+ * The project model (docs/projects.md).
  *
  * Three rules:
  *   1. A project is a FOLDER; the folder name (YYYYMMDD-NN) is its ID,
@@ -82,11 +82,9 @@ class ProjectManager {
   std::vector<Info> listRecents(int max = 10) const;
 
   /** The last session template used or saved, persisted in
-   * <base>/state.json. Bookkeeping only since Q17 (2026-08-13): the
-   * launch ritual (auto-load + the seeded "Track 1" Default template)
-   * is RETIRED — the app boots EMPTY, and session templates are an
-   * explicit new-from choice. Owner: "when I am making real music,
-   * I'll decide which instrument I am using to form the Q." */
+   * <base>/state.json. Bookkeeping only (Q17): the app boots EMPTY and
+   * session templates are an explicit new-from choice — nothing
+   * auto-loads this. */
   juce::String lastTemplateName() const;
 
   // --- Track templates (design_language.md Q17 — the Q7 companion) ---

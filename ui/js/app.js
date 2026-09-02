@@ -50,15 +50,15 @@ function setLogLine(msg) {
     if (line) line.textContent = msg;
 }
 
-/* ---------- landed-state verification (audit 2026-08-31 U9) --------
+/* ---------- landed-state verification --------
  * The engine refuses window/map edits silently behind several guards
- * (coherence, mid-take, non-definer bounds, wrapper warps). The UI
- * used to announce success regardless, and the next poll snapped the
- * brackets back with no explanation. After a geometry commit settles,
- * ONE debounced state read compares what landed to what was asked —
- * an honest refusal message, or the success + its undo hint.
- * Debounced per node: live splices stream through the same callback
- * (~11/s) and only the final state deserves a verdict. */
+ * (coherence, mid-take, non-definer bounds, wrapper warps); announcing
+ * success regardless would leave the next poll snapping the brackets
+ * back with no explanation. After a geometry commit settles, ONE
+ * debounced state read compares what landed to what was asked — an
+ * honest refusal message, or the success + its undo hint. Debounced
+ * per node: live splices stream through the same callback (~11/s) and
+ * only the final state deserves a verdict. */
 const verifyTimers = new Map();  // node id → pending verification timer
 function scheduleVerify(id, check, okMsg, refusedMsg) {
     clearTimeout(verifyTimers.get(id));
@@ -68,9 +68,8 @@ function scheduleVerify(id, check, okMsg, refusedMsg) {
             const state = getState !== null
                 ? getState() : await callNative('getGraphState');
             if (!state) return;
-            // Children ride `nodes` in the published tree (an earlier
-            // inline walker read `children` and never found a nested
-            // clip, so grouped edits got no verdict at all).
+            // Children ride `nodes` in the published tree, never
+            // `children` (findNodeInTree walks the right key).
             const n = findNodeInTree(state.nodes, id);
             if (!n) return;  // node gone: a refusal message would lie
             setLogLine(check(n) ? okMsg : refusedMsg);
@@ -136,7 +135,7 @@ const LIVE = -1; // peakDurations marker: array holds live recording peaks
  * RECORDING clips, accumulate the engine's currentPeak TIME-INDEXED
  * (live_peaks.js): a peak's slot derives from `duration` at capture, so
  * the drawn waveform is anchored to its position regardless of poll
- * cadence (per-poll pushing made content drift sideways — field report).
+ * cadence (per-poll pushing would drift content sideways).
  */
 function refreshPeaks(nodes, sampleRate) {
     (nodes || []).forEach(n => {
@@ -182,20 +181,20 @@ function clipsUnder(node, out = []) {
 }
 const isHotClip = c => c.isRecording || c.isPendingStart;
 
-/* PER-TRACK RECORD (owner ruling 2026-07-19h): there is NO global
- * record button — the track's ● is the record verb, which keeps the
- * core journey direct: song looping → ＋ Track → hit its ● → recording
- * at the next Q boundary. A group's ● records all its empty tracks
- * (the drum-mic case); a recording track's ● stops it. */
+/* PER-TRACK RECORD (owner-ruled): there is NO global record button —
+ * the track's ● is the record verb, which keeps the core journey
+ * direct: song looping → ＋ Track → hit its ● → recording at the next
+ * Q boundary. A group's ● records all its empty tracks (the drum-mic
+ * case); a recording track's ● stops it. */
 /**
  * The lane record button: if anything under the lane is hot
  * (recording/pending), stop it all; otherwise record the lane. Both
  * verbs are ONE bridge call on the lane's own id — the ENGINE owns the
  * cascade (Q7 group arm: a stack arms every empty clip beneath it in
  * one message-thread pass, so the group shares one arm target and one
- * committed duration; the old per-clip loop here could straddle an
- * audio block and split the group across two boundaries). The engine
- * also owns the Q-boundary wait (Q11) and arm-targets-emptiness (Q7).
+ * committed duration; a per-clip loop here could straddle an audio
+ * block and split the group across two boundaries). The engine also
+ * owns the Q-boundary wait (Q11) and arm-targets-emptiness (Q7).
  */
 async function onArm(lane) {
     const node = lastNodesById.get(lane.id);
@@ -221,15 +220,15 @@ async function onArm(lane) {
         : midi ? 'Recording MIDI — play your keyboard' : 'Recording');
 }
 
-/* R = the record key (field request 2026-08-12): press the selected
- * track's (or group's) ● from the keyboard. Stop is SELECTION-PROOF —
- * if anything is recording anywhere, R stops it all (one engine call on
- * the root: the selection may have changed mid-take, and a stop that
- * silently no-ops while tape rolls is the worst failure mode). With
- * nothing hot, R records the selected lane; with no selection and
- * exactly one top-level lane, that lane. With ZERO lanes (Q17: the app
- * boots empty now), R CREATES + ARMS the default track — the scratch
- * spark is literally one key: launch → R → recording. */
+/* R = the record key: press the selected track's (or group's) ● from
+ * the keyboard. Stop is SELECTION-PROOF — if anything is recording
+ * anywhere, R stops it all (one engine call on the root: the selection
+ * may have changed mid-take, and a stop that silently no-ops while tape
+ * rolls is the worst failure mode). With nothing hot, R records the
+ * selected lane; with no selection and exactly one top-level lane, that
+ * lane. With ZERO lanes (Q17: the app boots empty), R CREATES + ARMS
+ * the default track — the scratch spark is literally one key: launch →
+ * R → recording. */
 async function onRecordKey(selectedId) {
     const anyHot = [...lastNodesById.values()].some(isHotClip);
     if (anyHot) {
@@ -282,15 +281,15 @@ function findParentIn(node) {
 
 /* ---------- session-view callbacks (structure) ---------- */
 
-/* Drag-to-group (2026-07-19h/j): clip target → combine into a
- * new group; group target → move inside. A multi-drag (selected
- * rails) applies to every dragged track. */
+/* Drag-to-group: clip target → combine into a new group; group target
+ * → move inside. A multi-drag (selected rails) applies to every
+ * dragged track. */
 /**
  * Sequencing: the first drop onto a CLIP target calls combineNodes
  * (which creates the group); every further id is reorderNode'd into
  * that group, appended in drag order. The graph is fetched ONCE, after
  * the group exists, to seed the append cursor — each insert then
- * advances it locally (a per-id refetch was an N+1).
+ * advances it locally (no per-id refetch).
  */
 async function onDropLane(ids, target) {
     const tNode = lastNodesById.get(target.id);
@@ -392,8 +391,8 @@ function onWindowEdit(id, open) {
 }
 
 // Move the OS cursor (viewport CSS px). True when the backend
-// actually warped; the mock returns false and the drag keeps
-// its eased-capture fallback.
+// actually warped; the mock returns false and the drag falls back
+// to absolute capture (map_bands.js runExpandedDrag).
 async function onWarpPointer(x, y) {
     // The viewport size rides along so the native side can map CSS px
     // to its own points exactly under any zoom / DPI scale.
@@ -492,9 +491,9 @@ function patchCalibrateButton(state) {
 
 /* ---------- MIDI target follows selection ---------- */
 /**
- * The keyboard plays the SELECTED instrument track (owner ruling
- * 2026-08-18: "it should just always be monitoring if it's selected" —
- * the ♪ toggle is gone). Reconciled every poll: the desired target is a
+ * The keyboard plays the SELECTED instrument track (owner-ruled: a
+ * selected instrument track is always monitoring; there is no separate
+ * toggle). Reconciled every poll: the desired target is a
  * MIDI take in progress if there is one (record MIDI-arms its clip in
  * the engine; the performer is playing INTO it), else the most recently
  * selected lane whose chain carries an instrument. Nothing selected /
@@ -633,10 +632,10 @@ function refreshProjectInfo(announceSave = false) {
     return callNative('getProjectInfo').then(raw => {
         const info = parseMaybeJson(raw);
         // A lost bridge call resolves null (bridge.js contract: never
-        // rejects). Keep the last good state — assigning it poisoned
-        // projectInfo permanently, and every later click on the button
-        // threw on `projectInfo.born` BEFORE the menu opened (the dead
-        // "Project ▾" button, owner report 2026-08-19).
+        // rejects). Keep the last good state — assigning null would
+        // poison projectInfo permanently, and every later click on the
+        // button would throw on `projectInfo.born` BEFORE the menu
+        // opened (a dead "Project ▾" button).
         if (!info || typeof info !== 'object') return;
         const wasBorn = projectInfo.born;
         projectInfo = info;
@@ -785,11 +784,10 @@ function initProjectUI() {
     setInterval(refreshProjectInfo, PROJECT_POLL_MS);  // birth/rename follow the mirror
 }
 
-/* SPACE = STOP EVERYTHING (owner request 2026-08-21: "space bar stops
- * playback but not recording, it should do both"; R stays the record
- * key). With a take rolling, Space requests the stop — the take finishes
- * to its next boundary like every stop (owner ruling 2026-07-10: stops
- * always pad forward) — and the transport PAUSES the moment it lands
+/* SPACE = STOP EVERYTHING (playback AND recording; R stays the record
+ * key). With a take rolling, Space requests the stop — the take
+ * finishes to its next boundary like every stop (stops always pad
+ * forward) — and the transport PAUSES the moment it lands
  * (pausing the clock first would strand the take awaiting a boundary
  * that never comes). An armed-not-yet-capturing take is cancelled and
  * the pause follows on the next poll. A second Space before the take
@@ -867,8 +865,8 @@ function wireKeyboard() {
 function initApp() {
     initSessionView({
         onTogglePlay: () => callNative('togglePlayback'),
-        // Ruler scrub (owner ruling 2026-08-27): target in the
-        // published-masterPos domain, samples. Streams while dragging
+        // Ruler scrub: target in the published-masterPos domain,
+        // samples. Streams while dragging
         // (cheap epoch re-base engine-side); NOT undoable — a
         // monitoring gesture, like auditionStep. The engine refuses
         // mid-take (the UI locks the gesture too).

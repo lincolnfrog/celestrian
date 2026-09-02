@@ -35,7 +35,7 @@ class MainComponent : public juce::Component, public juce::Timer {
   celestrian::ProjectManager project_manager_{audio_engine};
   // Plugin hosting foundation (docs/vst3.md §4): known-plugin registry
   // + background scan, persisted beside audio_device.xml. Message
-  // thread only; the chain integration arrives in phases 2-3.
+  // thread only.
   celestrian::PluginHostService plugin_host_{
       juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
           .getChildFile("Celestrian")};

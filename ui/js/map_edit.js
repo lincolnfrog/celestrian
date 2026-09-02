@@ -1,15 +1,13 @@
 /**
  * Map-editor algebra (time_maps.md §4, phase 3 — CUT BANDS, the
- * owner-chosen design 2026-07-22) — pure Q-space interval math. No
- * DOM, no state.
+ * owner-chosen design) — pure Q-space interval math. No DOM, no state.
  *
  * The vocabulary split: leading/trailing exclusions belong to the
- * WINDOW (the existing bracket gesture); INNER gaps are CUT BANDS —
- * visible objects with their own handles. A cut's length is ALWAYS a
- * whole number of Qs (the seam theorem: groove-transparent iff removed
- * length ≡ 0 mod Q; owner ruling 2026-08-09 made this categorical —
- * the earlier ⌥-free escape hatch is gone, edits can only snap to Q
- * unless they modify the Q-defining clip itself). Cuts slide FREELY in
+ * WINDOW (the bracket gesture); INNER gaps are CUT BANDS — visible
+ * objects with their own handles. A cut's length is ALWAYS a whole
+ * number of Qs (the seam theorem: groove-transparent iff removed length
+ * ≡ 0 mod Q; this is categorical — edits can only snap to Q unless
+ * they modify the Q-defining clip itself). Cuts slide FREELY in
  * POSITION — excising exactly 1Q off the grid is the design's reason
  * to exist — but only within their kept neighbourhood (cutBounds), so
  * a cut meets a neighbouring gap at exact adjacency (whole ∪ whole
@@ -114,11 +112,10 @@ export function cellCutAt(clickQ, totalQ) {
 
 /**
  * The kept neighbourhood of a cut: the healed covered segment that
- * contains it. Slides and resizes are clamped here (owner ruling
- * 2026-08-09, categorical coherence): a cut may only meet a
- * neighbouring gap at EXACT adjacency — whole ∪ whole stays whole —
- * never by fractional overlap, which is how a slide/resize used to
- * mint a fractional period.
+ * contains it. Slides and resizes are clamped here (categorical
+ * coherence): a cut may only meet a neighbouring gap at EXACT
+ * adjacency — whole ∪ whole stays whole — never by fractional overlap,
+ * which would mint a fractional period.
  */
 export function cutBounds(segs, cut, totalQ) {
     const healed = coveredSet(healCut(segs, cut[0], cut[1], totalQ), totalQ);
@@ -132,9 +129,9 @@ export function cutBounds(segs, cut, totalQ) {
  * Resize one edge of a cut [a, b): the handle follows `rawQ`; the
  * released length snaps to whole Qs ≥ 1 (linked edges — the OTHER edge
  * holds), capped by the room to the neighbouring gap (loQ/hiQ from
- * cutBounds). No free mode (owner ruling 2026-08-09). Returns
- * { inQ, outQ, lenQ, coherent } — coherent stays in the shape for the
- * defensive ⚠ badge, but every path through here is coherent now.
+ * cutBounds). No free mode. Returns { inQ, outQ, lenQ, coherent } —
+ * coherent stays in the shape for the defensive ⚠ badge; every path
+ * through here is coherent.
  */
 export function resizeCutTarget({ cut, edge, rawQ, maxQ,
                                   loQ = 0, hiQ = maxQ }) {
@@ -184,12 +181,11 @@ export function trimBoundTo(segs, edge, boundQ, totalQ) {
     return applyCut(cov, boundQ, totalQ, totalQ);
 }
 
-/** THE SEAM THEOREM'S SNAP (field video 2026-08-08: a whole-Q BOUND
- * over a free-slid cut committed a 0.65Q PERIOD, and the engine's
- * cycle LCM exploded to 66187Q — the timeline went blank). Coherence
- * is period ≡ 0 (mod Q), not bound ≡ 0: with fractional seam positions
- * inside, the two differ. So trims snap the PERIOD and derive the
- * bound. The period is piecewise linear in the bound (slope 1 inside
+/** THE SEAM THEOREM'S SNAP. Coherence is period ≡ 0 (mod Q), not
+ * bound ≡ 0: with fractional seam positions inside, the two differ (a
+ * whole-Q BOUND over a free-slid cut would commit a fractional PERIOD
+ * and explode the engine's cycle LCM). So trims snap the PERIOD and
+ * derive the bound. The period is piecewise linear in the bound (slope 1 inside
  * kept material, 0 across cuts) — walk the covered set to the raw
  * position where the kept total is exactly `targetP` (clamped to
  * [1Q, the reachable span]). */
@@ -220,8 +216,8 @@ export function trimBoundForPeriod(segs, edge, targetP, totalQ) {
     return first;
 }
 
-/** ⌥ FREE SLIDE (owner request 2026-08-18): move the whole covered set
- * by `deltaQ` — any fractional amount — with the period HELD, so Q
+/** ⌥ FREE SLIDE: move the whole covered set by `deltaQ` — any
+ * fractional amount — with the period HELD, so Q
  * coherence survives (the anchoring law keeps content in place; only
  * which stretch of the take is heard changes). The delta is clamped so
  * the set stays inside [0, totalQ]; a slide never trims. Returns

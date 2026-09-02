@@ -20,10 +20,10 @@ import { wireRulerSeek } from './ruler_seek.js';
 export function initSessionView(callbacks) {
     initCtx(callbacks);
     ctx.els.playBtn.addEventListener('click', () => ctx.cb.onTogglePlay());
-    // Creation lives in the CANVAS (2026-07-19g): the persistent row
-    // under the lanes makes tracks; the transport is transport. Since
-    // Q17 the + opens the TEMPLATE PICKER (default "Track" row under
-    // the cursor — click-click keeps the old one-verb speed).
+    // Creation lives in the CANVAS: the persistent row under the lanes
+    // makes tracks; the transport is transport. The + opens the
+    // TEMPLATE PICKER (Q17; default "Track" row under the cursor —
+    // click-click is still one verb).
     document.getElementById('create-track-btn')
         .addEventListener('click', e => openCreationMenu(e, ''));
 
@@ -69,8 +69,8 @@ export function initSessionView(callbacks) {
     });
 
     wireZoom();
-    // Ruler scrub (owner ruling 2026-08-27): click/drag the ruler to
-    // seek — the callback is onSeek (app.js → seekTransport).
+    // Ruler scrub: click/drag the ruler to seek — the callback is
+    // onSeek (app.js → seekTransport).
     wireRulerSeek();
     wireNavScroll();
     wireMenuDismiss();
@@ -87,7 +87,7 @@ function wireKeyboard() {
         if (e.key === 'Escape') {
             // A live drag owns Escape (gesture.js cancels it in the
             // capture phase and stops propagation; this guard is the
-            // belt to that suspender — audit 2026-08-31 U6).
+            // belt to that suspender).
             if (isGestureLive()) return;
             clearSelection();
             if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);

@@ -12,8 +12,7 @@
 /**
  * QTime — exact rational musical time in units of the island quantum Q.
  *
- * Ruling Q12 (design_language.md §5; decision record in
- * unification_audit.md §4): musical facts — origins as offsets from the
+ * Q12 (design_language.md §5): musical facts — origins as offsets from the
  * island epoch, periods, window segments, arm targets, Q subdivisions —
  * are exact rationals of Q. Physical facts — the monotonic clock, epoch
  * timestamps, ring indices, buffer lengths, the calibration constant —
@@ -201,7 +200,7 @@ inline QTime qlcm(QTime a, QTime b) {
 }
 
 /**
- * THE rounding law (Q12 / D-T4): QTime → samples at the island's
+ * THE rounding law (Q12): QTime → samples at the island's
  * exchange rate. Round to the nearest sample; exact halves round toward
  * +∞ — boundaries err later, never earlier, consistent with the
  * "stop always records forward" ruling. Implemented as

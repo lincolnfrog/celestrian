@@ -4,8 +4,8 @@
  * (the fx-row expansion pattern). Rows = the stack's direct children,
  * columns = steps, pads = gates.
  *
- * TIME-HONEST LAYOUT (owner feedback 2026-08-20): the pads live in the
- * lane-body column and span its full width, so step boundaries sit ON
+ * TIME-HONEST LAYOUT: the pads live in the lane-body column and span
+ * its full width, so step boundaries sit ON
  * the shared time axis — a 2Q step ends exactly where 2Q is on the
  * ruler (I2 in spirit). Row names live in the RAIL column (mirrored
  * fixed-height rows), and the append verb lives in the footer, so
@@ -177,8 +177,8 @@ function rebuild(row, lane) {
         nm.title = 'Double-click to rename · right-click to delete step';
         nm.addEventListener('dblclick', () => renameStep(row, cell, i));
         const len = el('span', 'seq-hlen', { textContent: fmtQ(s.lenQ) + 'Q' });
-        // \u21e4 — CUE (S22, ruled 2026-08-27): a per-step pip on the
-        // header toggles gate-mode <-> cue-mode. A cued step re-bases
+        // \u21e4 — CUE (S22): a per-step pip on the header toggles
+        // gate-mode <-> cue-mode. A cued step re-bases
         // its span to the SONG TOP (docs/sequencer.md ss3 — the serial
         // primitive: verse-box then chorus-box). Rides setSequence
         // (one undo step, whole-object swap).
@@ -198,8 +198,7 @@ function rebuild(row, lane) {
         });
         cell.classList.toggle('cued', cued);
         // The resize grip: a VISIBLE handle (the bracket vocabulary —
-        // it was a 3px hairline nobody found; owner field report
-        // 2026-08-20b: "we do need a way to lengthen each section").
+        // a hairline is not discoverable).
         const grip = el('span', 'seq-grip', {
             title: 'Drag to resize this step (snaps to whole cycles; ' +
                    '⌥ = whole Q)' });

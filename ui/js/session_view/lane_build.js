@@ -34,9 +34,9 @@ export function buildLane(lane) {
     // fx-row expansion pattern; content renders in patchSeqGrid)
     if (lane.kind === 'seq') return buildSeqGrid(row, lane);
 
-    // Synthetic add-track row at the bottom of an open group. Since
-    // Q17 the + opens the creation menu (template picker) targeting
-    // this group — click-click on the default row keeps the old speed.
+    // Synthetic add-track row at the bottom of an open group. The +
+    // opens the creation menu (template picker, Q17) targeting this
+    // group — click-click on the default row is still one verb.
     if (lane.kind === 'add') {
         row.classList.add('lane-add');
         row.dataset.depth = String(Math.min(lane.depth, 2));
@@ -53,7 +53,7 @@ export function buildLane(lane) {
     // the bottom line. Nothing ever competes with the name for width.
     const rail = el('div', 'lane-rail');
 
-    // GROUPING BY DRAG (owner ruling 2026-07-19h): grouping is a
+    // GROUPING BY DRAG (owner-ruled): grouping is a
     // post-hoc gesture, not an upfront decision — drag one track's rail
     // onto another's. Clip target → the two combine into a new group
     // (engine Combine edit, undoable); group target → the dragged track
@@ -108,13 +108,12 @@ export function buildLane(lane) {
     // Status word lives on the name row, right-aligned — it never
     // competes with the buttons row for width
     head.appendChild(el('span', 'rail-status armed-word mono'));
-    // The Q-DEFINER badge (owner request 2026-07-19g): while the island's
-    // tempo is still provisional, the track that defines it says so.
-    // Locked islands own their Q — the badge retires at the 2nd take.
-    // A LAMP, not a word: fixed-size, so it can never truncate — the
-    // text version crushed to "T…" on crowded rails (owner feedback
-    // 2026-08-08e). A lit "Q" indicator in the deck's record-lamp
-    // vocabulary; the tooltip carries the explanation.
+    // The Q-DEFINER badge: while the island's tempo is still
+    // provisional, the track that defines it says so. Locked islands
+    // own their Q — the badge retires at the 2nd take. A LAMP, not a
+    // word: fixed-size, so it can never truncate on a crowded rail. A
+    // lit "Q" indicator in the deck's record-lamp vocabulary; the
+    // tooltip carries the explanation.
     const tempo = el('span', 'tempo-chip mono', {
         textContent: 'Q',
         title: 'This take defines the loop length (Q — the tempo). ' +
@@ -171,9 +170,9 @@ export function buildLane(lane) {
     // every ARMABLE child (Q7 — arm targets emptiness). State is set in
     // patchRail; the click hands the current lane back to app.js.
     // Arm is a STATE TOGGLE, not a record button — the transport's red
-    // circle is the one record verb (owner ruling 2026-07-19: three
-    // identical red dots read as three mystery record buttons). The
-    // ring fills red when armed; the glyph stays empty at rest.
+    // circle is the one record verb (three identical red dots would
+    // read as three mystery record buttons). The ring fills red when
+    // armed; the glyph stays empty at rest.
     const arm = el('button', 'rail-btn arm-btn', {
         title: 'Record into this track' });
     arm.addEventListener('click', () => ctx.cb.onArm(row._lane));

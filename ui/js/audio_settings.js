@@ -1,8 +1,8 @@
 /**
  * Audio device panel (docs/performance.md §4).
  *
- * Why this exists: the app used to open whatever Windows called the
- * default input, which is a 2-channel endpoint. Worse, a multi-channel
+ * Why this exists: whatever Windows calls the default input is a
+ * 2-channel endpoint. Worse, a multi-channel
  * interface's WDM driver publishes each pair as its OWN stereo endpoint
  * ("MOTU Analog 1-2", "Analog 3-4", …) and Windows opens one at a time —
  * so on WASAPI there is NO device that gives you 8 inputs. Only the ASIO
@@ -131,7 +131,7 @@ function sel(labelText, options, current, onChange, formatter) {
 async function apply({ type, device, sampleRate, bufferSize }) {
     // Empty/0 mean "keep current" on the native side; a type switch
     // deliberately sends no device so the engine picks that type's default
-    // rather than failing on a name that belongs to the old type.
+    // rather than failing on a name that belongs to the other type.
     panel.querySelectorAll('select, button').forEach(el => (el.disabled = true));
     try {
         const err = await callNative('setAudioDevice',

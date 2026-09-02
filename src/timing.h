@@ -30,8 +30,8 @@ constexpr double kHysteresisThreshold = 0.15;
 /** Subdivisions of Q considered when committing/stopping short recordings. */
 constexpr int kSubdivisions[] = {2, 4, 8};
 
-// gcd/lcm moved to qtime.h (the foundation layer); still exposed in
-// this namespace via the include above.
+// gcd/lcm live in qtime.h (the foundation layer), exposed in this
+// namespace via the include above.
 
 /**
  * One step of the composite-period fold shared by every LCM composition
@@ -49,15 +49,15 @@ inline int64_t foldPeriod(int64_t composite, int64_t next) {
 
 /**
  * A Q subdivision boundary in samples, through THE rounding law
- * (qtime.h): toSamples(1/d · Q). Replaces the bare integer division
- * `quantum / d`, which silently floored when Q wasn't divisible —
- * capture and playback must round identically (Q12 / D-T4).
+ * (qtime.h): toSamples(1/d · Q). Never a bare `quantum / d`, which
+ * silently floors when Q isn't divisible — capture and playback must
+ * round identically (Q12).
  */
 inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
   return toSamples(qtime(1, denominator), quantum);
 }
 
-// === The physical/musical boundary (Q12 / D-T3) ===
+// === The physical/musical boundary (Q12) ===
 //
 // PHYSICAL facts stay in samples: the monotonic clock t, the epoch (a
 // clock timestamp), pre-record ring indices, buffer lengths, the
@@ -66,28 +66,27 @@ inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
 // clip's origin as an OFFSET FROM THE EPOCH, its period, its window
 // segments, arm targets, and Q subdivisions.
 //
-// The RT hot path stores the musical facts as sample atomics (owner
-// ruling: QTime-on-node defers to the immutable-root step); the helpers
-// below project those atomics onto the musical frame for the
+// The RT hot path stores the musical facts as sample atomics; the
+// helpers below project those atomics onto the musical frame for the
 // metadata/persistence boundary, so the UI and the save format are
 // device-independent. THE RULE: no engine code converts musical↔samples
 // except through toSamples / fromSamples / subdivisionSamples — never a
-// bare `x / quantum`, which silently floors (the bug D-T4 closed).
+// bare `x / quantum`, which silently floors.
 
 /**
- * A clip's origin as a musical offset from the island epoch (D-T3).
+ * A clip's origin as a musical offset from the island epoch.
  * `origin_samples` is stored ABSOLUTE (performance-clock frame); the
  * musical fact is (origin − epoch) / q_samples · Q. Exact by
  * construction (fromSamples never rounds). An unsnapped or
- * context-relative origin yields an ugly-but-exact rational (D-T5) —
- * that is correct, not a defect: QTime says where content BELONGS.
+ * context-relative origin yields an ugly-but-exact rational — that is
+ * correct, not a defect: QTime says where content BELONGS.
  */
 inline QTime originQ(int64_t origin_samples, int64_t epoch_samples,
                      int64_t q_samples) {
   return fromSamples(origin_samples - epoch_samples, q_samples);
 }
 
-/** A period / duration as musical time (D-T3). */
+/** A period / duration as musical time. */
 inline QTime periodQ(int64_t duration_samples, int64_t q_samples) {
   return fromSamples(duration_samples, q_samples);
 }
@@ -139,10 +138,9 @@ inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
  *
  * Callers pass the HEARD (latency-compensated) position: a click
  * shortly before a boundary compensates back onto it, which is the
- * whole of the "pickup"/anticipatory behavior (E-A). A deferral window
- * that once existed on top of this was deleted 2026-07-16 — it added
- * nothing and overshot the take by a full Q when compensation was
- * small.
+ * whole of the "pickup"/anticipatory behavior (E-A). No deferral
+ * window sits on top of this: one overshoots the take by a full Q when
+ * compensation is small.
  */
 inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
   if (rel < 0) rel = 0;
@@ -160,8 +158,8 @@ inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
   // iteration. A mark at/past the context top means "the top of the
   // NEXT cycle" — the heard grid restarts there, so an unsnapped
   // context's final partial Q arms at the top itself (folding it
-  // `% context_loop` put the boundary in the PAST — latent bug fixed
-  // with the through-window vectors, phase 2).
+  // `% context_loop` would put the boundary in the PAST; pinned by the
+  // through-window golden vectors).
   const int64_t effective = rel % context_loop;
   const int64_t next_visual = (effective % quantum == 0)
                                   ? effective

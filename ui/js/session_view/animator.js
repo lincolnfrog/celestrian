@@ -3,9 +3,9 @@
  *
  * Between 50ms polls the playhead DEAD-RECKONS at the estimated
  * transport velocity and wraps EXACTLY at the audible cycle
- * (vm.loopCycleQ) — the CSS-glide approach lagged the target by the
- * transition time, so the sweep visually wrapped early and restarted
- * past zero (field 2026-07-11). Window cursors ride the same clock
+ * (vm.loopCycleQ) — a CSS glide lags the target by the transition
+ * time, so the sweep would visually wrap early and restart past zero.
+ * Window cursors ride the same clock
  * (heard time advances at the same rate everywhere). While RECORDING
  * the animator is off and the 140ms glide keeps the playhead in
  * lockstep with the recording bar's edge (law 10) — there is no wrap

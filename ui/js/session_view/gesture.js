@@ -1,43 +1,41 @@
 /**
- * THE GESTURE RUNNER (audit 2026-08-30 §4.4/§4.5; hardened 2026-08-31).
+ * THE GESTURE RUNNER.
  *
  * Every drag in the session view — window brackets, cut-band
- * chip/handles, seam handles, trim grips — used to hand-roll the same
- * lifecycle: pointer capture, listener bookkeeping, the lost-capture /
- * window-blur safety net, the overlay-freeze latch, the shared frame
- * pin, and an exactly-once end. The Windows fixes (guardGesture,
- * idempotent ends) had to be patched into three copies. This module
- * owns the lifecycle ONCE; gesture sites keep only their own geometry.
+ * chip/handles, seam handles, trim grips — shares one lifecycle:
+ * pointer capture, listener bookkeeping, the lost-capture / window-blur
+ * safety net, the overlay-freeze latch, the shared frame pin, and an
+ * exactly-once end. This module owns that lifecycle ONCE; gesture sites
+ * keep only their own geometry.
  *
- * The latches also live HERE, as COUNTERS keyed by the body element
- * (audit 2026-08-31 U1 — a WeakSet let the first of two overlapping
- * holds unfreeze the body under the second):
- *   - FROZEN  (was body._winDrag): a live drag holds pointer capture on
- *     an overlay node; rebuilding the overlay would orphan the gesture.
- *     Set via g.freeze(body); cleared automatically when the gesture
- *     ends, HOWEVER it ends (release, cancel, lost capture, blur).
- *   - HELD    (was body._winHold): after a commit the overlay stays at
- *     the previewed geometry until the bridge answers — a poll in
- *     flight at release still carries the OLD state (the snap-back).
+ * The latches live HERE, as COUNTERS keyed by the body element (a set
+ * would let the first of two overlapping holds unfreeze the body under
+ * the second):
+ *   - FROZEN: a live drag holds pointer capture on an overlay node;
+ *     rebuilding the overlay would orphan the gesture. Set via
+ *     g.freeze(body); cleared automatically when the gesture ends,
+ *     HOWEVER it ends (release, cancel, lost capture, blur).
+ *   - HELD: after a commit the overlay stays at the previewed geometry
+ *     until the bridge answers — a poll in flight at release still
+ *     carries the pre-commit state (the snap-back).
  *     holdOverlay(body) / releaseOverlay(body), used by commit sites.
  * Renderers ask ONE question: isOverlayFrozen(body).
  *
- * ONE LIVE GESTURE (audit 2026-08-31 U7): two simultaneous pointers
- * (touch + mouse, or a second button mid-drag) used to run two gesture
- * lifecycles against the same latches and commit twice. The runner is
- * now a singleton: while one gesture is live, beginGesture returns an
- * INERT controller (live() === false, every method a no-op) and takes
- * no capture. Callers that do their own setup gate it on g.live().
+ * ONE LIVE GESTURE: two simultaneous pointers (touch + mouse, or a
+ * second button mid-drag) must not run two lifecycles against the same
+ * latches and commit twice. The runner is a singleton: while one
+ * gesture is live, beginGesture returns an INERT controller
+ * (live() === false, every method a no-op) and takes no capture.
+ * Callers that do their own setup gate it on g.live().
  *
- * ESCAPE CANCELS (audit 2026-08-31 U6): a capture-phase keydown while
- * live ends the gesture with commit=false — the same path as
- * pointercancel, so onEnd sites restore their pre-drag state.
+ * ESCAPE CANCELS: a capture-phase keydown while live ends the gesture
+ * with commit=false — the same path as pointercancel, so onEnd sites
+ * restore their pre-drag state.
  *
  * (Per-node render caches — _peaksRef, _dk, _key … — deliberately stay
  * on their nodes: a cache keyed by the thing it caches dies exactly
- * when the node does, which is the lifetime a cache wants. The latches
- * were different: they gated OTHER code and outlived their gesture on
- * every failure path.)
+ * when the node does. The latches gate OTHER code and must not outlive
+ * their gesture on any failure path, so they live here instead.)
  */
 
 import { capturePointer, guardGesture } from './sv_util.js';
@@ -62,7 +60,7 @@ export const isDragging = body => frozen.has(body);
 export const holdOverlay = body => bump(held, body);
 export const releaseOverlay = body => drop(held, body);
 
-let activeGesture = null;  // the singleton (U7)
+let activeGesture = null;  // the singleton
 
 /** Is any gesture live right now? (init.js gates its Escape on this —
  * a live gesture's Escape means "cancel the drag", nothing else.) */
@@ -99,8 +97,8 @@ export function beginGesture(ev, { node = ev.target, claim = null,
         return INERT;
     }
     // A focused text field (rename box) keeps keystrokes; a drag that
-    // preventDefault()s without blurring left it focused but unreachable
-    // (audit 2026-08-31 U8).
+    // preventDefault()s without blurring would leave it focused but
+    // unreachable.
     const ae = document.activeElement;
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
                ae.isContentEditable)) {

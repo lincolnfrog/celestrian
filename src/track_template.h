@@ -38,11 +38,11 @@ namespace celestrian::track_templates {
  *  durations, origins, windows) are never captured — a template is
  *  pre-Q by construction, like its whole-session cousin.
  *
- *  SEQUENCES are the ruled exception (S14, docs/sequencer.md §9): a
- *  song's shape is a saved decision, not saved music. Step lengths are
+ *  SEQUENCES are the exception (S14, docs/sequencer.md §9): a song's
+ *  shape is a saved decision, not saved music. Step lengths are
  *  stored as Q COUNTS (`lenQ`, double — device- and tempo-portable)
- *  and gates are keyed by CHILD INDEX (build stamps fresh uuids, so
- *  uuid keys would dangle — the input-rekey precedent). Pass the
+ *  and gates are keyed by CHILD INDEX (build stamps new uuids, so
+ *  uuid keys would dangle). Pass the
  *  capturing island's `q_samples`; with no Q established the sequence
  *  is skipped (its lengths would be meaningless). */
 inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
@@ -101,7 +101,7 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
 /** Rebuild a fresh (empty, armable) subtree from a captured var. New
  *  uuids throughout — a template stamps COPIES, never aliases. Returns
  *  nullptr on an unrecognized shape. `sample_rate` seeds the clip
- *  buffers exactly like AudioEngine::createNode (P0-5). */
+ *  buffers exactly like AudioEngine::createNode. */
 inline std::unique_ptr<AudioNode> build(const juce::var& v,
                                         double sample_rate,
                                         int64_t q_samples = 0) {

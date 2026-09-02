@@ -21,7 +21,7 @@ export const BRIDGE_METHODS = [
 
     // Transport
     { name: 'togglePlayback', params: [] },
-    // Ruler scrub (owner ruling 2026-08-27): seek to a position in the
+    // Ruler scrub: seek to a position in the
     // SAME domain the published masterPos wraps in — epoch-relative
     // samples, folded on the audible cycle. NOT undoable (a monitoring
     // gesture, like auditionStep). Refused while any take is live or
@@ -82,9 +82,9 @@ export const BRIDGE_METHODS = [
     { name: 'saveTrackTemplate', params: ['uuid', 'name'], returns: 'true on success' },
     { name: 'createFromTrackTemplate', params: ['name', 'parentUuid?'], returns: 'true on success' },
 
-    // Per-node audio state. (togglePlay was deleted with Q16: per-node
-    // Play/Stop is superseded — mute/solo + the one transport are the
-    // per-node play controls. Solo is per-node, additive, fractal.)
+    // Per-node audio state: there is no per-node Play/Stop (Q16) —
+    // mute/solo + the one transport are the per-node play controls.
+    // Solo is per-node, additive, fractal.
     { name: 'toggleSolo', params: ['uuid'] },
     { name: 'toggleMute', params: ['uuid'] },
     { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples'] },

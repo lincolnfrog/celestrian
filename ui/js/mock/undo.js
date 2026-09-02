@@ -68,8 +68,8 @@ export function interceptUndoableCall(method, arg0) {
             lastUndoable.method === 'setSegments' &&
             lastUndoable.arg0 === arg0;
         if (!coalesce) {
-            // Save the redo branch BEFORE the push clears it (audit
-            // 2026-08-31 F-C): a REFUSED edit mutates nothing, so it
+            // Save the redo branch BEFORE the push clears it: a
+            // REFUSED edit mutates nothing, so it
             // must not destroy the user's redo either — engine parity
             // (AudioEngine::record clears redo only for edits that
             // actually apply). pushUndoSnapshot replaces the array, so
@@ -98,7 +98,7 @@ export function popUndoForRefusal() {
     if (undoPushedForCall) {
         undoStack.pop();
         // Restore the redo branch the dispatch's push cleared — a
-        // refusal is a no-op, and no-ops keep redo (F-C).
+        // refusal is a no-op, and no-ops keep redo.
         if (redoSavedForCall) redoStack = redoSavedForCall;
         undoPushedForCall = false;
     }

@@ -5,7 +5,7 @@
 namespace celestrian {
 
 /**
- * OUT-OF-PROCESS PLUGIN SCANNING (docs/vst3.md §4, 2026-08-26): the
+ * OUT-OF-PROCESS PLUGIN SCANNING (docs/vst3.md §4): the
  * worker half. A scan never loads plugin code in the app process:
  * PluginHostService (the coordinator) enumerates candidate files
  * itself, then re-launches its own executable as

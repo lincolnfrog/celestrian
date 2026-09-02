@@ -81,19 +81,26 @@ Nothing in Tier D is required for 1.0.
 
 ## Tier B: Product to 1.0
 
-- [ ] **B1 — Software input monitoring.** Hear the armed input through
-  the engine (performance.md §2.1 notes none exists); off by default
-  when the interface offers direct monitoring; latency shown from the
-  calibration.
-- [ ] **B2 — Bounce / export.** Render any node (root = the song) to a
-  WAV through the real render path at the device rate: one pass of the
-  effective cycle for a loop, the full sequence for a song, with tails.
-  projects.md deferred this "until the sequencer exists"; it does.
-- [ ] **B3 — Count-in and metronome.** A metronome on the Q grid (after
-  Q exists) and an optional count-in of N Q before the arm target.
-- [ ] **B4 — Takes.** Re-record a committed clip: alternate content
-  buffers sharing one origin/period, a take list per clip, "new take"
-  on the record button. Take commits are already undo entries.
+- [ ] **B1 — Software input monitoring** (ruled Q20): hear the armed
+  input through the engine; OFF by default, a per-track toggle with the
+  calibrated latency shown beside it. Done = the toggle on the rail,
+  the engine mixes the input at the output stage of the armed clip,
+  the mock mirrors it, one e2e.
+- [ ] **B2 — Bounce / export** (ruled Q19): render the island root for
+  one effective cycle (the song when a sequence is active) to a WAV
+  through the real render path at the device rate, tails ringing past
+  the end; any node bounceable the same way. Done = a `bounce(uuid,
+  path)` bridge verb, offline render through `AudioNode::process`
+  with a fresh snapshot, a native file dialog, a pinned golden (a
+  bounced loop equals the live render of the same cycle).
+- [x] **B3 — Count-in and metronome: CLOSED (ruled Q21, 2026-09-01).**
+  No meter, no tempo, no beat to click on; the scratch loop is the
+  count-in. A single Q-top pulse is a possible later option only.
+- [ ] **B4 — Takes and comping.** Re-record a committed clip: alternate
+  content buffers sharing one origin/period, a take list per clip,
+  "new take" on the record button; comping = choosing per-Q-cell which
+  take sounds (a per-cell take index, the segment editor's grammar).
+  Take commits are already undo entries.
 - [ ] **B5 — Master bus.** A root output stage with a fader and meter;
   the VU today reads the device output.
 - [ ] **B6 — Audio file import.** Drop a WAV onto a lane: it becomes a

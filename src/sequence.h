@@ -13,7 +13,7 @@ namespace celestrian {
  * timeline, plus per-child GATE rows saying which children sound during
  * which steps.
  *
- * Semantics (all owner-ruled, sequencer.md §0/§9):
+ * Semantics (sequencer.md §0/§9):
  *  - Gates are MUTE-SHAPED (S1): a gated-off child keeps its clock; an
  *    entrance lands exactly in phase. Nothing here transforms time.
  *  - An ACTIVE sequence sets the stack's effective period to `total`
@@ -37,9 +37,9 @@ struct Sequence {
     int64_t len = 0;  // samples (whole-Q by UI construction; engine
                       // accepts free lengths — S10: permitted, badged)
     juce::String name;
-    // CUE (docs/sequencer.md §3; S11 reserved, ruled + built 2026-08-27
-    // with S20-S22 — the Q6 serial primitive): a cued step re-bases the
-    // subtree's received frame to the step top — children hear
+    // CUE (S11, docs/sequencer.md §3 — the Q6 serial primitive): a cued
+    // step re-bases the subtree's received frame to the step top —
+    // children hear
     // t' = epoch + (songRel - stepStart), so a cued child starts from
     // its own top on every entrance (verse-box then chorus-box; the
     // radio's song-after-song). Playback-only here: the envelope below
@@ -85,17 +85,16 @@ struct Sequence {
    * the child clock jumps there (re-base in or out), so the gate
    * envelope must dip through zero (the ~10 ms anti-pop micro-fade)
    * even for a child gated ON across it. Musical crossfades between
-   * cued children stay S13 future work.
+   * cued children (S13) are not built.
    */
   bool cutBetween(int a, int b) const { return cueAt(a) || cueAt(b); }
 
   /**
    * THE CUE MAP (docs/sequencer.md §3): song position -> content
    * position. Identity on plain steps; a cued step selects the song
-   * TOP span [0, len) — the per-step epoch re-base, i.e. exactly the
-   * time-map Q6's provisional ruling names ("a serial group is a
-   * composite whose time-map routes each child a sub-range of the
-   * cycle"). `rel` is folded internally.
+   * TOP span [0, len) — the per-step epoch re-base (Q6: a serial group
+   * is a composite whose time-map routes each child a sub-range of the
+   * cycle). `rel` is folded internally.
    */
   int64_t songToContent(int64_t rel) const {
     rel = fold(rel);

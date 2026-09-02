@@ -28,8 +28,7 @@
  *   devices.js    — audio device / input / latency-calibration mocks
  *   effects.js    — effect rack defaults and setters
  *   projects.js   — project model + in-memory session save/load
- *   scenarios.js  — test scenario loaders (boots 'empty': the launch
- *                   ritual is retired, Q17 parity)
+ *   scenarios.js  — test scenario loaders (boots 'empty', Q17 parity)
  */
 
 import { interceptUndoableCall, mockUndo, mockRedo } from './mock/undo.js';
@@ -147,8 +146,8 @@ export const handlers = {
     // The step audition (§11.2): a monitoring gesture — NOT undoable.
     auditionStep,
     // Track templates (Q17): createFrom is UNDOABLE as one step (see
-    // mock/undo.js); save writes the LIBRARY, not the graph. togglePlay
-    // is GONE (Q16: per-node play superseded).
+    // mock/undo.js); save writes the LIBRARY, not the graph. There is
+    // no per-node togglePlay (Q16).
     listTrackTemplates,
     saveTrackTemplate,
     createFromTrackTemplate,
@@ -171,10 +170,10 @@ export const handlers = {
  *
  * Unknown methods warn and resolve to null.
  */
-// The POLLS are exempt from the invocation trace (owner report
-// 2026-08-13, C++ bridge parity — logBridgeCall): the 50ms graph poll
-// and the 2s project poll are the heartbeat, not events; tracing them
-// buries every real call. Event-shaped methods all still trace.
+// The POLLS are exempt from the invocation trace (C++ bridge parity —
+// logBridgeCall): the 50ms graph poll and the 2s project poll are the
+// heartbeat, not events; tracing them buries every real call.
+// Event-shaped methods all trace.
 const QUIET_POLLS = new Set(['getGraphState', 'getProjectInfo']);
 
 export async function callNative(method, ...args) {

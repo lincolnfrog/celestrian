@@ -73,8 +73,8 @@ class Vst3Slot : public FxSlot {
   void processStereoMidi(float* l, float* r, int sample_count,
                          const juce::MidiBuffer& midi) override;
 
-  /** VST3 parameters belong to the plugin's editor (owner ruling
-   * 2026-08-15) — the bridge param surface rejects everything. */
+  /** VST3 parameters belong to the plugin's editor — the bridge param
+   * surface rejects everything. */
   bool setParam(const juce::String& key, double value) override;
 
   /** Metadata: {name, uid, file, missing, latency} — the state blob is
@@ -105,7 +105,8 @@ class Vst3Slot : public FxSlot {
   juce::String display_name_;  // plugin name for chips/windows
   juce::String file_;          // fileOrIdentifier (diagnostics/rescan)
   juce::MemoryBlock state_;    // last-known state (placeholder keeps it)
-  juce::MidiBuffer midi_scratch_;  // always empty; processBlock needs one
+  juce::MidiBuffer midi_scratch_;  // preallocated in doPrepare; empty on
+                                   // the no-MIDI path
 };
 
 }  // namespace celestrian::dsp

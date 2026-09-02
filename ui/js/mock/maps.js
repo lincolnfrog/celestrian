@@ -18,25 +18,23 @@ import { lcm } from '../math_utils.js';
 import { effectivePeriodOf } from './cycles.js';
 import { activeSeqLen, retimeSequences } from './sequence.js';
 
-/** PHASE-PRESERVING RE-ANCHOR (engine parity, 2026-07-25h/i): origin'
+/** PHASE-PRESERVING RE-ANCHOR (engine parity, continuityOrigin): origin'
  * such that the buffer position sounding right now keeps sounding when
- * the clip's map becomes `newMap` — only while the new map still
+ * the node's map becomes `newMap` — only while the new map still
  * COVERS it. When the edit removed the sounding region the origin
  * stays FIXED (an audible jump is expected, and the display stays
- * anchored at the click). Inactive maps = their full-span form. */
-/* TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09, engine parity —
- * see AudioEngine's twin note): a map edit on a playing clip keeps
- * the sounding sample sounding (origin re-anchor, unless the edit
- * REMOVED that region — then both anchors stay put and the jump is
- * expected), and the island epoch rides the SAME whole-Q delta so
- * the edited clip's frame position — the timeline the user drew —
- * is unchanged. The fold, not the clip, absorbs the difference. */
-/* Q18: ONE implementation for clips and stacks (engine parity
- * continuityOrigin) — the node's inner position now (the node
- * equation, state.innerUnder) re-anchored under the new map. For a
- * stack the returned origin moves its whole subtree (the caller's
- * shiftOrigins); an unanchored stack measures from its received cycle
- * top and nothing moves. */
+ * anchored at the click). Inactive maps = their full-span form.
+ *
+ * TWO-ANCHOR CONTINUITY (see AudioEngine's twin note): the island
+ * epoch rides the SAME whole-Q delta as the origin, so the edited
+ * node's frame position — the timeline the user drew — is unchanged.
+ * The fold, not the node, absorbs the difference.
+ *
+ * ONE implementation for clips and stacks (Q18): the node's inner
+ * position now (the node equation, state.innerUnder) re-anchored under
+ * the new map. For a stack the returned origin moves its whole subtree
+ * (the caller's shiftOrigins); an unanchored stack measures from its
+ * received cycle top and nothing moves. */
 function continuityOrigin(node, oldMap, newMap) {
     const dur = intrinsicOfNode(node);
     const eff = m => (m && mapActive(m) && mapPeriod(m) > 0)
@@ -73,15 +71,15 @@ function periodExcluding(node, skip) {
 
 /** The map-edit riders (engine parity: AudioEngine::attachMapEditRiders).
  * While playing, continuity re-anchors the origin so the sounding sample
- * keeps sounding. Then the CYCLE-TOP RULE (owner question 2026-08-18):
+ * keeps sounding. Then the CYCLE-TOP RULE:
  * if `node` DEFINES the cycle after the edit (its new period is a
  * multiple of Q and of every other loop's period) and the loop's heard
  * top (origin' + mapOffset(0)) is off the frame top by a whole number of
  * Qs, the epoch moves TO that top — the loop you just shaped fills the
  * frame from its own top (the visual successor of the commit re-base
  * and the Q13 sole-definer re-trim). Otherwise two-anchor continuity
- * (2026-08-09) rides the epoch by the origin's whole-Q delta. Nothing
- * audible moves either way. */
+ * rides the epoch by the origin's whole-Q delta. Nothing audible moves
+ * either way. */
 function applyMapEditRiders(node, oldMap, newMap) {
     // Q18 (engine parity attachMapEditRiders): a stack's frame is its
     // own origin once anchored, else its received cycle top; the riders
@@ -104,9 +102,8 @@ function applyMapEditRiders(node, oldMap, newMap) {
     const definer = newPeriod > 0 && (others <= 0 || newPeriod % others === 0);
     const topOffFrame = definer && posMod(top - epoch, newPeriod) !== 0;
     // The epoch moves in whole Qs. (Q18: no windowed-group guard is
-    // needed any more — a stack's map anchors at the stack's OWN
-    // origin, so an epoch move never re-selects content anywhere; the
-    // 2026-08-30 epochViewStep is gone, composition.md §8.)
+    // needed — a stack's map anchors at the stack's OWN origin, so an
+    // epoch move never re-selects content anywhere; composition.md §8.)
     const step = q > 0 ? q : 0;
     if (step > 0 && topOffFrame && posMod(top - epoch, step) === 0) {
         state.islandEpoch = top;
@@ -116,38 +113,15 @@ function applyMapEditRiders(node, oldMap, newMap) {
         state.islandEpoch = epoch + delta;
     }
 }
-/** Legacy name (tests import it). */
+/** Alias under the name the tests import. */
 export const applyTwoAnchorContinuity = applyMapEditRiders;
 
-/**
- * Set a node's single loop window [loopStart, loopEnd) — the phase-3
- * single-segment map form (an explicit window edit supersedes any
- * multi-segment override).
- *
- * Contract (engine parity, AudioEngine::setLoopPoints):
- *  - MID-TAKE GATE: a stack with a take recording in its subtree
- *    refuses (the take froze its map geometry at arm).
- *  - COHERENCE GUARD (owner ruling 2026-08-09): a window length that
- *    is neither a whole multiple nor an exact divisor of Q refuses —
- *    unless this very edit re-establishes Q (Q13 sole definer) or
- *    clears the window (length 0).
- *  - Q13 SOLE DEFINER: while the island's only committed content is
- *    this clip, the window re-establishes the STORED (Q, epoch),
- *    phase-preserving.
- *  - Otherwise, on a playing clip, TWO-ANCHOR CONTINUITY re-anchors
- *    origin and rides the epoch (see continuityOrigin above).
- *  - Refusals pop the dispatch's pre-pushed undo snapshot.
- */
-/** S16 (docs/sequencer.md §11.8, engine parity stampWindowDomain): a
- * window edit on a STACK stamps its domain — 'sequence' when authored
- * over an active sequence timeline, else 'intrinsic'. Undo restores the
- * stamp with the snapshot. */
 /** A stack's INNER cycle (engine StackNode::getIntrinsicDuration): the
  * LCM of its children's INTRINSIC durations (a member's raw take, a
  * nested stack's own inner cycle), one-shots excluded. (Folding the
- * children's EFFECTIVE periods here — the pre-2026-08-30 form —
- * diverged from the engine whenever a member carried a window: the
- * mock clamped a definer trim to the member window's length.) */
+ * children's EFFECTIVE periods here would diverge from the engine
+ * whenever a member carries a window: a definer trim would clamp to
+ * the member window's length.) */
 function stackInnerCycle(node) {
     let composite = 0;
     (node.nodes || []).forEach(c => {
@@ -158,15 +132,38 @@ function stackInnerCycle(node) {
     return composite;
 }
 
+/** S16 (docs/sequencer.md §11.8, engine parity stampWindowDomain): a
+ * window edit on a STACK stamps its domain — 'sequence' when authored
+ * over an active sequence timeline, else 'intrinsic'. Undo restores the
+ * stamp with the snapshot. */
 function stampWindowDomain(node) {
     if (node.type !== 'stack') return;
     node.windowDomain = activeSeqLen(node) > 0 ? 'sequence' : 'intrinsic';
 }
 
+/**
+ * Set a node's single loop window [loopStart, loopEnd) — the phase-3
+ * single-segment map form (an explicit window edit supersedes any
+ * multi-segment override).
+ *
+ * Contract (engine parity, AudioEngine::setLoopPoints):
+ *  - MID-TAKE GATE: a stack with a take recording in its subtree
+ *    refuses (the take froze its map geometry at arm).
+ *  - COHERENCE GUARD: a window length that is neither a whole multiple
+ *    nor an exact divisor of Q refuses — unless this very edit
+ *    re-establishes Q (Q13 sole definer) or clears the window
+ *    (length 0).
+ *  - Q13 SOLE DEFINER: while the island's only committed content is
+ *    this clip, the window re-establishes the STORED (Q, epoch),
+ *    phase-preserving.
+ *  - Otherwise, on a playing clip, TWO-ANCHOR CONTINUITY re-anchors
+ *    origin and rides the epoch (see continuityOrigin above).
+ *  - Refusals pop the dispatch's pre-pushed undo snapshot.
+ */
 export function setLoopPoints(id, loopStart, loopEnd) {
     const node = findNode(id);
-    // Unknown node = a refusal too (F-C): the dispatch pre-pushed a
-    // snapshot; leaving it made a no-op undo step (and ate the redo).
+    // Unknown node = a refusal too: the dispatch pre-pushed a snapshot;
+    // leaving it would make a no-op undo step (and eat the redo).
     if (!node) { popUndoForRefusal(); return; }
     // MID-TAKE MAP-EDIT GATE (engine parity, owner-ruled): a take
     // recording through this stack's map froze its geometry at arm —
@@ -177,8 +174,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         return;
     }
     // A NON-DEFINER stack window selects over its INNER cycle: an end
-    // past it is malformed — refused, as the engine refuses (parity
-    // with audit 2026-08-30 §1.5; the definer branch clamps instead).
+    // past it is malformed — refused, as the engine refuses (the
+    // definer branch clamps instead).
     // (An EMPTY stack accepts freely — pre-authored parts are legal;
     // the Q-establishment scrub clears what the grid cannot carry.)
     if (node.type === 'stack' && !isQ13DefinerStack(node) &&
@@ -191,21 +188,21 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             return;
         }
     }
-    // COHERENCE GUARD (owner ruling 2026-08-09, engine parity): a
-    // window length off the Q grid is refused — categorical, both
-    // sides — unless this very edit re-establishes Q (the Q13
-    // sole-definer re-trim below) or clears the window.
+    // COHERENCE GUARD (engine parity): a window length off the Q grid
+    // is refused — categorical, both sides — unless this very edit
+    // re-establishes Q (the Q13 sole-definer re-trim below) or clears
+    // the window.
     {
         const cs = Math.max(0, loopStart);
-        // Clamp to material even when there is NONE (F-A): an empty
-        // clip's window clamps to end 0 — i.e. clears — instead of
-        // storing a window over nothing.
+        // Clamp to material even when there is NONE: an empty clip's
+        // window clamps to end 0 — i.e. clears — instead of storing a
+        // window over nothing.
         const ce = node.type === 'clip'
             ? Math.min(loopEnd, node.duration || 0) : loopEnd;
-        // IDENTITY EDITS RECORD NOTHING (audit 2026-08-31 U3, engine
-        // parity): re-committing the stored window is a no-op — no
-        // undo step, and the redo branch survives. An installed
-        // override still applies (the edit supersedes it).
+        // IDENTITY EDITS RECORD NOTHING (engine parity): re-committing
+        // the stored window is a no-op — no undo step, and the redo
+        // branch survives. An installed override still applies (the
+        // edit supersedes it).
         const storedLs = node.loopStart || 0;
         const storedLe = node.loopEnd || 0;
         const sameCleared = !(ce > cs) && !(storedLe > storedLs);
@@ -242,8 +239,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     stampWindowDomain(node);
     // Clamp to the recorded material (engine parity): a fractional-Q
     // drag rounded past the take's end must not window silence. Even
-    // when there is NO material (F-A): an empty clip's window clamps
-    // to end 0 — cleared, never a window over nothing.
+    // when there is NO material: an empty clip's window clamps to
+    // end 0 — cleared, never a window over nothing.
     if (node.type === 'clip') {
         loopStart = Math.max(0, loopStart);
         loopEnd = Math.min(loopEnd, node.duration || 0);
@@ -272,9 +269,9 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
     } else if (!(loopEnd > loopStart) && isQ13SoleDefiner(node) &&
                (node.duration || 0) > 0) {
-        // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (audit 2026-08-31
-        // E8, engine parity): the definer's window was Q — clearing it
-        // restores the full take as the part: Q := D, epoch := origin.
+        // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (engine parity):
+        // the definer's window was Q — clearing it restores the full
+        // take as the part: Q := D, epoch := origin.
         retimeSequences(state.islandQ, node.duration);
         state.islandQ = node.duration;
         state.islandEpoch = node.origin || 0;
@@ -288,17 +285,17 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         // sounding now (state.nodeInner, measured from the STACK's own
         // origin) folds into the new window, origin' = t0 − pT, and the
         // origin shift moves the stack's whole SUBTREE (shiftOrigins),
-        // so the members follow their group with no per-member riders
-        // (the 2026-08-30 origin riders are gone). The window stays on
-        // the stack (it IS the part); children stay whole.
+        // so the members follow their group with no per-member riders.
+        // The window stays on the stack (it IS the part); children
+        // stay whole.
         // MEMBERS WHOLE (engine parity, the window riders on the
-        // stack-definer LoopPoints edit, 2026-08-30): a member still
-        // carrying its own single window (a group take committed
-        // against a locked Q, then left as the island's only content)
-        // would loop its slice under the stack's window while the trim
-        // view draws members whole. The snapshot undo restores them.
-        // (Before the inner cycle is read: the engine's inner is the
-        // members' RAW extent; whole members make the mock's agree.)
+        // stack-definer LoopPoints edit): a member still carrying its
+        // own single window (a group take committed against a locked
+        // Q, then left as the island's only content) would loop its
+        // slice under the stack's window while the trim view draws
+        // members whole. The snapshot undo restores them. (Before the
+        // inner cycle is read: the engine's inner is the members' RAW
+        // extent; whole members make the mock's agree.)
         for (const c of node.nodes || []) {
             if (c.type !== 'clip' || !(c.duration > 0) || c.isRecording) continue;
             if (Array.isArray(c.segments) && c.segments.length >= 2) continue;
@@ -330,8 +327,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             state.islandEpoch = origin1 + loopStart;
             console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
         } else if (!(loopEnd > loopStart) && inner > 0) {
-            // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (E8, one path
-            // with the clip): Q := the whole inner cycle, epoch := the
+            // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (one path with
+            // the clip): Q := the whole inner cycle, epoch := the
             // stack's origin (the content-frame identity).
             retimeSequences(state.islandQ, inner);
             state.islandQ = inner;
@@ -341,7 +338,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         }
     } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {
         // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders)
-        // — clips and stacks alike since Q18.
+        // — clips and stacks alike (Q18).
         applyMapEditRiders(node, oldMapPre,
             loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
                                 : { segs: [] });
@@ -393,8 +390,8 @@ export function setSegments(id, flat) {
     // Structural sanity (engine parity): ordered, disjoint, non-empty,
     // within the inner cycle.
     const intrinsic = intrinsicOfNode(node);
-    // An EMPTY clip has no material for a map to select (audit
-    // 2026-08-31 F-A, engine parity): refuse. Empty STACKS accept —
+    // An EMPTY clip has no material for a map to select (engine
+    // parity): refuse. Empty STACKS accept —
     // pre-authored parts are legal; the Q-establishment scrub clears
     // what the grid cannot carry.
     if (segs.length >= 2 && intrinsic <= 0 && node.type === 'clip') {
@@ -418,12 +415,12 @@ export function setSegments(id, flat) {
         else setLoopPoints(id, 0, 0);
         return;
     }
-    // COHERENCE GUARD (owner ruling 2026-08-09): the map's PERIOD must
-    // be a whole multiple of Q — categorical, both sides. One
-    // incoherent period LCM'd the effective cycle to 66187Q (field
-    // video 2026-08-08) and blanked the timeline. The sole exception
-    // is the Q13 sole-definer re-trim below, where the period
-    // *re-establishes* Q rather than fighting it.
+    // COHERENCE GUARD: the map's PERIOD must be a whole multiple (or
+    // exact divisor) of Q — categorical, both sides. One incoherent
+    // period would LCM the effective cycle into the tens of thousands
+    // of Qs and blank the timeline. The sole exception is the Q13
+    // sole-definer re-trim below, where the period *re-establishes* Q
+    // rather than fighting it.
     {
         const q13 = isQ13SoleDefiner(node) || isQ13DefinerStack(node);
         const q = state.islandQ;
@@ -501,7 +498,7 @@ export function setSegments(id, flat) {
         }
     } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {
         // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders)
-        // — clips and stacks alike since Q18.
+        // — clips and stacks alike (Q18).
         applyMapEditRiders(node, oldMap, { segs });
     }
     console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));
@@ -511,7 +508,7 @@ export function toggleLoopWindow(id) {
     // Fractal (I5, engine parity): clips toggle their single-segment
     // window exactly like stacks toggle their time-map.
     const node = findNode(id);
-    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal (F-C)
+    if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
     if (node) {
         // MID-TAKE MAP-EDIT GATE (see setLoopPoints).
         if (node.type === 'stack' && subtreeRecording(node)) {

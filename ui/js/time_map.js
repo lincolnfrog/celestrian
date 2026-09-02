@@ -91,9 +91,9 @@ export function heardOffsetOf(map, inner) {
 /** A PUBLISHED node's window-activity verdict — the engine's
  * `windowActive` when the field is present, else derived exactly the
  * way the engine does (not bypassed, and either a multi-segment map or
- * a forward single window). ONE copy (audit 2026-08-30 §4.3): the
- * composite mixdown, the timeline period math and the VM's member
- * checks all read this instead of restating the fallback. */
+ * a forward single window). ONE copy: the composite mixdown, the
+ * timeline period math and the VM's member checks all read this
+ * instead of restating the fallback. */
 export function nodeWindowActive(n) {
     return n.windowActive ?? (!n.loopBypassed &&
         ((Array.isArray(n.segments) && n.segments.length >= 4) ||
