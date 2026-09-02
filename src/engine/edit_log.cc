@@ -9,6 +9,7 @@
 #include <algorithm>
 
 #include "../clip_node.h"
+#include "../dsp/vst3_slot.h"
 #include "../stack_node.h"
 #include "../timing.h"
 #include "engine_internal.h"
@@ -120,6 +121,22 @@ void applyWindowRiders(
       node->setLoopPoints(r.start, r.end);
     }
   }
+}
+
+/** A take left the list at index k (docs/takes.md): comp cells naming
+ * it fall back to the active take, cells above it renumber; a comp
+ * naming nothing anymore clears. */
+void dropTakeFromComp(celestrian::ClipNode& clip, int k) {
+  std::vector<int> cells = clip.compCells();
+  if (cells.empty()) return;
+  bool any = false;
+  for (int& c : cells) {
+    if (c == k) c = -1;
+    else if (c > k) --c;
+    if (c >= 0) any = true;
+  }
+  if (any) clip.setCompCells(cells, clip.compCellLength());
+  else clip.setCompCells({}, 0);
 }
 
 /** The definer STACK's committed direct members (one take). */
@@ -475,6 +492,10 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           inv.iepoch = clip->getIntrinsicDuration();
           inv.d1 = (double)clip->getContentBase();
           inv.d2 = (double)clip->recordedLength();
+          // Every other take of the slot splices the same way (one
+          // period, one base — docs/takes.md); the inverse owns their
+          // pre-splice records. BEFORE spliceToMap rewrites the base.
+          inv.other_takes = clip->spliceOtherTakesToMap(*m);
           // MIDI content splices its note sequence too (phase 5) —
           // BEFORE spliceToMap rewrites the shared facts (base).
           if (clip->contentKind() == celestrian::ClipNode::ContentKind::Midi)
@@ -503,6 +524,10 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
                                           (int64_t)e.d1, (int64_t)e.d2));
         liftAncestorsOf(*clip, clip->origin_samples.load() - before_origin);
         if (e.midi) retireOwned(clip->unspliceMidi(std::move(e.midi)));
+        for (auto& d : clip->unspliceOtherTakes(std::move(e.other_takes))) {
+          retireOwned(std::move(d.buffer));
+          retireOwned(std::move(d.midi));
+        }
         clip->setMap(e.tmap);
         // Inverse of the inverse: the parameterless forward re-derives
         // (the override is present again).
@@ -624,12 +649,25 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       Edit inv(strip ? K::Take : K::Untake);
       // Every named clip must exist and be idle, or the edit is a Nop
       // (a deleted clip's take is gone with it — Remove owns that).
+      // A payload with a take index names a take of a multi-take slot
+      // (docs/takes.md): Untake removes the LAST take, Take appends —
+      // the slot itself keeps its content either way.
       std::vector<celestrian::ClipNode*> clips;
       for (const auto& tp : e.takes) {
         auto* clip = dynamic_cast<celestrian::ClipNode*>(find(tp.uuid));
         if (!clip || clip->isArmedOrRecording()) return {};
-        if (strip && clip->duration_samples.load() <= 0) return {};
-        if (!strip && clip->duration_samples.load() > 0) return {};
+        if (tp.take_index >= 0) {
+          if (clip->duration_samples.load() <= 0) return {};
+          if (strip && (tp.take_index < 1 ||
+                        clip->takeCount() != tp.take_index + 1))
+            return {};
+          if (!strip && clip->takeCount() != tp.take_index) return {};
+        } else {
+          if (strip && (clip->duration_samples.load() <= 0 ||
+                        clip->takeCount() > 1))
+            return {};
+          if (!strip && clip->duration_samples.load() > 0) return {};
+        }
         clips.push_back(clip);
       }
       // Island facts: capture current, then set the payload's.
@@ -637,15 +675,48 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       inv.iq = root_node->getQuantum();
       inv.iepoch = root_node->getEpoch();
       for (size_t i = 0; i < clips.size(); ++i) {
+        Edit::TakePayload& in = e.takes[i];
         Edit::TakePayload out;
-        out.uuid = e.takes[i].uuid;
-        if (strip) {
+        out.uuid = in.uuid;
+        out.take_index = in.take_index;
+        out.prev_active = in.prev_active;
+        if (in.take_index >= 0) {
+          celestrian::ClipNode& clip = *clips[i];
+          if (strip) {
+            // The comp rides the inverse; cells naming the removed
+            // take fall back to the active one meanwhile.
+            out.setsComp = true;
+            out.cells = clip.compCells();
+            out.cell_len = clip.compCellLength();
+            if (in.prev_active >= 0 && in.prev_active != clip.activeTake())
+              clip.selectTake(in.prev_active);
+            out.state = clip.removeTake(in.take_index);
+            dropTakeFromComp(clip, in.take_index);
+          } else {
+            if (!in.state.buffer) return {};
+            clip.insertTake(in.take_index, std::move(in.state));
+            clip.selectTake(in.take_index);
+            if (in.setsComp) clip.setCompCells(in.cells, in.cell_len);
+          }
+        } else if (strip) {
           out.state = clips[i]->stripTake();
         } else {
-          if (!e.takes[i].state.buffer) return {};
-          auto displaced = clips[i]->restoreTake(std::move(e.takes[i].state));
+          if (!in.state.buffer) return {};
+          auto displaced = clips[i]->restoreTake(std::move(in.state));
           retireOwned(displaced.first.release());
           retireOwned(displaced.second.release());
+        }
+        // The instrument rider (docs/vst3.md §11): the inverse takes
+        // the state current now, the payload's state goes live. A slot
+        // no longer on the chain drops the rider.
+        if (in.instrument_slot.isNotEmpty()) {
+          if (auto* instrument = dynamic_cast<celestrian::dsp::Vst3Slot*>(
+                  clips[i]->fxChain()->findSlot(in.instrument_slot))) {
+            out.instrument_slot = in.instrument_slot;
+            out.instrument_state = instrument->stateBlob();
+            if (in.instrument_state.getSize() > 0)
+              instrument->restoreState(in.instrument_state);
+          }
         }
         inv.takes.push_back(std::move(out));
       }
@@ -672,6 +743,69 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           }
         }
       }
+      return inv;
+    }
+    case K::SelectTake: {
+      // Takes (docs/takes.md): an atomic content-pointer swap; the
+      // inverse names the take that was active.
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
+      if (!clip || clip->isArmedOrRecording()) return {};
+      if (root_node->hasActiveTake()) return {};
+      if (e.index < 0 || e.index >= clip->takeCount() ||
+          e.index == clip->activeTake())
+        return {};
+      Edit inv(K::SelectTake);
+      inv.uuid = e.uuid;
+      inv.index = clip->activeTake();
+      if (!clip->selectTake(e.index)) return {};
+      return inv;
+    }
+    case K::DeleteTake: {
+      // Forward (no payload): detach take `index` — never the last one;
+      // the inverse OWNS the record (the owned-subtree argument) with
+      // the activity and comp to restore. With a payload: reinsert.
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
+      if (!clip || clip->isArmedOrRecording()) return {};
+      if (root_node->hasActiveTake()) return {};
+      Edit inv(K::DeleteTake);
+      inv.uuid = e.uuid;
+      if (e.takes.empty()) {
+        const int k = e.index;
+        if (clip->takeCount() < 2 || k < 0 || k >= clip->takeCount()) return {};
+        Edit::TakePayload tp;
+        tp.uuid = e.uuid;
+        tp.take_index = k;
+        tp.prev_active = clip->activeTake();
+        tp.setsComp = true;
+        tp.cells = clip->compCells();
+        tp.cell_len = clip->compCellLength();
+        tp.state = clip->removeTake(k);
+        if (!tp.state.buffer) return {};
+        dropTakeFromComp(*clip, k);
+        inv.takes.push_back(std::move(tp));
+        return inv;
+      }
+      Edit::TakePayload& tp = e.takes[0];
+      if (!tp.state.buffer || tp.take_index < 0 ||
+          tp.take_index > clip->takeCount())
+        return {};
+      clip->insertTake(tp.take_index, std::move(tp.state));
+      if (tp.prev_active >= 0) clip->selectTake(tp.prev_active);
+      if (tp.setsComp) clip->setCompCells(tp.cells, tp.cell_len);
+      inv.index = tp.take_index;
+      return inv;
+    }
+    case K::Comp: {
+      // The comp (docs/takes.md): the full cell array replaces the
+      // old one whole (seqlocked inline); the inverse carries the old.
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
+      if (!clip || clip->isArmedOrRecording()) return {};
+      if (root_node->hasActiveTake()) return {};
+      Edit inv(K::Comp);
+      inv.uuid = e.uuid;
+      inv.cells = clip->compCells();
+      inv.cell_len = clip->compCellLength();
+      clip->setCompCells(e.cells, e.cell_len);
       return inv;
     }
     case K::SequenceBypass: {
@@ -775,19 +909,22 @@ void AudioEngine::retireEdit(celestrian::Edit&& e) {
   retireOwned(std::move(e.buffer));
   retireOwned(std::move(e.node));
   retireOwned(std::move(e.node2));
-  // Take content (Kind::Take payloads) rides the same grace.
-  for (auto& tp : e.takes) {
-    retireOwned(std::move(tp.state.buffer));
-    retireOwned(std::move(tp.state.midi));
+  // Take content (Kind::Take payloads, detached takes of a slot, the
+  // pre-splice records of a slot's other takes) rides the same grace.
+  auto retireTake = [this](celestrian::ClipNode::TakeState& s) {
+    retireOwned(std::move(s.buffer));
+    retireOwned(std::move(s.midi));
     // TakeStorage rides the same grace: dropping it inline would
     // munmap/VirtualFree pages an in-flight callback may still be
     // reading through storage_rt_.
-    if (tp.state.storage != nullptr) {
+    if (s.storage != nullptr) {
       // shared_ptr wrapper: retire() takes a copyable std::function.
       retire([st = std::shared_ptr<celestrian::TakeStorage>(
-                  std::move(tp.state.storage))] {});
+                  std::move(s.storage))] {});
     }
-  }
+  };
+  for (auto& tp : e.takes) retireTake(tp.state);
+  for (auto& ot : e.other_takes) retireTake(ot.second);
   // A chain slot rides the same grace: the chain that referenced it was
   // itself just retired, so an in-flight callback may still process the
   // slot. The deleter holds the shared_ptr until the grace passes.
@@ -835,8 +972,13 @@ namespace {
 // of a trim (window + origin riders, or a lock-collapse) shifts the
 // cycle under the take exactly like a take edit would.
 bool movesIslandFacts(const celestrian::Edit& e) {
+  // Take-list edits (docs/takes.md) join the set: their appliers
+  // refuse under a live take, and a refusal must KEEP the entry.
   return e.kind == celestrian::Edit::Kind::Take ||
          e.kind == celestrian::Edit::Kind::Untake ||
+         e.kind == celestrian::Edit::Kind::SelectTake ||
+         e.kind == celestrian::Edit::Kind::DeleteTake ||
+         e.kind == celestrian::Edit::Kind::Comp ||
          e.kind == celestrian::Edit::Kind::CollapseTake ||
          e.kind == celestrian::Edit::Kind::CollapseGroup || e.setsIsland ||
          e.setsOrigin || !e.anchors.empty() || !e.windows.empty();

@@ -137,6 +137,9 @@ bool AudioEngine::loadSession(const juce::String& path) {
   // the epoch (wrong); this overrides it with the persisted values.
   root_node->setQuantum(loaded.q_samples, loaded.epoch);
   root_node->is_muted.store(loaded.root_muted);
+  // The master strip's output stage (B5): fader and balance on the root.
+  root_node->gain.store(loaded.root_gain);
+  root_node->pan.store(loaded.root_pan);
   celestrian::session_io::applyEffects(
       *root_node, loaded.root_effects, loaded.sample_rate,
       [this](celestrian::dsp::FxChain* old) { retireOwned(old); });

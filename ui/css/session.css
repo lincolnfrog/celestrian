@@ -303,6 +303,21 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     flex: none;
 }
 #master-monitor .vu-pair { display: flex; gap: 10px; align-items: center; }
+/* Master fx chip (B5): the root's rack, opened from the strip — the
+   rail fx chip's family (enabled count at rest, amber when live, an
+   inset ring while its row is open). */
+#master-fx-btn {
+    width: auto;
+    min-width: 30px;
+    height: 24px;
+    padding: 0 7px;
+    border-radius: 5px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-dim);
+}
+#master-fx-btn.on { color: var(--tape); border-color: var(--tape); background: var(--panel-2); }
+#master-fx-btn.open { box-shadow: inset 0 0 0 1px var(--tape); }
 /* Master fader: a slim vertical fader beside the meters — root-node
    gain (0..unity, the no-boost law). The grip tracks the pointer 1:1;
    double-click for unity. (A fader, not a knob: the master is a fader
@@ -395,6 +410,37 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     box-shadow: 0 0 7px var(--amber);
     opacity: 0.15;
     transition: opacity 120ms;
+}
+/* The clip LATCH (B5): the follower read full scale — solid arm-red,
+   held until the face is clicked (vu_meter.js clearClip). Reads by fill
+   and steadiness, not hue alone: the momentary −3 dB warning breathes,
+   the latch does not. */
+#master-monitor .vu .peak.latched {
+    background: var(--arm);
+    box-shadow: 0 0 8px var(--arm), 0 0 0 1px rgba(0,0,0,.6);
+    opacity: 1;
+    transition: none;
+}
+#master-monitor .vu.clipped { cursor: pointer; }
+/* The peak-hold tick: a thin marker parked at the highest needle angle
+   of the last ~1.5 s, then falling (vu_meter.js meterStep). No
+   transition — a held peak is a fact, not a motion. */
+#master-monitor .vu .hold {
+    position: absolute;
+    left: 50%; bottom: 0;
+    width: 2px; height: 36px;
+    transform-origin: 50% 100%;
+    transform: translateX(-50%) rotate(-26deg);
+    pointer-events: none;
+}
+#master-monitor .vu .hold::after {
+    content: "";
+    position: absolute;
+    left: 0; top: 0;
+    width: 2px; height: 6px;
+    border-radius: 1px;
+    background: var(--cyan);
+    box-shadow: 0 0 3px var(--cyan);
 }
 #master-monitor .vu .needle {
     position: absolute;
@@ -902,6 +948,17 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .rail-btn.input-btn {
     width: auto;
     min-width: 34px;
+    padding: 0 5px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+/* The monitoring chip (Q20) sits beside the input picker in the same
+   compact voice; lit (tape) while the input is heard through the
+   track. */
+.rail-btn.mon-btn {
+    width: auto;
+    min-width: 30px;
     padding: 0 5px;
     font-size: 0.65rem;
     font-weight: 600;
@@ -1478,6 +1535,147 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .win-chip.toggle { pointer-events: auto; cursor: pointer; }
 .win-chip.toggle:hover { color: var(--tape); }
 
+/* ===== 16b. Takes (docs/takes.md): the take chip, list and comp cells ===== */
+/* The take chip: T<active>/<n> in the head row beside the period-source
+   toggle (compact — every head pixel is the name's). Quiet with one
+   take (hover-revealed), cyan-tinged when a comp is set, lit while the
+   lane is in comp mode (the chip is the exit). */
+.rail-btn.take-btn {
+    flex: none;
+    width: auto; min-width: 26px; height: 20px;
+    padding: 0 5px;
+    font-size: 0.62rem; line-height: 1;
+    color: var(--text-dim);
+    transition: opacity 120ms ease;
+}
+.rail-btn.take-btn.quiet { opacity: 0; }
+.lane-rail:hover .rail-btn.take-btn.quiet { opacity: 0.6; }
+.rail-btn.take-btn.comped { color: var(--cyan); }
+.rail-btn.take-btn.on {
+    color: var(--ground); background: var(--tape); border-color: var(--tape);
+    opacity: 1;
+}
+/* ● as NEW TAKE: the ring carries a dot — a take exists, another will
+   layer onto the slot (fill reads the state, never hue). */
+.rail-btn.arm-btn.retake { position: relative; }
+.rail-btn.arm-btn.retake::after {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border-radius: 50%;
+    background: var(--arm);
+    opacity: 0.55;
+}
+.rail-btn.arm-btn.retake.on::after,
+.rail-btn.arm-btn.retake.recording::after { display: none; }
+/* The take list: the input-menu shape under the rail. */
+.take-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 8px;
+    right: 8px;
+    z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--panel-2);
+    border: 1px solid var(--btn-border);
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+.take-menu-note { padding: 6px 10px; font-size: 0.72rem; color: var(--text-dim); }
+.take-item { display: flex; align-items: center; gap: 4px; border-radius: 6px; }
+.take-item:hover { background: var(--lane); }
+.take-pick {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 8px;
+    text-align: left;
+    padding: 6px 8px;
+    background: transparent; border: none; box-shadow: none;
+}
+.take-label { font-size: 0.72rem; min-width: 3ch; color: var(--text); }
+.take-item.current .take-label { color: var(--tape); }
+.take-item.current .take-label::after { content: " ✓"; }
+.take-wave { flex: none; border-radius: 3px; background: var(--lane); }
+.take-delete {
+    flex: none;
+    width: 22px; height: 22px;
+    border: none; background: none; box-shadow: none;
+    color: var(--text-dim);
+    opacity: 0.5;
+    font-size: 0.9rem; line-height: 1;
+}
+.take-delete:hover { opacity: 1; color: #fff; background: var(--rec); border-radius: 6px; }
+.take-delete:disabled { opacity: 0.15; background: none; cursor: default; }
+.take-comp-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 10px;
+    text-align: left;
+    padding: 8px 10px;
+    font-size: 0.78rem;
+    background: transparent;
+    border: none; border-top: 1px solid var(--line);
+    border-radius: 0 0 6px 6px;
+    box-shadow: none;
+}
+.take-comp-row:hover { background: var(--lane); }
+.take-comp-row.on { color: var(--tape); }
+/* A retaking lane's resting tiles: the slot is silent while the new
+   take is live — dimmed, dashed (an outline: the state-metrics law). */
+.rep.silent {
+    opacity: 0.3;
+    outline: 1px dashed var(--text-dim);
+    outline-offset: -1px;
+    border-radius: 3px;
+}
+/* Comp cells: one band per Q cell over the take tile. At rest only
+   cells naming another take render (tinted in the take's hue, its
+   slice drawn over); in comp mode every cell is a dim band with a
+   badge and opts in to the pointer (the overlay layer is inert). */
+.comp-cell {
+    position: absolute;
+    top: 0; bottom: 0;
+    pointer-events: none;
+    z-index: 4;
+    border-left: 1px dashed var(--map-amber-40);
+}
+.comp-cell.editing {
+    pointer-events: auto;
+    cursor: pointer;
+    background: rgba(12, 8, 5, 0.28);
+}
+.comp-cell.editing:hover { background: rgba(228, 180, 90, 0.10); }
+.comp-cell.tint {
+    background: color-mix(in srgb, var(--take-hue) 16%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--take-hue) 55%, transparent);
+}
+.comp-cell.tint.editing {
+    background: color-mix(in srgb, var(--take-hue) 22%, transparent);
+}
+.comp-slice { position: absolute; left: 0; top: 3px; height: calc(100% - 6px); }
+.comp-badge {
+    position: absolute;
+    top: 4px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(10, 11, 13, 0.85);
+    color: var(--text-dim);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 7;
+}
+.comp-cell.tint .comp-badge { color: var(--take-hue); }
+.win-chip.comp-done-chip {
+    right: 4px;
+    left: auto !important;
+    cursor: pointer;
+    color: var(--tape);
+    border-color: var(--tape);
+}
+
 /* ===== 17. Playhead ===== */
 /* The one playhead (I8) */
 #playhead {
@@ -1705,6 +1903,42 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     color: #ff9a86;
     line-height: 1.4;
 }
+
+/* The preferences panel (preferences.js, tasks.md B8): the audio-panel
+   chrome, dropped DOWN out of the transport like #project-menu —
+   sections for the device pickers, calibration and the projects root. */
+#prefs-panel {
+    display: none;
+    top: calc(100% + 6px);
+    bottom: auto;
+    min-width: 360px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+}
+#prefs-panel.open { display: block; }
+#prefs-panel .ap-section { padding: 2px 0 6px; border-top: 1px solid var(--line); }
+#prefs-panel .ap-label {
+    padding: 8px 8px 2px;
+    font-size: 0.65rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+}
+#prefs-panel .ap-row button { flex: none; padding: 4px 10px; font-size: 0.75rem; }
+#prefs-panel #calibration-status { flex: 1 1 auto; min-width: 0; color: var(--text-dim); }
+#prefs-panel #projects-root {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;         /* a long path keeps its TAIL (the folder name) */
+    text-align: left;
+    color: var(--text);
+}
+
+/* An OS file dragged over a lane body (import_drop.js, docs/import.md):
+   the body outlines in the material hue until the drop lands. */
+.lane-body.drop-file { outline: 1px dashed var(--amber); outline-offset: -2px; }
 
 /* ===== 21. Loading overlay ===== */
 /* Boot splash (session.css is a render-blocking <link>, so these

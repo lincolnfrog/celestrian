@@ -200,6 +200,55 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // audio thread sees no pointer race.
   bool saveSession(const juce::String& path);
   bool loadSession(const juce::String& path);
+
+  // --- Bounce (Q19, docs/bounce.md). Message thread only.
+  /**
+   * Renders node `uuid` OFFLINE through the real render path to a
+   * stereo 32-bit float WAV at the device rate: the island root for
+   * one EFFECTIVE cycle (the whole song under an active sequence) from
+   * the island epoch; any other node for one effective period from its
+   * frame top (origin + a0; the island epoch for an unanchored stack).
+   * Past the span every leaf's content falls silent while the racks
+   * keep running, and the file ends with the effect tail (through its
+   * first block under −90 dBFS; 10 s cap). The device callback is
+   * removed for the duration (silence out, no concurrent graph run) and
+   * re-added after — live fx tails are perturbed by the render, the
+   * monotonic transport is not. Refused (false) while any take is
+   * armed or recording, when the target has no committed content, or
+   * when the file cannot be written. Parent directories are created.
+   */
+  bool bounce(const juce::String& uuid, const juce::String& wav_path);
+  // --- Audio file import (docs/import.md). Message thread only.
+  /**
+   * Imports a WAV/AIFF/FLAC as a committed take. The file decodes on
+   * the message thread (channels beyond two fold onto the stereo pair;
+   * a mismatched rate resamples to the device rate) and lands one of
+   * two ways:
+   *   - on an EMPTY clip (or a stack, which gains a fresh clip child
+   *     named after the file — one undoable Insert): a first take at
+   *     origin = epoch + the nearest Q boundary to `at_q` (Q11), its
+   *     length through the record path's hysteresis law
+   *     (timing::snapCommittedDuration); on a pre-Q island the file
+   *     establishes Q like a first take;
+   *   - on a COMMITTED clip: a NEW TAKE of the slot, cut or zero-
+   *     padded to the slot's period (docs/takes.md — one origin, one
+   *     period per slot), active on arrival.
+   * Both forms ride Edit::Take/Untake (undoable) and settle anchors.
+   * Refused (false, logged) while any take is live or armed, on a MIDI
+   * track, on a full take list, or when the file cannot be decoded.
+   */
+  bool importAudio(const juce::String& uuid, const juce::String& path,
+                   int64_t at_q_num, int64_t at_q_den);
+  /**
+   * A MIDI clip's notes for the lane's piano-roll tile (docs/vst3.md
+   * §11): note-on/off PAIRED per channel and pitch into
+   * [[posQnum, posQden, note, velocity, lenQnum, lenQden], ...] —
+   * content positions as QTime on the island rate, base-relative,
+   * inside the committed span; an unpaired note-on runs to the take
+   * end. Empty for an audio clip, an empty clip, or while a take is
+   * live on it.
+   */
+  juce::var getMidiNotes(const juce::String& uuid) const;
   /** Project-model save (docs/projects.md): options carry display name
    * / template-strip / incremental-mirror. Message thread. */
   bool saveSessionTo(const juce::File& dir,
@@ -208,6 +257,35 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                                         dir, opts);
   }
   bool hasActiveTake() const { return root_node->hasActiveTake(); }
+
+  // --- Takes and comping (docs/takes.md). Message thread only.
+  /**
+   * NEW TAKE: arm a further take of a COMMITTED clip — or, on a stack,
+   * of every committed direct clip child as one performance (Q7) —
+   * without emptying it. The slot keeps its origin, period, loop points
+   * and base; each member arms at its own next top (t ≡ origin mod
+   * period), captures exactly one period and auto-finishes; a stop
+   * before that cancels the new take. Logged as one Take/Untake entry
+   * once settled (reconcileTakes): undo restores the previous active
+   * take. Refused (logged) with no committed target, under an active
+   * ancestor map, on a one-shot, when the list is full, or when the
+   * next take's kind would differ from the slot's.
+   */
+  void newTake(const juce::String& uuid);
+  /** Make take `index` the clip's active take (Edit::SelectTake,
+   * undoable). Refused mid-take and out of range. */
+  void selectTake(const juce::String& uuid, int index);
+  /** Remove take `index` (Edit::DeleteTake, undoable; never the last
+   * take). The comp drops cells naming it. Refused mid-take. */
+  void deleteTake(const juce::String& uuid, int index);
+  /** Set the clip's comp: one take index per Q cell of its period
+   * (cells = ceil(period / Q), −1 = the active take); empty clears.
+   * Edit::Comp, undoable. Refused mid-take, on MIDI clips, on a wrong
+   * cell count or an out-of-range take index. */
+  void setComp(const juce::String& uuid, const std::vector<int>& cells);
+  /** Peaks of take `index` of a clip (the take-list view). */
+  juce::var getTakeWaveform(const juce::String& uuid, int index,
+                            int num_peaks) const;
   /** Compaction: shrink idle committed takes to their recorded
    * material (atomic content swap + reclaimer retire). Message thread;
    * driven by the app heartbeat (ProjectManager::tick) and tests. */
@@ -317,15 +395,21 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void moveChainSlot(const juce::String& uuid, const juce::String& slot_uuid,
                      int new_index);
   /**
-   * Inserts a PREPARED-by-us VST3 slot (docs/vst3.md phase 3) as an
-   * undoable AddSlot edit; index < 0 appends. The slot arrives from
-   * MainComponent's async instantiation completion (the engine owns no
-   * format manager) and lands ENABLED — an added plugin is audible.
-   * Message thread.
+   * Inserts a PREPARED-by-us plugin slot (docs/vst3.md phase 3; VST3 or
+   * AudioUnit, §11) as an undoable AddSlot edit; index < 0 appends. The
+   * slot arrives from MainComponent's async instantiation completion
+   * (the engine owns no format manager) and lands ENABLED — an added
+   * plugin is audible. Message thread.
    */
+  void addPluginSlotToChain(const juce::String& uuid,
+                            std::shared_ptr<celestrian::dsp::FxSlot> slot,
+                            int index);
+  /** The VST3-era name of addPluginSlotToChain — the same verb. */
   void addVst3SlotToChain(const juce::String& uuid,
                           std::shared_ptr<celestrian::dsp::FxSlot> slot,
-                          int index);
+                          int index) {
+    addPluginSlotToChain(uuid, std::move(slot), index);
+  }
   /** Undoable RemoveSlot edit; VST3 slots only (the built-in four are
    * the panel's fixed cards). The undo entry owns the removed slot —
    * and its plugin instance — until history drops it (reclaimer). */
@@ -367,6 +451,16 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * gesture like solo: not undoable, not persisted. Message thread.
    */
   void setMidiArmed(const juce::String& uuid, bool on);
+  /**
+   * Software input monitoring (Q20): `on` makes the clip render its
+   * input channel(s) from the pre-record ring through its own rack,
+   * gate, gain and pan — heard whether idle, armed or capturing, with
+   * no latency beyond the device round trip. Clips only; OFF by
+   * default. A monitoring gesture like solo: not undoable. Persisted
+   * (session `monitor` key) and captured by track templates as input
+   * setup. Message thread.
+   */
+  void setMonitor(const juce::String& uuid, bool on);
   /**
    * Opens every available MIDI input through the device manager and
    * (once) registers this engine as the all-devices callback. Called
@@ -557,6 +651,11 @@ class AudioEngine : public juce::AudioIODeviceCallback,
     // a looping step; empty = plain take.
     juce::String gate_stack;
     int gate_step = -1;
+    // A NEW TAKE of committed slots (docs/takes.md): settled through
+    // ClipNode::settleRetake; prev_active[i] is member i's active take
+    // before the arm (the Untake payload restores it).
+    bool retake = false;
+    std::vector<int> prev_active;
   };
   std::vector<PendingTake> pending_takes_;
   void reconcileTakes();
@@ -579,6 +678,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   int64_t calculateEffectiveCycleLength() const;
 
   juce::AudioDeviceManager device_manager;
+  // True once initialiseAudioDevice registered this engine as the
+  // device callback — a bounce detaches and re-attaches exactly that
+  // registration (tests, which never open a device, register nothing).
+  bool device_callback_registered_ = false;
 
   // The root of the hierarchical audio graph — always a stack (it is
   // the island root: owns Q, epoch, and the take-lifecycle counter).

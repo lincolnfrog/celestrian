@@ -17,20 +17,20 @@ namespace celestrian {
  *
  * Responsibilities:
  *  - `juce::AudioPluginFormatManager` with the VST3 format registered
- *    (format-generic by construction — AU later is one addFormat call).
+ *    everywhere and AudioUnit on macOS (JUCE_PLUGINHOST_AU, docs/vst3.md
+ *    §11) — format-generic by construction.
  *  - `juce::KnownPluginList`, persisted as XML in the app data
  *    directory (the same directory audio_device.xml lives in; tests
  *    pass a temp directory instead).
- *  - OUT-OF-PROCESS background scan: this process only enumerates
- *    candidate files; every probe of not-yet-known plugin code happens
- *    in a scan worker — our own executable re-launched with
- *    `--scan-worker` (src/plugin_scan_worker.h has the protocol). A
- *    plugin that crashes or hangs kills or times out the WORKER; the
- *    coordinator blacklists that file, starts a fresh worker on the
- *    remainder, and the app never notices beyond a status line. The
- *    dead-man's-pedal (crash once, blacklist on relaunch) is the
- *    in-process fallback when no worker command is configured; its
- *    leftovers are honoured at construction.
+ *  - OUT-OF-PROCESS background scan, the ONLY probe path: this process
+ *    only enumerates candidate files; every probe of not-yet-known
+ *    plugin code happens in a scan worker — our own executable
+ *    re-launched with `--scan-worker` (src/plugin_scan_worker.h has the
+ *    protocol). A plugin that crashes or hangs kills or times out the
+ *    WORKER; the coordinator blacklists that file, starts a fresh
+ *    worker on the remainder, and the app never notices beyond a
+ *    status line. No plugin code is ever loaded here by a scan: with no
+ *    worker command the scan ends with an error instead.
  *
  * Licensing note: JUCE bundles the VST3 SDK headers under the SDK's
  * GPLv3 option, which combines with this project's AGPLv3 exactly as
@@ -38,34 +38,34 @@ namespace celestrian {
  */
 class PluginHostService {
  public:
-  /** `data_directory` holds known_plugins.xml, the pedal file, and the
-   * scan work files; the app passes <user app data>/Celestrian, tests
-   * pass a temp dir. The constructor loads the persisted list, applies
-   * any pedal blacklisting left over from a crashed in-process scan,
-   * and persists that blacklisting immediately (so a second bad plugin
-   * crashing the next scan cannot un-blacklist the first). The scan
-   * worker command defaults to this very executable + --scan-worker. */
+  /** `data_directory` holds known_plugins.xml and the scan work files;
+   * the app passes <user app data>/Celestrian, tests pass a temp dir.
+   * The constructor loads the persisted list. The scan worker command
+   * defaults to this very executable + --scan-worker. */
   explicit PluginHostService(const juce::File& data_directory);
   ~PluginHostService();
 
   /**
    * The known-plugin registry as a JSON-ready var array, name-sorted:
-   * [{name, uid, file, maker, category, version, isInstrument}].
+   * [{name, uid, file, format, maker, category, version, isInstrument}].
    * `uid` is the format-specific identity string
    * (PluginDescription::createIdentifierString) the chain save format
-   * keys on (docs/vst3.md §6).
+   * keys on (docs/vst3.md §6); `format` is the hosting format's name
+   * ("VST3", "AudioUnit").
    */
   juce::var getKnownPluginsVar() const;
 
   /**
-   * Starts a background scan of the default VST3 directories plus
-   * `extra_path` when non-empty. No-op while a scan is running.
+   * Starts a background scan of every format's default locations (the
+   * VST3 directories; on macOS the AudioUnit component registry too)
+   * plus `extra_path` when non-empty. No-op while a scan is running.
    * Already-known and blacklisted files are not re-probed; the
    * completed scan persists the list (including any new blacklistings).
    *
-   * `include_default_locations = false` scans ONLY `extra_path` — for
-   * tests that must not touch the machine's real plugin folders (the
-   * app always scans the defaults).
+   * `include_default_locations = false` scans ONLY `extra_path` for
+   * VST3 bundles — for tests that must not touch the machine's real
+   * plugins (AudioUnits have no directory to confine to, so they are
+   * excluded with the defaults; the app always scans the defaults).
    */
   void startScan(const juce::String& extra_path = juce::String(),
                  bool include_default_locations = true);
@@ -84,9 +84,10 @@ class PluginHostService {
   void saveKnownPlugins() const;
 
   /** The command prefix the scan is launched with; the coordinator
-   * appends `<list file> <results file>`. Empty = probe in-process
-   * (the pedal fallback). Tests point it at a broken binary to pin the
-   * failure mode; the app leaves the default. Not while scanning. */
+   * appends `<list file> <results file>`. Empty = a scan with anything
+   * to probe ends with an error (nothing is ever probed in-process).
+   * Tests point it at a broken binary to pin the failure mode; the app
+   * leaves the default. Not while scanning. */
   void setScanWorkerCommand(const juce::StringArray& command);
   juce::StringArray scanWorkerCommand() const { return scan_worker_command_; }
 
@@ -100,20 +101,16 @@ class PluginHostService {
   juce::AudioPluginFormatManager& formats() { return format_manager_; }
 
   juce::File knownPluginsFile() const;
-  juce::File pedalFile() const;
   /** Where the coordinator writes list/results files for its workers. */
   juce::File scanWorkDirectory() const;
 
   static constexpr const char* kKnownPluginsFileName = "known_plugins.xml";
-  static constexpr const char* kPedalFileName = "scan_dead_mans_pedal.txt";
   static constexpr const char* kScanWorkDirectoryName = "scan_work";
 
  private:
   class ScanThread;
 
   void loadKnownPlugins();
-  /** The VST3 format instance owned by the format manager. */
-  juce::AudioPluginFormat* vst3Format() const;
 
   juce::File data_directory_;
   juce::AudioPluginFormatManager format_manager_;

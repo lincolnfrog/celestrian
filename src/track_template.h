@@ -34,9 +34,11 @@ namespace celestrian::track_templates {
 
 /** Serialize `node`'s structure + names + inputs to a var tree:
  *  { type: 'clip'|'stack', name, inputChannel?, inputChannelR?,
- *    children?: [...], sequence?: {...} }. Performance facts (audio,
- *  durations, origins, windows) are never captured — a template is
- *  pre-Q by construction, like its whole-session cousin.
+ *    monitor?, children?: [...], sequence?: {...} }. Input setup is
+ *  the channels AND the Q20 monitoring toggle (`monitor`, additive:
+ *  present only when on). Performance facts (audio, durations,
+ *  origins, windows) are never captured — a template is pre-Q by
+ *  construction, like its whole-session cousin.
  *
  *  SEQUENCES are the exception (S14, docs/sequencer.md §9): a song's
  *  shape is a saved decision, not saved music. Step lengths are
@@ -52,6 +54,7 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
     o->setProperty("type", "clip");
     o->setProperty("inputChannel", clip->getInputChannel());
     o->setProperty("inputChannelR", clip->getInputChannelRight());
+    if (clip->isMonitoring()) o->setProperty("monitor", true);
   } else if (auto* stack = dynamic_cast<const StackNode*>(&node)) {
     o->setProperty("type", "stack");
     juce::Array<juce::var> kids;
@@ -112,6 +115,7 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
         name.isEmpty() ? juce::String("New Clip") : name, sample_rate);
     clip->setInputChannel((int)v.getProperty("inputChannel", 0));
     clip->setInputChannelRight((int)v.getProperty("inputChannelR", -1));
+    clip->setMonitoring((bool)v.getProperty("monitor", false));
     return clip;
   }
   if (type == "stack") {

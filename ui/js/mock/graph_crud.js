@@ -258,6 +258,13 @@ export function setNodeInputRight(id, channelIndex) {
     }
 }
 
+// Software input monitoring (Q20) — clips only; a monitoring gesture
+// like solo, NOT undoable (engine parity: AudioEngine::setMonitor).
+export function setMonitor(id, on) {
+    const node = findNode(id);
+    if (node && node.type === 'clip') node.monitor = !!on;
+}
+
 // Mixer knob — like effect params, NOT undoable (engine parity).
 export function setNodePan(id, pan) {
     const node = findNode(id);

@@ -166,3 +166,36 @@ field bug so far in one glance.
 - A release that briefly snaps a bracket back then forward is the
   reconcile-during-drag guard regressed (or a hold longer than 1.5 s:
   bridge latency).
+
+### Field checklist: the 1.0 session (tasks.md B9)
+
+One scripted session, run with a real interface on macOS and on
+Windows before a build is called 1.0. Every step names the ruling it
+exercises; a dump (📦) after each take is the evidence.
+
+1. Launch to an empty session; press `R`. A track exists, is armed, and
+   capture begins at the next boundary (Q17 spark, Q11).
+2. Play a scratch loop ~4 bars; stop. Trim the dead air with the
+   brackets while it plays; the loop does not jump (Q13, phase-preserving
+   trim). Q reads the trimmed length.
+3. + → Drums (a 5-mic group template); ● on the group. All five mics
+   commit with ONE origin and ONE duration (Q7, I2). Trim the group's
+   window: the mics stay one take and the epoch is origin + start (Q18).
+4. Record bass over it; the drum trim is locked (Q13 lock-collapse); the
+   bass anchors on the grid.
+5. Toggle the drums to a one-shot (↺/1×): they fire once per cycle from
+   their take mark and rest silent (Q18, Q5). Toggle back.
+6. Window the bass to [1Q, 2Q) while playing: audio continuous at the
+   edit, the window top at the frame top (cycle-top rule); ⌘Z restores.
+7. Open the sequencer on the root; make three steps (intro / verse /
+   chorus) with gates; cue the chorus. Playback follows the song; the
+   frame-health badge stays quiet (S-series, sequencer.md).
+8. Bounce the song (project menu). The WAV is one song long plus tails
+   and equals what the speakers played (Q19).
+9. Save; quit; relaunch; open. Everything above is exactly as left,
+   including the one-shot knob, the windows, the sequence and the
+   group's origin (session_io, Q18 persistence).
+10. Optional interface features: turn software monitoring on for a track
+    (Q20) and confirm the latency readout matches the calibration.
+
+Any step that fails goes into tasks.md with the dump attached.

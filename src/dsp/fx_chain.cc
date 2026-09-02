@@ -198,9 +198,13 @@ bool FxChain::hasEnabledInstrument() const {
 }
 
 bool FxChain::hasInstrumentSlot() const {
+  return firstInstrumentSlot() != nullptr;
+}
+
+FxSlot* FxChain::firstInstrumentSlot() const {
   for (const auto& slot : slots_)
-    if (slot->isInstrument()) return true;
-  return false;
+    if (slot->isInstrument()) return slot.get();
+  return nullptr;
 }
 
 bool FxChain::anyEnabled() const {

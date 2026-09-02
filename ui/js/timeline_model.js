@@ -271,14 +271,6 @@ export function launchPointFor(startPhase, duration) {
 }
 
 /**
- * Normalized playhead position (0..1) for a clip.
- */
-export function playheadPercent(masterPos, launchPoint, duration) {
-    if (duration <= 0) return 0;
-    return ((masterPos + launchPoint) % duration) / duration;
-}
-
-/**
  * The boundary at which a stop request is honored: the next clean multiple of
  * Q, or — for short recordings (L < Q/2) — the smallest subdivision of Q that
  * is still ahead of the recorded length. Mirrors timing::nextStopBoundary.

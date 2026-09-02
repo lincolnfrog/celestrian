@@ -42,6 +42,10 @@ if (useMock) {
             setMasterPos: mockBackend.setMasterPos,
             setIsPlaying: mockBackend.setIsPlaying,
             callNative: mockBackend.callNative,
+            // The last accepted bounce request (mock/bounce.js)
+            getLastBounce: mockBackend.getLastBounce,
+            // The last accepted import request (mock/import.js)
+            getLastImport: mockBackend.getLastImport,
             // Transport simulation
             startTransport: mockBackend.startTransport,
             pauseTransport: mockBackend.pauseTransport,

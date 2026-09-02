@@ -15,7 +15,8 @@
 
 import { ctx } from './context.js';
 import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ, tickSetSig } from './sv_util.js';
-import { drawWaveform } from '../canvas_renderer.js';
+import { drawWaveform, drawMidiTile } from '../canvas_renderer.js';
+import { sliceNotesToTile } from '../midi_notes.js';
 import { generateCompositeWaveform } from '../composite_waveform.js';
 import { calculateStackLCM } from '../timeline_model.js';
 import { oneTakeDuration } from '../view_model.js';
@@ -28,6 +29,7 @@ import { wireBandCreate, appendCutBands, appendTrimGrips }
     from './map_bands.js';
 import { wireWindow } from './window_edit.js';
 import { isOverlayFrozen } from './gesture.js';
+import { appendCompCells, patchCompCanvases, compKey } from './comp_cells.js';
 
 /* Surplus rep tiles fade out over this long before removal (instant
  * removal mid-morph leaves a momentary gap — the commit "squish"). */
@@ -89,10 +91,17 @@ function layersOf(body) {
  *                 the live bar).
  *   rotFrac     — phase rotation: where the loop's heard top sits
  *                 within the tile (heard tiles sit on the frame grid).
+ *   midi        — a MIDI lane's notes (docs/vst3.md §11): {notes (Q
+ *                 units, midi_notes.notesFromRows), range (the take's
+ *                 pitch fit), intrinsicQ}. The tile paints note bars
+ *                 instead of the envelope; `src` and `rotFrac` slice
+ *                 the notes exactly as they slice peaks. Identity-
+ *                 tracked on the notes array like peaks.
  */
 function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
-                              live, pxPerSlot, src, isGhost, rotFrac }) {
+                              live, pxPerSlot, src, isGhost, rotFrac, midi }) {
     let canvas = div.firstElementChild;
+    if (midi && midi.notes && midi.notes.length) peaks = midi.notes;
     if (!peaks || !peaks.length) {
         // Peaks can be transiently empty around a commit (cache regen /
         // fetch in flight): KEEP the last drawn content — stale for a
@@ -111,7 +120,9 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
         Math.round(cssHeight) + ':' + isComposite + ':' + !!live + ':' +
         Math.round((pxPerSlot || 0) * 1000) + ':' +
         (src ? src.map(r => r[0].toFixed(4) + '-' + r[1].toFixed(4)).join(',') : '') +
-        ':' + !!isGhost + ':' + ((rotFrac || 0).toFixed(4));
+        ':' + !!isGhost + ':' + ((rotFrac || 0).toFixed(4)) +
+        (midi ? ':m' + midi.range.lo + '-' + midi.range.hi + ':' +
+            (midi.intrinsicQ || 0).toFixed(4) : '');
     if (div._peaksRef === peaks && div._dk === dk) return false;
 
     // CONTENT SWAP → CROSS-FADE: a new peaks array replacing an old one
@@ -138,6 +149,14 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
         canvas.style.width = Math.round(cssWidth) + 'px';
         drawWaveform(canvas, peaks, { cssWidth, cssHeight,
             fixedBoost: div._liveBoost, pxPerPeak: pxPerSlot || undefined });
+    } else if (midi) {
+        if (div._liveBoost !== undefined) delete div._liveBoost;
+        canvas.style.width = Math.round(cssWidth) + 'px';
+        // The piano-roll tile: the same content slicing (srcSegs,
+        // rotation) the envelope gets, then bars instead of peaks.
+        drawMidiTile(canvas,
+            sliceNotesToTile(midi.notes, midi.intrinsicQ, src, rotFrac || 0),
+            { cssWidth, cssHeight, isEcho: !!isGhost, range: midi.range });
     } else {
         if (div._liveBoost !== undefined) delete div._liveBoost;
         // Pinned, like the live bar: the div's transition reveals/clips
@@ -220,6 +239,9 @@ export function patchLaneBody(row, lane, vm, aux) {
     // full raw take on its own horizontal frame — an inspector, not a
     // timeline. Everything below maps through this local cycle.
     const cycleQ = lane.frameQ || vm.cycleQ;
+    // The file-drop handler (lane_build.js) maps its x through this
+    // frame: an import lands on the Q the pointer is over.
+    body._cycleQ = cycleQ;
     const { grid, reps: repsL, overlay } = layersOf(body);
     const bodyW = body.clientWidth;
     const peaks = lanePeaks(lane, aux, bodyW);
@@ -269,9 +291,11 @@ export function patchLaneBody(row, lane, vm, aux) {
     // (canvas) trails inside by the latency compensation, and the bar's
     // background marks the being-written zone. Ending the bar at
     // start+length would leave the playhead visibly ahead of the
-    // waveform.
+    // waveform. A NEW TAKE (docs/takes.md) keeps the slot's resting
+    // tiles beneath the bar, `silent` — the slot renders silence while
+    // the take is live; a plain recording lane has none.
     const tiles = wantBar
-        ? [{
+        ? [...lane.reps, {
             startQ: barStartQ,
             endQ: Math.max(vm.playheadQ,
                 barStartQ + Math.max(lane.recordingLengthQ, MIN_BAR_LEN_Q)),
@@ -301,11 +325,29 @@ export function patchLaneBody(row, lane, vm, aux) {
             snapThenAnimate(div);
             repsL.appendChild(div);
         }
+        // A MIDI lane's resting tiles draw note bars from the fetched
+        // notes (docs/vst3.md §11); the live bar and a retake's silent
+        // tiles keep the velocity envelope.
+        const midi = lane.isMidi && !rep.bar && !rep.silent && aux.midiNotes
+            ? aux.midiNotes.get(lane.id) || null : null;
         const cls = 'rep' + (rep.ghost ? ' ghost' : '') +
+            (rep.silent ? ' silent' : '') +
+            (midi ? ' midi' : '') +
             (rep.bar
                 ? ' recording-bar' + (lane.throughMap ? ' map-bar' : '')
                 : '');
         if (div.className !== cls) div.className = cls;
+        const noteCount = midi ? String(midi.notes.length) : '';
+        if ((div.dataset.notes || '') !== noteCount) {
+            if (noteCount) div.dataset.notes = noteCount;
+            else delete div.dataset.notes;
+        }
+        // A silent tile draws the ACTIVE take from the per-take cache:
+        // the lane's live array holds the new take's bar peaks.
+        const tilePeaks = rep.silent
+            ? (typeof aux.takePeaks === 'function'
+                ? aux.takePeaks(lane.id, lane.activeTake || 0) : null)
+            : peaks;
         // The live bar draws at a FIXED px-per-slot scale: a peak's
         // pixels are a function of its slot index only, never of the
         // growing count — fit-to-width would remap every column each
@@ -321,11 +363,13 @@ export function patchLaneBody(row, lane, vm, aux) {
             cssW = Math.max(MIN_TILE_PX, Math.ceil(peaks.length * pxPerSlot));
         }
         const redrew = drawRepCanvas(div, {
-            peaks, cssWidth: cssW, cssHeight: bodyH,
+            peaks: tilePeaks, cssWidth: cssW, cssHeight: bodyH,
             isComposite: lane.kind === 'group', live: !!rep.bar, pxPerSlot,
             src: rep.srcSegs || null,
             isGhost: !!rep.ghost,
             rotFrac: rep.srcTopFrac || 0,
+            midi: midi ? { notes: midi.notes, range: midi.range,
+                           intrinsicQ: lane.intrinsicQ || 0 } : null,
         });
 
         // MORPH ONLY PURE MOVES; SNAP RE-LAYOUTS. When the canvas was
@@ -351,7 +395,10 @@ export function patchLaneBody(row, lane, vm, aux) {
     // the gesture (same node-replacement class as the setText law).
     const armedEmpty = (lane.kind === 'clip' && !lane.recording &&
         lane.reps.length === 0 && lane.armed) || (lane.recording && lane.pendingStart);
-    const armQ = vm.armAtQ % cycleQ;
+    // A pending NEW TAKE waits for the SLOT's top (view_model armAtQ),
+    // not the next Q boundary.
+    const retakePending = !!(lane.retake && lane.pendingStart);
+    const armQ = (retakePending ? lane.armAtQ : vm.armAtQ) % cycleQ;
     // Cut-band creation is wired ONCE per body and reads per-patch
     // state — refresh it before any early return so a lane changing
     // views never leaves a stale (wrong-frame) editor behind.
@@ -440,7 +487,9 @@ export function patchLaneBody(row, lane, vm, aux) {
          lane.windowEditing || false, lane.parentMapSegs || null,
          // The drag closure converts frame Q → samples with vm.quantum
          // and clamps to intrinsicQ: a change in either must rebuild.
-         vm.quantum, lane.intrinsicQ || 0, !!lane.isQDefiner]);
+         vm.quantum, lane.intrinsicQ || 0, !!lane.isQDefiner,
+         // The comp cells (docs/takes.md) rebuild with the comp.
+         compKey(lane), retakePending]);
 
     // The heard-time WINDOW CURSOR: where in its window this lane is
     // sounding right now (the engine publishes the window phase on
@@ -470,7 +519,9 @@ export function patchLaneBody(row, lane, vm, aux) {
             m.style.left = pct(armQ, cycleQ);
             const label = el('div', 'arm-label');
             label.style.left = pct(armQ, cycleQ);
-            label.textContent = '● at ' + (armQ === 0 ? '↺' : fmtQ(armQ) + 'Q');
+            label.textContent = retakePending
+                ? '● new take at the top'
+                : '● at ' + (armQ === 0 ? '↺' : fmtQ(armQ) + 'Q');
             o.append(m, label);
         }
         if (win) {
@@ -547,7 +598,13 @@ export function patchLaneBody(row, lane, vm, aux) {
             o.appendChild(makeDoneChip(lane.id,
                 'Close the take view (Esc)'));
         }
+        // The comp (docs/takes.md): cells over the take tile — the
+        // tinted ones at rest, every one in comp mode.
+        appendCompCells(o, lane, vm, body, cycleQ);
     });
+    // Slice canvases draw as their take peaks arrive (per poll, outside
+    // the keyed rebuild — the cache answers asynchronously).
+    patchCompCanvases(overlay, lane, aux, bodyW, bodyH, cycleQ);
 }
 
 /**

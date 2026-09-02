@@ -54,7 +54,7 @@ struct GraphSnapshot;
  *    island / stop generations that let the audio thread adopt multi-field
  *    edits as one fact.
  *  - Recording context: context_loop (the longest committed sibling — arm
- *    math), the latency compensation, is_recording.
+ *    math), the latency compensation.
  *  - Render context: context_cycle (the Q5 one-shot period), map +
  *    map_count (the innermost active map), gate_g0/g1 (the sequencer gate
  *    ramp), any_solo.
@@ -69,7 +69,6 @@ struct ProcessContext {
   double sample_rate = 44100.0;
   int num_samples = 0;
   bool is_playing = false;
-  bool is_recording = false;
 
   // Global transport master position (in samples)
   int64_t master_pos = 0;
@@ -191,6 +190,13 @@ struct ProcessContext {
   // gate in gateEndpoints) so effect tails ring through a closed gate.
   float gate_g0 = 1.0f;
   float gate_g1 = 1.0f;
+
+  // THE BOUNCE TAIL (docs/bounce.md): true past the bounced span —
+  // every leaf renders SILENCE into its rack in place of content (a
+  // closed gate with no ramp) while gates, racks and output stages run
+  // unchanged, so effect tails ring past the end. Stacks pass it down
+  // untouched; the live callback never sets it.
+  bool content_silent = false;
 
   // The innermost enclosing ACTIVE map (empty when none): set by a
   // mapping stack in childContext for its whole subtree, alongside

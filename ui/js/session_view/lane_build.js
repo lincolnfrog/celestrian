@@ -7,10 +7,12 @@
 
 import { ctx } from './context.js';
 import { el, setText, parseDropIds } from './sv_util.js';
+import { dragHasFiles, dropFrameQ } from '../import_drop.js';
 import { selection, clearSelection, toggleSelect } from './selection.js';
 import { buildGainDial, buildPanDial } from './dials.js';
 import { buildNavDock } from './teleport.js';
 import { toggleInputMenu } from './input_menu.js';
+import { toggleTakeMenu } from './take_menu.js';
 import { openCreationMenu } from './creation_menu.js';
 import { buildFxRow } from './fx_row.js';
 import { buildSeqGrid } from './seq_grid.js';
@@ -158,6 +160,21 @@ export function buildLane(lane) {
         });
         head.appendChild(ps);
     }
+    // The TAKE chip (docs/takes.md) — clips only, in the HEAD beside
+    // the period-source toggle (the foot row is at the rail's width):
+    // `T<active>/<n>`, quiet with one take. Click opens the take list;
+    // in comp mode the click closes the editor (the chip is the exit).
+    if (lane.kind === 'clip') {
+        const takeBtn = el('button', 'rail-btn take-btn mono quiet',
+            { textContent: 'T1', title: 'Takes' });
+        takeBtn.style.display = 'none';
+        takeBtn.addEventListener('click', () => {
+            const l = row._lane;
+            if (l && l.compMode) ctx.cb.onCompMode(l.id, false);
+            else toggleTakeMenu(row);
+        });
+        head.appendChild(takeBtn);
+    }
     head.appendChild(buildGainDial(row));
     head.appendChild(buildPanDial(row));
     head.appendChild(del);
@@ -212,6 +229,19 @@ export function buildLane(lane) {
             title: 'Recording input — click to choose' });
         input.addEventListener('click', () => toggleInputMenu(row));
         foot.appendChild(input);
+        // Software input monitoring (Q20): hear this track's input
+        // through its rack, gain and pan. Off by default — most
+        // interfaces monitor directly, so the engine never doubles the
+        // signal unasked. The tooltip carries the calibrated round
+        // trip (patchRail); a monitoring gesture like solo, not
+        // undoable.
+        const mon = el('button', 'rail-btn mon-btn mono', {
+            textContent: 'mon', title: 'monitor input · not calibrated' });
+        mon.addEventListener('click', () => {
+            const l = row._lane;
+            if (l) ctx.cb.onMonitor(l.id, !l.monitor);
+        });
+        foot.appendChild(mon);
     }
 
     if (lane.kind === 'group') {
@@ -226,6 +256,29 @@ export function buildLane(lane) {
     rail.appendChild(foot);
 
     const body = el('div', 'lane-body');
+
+    // AUDIO FILE IMPORT (docs/import.md): an OS file dropped on the
+    // lane body becomes a take at the Q the pointer is over — the x
+    // maps through the lane's frame (body._cycleQ, patchLaneBody).
+    // Rail drags carry no files and pass by untouched.
+    body.addEventListener('dragover', e => {
+        if (!dragHasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        body.classList.add('drop-file');
+    });
+    body.addEventListener('dragleave', () => body.classList.remove('drop-file'));
+    body.addEventListener('drop', e => {
+        if (!dragHasFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        body.classList.remove('drop-file');
+        const l = row._lane;
+        if (!l || !ctx.cb.onImportDrop) return;
+        const r = body.getBoundingClientRect();
+        const q = dropFrameQ(r.width > 0 ? (e.clientX - r.left) / r.width : 0,
+                             body._cycleQ || 0);
+        ctx.cb.onImportDrop(l.id, q, Array.from(e.dataTransfer.files || []));
+    });
 
     row.append(rail, body, buildNavDock(row));
     return row;

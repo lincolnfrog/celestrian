@@ -12,25 +12,34 @@ namespace celestrian {
  * exit flag every 100 ms and kills its worker on the way out, so
  * shutdown never waits on a probe).
  *
- * Enumeration (walking directories for .vst3 bundles) runs here, in
- * this process — no plugin code is involved. Probing runs in a worker
- * process per src/plugin_scan_worker.h; this thread tails the worker's
- * results file. The in-process path (`runInProcess`) is the
- * pedal-protected fallback, used only when no worker command is set.
+ * Enumeration (walking directories for .vst3 bundles; listing the
+ * AudioUnit component registry on macOS) runs here, in this process —
+ * no plugin code is involved. Probing runs ONLY in a worker process per
+ * src/plugin_scan_worker.h; this thread tails the worker's results
+ * file. Without a worker command a scan with pending files ends with
+ * an error: this process never loads plugin code to probe it.
  */
 class PluginHostService::ScanThread : public juce::Thread {
  public:
-  ScanThread(PluginHostService& owner, juce::FileSearchPath search_path)
+  ScanThread(PluginHostService& owner, juce::FileSearchPath search_path,
+             bool include_default_locations)
       : juce::Thread("Celestrian plugin scan"),
         owner_(owner),
-        search_path_(std::move(search_path)) {}
+        search_path_(std::move(search_path)),
+        include_default_locations_(include_default_locations) {}
 
   void run() override {
     enumerate();
-    if (owner_.scan_worker_command_.isEmpty())
-      runInProcess();
-    else
+    // A fresh work directory per scan: its list/results files are the
+    // record of which workers THIS scan launched.
+    owner_.scanWorkDirectory().deleteRecursively();
+    if (pending_.isEmpty()) {
+      // Nothing to probe: no worker, no error.
+    } else if (owner_.scan_worker_command_.isEmpty()) {
+      setError("no scan worker configured - nothing was probed");
+    } else {
       runOutOfProcess();
+    }
     // Persist everything the scan learned, including the files it
     // blacklisted. Reached on the way out of a stopThread too — the
     // work done so far is worth keeping.
@@ -44,9 +53,15 @@ class PluginHostService::ScanThread : public juce::Thread {
 
   /** Fills `pending_` with the files worth probing: everything the
    * formats find on the search path that is neither already listed
-   * (with an unchanged modification time) nor blacklisted. */
+   * (with an unchanged modification time) nor blacklisted. A format
+   * without directories to search (AudioUnit lists the whole component
+   * registry whatever the path) only joins a default-locations scan —
+   * a confined scan stays confined. */
   void enumerate() {
     for (auto* format : owner_.format_manager_.getFormats()) {
+      if (!include_default_locations_ &&
+          format->getDefaultLocationsToSearch().getNumPaths() == 0)
+        continue;
       const auto candidates = format->searchPathsForPlugins(
           search_path_, /*recursive=*/true, /*allowAsync=*/false);
       for (const auto& file : candidates) {
@@ -94,24 +109,6 @@ class PluginHostService::ScanThread : public juce::Thread {
     pending_.removeString(file);
     ++done_;
     updateProgress();
-  }
-
-  // -- fallback: probe in this process, pedal-protected --------------------
-
-  void runInProcess() {
-    auto* format = owner_.vst3Format();
-    if (format == nullptr) return;
-    while (!pending_.isEmpty() && !threadShouldExit()) {
-      const auto file = pending_[0];
-      setCurrent(file);
-      // The dead-man's-pedal: a crash here leaves the file named for
-      // the next launch to blacklist (constructor).
-      owner_.pedalFile().replaceWithText(file + "\n");
-      juce::OwnedArray<juce::PluginDescription> found;
-      owner_.known_plugins_.scanAndAddFile(file, true, found, *format);
-      owner_.pedalFile().deleteFile();
-      finishFile(file);
-    }
   }
 
   // -- out of process ------------------------------------------------------
@@ -182,7 +179,6 @@ class PluginHostService::ScanThread : public juce::Thread {
 
   void runOutOfProcess() {
     const auto work_dir = owner_.scanWorkDirectory();
-    work_dir.deleteRecursively();
     work_dir.createDirectory();
 
     for (int spawn = 1; !pending_.isEmpty() && !threadShouldExit(); ++spawn) {
@@ -264,6 +260,7 @@ class PluginHostService::ScanThread : public juce::Thread {
 
   PluginHostService& owner_;
   juce::FileSearchPath search_path_;
+  const bool include_default_locations_;
   juce::StringArray pending_;
   int total_ = 0;
   int done_ = 0;
@@ -272,20 +269,12 @@ class PluginHostService::ScanThread : public juce::Thread {
 PluginHostService::PluginHostService(const juce::File& data_directory)
     : data_directory_(data_directory) {
   format_manager_.addFormat(new juce::VST3PluginFormat());
+#if JUCE_PLUGINHOST_AU && JUCE_MAC
+  // AudioUnit hosting (docs/vst3.md §11): the same registry, scan
+  // worker, and chain slot; identities carry the format name.
+  format_manager_.addFormat(new juce::AudioUnitPluginFormat());
+#endif
   loadKnownPlugins();
-  // Crash recovery for the in-process path: a pedal file with content
-  // is the fingerprint of a scan that died mid-probe. Blacklist the
-  // culprit so the next scan walks past it instead of crashing again.
-  const int blacklisted_before = known_plugins_.getBlacklistedFiles().size();
-  juce::PluginDirectoryScanner::applyBlacklistingsFromDeadMansPedal(
-      known_plugins_, pedalFile());
-  // Persist the blacklisting NOW, not at the end of the next clean
-  // scan: with two bad plugins, the next scan dies on the second one
-  // before it ever saves, and an unsaved first culprit comes back to
-  // crash the launch after that (an endless crash loop). Pinned by
-  // plugin_host_tests.
-  if (known_plugins_.getBlacklistedFiles().size() > blacklisted_before)
-    saveKnownPlugins();
 
   // The default worker is this very executable in --scan-worker mode
   // (the app and CelestrianTests both carry the flag).
@@ -308,19 +297,8 @@ juce::File PluginHostService::knownPluginsFile() const {
   return data_directory_.getChildFile(kKnownPluginsFileName);
 }
 
-juce::File PluginHostService::pedalFile() const {
-  return data_directory_.getChildFile(kPedalFileName);
-}
-
 juce::File PluginHostService::scanWorkDirectory() const {
   return data_directory_.getChildFile(kScanWorkDirectoryName);
-}
-
-juce::AudioPluginFormat* PluginHostService::vst3Format() const {
-  for (auto* format : format_manager_.getFormats())
-    if (format->getName() == "VST3") return format;
-  jassertfalse;  // registered in the constructor — cannot be missing
-  return nullptr;
 }
 
 void PluginHostService::loadKnownPlugins() {
@@ -349,6 +327,7 @@ juce::var PluginHostService::getKnownPluginsVar() const {
     entry->setProperty("name", type.name);
     entry->setProperty("uid", type.createIdentifierString());
     entry->setProperty("file", type.fileOrIdentifier);
+    entry->setProperty("format", type.pluginFormatName);
     entry->setProperty("maker", type.manufacturerName);
     entry->setProperty("category", type.category);
     entry->setProperty("version", type.version);
@@ -363,15 +342,14 @@ void PluginHostService::startScan(const juce::String& extra_path,
   if (scanning_.load()) return;
   if (scan_thread_ != nullptr) scan_thread_->stopThread(5000);
 
-  auto* format = vst3Format();
-  if (format == nullptr) return;
-
   juce::FileSearchPath search_path;
-  if (include_default_locations)
-    search_path = format->getDefaultLocationsToSearch();
+  if (include_default_locations) {
+    for (auto* format : format_manager_.getFormats())
+      search_path.addPath(format->getDefaultLocationsToSearch());
+  }
   if (extra_path.isNotEmpty()) search_path.add(juce::File(extra_path));
 
-  data_directory_.createDirectory();  // pedal + work files need a home
+  data_directory_.createDirectory();  // the work files need a home
   {
     const juce::ScopedLock lock(status_lock_);
     current_name_.clear();
@@ -380,7 +358,8 @@ void PluginHostService::startScan(const juce::String& extra_path,
   }
   scan_progress_.store(0.0f);
   scanning_.store(true);
-  scan_thread_ = std::make_unique<ScanThread>(*this, search_path);
+  scan_thread_ = std::make_unique<ScanThread>(*this, search_path,
+                                              include_default_locations);
   scan_thread_->startThread();
 }
 
@@ -400,7 +379,9 @@ juce::var PluginHostService::getScanStatusVar() const {
   status->setProperty("count", known_plugins_.getNumTypes());
   status->setProperty("blacklistCount",
                       known_plugins_.getBlacklistedFiles().size());
-  status->setProperty("outOfProcess", !scan_worker_command_.isEmpty());
+  // Probing is out-of-process by construction; the field stays for
+  // the UI's status line.
+  status->setProperty("outOfProcess", true);
   return juce::var(status);
 }
 

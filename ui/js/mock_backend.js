@@ -21,7 +21,8 @@
  *   cycles.js     — committed/effective island cycle math
  *   graph_crud.js — structural edits, toggles, per-node knobs
  *   maps.js       — loop windows, multi-segment maps, bypass
- *   recording.js  — arm/stop/commit lifecycle + recView
+ *   recording.js  — arm/stop/commit lifecycle + recView + newTake
+ *   takes.js      — the take list, the comp, per-take peaks
  *   transport.js  — the simulated clock + published masterPos view
  *   publish.js    — getState/enrichNodes/VU + test clock hooks
  *   waveform.js   — deterministic peak synthesis
@@ -36,14 +37,15 @@ import {
     createNode, deleteNode, renameNode, reorderNode,
     combineNodes, toggleSolo, toggleMute,
     setNodeInput, setNodeInputRight, setNodePan, setNodeGain,
-    setPeriodSource,
+    setPeriodSource, setMonitor,
 } from './mock/graph_crud.js';
 import {
     saveTrackTemplate, listTrackTemplates, createFromTrackTemplate,
 } from './mock/track_templates.js';
 import { setLoopPoints, setSegments, toggleLoopWindow } from './mock/maps.js';
 import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
-import { startRecordingInNode, stopRecordingInNode } from './mock/recording.js';
+import { startRecordingInNode, stopRecordingInNode, newTake } from './mock/recording.js';
+import { selectTake, deleteTake, setComp, getTakeWaveform } from './mock/takes.js';
 import { togglePlayback, seekTransport } from './mock/transport.js';
 import { getState } from './mock/publish.js';
 import { getWaveform } from './mock/waveform.js';
@@ -63,7 +65,11 @@ import {
     saveSession, loadSession, getProjectInfo, renameProject, saveProjectNow,
     listTemplates, listRecentProjects, newProjectFromTemplate,
     openProjectPath, saveAsTemplate, duplicateProject,
+    setProjectsRoot, chooseProjectsRoot,
 } from './mock/projects.js';
+import { bounce, bounceWithDialog } from './mock/bounce.js';
+import { importAudio, importAudioWithDialog } from './mock/import.js';
+import { getMidiNotes } from './mock/midi.js';
 import './mock/scenarios.js';  // module load runs the launch-ritual boot
 
 // The public test surface (index_test.html, backend.js, and the node
@@ -72,6 +78,12 @@ export { getState, setMasterPos, setIsPlaying } from './mock/publish.js';
 export { startTransport, pauseTransport, advanceBy,
          SIMULATED_SAMPLES_PER_SECOND } from './mock/transport.js';
 export { loadScenario } from './mock/scenarios.js';
+// The last accepted bounce request (Q19) — what the e2e reads after
+// the project menu's "Bounce song…".
+export { getLastBounce } from './mock/bounce.js';
+// The last accepted import request (docs/import.md) — what the e2e
+// reads after a menu import or a lane drop.
+export { getLastImport } from './mock/import.js';
 // The mock's sample rate — every rate-dependent value derives from it.
 // Set it BEFORE loadScenario (fixture lengths are read at load time);
 // ?rate= / CELESTRIAN_MOCK_RATE do this early enough automatically.
@@ -100,18 +112,40 @@ export const handlers = {
     stopRecordingInNode,
     getGraphState: getState,
     getWaveform,
+    // Takes and comping (docs/takes.md): newTake arms like record (its
+    // commit rides the take's pending snapshot); the rest are undoable.
+    newTake,
+    selectTake,
+    deleteTake,
+    setComp,
+    getTakeWaveform,
     createNode,
     deleteNode,
     undo: mockUndo,
     redo: mockRedo,
     saveSession,
     loadSession,
+    // Bounce (Q19): records the request; refuses under a live take.
+    bounce,
+    bounceWithDialog,
+    // Audio file import (docs/import.md): synthesizes the take,
+    // records the request; UNDOABLE (the dispatch snapshot).
+    importAudio,
+    importAudioWithDialog,
+    // MIDI lane rendering (docs/vst3.md §11): paired notes on demand.
+    getMidiNotes,
+    // Preferences: the base folder (projects root + template library).
+    setProjectsRoot,
+    chooseProjectsRoot,
     renameNode,
     reorderNode,
     combineNodes,
     getInputList,
     setNodeInput,
     setNodeInputRight,
+    // Software input monitoring (Q20): a monitoring gesture — NOT
+    // undoable (absent from UNDOABLE, like solo and the mixer knobs).
+    setMonitor,
     setNodePan,
     setNodeGain,
     setPeriodSource,

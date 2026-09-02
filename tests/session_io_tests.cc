@@ -304,6 +304,51 @@ class SessionIoTests : public juce::UnitTest {
                  (*nodes)[0].getProperty("id", "").toString(),
              "uuid stable across save->load->save->load");
     }
+
+    beginTest(
+        "root output stage (master fader / balance) round-trips; absent "
+        "reads unity");
+    {
+      // The root is not in `nodes`: its fader and balance ride the
+      // bundle top level like its mute and rack (B5).
+      StackNode root("MasterRoot");
+      root.setQuantum(Q, epoch);
+      root.gain.store(0.5f);
+      root.pan.store(-0.25f);
+
+      auto dir = freshTempDir("master");
+      expect(session_io::save(root, (double)Q, dir), "save");
+      auto loaded = session_io::load(dir, (double)Q);
+      expect(loaded.ok, "load ok");
+      expectWithinAbsoluteError(loaded.root_gain, 0.5f, 1e-6f,
+                                "root gain restored");
+      expectWithinAbsoluteError(loaded.root_pan, -0.25f, 1e-6f,
+                                "root pan restored");
+
+      // Through the engine: the published root carries the loaded stage.
+      AudioEngine engine;
+      expect(engine.loadSession(dir.getFullPathName()), "engine loadSession");
+      auto state = engine.getGraphState();
+      expectWithinAbsoluteError((double)state.getProperty("gain", 1.0), 0.5,
+                                1e-6, "engine root gain");
+      expectWithinAbsoluteError((double)state.getProperty("pan", 0.0), -0.25,
+                                1e-6, "engine root pan");
+
+      // A bundle written before the master strip carries neither key:
+      // unity / center, never silent.
+      auto legacy = freshTempDir("master_legacy");
+      legacy.createDirectory();
+      expect(legacy.getChildFile("session.json")
+                 .replaceWithText("{\"version\":1,\"qSamples\":0,"
+                                  "\"epoch\":0,\"nodes\":[]}"),
+             "write legacy bundle");
+      auto old = session_io::load(legacy, (double)Q);
+      expect(old.ok, "legacy load ok");
+      expectWithinAbsoluteError(old.root_gain, 1.0f, 1e-6f,
+                                "absent rootGain reads unity");
+      expectWithinAbsoluteError(old.root_pan, 0.0f, 1e-6f,
+                                "absent rootPan reads center");
+    }
   }
 };
 

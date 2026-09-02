@@ -27,6 +27,8 @@
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
+#include "../src/dsp/vst3_slot.h"
+#include "stub_plugin_instance.h"
 #include "test_utils.h"
 
 namespace celestrian {
@@ -290,6 +292,71 @@ class TakeUndoTests : public juce::UnitTest {
       expectEquals(bitsOf(gatesOf(engine), g), juce::String(""),
                    "the group's row is untouched - a deeper take lands ungated");
       expect(engine.canUndo(), "the take itself is still undoable");
+    }
+
+    beginTest("MIDI take: the instrument's state rides the undo entry");
+    {
+      // docs/vst3.md 11: the entry carries the instrument slot's state
+      // at commit; undo restores it, the inverse taking the state
+      // current at that moment (copy-swap), so redo brings that back.
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      engine.createNode("clip");
+      const juce::String c = lastTopId(engine);
+      auto instance = std::make_unique<test_utils::StubSynthInstance>();
+      auto* synth = instance.get();
+      synth->patch = 1.0f;  // the sound the take is recorded with
+      engine.addPluginSlotToChain(
+          c,
+          std::make_shared<dsp::Vst3Slot>(std::move(instance), "Stub-synth-uid",
+                                          "Stub Synth", "/stub/StubSynth.vst3",
+                                          /*is_instrument=*/true),
+          -1);
+      engine.startRecordingInNode(c);
+      process(20000);
+      engine.stopRecordingInNode(c);
+      for (int i = 0; i < 400 && engine.hasActiveTake(); ++i) process(512);
+      engine.getGraphState();
+      expect(test_utils::isClipCommitted(engine, c), "MIDI take committed");
+      expect(engine.canUndo(), "the take is an undo step");
+      synth->patch = 2.0f;  // a tweak after the take
+      engine.undo();
+      expectEquals(propOf(engine, c, "duration"), 0.0, "undo: take stripped");
+      expectWithinAbsoluteError(synth->patch, 1.0f, 1e-6f,
+                                "undo: the instrument sounds as the take did");
+      expectEquals(synth->state_restores, 1, juce::String("one restore"));
+      engine.redo();
+      expect((int64_t)propOf(engine, c, "duration") > 0, "redo: take back");
+      expectWithinAbsoluteError(synth->patch, 2.0f, 1e-6f,
+                                "redo: the state current at undo time");
+      engine.undo();
+      expectWithinAbsoluteError(synth->patch, 1.0f, 1e-6f,
+                                "undo again: the take's state again");
+    }
+
+    beginTest("audio take: no instrument rider");
+    {
+      AudioEngine engine;
+      auto process = makeProcess(engine);
+      engine.createNode("clip");
+      const juce::String c = lastTopId(engine);
+      auto instance = std::make_unique<test_utils::StubPluginInstance>(0.5f);
+      auto* effect = instance.get();
+      engine.addPluginSlotToChain(
+          c,
+          std::make_shared<dsp::Vst3Slot>(std::move(instance), "Stub-uid",
+                                          "Stub Gain", "/stub/StubGain.vst3"),
+          -1);
+      engine.startRecordingInNode(c);
+      process(20000);
+      engine.stopRecordingInNode(c);
+      for (int i = 0; i < 400 && engine.hasActiveTake(); ++i) process(512);
+      engine.getGraphState();
+      expect(test_utils::isClipCommitted(engine, c), "audio take committed");
+      engine.undo();
+      engine.redo();
+      expectEquals(effect->state_restores, 0,
+                   juce::String("an audio take restores no plugin state"));
     }
   }
 };

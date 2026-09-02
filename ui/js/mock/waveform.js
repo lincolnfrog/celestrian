@@ -4,10 +4,12 @@
  */
 
 import { findNode } from './state.js';
+import { takePeaks } from './takes.js';
 
 // Deterministic waveform peaks for a CLIP (no Math.random — stable for
-// tests). Stacks return nothing: the UI fetches peaks for clips only
-// (app.js) and composites a group from its children's peaks
+// tests): the ACTIVE take's (docs/takes.md; the take-list view is
+// getTakeWaveform). Stacks return nothing: the UI fetches peaks for
+// clips only (app.js) and composites a group from its children's peaks
 // (composite_waveform.js), the engine's shape.
 export function getWaveform(id, numPeaks = 100) {
     const node = findNode(id);
@@ -17,10 +19,5 @@ export function getWaveform(id, numPeaks = 100) {
     // takes from currentPeak, never from the buffer).
     if (node.isRecording || node.isPendingStart) return [];
     if (!node.duration || node.duration <= 0) return [];
-
-    const peaks = [];
-    for (let i = 0; i < numPeaks; i++) {
-        peaks.push(0.5 + 0.4 * Math.sin((i / numPeaks) * Math.PI * 4));
-    }
-    return peaks;
+    return takePeaks(node, node.activeTake || 0, numPeaks);
 }

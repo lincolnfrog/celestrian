@@ -50,6 +50,16 @@ cmake --build build --target CelestrianTests
 ./build/CelestrianTests_artefacts/Debug/CelestrianTests
 ```
 
+### Packaging a release
+
+After a Release build (`scripts/full_build.sh Release` or `scripts\build.cmd`):
+
+```bash
+scripts/package_macos.sh
+```
+
+signs with `CELESTRIAN_SIGN_IDENTITY`, notarizes through the keychain profile in `CELESTRIAN_NOTARY_PROFILE`, staples, and writes `dist/Celestrian-<version>-macos.zip` (`--sign-only` skips notarization). On Windows, `scripts\package_windows.cmd` signs with `CELESTRIAN_SIGN_PFX` / `CELESTRIAN_SIGN_PASSWORD` and builds `dist\Celestrian-<version>-windows-setup.exe` with Inno Setup (`--no-sign` for an unsigned installer). Certificates and passwords live only in your environment, never in the repo.
+
 ## Development
 
 - **Source Code**: `src/` (C++20, JUCE 8)

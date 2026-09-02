@@ -4,20 +4,23 @@ namespace celestrian::dsp {
 
 Vst3Slot::Vst3Slot(std::unique_ptr<juce::AudioPluginInstance> instance,
                    const juce::String& uid, const juce::String& display_name,
-                   const juce::String& file, bool is_instrument)
+                   const juce::String& file, bool is_instrument,
+                   const juce::String& format)
     : instance_(std::move(instance)),
       is_instrument_(is_instrument),
       uid_(uid),
       display_name_(display_name),
-      file_(file) {}
+      file_(file),
+      format_(format.isNotEmpty() ? format : juce::String(kDefaultFormat)) {}
 
 Vst3Slot::Vst3Slot(const juce::String& uid, const juce::String& display_name,
                    const juce::String& file, const juce::MemoryBlock& state,
-                   bool is_instrument)
+                   bool is_instrument, const juce::String& format)
     : is_instrument_(is_instrument),
       uid_(uid),
       display_name_(display_name),
       file_(file),
+      format_(format.isNotEmpty() ? format : juce::String(kDefaultFormat)),
       state_(state) {}
 
 void Vst3Slot::doPrepare(double sample_rate) {
@@ -75,6 +78,7 @@ void Vst3Slot::fillParams(juce::DynamicObject& out) const {
   out.setProperty("name", display_name_);
   out.setProperty("uid", uid_);
   out.setProperty("file", file_);
+  out.setProperty("format", format_);
   out.setProperty("missing", isMissing());
   out.setProperty("isInstrument", is_instrument_);
   out.setProperty("latency", latencySamples());

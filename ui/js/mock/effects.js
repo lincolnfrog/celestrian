@@ -42,12 +42,18 @@ export function ensureEffects(node) {
     return node.effects;
 }
 
+/** The node whose rack `id` addresses: the synthetic root holder for
+ * 'mock-root' (the master rack, B5), else the graph node. */
+function rackHolder(id) {
+    return id === 'mock-root' ? state.root : findNode(id);
+}
+
 function findSlotEntry(node, slotUuid) {
     return node && ensureEffects(node).chain.find(s => s.slot === slotUuid);
 }
 
 export function setSlotEnabled(id, slotUuid, enabled) {
-    const entry = findSlotEntry(findNode(id), slotUuid);
+    const entry = findSlotEntry(rackHolder(id), slotUuid);
     if (entry) {
         entry.enabled = !!enabled;
         console.log('[MockBackend] Slot', entry.type, slotUuid, 'on', id,
@@ -56,7 +62,7 @@ export function setSlotEnabled(id, slotUuid, enabled) {
 }
 
 export function setSlotParam(id, slotUuid, key, value) {
-    const entry = findSlotEntry(findNode(id), slotUuid);
+    const entry = findSlotEntry(rackHolder(id), slotUuid);
     if (entry && key !== 'slot' && key !== 'type' && key !== 'enabled' &&
         Object.prototype.hasOwnProperty.call(entry, key)) {
         entry[key] = value;
@@ -67,7 +73,7 @@ export function setSlotParam(id, slotUuid, key, value) {
 
 /** Chain STRUCTURE (undoable, unlike the knobs — see mock/undo.js). */
 export function moveChainSlot(id, slotUuid, newIndex) {
-    const node = findNode(id);
+    const node = rackHolder(id);
     if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
     const chain = ensureEffects(node).chain;
     const from = chain.findIndex(s => s.slot === slotUuid);
@@ -83,7 +89,7 @@ export function moveChainSlot(id, slotUuid, newIndex) {
  * immediately — the UI contract is only "the chip appears when the
  * chain publishes it". Arrives ENABLED, like the engine's. */
 export function addPluginToChain(id, pluginUid, index) {
-    const node = findNode(id);
+    const node = rackHolder(id);
     if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
     const known = getKnownPlugins().find(p => p.uid === pluginUid);
     if (!known) {
@@ -110,7 +116,7 @@ export function addPluginToChain(id, pluginUid, index) {
 
 /** VST3-only removal (engine parity: built-ins are the fixed cards). */
 export function removeChainSlot(id, slotUuid) {
-    const node = findNode(id);
+    const node = rackHolder(id);
     if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
     const chain = ensureEffects(node).chain;
     const at = chain.findIndex(s => s.slot === slotUuid && s.type === 'vst3');
@@ -151,7 +157,7 @@ export function getMidiInputs() {
 export function setEffectScope(id, active) {
     // Engine parity (FxScope::setActive): scope telemetry only exists
     // while a panel watches.
-    const node = findNode(id);
+    const node = rackHolder(id);
     if (node) {
         node._scopeOn = !!active;
         console.log('[MockBackend] Effect scope on', id, '→', active ? 'OPEN' : 'CLOSED');

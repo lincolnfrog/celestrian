@@ -120,6 +120,8 @@ target_sources(Celestrian PRIVATE
     src/engine/map_edits.cc
     src/engine/audio_callback.cc
     src/engine/device_service.cc
+    src/engine/bounce.cc
+    src/engine/import.cc
     src/timing.h
     src/clip_node.cc
     src/take_storage.cc
@@ -166,6 +168,21 @@ target_compile_definitions(Celestrian PRIVATE
 )
 
 celestrian_enable_asio(Celestrian)
+
+# AudioUnit hosting on macOS (docs/vst3.md §11): the same registry, scan
+# worker and chain slot as VST3, behind JUCE_PLUGINHOST_AU. JUCE's AU
+# host code needs the AudioUnit and CoreAudioKit frameworks beyond the
+# module's own list. Windows/Linux builds never see the flag.
+function(celestrian_enable_au_hosting target)
+    if (APPLE)
+        target_compile_definitions(${target} PRIVATE JUCE_PLUGINHOST_AU=1)
+        target_link_libraries(${target} PRIVATE
+            "-framework AudioUnit"
+            "-framework CoreAudioKit"
+        )
+    endif()
+endfunction()
+celestrian_enable_au_hosting(Celestrian)
 
 # Copy UI files to the build directory (for development)
 if (APPLE)
@@ -222,18 +239,23 @@ target_sources(CelestrianTests PRIVATE
     tests/callback_edge_tests.cc
     tests/group_arm_tests.cc
     tests/take_undo_tests.cc
+    tests/takes_tests.cc
     tests/content_frame_tests.cc
     tests/audit_regression_tests.cc
     tests/stack_origin_tests.cc
     tests/solo_tests.cc
     tests/track_template_tests.cc
     tests/plugin_host_tests.cc
+    tests/midi_release_tests.cc
     tests/vst3_slot_tests.cc
     tests/plugin_host_integration_tests.cc
     tests/plugin_scan_crash_tests.cc
     tests/midi_tests.cc
     tests/midi_record_tests.cc
     tests/sequencer_tests.cc
+    tests/bounce_tests.cc
+    tests/monitor_tests.cc
+    tests/import_tests.cc
     src/clip_node.cc
     src/take_storage.cc
     src/stack_node.cc
@@ -246,6 +268,8 @@ target_sources(CelestrianTests PRIVATE
     src/engine/map_edits.cc
     src/engine/audio_callback.cc
     src/engine/device_service.cc
+    src/engine/bounce.cc
+    src/engine/import.cc
     src/session_io.cc
     src/project_manager.cc
     src/plugin_host_service.cc
@@ -276,6 +300,7 @@ target_compile_definitions(CelestrianTests PRIVATE
 )
 
 celestrian_enable_asio(CelestrianTests)
+celestrian_enable_au_hosting(CelestrianTests)
 
 # --- In-repo test VST3 plugins (docs/vst3.md phase 3 + §4) -------------
 # Two deterministic real-binary validation targets for the hosting path,

@@ -203,16 +203,13 @@ MainComponent or the engine — placement per ui.md's bridge rules):
   window. The status var carries `crashed` (file names excluded this
   scan), `crashedCount`, `error`, `outOfProcess`; the plugin panel names
   the excluded plugins in its scan-done line.
-- The older **dead-man's-pedal** (write the path before probing, clear it
-  after; a crashed scan leaves the culprit named for the next launch to
-  blacklist) remains as the in-process fallback when no worker command is
-  configured, and its leftovers are still honoured at construction — and
-  persisted at once (fix 2026-08-26: they used to live only in memory
-  until the next clean scan saved them, so two bad plugins crash-looped
-  forever). Field note: a JUCE 8 scan never even loads a bundle that
-  ships `moduleinfo.json` (descriptions come from the manifest), so the
-  plugins that can crash a scan are the ones without a manifest, or ones
-  that die on library load.
+- The worker is the **only** probe path (§11): with no worker command
+  configured, a scan with anything to probe ends with an `error` and
+  loads nothing — there is no in-process fallback and no dead-man's-pedal
+  file. Field note: a JUCE 8 scan never even loads a bundle that ships
+  `moduleinfo.json` (descriptions come from the manifest), so the plugins
+  that can crash a scan are the ones without a manifest, or ones that
+  die on library load.
 - Scanning covers the platform default VST3 directories + a user-added
   path (`startScan(path, include_default_locations)`; tests confine
   themselves to one folder); progress and results reach the UI through
@@ -469,3 +466,37 @@ Phase 2 is the risk concentrator — it touches every node's render path —
 which is exactly why it ships *without* any VST3 code in the chain: the
 refactor is verified against unchanged audible behavior before third-party
 code enters the picture.
+
+## 11. Phase 6 (2026-09-02) — engine half (MIDI lane rendering is the UI's)
+
+- **Sound-off edges.** When a MIDI clip's content stops sounding — transport
+  stop, the S7 gate landing closed (mute, solo-silence, a sequence cut), the
+  new-take silence, a bounce tail, a device stop (`requestMidiSoundOff`,
+  walked from `audioDeviceStopped`) — the instrument gets the held notes'
+  note-offs plus CC 123 + CC 120 on the channels in use, **once per closing
+  edge**, never per block (`renderMidi`'s `closingEdge`). The gate edge lands
+  where the ramp reaches zero (no pop); a muted instrument keeps being fed.
+- **Instrument state in take undo entries.** A MIDI take's `TakePayload`
+  carries the instrument slot's uuid + state blob at commit; Take/Untake
+  restore it, the inverse capturing the state current then (copy-swap).
+- **Boundary notes.** A note down before the capture window opens lands as a
+  note-on at content 0 (I1, the prelude); one still down at commit is closed
+  at the last sample.
+- **Scanning is worker-only.** No in-process probe path, no pedal file; an
+  empty worker command ends a scan with `error`.
+- **AudioUnit hosting (macOS).** `JUCE_PLUGINHOST_AU=1` on Apple, both
+  targets; format manager + scan worker register `AudioUnitPluginFormat`;
+  registry entries and slot metadata carry `format` (persisted; absent =
+  VST3); engine verb `addPluginSlotToChain` (`addVst3SlotToChain` aliases
+  it); AUs join default-location scans only. Bridge verbs unchanged.
+
+- **MIDI lane rendering (the UI half, 2026-09-02).** A MIDI lane's tiles
+  paint note bars from `getMidiNotes` (fetched on demand, cached by
+  `midiEvents` + active take): pitch → row over a compact range fit,
+  length → width, velocity → alpha, sliced per rep tile by the audio
+  tile's srcSegs/rotation rules so windows, cuts and comps apply
+  (`ui/js/midi_notes.js`, `canvas_renderer.drawMidiTile`).
+
+Tests: midi_release_tests, midi_record_tests, take_undo_tests,
+plugin_host_tests; ui/js/tests/midi_lane.test.mjs, ui/e2e/midi_lane.spec.js.
+Deferred: PDC (Q-V2 stands — report-only latency).

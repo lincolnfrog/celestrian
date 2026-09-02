@@ -2,8 +2,10 @@
 
 #include <juce_core/juce_core.h>
 
+#include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -18,6 +20,30 @@ juce::String projectInfosToJson(
     arr.add(juce::var(o));
   }
   return juce::JSON::toString(juce::var(arr), true);
+}
+
+/** The published name of node `uuid` in a getGraphState tree (empty
+ * when absent) — the bounce dialog's default file name. */
+juce::String nodeNameIn(const juce::var& node, const juce::String& uuid) {
+  if (node.getProperty("id", "").toString() == uuid)
+    return node.getProperty("name", "").toString();
+  if (auto* kids = node.getProperty("nodes", juce::var()).getArray()) {
+    for (const auto& kid : *kids) {
+      const juce::String hit = nodeNameIn(kid, uuid);
+      if (hit.isNotEmpty()) return hit;
+    }
+  }
+  return {};
+}
+
+/** A QTime rational from a bridge argument: a [num, den] array, or a
+ * bare number taken as whole Qs. */
+std::pair<int64_t, int64_t> qtimeArg(const juce::var& v) {
+  if (auto* arr = v.getArray(); arr != nullptr && arr->size() >= 2) {
+    const int64_t den = (int64_t)(double)(*arr)[1];
+    return {(int64_t)(double)(*arr)[0], den == 0 ? 1 : den};
+  }
+  return {(int64_t)std::llround((double)v), 1};
 }
 
 juce::String trackTemplatesToJson(
@@ -161,6 +187,48 @@ MainComponent::MainComponent()
                                             args[0].toString(), (int)args[1]);
                                       },
                                       juce::var(juce::Array<juce::var>())))
+              // Takes and comping (docs/takes.md).
+              .withNativeFunction("newTake",
+                                  voidCall("newTake", 1,
+                                           [this](const auto& args) {
+                                             audio_engine.newTake(
+                                                 args[0].toString());
+                                           }))
+              .withNativeFunction("selectTake",
+                                  voidCall("selectTake", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.selectTake(
+                                                 args[0].toString(),
+                                                 (int)args[1]);
+                                           }))
+              .withNativeFunction("deleteTake",
+                                  voidCall("deleteTake", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.deleteTake(
+                                                 args[0].toString(),
+                                                 (int)args[1]);
+                                           }))
+              .withNativeFunction(
+                  "setComp",
+                  voidCall("setComp", 2,
+                           [this](const auto& args) {
+                             // args[1] = [take index per Q cell]
+                             std::vector<int> cells;
+                             if (auto* arr = args[1].getArray()) {
+                               for (const auto& c : *arr)
+                                 cells.push_back((int)c);
+                             }
+                             audio_engine.setComp(args[0].toString(), cells);
+                           }))
+              .withNativeFunction(
+                  "getTakeWaveform",
+                  valueCall(
+                      "getTakeWaveform", 3,
+                      [this](const auto& args) {
+                        return audio_engine.getTakeWaveform(
+                            args[0].toString(), (int)args[1], (int)args[2]);
+                      },
+                      juce::var(juce::Array<juce::var>())))
               .withNativeFunction(
                   "createNode",
                   voidCall("createNode", 1,
@@ -213,6 +281,68 @@ MainComponent::MainComponent()
                     }
                     chooseSessionPath(ChooserMode::OPEN, std::move(completion));
                   })
+              // Bounce (Q19, docs/bounce.md): the direct verb takes a
+              // path; the dialog verb picks one natively, then bounces.
+              .withNativeFunction(
+                  "bounce",
+                  valueCall(
+                      "bounce", 2,
+                      [this](const auto& args) {
+                        return audio_engine.bounce(args[0].toString(),
+                                                   args[1].toString());
+                      },
+                      false))
+              .withNativeFunction(
+                  "bounceWithDialog",
+                  [this](const juce::Array<juce::var>& args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    logBridgeCall("bounceWithDialog");
+                    if (args.size() < 1) {
+                      completion(false);
+                      return;
+                    }
+                    bounceWithDialog(args[0].toString(), std::move(completion));
+                  })
+              // Import (docs/import.md): the direct verb takes a path +
+              // a QTime placement; the dialog verb picks the file
+              // natively, then imports.
+              .withNativeFunction(
+                  "importAudio",
+                  valueCall(
+                      "importAudio", 3,
+                      [this](const auto& args) {
+                        const auto at = qtimeArg(args[2]);
+                        return audio_engine.importAudio(
+                            args[0].toString(), args[1].toString(), at.first,
+                            at.second);
+                      },
+                      false))
+              .withNativeFunction(
+                  "importAudioWithDialog",
+                  [this](const juce::Array<juce::var>& args,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    logBridgeCall("importAudioWithDialog");
+                    if (args.size() < 1) {
+                      completion(false);
+                      return;
+                    }
+                    const auto at = qtimeArg(args.size() > 1 ? args[1]
+                                                             : juce::var(0));
+                    importAudioWithDialog(args[0].toString(), at.first,
+                                          at.second, std::move(completion));
+                  })
+              // MIDI lane rendering (docs/vst3.md §11): notes on demand,
+              // like waveforms.
+              .withNativeFunction(
+                  "getMidiNotes",
+                  valueCall(
+                      "getMidiNotes", 1,
+                      [this](const auto& args) {
+                        return audio_engine.getMidiNotes(args[0].toString());
+                      },
+                      juce::var(juce::Array<juce::var>())))
               .withNativeFunction(
                   "getProjectInfo",
                   valueCall("getProjectInfo", 0,
@@ -222,8 +352,41 @@ MainComponent::MainComponent()
                               o->setProperty("name",
                                              project_manager_.displayName());
                               o->setProperty("born", project_manager_.born());
+                              // The library folders (the preferences
+                              // panel, docs/projects.md): the projects
+                              // root and the track-template library
+                              // beneath it.
+                              o->setProperty(
+                                  "projectsRoot",
+                                  project_manager_.projectsRoot()
+                                      .getFullPathName());
+                              o->setProperty(
+                                  "trackTemplatesRoot",
+                                  project_manager_.trackTemplatesRoot()
+                                      .getFullPathName());
                               return juce::JSON::toString(juce::var(o), true);
                             }))
+              // Preferences: the projects root is a persisted choice
+              // (<app data>/Celestrian/projects_root.json, the
+              // audio-device discipline); the chooser verb picks it
+              // natively and answers the new path.
+              .withNativeFunction(
+                  "setProjectsRoot",
+                  valueCall(
+                      "setProjectsRoot", 1,
+                      [this](const auto& args) {
+                        return project_manager_.setBase(
+                            juce::File(args[0].toString()));
+                      },
+                      false))
+              .withNativeFunction(
+                  "chooseProjectsRoot",
+                  [this](const juce::Array<juce::var>&,
+                         juce::WebBrowserComponent::NativeFunctionCompletion
+                             completion) {
+                    logBridgeCall("chooseProjectsRoot");
+                    chooseProjectsRoot(std::move(completion));
+                  })
               .withNativeFunction(
                   "renameProject",
                   voidCall("renameProject", 0,
@@ -449,6 +612,13 @@ MainComponent::MainComponent()
                                   voidCall("setMidiArmed", 2,
                                            [this](const auto& args) {
                                              audio_engine.setMidiArmed(
+                                                 args[0].toString(),
+                                                 (bool)args[1]);
+                                           }))
+              .withNativeFunction("setMonitor",
+                                  voidCall("setMonitor", 2,
+                                           [this](const auto& args) {
+                                             audio_engine.setMonitor(
                                                  args[0].toString(),
                                                  (bool)args[1]);
                                            }))
@@ -728,8 +898,8 @@ void MainComponent::addPluginToChain(const juce::String& node_uuid,
         auto slot = std::make_shared<celestrian::dsp::Vst3Slot>(
             std::move(instance), description.createIdentifierString(),
             description.name, description.fileOrIdentifier,
-            description.isInstrument);
-        audio_engine.addVst3SlotToChain(node_uuid, std::move(slot), index);
+            description.isInstrument, description.pluginFormatName);
+        audio_engine.addPluginSlotToChain(node_uuid, std::move(slot), index);
       });
 }
 
@@ -800,6 +970,86 @@ void MainComponent::chooseSessionPath(
                             ? audio_engine.saveSession(file.getFullPathName())
                             : project_manager_.openProject(file);
         done(ok);
+      });
+}
+
+void MainComponent::bounceWithDialog(
+    const juce::String& uuid,
+    juce::WebBrowserComponent::NativeFunctionCompletion done) {
+  // A live take refuses the bounce (AudioEngine::bounce); no dialog for
+  // a render that cannot happen.
+  if (audio_engine.hasActiveTake()) {
+    done(false);
+    return;
+  }
+  const juce::String name = nodeNameIn(audio_engine.getGraphState(), uuid);
+  const juce::File folder =
+      project_manager_.born()
+          ? project_manager_.folder()
+          : juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+  const juce::File suggested = folder.getChildFile(
+      juce::File::createLegalFileName(name.isNotEmpty() ? name : "bounce") +
+      ".wav");
+  bounce_chooser_ =
+      std::make_unique<juce::FileChooser>("Bounce to WAV", suggested, "*.wav");
+  const int flags = juce::FileBrowserComponent::saveMode |
+                    juce::FileBrowserComponent::canSelectFiles |
+                    juce::FileBrowserComponent::warnAboutOverwriting;
+  bounce_chooser_->launchAsync(
+      flags,
+      [this, uuid, done = std::move(done)](const juce::FileChooser& fc) mutable {
+        const juce::File file = fc.getResult();
+        if (file == juce::File()) {
+          done(false);  // cancelled
+          return;
+        }
+        done(audio_engine.bounce(
+            uuid, file.withFileExtension("wav").getFullPathName()));
+      });
+}
+
+void MainComponent::importAudioWithDialog(
+    const juce::String& uuid, int64_t at_q_num, int64_t at_q_den,
+    juce::WebBrowserComponent::NativeFunctionCompletion done) {
+  // A live take refuses the import (AudioEngine::importAudio); no
+  // dialog for an import that cannot land.
+  if (audio_engine.hasActiveTake()) {
+    done(false);
+    return;
+  }
+  const juce::File start =
+      juce::File::getSpecialLocation(juce::File::userMusicDirectory);
+  import_chooser_ = std::make_unique<juce::FileChooser>(
+      "Import audio", start, "*.wav;*.aif;*.aiff;*.flac");
+  const int flags = juce::FileBrowserComponent::openMode |
+                    juce::FileBrowserComponent::canSelectFiles;
+  import_chooser_->launchAsync(
+      flags, [this, uuid, at_q_num, at_q_den,
+              done = std::move(done)](const juce::FileChooser& fc) mutable {
+        const juce::File file = fc.getResult();
+        if (file == juce::File()) {
+          done(false);  // cancelled
+          return;
+        }
+        done(audio_engine.importAudio(uuid, file.getFullPathName(), at_q_num,
+                                      at_q_den));
+      });
+}
+
+void MainComponent::chooseProjectsRoot(
+    juce::WebBrowserComponent::NativeFunctionCompletion done) {
+  root_chooser_ = std::make_unique<juce::FileChooser>(
+      "Projects folder", project_manager_.baseFolder());
+  const int flags = juce::FileBrowserComponent::openMode |
+                    juce::FileBrowserComponent::canSelectDirectories;
+  root_chooser_->launchAsync(
+      flags, [this, done = std::move(done)](const juce::FileChooser& fc) mutable {
+        const juce::File dir = fc.getResult();
+        if (dir == juce::File() || !project_manager_.setBase(dir)) {
+          done(juce::String());  // cancelled, or the folder cannot be made
+          return;
+        }
+        done(project_manager_.baseFolder().getFullPathName());
       });
 }
 

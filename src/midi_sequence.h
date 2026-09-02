@@ -140,20 +140,32 @@ class MidiSequence {
 };
 
 /**
- * Held-note bookkeeping (128 notes × 16 channels as bitmasks): capture
- * uses it for the take meter, render uses it to release notes cut by a
- * content discontinuity (loop seam, window seam, one-shot rest,
- * transport stop) — the "hanging notes closed at the seam" rule
- * (docs/vst3.md §8). Plain POD; the owner decides which thread.
+ * Held-note bookkeeping (128 notes × 16 channels as bitmasks, plus the
+ * velocity each held note was struck with): capture uses it for the
+ * take meter and the boundary notes (a note held across the take's
+ * start lands as a note-on at content 0, one held across its end is
+ * closed at the last sample — docs/vst3.md §11), render uses it to
+ * release notes cut by a content discontinuity (loop seam, window
+ * seam, one-shot rest, transport stop) — the "hanging notes closed at
+ * the seam" rule (docs/vst3.md §8). Plain POD; the owner decides which
+ * thread.
  */
 struct HeldNotes {
   std::array<juce::uint16, 128> channels{};  // bit c = channel c held
+  // velocity[ch * 128 + note]: the note-on velocity while held.
+  std::array<juce::uint8, 16 * 128> velocity{};
 
   void clear() { channels.fill(0); }
   bool any() const {
     for (const auto c : channels)
       if (c) return true;
     return false;
+  }
+  /** Bit c set when any note is held on channel c. */
+  juce::uint16 channelMask() const {
+    juce::uint16 mask = 0;
+    for (const auto c : channels) mask |= c;
+    return mask;
   }
   /** Track a raw channel message; returns true if it was a note event. */
   bool track(const juce::uint8* bytes, int size) {
@@ -163,6 +175,7 @@ struct HeldNotes {
     const int note = bytes[1] & 0x7F;
     if (status == 0x90 && bytes[2] > 0) {
       channels[(size_t)note] |= (juce::uint16)(1u << ch);
+      velocity[(size_t)(ch * 128 + note)] = bytes[2];
       return true;
     }
     if (status == 0x80 || (status == 0x90 && bytes[2] == 0)) {
@@ -171,20 +184,43 @@ struct HeldNotes {
     }
     return false;
   }
-  /** Add a note-off for every held note at `offset` and clear. The
-   * buffer must be preallocated (audio thread). */
-  void releaseInto(juce::MidiBuffer& out, int offset) {
+  /** Calls fn(channel0, note, velocity) for every held note. */
+  template <typename Fn>
+  void forEachHeld(Fn&& fn) const {
     for (int note = 0; note < 128; ++note) {
       const juce::uint16 mask = channels[(size_t)note];
       if (mask == 0) continue;
       for (int ch = 0; ch < 16; ++ch) {
-        if (mask & (1u << ch)) {
-          out.addEvent(juce::MidiMessage::noteOff(ch + 1, note), offset);
-        }
+        if (mask & (1u << ch)) fn(ch, note, velocity[(size_t)(ch * 128 + note)]);
       }
-      channels[(size_t)note] = 0;
     }
   }
+  /** Add a note-off for every held note at `offset` and clear. The
+   * buffer must be preallocated (audio thread). */
+  void releaseInto(juce::MidiBuffer& out, int offset) {
+    forEachHeld([&](int ch, int note, juce::uint8) {
+      out.addEvent(juce::MidiMessage::noteOff(ch + 1, note), offset);
+    });
+    clear();
+  }
 };
+
+/**
+ * The SOUND-OFF pair (docs/vst3.md §11): All Notes Off (CC 123) then
+ * All Sound Off (CC 120) on every channel in `channel_mask`, at
+ * `offset`. Sent to an instrument ONCE per closing edge — transport
+ * stop, the S7 gate closing (mute / solo-silence / a sequence cut),
+ * the new-take silence, a bounce tail, a device stop — so notes the
+ * instrument holds release through its own envelope while the chain
+ * after it rings. Fixed-size events; the buffer is preallocated.
+ */
+inline void addSoundOff(juce::MidiBuffer& out, juce::uint16 channel_mask,
+                        int offset) {
+  for (int ch = 0; ch < 16; ++ch) {
+    if (!(channel_mask & (1u << ch))) continue;
+    out.addEvent(juce::MidiMessage::allNotesOff(ch + 1), offset);
+    out.addEvent(juce::MidiMessage::allSoundOff(ch + 1), offset);
+  }
+}
 
 }  // namespace celestrian

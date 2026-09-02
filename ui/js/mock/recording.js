@@ -96,14 +96,45 @@ export function startRecordingInNode(id) {
         targets = [node];
     }
 
-    // Q13 LOCK-COLLAPSE (engine parity, AudioEngine::startRecordingInNode
-    // → Edit::CollapseTake): arming a take against a provisionally
-    // trimmed island finalizes the trim — the sole committed clip's
-    // window BECOMES the take (duration = window len, origin moves to
-    // the window top, window consumed). Undo (snapshot) restores.
+    lockCollapseAtArm(targets.map(t => t.id));
+
+    // The pending performance: its undo snapshot + the step auto-gate
+    // target (the auditioning DIRECT parent, §11.5 — root included).
+    const pending = { ids: targets.map(t => t.id), snap: serializeGraph(),
+                      gateStack: null, gateStep: -1 };
+    for (const t of targets) {
+        const parent = findParent(t.id);
+        if (parent) {
+            if (auditionMapOf(parent)) {
+                pending.gateStack = parent.id;
+                pending.gateStep = parent.auditionStep;
+                break;
+            }
+        } else if (rootActiveMap()) {
+            pending.gateStack = 'mock-root';
+            pending.gateStep = state.rootAuditionStep;
+            break;
+        }
+    }
+    targets.forEach(armClip);
+    pendingTakes.push(pending);
+}
+
+/**
+ * Q13 LOCK-COLLAPSE at an arm (engine parity, AudioEngine::
+ * startRecordingInNode / newTake → Edit::CollapseTake, CollapseGroup):
+ * arming against a provisionally trimmed island finalizes the trim —
+ * the sole committed clip's window BECOMES the take (duration = window
+ * len, origin moves to the window top, window consumed), or a definer
+ * stack's window becomes its members' take. `excludeIds` are the arm
+ * targets a plain arm never collapses (they are empty); a new take
+ * passes none — its own slot is what collapses. Undo (snapshot)
+ * restores.
+ */
+function lockCollapseAtArm(excludeIds) {
     if (committedClipCount() === 1) {
         const definer = findSoleCommittedClip();
-        if (definer && !targets.some(t => t.id === definer.id) &&
+        if (definer && !excludeIds.includes(definer.id) &&
             !definer.loopBypassed && !activeGeometryOutside(definer)) {
             const ls = definer.loopStart || 0;
             const le = Math.min(definer.loopEnd || 0, definer.duration);
@@ -164,37 +195,130 @@ export function startRecordingInNode(id) {
             }
         }
     }
+}
 
-    // The pending performance: its undo snapshot + the step auto-gate
-    // target (the auditioning DIRECT parent, §11.5 — root included).
-    const pending = { ids: targets.map(t => t.id), snap: serializeGraph(),
-                      gateStack: null, gateStep: -1 };
+/**
+ * NEW TAKE (docs/takes.md; engine parity AudioEngine::newTake): arm a
+ * further take of a COMMITTED clip — or of every committed direct clip
+ * child of a stack, one performance — without emptying it. The slot
+ * keeps origin, duration, loop points and comp; the previous takes
+ * stay in the list; the clip is silent while the take is live. Arm
+ * target: the next t ≡ origin (mod duration); capture runs exactly one
+ * period and auto-finishes (growRecordingClips); a stop before that
+ * cancels (stopClipRecording). Logged at settle like any take (the
+ * snapshot taken here is what undo restores: the previous list).
+ * Refused with no committed target, on a one-shot, or under an active
+ * ancestor map (the slot top may never be heard through it).
+ */
+export function newTake(id) {
+    const node = recTarget(id);
+    if (!node) return;
+    const committedIdle = c => c.type === 'clip' && !c.isRecording && (c.duration || 0) > 0;
+    const targets = node.type === 'stack'
+        ? (node.nodes || []).filter(committedIdle)
+        : (committedIdle(node) ? [node] : []);
+    if (!targets.length) {
+        console.log('[MockBackend] new take refused — no committed idle clip under', id);
+        return;
+    }
     for (const t of targets) {
-        const parent = findParent(t.id);
-        if (parent) {
-            if (auditionMapOf(parent)) {
-                pending.gateStack = parent.id;
-                pending.gateStep = parent.auditionStep;
-                break;
+        if (t.periodSource === 'context') {
+            console.log('[MockBackend] new take refused — one-shot:', t.id);
+            return;
+        }
+        for (let p = findParent(t.id); p; p = findParent(p.id)) {
+            if (activeMapOf(p)) {
+                console.log('[MockBackend] new take refused — an active map encloses', t.id);
+                return;
             }
-        } else if (rootActiveMap()) {
-            pending.gateStack = 'mock-root';
-            pending.gateStep = state.rootAuditionStep;
-            break;
+        }
+        if (rootActiveMap()) {
+            console.log('[MockBackend] new take refused — the root audition encloses', t.id);
+            return;
         }
     }
-    targets.forEach(armClip);
+    lockCollapseAtArm([]);
+    const pending = { ids: targets.map(t => t.id), snap: serializeGraph(),
+                      gateStack: null, gateStep: -1, retake: true };
+    targets.forEach(armRetake);
     pendingTakes.push(pending);
 }
 
-/** Settle pending performances (engine parity: reconcileTakes). */
+/** Arm one slot for a new take: silent, pending its own next top. */
+function armRetake(node) {
+    console.log('[MockBackend] newTake', node.id);
+    if (!recView.active) {
+        const raw = state.masterPos;
+        const Q = effectiveQuantumForState();
+        const viewCycle = effectiveCycle(Q);
+        const rel = raw - state.islandEpoch;
+        recView.base = viewCycle > 0 ? posMod(rel, viewCycle) : rel;
+        recView.anchor = raw;
+        recView.lcmBefore = committedCycle(Q);
+        recView.heardAtArm = viewCycle;
+        recView.active = true;
+    }
+    const period = node.duration;
+    const origin = node.origin || 0;
+    const raw = state.masterPos;
+    const rel = Math.max(0, raw - origin);
+    const at = origin + Math.ceil(rel / period) * period;
+    node._retake = { period, captured: 0 };
+    node.isRecording = true;
+    node.isPlaying = false;
+    if (at > raw) {
+        node.isPendingStart = true;
+        node.pendingStartAt = at;
+        console.log('[MockBackend] New take pending at the slot top', at);
+    } else {
+        node.recordingStartPos = at;
+    }
+}
+
+/** A new take reached its period: it joins the list and becomes the
+ * active take; the slot's facts and comp stand. */
+function commitRetake(node) {
+    const takes = takesOf(node).slice();
+    takes.push({ seed: nextTakeSeed(node) });
+    node.takes = takes;
+    node.activeTake = takes.length - 1;
+    node.isRecording = false;
+    node.isPendingStart = false;
+    delete node.pendingStartAt;
+    delete node._retake;
+    node.isPlaying = true;
+    node._retakeDone = 'committed';
+    if (!anyNodeRecording()) recView.active = false;
+    console.log(`[MockBackend] New take committed on ${node.id}: take ${node.activeTake}`);
+    reconcileTakes();
+}
+
+/** The take list of a clip: `takes` when materialized, else the one
+ * implicit take a committed clip holds (engine parity takeCount). */
+export function takesOf(node) {
+    if (Array.isArray(node.takes) && node.takes.length) return node.takes;
+    return (node.duration || 0) > 0 ? [{ seed: 0 }] : [];
+}
+
+/** A fresh waveform seed for a new take (distinct peaks per take). */
+function nextTakeSeed(node) {
+    const takes = takesOf(node);
+    return takes.reduce((m, t) => Math.max(m, t.seed || 0), 0) + 1;
+}
+
+/** Settle pending performances (engine parity: reconcileTakes). A new
+ * take logs only when it committed (a cancel leaves the slot as it was
+ * and records nothing). */
 function reconcileTakes() {
     for (let i = 0; i < pendingTakes.length;) {
         const p = pendingTakes[i];
         const members = p.ids.map(id => findNode(id)).filter(Boolean);
         if (members.some(m => m.isRecording)) { i++; continue; }
         pendingTakes.splice(i, 1);
-        const committed = members.filter(m => (m.duration || 0) > 0);
+        const committed = p.retake
+            ? members.filter(m => m._retakeDone === 'committed')
+            : members.filter(m => (m.duration || 0) > 0);
+        members.forEach(m => { delete m._retakeDone; });
         if (!committed.length) continue;  // the whole performance cancelled
         pushUndoSnapshot(p.snap);
         console.log('[MockBackend] take logged (undoable) -', committed.length, 'clip(s)');
@@ -461,6 +585,22 @@ function stopClipRecording(node, islandHasQuantum) {
     const id = node.id;
     console.log('[MockBackend] stopRecordingInNode', id);
 
+    // A NEW TAKE stopped before its period CANCELS (docs/takes.md):
+    // nothing shorter can be a take of the slot; the previous take
+    // sounds again and nothing is logged.
+    if (node._retake) {
+        node.isRecording = false;
+        node.isPendingStart = false;
+        delete node.pendingStartAt;
+        delete node._retake;
+        node.isPlaying = true;
+        node._retakeDone = 'cancelled';
+        if (!anyNodeRecording()) recView.active = false;
+        console.log('[MockBackend] New take cancelled before its period:', id);
+        reconcileTakes();
+        return;
+    }
+
     // Engine parity (ClipNode::stopRecording, Armed → CANCEL): stopping
     // a clip that never reached its arm boundary un-arms it — no
     // content, no phantom awaiting-stop.
@@ -654,7 +794,25 @@ export function commitClip(node, duration) {
 // ClipNode's awaiting_stop_at crossing check).
 export function growRecordingClips(nodes, samples) {
     (nodes || []).forEach(node => {
-        if (node.isRecording) {
+        if (node.isRecording && node._retake) {
+            // A NEW TAKE: the slot's duration stands; the capture count
+            // runs from the slot top to exactly one period (the cap).
+            if (node.isPendingStart) {
+                if (state.masterPos >= node.pendingStartAt) {
+                    node.isPendingStart = false;
+                    node.recordingStartPos = node.pendingStartAt;
+                    node._retake.captured = state.masterPos - node.pendingStartAt;
+                    node.currentPeak = 0.3 + Math.random() * 0.4;
+                }
+            } else {
+                node._retake.captured += samples;
+                node.currentPeak = 0.3 + Math.random() * 0.4;
+            }
+            if (!node.isPendingStart && node._retake &&
+                node._retake.captured >= node._retake.period) {
+                commitRetake(node);
+            }
+        } else if (node.isRecording) {
             if (node.isPendingStart) {
                 // Q11 trigger: recording begins AT the boundary
                 if (state.masterPos >= node.pendingStartAt) {

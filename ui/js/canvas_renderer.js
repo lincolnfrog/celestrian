@@ -204,3 +204,66 @@ export function drawWaveform(canvas, peaks, opts = {}) {
     ctx.closePath();
     ctx.fill();
 }
+
+/* MIDI tile geometry: a note bar fills this fraction of its pitch row
+ * (the rest is the gap between adjacent semitones), never thinner than
+ * MIDI_BAR_MIN_PX; velocity maps to alpha between the two bounds. */
+const MIDI_BAR_ROW_FRAC = 0.8;
+const MIDI_BAR_MIN_PX = 1.5;
+const MIDI_ALPHA_FLOOR = 0.35;
+
+/**
+ * @typedef {Object} DrawMidiTileOptions
+ * @property {number} [cssWidth] CSS-pixel width (defaults like drawWaveform)
+ * @property {number} [cssHeight] CSS-pixel height
+ * @property {boolean} [isEcho] cool cyan tone for ghost tiles (audible
+ *     repetitions, never material — theme.ECHO)
+ * @property {{lo: number, hi: number}} range the pitch range the tile
+ *     maps over its height (midi_notes.fitPitchRange of the WHOLE take,
+ *     so every rep of one take shares one vertical scale)
+ */
+
+/**
+ * Draw a MIDI clip's tile: one bar per note — pitch → row over the
+ * tile's height (the compact range fit), length → width, velocity →
+ * alpha — in the tape hue (echo tone for ghosts). `notes` are already
+ * sliced into tile fractions (midi_notes.sliceNotesToTile): the audio
+ * tile's srcSegs/rotation rules ran before this, so windows, cuts and
+ * comps apply here exactly as they do to peaks.
+ *
+ * @param {HTMLCanvasElement} canvas target
+ * @param {Array<{f0: number, f1: number, note: number, vel: number}>} notes
+ * @param {DrawMidiTileOptions} opts
+ */
+export function drawMidiTile(canvas, notes, opts = {}) {
+    if (!canvas) return;
+    const cssW = Math.max(2, Math.floor(
+        opts.cssWidth || canvas.clientWidth || DEFAULT_CSS_W));
+    const cssH = Math.max(2, Math.floor(
+        opts.cssHeight || canvas.clientHeight || DEFAULT_CSS_H));
+    const { ctx } = fitCanvas(canvas, cssW, cssH);
+    const tone = opts.isEcho ? ECHO : TAPE;
+    if (!notes || !notes.length) {
+        ctx.fillStyle = tone.mid;
+        ctx.globalAlpha = 0.25;
+        ctx.fillRect(0, cssH / 2 - 0.5, cssW, 1);
+        ctx.globalAlpha = 1;
+        return;
+    }
+    const range = opts.range || { lo: 54, hi: 66 };
+    const rows = Math.max(1, range.hi - range.lo + 1);
+    const rowH = cssH / rows;
+    const barH = Math.max(MIDI_BAR_MIN_PX, rowH * MIDI_BAR_ROW_FRAC);
+    ctx.fillStyle = tone.mid;
+    for (const n of notes) {
+        const x0 = n.f0 * cssW;
+        const x1 = Math.max(x0 + 1, n.f1 * cssW);
+        // Row `note - lo` counts up from the bottom edge.
+        const rowTop = cssH - (n.note - range.lo + 1) * rowH;
+        const y = rowTop + (rowH - barH) / 2;
+        const vel = Math.max(0, Math.min(127, n.vel || 0)) / 127;
+        ctx.globalAlpha = MIDI_ALPHA_FLOOR + (1 - MIDI_ALPHA_FLOOR) * vel;
+        ctx.fillRect(x0, y, x1 - x0, barH);
+    }
+    ctx.globalAlpha = 1;
+}

@@ -13,9 +13,11 @@ import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle, wireNavScroll } from './teleport.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
+import { closeTakeMenus, wireTakeMenuDismiss } from './take_menu.js';
 import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
     from './creation_menu.js';
 import { wireRulerSeek } from './ruler_seek.js';
+import { dragHasFiles } from '../import_drop.js';
 
 export function initSessionView(callbacks) {
     initCtx(callbacks);
@@ -68,6 +70,16 @@ export function initSessionView(callbacks) {
         if (ids.length) { clearSelection(); ctx.cb.onMoveToTop(ids); }
     });
 
+    // A file dropped anywhere but a lane body must not NAVIGATE the
+    // webview to it (the browser default): swallow it. Lane bodies
+    // handle their own drops first (lane_build.js).
+    document.addEventListener('dragover', e => {
+        if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+    });
+    document.addEventListener('drop', e => {
+        if (dragHasFiles(e.dataTransfer)) e.preventDefault();
+    });
+
     wireZoom();
     // Ruler scrub: click/drag the ruler to seek — the callback is
     // onSeek (app.js → seekTransport).
@@ -75,6 +87,7 @@ export function initSessionView(callbacks) {
     wireNavScroll();
     wireMenuDismiss();
     wireCreationMenuDismiss();
+    wireTakeMenuDismiss();
     wireKeyboard();
 }
 
@@ -92,9 +105,12 @@ function wireKeyboard() {
         if (isGestureLive()) return;
         clearSelection();
         if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
+        // Esc leaves comp mode on every lane (the comp itself stays).
+        if (ctx.cb.onCompMode) ctx.cb.onCompMode(null, false);
         // Esc drops any step audition (§11.3: "esc exits the loop").
         if (ctx.cb.onEscapeAudition) ctx.cb.onEscapeAudition();
         closeInputMenus();
+        closeTakeMenus();
         closeCreationMenu();
     } });
     const hotkey = (key, handler) => view({ key, ignore: ['shift'], handler });

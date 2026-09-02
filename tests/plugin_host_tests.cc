@@ -4,13 +4,14 @@
 #include "../src/plugin_host_service.h"
 
 /**
- * PluginHostService (docs/vst3.md §4, phase 1): the known-plugin
- * registry, its persistence, and the dead-man's-pedal crash blacklist.
+ * PluginHostService (docs/vst3.md §4, phase 1; §11 formats): the
+ * known-plugin registry, its persistence, the registry's bridge shape
+ * (with the `format` field), and the worker-only probe rule.
  *
- * No real VST3 binaries are involved anywhere in this suite (Q-V5
+ * No real plugin binaries are involved anywhere in this suite (Q-V5
  * ruling): the registry is exercised by adding PluginDescriptions
- * directly, and the pedal path by writing the file a crashed scan would
- * have left behind. Scanning real directories is a manual macOS pass.
+ * directly. Scanning real directories is a manual macOS pass; the
+ * crash-isolation proof lives in plugin_scan_crash_tests.cc.
  */
 class PluginHostTests : public juce::UnitTest {
  public:
@@ -47,6 +48,13 @@ class PluginHostTests : public juce::UnitTest {
         format_names.add(format->getName());
       expect(format_names.contains("VST3"),
              "format manager should host the VST3 format");
+#if JUCE_MAC && JUCE_PLUGINHOST_AU
+      expect(format_names.contains("AudioUnit"),
+             "macOS hosts AudioUnits alongside VST3 (docs/vst3.md 11)");
+#else
+      expect(!format_names.contains("AudioUnit"),
+             "AudioUnit hosting is macOS-only");
+#endif
       expect(!service.isScanning(), "fresh service must not be scanning");
     }
 
@@ -93,80 +101,51 @@ class PluginHostTests : public juce::UnitTest {
                    juce::String("Testing"));
       expect(!(bool)first.getProperty("isInstrument", true),
              "Fx category is not an instrument");
+      expectEquals(first.getProperty("format", "").toString(),
+                   juce::String("VST3"),
+                   juce::String("the entry names its hosting format"));
     }
 
-    beginTest("dead-man's-pedal: crash leftovers are blacklisted on boot");
+    beginTest("blacklist persists with the registry");
     {
-      const auto dir = freshDataDir("pedal");
-      const auto crashed_path = juce::String("/fake/CrashyPlugin.vst3");
+      const auto dir = freshDataDir("blacklist");
       {
-        // Simulate the file a scan writes before probing each plugin —
-        // and a crash means it is still there on the next launch.
-        dir.createDirectory();
-        dir.getChildFile(celestrian::PluginHostService::kPedalFileName)
-            .replaceWithText(crashed_path + "\n");
+        celestrian::PluginHostService service(dir);
+        service.knownPlugins().addToBlacklist("/fake/CrashyPlugin.vst3");
+        const auto status = service.getScanStatusVar();
+        expectEquals((int)status.getProperty("blacklistCount", 0), 1,
+                     juce::String("status var reports the blacklist"));
+        service.saveKnownPlugins();
       }
-      celestrian::PluginHostService service(dir);
-      expect(service.knownPlugins().getBlacklistedFiles().contains(
-                 crashed_path),
-             "the culprit must be blacklisted at construction");
-      const auto status = service.getScanStatusVar();
-      expectEquals((int)status.getProperty("blacklistCount", 0), 1,
-                   juce::String("status var reports the blacklist"));
-      // And the blacklist itself persists.
-      service.saveKnownPlugins();
       celestrian::PluginHostService reborn(dir);
       expect(reborn.knownPlugins().getBlacklistedFiles().contains(
-                 crashed_path),
+                 "/fake/CrashyPlugin.vst3"),
              "blacklist survives the round trip");
     }
 
-    beginTest("dead-man's-pedal: blacklisting is persisted at construction");
+    beginTest("no worker command: a pending file ends the scan with an error");
     {
-      // The regression (2026-08-26): the pedal blacklist used to live
-      // only in memory until the NEXT clean scan saved it. Two bad
-      // plugins then crash-looped forever: launch N blacklists A and
-      // dies on B, launch N+1 blacklists B but has forgotten A, dies on
-      // A, and so on. The constructor must persist what the pedal
-      // taught it before anything else can crash.
-      const auto dir = freshDataDir("pedal_persist");
-      dir.createDirectory();
-      const auto pedal =
-          dir.getChildFile(celestrian::PluginHostService::kPedalFileName);
-      const juce::String culprit_a = "/fake/CrashyA.vst3";
-      const juce::String culprit_b = "/fake/CrashyB.vst3";
-
-      // Launch 1 crashed on A. Launch 2: construct, do NOT save, "die"
-      // (destroy) with the pedal now naming B.
-      pedal.replaceWithText(culprit_a + "\n");
-      {
-        celestrian::PluginHostService second_launch(dir);
-        expect(second_launch.knownPlugins().getBlacklistedFiles().contains(
-                   culprit_a),
-               "launch 2 blacklists A");
-        expect(second_launch.knownPluginsFile().existsAsFile(),
-               "launch 2 wrote the registry without a scan completing");
-      }
-      pedal.replaceWithText(culprit_b + "\n");
-
-      // Launch 3 must know about BOTH — A from the persisted registry,
-      // B from the pedal.
-      celestrian::PluginHostService third_launch(dir);
-      const auto blacklist = third_launch.knownPlugins().getBlacklistedFiles();
-      expect(blacklist.contains(culprit_a),
-             "A survives a launch that never completed a scan");
-      expect(blacklist.contains(culprit_b), "B is blacklisted from the pedal");
-      expectEquals(blacklist.size(), 2, juce::String("exactly the two culprits"));
-
-      // And a construction with nothing to learn leaves the file alone
-      // (no gratuitous rewrite: same blacklist, same registry).
-      pedal.deleteFile();
-      const auto before = third_launch.knownPluginsFile().getLastModificationTime();
-      celestrian::PluginHostService quiet_launch(dir);
-      expectEquals(quiet_launch.knownPlugins().getBlacklistedFiles().size(), 2,
-                   juce::String("quiet launch keeps the persisted blacklist"));
-      expect(quiet_launch.knownPluginsFile().getLastModificationTime() == before,
-             "nothing learned, nothing rewritten");
+      // The scan worker is the ONLY probe path (docs/vst3.md 11):
+      // nothing is ever probed in this process. A bundle-shaped
+      // directory is enough to be enumerated; with no worker to hand it
+      // to, the scan reports the error and touches no plugin code.
+      const auto dir = freshDataDir("no_worker");
+      const auto plugins = dir.getChildFile("plugins");
+      plugins.getChildFile("Fake.vst3").createDirectory();
+      celestrian::PluginHostService service(dir);
+      service.setScanWorkerCommand({});
+      service.startScan(plugins.getFullPathName(),
+                        /*include_default_locations=*/false);
+      for (int i = 0; i < 500 && service.isScanning(); ++i)
+        juce::Thread::sleep(10);
+      expect(!service.isScanning(), "scan ended");
+      const auto status = service.getScanStatusVar();
+      expect(status.getProperty("error", "").toString().isNotEmpty(),
+             "status carries the no-worker error");
+      expectEquals(service.knownPlugins().getNumTypes(), 0,
+                   juce::String("nothing probed, nothing listed"));
+      expectEquals(service.knownPlugins().getBlacklistedFiles().size(), 0,
+                   juce::String("nothing blamed on the file"));
     }
 
     beginTest("startScan can be confined to one directory (no defaults)");

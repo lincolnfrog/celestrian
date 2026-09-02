@@ -188,8 +188,6 @@ class PluginScanCrashTests : public juce::UnitTest {
                                 1.0, 1e-6, "progress ends at 1");
       expect(service.knownPluginsFile().existsAsFile(),
              "completed scan persisted the registry");
-      expect(!service.pedalFile().existsAsFile(),
-             "no pedal file: nothing was probed in-process");
       const auto work = service.scanWorkDirectory();
       expect(work.getChildFile("list_1.txt").existsAsFile() &&
                  work.getChildFile("results_1.txt").existsAsFile(),
@@ -254,6 +252,25 @@ class PluginScanCrashTests : public juce::UnitTest {
                    juce::String("nothing blamed on a plugin"));
       expectEquals(service.knownPlugins().getBlacklistedFiles().size(), 0,
                    juce::String("nothing blacklisted"));
+    }
+
+    beginTest("no worker command: the crasher is never probed in-process");
+    {
+      // The worker is the ONLY probe path (docs/vst3.md §11): with the
+      // command cleared, a scan over the crashing bundle ends with an
+      // error and this process is still here to say so.
+      const auto no_worker_data = root.getChildFile("data_no_worker");
+      PluginHostService service(no_worker_data);
+      service.setScanWorkerCommand({});
+      service.startScan(plugins.getFullPathName(), false);
+      expect(waitForScan(service, 30000), "scan ended");
+      const auto status = service.getScanStatusVar();
+      expect(status.getProperty("error", "").toString().isNotEmpty(),
+             "status carries the no-worker error");
+      expect(!registryHas(service, "Celestrian Test Gain"),
+             "nothing was probed: the good plugin is not listed either");
+      expect((bool)status.getProperty("outOfProcess", false),
+             "probing is out-of-process by construction");
     }
   }
 };

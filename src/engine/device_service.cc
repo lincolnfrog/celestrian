@@ -65,6 +65,7 @@ void AudioEngine::init(int inputs, int outputs) {
         "AudioEngine: FAILED to get current audio device.");
   }
   device_manager.addAudioCallback(this);
+  device_callback_registered_ = true;
 }
 
 void AudioEngine::enableAllInputChannels() {
@@ -345,6 +346,10 @@ juce::var AudioEngine::getLatencyCalibration() {
 }
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device) {
+  // No callback is in flight here (the device manager calls this before
+  // the first block): the xrun detector's gap reference restarts, so a
+  // re-attach after a bounce does not read the detachment as a gap.
+  last_entry_ticks_ = 0;
   if (device) {
     cached_input_latency_.store(device->getInputLatencyInSamples());
     cached_output_latency_.store(device->getOutputLatencyInSamples());
@@ -445,4 +450,15 @@ void AudioEngine::restoreCalibrationForCurrentDevice() {
 void AudioEngine::audioDeviceStopped() {
   // The callback is no longer running; everything pending is safe to free.
   flushGraveyard();
+  // A device stop is a closing edge for every instrument (docs/vst3.md
+  // §11): no block can carry the sound-off now, so each MIDI clip sends
+  // its pair at the first block the device runs again.
+  std::function<void(celestrian::AudioNode&)> request =
+      [&](celestrian::AudioNode& node) {
+        if (auto* clip = dynamic_cast<celestrian::ClipNode*>(&node))
+          clip->requestMidiSoundOff();
+        if (auto* stack = dynamic_cast<celestrian::StackNode*>(&node))
+          for (const auto& child : stack->ownedChildren()) request(*child);
+      };
+  request(*root_node);
 }

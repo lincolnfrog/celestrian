@@ -6,10 +6,42 @@
 
 namespace celestrian {
 
+juce::File ProjectManager::baseChoiceFile() {
+  return juce::File::getSpecialLocation(
+             juce::File::userApplicationDataDirectory)
+      .getChildFile("Celestrian")
+      .getChildFile("projects_root.json");
+}
+
 juce::File ProjectManager::base() const {
   if (base_override_ != juce::File()) return base_override_;
+  if (!chosen_base_read_) {
+    chosen_base_read_ = true;
+    const juce::File f = baseChoiceFile();
+    if (f.existsAsFile()) {
+      const juce::var v = juce::JSON::parse(f.loadFileAsString());
+      const juce::String path = v.getProperty("base", "").toString();
+      if (path.isNotEmpty()) chosen_base_ = juce::File(path);
+    }
+  }
+  if (chosen_base_ != juce::File()) return chosen_base_;
   return juce::File::getSpecialLocation(juce::File::userMusicDirectory)
       .getChildFile("Celestrian");
+}
+
+bool ProjectManager::setBase(const juce::File& dir) {
+  if (dir == juce::File() || !dir.createDirectory()) return false;
+  chosen_base_ = dir;
+  chosen_base_read_ = true;
+  if (base_override_ != juce::File()) return true;  // tests never persist
+  auto* o = new juce::DynamicObject();
+  o->setProperty("base", dir.getFullPathName());
+  const juce::File f = baseChoiceFile();
+  f.getParentDirectory().createDirectory();
+  const bool ok = f.replaceWithText(juce::JSON::toString(juce::var(o), true));
+  juce::Logger::writeToLog("ProjectManager: base folder -> " +
+                           dir.getFullPathName() + (ok ? "" : " (not persisted)"));
+  return true;
 }
 
 juce::File ProjectManager::projectsRoot() const {

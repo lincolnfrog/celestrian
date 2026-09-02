@@ -241,13 +241,26 @@ export function windowDragTarget({ edge, rawQ, startQ, endQ, maxQ }) {
 }
 
 /**
- * Arm targets emptiness (Q7 refinement): a clip with content cannot be
- * re-recorded (no overdub by design) — group record captures the empty
- * clips and just plays the full ones. Shared with app.js's record
- * handler (one rule, one copy).
+ * The verb a clip's ● offers (Q7 + docs/takes.md §2), shared with
+ * app.js's record handler (one rule, one copy):
+ *   'stop'   — a live take (recording or pending): ● stops/cancels it;
+ *   'record' — an empty clip: ● records its first take;
+ *   'retake' — a committed clip: ● arms a NEW TAKE of the slot
+ *              (`newTake`; a plain arm on content stays refused);
+ *   null     — a committed one-shot: its slot top is never heard
+ *              through the context cycle, so the engine refuses.
  */
+export function armMode(clip) {
+    if (clip.isRecording || clip.isPendingStart) return 'stop';
+    if (!(clip.duration > 0)) return 'record';
+    if (clip.periodSource === 'context') return null;
+    return 'retake';
+}
+
+/** True when ● does anything on this clip (a committed clip is armable
+ * as a retake). */
 export function isArmable(clip) {
-    return clip.isRecording || clip.isPendingStart || !(clip.duration > 0);
+    return armMode(clip) !== null;
 }
 
 /** Does the node's published chain carry an instrument slot (docs/
@@ -259,22 +272,55 @@ export function hasInstrument(node) {
 }
 
 /**
- * Aggregate arm state over a group's ARMABLE clip descendants:
- * { state: 'all'|'some'|'none', armable: count }. armable === 0 means
- * the rail's group-arm control has nothing to do (disable it).
+ * Aggregate arm state over a group: { state: 'all'|'some'|'none',
+ * armable: count, mode: 'record'|'retake'|'none' }. Arm targets
+ * emptiness first (Q7): while any EMPTY or live clip sits beneath, the
+ * ● records the empties (full ones just play) and the aggregate spans
+ * those. With every track full, the ● is a NEW TAKE of the group's
+ * committed DIRECT clips — one performance (docs/takes.md §2) — and
+ * armable counts them. armable === 0 means the control has nothing to
+ * do (disable it).
  */
 function groupArmState(node) {
     let armed = 0, armable = 0;
     const visit = n => (n.nodes || []).forEach(c => {
         if (c.type === 'clip') {
-            if (!isArmable(c)) return;
-            armable++;
-            if (c.isPendingStart || c.isRecording) armed++;
+            const m = armMode(c);
+            if (m === 'stop') { armed++; armable++; }
+            else if (m === 'record') armable++;
         } else if (c.type === 'stack') visit(c);
     });
     visit(node);
-    const state = armed === 0 ? 'none' : armed === armable ? 'all' : 'some';
-    return { state, armable };
+    if (armable > 0) {
+        const state = armed === 0 ? 'none' : armed === armable ? 'all' : 'some';
+        return { state, armable, mode: 'record' };
+    }
+    const retakes = (node.nodes || [])
+        .filter(c => c.type === 'clip' && armMode(c) === 'retake').length;
+    return { state: 'none', armable: retakes,
+             mode: retakes > 0 ? 'retake' : 'none' };
+}
+
+/**
+ * The take facts a clip lane carries (docs/takes.md §5): the list
+ * size, the active index, the comp (one take index per Q cell, −1 =
+ * active, [] = none), the cell count the comp editor draws
+ * (ceil(period / Q)), and whether the lane is in COMP MODE (view state,
+ * opts.compMode). States without the keys (hand-built scenes) read as
+ * one take, no comp.
+ */
+function takeFields(node, quantum, ctx) {
+    const duration = node.duration || 0;
+    const takes = typeof node.takes === 'number'
+        ? node.takes : (duration > 0 ? 1 : 0);
+    return {
+        takes,
+        activeTake: node.activeTake || 0,
+        comp: Array.isArray(node.comp) ? node.comp.slice() : [],
+        compCells: quantum > 0 && duration > 0
+            ? Math.ceil(duration / quantum - EPS) : 0,
+        compMode: !!(ctx.compMode && ctx.compMode.has(node.id)),
+    };
 }
 
 /**
@@ -301,6 +347,7 @@ function groupArmState(node) {
  *   hasInstrument: boolean, // chain carries an instrument slot (♪ toggle)
  *   midiArmed: boolean,    //  THE live MIDI target (single-armed)
  *   isMidi: boolean,       //  MIDI track: records notes, no audio input
+ *   monitor: boolean,      //  Q20 software input monitoring (clips; off by default)
  * }}
  */
 function laneCommon(node, state) {
@@ -344,6 +391,9 @@ function laneCommon(node, state) {
         oneShot: node.periodSource === 'context',
         inputChannelR: node.inputChannelR ?? -1,
         channels: node.channels ?? 1,
+        // Software input monitoring (Q20): the rail's "mon" chip —
+        // published per clip, off unless toggled on.
+        monitor: !!node.monitor,
     };
 }
 
@@ -1376,12 +1426,16 @@ function pushDefinerLane(node, depth, ctx) {
         // second amber cursor sweeping the same span would read
         // as two cursors.
         windowPhase: 0,
-        armable: false,
+        // The sole clip's ● is a NEW TAKE like any committed clip's
+        // (the take keeps the provisional Q); a definer stack's ● is
+        // its group aggregate.
+        armable: node.type === 'clip' ? isArmable(node) : false,
+        armMode: node.type === 'clip' ? armMode(node) : null,
         inputChannel: node.inputChannel ?? -1,
         isQDefiner: true,
         folded: node.type === 'stack' && isFolded(node, ctx),
         groupArm: node.type === 'stack' ? groupArmState(node) : undefined,
-    }));
+    }, node.type === 'stack' ? {} : takeFields(node, quantum, ctx)));
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
 }
 
@@ -1390,26 +1444,57 @@ function pushDefinerLane(node, depth, ctx) {
  * the masterPos contract the playhead IS the take's end, and the
  * engine grows `duration` live while writing. Zero length = pending
  * start (armed, waiting for the Q boundary).
+ *
+ * A NEW TAKE of a committed slot (docs/takes.md §2; opts.retakes names
+ * the lane) keeps the slot's `duration`, so the bar's length is the
+ * distance from the slot's top instead: capture starts at t ≡ origin
+ * (mod period) and runs exactly one period. The resting tiles stay,
+ * flagged `silent` — the engine renders silence for the slot while
+ * the take is live — and `armAtQ` marks the slot top a pending take
+ * waits for.
  */
-function pushRecordingLane(node, depth, mapCtx, ctx) {
+function pushRecordingLane(node, depth, mapCtx, ctx, offsetQ) {
     const { quantum, fxOpen, lanes, state } = ctx;
+    const retake = !!(ctx.retakes && ctx.retakes.has(node.id)) &&
+        (node.duration || 0) > 0;
+    let reps = [];
+    let recordingLengthQ = (node.duration || 0) / quantum;
+    let pendingStart = !(node.duration > 0);
+    let armAtQ = 0;
+    if (retake) {
+        const periodQ = intrinsicPeriodQ(node, quantum);
+        reps = ctx.qEstablished && periodQ > 0
+            ? unrollReps({ periodQ, offsetQ, cycleQ: ctx.cycleQ })
+                .map(r => Object.assign({}, r, { silent: true }))
+            : [];
+        pendingStart = !!node.isPendingStart;
+        const sinceTopQ = periodQ > 0
+            ? posMod(ctx.playheadQ - offsetQ, periodQ) : 0;
+        recordingLengthQ = pendingStart ? 0 : sinceTopQ;
+        armAtQ = periodQ > 0 ? ctx.playheadQ + (periodQ - sinceTopQ) : 0;
+    }
     lanes.push(Object.assign(laneCommon(node, state), {
         kind: 'clip',
         depth,
         periodQ: 0,
-        reps: [],
+        intrinsicQ: retake ? intrinsicPeriodQ(node, quantum) : 0,
+        takeStartQ: (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
+        reps,
         window: null,
         armable: true,
+        armMode: 'stop',
         inputChannel: node.inputChannel ?? -1,
-        recordingLengthQ: (node.duration || 0) / quantum,
-        pendingStart: !(node.duration > 0),
+        recordingLengthQ,
+        pendingStart,
+        retake,
+        armAtQ,
         // Recording THROUGH an enclosing map (phase 2): the cue
         // hooks + the bar's cap (the engine commits ≤ one map
         // period).
         throughMap: !!mapCtx,
         mapPeriodQ: mapCtx ? mapCtx.periodQ : 0,
         mapStartQ: mapCtx ? mapCtx.startQ : 0,
-    }));
+    }, retake ? takeFields(node, quantum, ctx) : {}));
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
 }
 
@@ -1439,8 +1524,9 @@ function windowEditLane(node, win, intrinsicQ, ctx) {
         bandTotalQ: intrinsicQ,
         bandEditable: intrinsicQ >= 2,
         armable: false,
+        armMode: null,
         inputChannel: node.inputChannel ?? -1,
-    });
+    }, node.type === 'stack' ? {} : takeFields(node, ctx.quantum, ctx));
 }
 
 
@@ -1685,8 +1771,9 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
         windowPhase: node.windowActive ? (node.playhead || 0) : 0,
     // HEARD VIEW (the shared function, I5): overrides the raw-framed
     // fields above — period, extent, reps, chip, seams.
-    }, heardFields || {}, {
+    }, heardFields || {}, takeFields(node, quantum, ctx), {
         armable: isArmable(node),
+        armMode: armMode(node),
         // Under an enclosing ACTIVE map: the map's excluded regions
         // project onto this lane as dims — what the group's map
         // silences, the child shows silenced (the full heard-frame
@@ -1737,13 +1824,16 @@ function pushLane(node, depth, mapCtx, ctx) {
         return;
     }
     if (node.isRecording) {
-        pushRecordingLane(node, depth, mapCtx, ctx);
+        pushRecordingLane(node, depth, mapCtx, ctx, offsetQ);
         return;
     }
     const periodQ = displayPeriodQ(node, ctx.quantum);
     const intrinsicQ = intrinsicPeriodQ(node, ctx.quantum);
     const win = mapOf(node, ctx.quantum);
-    if (ctx.windowEdit && ctx.windowEdit.has(node.id) &&
+    // COMP MODE on a windowed lane opens its raw inspector: the comp's
+    // cells live on the slot's period, which the heard view folds away.
+    const compOpen = !!(ctx.compMode && ctx.compMode.has(node.id) && win);
+    if (((ctx.windowEdit && ctx.windowEdit.has(node.id)) || compOpen) &&
         (win || intrinsicQ >= 2)) {
         ctx.lanes.push(Object.assign(windowEditLane(node, win, intrinsicQ, ctx),
             { kind: 'clip', depth }));
@@ -1773,11 +1863,21 @@ function pushLane(node, depth, mapCtx, ctx) {
  * opts.fxOpen:     Set of lane ids whose effects row is expanded.
  * opts.seqOpen:    Set of stack ids whose sequencer grid is expanded.
  * opts.windowEdit: Set of lane ids in the window EDIT view.
+ * opts.compMode:   Set of clip ids in COMP MODE (docs/takes.md; the
+ *                  windowEdit pattern — a windowed lane opens its raw
+ *                  inspector for it).
+ * opts.retakes:    Set of clip ids whose live take is a NEW TAKE of a
+ *                  committed slot. Published state does not say so (a
+ *                  retake keeps the slot's `duration`); app.js infers
+ *                  it — a committed clip that goes hot can only be
+ *                  retaking, since the engine refuses a plain arm on
+ *                  content.
  * opts.pinFrameQ / opts.pinFoldQ: the map-gesture frame pin (drag_pin).
  *
  * Returns the Q-unit view model:
  * {
  *   quantum, epochSamples, sampleRate, isPlaying, qEstablished,
+ *   monitorLatencyMs, // Q20: the calibrated round trip (ms) or null
  *   cycleQ,          // the DISPLAY FRAME lanes tile
  *   lcmQ,            // the committed cycle (≤ cycleQ while a take grows)
  *   loopCycleQ,      // the AUDIBLE cycle (a step audition shortens it)
@@ -1787,6 +1887,8 @@ function pushLane(node, depth, mapCtx, ctx) {
  *   soleQDefinerId, provisionalDefiner,   // Q13
  *   ruler: { cycleQ, ticks: [{ q, major }] },
  *   rootId,          // setSequence/toggleSequence target
+ *   rootGain,        // the master fader (root output stage), 0..1
+ *   rootFxCount,     // enabled slots in the root's rack (master fx chip)
  *   rootSeq: { bypassed, totalQ, stepCount, auditionStep, drift } | null,
  *   rootWindow: { startQ, endQ, step } | null,  // root audition brackets
  *   lanes: [ rows in render order — kind decides the shape:
@@ -1797,8 +1899,12 @@ function pushLane(node, depth, mapCtx, ctx) {
  *        wrapped, srcSegs?, srcTopFrac? }], window | null, windowChipQ,
  *        mapMulti, mapSegs, mapBypassed, mapSuspended, bandSegs,
  *        bandTotalQ, bandHeard, bandEditable, throughMap, underMap,
- *        armable (clips), recordingLengthQ (recording lanes), folded /
- *        groupArm / groupCycleQ / seqDims (groups), health (frame_health
+ *        armable + armMode (clips: 'stop'|'record'|'retake'|null),
+ *        takes / activeTake / comp / compCells / compMode (clips —
+ *        docs/takes.md), recordingLengthQ + retake + armAtQ (recording
+ *        lanes; a retake's reps are `silent`), folded /
+ *        groupArm { state, armable, mode } / groupCycleQ / seqDims
+ *        (groups), health (frame_health
  *        blowup/drift verdicts), definer/edit-view fields per builder;
  *     'fx':  { id: 'fx:'+ownerId, ownerId, depth, effects } (effects row);
  *     'seq': { id: 'seq:'+ownerId, ownerId, depth, bypassed, steps,
@@ -1960,6 +2066,12 @@ export function deriveViewModel(state, opts = {}) {
         seqOpen: opts.seqOpen || null,
         // Folded stacks (I6b view state — the app shell's set).
         folded: opts.folded || null,
+        // Takes (docs/takes.md): lanes in comp mode; lanes whose live
+        // take is a new take of a committed slot; the display playhead
+        // (a retake's bar runs from the slot top to now).
+        compMode: opts.compMode || null,
+        retakes: opts.retakes || null,
+        playheadQ,
         // The cycle top-level lanes hear (§12.2): the root song when
         // sequenced, else the audible loop.
         scopeCycleQ: rootSeqSamples > 0 ? rootSeqSamples / quantum
@@ -1993,6 +2105,12 @@ export function deriveViewModel(state, opts = {}) {
             editable: !anyRecording,
         }));
     }
+    // THE MASTER RACK (B5): the root stack's fx row — the same synthetic
+    // row a group's fx chip opens, keyed on the root's id — renders
+    // ABOVE the root grid (the master shapes everything below it).
+    if (fxOpen && rootId && fxOpen.has(rootId)) {
+        lanes.unshift(fxRow(state, 0));
+    }
 
     attachFrameHealth(lanes, state, nodes, quantum, qEstablished);
 
@@ -2012,12 +2130,26 @@ export function deriveViewModel(state, opts = {}) {
         soleQDefinerId,  // Q13: the sole committed clip (provisional Q), or null
         provisionalDefiner,  // Q13: framing the full buffer to trim the loop
         sampleRate: (state.perf && state.perf.sampleRate) || 44100,
+        // Software input monitoring (Q20): the calibrated round trip
+        // the monitored signal carries, in ms at the device rate —
+        // null until a calibration has been measured (the mon chip's
+        // tooltip says so instead of guessing).
+        monitorLatencyMs: state.perf && state.perf.calibrated
+            ? (state.perf.latencyCompensationSamples /
+               (state.perf.sampleRate || 44100)) * 1000
+            : null,
         armAtQ,
         ruler: { cycleQ, ticks },
         lanes,
         // The root sequencer's transport-chip facts (docs/sequencer.md):
         // rootId targets setSequence/toggleSequence at the session root.
         rootId,
+        // THE MASTER STRIP (B5): the root stack's output-stage fader
+        // (absent = unity — pre-gain states must not read as silent)
+        // and its rack's enabled count for the master fx chip.
+        rootGain: typeof state.gain === 'number' ? state.gain : 1,
+        rootFxCount: state.effects && Array.isArray(state.effects.chain)
+            ? state.effects.chain.filter(s => s.enabled).length : 0,
         rootSeq: (() => {
             const s = seqOf(state);
             if (!s) return null;

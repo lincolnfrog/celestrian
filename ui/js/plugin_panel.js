@@ -1,8 +1,8 @@
 /**
  * Plugin registry panel (docs/vst3.md phase 1).
  *
- * A status-strip popover, structurally the audio_settings.js twin (it
- * reuses the .audio-panel styles): lists the known VST3 plugins and
+ * A status-strip popover (it reuses the .audio-panel styles the
+ * preferences panel wears): lists the known VST3 plugins and
  * drives a rescan. Scanning runs on a backend background thread; while
  * it runs this panel polls getPluginScanStatus and re-fetches the list
  * on completion. This panel is the registry view only: adding a

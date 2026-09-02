@@ -17,12 +17,6 @@
     { "name": "3Q start phase, 2Q clip -> launch 1Q", "startPhase": 132300, "duration": 88200, "expected": 44100 }
   ],
 
-  "playhead_cases": [
-    { "name": "Example 2: at timeline 2Q, clip3 (launch 6Q, dur 8Q) is at 0% (aligned with recording)", "masterPos": 88200, "launchPoint": 264600, "duration": 352800, "expected": 0.0 },
-    { "name": "Example 2: at timeline 0, clip3 is at 75%", "masterPos": 0, "launchPoint": 264600, "duration": 352800, "expected": 0.75 },
-    { "name": "4Q clip at 1Q with no launch offset -> 25%", "masterPos": 44100, "launchPoint": 0, "duration": 176400, "expected": 0.25 }
-  ],
-
   "stop_boundary_cases": [
     { "name": "stop mid-2nd quantum -> extends to 2Q", "recordedLength": 50000, "quantum": 44100, "expected": 88200 },
     { "name": "stop exactly at 4Q -> next boundary is 5Q", "recordedLength": 176400, "quantum": 44100, "expected": 220500 },

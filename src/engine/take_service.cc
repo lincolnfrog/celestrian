@@ -1,15 +1,18 @@
 // AudioEngine — TAKE LIFECYCLE: arm (startRecordingInNode: the Q13
-// lock-collapse, Q7 group arm, S21 auto-target, through-map arm), stop
-// (stopRecordingInNode), the settle that logs a performance into the
-// undo log (reconcileTakes, liftGroupWindow, applyAutoGate), and take
-// storage upkeep (compactClipToHeap, compactIdleTakes, growLiveTakes).
-// Message thread only.
+// lock-collapse, Q7 group arm, S21 auto-target, through-map arm), the
+// new take of a committed slot (newTake), stop (stopRecordingInNode),
+// the settle that logs a performance into the undo log
+// (reconcileTakes, liftGroupWindow, applyAutoGate), the take-list verbs
+// (selectTake, deleteTake, setComp — docs/takes.md), and take storage
+// upkeep (compactClipToHeap, compactIdleTakes, growLiveTakes). Message
+// thread only.
 
 #include "../audio_engine.h"
 
 #include <algorithm>
 
 #include "../clip_node.h"
+#include "../dsp/vst3_slot.h"
 #include "../stack_node.h"
 #include "../timing.h"
 #include "engine_internal.h"
@@ -128,6 +131,28 @@ void collectArmTargets(celestrian::AudioNode* node,
     for (const auto& child : stack->ownedChildren()) {
       collectArmTargets(child.get(), out);
     }
+  }
+}
+
+/** NEW-TAKE targets (docs/takes.md, the Q7 twin of collectArmTargets):
+ * a committed idle clip records itself; a stack records its committed
+ * idle DIRECT clip children as one performance. */
+void collectRetakeTargets(celestrian::AudioNode* node,
+                          std::vector<celestrian::ClipNode*>& out) {
+  auto consider = [&](celestrian::AudioNode* n) {
+    if (n->getNodeType() != celestrian::NodeType::Clip) return;
+    auto* clip = static_cast<celestrian::ClipNode*>(n);
+    if (clip->recState() == celestrian::ClipNode::RecState::Idle &&
+        clip->getIntrinsicDuration() > 0) {
+      out.push_back(clip);
+    }
+  };
+  if (node->getNodeType() == celestrian::NodeType::Clip) {
+    consider(node);
+    return;
+  }
+  if (auto* stack = dynamic_cast<celestrian::StackNode*>(node)) {
+    for (const auto& child : stack->ownedChildren()) consider(child.get());
   }
 }
 
@@ -368,6 +393,214 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   }
 }
 
+void AudioEngine::newTake(const juce::String& uuid) {
+  juce::Logger::writeToLog("AudioEngine: new_take requested for " + uuid);
+  auto* node = findNodeByUuid(root_node.get(), uuid);
+  if (node == nullptr) {
+    juce::Logger::writeToLog("AudioEngine: NODE NOT FOUND for " + uuid);
+    return;
+  }
+  std::vector<celestrian::ClipNode*> targets;
+  collectRetakeTargets(node, targets);
+  if (targets.empty()) {
+    juce::Logger::writeToLog(
+        "AudioEngine: new take refused - no committed idle clip under " +
+        uuid + " (record arms an empty clip; a new take re-records a slot)");
+    return;
+  }
+  for (auto* t : targets) {
+    // A one-shot's period is the context cycle, not its length: the
+    // slot-top arm rule has no top to aim at.
+    if (t->periodFromContext()) {
+      juce::Logger::writeToLog(
+          "AudioEngine: new take refused - " + t->getUuid() +
+          " is a one-shot (its period is the context cycle)");
+      return;
+    }
+    // The slot's top must be a heard moment: under an ACTIVE ancestor
+    // map the heard clock is folded and may never visit it.
+    for (auto* a = t->getParent(); a != nullptr; a = a->getParent()) {
+      if (a->activeTimeMap().active()) {
+        juce::Logger::writeToLog(
+            "AudioEngine: new take refused - an active loop window or "
+            "step audition encloses " + t->getUuid() +
+            " (bypass it to re-record the slot)");
+        return;
+      }
+    }
+    if (t->takeCount() >= celestrian::ClipNode::kMaxTakes) {
+      juce::Logger::writeToLog("AudioEngine: new take refused - " +
+                               t->getUuid() + " holds the maximum number of takes");
+      return;
+    }
+    const bool next_midi = t->fxChain()->hasInstrumentSlot();
+    if (next_midi != (t->contentKind() ==
+                      celestrian::ClipNode::ContentKind::Midi)) {
+      juce::Logger::writeToLog(
+          "AudioEngine: new take refused - " + t->getUuid() +
+          " would record a different content kind than its takes hold");
+      return;
+    }
+  }
+
+  // Q13 LOCK-COLLAPSE, exactly as at any other arm: a provisionally
+  // trimmed definer (clip or stack) collapses to its window first, so
+  // the new take's period IS the trimmed loop.
+  if (islandCommittedClipCount() == 1) {
+    if (auto* definer = firstCommittedClip(root_node.get());
+        definer && definer->isLoopWindowActive() &&
+        !hasActiveGeometryOutside(root_node.get(), definer)) {
+      celestrian::Edit e(celestrian::Edit::Kind::CollapseTake);
+      e.uuid = definer->getUuid();
+      record(std::move(e));
+    }
+  }
+  if (auto* ds = definerStack(root_node.get());
+      ds != nullptr && !root_node->hasActiveTake() && !ds->auditionActive() &&
+      !ds->isLoopWindowBypassed() && !ds->hasSegmentMap() &&
+      ds->getLoopEnd() > ds->getLoopStart()) {
+    celestrian::Edit e(celestrian::Edit::Kind::CollapseGroup);
+    e.uuid = ds->getUuid();
+    record(std::move(e));
+  }
+
+  if (!is_playing_global.load()) {
+    is_playing_global.store(true);
+    juce::Logger::writeToLog(
+        "AudioEngine: Auto-starting transport for a new take.");
+  }
+
+  // ONE PERFORMANCE, ONE ARM MOMENT (see startRecordingInNode): reserve
+  // every member first, then publish the Armed states back-to-back.
+  PendingTake p;
+  p.retake = true;
+  p.q_before = root_node->getQuantum();
+  p.epoch_before = root_node->getEpoch();
+  std::vector<celestrian::ClipNode*> prepared;
+  for (auto* t : targets) {
+    const int prev = t->activeTake();
+    if (!t->prepareRetake()) {
+      juce::Logger::writeToLog("AudioEngine: new take not armed on " +
+                               t->getUuid());
+      continue;
+    }
+    prepared.push_back(t);
+    p.uuids.push_back(t->getUuid());
+    p.prev_active.push_back(prev);
+  }
+  for (auto* t : prepared) t->publishArm();
+  if (prepared.empty()) return;
+  for (auto* t : prepared) {
+    if (t->contentKind() == celestrian::ClipNode::ContentKind::Midi) {
+      if (!t->midi_armed.load()) setMidiArmed(t->getUuid(), true);
+      break;
+    }
+  }
+  pending_takes_.push_back(std::move(p));
+  juce::Logger::writeToLog("AudioEngine: new take armed on " +
+                           juce::String((int)prepared.size()) +
+                           " clip(s) - each at its own slot top");
+}
+
+void AudioEngine::selectTake(const juce::String& uuid, int index) {
+  auto* clip = dynamic_cast<celestrian::ClipNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (clip == nullptr) return;
+  if (root_node->hasActiveTake()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::selectTake refused - a take is armed/recording");
+    return;
+  }
+  if (index < 0 || index >= clip->takeCount()) {
+    juce::Logger::writeToLog("AudioEngine::selectTake refused - no take " +
+                             juce::String(index) + " on " + uuid);
+    return;
+  }
+  if (index == clip->activeTake()) return;
+  celestrian::Edit e(celestrian::Edit::Kind::SelectTake);
+  e.uuid = uuid;
+  e.index = index;
+  record(std::move(e));
+}
+
+void AudioEngine::deleteTake(const juce::String& uuid, int index) {
+  auto* clip = dynamic_cast<celestrian::ClipNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (clip == nullptr) return;
+  if (root_node->hasActiveTake()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::deleteTake refused - a take is armed/recording");
+    return;
+  }
+  if (clip->takeCount() < 2) {
+    juce::Logger::writeToLog(
+        "AudioEngine::deleteTake refused - the last take of a slot stays "
+        "(delete the clip to remove it)");
+    return;
+  }
+  if (index < 0 || index >= clip->takeCount()) {
+    juce::Logger::writeToLog("AudioEngine::deleteTake refused - no take " +
+                             juce::String(index) + " on " + uuid);
+    return;
+  }
+  celestrian::Edit e(celestrian::Edit::Kind::DeleteTake);
+  e.uuid = uuid;
+  e.index = index;
+  record(std::move(e));
+}
+
+void AudioEngine::setComp(const juce::String& uuid,
+                          const std::vector<int>& cells) {
+  auto* clip = dynamic_cast<celestrian::ClipNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (clip == nullptr) return;
+  if (root_node->hasActiveTake()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setComp refused - a take is armed/recording");
+    return;
+  }
+  if (clip->contentKind() == celestrian::ClipNode::ContentKind::Midi) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setComp refused - comping a MIDI clip is not "
+        "supported (select a whole take)");
+    return;
+  }
+  const int64_t q = root_node->getQuantum();
+  const int64_t period = clip->getIntrinsicDuration();
+  if (q <= 0 || period <= 0) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setComp refused - no committed period to comp");
+    return;
+  }
+  const int64_t expected = (period + q - 1) / q;
+  if (!cells.empty() && (int64_t)cells.size() != expected) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setComp refused - " + juce::String((int)cells.size()) +
+        " cells for a period of " + juce::String(expected) + " Q cells");
+    return;
+  }
+  if (expected > celestrian::ClipNode::kMaxCompCells) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setComp refused - the period exceeds the comp's "
+        "cell bound");
+    return;
+  }
+  for (const int c : cells) {
+    if (c < -1 || c >= clip->takeCount()) {
+      juce::Logger::writeToLog("AudioEngine::setComp refused - take " +
+                               juce::String(c) + " does not exist on " + uuid);
+      return;
+    }
+  }
+  const int64_t cell_len = cells.empty() ? 0 : q;
+  if (cells == clip->compCells() && cell_len == clip->compCellLength()) return;
+  celestrian::Edit e(celestrian::Edit::Kind::Comp);
+  e.uuid = uuid;
+  e.cells = cells;
+  e.cell_len = cell_len;
+  record(std::move(e));
+}
+
 /**
  * GROUP-WINDOW LIFT (Q13 FOR GROUPS). A take committed against a
  * SURVIVED Q (the island's earlier content deleted, Q kept) whose
@@ -441,21 +674,80 @@ void AudioEngine::reconcileTakes() {
     }
     PendingTake done = std::move(p);
     pending_takes_.erase(pending_takes_.begin() + (long)i);
+
+    // A NEW TAKE of committed slots (docs/takes.md) settles through the
+    // clip: a committed one joins the list (now active); a cancelled
+    // one hands the slot back to its previous take, the abandoned
+    // reservation retiring through the reclaimer.
+    std::vector<int> prev_active;
+    if (done.retake) {
+      committed.clear();
+      for (size_t k = 0; k < done.uuids.size(); ++k) {
+        auto* clip = dynamic_cast<celestrian::ClipNode*>(
+            findNodeByUuid(root_node.get(), done.uuids[k]));
+        if (clip == nullptr || !clip->retakeSettled()) continue;
+        celestrian::ClipNode::TakeState displaced;
+        if (clip->settleRetake(displaced)) {
+          committed.push_back(clip);
+          prev_active.push_back(k < done.prev_active.size()
+                                    ? done.prev_active[k]
+                                    : 0);
+        } else {
+          retireOwned(std::move(displaced.buffer));
+          retireOwned(std::move(displaced.midi));
+          if (displaced.storage != nullptr) {
+            retire([st = std::shared_ptr<celestrian::TakeStorage>(
+                        std::move(displaced.storage))] {});
+          }
+          juce::Logger::writeToLog("AudioEngine: new take cancelled on " +
+                                   clip->getUuid() +
+                                   " - the previous take stands");
+        }
+      }
+    }
     if (committed.empty()) continue;  // the whole performance cancelled
 
     // The log entry is the INVERSE (Untake): it names the clips and
     // carries the island facts as they were BEFORE the performance, so
     // undo restores the grid with the content. applyEdit on Untake
     // builds the forward Take (owning the stripped content) for redo.
+    // A new take's payload names its list index and the take that was
+    // active before it: undo removes the take and restores that one.
     celestrian::Edit inv(celestrian::Edit::Kind::Untake);
-    for (auto* clip : committed) {
+    for (size_t k = 0; k < committed.size(); ++k) {
       celestrian::Edit::TakePayload tp;
-      tp.uuid = clip->getUuid();
+      tp.uuid = committed[k]->getUuid();
+      if (done.retake) {
+        tp.take_index = committed[k]->activeTake();
+        tp.prev_active = prev_active[k];
+      }
+      // A MIDI take carries its instrument's state at commit
+      // (docs/vst3.md §11): undo puts the instrument back as it was
+      // with the take; an audio take carries nothing here.
+      if (committed[k]->contentKind() ==
+          celestrian::ClipNode::ContentKind::Midi) {
+        if (auto* instrument = dynamic_cast<celestrian::dsp::Vst3Slot*>(
+                committed[k]->fxChain()->firstInstrumentSlot())) {
+          tp.instrument_slot = instrument->slotUuid();
+          tp.instrument_state = instrument->stateBlob();
+        }
+      }
       inv.takes.push_back(std::move(tp));
     }
     inv.setsIsland = true;
     inv.iq = done.q_before;
     inv.iepoch = done.epoch_before;
+    if (done.retake) {
+      for (auto* clip : committed) {
+        if (clip->reservedStorage() != nullptr) compactClipToHeap(*clip);
+      }
+      pushUndo(std::move(inv));
+      clearRedo();
+      juce::Logger::writeToLog(
+          "AudioEngine: new take logged (undoable) - " +
+          juce::String((int)committed.size()) + " clip(s)");
+      continue;
+    }
     // Q18: the first content under a stack anchors it (the group take
     // anchors its group at the take's origin); rides the take's entry.
     settleAnchors(inv);
@@ -571,4 +863,7 @@ void AudioEngine::stopRecordingInNode(const juce::String& uuid) {
     clip->stopRecording(had_quantum, gen);
   }
   if (gen != 0) root_node->publishStopGeneration(gen);
+  // A new take cancelled before capture settles right here (its slot
+  // sounds again without waiting for the next poll).
+  reconcileTakes();
 }

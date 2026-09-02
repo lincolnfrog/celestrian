@@ -15,6 +15,7 @@ import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
 import { getCalibrationSamples } from './devices.js';
 import { getSampleRate, toSeconds } from './rate.js';
+import { publishTakes } from './takes.js';
 
 /**
  * Recursively project raw graph nodes into the ENGINE's published
@@ -100,6 +101,11 @@ export function enrichNodes(nodes) {
                 (instrument && !((node.duration || 0) > 0) && !node.isRecording)
                 ? 'midi' : 'audio';
             updatedNode.midiEvents = node.midiEvents || 0;
+            // Software input monitoring (Q20, engine parity: clip
+            // metadata `monitor`) — off unless toggled on.
+            updatedNode.monitor = !!node.monitor;
+            // The take list (docs/takes.md): takes / activeTake / comp.
+            publishTakes(node, updatedNode);
         }
         if (typeof updatedNode.gain !== 'number') updatedNode.gain = 1;
         if (typeof updatedNode.pan !== 'number') updatedNode.pan = 0;
@@ -200,6 +206,9 @@ export function getState() {
         // Root output-stage gain (engine parity: the root stack
         // publishes `gain` like every node) — the master fader's value.
         gain: state.masterGain,
+        // The root's rack (engine parity: `effects` on every node's
+        // metadata, the root included) — the master fx panel's model.
+        effects: ensureEffects(state.root),
         // The raw island clock (engine parity): epoch-relative,
         // unwrapped — the UI folds it on its own pinned frame during
         // map gestures for a continuous cursor.

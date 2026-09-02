@@ -10,7 +10,11 @@
 namespace celestrian::dsp {
 
 /**
- * A VST3 plugin as a chain slot (docs/vst3.md §3, phase 3).
+ * A hosted plugin as a chain slot (docs/vst3.md §3, phase 3): any
+ * `juce::AudioPluginInstance` — VST3 everywhere, AudioUnit on macOS
+ * (§11). The type id stays "vst3" (the save format and UI key on it);
+ * the FORMAT rides the slot's identity (`pluginFormat`, persisted as
+ * `format`) alongside the uid.
  *
  * Two modes, one class:
  *  - LIVE: owns a prepared `juce::AudioPluginInstance`; processStereo
@@ -47,12 +51,18 @@ class Vst3Slot : public FxSlot {
    * instruments: 0-in/2-out) and prepared by prepare(). */
   Vst3Slot(std::unique_ptr<juce::AudioPluginInstance> instance,
            const juce::String& uid, const juce::String& display_name,
-           const juce::String& file, bool is_instrument = false);
+           const juce::String& file, bool is_instrument = false,
+           const juce::String& format = kDefaultFormat);
 
   /** PLACEHOLDER slot (missing plugin on load): identity + state only. */
   Vst3Slot(const juce::String& uid, const juce::String& display_name,
            const juce::String& file, const juce::MemoryBlock& state,
-           bool is_instrument = false);
+           bool is_instrument = false,
+           const juce::String& format = kDefaultFormat);
+
+  /** The format name a slot carries when none is given —
+   * `juce::PluginDescription::pluginFormatName` for VST3. */
+  static constexpr const char* kDefaultFormat = "VST3";
 
   const char* typeId() const override { return "vst3"; }
   bool wantsStereo() const override { return true; }
@@ -62,6 +72,8 @@ class Vst3Slot : public FxSlot {
   const juce::String& pluginUid() const { return uid_; }
   const juce::String& displayName() const { return display_name_; }
   const juce::String& fileOrIdentifier() const { return file_; }
+  /** The hosting format's name ("VST3", "AudioUnit"). */
+  const juce::String& pluginFormat() const { return format_; }
   juce::AudioPluginInstance* instance() const { return instance_.get(); }
 
   /** Audio thread. Mono is never reached (see class comment). */
@@ -77,9 +89,9 @@ class Vst3Slot : public FxSlot {
    * surface rejects everything. */
   bool setParam(const juce::String& key, double value) override;
 
-  /** Metadata: {name, uid, file, missing, latency} — the state blob is
-   * deliberately NOT here (it rides fillPersistentState at save time
-   * only; base64 at 20 Hz poll cadence would be waste). */
+  /** Metadata: {name, uid, file, format, missing, latency} — the state
+   * blob is deliberately NOT here (it rides fillPersistentState at save
+   * time only; base64 at 20 Hz poll cadence would be waste). */
   void fillParams(juce::DynamicObject& out) const override;
 
   /** Adds the base64 `state` property for the save format (message
@@ -104,6 +116,7 @@ class Vst3Slot : public FxSlot {
   juce::String uid_;           // PluginDescription::createIdentifierString
   juce::String display_name_;  // plugin name for chips/windows
   juce::String file_;          // fileOrIdentifier (diagnostics/rescan)
+  juce::String format_;        // PluginDescription::pluginFormatName
   juce::MemoryBlock state_;    // last-known state (placeholder keeps it)
   juce::MidiBuffer midi_scratch_;  // preallocated in doPrepare; empty on
                                    // the no-MIDI path

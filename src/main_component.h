@@ -64,5 +64,28 @@ class MainComponent : public juce::Component, public juce::Timer {
       juce::WebBrowserComponent::NativeFunctionCompletion done);
   std::unique_ptr<juce::FileChooser> session_chooser_;
 
+  // Bounce (Q19, docs/bounce.md): opens a native save chooser for the
+  // node's WAV — named after the node, in the project folder when one
+  // exists, else the user's music folder — then renders through
+  // AudioEngine::bounce and reports its verdict to the webview.
+  void bounceWithDialog(
+      const juce::String& uuid,
+      juce::WebBrowserComponent::NativeFunctionCompletion done);
+  std::unique_ptr<juce::FileChooser> bounce_chooser_;
+
+  // Import (docs/import.md): opens a native open chooser filtered to
+  // WAV/AIFF/FLAC, then imports the pick at `at_q` (a QTime rational)
+  // through AudioEngine::importAudio; false when cancelled or refused.
+  void importAudioWithDialog(
+      const juce::String& uuid, int64_t at_q_num, int64_t at_q_den,
+      juce::WebBrowserComponent::NativeFunctionCompletion done);
+  std::unique_ptr<juce::FileChooser> import_chooser_;
+
+  // Preferences (docs/projects.md): a native directory chooser for the
+  // projects root; answers the chosen path ("" when cancelled).
+  void chooseProjectsRoot(
+      juce::WebBrowserComponent::NativeFunctionCompletion done);
+  std::unique_ptr<juce::FileChooser> root_chooser_;
+
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

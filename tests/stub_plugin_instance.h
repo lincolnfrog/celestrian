@@ -57,8 +57,10 @@ class StubPluginInstance : public juce::AudioPluginInstance {
     dest.replaceAll(&gain, sizeof(gain));
   }
   void setStateInformation(const void* data, int size) override {
+    ++state_restores;
     if (size == (int)sizeof(gain)) memcpy(&gain, data, sizeof(gain));
   }
+  int state_restores = 0;  // setStateInformation calls (rider pins)
 };
 
 /**
@@ -67,7 +69,10 @@ class StubPluginInstance : public juce::AudioPluginInstance {
  * clears it — SAMPLE-ACCURATE from the event's block offset, no
  * envelope math: deterministic assertions on where a note starts and
  * stops). OVERWRITES the buffer, the chain-head instrument semantic
- * (docs/vst3.md §8). Counts note-ons/offs for the phase-5 tests.
+ * (docs/vst3.md §8). Counts note-ons/offs for the phase-5 tests and
+ * records the SOUND-OFF pair (CC 123 / CC 120, docs/vst3.md §11): each
+ * clears the held note, is counted, and marks its channel. Its state
+ * blob is `patch` (one float) for the take-undo rider pins.
  */
 class StubSynthInstance : public juce::AudioPluginInstance {
  public:
@@ -77,6 +82,11 @@ class StubSynthInstance : public juce::AudioPluginInstance {
   int blocks_processed = 0;
   int note_ons = 0;
   int note_offs = 0;
+  int all_notes_off = 0;               // CC 123 received
+  int all_sound_off = 0;               // CC 120 received
+  juce::uint16 sound_off_channels = 0;  // bit c: channel c got the pair
+  float patch = 0.0f;
+  int state_restores = 0;
 
   void fillInPluginDescription(juce::PluginDescription& d) const override {
     d.name = "Stub Synth";
@@ -117,6 +127,12 @@ class StubSynthInstance : public juce::AudioPluginInstance {
         note_held = false;
         ++note_offs;
       }
+      if (message.isAllNotesOff() || message.isAllSoundOff()) {
+        note_held = false;
+        if (message.isAllNotesOff()) ++all_notes_off;
+        if (message.isAllSoundOff()) ++all_sound_off;
+        sound_off_channels |= (juce::uint16)(1u << (message.getChannel() - 1));
+      }
     }
     if (cursor < n) fillTo(n);
   }
@@ -130,8 +146,13 @@ class StubSynthInstance : public juce::AudioPluginInstance {
   void setCurrentProgram(int) override {}
   const juce::String getProgramName(int) override { return {}; }
   void changeProgramName(int, const juce::String&) override {}
-  void getStateInformation(juce::MemoryBlock&) override {}
-  void setStateInformation(const void*, int) override {}
+  void getStateInformation(juce::MemoryBlock& dest) override {
+    dest.replaceAll(&patch, sizeof(patch));
+  }
+  void setStateInformation(const void* data, int size) override {
+    ++state_restores;
+    if (size == (int)sizeof(patch)) memcpy(&patch, data, sizeof(patch));
+  }
 };
 
 }  // namespace celestrian::test_utils

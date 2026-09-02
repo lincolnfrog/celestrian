@@ -13,6 +13,7 @@
 #include <cmath>
 
 #include "../stack_node.h"
+#include "engine_internal.h"
 
 void AudioEngine::audioDeviceIOCallbackWithContext(
     const float* const* input_channel_data, int num_input_channels,
@@ -109,12 +110,17 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
   midi_history_.pushBlock(live_midi_buffer_, input_clock_);
 
   if (root_node) {
-    celestrian::ProcessContext pc;
-    pc.sample_rate = cached_sample_rate_.load();
-    pc.num_samples = num_samples;
-    pc.is_playing = is_playing_global;
-    pc.is_recording = true;  // Enable recording capture from inputs
-    pc.master_pos = global_transport_pos;
+    // Whole-graph snapshot + island facts: ONE structure load for the
+    // entire callback; leaves read island state from the context
+    // instead of walking parents. The render facts are built by the
+    // helper the offline bounce shares (engine_internal.h); everything
+    // below it is this callback's live input.
+    const celestrian::GraphSnapshot* snap =
+        graph_snapshot_.load(std::memory_order_acquire);
+    jassert(snap != nullptr);  // published at construction, never cleared
+    celestrian::ProcessContext pc = celestrian::engine_internal::renderContext(
+        *root_node, *snap, cached_sample_rate_.load(), num_samples,
+        global_transport_pos.load(), is_playing_global.load());
     pc.live_midi = &live_midi_buffer_;
     if (ring_channels > 0) {
       pc.prerecord_ring = prerecord_ring_.getArrayOfReadPointers();
@@ -141,37 +147,6 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
                                          : 0;
     }
     pc.midi_history = &midi_history_;
-    // Solo canon (Q16): one snapshot scan per callback answers "is any
-    // solo lit anywhere?" — leaves then resolve their own ancestry.
-    // (The scan happens below once `snap` is loaded.)
-    // Cycle-top of the island frame — loop-window time-maps phase off
-    // this (time_maps.md); windowed stacks re-base it for their children.
-    // (Q, epoch) as ONE consistent fact (StackNode::readIslandFacts —
-    // a re-trim between two separate reads would hand a block a mixed
-    // pair).
-    const celestrian::StackNode::IslandFacts island_facts =
-        root_node->readIslandFacts();
-    pc.cycle_epoch = island_facts.epoch;
-    // Whole-graph snapshot + island facts: ONE structure load for the
-    // entire callback; leaves read island state from the context
-    // instead of walking parents.
-    pc.snap = graph_snapshot_.load(std::memory_order_acquire);
-    jassert(pc.snap != nullptr);  // published at construction, never cleared
-    pc.self = 0;
-    pc.any_solo = celestrian::snapAnySolo(*pc.snap);
-    pc.quantum = island_facts.quantum;
-    pc.island_generation = island_facts.generation;
-    pc.stop_generation = root_node->stopGeneration();
-    pc.island_epoch = pc.cycle_epoch;
-    pc.island = root_node.get();
-    // The invariant monotonic clock (master_pos twin of island_epoch):
-    // mapping stacks fold master_pos on the way down but never this.
-    pc.island_pos = global_transport_pos;
-    // Context-cycle seed (Q5 one-shots): the island's audible cycle.
-    // Each stack recomputes it for its own scope in childContext; this
-    // seed is the fallback an all-one-shot ROOT scope inherits.
-    pc.context_cycle = celestrian::snapEffectiveCycle(*pc.snap, pc.quantum,
-                                                      (int64_t)pc.sample_rate);
 
     root_node->process(input_channel_data, output_channel_data,
                        num_input_channels, num_output_channels, pc);

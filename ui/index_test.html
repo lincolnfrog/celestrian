@@ -50,7 +50,61 @@
             <button id="play-btn" title="Play / stop (space)">▶</button>
             <span id="position-readout">—</span>
             <span id="q-info"></span>
+            <!-- THE MASTER STRIP (B5) — same ids as index.html (keep in
+                 lockstep): meters with hold tick + clip lamp, the root
+                 gain fader, the master fx chip. -->
+            <div id="master-monitor" title="Master output — what the speakers hear">
+                <div class="vu-pair">
+                    <div class="vu" id="vu-l">
+                        <div class="label">VU · L</div>
+                        <div class="arc"></div>
+                        <div class="zone"></div>
+                        <span class="peak"></span>
+                        <div class="hold"></div>
+                        <div class="needle"></div>
+                    </div>
+                    <div class="vu" id="vu-r">
+                        <div class="label">VU · R</div>
+                        <div class="arc"></div>
+                        <div class="zone"></div>
+                        <span class="peak"></span>
+                        <div class="hold"></div>
+                        <div class="needle"></div>
+                    </div>
+                    <button id="master-fader"
+                        title="Master volume — drag up/down, double-click for unity"><span
+                            class="grip"></span></button>
+                    <button id="master-fx-btn" class="mono"
+                        title="Master effects: the root's rack — EQ · Compressor · Echo · Reverb">fx</button>
+                </div>
+                <div class="monitor-label">MASTER MONITOR</div>
+            </div>
             <span class="spacer"></span>
+            <!-- Keep in lockstep with index.html (preferences.js binds
+                 these ids at init). -->
+            <button id="prefs-btn" class="bar-btn"
+                    title="Preferences — audio device, latency, projects folder">⚙</button>
+            <div id="prefs-panel" class="audio-panel">
+                <div class="ap-head">Preferences</div>
+                <div class="ap-section">
+                    <div class="ap-label">Audio device</div>
+                    <div id="audio-device-host"></div>
+                </div>
+                <div class="ap-section">
+                    <div class="ap-label">Latency</div>
+                    <div class="ap-row">
+                        <button id="calibrate-btn">🎯 Calibrate</button>
+                        <span id="calibration-status"></span>
+                    </div>
+                </div>
+                <div class="ap-section">
+                    <div class="ap-label">Projects folder</div>
+                    <div class="ap-row">
+                        <span id="projects-root" class="mono"></span>
+                        <button id="projects-root-change">Change…</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- SESSION -->
@@ -86,8 +140,6 @@
         <!-- STATUS STRIP -->
         <div id="status-strip">
             <span id="log-line">ready</span>
-            <span id="calibration-status"></span>
-            <button id="calibrate-btn">🎯 Calibrate</button>
             <button id="dump-state-btn">📦 Dump State</button>
         </div>
     </div>

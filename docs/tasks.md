@@ -27,12 +27,11 @@ and no prior setup can:
 1. open Celestrian to an empty session and press `R` (done);
 2. record a scratch loop, trim it to define Q, then record a drum group
    and a bass over it, hearing themselves with no perceptible latency
-   (done, except software input monitoring — B1);
-3. shape parts with windows, cuts and one-shot groups (done — Q18 UI
-   in flight, A1);
-4. arrange the parts into a song with the sequencer, count-in included
-   (done except count-in — B3);
-5. bounce the song, or any node, to a WAV (B2);
+   (done; software input monitoring is B1, ruled Q20);
+3. shape parts with windows, cuts and one-shot groups (done — Q18);
+4. arrange the parts into a song with the sequencer (done; no count-in
+   by ruling Q21 — the scratch loop is the count-in);
+5. bounce the song, or any node, to a WAV (done — B2, Q19);
 6. save, quit, reopen, and find the session exactly as left (done);
 7. install it from a signed build on macOS and Windows (B8).
 
@@ -42,13 +41,14 @@ Nothing in Tier D is required for 1.0.
 
 ## Tier A: Foundation follow-through (2026-09)
 
-- [ ] **A1 — Q18 in the UI.** Group lanes carry a take mark
-  (`(origin − epoch) mod frame`), bracket/cut geometry on group lanes
-  is inner-position offset by it, one-shot groups render dashed with no
-  ghosts, the rail ↺/1× chip works on groups; mock in lockstep
-  (`anchored` + `origin` on stacks, the settle rule, subtree origin
-  shifts). Done = `stack_origin.test.mjs` + VM tests + one e2e green,
-  and a field session with the five-mic drum group as a one-shot.
+- [x] **A1 — Q18 in the UI** ✅ 2026-09-01 (code): group lanes carry a
+  take mark, bracket/cut geometry on group lanes is inner-position
+  offset by it, one-shot groups render dashed with no ghosts, the rail
+  ↺/1× chip works on groups; mock in lockstep (`anchored` + `origin` on
+  stacks, the settle rule, subtree origin shifts) — pinned by
+  `ui/js/tests/stack_origin.test.mjs`, VM tests and an e2e.
+  **Owner's part still open:** a field session with the five-mic drum
+  group as a one-shot (the 1.0 checklist in test_harness.md, step 5).
 - [x] **A2 — One window storage** ✅ 2026-09-01: a node's geometry is
   ONE inline `TimeMap` behind a seqlock (`AudioNode::storedMap` /
   `setMap`; a window is the n = 1 case) — the loop atomics, the heap
@@ -104,37 +104,51 @@ Nothing in Tier D is required for 1.0.
 
 ## Tier B: Product to 1.0
 
-- [ ] **B1 — Software input monitoring** (ruled Q20): hear the armed
-  input through the engine; OFF by default, a per-track toggle with the
-  calibrated latency shown beside it. Done = the toggle on the rail,
-  the engine mixes the input at the output stage of the armed clip,
-  the mock mirrors it, one e2e.
-- [ ] **B2 — Bounce / export** (ruled Q19): render the island root for
-  one effective cycle (the song when a sequence is active) to a WAV
-  through the real render path at the device rate, tails ringing past
-  the end; any node bounceable the same way. Done = a `bounce(uuid,
-  path)` bridge verb, offline render through `AudioNode::process`
-  with a fresh snapshot, a native file dialog, a pinned golden (a
-  bounced loop equals the live render of the same cycle).
+- [x] **B1 — Software input monitoring** ✅ 2026-09-02 (ruled Q20):
+  `ClipNode::render` adds the block's pre-record-ring arrivals into the
+  clip's dry signal ahead of the gate and rack (rack, gain, pan apply;
+  zero added latency; never in a bounce); the rail's "mon" chip toggles
+  it (off by default, not undoable, persisted + in templates) with the
+  calibrated round trip in its tooltip; mock parity, one e2e.
+- [x] **B2 — Bounce / export** ✅ 2026-09-02 (ruled Q19, docs/bounce.md):
+  `AudioEngine::bounce` renders the root for one effective cycle (any
+  node for one effective period) through the callback's own context
+  builder to a stereo float WAV with the −90 dBFS tail; `bounce` /
+  `bounceWithDialog` bridge verbs + mock twins; "Bounce song…" / "Bounce
+  selected…" in the project menu; the golden in tests/bounce_tests.cc
+  pins bounce == live render sample for sample.
 - [x] **B3 — Count-in and metronome: CLOSED (ruled Q21, 2026-09-01).**
   No meter, no tempo, no beat to click on; the scratch loop is the
   count-in. A single Q-top pulse is a possible later option only.
-- [ ] **B4 — Takes and comping.** Re-record a committed clip: alternate
-  content buffers sharing one origin/period, a take list per clip,
-  "new take" on the record button; comping = choosing per-Q-cell which
-  take sounds (a per-cell take index, the segment editor's grammar).
-  Take commits are already undo entries.
-- [ ] **B5 — Master bus.** A root output stage with a fader and meter;
-  the VU today reads the device output.
-- [ ] **B6 — Audio file import.** Drop a WAV onto a lane: it becomes a
-  committed take (origin = the drop's frame position; length snapped
-  per the hysteresis law or free with a window).
-- [ ] **B7 — VST3 phase 6 polish.** All-notes-off on stop/mute/solo
-  silence, instrument state in take undo entries, piano-roll-ish MIDI
-  lane rendering, out-of-process scanning, AU.
-- [ ] **B8 — Distribution.** Signed/notarized macOS build, Windows
-  installer, a preferences panel (audio device, calibration, library
-  paths), crash-safe project mirroring verified in the field.
+- [x] **B4 — Takes and comping: ✅ engine + UI** (docs/takes.md). ● on
+  a committed clip/group = `newTake`; the `T<a>/<n>` chip + take list
+  (select / delete / mini waveforms); comp cells over the tile (one
+  `setComp` per click, tinted slices at rest); ⌘Z throughout;
+  ui/e2e/takes.spec.js drives the three flows.
+- [x] **B5 — Master bus: ✅** the transport's master strip — root fader (`setNodeGain` on `rootId`), post-fader VU with peak-hold and clip latch, master fx chip opening the root's rack, root gain/pan persisted (`rootGain`/`rootPan`, absent = unity).
+- [x] **B6 — Audio file import: ✅ 2026-09-02** (docs/import.md). A
+  WAV/AIFF/FLAC becomes a committed take on the nearest Q boundary —
+  a first take (hysteresis-snapped; pre-Q defines Q) or a new take of a
+  committed slot (cut to the period); undoable; `importAudio` /
+  `importAudioWithDialog`. UI: drop onto a lane body at the pointer's
+  Q (a sandboxed WebView hands the page no path → the chooser at that
+  Q), "Import audio…" in every + menu and the project menu.
+- [x] **B7 — VST3 phase 6 polish: ✅ 2026-09-02.** engine (docs/vst3.md
+  §11: sound-off edges, instrument state in take undo entries, boundary
+  notes, worker-only scanning, AU) + UI: MIDI lanes paint note bars
+  from `getMidiNotes` (pitch → row over a compact range fit, length →
+  width, velocity → alpha), tiled like audio so windows/cuts/comps
+  apply (ui/js/midi_notes.js, canvas_renderer.drawMidiTile).
+- [ ] **B8 — Distribution.** Packaging scaffolding ✅ 2026-09-02:
+  `scripts/package_macos.sh` (hardened-runtime sign → notarize →
+  staple → zip; `scripts/celestrian.entitlements`) and
+  `scripts/package_windows.cmd` + `scripts/celestrian.iss` (signtool +
+  Inno Setup), identities from the environment only (README).
+  Preferences panel ✅ 2026-09-02: the transport's gear opens the one
+  panel — audio device pickers, latency calibration, the projects root
+  (`chooseProjectsRoot` / `setProjectsRoot`; ui/js/preferences.js).
+  Still open: the owner's certificates and a first notarized build;
+  crash-safe project mirroring verified in the field.
 - [ ] **B9 — Field checklist for 1.0.** One scripted session (the 1.0
   paragraph above) run on macOS and Windows with a real interface.
 
@@ -169,6 +183,52 @@ Nothing in Tier D is required for 1.0.
   **disable auto-quantize** toggle (revives Q3); **sharing** of
   projects and templates.
 
+## Tier E: Follow-ups surfaced while building Tier B (2026-09-02)
+
+Small, concrete, each a half-day or less unless marked. None blocks
+1.0; all are captured so nothing is lost between sessions.
+
+- [ ] **Import: a native file-drop path.** Sandboxed WebViews hand a
+  dropped file its name only, so a drop currently opens the chooser at
+  the drop's Q (docs/import.md). Fix: a JUCE `FileDragAndDropTarget`
+  on the native component that forwards the real path + pointer
+  position to the page — then the drop imports directly.
+- [ ] **Bounce options.** An N-cycles choice at export (Q19 picked one
+  cycle as the default, not the only option); 24-bit PCM alongside
+  32-bit float; "bounce in place" — render a node to a NEW TAKE of
+  itself (the takes list makes this natural).
+- [ ] **Takes: MIDI comping** (refused today, docs/takes.md), take
+  naming, auditioning a take while the transport runs (a solo-like
+  monitoring gesture, not a selection edit).
+- [ ] **Monitoring: a "monitor while armed" preference** (the Q20
+  alternative), for interfaces without direct monitoring.
+- [ ] **Master limiter / clip protection** on the root rack (the clip
+  lamp latches today; nothing prevents the clip).
+- [ ] **A Q-top pulse** — the one meter-free click (Q21 leaves it as a
+  possible later option; only if field use asks).
+- [ ] **Theme toggle** in Preferences (theme.js has none; the panel has
+  the slot).
+- [ ] **Deferred from time_maps phase 3:** zero-crossing micro-snap at
+  seams, seam audition, the true heard-frame child unroll (open
+  question 7).
+- [ ] **Engine perf:** cache `StackNode::getIntrinsicDuration` (walks
+  children per call on the message thread) if the perf meters ever
+  care; `ProcessContext::is_recording` and `timing::playheadPercent`
+  residue (A8).
+- [ ] **Test coverage shape** (from the 2026-09-01 audit): the DOM patch
+  layer (`lane_body.js`, `map_bands.js`, `patch.js`, `rail.js`) is
+  e2e-only and `app.js` glue has few units — the confirmed UI bug lived
+  there. A Windows/WebView2 Playwright target would catch the platform
+  differences the field keeps finding.
+- [ ] **Docs:** `design.md` is the 2025 vision and reads stale next to
+  the specs — rewrite it post-1.0 as a one-page manifesto that points
+  at composition.md; move kernel.md §1/§3/§5/§6 (migration history) to
+  the archive; recording.md's islands section becomes the one home for
+  islands (open question 8).
+- [ ] **Process:** agent tasks stall when they span several features;
+  one feature per task with the suites run after each step is the
+  cadence that worked (memory note).
+
 ---
 
 ## Open Design Questions
@@ -184,6 +244,8 @@ Nothing in Tier D is required for 1.0.
 | 7 | The true heard-frame unroll of a mapped group's children (today: excluded regions drawn as dims) — needs a ruling | time_maps.md phase 3 |
 | 8 | Islands are specified in triplicate (recording.md, archive/implementation.md §8, design.md §8) — recording.md should be canonical | design_language §4 item 5 |
 | 9 | Should an anchored stack's origin be editable directly (drag the group's take mark), i.e. is "move a group in time" a first-class edit? | composition.md §5 |
+| 10 | A new take on a group (Q7-fractal) re-records every committed direct clip as one performance — should it also offer per-member retakes (one mic only), and does a per-member retake keep the group's "one take" definer status? | docs/takes.md |
+| 11 | Import onto a committed slot cuts/pads the file to the period. Should a longer file instead offer "new clip at the drop" vs "new take of this slot"? | docs/import.md |
 
 Closed since the 2026-08-20 tracker: rational time (Q12), record on a
 composite (Q7), large-LCM warning (frame-health badge), windowed-lane

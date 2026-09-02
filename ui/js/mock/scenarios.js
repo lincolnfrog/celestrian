@@ -55,6 +55,8 @@ const IDLE_FLAGS = { isRecording: false, isPlaying: false,
  *  - 'recording-1q-plus-growing' — live take growing past 2.5Q
  *  - 'fractal-drums'             — root song over bass + a sequenced
  *                                  one-shot drum kit (sequencer.md §12)
+ *  - 'midi-clip'                 — a 1Q audio seed + a 2Q MIDI clip
+ *                                  holding four notes (vst3.md §11)
  */
 export function loadScenario(name) {
     console.log('[MockBackend] Loading scenario:', name);
@@ -78,6 +80,7 @@ export function loadScenario(name) {
     state.islandEpoch = 0;
     state.islandQ = 0;  // fresh session: Q re-establishes per scenario
     state.masterGain = 1;  // master fader back to unity (test isolation)
+    state.root.effects = null;  // the master rack: fresh default chain
     state.rootSequence = null;        // the root song (sequencer.md)
     state.rootSequenceBypassed = false;
     state.rootAuditionStep = -1;
@@ -439,6 +442,35 @@ export function loadScenario(name) {
             };
             state.rootSequenceBypassed = false;
             state.nextId = 10;
+            break;
+
+        case 'midi-clip':
+            // A MIDI CLIP (docs/vst3.md §11): a 1Q audio seed defines
+            // Q; a 2Q note clip beside it carries four content events
+            // as [pos, status, data1, data2] — a C-major arpeggio over
+            // the first bar, one note held into the second, and a
+            // note-on left open (it runs to the take end).
+            state.islandQ = Q;
+            state.nodes = [
+                makeClip({
+                    id: 'seed', name: 'Seed', duration: Q, origin: 0,
+                    effectiveQuantum: Q, ...IDLE_FLAGS, isPlaying: true,
+                    loopStart: 0, loopEnd: Q,
+                }),
+                makeClip({
+                    id: 'midi-1', name: 'Keys', duration: 2 * Q, origin: 0,
+                    effectiveQuantum: Q, ...IDLE_FLAGS, isPlaying: true,
+                    loopStart: 0, loopEnd: 2 * Q, contentKind: 'midi',
+                    midiEvents: 7,
+                    midi: [
+                        [0, 0x90, 60, 100], [Q / 4, 0x80, 60, 0],
+                        [Q / 4, 0x90, 64, 90], [Q / 2, 0x80, 64, 0],
+                        [Q / 2, 0x90, 67, 80], [1.25 * Q, 0x80, 67, 0],
+                        [1.5 * Q, 0x90, 72, 110],
+                    ],
+                }),
+            ];
+            state.nextId = 3;
             break;
 
         case 'recording-1q-plus-growing':

@@ -1,5 +1,7 @@
 /**
- * Audio device panel (docs/performance.md §4).
+ * Audio device pickers (docs/performance.md §4), hosted by the
+ * preferences panel (preferences.js renders them into
+ * #audio-device-host on open).
  *
  * Why this exists: whatever Windows calls the default input is a
  * 2-channel endpoint. Worse, a multi-channel
@@ -10,7 +12,7 @@
  * the primary control here, not an advanced afterthought.
  *
  * The selection is persisted by the engine (audio_device.xml), so this
- * panel is a launch-time ritual you perform once, not every session.
+ * is a launch-time ritual you perform once, not every session.
  *
  * Ordering note: type → device → rate/buffer is a dependency chain. A
  * type switch invalidates the device list, and a device switch
@@ -18,50 +20,34 @@
  * from the engine rather than patching locally.
  */
 
-import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
-
-let panel = null;
+let host = null;
 let callNative = null;
 let onLog = () => { };
 
-/** Wires the status-strip button. `log` writes to the status line. */
+/** Binds the bridge and the status line; rendering waits for a host. */
 export function initAudioSettings(callNativeFn, log) {
     callNative = callNativeFn;
     if (log) onLog = log;
-
-    const btn = document.getElementById('audio-device-btn');
-    if (!btn) return;
-    btn.addEventListener('click', () => togglePanel(btn));
-
-    // Close on outside click / Escape, like the project menu. The
-    // panel scope wins Escape while open (keys.js), so the session
-    // view's Escape does not also clear the selection.
-    document.addEventListener('click', (e) => {
-        if (!panel) return;
-        if (panel.contains(e.target) || e.target === btn) return;
-        closePanel();
-    });
-    registerKey({ key: 'Escape', scope: SCOPE.PANEL, ignore: ANY_MODIFIERS,
-                  whileTyping: true, when: () => !!panel, handler: closePanel });
-
-    // Surface the channel count on the button itself — the whole bug was
-    // that "only 2 inputs" was invisible until you opened a track's menu.
-    refreshButtonLabel();
 }
 
-/** Remove the panel from the DOM (no-op when closed). Module-internal:
- *  nothing imports this today, so it is deliberately not exported. */
-function closePanel() {
-    if (panel) { panel.remove(); panel = null; }
+/** One line for the device: "MOTU 8A · 8 in · 48 kHz / 256", or the
+ * no-device notice. */
+export function deviceSummary(s) {
+    if (!s || !s.currentDevice) return 'No audio device open';
+    const n = s.inputChannels || 0;
+    return `${s.currentDevice} · ${n} in · ` +
+        `${(s.currentSampleRate || 0) / 1000} kHz / ${s.currentBufferSize || 0}`;
 }
 
-async function togglePanel(btn) {
-    if (panel) { closePanel(); return; }
-    panel = document.createElement('div');
-    panel.className = 'audio-panel open';
-    panel.innerHTML = '<div class="ap-head">Audio device</div>' +
-        '<div class="ap-note">loading…</div>';
-    document.getElementById('status-strip').appendChild(panel);
+/** Render the pickers into `hostEl` (re-entrant: a later call replaces
+ * the contents; an apply re-renders into the same host). */
+export async function renderAudioDevice(hostEl) {
+    host = hostEl;
+    host.textContent = '';
+    const note = document.createElement('div');
+    note.className = 'ap-note';
+    note.textContent = 'loading…';
+    host.appendChild(note);
     await render();
 }
 
@@ -76,22 +62,8 @@ async function fetchState() {
     }
 }
 
-async function refreshButtonLabel() {
-    const btn = document.getElementById('audio-device-btn');
-    if (!btn) return;
-    const s = await fetchState();
-    if (!s) return;
-    const n = s.inputChannels || 0;
-    btn.textContent = s.currentDevice
-        ? `🎛 ${s.currentDevice} · ${n} in`
-        : '🎛 No audio device';
-    btn.title = s.currentDevice
-        ? `${s.currentType} — ${s.currentSampleRate} Hz, ${s.currentBufferSize} samples`
-        : 'No audio device open — click to choose one';
-}
-
 /**
- * Build one labelled <select> row for the panel.
+ * Build one labelled <select> row.
  * @param {string} labelText  Row label ("Driver", "Device", …).
  * @param {Array} options     Option values; an empty/missing list renders
  *                            a disabled "—" placeholder.
@@ -126,16 +98,16 @@ function sel(labelText, options, current, onChange, formatter) {
 }
 
 /**
- * Push a (partial) device change to the engine, then re-render the panel
- * and the strip button from freshly fetched state (never patched
- * locally — see the ordering note in the file header). All controls are
- * disabled while the change applies; errors go to the status line.
+ * Push a (partial) device change to the engine, then re-render from
+ * freshly fetched state (never patched locally — see the ordering note
+ * in the file header). All controls are disabled while the change
+ * applies; errors go to the status line.
  */
 async function apply({ type, device, sampleRate, bufferSize }) {
     // Empty/0 mean "keep current" on the native side; a type switch
     // deliberately sends no device so the engine picks that type's default
     // rather than failing on a name that belongs to the other type.
-    panel.querySelectorAll('select, button').forEach(el => (el.disabled = true));
+    host.querySelectorAll('select, button').forEach(el => (el.disabled = true));
     try {
         const err = await callNative('setAudioDevice',
             type || '', device || '', sampleRate || 0, bufferSize || 0);
@@ -145,45 +117,39 @@ async function apply({ type, device, sampleRate, bufferSize }) {
         onLog('Audio device error: ' + e.message);
     }
     await render();
-    refreshButtonLabel();
 }
 
 /**
- * (Re)build the open panel's contents from engine state: the four
+ * (Re)build the host's contents from engine state: the four
  * dependency-chained selects (type → device → rate/buffer), the channel
  * count, the WASAPI→ASIO nudge hints, and any engine error. Safe if the
- * panel closed mid-fetch (bails), or if the engine is unreachable
- * (renders a note instead).
+ * host left the document mid-fetch (bails), or if the engine is
+ * unreachable (renders a note instead).
  */
 async function render() {
-    if (!panel) return;
+    if (!host) return;
     const s = await fetchState();
-    if (!panel) return; // closed while fetching
-    panel.textContent = '';
-
-    const head = document.createElement('div');
-    head.className = 'ap-head';
-    head.textContent = 'Audio device';
-    panel.appendChild(head);
+    if (!host || !host.isConnected) return;
+    host.textContent = '';
 
     if (!s) {
         const note = document.createElement('div');
         note.className = 'ap-note';
         note.textContent = 'Engine not reachable.';
-        panel.appendChild(note);
+        host.appendChild(note);
         return;
     }
 
-    panel.appendChild(sel('Driver', s.types, s.currentType,
+    host.appendChild(sel('Driver', s.types, s.currentType,
         v => apply({ type: v })));
-    panel.appendChild(sel('Device', s.devices, s.currentDevice,
+    host.appendChild(sel('Device', s.devices, s.currentDevice,
         v => apply({ type: s.currentType, device: v })));
-    panel.appendChild(sel('Sample rate', s.sampleRates, s.currentSampleRate,
+    host.appendChild(sel('Sample rate', s.sampleRates, s.currentSampleRate,
         v => apply({
             type: s.currentType, device: s.currentDevice,
             sampleRate: Number(v),
         }), v => `${v} Hz`));
-    panel.appendChild(sel('Buffer', s.bufferSizes, s.currentBufferSize,
+    host.appendChild(sel('Buffer', s.bufferSizes, s.currentBufferSize,
         v => apply({
             type: s.currentType, device: s.currentDevice,
             bufferSize: Number(v),
@@ -195,7 +161,7 @@ async function render() {
     const stat = document.createElement('div');
     stat.className = 'ap-stat';
     stat.textContent = `${s.inputChannels} inputs · ${s.outputChannels} outputs`;
-    panel.appendChild(stat);
+    host.appendChild(stat);
 
     // The actionable nudge: on Windows, few inputs almost always means
     // "you are on WASAPI", and the fix is one dropdown away.
@@ -206,7 +172,7 @@ async function render() {
         hint.textContent =
             'Only 2 inputs? Windows splits multi-channel interfaces into ' +
             'stereo pairs. Switch Driver to ASIO to get all channels at once.';
-        panel.appendChild(hint);
+        host.appendChild(hint);
     }
     if (!s.asioAvailable) {
         const hint = document.createElement('div');
@@ -214,12 +180,12 @@ async function render() {
         hint.textContent =
             'No ASIO driver type — this build has no ASIO support, so ' +
             'multi-channel interfaces are limited to stereo pairs.';
-        panel.appendChild(hint);
+        host.appendChild(hint);
     }
     if (s.error) {
         const err = document.createElement('div');
         err.className = 'ap-err';
         err.textContent = s.error;
-        panel.appendChild(err);
+        host.appendChild(err);
     }
 }

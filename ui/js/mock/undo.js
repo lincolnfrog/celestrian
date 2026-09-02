@@ -32,6 +32,15 @@ const UNDOABLE = new Set([
     // The SEQUENCER (docs/sequencer.md): both verbs are musical facts
     // (engine parity: Edit::Sequence / Edit::SequenceBypass).
     'setSequence', 'toggleSequence',
+    // Takes (docs/takes.md): selection, deletion and the comp are
+    // musical facts (engine parity: Edit::SelectTake / DeleteTake /
+    // Comp). newTake rides the take's pending snapshot like record.
+    'selectTake', 'deleteTake', 'setComp',
+    // Audio file import (docs/import.md): a committed take arrives
+    // whole in one call (engine parity: the Untake entry is logged in
+    // the same message-thread call), so the dispatch snapshot IS the
+    // take's undo entry.
+    'importAudio', 'importAudioWithDialog',
 ]);
 
 let lastUndoable = { method: null, arg0: null };

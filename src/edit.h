@@ -96,6 +96,21 @@ struct Edit {
                      // A group take (Q7) is ONE entry. Island (Q, epoch)
                      // ride along via setsIsland: the first take's
                      // establishment and any growth re-base undo with it.
+                     // A payload with take_index >= 0 is a NEW TAKE of a
+                     // committed slot (docs/takes.md): Untake removes
+                     // that (last) take and restores prev_active; Take
+                     // re-appends it as the active one. Never an empty
+                     // clip.
+    SelectTake,      // index = the take to make active; inverse = the
+                     // old index. An atomic content-pointer swap.
+    DeleteTake,      // forward: index = the take to remove (never the
+                     // last one; an active one hands activity to its
+                     // neighbour); the inverse carries the removed
+                     // record in `takes[0]` (take_index = its slot,
+                     // prev_active = the activity to restore) and the
+                     // old comp (setsComp) — applying it reinserts.
+    Comp,            // cells + cell_len = the new comp (empty = none);
+                     // inverse = the old one. Audio clips only.
   };
   // Effect enable/param edits are NOT undoable (non-destructive knobs;
   // slider drags would flood the log without coalescing). Delete + all
@@ -201,8 +216,32 @@ struct Edit {
   struct TakePayload {
     juce::String uuid;
     ClipNode::TakeState state;  // the take exactly as stripTake returned it
+    // A take of a multi-take slot (docs/takes.md): its list index, and
+    // the index that was active before it (−1 = a whole-clip strip).
+    int take_index = -1;
+    int prev_active = -1;
+    // The clip's comp as it was before a list change, restored with
+    // the take (per clip: a group performance carries one each).
+    bool setsComp = false;
+    std::vector<int> cells;
+    int64_t cell_len = 0;
+    // A MIDI take's INSTRUMENT (docs/vst3.md §11): the instrument
+    // slot's uuid and its state blob as the take sounded. Applying the
+    // payload restores that state; the inverse captures the state
+    // current at apply time (copy-swap, like every rider). Empty for an
+    // audio take or a clip without an instrument slot.
+    juce::String instrument_slot;
+    juce::MemoryBlock instrument_state;
   };
   std::vector<TakePayload> takes;
+  // THE COMP (Kind::Comp): one take index per Q cell, −1 = the active
+  // take; cell_len = the cell length in samples (0 with no cells).
+  std::vector<int> cells;
+  int64_t cell_len = 0;
+  // A multi-take slot's lock-collapse SPLICE (CollapseTake, n >= 2)
+  // replaces every inactive take too; the inverse owns their pre-splice
+  // records by list index. Retired with the entry, never freed inline.
+  std::vector<std::pair<int, ClipNode::TakeState>> other_takes;
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

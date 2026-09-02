@@ -113,6 +113,13 @@ export function openCreationMenu(ev, groupId = '') {
                 rest.appendChild(menuNote(
                     'no templates yet — select a track, save it below'));
             }
+            // AUDIO FILE IMPORT (docs/import.md): a new track from a
+            // WAV/AIFF/FLAC, picked natively, placed at the frame top.
+            if (ctx.cb.onImportAudio) {
+                rest.appendChild(el('div', 'creation-menu-sep'));
+                rest.appendChild(menuItem('Import audio…', 'file',
+                    () => ctx.cb.onImportAudio(groupId, 0), ' import'));
+            }
             // Save-from-selection: the library grows from the session.
             const sel = soleSelection();
             if (sel && ctx.cb.onSaveTemplate) {

@@ -237,6 +237,10 @@ class FxChain {
    * makes a clip a MIDI track: its takes record notes, not audio
    * (docs/vst3.md §8, phase 5). Message thread (arm-time decision). */
   bool hasInstrumentSlot() const;
+  /** THE instrument slot — the first one in signal order, whose state
+   * a MIDI take's undo entry carries (docs/vst3.md §11); null without
+   * one. Message thread. */
+  FxSlot* firstInstrumentSlot() const;
 
   /** The chain array for metadata AND the save format (docs/vst3.md
    * §6): [{slot, type, enabled, ...params}] in signal order. Pass

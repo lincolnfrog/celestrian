@@ -10,53 +10,135 @@
  * session.css) interpolates between polls, so the sweep reads as
  * continuous without a rAF loop.
  *
+ * THE MASTER READING (B5): the engine meters the device buffers after
+ * root_node->process, i.e. after the root stack's own output stage —
+ * post-fader, post-rack; what the speakers get.
+ *
  * Dial mapping: −48 dB … 0 dB across the −26° … +26° sweep. The engine
- * meters block PEAK (instant attack, ~400 ms release), so the needle
- * dances with transients; the wide absolute scale means quiet laptop
- * takes read mid-dial and a hot mix rides the top (a −20…+3 VU range
- * would pin everything below −20 dB).
- * Peak lamp above −3 dB: a true near-clip warning.
+ * meters an envelope follower (~15 ms attack, ~400 ms release), so the
+ * needle dances with transients; the wide absolute scale means quiet
+ * laptop takes read mid-dial and a hot mix rides the top (a −20…+3 VU
+ * range would pin everything below −20 dB).
+ *
+ * Peak-hold tick: a thin marker parked at the highest needle angle of
+ * the last HOLD_MS, then falling at HOLD_FALL_PER_MS — the "how hot did
+ * that hit" answer a moving needle cannot give.
+ * Clip lamp: lit (momentary) above −3 dB as the near-clip warning, and
+ * LATCHED — solid, until the meter is clicked — once the follower reads
+ * full scale (CLIP_LV): the buffers are unclamped floats, so an over
+ * pushes the follower to or past 1.0 and only an over can.
  */
 
 const SWEEP_MIN_DB = -48;
 const SWEEP_MAX_DB = 0;
 const SWEEP_DEG = 26;
 const PEAK_LV = 0.9375;  // −3 dB on the −48..0 sweep
+const CLIP_LV = 1.0;     // linear full scale — the follower reads it only on an over
+const HOLD_MS = 1500;    // the peak tick parks this long before falling
+const HOLD_FALL_PER_MS = 0.4 / 1000;  // dial fraction per ms (~2.5 s full sweep)
 
 /** Map a linear RMS level (0..1) to dial fraction (0..1). */
-function levelToDial(level) {
+export function levelToDial(level) {
     const db = 20 * Math.log10((Math.abs(level) || 0) + 1e-6);
     const lv = (db - SWEEP_MIN_DB) / (SWEEP_MAX_DB - SWEEP_MIN_DB);
     return Math.max(0, Math.min(1, lv));
 }
 
+/** A meter's memory between polls: the held peak (dial fraction), when
+ * it may start falling, the clip latch, and the last poll's clock. */
+export function freshMeterMemory() {
+    return { hold: 0, holdUntil: 0, clipped: false, lastMs: 0 };
+}
+
 /**
- * Point one meter's needle at `level` and set its peak lamp. The
- * rotation is written as an inline transform; the CSS transition on
- * .needle supplies the sweep between polls.
- *
- * @param {Element|null} el the meter root (contains .needle and .peak)
- * @param {number} level linear RMS 0..1 from the engine
+ * One poll of peak-hold + clip-latch bookkeeping. PURE: returns the next
+ * memory for `level` (linear 0..1) at wall clock `now` (ms) — the DOM
+ * drive below applies it, and js/tests pin it without a document.
+ * A held peak is refreshed by any level reaching it; once HOLD_MS has
+ * passed it falls linearly toward the live level, never below it. The
+ * latch only ever sets here — clearing is the click (clearClip).
  */
-function drive(el, level) {
-    if (!el) return;
+export function meterStep(memory, level, now) {
     const lv = levelToDial(level);
+    let { hold, holdUntil } = memory;
+    if (lv >= hold) {
+        hold = lv;
+        holdUntil = now + HOLD_MS;
+    } else if (now > holdUntil) {
+        // The fall clock starts when the park ends, not at the last
+        // poll — a long park must not become one big drop.
+        const from = Math.max(memory.lastMs || now, holdUntil);
+        hold = Math.max(lv, hold - Math.max(0, now - from) * HOLD_FALL_PER_MS);
+    }
+    return {
+        hold,
+        holdUntil,
+        clipped: memory.clipped || level >= CLIP_LV,
+        lastMs: now,
+    };
+}
+
+/** Per-meter memory, keyed by element id ('vu-l' / 'vu-r'). */
+const meterMemory = new Map();
+
+function memoryFor(id) {
+    if (!meterMemory.has(id)) meterMemory.set(id, freshMeterMemory());
+    return meterMemory.get(id);
+}
+
+/** Release a meter's clip latch (the click on the meter face). */
+export function clearClip(id) {
+    memoryFor(id).clipped = false;
+}
+
+/**
+ * Point one meter's needle at `level`, park the hold tick and set the
+ * clip lamp. Rotations are inline transforms; the CSS transition on
+ * .needle supplies the sweep between polls (the tick jumps — a held
+ * peak is a fact, not a motion).
+ *
+ * @param {Element|null} el the meter root (.needle, .hold, .peak)
+ * @param {number} level linear RMS 0..1 from the engine
+ * @param {number} now wall clock, ms
+ */
+function drive(el, level, now) {
+    if (!el) return;
+    const memory = meterStep(memoryFor(el.id), level, now);
+    meterMemory.set(el.id, memory);
+    const lv = levelToDial(level);
+    const angle = v => -SWEEP_DEG + v * 2 * SWEEP_DEG;
     const needle = el.querySelector('.needle');
+    const hold = el.querySelector('.hold');
     const peak = el.querySelector('.peak');
     if (needle) {
-        needle.style.transform =
-            `translateX(-50%) rotate(${-SWEEP_DEG + lv * 2 * SWEEP_DEG}deg)`;
+        needle.style.transform = `translateX(-50%) rotate(${angle(lv)}deg)`;
     }
-    if (peak) peak.style.opacity = lv > PEAK_LV ? '1' : '0.15';
+    if (hold) {
+        hold.style.transform =
+            `translateX(-50%) rotate(${angle(memory.hold)}deg)`;
+    }
+    if (peak) {
+        peak.style.opacity = memory.clipped || lv > PEAK_LV ? '1' : '0.15';
+        peak.classList.toggle('latched', memory.clipped);
+    }
+    el.classList.toggle('clipped', memory.clipped);
 }
 
 /**
  * Patch both master meters from polled state. Idempotent; cheap enough
- * to call every poll tick.
+ * to call every poll tick. `now` defaults to the wall clock.
  */
-export function updateMasterVU(levelL, levelR) {
-    drive(document.getElementById('vu-l'), levelL);
-    drive(document.getElementById('vu-r'), levelR);
+export function updateMasterVU(levelL, levelR, now = Date.now()) {
+    drive(document.getElementById('vu-l'), levelL, now);
+    drive(document.getElementById('vu-r'), levelR, now);
+}
+
+/** Wire the meters: a click on a face releases its clip latch. */
+export function initMasterMeters() {
+    for (const id of ['vu-l', 'vu-r']) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', () => clearClip(id));
+    }
 }
 
 /* ---------- master fader (root-node gain) ---------- */

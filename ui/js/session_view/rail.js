@@ -44,20 +44,52 @@ export function patchRail(row, lane, vm) {
         const g = lane.groupArm;
         arm.classList.toggle('on', g.state === 'all');
         arm.classList.toggle('some', g.state === 'some');
+        arm.classList.toggle('retake', g.mode === 'retake');
         if (arm.disabled !== (g.armable === 0)) arm.disabled = g.armable === 0;
         setTitle(arm, g.armable === 0
-            ? 'Nothing to record: every track has a take (re-recording arrives with takes)'
+            ? 'Nothing to record: no track here takes (loop a one-shot ↺ to take it again)'
+            : g.mode === 'retake'
+                ? `New take of ${g.armable} track${g.armable > 1 ? 's' : ''} — one performance from the group top (● again cancels)`
             : g.state === 'none'
                 ? `Record all ${g.armable} empty track${g.armable > 1 ? 's' : ''} (full ones just play)`
                 : 'Stop recording');
     } else {
+        // The ● verb (view_model.armMode): stop / record / new take;
+        // a committed one-shot has no slot top to take at.
+        const mode = lane.armMode ?? (lane.armable ? 'record' : null);
         arm.classList.toggle('on', lane.armed);
+        arm.classList.toggle('retake', mode === 'retake');
         if (arm.disabled !== !lane.armable) arm.disabled = !lane.armable;
-        setTitle(arm, !lane.armable
-            ? 'Already has a take (re-recording arrives with takes)'
+        setTitle(arm, mode === null
+            ? 'One-shot: loop it (↺) to record a new take'
+            : mode === 'retake'
+                ? 'New take — one period from the slot top; ● again cancels (⌘Z undoes a take)'
+            : lane.retake
+                ? (lane.recording && !lane.pendingStart
+                    ? 'Cancel the new take (the previous take stands)'
+                    : 'New take starts at the slot top — ● again cancels')
             : lane.recording ? 'Stop recording'
             : lane.armed ? 'Recording starts at the next Q boundary'
                 : 'Record into this track');
+    }
+
+    // The TAKE chip (docs/takes.md): `T<active+1>/<n>` on committed
+    // clips, quiet (hover-revealed) with one take, lit in comp mode.
+    const takeBtn = row.querySelector('.take-btn');
+    if (takeBtn) {
+        const n = lane.takes || 0;
+        const show = lane.kind === 'clip' && n > 0 ? '' : 'none';
+        if (takeBtn.style.display !== show) takeBtn.style.display = show;
+        setText(takeBtn, n > 1 ? 'T' + ((lane.activeTake || 0) + 1) + '/' + n : 'T1');
+        takeBtn.classList.toggle('quiet', n < 2 && !lane.compMode);
+        takeBtn.classList.toggle('on', !!lane.compMode);
+        takeBtn.classList.toggle('comped', !!(lane.comp && lane.comp.length));
+        setTitle(takeBtn, lane.compMode
+            ? 'Close the comp editor (Esc)'
+            : n > 1
+                ? `Take ${(lane.activeTake || 0) + 1} of ${n} sounds — click for the list` +
+                  (lane.comp && lane.comp.length ? ' (comped per Q cell)' : '')
+                : 'One take — ● records another; click for the list');
     }
 
     // Sub-line: the period at rest; while RECORDING it becomes the live
@@ -202,6 +234,20 @@ export function patchRail(row, lane, vm) {
         // The take is being written from its input NOW — switching
         // mid-take is not a thing (the engine reads the channel per block)
         if (input.disabled !== !!lane.recording) input.disabled = !!lane.recording;
+    }
+
+    // The monitoring chip (Q20): lit while the input is heard through
+    // the track; the tooltip names the calibrated round trip (the
+    // latency the monitored signal carries) or says none is measured.
+    // Hidden on MIDI tracks — no audio input to hear.
+    const mon = row.querySelector('.mon-btn');
+    if (mon) {
+        const show = lane.isMidi ? 'none' : '';
+        if (mon.style.display !== show) mon.style.display = show;
+        mon.classList.toggle('on', !!lane.monitor);
+        const ms = vm.monitorLatencyMs;
+        setTitle(mon, 'monitor input · ' +
+            (ms == null ? 'not calibrated' : ms.toFixed(1) + ' ms'));
     }
 
     // Pan/gain dials: reflect the engine value unless the user is

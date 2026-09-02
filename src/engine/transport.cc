@@ -105,6 +105,7 @@ void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
     if (e.setsOrigin) e.iorg += delta;
     for (auto& r : e.anchors) r.origin += delta;
     for (auto& tp : e.takes) tp.state.origin += delta;
+    for (auto& ot : e.other_takes) ot.second.origin += delta;
     shiftSubtree(e.node.get());
     shiftSubtree(e.node2.get());
   };
@@ -204,6 +205,16 @@ juce::var AudioEngine::getWaveform(const juce::String& uuid,
   auto* self = const_cast<AudioEngine*>(this);
   if (auto* node = self->findNodeByUuid(root_node.get(), uuid)) {
     return node->getWaveform(num_peaks);
+  }
+  return juce::Array<juce::var>();
+}
+
+juce::var AudioEngine::getTakeWaveform(const juce::String& uuid, int index,
+                                       int num_peaks) const {
+  auto* self = const_cast<AudioEngine*>(this);
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
+          self->findNodeByUuid(root_node.get(), uuid))) {
+    return clip->getTakeWaveform(index, num_peaks);
   }
   return juce::Array<juce::var>();
 }

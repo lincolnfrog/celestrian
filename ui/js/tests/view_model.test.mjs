@@ -626,21 +626,21 @@ test('group arm aggregates ARMABLE (empty) descendants: none/some/all (Q7)', () 
     const scene = () => state([clip(4), drums]);
 
     let g = deriveViewModel(scene()).lanes.find(l => l.kind === 'group');
-    assert.deepEqual(g.groupArm, { state: 'none', armable: 5 });
+    assert.deepEqual(g.groupArm, { state: 'none', armable: 5, mode: 'record' });
 
     kit[0].isPendingStart = true;
     g = deriveViewModel(scene()).lanes.find(l => l.kind === 'group');
-    assert.deepEqual(g.groupArm, { state: 'some', armable: 5 });
+    assert.deepEqual(g.groupArm, { state: 'some', armable: 5, mode: 'record' });
 
     kit.forEach(c => { c.isPendingStart = true; });
     const vm = deriveViewModel(scene());
     g = vm.lanes.find(l => l.kind === 'group');
-    assert.deepEqual(g.groupArm, { state: 'all', armable: 5 });
+    assert.deepEqual(g.groupArm, { state: 'all', armable: 5, mode: 'record' });
     vm.lanes.filter(l => l.kind === 'clip' && l.depth === 1)
         .forEach(l => assert.equal(l.armed, true));
 });
 
-test('arm targets emptiness: content clips are not armable (Q7 refinement)', () => {
+test('arm targets emptiness: the group records its empty clips; content clips retake (Q7 + takes)', () => {
     // Snare and Kick already have takes; three tracks still empty
     const kit = [
         clip(4, { name: 'Kick' }), clip(4, { name: 'Snare' }),
@@ -649,23 +649,28 @@ test('arm targets emptiness: content clips are not armable (Q7 refinement)', () 
     const drums = stack(kit, { name: 'Drums' });
 
     // "Arm the stack" = arm only the empty clips (engine behavior);
-    // the VM must report full arm over the 3 armable ones
+    // the VM must report full arm over the 3 empty ones
     kit.filter(c => !(c.duration > 0)).forEach(c => { c.isPendingStart = true; });
     const vm = deriveViewModel(state([drums]));
     const g = vm.lanes.find(l => l.kind === 'group');
-    assert.deepEqual(g.groupArm, { state: 'all', armable: 3 });
+    assert.deepEqual(g.groupArm, { state: 'all', armable: 3, mode: 'record' });
 
     const byName = Object.fromEntries(vm.lanes.map(l => [l.name, l]));
-    assert.equal(byName.Kick.armable, false);   // has content: just plays
-    assert.equal(byName.Snare.armable, false);
+    // Content clips just play under the group arm; their own ● is a
+    // NEW TAKE (docs/takes.md §2).
+    assert.equal(byName.Kick.armMode, 'retake');
+    assert.equal(byName.Kick.armable, true);
+    assert.equal(byName.Snare.armMode, 'retake');
     assert.equal(byName.Kick.armed, false);
+    assert.equal(byName.HatL.armMode, 'stop');   // armed: ● stops it
     assert.equal(byName.HatL.armable, true);
     assert.equal(byName.HatL.armed, true);
 
-    // Nothing armable at all → the group-arm control disables
+    // Nothing empty at all → the group ● is a new take of every
+    // committed direct clip (one performance)
     kit.forEach(c => { c.isPendingStart = false; c.duration = 4 * Q; });
     const g2 = deriveViewModel(state([drums])).lanes.find(l => l.kind === 'group');
-    assert.deepEqual(g2.groupArm, { state: 'none', armable: 0 });
+    assert.deepEqual(g2.groupArm, { state: 'none', armable: 5, mode: 'retake' });
 });
 
 test('FIRST TAKE frame: no Q yet → the growing take is the timeline', () => {

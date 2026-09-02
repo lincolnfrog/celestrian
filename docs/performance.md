@@ -54,13 +54,15 @@ the message thread and retires the old buffer via the reclaimer — legal
 under an actively rendering clip because render loads the pointer once
 per block. Never resize or swap a buffer the audio thread might be
 CAPTURING into (compaction skips armed/recording clips).
-*Phase 3 (2026-07-22):* a node's multi-segment map override follows
-the same discipline — ONE atomic pointer (`AudioNode::chain_`; a node's time-map is an inline seqlocked value, `AudioNode::storedMap`, not a heap object),
-message-thread swaps, superseded maps retired through the reclaimer,
-audio thread loads at most once per call. A multi-segment
-lock-collapse SPLICES a new content buffer in; the displaced buffer is
-owned by the undo entry (never freed inline) and the un-splice retires
-the spliced one.
+*The effect chain* follows the same discipline — ONE atomic pointer
+(`AudioNode::chain_`), message-thread swaps, superseded chains retired
+through the reclaimer, audio thread loads at most once per call. *A
+node's time-map* is different: an inline seqlocked value
+(`AudioNode::storedMap` / `setMap` — all-atomic segment fields, like
+the island facts), so a window edit is a value write with no heap and
+no retirement. A multi-segment lock-collapse SPLICES a new content
+buffer in; the displaced buffer is owned by the undo entry (never freed
+inline) and the un-splice retires the spliced one.
 *Documented deviation (time_maps.md phase 2, 2026-07-21):* a
 THROUGH-MAP arm zeroes exactly `[0, C)` at arm time on the message
 thread — the commit is a dense buffer with literal silence in
@@ -77,8 +79,12 @@ metadata/waveform) are MESSAGE THREAD ONLY; their audio-side twins are the
 snapshot-space free functions in `graph_snapshot.h`
 (`snapIntrinsicDuration`, `snapEffectivePeriod`, `snapEffectiveCycle`,
 `snapIsUnderSolo`). Parent-pointer walks (`getParent`/`rootNode`/
-`getEffectiveQuantum`) survive only as message-thread helpers and the
-single-threaded unit-test fallback inside `process` paths.
+`getEffectiveQuantum`) survive only as message-thread helpers; the
+audio thread has no fallback path — `process`/`control`/`render` assert
+the snapshot and island facts, and node-level tests build a real
+snapshot through `test_utils::contextFor`. The offline bounce
+(bounce.md) builds its context with the same `renderContext` helper the
+callback uses.
 
 **PR checklist for anything touching the process path:**
 
@@ -92,18 +98,11 @@ single-threaded unit-test fallback inside `process` paths.
 - [ ] Cross-thread fields are `std::atomic`.
 - [ ] Destruction of graph objects goes through `retire()`.
 
-Known residual violations (tracked in refactoring_proposal.md):
-
-- `ClipNode::getWaveform()` reads the recording buffer on the message thread
-  while the audio thread writes it. Benign-ish (aligned float reads), fix
-  belongs with the state-snapshot work (P3 note).
-- ~22 `dynamic_cast`s per block (P1-8: replace with virtual dispatch /
-  `forEachChild`).
-- ~~`getEffectiveQuantum()` re-derives min-duration~~ — ✅ resolved
-  (P0-3, 2026-07-09): quantum is stored island state; the lookup is a
-  parent walk to one atomic read. `getIntrinsicDuration()` on stacks
-  (composite LCM) still walks children per call — cache if the perf
-  meters ever care.
+Known residuals: none on the audio thread. `getWaveform` reads content
+only while a clip is Idle (the state machine's commit store is the
+publication point); traversal is cast-free over the snapshot; the
+message-thread `getIntrinsicDuration()` on stacks walks children per
+call — cache if the perf meters ever care.
 
 ---
 
@@ -114,12 +113,24 @@ Four independent chains matter. Numbers below assume 44.1 kHz; a block of
 
 ### 2.1 Monitoring chain (instrument → ears)
 
-We do no software input monitoring today — users hear themselves
-acoustically or through hardware monitoring. So this chain is currently
-zero-cost for us, but it defines the *reference* the user plays against:
-they play in time with what they **hear** (playback delayed by output
-latency), and their sound reaches us delayed by input latency. That is
-exactly the model behind the compensation in `ClipNode::process`:
+**Software input monitoring (Q20, tasks.md B1).** OFF by default — most
+interfaces monitor directly, so the engine never doubles the signal
+unasked. Per clip (`ClipNode::setMonitoring`; the rail's "mon" chip):
+`render` adds this block's arrivals from the pre-record ring (§3 — the
+callback writes the ring BEFORE the graph renders, so index
+`(input_clock + i) mod ring_len` for the clip's input channel(s) is
+already this block) into the dry signal ahead of the gate and the rack,
+so the input takes the clip's chain, gain and pan exactly like content.
+Zero added latency: the monitored signal carries only the device round
+trip — the calibrated figure (§7) shown beside the chip. Independent of
+the recording state (a capturing clip renders no content, so nothing
+doubles). A bounce carries no ring: monitoring never reaches a bounce
+(tests/monitor_tests.cc).
+
+Monitored or not, this chain defines the *reference* the user plays
+against: they play in time with what they **hear** (playback delayed by
+output latency), and their sound reaches us delayed by input latency.
+That is exactly the model behind the compensation in `ClipNode::process`:
 
 ```
 compensated_pos = master_pos - (input_latency + output_latency)

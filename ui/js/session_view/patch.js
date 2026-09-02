@@ -69,13 +69,24 @@ export function patchSessionView(vm, aux) {
         rootSeqBtn.classList.toggle('looping', looping);
         rootSeqBtn.classList.toggle('drift', !!(s && s.drift));
         rootSeqBtn.classList.toggle('bypassed', !!(s && s.bypassed));
-        rootSeqBtn.classList.toggle('open',
-            vm.lanes.length > 0 && vm.lanes[0].kind === 'seq' &&
-            vm.lanes[0].ownerId === vm.rootId);
+        rootSeqBtn.classList.toggle('open', vm.lanes.some(l =>
+            l.kind === 'seq' && l.ownerId === vm.rootId));
         const show = vm.lanes.length && vm.qEstablished ? '' : 'none';
         if (rootSeqBtn.style.display !== show) {
             rootSeqBtn.style.display = show;
         }
+    }
+
+    // THE MASTER FX chip (B5): the root's rack, opened from the
+    // transport's master strip as the first row. The enabled count at
+    // rest, like a rail's fx chip.
+    const masterFxBtn = document.getElementById('master-fx-btn');
+    if (masterFxBtn) {
+        const n = vm.rootFxCount || 0;
+        setText(masterFxBtn, n > 0 ? 'fx·' + n : 'fx');
+        masterFxBtn.classList.toggle('on', n > 0);
+        masterFxBtn.classList.toggle('open', vm.lanes.some(l =>
+            l.kind === 'fx' && l.ownerId === vm.rootId));
     }
 
     patchRuler(vm);

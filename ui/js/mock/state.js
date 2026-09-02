@@ -23,6 +23,9 @@ export const state = {
     islandEpoch: 0,   // the island frame origin (P0-3 stored fact)
     islandQ: 0,       // the STORED island quantum (0 = unestablished)
     masterGain: 1,    // the root output stage — the master fader
+    // The synthetic root's rack holder ('mock-root' is not in `nodes`):
+    // effects.js installs the default chain here lazily, like a node.
+    root: { id: 'mock-root', type: 'stack', effects: null },
     rootAuditionStep: -1,  // the root's step audition (§11.2), −1 = none
 };
 
@@ -492,7 +495,9 @@ export function serializeGraph() {
                             // The root's sequence (docs/sequencer.md) —
                             // node-level sequences ride state.nodes.
                             rootSequence: state.rootSequence || null,
-                            rootSequenceBypassed: !!state.rootSequenceBypassed });
+                            rootSequenceBypassed: !!state.rootSequenceBypassed,
+                            // The root's rack (chain STRUCTURE is undoable).
+                            rootEffects: state.root.effects || null });
 }
 
 /** Restore a serializeGraph() string into the live state singleton. */
@@ -503,4 +508,5 @@ export function restoreGraph(snap) {
     state.islandQ = o.islandQ || 0;
     state.rootSequence = o.rootSequence || null;
     state.rootSequenceBypassed = !!o.rootSequenceBypassed;
+    state.root.effects = o.rootEffects || null;
 }

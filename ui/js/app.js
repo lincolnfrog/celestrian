@@ -1,22 +1,26 @@
 // Celestrian app shell (docs/ui_overhaul.md): backend poll → pure view
 // model → thin DOM patch. Backend selection lives in backend.js (P2-9);
 // all timeline math lives in view_model.js / timeline_model.js; the
-// session grid's DOM lives in session_view.js (and the status-strip
-// popovers in audio_settings.js / plugin_panel.js). This file is glue:
-// polling, waveform peak fetching, the bridge-call callbacks, the
-// global keyboard verbs, and the small chrome it owns directly — the
-// log line, the master fader/VU wiring, and the Project menu.
+// session grid's DOM lives in session_view.js (the preferences panel
+// in preferences.js, the plugin popover in plugin_panel.js). This file
+// is glue: polling, waveform peak and MIDI note fetching, the
+// bridge-call callbacks, the global keyboard verbs, and the small
+// chrome it owns directly — the log line, the master fader/VU wiring,
+// and the Project menu.
 
 import { callNative, log, getState } from './backend.js';
-import { deriveViewModel, findNodeInTree, isArmable, hasInstrument }
+import { deriveViewModel, findNodeInTree, armMode, hasInstrument }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
-         activeSelectedId }
+         activeSelectedId, selection }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
-import { initAudioSettings } from './audio_settings.js';
+import { initPreferences } from './preferences.js';
 import { initPluginPanel } from './plugin_panel.js';
-import { updateMasterVU, initMasterFader, updateMasterFader }
+import { notesFromRows, fitPitchRange } from './midi_notes.js';
+import { filePathOf } from './import_drop.js';
+import { updateMasterVU, initMasterMeters, initMasterFader,
+         updateMasterFader }
     from './vu_meter.js';
 import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
 import { foldedStacks, toggleFolded, migrateFolds } from './view_prefs.js';
@@ -33,10 +37,17 @@ const CALIBRATION_POLL_TRIES = 40;  // latency calibration: poll attempts…
 const CALIBRATION_POLL_MS = 250;    // …every this many ms (10 s ceiling)
 
 const livePeaks = new Map();        // clip id → peak array
-const peakDurations = new Map();    // clip id → duration the peaks were fetched at
+const peakKeys = new Map();         // clip id → peakKey the peaks were fetched at (LIVE while recording)
 const fxOpen = new Set();           // lane ids with the effects panel expanded (view state)
 const windowEdit = new Set();       // lanes expanded into the window editor
 const seqOpen = new Set();          // stacks with the sequencer grid expanded (view state)
+const compMode = new Set();         // clips in COMP MODE (view state, docs/takes.md)
+// Clips whose live take is a NEW TAKE of a committed slot. Published
+// state cannot say so (the slot keeps its duration), and it is not
+// needed: a committed clip that goes hot can only be retaking — the
+// engine refuses a plain arm on content — so the poll infers it from
+// the transition (trackRetakes).
+const retakes = new Set();
 
 /* ---------- small helpers ---------- */
 
@@ -107,18 +118,24 @@ async function call(method, args = [], okMsg, failMsg) {
 }
 
 /* ---------- waveform peaks ---------- */
+/** The identity of a clip's ACTIVE content: getWaveform answers for
+ * the active take, so a selection or a renumbering delete (docs/
+ * takes.md §3) must refetch even though the duration stands. */
+const peakKey = n =>
+    (n.duration || 0) + ':' + (n.activeTake || 0) + ':' + (n.takes || 0);
+
 const peakFetches = new Map(); // clip id → in-flight fetch promise
-async function fetchWaveform(id, duration) {
+async function fetchWaveform(id, key) {
     // Per-id in-flight guard: concurrent fetches for DIFFERENT clips may
     // proceed; a second request for the same clip while one is in flight
-    // is dropped (the poll loop retries next tick if the duration moved).
+    // is dropped (the poll loop retries next tick if the key moved).
     if (peakFetches.has(id)) return;
     const p = (async () => {
         try {
             const peaks = await callNative('getWaveform', id, PEAK_COUNT);
             if (peaks && peaks.length > 0) {
                 livePeaks.set(id, peaks);
-                peakDurations.set(id, duration);
+                peakKeys.set(id, key);
                 dbg(`Fetched ${peaks.length} peaks for ${id}`);
             }
         } catch (err) {
@@ -130,36 +147,147 @@ async function fetchWaveform(id, duration) {
     peakFetches.set(id, p);
 }
 
-const LIVE = -1; // peakDurations marker: array holds live recording peaks
+const LIVE = 'live'; // peakKeys marker: array holds live recording peaks
 
 /**
  * Fetch peaks for committed clips whose content we don't have yet; for
  * RECORDING clips, accumulate the engine's currentPeak TIME-INDEXED
  * (live_peaks.js): a peak's slot derives from `duration` at capture, so
  * the drawn waveform is anchored to its position regardless of poll
- * cadence (per-poll pushing would drift content sideways).
+ * cadence (per-poll pushing would drift content sideways). A NEW TAKE
+ * keeps the slot's duration, so its slot derives from the captured
+ * length the view model computes (lane.recordingLengthQ).
  */
-function refreshPeaks(nodes, sampleRate) {
+function refreshPeaks(nodes, sampleRate, lanesById) {
     (nodes || []).forEach(n => {
-        if (n.type === 'stack') return refreshPeaks(n.nodes, sampleRate);
+        if (n.type === 'stack') return refreshPeaks(n.nodes, sampleRate, lanesById);
         if (n.type !== 'clip') return;
         if (n.isRecording) {
             let arr = livePeaks.get(n.id);
-            if (!arr || peakDurations.get(n.id) !== LIVE) {
+            if (!arr || peakKeys.get(n.id) !== LIVE) {
                 arr = []; // fresh take: drop stale committed peaks
                 livePeaks.set(n.id, arr);
-                peakDurations.set(n.id, LIVE);
+                peakKeys.set(n.id, LIVE);
             }
-            if (n.duration > 0) {
-                appendLivePeak(arr, n.duration, sampleRate, n.currentPeak || 0);
+            const lane = lanesById.get(n.id);
+            const captured = lane && lane.retake
+                ? (lane.pendingStart ? 0 : lane.recordingLengthQ * lane.quantum)
+                : n.duration;
+            if (captured > 0) {
+                appendLivePeak(arr, captured, sampleRate, n.currentPeak || 0);
             }
             return;
         }
         if (!(n.duration > 0)) return;
-        if (!livePeaks.has(n.id) || peakDurations.get(n.id) !== n.duration) {
-            fetchWaveform(n.id, n.duration); // also replaces live arrays on commit
+        if (!livePeaks.has(n.id) || peakKeys.get(n.id) !== peakKey(n)) {
+            fetchWaveform(n.id, peakKey(n)); // also replaces live arrays on commit
         }
     });
+}
+
+/* ---------- per-take peaks (docs/takes.md) ----------
+ * getTakeWaveform for the take list rows, the comp cells and the
+ * silent tile of a retaking lane. Cached per (clip, take): takes are
+ * immutable, so an entry is good until the clip's LIST changes (a
+ * commit appends, a delete renumbers — both move `takes`), when the
+ * clip's entries drop. */
+const takePeakCache = new Map();   // `${id}:${k}` → peaks
+const takePeakFetches = new Map(); // `${id}:${k}` → in-flight promise
+const takeListSizes = new Map();   // clip id → `takes` the cache was built at
+
+/** Peaks of take k, fetching on a miss; resolves [] on a refusal. */
+function fetchTakePeaks(id, k) {
+    const key = id + ':' + k;
+    if (takePeakCache.has(key)) return Promise.resolve(takePeakCache.get(key));
+    if (takePeakFetches.has(key)) return takePeakFetches.get(key);
+    const p = (async () => {
+        try {
+            const peaks = await callNative('getTakeWaveform', id, k, PEAK_COUNT);
+            if (peaks && peaks.length > 0) takePeakCache.set(key, peaks);
+            return peaks || [];
+        } catch (err) {
+            console.error('Take waveform fetch failed:', err);
+            return [];
+        } finally {
+            takePeakFetches.delete(key);
+        }
+    })();
+    takePeakFetches.set(key, p);
+    return p;
+}
+
+/** The cached peaks of take k, or null (a fetch is kicked off; the
+ * next patch draws it). The synchronous face for the patch layer. */
+function takePeaksNow(id, k) {
+    const cached = takePeakCache.get(id + ':' + k);
+    if (cached) return cached;
+    fetchTakePeaks(id, k);
+    return null;
+}
+
+/** Drop a clip's cached takes when its list changes (poll hook). */
+function invalidateTakePeaks(nodesById) {
+    for (const n of nodesById.values()) {
+        if (n.type !== 'clip') continue;
+        const size = n.takes || 0;
+        if (takeListSizes.get(n.id) === size) continue;
+        takeListSizes.set(n.id, size);
+        for (const key of [...takePeakCache.keys()]) {
+            if (key.startsWith(n.id + ':')) takePeakCache.delete(key);
+        }
+    }
+}
+
+/** The retake inference (see `retakes`): a clip that was committed and
+ * idle on the previous poll and is hot now is taking a NEW TAKE; a
+ * clip that is no longer hot leaves the set. */
+function trackRetakes(prev, next) {
+    for (const n of next.values()) {
+        if (n.type !== 'clip') continue;
+        if (!isHotClip(n)) { retakes.delete(n.id); continue; }
+        const was = prev.get(n.id);
+        if (was && !isHotClip(was) && (was.duration || 0) > 0) retakes.add(n.id);
+    }
+}
+
+/* ---------- MIDI notes (docs/vst3.md §11) ----------
+ * getMidiNotes for a MIDI lane's tiles, fetched on demand like
+ * waveform peaks and cached by the clip's `midiEvents` count + active
+ * take + take count (a new take, a selection or a renumbering delete
+ * all change what the readout answers). The patch layer reads
+ * `midiNotes` (id → {notes, range}) through aux. */
+const midiNotes = new Map();      // clip id → {notes (Q units), range}
+const midiKeys = new Map();       // clip id → midiKey the notes were fetched at
+const midiFetches = new Map();    // clip id → in-flight fetch promise
+const midiKey = n =>
+    (n.midiEvents || 0) + ':' + (n.activeTake || 0) + ':' + (n.takes || 0);
+
+function fetchMidiNotes(id, key) {
+    if (midiFetches.has(id)) return;
+    const p = (async () => {
+        try {
+            const rows = await callNative('getMidiNotes', id);
+            const notes = notesFromRows(rows);
+            midiNotes.set(id, { notes, range: fitPitchRange(notes) });
+            midiKeys.set(id, key);
+            dbg(`Fetched ${notes.length} MIDI notes for ${id}`);
+        } catch (err) {
+            console.error('MIDI note fetch failed:', err);
+        } finally {
+            midiFetches.delete(id);
+        }
+    })();
+    midiFetches.set(id, p);
+}
+
+/** Refetch the notes of every committed, idle MIDI clip whose key
+ * moved; a hot clip's stale notes stay until its take commits. */
+function refreshMidiNotes(nodesById) {
+    for (const n of nodesById.values()) {
+        if (n.type !== 'clip' || n.contentKind !== 'midi') continue;
+        if (isHotClip(n) || !(n.duration > 0)) continue;
+        if (midiKeys.get(n.id) !== midiKey(n)) fetchMidiNotes(n.id, midiKey(n));
+    }
 }
 
 /* ---------- aux data for the patch layer ---------- */
@@ -182,6 +310,11 @@ function clipsUnder(node, out = []) {
     return out;
 }
 const isHotClip = c => c.isRecording || c.isPendingStart;
+/** Committed material in a node's subtree: a clip with a duration
+ * that is not recording, or a group holding one. */
+const hasCommittedClip = n => n.type === 'clip'
+    ? !n.isRecording && (n.duration || 0) > 0
+    : (n.nodes || []).some(hasCommittedClip);
 
 /* PER-TRACK RECORD (owner-ruled): there is NO global record button —
  * the track's ● is the record verb, which keeps the core journey
@@ -197,6 +330,12 @@ const isHotClip = c => c.isRecording || c.isPendingStart;
  * committed duration; a per-clip loop here could straddle an audio
  * block and split the group across two boundaries). The engine also
  * owns the Q-boundary wait (Q11) and arm-targets-emptiness (Q7).
+ *
+ * NEW TAKE (docs/takes.md §2, "new take on the record button"): with
+ * nothing empty beneath, ● on a committed clip — or on a group whose
+ * committed direct clips exist — calls `newTake` (the engine refuses a
+ * plain arm on content). The take captures one period from the slot's
+ * next top; ● again before that cancels it.
  */
 async function onArm(lane) {
     const node = lastNodesById.get(lane.id);
@@ -205,12 +344,25 @@ async function onArm(lane) {
     const hot = clips.filter(isHotClip);
     if (hot.length > 0) {
         await callNative('stopRecordingInNode', lane.id);
-        setLogLine('Stopped recording');
+        setLogLine(hot.some(c => retakes.has(c.id))
+            ? 'New take cancelled — the previous take sounds again'
+            : 'Stopped recording');
         return;
     }
-    const targets = clips.filter(isArmable);
+    const targets = clips.filter(c => armMode(c) === 'record');
     if (targets.length === 0) {
-        setLogLine('Nothing to record — tracks already have takes');
+        const slots = node.type === 'clip'
+            ? (armMode(node) === 'retake' ? [node] : [])
+            : (node.nodes || []).filter(c => c.type === 'clip' &&
+                                             armMode(c) === 'retake');
+        if (slots.length === 0) {
+            setLogLine('Nothing to record — loop a one-shot (↺) to take it again');
+            return;
+        }
+        await callNative('newTake', lane.id);
+        setLogLine(slots.length > 1
+            ? `New take of ${slots.length} tracks from the group top (● again cancels)`
+            : 'New take — one period from the slot top (● again cancels)');
         return;
     }
     await callNative('startRecordingInNode', lane.id);
@@ -392,6 +544,16 @@ function onWindowEdit(id, open) {
     if (open) windowEdit.add(id); else windowEdit.delete(id);
 }
 
+// Comp mode (docs/takes.md): pure view state, the windowEdit shape —
+// null closes every lane's (Escape).
+function onCompMode(id, open) {
+    if (id === null) { compMode.clear(); return; }
+    if (open) compMode.add(id); else compMode.delete(id);
+    setLogLine(open
+        ? 'Comp: click a Q cell to cycle which take sounds there (⌘Z undoes each)'
+        : 'Comp closed — the comp stays');
+}
+
 // Move the OS cursor (viewport CSS px). True when the backend
 // actually warped; the mock returns false and the drag falls back
 // to absolute capture (map_bands.js runExpandedDrag).
@@ -469,9 +631,10 @@ function wireStatusStrip() {
         }
     });
 
-    // Audio device picker. Calibration is keyed on device|rate|buffer, so
-    // it sits right next to the button that changes all three.
-    initAudioSettings(callNative, setLogLine);
+    // The preferences panel (preferences.js) hosts the device pickers
+    // beside the calibration button above: calibration is keyed on
+    // device|rate|buffer, so it sits next to what changes all three.
+    initPreferences(callNative, setLogLine);
 
     // Plugin registry panel (docs/vst3.md phase 1) — same popover
     // pattern; chain integration arrives with phases 2-3.
@@ -548,26 +711,39 @@ async function startPolling() {
         try {
             const state = isMock ? getState() : await callNative('getGraphState');
             if (state) {
-                refreshPeaks(state.nodes, (state.perf && state.perf.sampleRate) || 44100);
-                lastNodesById = indexNodes(state.nodes);
+                const nodesById = indexNodes(state.nodes);
+                trackRetakes(lastNodesById, nodesById);
+                lastNodesById = nodesById;
                 lastRootId = state.id || '';
+                invalidateTakePeaks(lastNodesById);
+                refreshMidiNotes(lastNodesById);
+                const vm = deriveViewModel(state,
+                    { folded: foldedStacks(projectInfo.id),
+                      fxOpen, windowEdit, seqOpen, compMode, retakes,
+                      pinFrameQ: mapDragPinQ(),
+                      pinFoldQ: mapDragPinFoldQ() });
+                const lanesById = new Map(vm.lanes.map(l =>
+                    [l.id, Object.assign({ quantum: vm.quantum }, l)]));
+                refreshPeaks(state.nodes,
+                    (state.perf && state.perf.sampleRate) || 44100, lanesById);
                 settlePendingPause(state);
                 // Committed clips whose real waveform hasn't landed yet:
                 // composites must not blend their live meter peaks
                 const pendingFetch = new Set();
                 for (const n of lastNodesById.values()) {
                     if (n.type === 'clip' && !n.isRecording && n.duration > 0 &&
-                        peakDurations.get(n.id) !== n.duration) {
+                        peakKeys.get(n.id) !== peakKey(n)) {
                         pendingFetch.add(n.id);
                     }
                 }
-                const vm = deriveViewModel(state,
-                    { folded: foldedStacks(projectInfo.id),
-                      fxOpen, windowEdit, seqOpen, pinFrameQ: mapDragPinQ(),
-                      pinFoldQ: mapDragPinFoldQ() });
                 patchSessionView(vm, {
                     livePeaks,
                     pendingFetch,
+                    // Per-take peaks for the comp cells and a retaking
+                    // lane's silent tile (cached; null until fetched)
+                    takePeaks: takePeaksNow,
+                    // A MIDI lane's notes for its tiles (cached above)
+                    midiNotes,
                     nodesById: lastNodesById,
                     vmQuantum: vm.quantum,
                     // Composite offsets are cycle projections of origin —
@@ -577,9 +753,12 @@ async function startPolling() {
                 });
                 patchCalibrateButton(state);
                 syncMidiTarget();
-                // Master monitor: engine-side smoothed output RMS →
-                // needle sweep (vu_meter.js; CSS transition interpolates
-                // between polls). The fader mirrors the root's gain.
+                // Master monitor (B5): the engine meters the device
+                // buffers AFTER root_node->process — the reading is
+                // post-fader, post-rack — and vu_meter.js sweeps the
+                // needles (CSS transition interpolates between polls),
+                // holds the peak tick and latches the clip lamp. The
+                // fader mirrors the root's gain (vm.rootGain).
                 // STALE-ENGINE TELL: a binary built before the master VU
                 // publishes no masterVuL at all — dim the meters and say
                 // why, instead of showing dead needles that look broken.
@@ -599,14 +778,16 @@ async function startPolling() {
                             return n <= 0 ? '−∞'
                                 : (20 * Math.log10(n)).toFixed(1);
                         };
-                        monitor.title = 'Master output — L ' + db(state.masterVuL)
-                            + ' dB · R ' + db(state.masterVuR) + ' dB (raw L='
-                            + state.masterVuL + ')';
+                        monitor.title = 'Master output (post-fader) — L '
+                            + db(state.masterVuL) + ' dB · R '
+                            + db(state.masterVuR) + ' dB (raw L='
+                            + state.masterVuL
+                            + ') · click a face to release its clip lamp';
                     }
                 }
                 updateMasterVU(Number(state.masterVuL) || 0,
                                Number(state.masterVuR) || 0);
-                updateMasterFader(state.gain);
+                updateMasterFader(vm.rootGain);
             }
         } catch (err) {
             console.error('Polling error:', err);
@@ -616,6 +797,46 @@ async function startPolling() {
 }
 
 /* ---------- init ---------- */
+/* ---------- Audio file import (docs/import.md) ----------
+ * A WAV/AIFF/FLAC becomes a committed take on the nearest Q boundary
+ * to `atQ` (a QTime [num, den] in the epoch frame). Two entry points:
+ * the native chooser (the + menu, the project menu, a drop the page
+ * cannot name — see import_drop.js on the WebView path limit) and the
+ * direct verb for a drop whose File exposes a filesystem path. Both
+ * are undoable engine-side; both refuse under a live take. */
+
+/** The status line for an import result. */
+function importVerdict(result, what) {
+    if (result) return `Imported${what ? ' ' + what : ''} — ⌘Z to undo`;
+    if ([...lastNodesById.values()].some(isHotClip)) {
+        return 'Import refused — a take is live';
+    }
+    return 'Import cancelled — or refused: audio files land on audio ' +
+        'tracks (WAV, AIFF, FLAC)';
+}
+
+/** The native chooser, placed at `q` (whole Q of the frame). */
+function importWithDialog(targetId, q) {
+    const id = targetId || lastRootId;
+    if (!id) return Promise.resolve(false);
+    return call('importAudioWithDialog', [id, [q, 1]],
+        r => importVerdict(r, q > 0 ? `at Q${q}` : ''));
+}
+
+/**
+ * An OS file dropped on a lane (lane_build.js): the first file lands
+ * at the drop's Q. A File that carries a path imports directly; one
+ * that carries only its name (every sandboxed WebView) falls back to
+ * the chooser, placed at the same Q.
+ */
+function onImportDrop(laneId, q, files) {
+    const file = files && files[0];
+    const path = filePathOf(file);
+    if (!path) return importWithDialog(laneId, q);
+    return call('importAudio', [laneId, path, [q, 1]],
+        r => importVerdict(r, `${file.name} at Q${q}`));
+}
+
 /* ---------- The project model (docs/projects.md) ----------
  * A project is a dated folder BORN at the first committed take and
  * continuously mirrored after. The UI's jobs: show the display name
@@ -736,6 +957,30 @@ function buildProjectMenu(menu) {
     item('Open project folder…', () =>
         call('loadSession', [''], 'Project opened', 'Open cancelled')
             .then(() => refreshProjectInfo()));
+
+    // Bounce (Q19, docs/bounce.md): the song is the island root for one
+    // effective cycle; a single selected lane bounces for one effective
+    // period. Both open the native save dialog. The engine refuses
+    // under a live take; a cancelled dialog also answers false.
+    sep();
+    const bounceVerdict = result => result ? 'Bounced'
+        : [...lastNodesById.values()].some(isHotClip)
+            ? 'Bounce refused — a take is live'
+            : 'Bounce cancelled';
+    const bounceTo = id => call('bounceWithDialog', [id], bounceVerdict);
+    const songHasContent = lastRootId &&
+        [...lastNodesById.values()].some(hasCommittedClip);
+    item('Bounce song…', () => bounceTo(lastRootId), !songHasContent);
+    if (selection.size === 1) {
+        const sel = lastNodesById.get(activeSelectedId());
+        if (sel) item('Bounce selected…', () => bounceTo(sel.id),
+                      !hasCommittedClip(sel));
+    }
+
+    // Audio file import (docs/import.md): a new track from a file,
+    // picked natively, at the frame top. Refused under a live take.
+    item('Import audio…', () => importWithDialog(lastRootId, 0),
+         !lastRootId || [...lastNodesById.values()].some(isHotClip));
 
     sep();
     head('Save as template');
@@ -939,6 +1184,13 @@ function initApp() {
             call('setNodeInputRight', [id, channelIndex], channelIndex >= 0
                 ? `Stereo pair: right = channel ${channelIndex + 1}`
                 : 'Track set to mono'),
+        // Software input monitoring (Q20): a monitoring gesture like
+        // solo — not undoable, straight to the bridge.
+        onMonitor: (id, on) => {
+            callNative('setMonitor', id, on);
+            setLogLine(on ? 'Monitoring input through the track'
+                          : 'Input monitoring off');
+        },
         // Pan/balance dial, −1..+1. Streams while dragging (cheap atomic
         // store engine-side; not undoable — the effect-param ruling).
         onSetPan: (id, pan) => callNative('setNodePan', id, pan),
@@ -1000,6 +1252,25 @@ function initApp() {
                 `${name || 'plugin'} removed (⌘Z to undo)`),
         onOpenPluginEditor: (id, slotUuid) =>
             callNative('openPluginEditor', id, slotUuid),
+        // Takes (docs/takes.md §3): selection, deletion and the comp
+        // are musical facts — undoable engine-side, refused mid-take.
+        // The take list's rows draw from the per-take peak cache.
+        getTakePeaks: fetchTakePeaks,
+        onSelectTake: (id, index) =>
+            call('selectTake', [id, index],
+                `Take ${index + 1} sounds (⌘Z to undo)`),
+        onDeleteTake: (id, index) =>
+            call('deleteTake', [id, index],
+                `Take ${index + 1} removed (⌘Z to undo)`),
+        onSetComp: (id, cells) =>
+            call('setComp', [id, cells],
+                cells.length ? 'Comp updated (⌘Z to undo)'
+                             : 'Comp cleared — the active take throughout (⌘Z to undo)'),
+        onCompMode,
+        // Audio file import (docs/import.md): the + menu's chooser
+        // (into a group, or the root) and the lane drop.
+        onImportAudio: (groupId, q) => importWithDialog(groupId, q),
+        onImportDrop,
         onArm,
         onRecordKey,
     });
@@ -1019,6 +1290,17 @@ function initApp() {
     // Master fader → the island root's output-stage gain (stacks apply
     // gain·pan at their output, so the root's fader IS the master).
     initMasterFader(v => { if (lastRootId) callNative('setNodeGain', lastRootId, v); });
+    initMasterMeters();  // a click on a meter face releases its clip latch
+    // The MASTER FX chip (B5): the root's rack opens as the same fx row
+    // a group rail's chip opens — one click to a master reverb/limiter.
+    {
+        const mfx = document.getElementById('master-fx-btn');
+        if (mfx) {
+            mfx.addEventListener('click', () => {
+                if (lastRootId) onToggleFx(lastRootId);
+            });
+        }
+    }
     wireKeyboard();
     initProjectUI();
     startPolling();

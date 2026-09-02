@@ -59,14 +59,17 @@ class PluginHostIntegrationTests : public juce::UnitTest {
 
     const juce::ScopedJuceInitialiser_GUI juce_runtime;  // MessageManager
 
-    beginTest("background scan discovers the real plugin (pedal path)");
+    beginTest("background scan discovers the real plugin (worker path)");
     juce::String uid;
     {
       auto data_dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
                           .getChildFile("celestrian_plugin_integration");
       data_dir.deleteRecursively();
       PluginHostService service(data_dir);
-      service.startScan(bundle.getParentDirectory().getFullPathName());
+      // Confined to the build's bundle folder: the machine's own VST3
+      // folders and AudioUnit registry stay out of the suite.
+      service.startScan(bundle.getParentDirectory().getFullPathName(),
+                        /*include_default_locations=*/false);
       // The scan runs on its own thread; bounded wait.
       for (int i = 0; i < 600 && service.isScanning(); ++i)
         juce::Thread::sleep(50);
@@ -85,9 +88,9 @@ class PluginHostIntegrationTests : public juce::UnitTest {
       expect(found, "scan found Celestrian Test Gain");
       expect(service.knownPluginsFile().existsAsFile(),
              "completed scan persisted the registry");
-      expect(!service.pedalFile().existsAsFile() ||
-                 service.pedalFile().loadFileAsString().trim().isEmpty(),
-             "clean scan leaves no pedal residue");
+      expectEquals(
+          service.getKnownPluginsVar()[0].getProperty("format", "").toString(),
+          juce::String("VST3"), juce::String("the entry names its format"));
     }
 
     beginTest("instantiate through the VST3 path; process; latency");

@@ -40,8 +40,14 @@
                 <div class="digits" id="position-readout">—</div>
                 <div class="sub" id="q-info"></div>
             </div>
-            <!-- Master monitor: VU needles driven by the engine's master
-                 output RMS (masterVuL/R on the state poll) -->
+            <!-- THE MASTER STRIP (B5): the root stack's output stage.
+                 VU needles read the post-fader master (masterVuL/R on
+                 the state poll — the device buffers after the root's
+                 gain·pan and rack), each with a peak-hold tick and a
+                 clip lamp that latches until the face is clicked; the
+                 fader is the root's gain (setNodeGain on rootId); fx
+                 opens the root's rack as the first row.
+                 Keep in lockstep with index_test.html. -->
             <div id="master-monitor" title="Master output — what the speakers hear">
                 <div class="vu-pair">
                     <div class="vu" id="vu-l">
@@ -49,6 +55,7 @@
                         <div class="arc"></div>
                         <div class="zone"></div>
                         <span class="peak"></span>
+                        <div class="hold"></div>
                         <div class="needle"></div>
                     </div>
                     <div class="vu" id="vu-r">
@@ -56,11 +63,14 @@
                         <div class="arc"></div>
                         <div class="zone"></div>
                         <span class="peak"></span>
+                        <div class="hold"></div>
                         <div class="needle"></div>
                     </div>
                     <button id="master-fader"
                         title="Master volume — drag up/down, double-click for unity"><span
                             class="grip"></span></button>
+                    <button id="master-fx-btn" class="mono"
+                        title="Master effects: the root's rack — EQ · Compressor · Echo · Reverb">fx</button>
                 </div>
                 <div class="monitor-label">MASTER MONITOR</div>
             </div>
@@ -71,6 +81,39 @@
             <button id="project-menu-btn" class="bar-btn"
                     title="Project — save, rename, templates">Project ▾</button>
             <div id="project-menu" class="mono"></div>
+            <!-- PREFERENCES (tasks.md B8, preferences.js): the one
+                 panel for the persisted per-machine choices — audio
+                 device (audio_settings.js renders into the host),
+                 latency calibration (app.js wires the button), the
+                 projects root (chooseProjectsRoot). Static markup so
+                 app.js binds the calibration ids at init.
+                 Keep in lockstep with index_test.html. -->
+            <button id="prefs-btn" class="bar-btn"
+                    title="Preferences — audio device, latency, projects folder">⚙</button>
+            <div id="prefs-panel" class="audio-panel">
+                <div class="ap-head">Preferences</div>
+                <div class="ap-section">
+                    <div class="ap-label">Audio device</div>
+                    <div id="audio-device-host"></div>
+                </div>
+                <div class="ap-section">
+                    <div class="ap-label">Latency</div>
+                    <div class="ap-row">
+                        <button id="calibrate-btn"
+                            title="Measure real round-trip latency: plays a click and listens for it on the input. See docs/performance.md">🎯
+                            Calibrate</button>
+                        <span id="calibration-status"></span>
+                    </div>
+                </div>
+                <div class="ap-section">
+                    <div class="ap-label">Projects folder</div>
+                    <div class="ap-row">
+                        <span id="projects-root" class="mono"></span>
+                        <button id="projects-root-change"
+                            title="Choose the folder your projects and track templates live under">Change…</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- SESSION -->
@@ -116,16 +159,9 @@
         <div id="status-strip">
             <span id="ready-lamp" title="Engine ready"></span>
             <span id="log-line">ready</span>
-            <span id="calibration-status"></span>
-            <button id="audio-device-btn" class="bar-btn"
-                title="Audio device — driver, interface, sample rate, buffer. On Windows only ASIO exposes all inputs of a multi-channel interface.">🎛
-                Audio</button>
             <button id="plugins-btn" class="bar-btn"
                 title="VST3 plugins — the known-plugin registry and scan. See docs/vst3.md">🔌
                 Plugins</button>
-            <button id="calibrate-btn"
-                title="Measure real round-trip latency: plays a click and listens for it on the input. See docs/performance.md">🎯
-                Calibrate</button>
             <button id="dump-state-btn">📦 Dump State</button>
         </div>
     </div>

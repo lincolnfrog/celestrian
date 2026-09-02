@@ -45,6 +45,10 @@ struct LoadedSession {
   int64_t epoch = 0;
   double sample_rate = 44100.0;
   bool root_muted = false;
+  // The root's output stage — the MASTER fader and balance (B5). Absent
+  // in the bundle reads as unity / center.
+  float root_gain = 1.0f;
+  float root_pan = 0.0f;
   juce::var root_effects;  // fx blob for the root stack (may be void)
   std::vector<std::unique_ptr<AudioNode>> children;
   juce::String display_name;  // project display name (docs/projects.md)

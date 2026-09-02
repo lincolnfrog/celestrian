@@ -29,6 +29,9 @@
 | [stacks.md](stacks.md) | spec + journal | Stack/nesting UX. The visual-design sections (superseded by ui_overhaul.md) and the Loop-on-Collapse section (superseded by time_maps.md) carry dated banners. |
 | [ui.md](ui.md) | spec | Frontend/backend separation of concerns; the masterPos contract; bridge placement rules (`ui/js/protocol.js` is the method list). |
 | [test_harness.md](test_harness.md) | spec | How to build and run every test layer, the gotchas, and the field checklist for loop regions. |
+| [bounce.md](bounce.md) | spec | Bounce / export (Q19): the span rule (root: one effective cycle from the epoch; node: one effective period from origin + a0), the −90 dBFS tail, stereo float WAV at the device rate, the bounce == live render golden. |
+| [takes.md](takes.md) | spec | Takes and comping (B4): a committed slot holds N immutable takes sharing one origin/period; the new-take arm rule (`t ≡ origin mod period`, one-period cap, stop = cancel); per-Q-cell comp with cell seams; undo shapes; persistence keys; what the UI half owes. Engine shipped; UI pending. |
+| [import.md](import.md) | spec | Audio file import (B6): a WAV/AIFF/FLAC as a committed take — nearest-Q placement from the drop, the hysteresis length law, pre-Q import defines Q, a new take onto a committed slot, resampling, undo; the WebView path limit (a drop without a path → the chooser at the drop's Q). |
 | [tasks.md](tasks.md) | tracker | Tiered task list + the Open Design Questions table. |
 | [mockups/](mockups/) | design artifacts | HTML mockups (`sequencer_ux.html`, `sequencer_ux2.html` — the 2026-08-19 sequencer rounds behind S15). |
 

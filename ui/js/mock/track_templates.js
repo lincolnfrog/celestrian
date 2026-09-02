@@ -32,12 +32,16 @@ function capture(node) {
             children: (node.nodes || []).map(capture),
         };
     }
-    return {
+    const tpl = {
         type: 'clip',
         name: node.name,
         inputChannel: node.inputChannel ?? -1,
         inputChannelR: node.inputChannelR ?? -1,
     };
+    // Q20 monitoring is input setup — additive, present only when on
+    // (engine parity: track_templates::capture).
+    if (node.monitor) tpl.monitor = true;
+    return tpl;
 }
 
 /** Engine parity: track_templates::countClips. */
@@ -72,6 +76,7 @@ function build(tpl) {
         base.inputChannel = tpl.inputChannel ?? -1;
         base.inputChannelR = tpl.inputChannelR ?? -1;
         base.channels = base.inputChannelR >= 0 ? 2 : 1;
+        base.monitor = !!tpl.monitor;
     }
     return base;
 }

@@ -43,18 +43,16 @@ juce::var effectsBlob(const AudioNode& node) {
   return node.fxChain()->getMetadata(/*include_persistent_state=*/true);
 }
 
-void writeClipWav(const ClipNode& clip, int64_t duration,
-                  const juce::File& audioDir, bool incremental) {
-  const auto& buf = clip.getAudioBuffer();
-  // Content base (Q13 lock-collapse): save the COMMITTED content —
-  // [base, base + duration). A collapsed take saves as the perfect
-  // window; the cut material is undo-only state, not session state.
-  const int64_t base = clip.getContentBase();
+/** One take's WAV: the COMMITTED content [base, base + duration) of
+ * `buf` (Q13 lock-collapse: a collapsed take saves as the perfect
+ * window; the cut material is undo-only state, not session state). */
+void writeTakeWav(const juce::AudioBuffer<float>& buf, int64_t base,
+                  int64_t duration, double sample_rate, const juce::File& file,
+                  bool incremental) {
   const int n =
       (int)std::min<int64_t>(duration, (int64_t)buf.getNumSamples() - base);
   if (n <= 0) return;
-  audioDir.createDirectory();
-  auto file = audioDir.getChildFile(clip.getUuid() + ".wav");
+  file.getParentDirectory().createDirectory();
   if (incremental && file.existsAsFile()) {
     // Committed audio is immutable; a matching length means current.
     // Duration changes (lock-collapse / uncollapse) mismatch → rewrite.
@@ -71,11 +69,81 @@ void writeClipWav(const ClipNode& clip, int64_t duration,
   // 32-bit float: lossless round-trip of the recorded buffer. Channel
   // count follows the content (stereo takes save as stereo WAVs).
   std::unique_ptr<juce::AudioFormatWriter> writer(fmt.createWriterFor(
-      stream.get(), clip.getSampleRate(),
-      (unsigned int)std::max(1, buf.getNumChannels()), 32, {}, 0));
+      stream.get(), sample_rate, (unsigned int)std::max(1, buf.getNumChannels()),
+      32, {}, 0));
   if (!writer) return;
   stream.release();  // the writer owns the stream now
   writer->writeFromAudioSampleBuffer(buf, (int)base, n);
+}
+
+/** Take k's file (docs/takes.md): take 0 keeps `<uuid>.wav`, later
+ * takes are `<uuid>.take<k>.wav`. */
+juce::File takeFile(const juce::File& audioDir, const juce::String& uuid,
+                    int k) {
+  return audioDir.getChildFile(
+      k == 0 ? uuid + ".wav" : uuid + ".take" + juce::String(k) + ".wav");
+}
+
+/** Every take of the clip. The incremental probe judges by length,
+ * which every take of a slot shares — so a renumbered list (a delete)
+ * rewrites all of them (takeFilesDirty) and files past the count go. */
+void writeClipWavs(const ClipNode& clip, int64_t duration,
+                   const juce::File& audioDir, bool incremental) {
+  const int64_t base = clip.getContentBase();
+  const int count = clip.takeCount();
+  const bool force = clip.takeFilesDirty();
+  for (int k = 0; k < count; ++k) {
+    const juce::AudioBuffer<float>* buf = clip.takeBuffer(k);
+    if (buf == nullptr) continue;
+    writeTakeWav(*buf, base, duration, clip.getSampleRate(),
+                 takeFile(audioDir, clip.getUuid(), k), incremental && !force);
+  }
+  for (int k = std::max(1, count); k < ClipNode::kMaxTakes; ++k) {
+    const juce::File stale = takeFile(audioDir, clip.getUuid(), k);
+    if (stale.existsAsFile()) stale.deleteFile();
+  }
+  clip.markTakeFilesWritten();
+}
+
+/** A MIDI take's events as [[num, den, byte...], ...] — positions as
+ * QTime on the island exchange rate, base-relative, inside the
+ * committed span. */
+juce::var midiEventsVar(const MidiSequence& seq, int64_t base,
+                        int64_t duration, int64_t q) {
+  juce::Array<juce::var> events;
+  for (const MidiEvent& e : seq.snapshot()) {
+    const int64_t rel = e.pos - base;
+    if (rel < 0 || rel >= duration) continue;
+    const timing::QTime pos = timing::fromSamples(rel, q);
+    juce::Array<juce::var> ev;
+    ev.add((double)pos.num);
+    ev.add((double)pos.den);
+    for (int k = 0; k < (int)e.size; ++k) ev.add((int)e.bytes[k]);
+    events.add(ev);
+  }
+  return events;
+}
+
+/** The inverse of midiEventsVar: content positions in samples. */
+std::vector<MidiEvent> parseMidiEvents(const juce::var& v, int64_t q) {
+  std::vector<MidiEvent> events;
+  if (auto* arr = v.getArray()) {
+    events.reserve((size_t)arr->size());
+    for (const auto& ev : *arr) {
+      auto* fields = ev.getArray();
+      if (!fields || fields->size() < 3) continue;
+      MidiEvent e;
+      e.pos = timing::toSamples(timing::qtime((int64_t)(double)(*fields)[0],
+                                              (int64_t)(double)(*fields)[1]),
+                                q);
+      const int size = std::min(3, fields->size() - 2);
+      e.size = (juce::uint8)size;
+      for (int k = 0; k < size; ++k)
+        e.bytes[k] = (juce::uint8)(int)(*fields)[k + 2];
+      events.push_back(e);
+    }
+  }
+  return events;
 }
 
 bool readClipWav(const juce::File& file, juce::AudioBuffer<float>& out) {
@@ -143,6 +211,9 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     const int64_t duration = node.duration_samples.load();
     o->setProperty("inputChannel", clip.getInputChannel());
     o->setProperty("inputChannelR", clip.getInputChannelRight());
+    // Software input monitoring (Q20) — additive: absent = off. Input
+    // setup like the channels, so templates keep it.
+    if (clip.isMonitoring()) o->setProperty("monitor", true);
     // origin as an OFFSET FROM EPOCH, period, contextCycle — all musical.
     // Templates strip performances: the clip persists as a named, wired,
     // EMPTY track (docs/projects.md).
@@ -162,22 +233,38 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     const bool hasAudio = sDur > 0 && !isMidi;
     const bool hasMidi = sDur > 0 && isMidi;
     o->setProperty("hasAudio", hasAudio);
-    if (hasAudio) writeClipWav(clip, duration, audioDir, opts.incremental);
+    if (hasAudio) writeClipWavs(clip, duration, audioDir, opts.incremental);
     if (isMidi) o->setProperty("contentKind", "midi");
+    const int64_t base = clip.getContentBase();
     if (hasMidi) {
-      juce::Array<juce::var> events;
-      const int64_t base = clip.getContentBase();
-      for (const MidiEvent& e : clip.midiSequence().snapshot()) {
-        const int64_t rel = e.pos - base;
-        if (rel < 0 || rel >= duration) continue;
-        const timing::QTime pos = timing::fromSamples(rel, q);
-        juce::Array<juce::var> ev;
-        ev.add((double)pos.num);
-        ev.add((double)pos.den);
-        for (int k = 0; k < (int)e.size; ++k) ev.add((int)e.bytes[k]);
-        events.add(ev);
+      o->setProperty("midi",
+                     midiEventsVar(clip.midiSequence(), base, duration, q));
+    }
+    // The take list (docs/takes.md) — additive keys: absent = one take,
+    // no comp. Take k's audio is `<uuid>.take<k>.wav` (take 0 keeps
+    // `<uuid>.wav`); MIDI takes ride inline as `midiTakes[k]` (`midi`
+    // stays the active one's). The comp names one take per Q cell.
+    const int take_count = sDur > 0 ? clip.takeCount() : 0;
+    if (take_count > 1) {
+      o->setProperty("takes", take_count);
+      o->setProperty("activeTake", clip.activeTake());
+      if (hasMidi) {
+        juce::Array<juce::var> midi_takes;
+        for (int k = 0; k < take_count; ++k) {
+          const MidiSequence* seq = clip.takeMidi(k);
+          midi_takes.add(seq ? midiEventsVar(*seq, base, duration, q)
+                             : juce::var(juce::Array<juce::var>()));
+        }
+        o->setProperty("midiTakes", midi_takes);
       }
-      o->setProperty("midi", events);
+    }
+    if (const std::vector<int> cells = clip.compCells();
+        sDur > 0 && !cells.empty()) {
+      juce::Array<juce::var> comp;
+      for (const int c : cells) comp.add(c);
+      o->setProperty("comp", comp);
+      o->setProperty("compCellQ",
+                     qvar(timing::fromSamples(clip.compCellLength(), q)));
     }
   } else {
     const auto& stack = static_cast<const StackNode&>(node);
@@ -303,35 +390,49 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     clip->setInputChannelRight(o->hasProperty("inputChannelR")
                                    ? (int)o->getProperty("inputChannelR")
                                    : -1);
+    // Absent key → false: monitoring is off unless saved on (Q20).
+    clip->setMonitoring((bool)o->getProperty("monitor"));
     clip->origin_samples.store(origin);
     clip->duration_samples.store(duration);
-    if ((bool)o->getProperty("hasAudio")) {
+    // The take list (docs/takes.md): absent keys = one take. Take 0
+    // loads as the active content, later takes append behind it, then
+    // the saved selection and comp apply.
+    const int take_count = std::max(1, (int)o->getProperty("takes"));
+    const bool hasAudio = (bool)o->getProperty("hasAudio");
+    const bool isMidi =
+        o->getProperty("contentKind").toString() == "midi" && duration > 0;
+    auto* midi_takes = o->getProperty("midiTakes").getArray();
+    if (hasAudio) {
       juce::AudioBuffer<float> audio;
-      if (readClipWav(audioDir.getChildFile(uuid + ".wav"), audio))
+      if (readClipWav(takeFile(audioDir, uuid, 0), audio))
         clip->loadCommitted(audio, ctx);
-    } else if (o->getProperty("contentKind").toString() == "midi" &&
-               duration > 0) {
+      for (int k = 1; k < take_count && k < ClipNode::kMaxTakes; ++k) {
+        juce::AudioBuffer<float> take_audio;
+        if (readClipWav(takeFile(audioDir, uuid, k), take_audio))
+          clip->appendLoadedTake(take_audio);
+      }
+    } else if (isMidi) {
       // MIDI take: [[num, den, byte...], ...] → content positions in
       // samples through the island exchange rate (Q-V4).
-      std::vector<MidiEvent> events;
-      if (auto* arr = o->getProperty("midi").getArray()) {
-        events.reserve((size_t)arr->size());
-        for (const auto& ev : *arr) {
-          auto* fields = ev.getArray();
-          if (!fields || fields->size() < 3) continue;
-          MidiEvent e;
-          e.pos = timing::toSamples(
-              timing::qtime((int64_t)(double)(*fields)[0],
-                            (int64_t)(double)(*fields)[1]),
-              q);
-          const int size = std::min(3, fields->size() - 2);
-          e.size = (juce::uint8)size;
-          for (int k = 0; k < size; ++k)
-            e.bytes[k] = (juce::uint8)(int)(*fields)[k + 2];
-          events.push_back(e);
-        }
+      const juce::var first = midi_takes != nullptr && midi_takes->size() > 0
+                                  ? (*midi_takes)[0]
+                                  : o->getProperty("midi");
+      clip->loadCommittedMidi(parseMidiEvents(first, q), ctx);
+      for (int k = 1; k < take_count && k < ClipNode::kMaxTakes; ++k) {
+        if (midi_takes == nullptr || k >= midi_takes->size()) break;
+        clip->appendLoadedMidiTake(parseMidiEvents((*midi_takes)[k], q));
       }
-      clip->loadCommittedMidi(std::move(events), ctx);
+    }
+    if (o->hasProperty("activeTake")) {
+      clip->selectTake((int)o->getProperty("activeTake"));
+    }
+    if (auto* comp = o->getProperty("comp").getArray();
+        comp != nullptr && !comp->isEmpty()) {
+      std::vector<int> cells;
+      for (const auto& c : *comp) cells.push_back((int)c);
+      const int64_t cell_len =
+          timing::toSamples(qread(o->getProperty("compCellQ")), q);
+      if (cell_len > 0) clip->setCompCells(cells, cell_len);
     }
     node = std::move(clip);
   }
@@ -414,7 +515,8 @@ void applyEffects(AudioNode& node, const juce::var& blob,
           o->getProperty("uid").toString(),
           o->getProperty("name").toString(),
           o->getProperty("file").toString(), state,
-          (bool)o->getProperty("isInstrument"));
+          (bool)o->getProperty("isInstrument"),
+          o->getProperty("format").toString());  // absent = VST3
       slot->enabled.store((bool)o->getProperty("enabled"));
     } else {
       slot = dsp::FxChain::makeBuiltIn(type);
@@ -461,6 +563,10 @@ bool save(const StackNode& root, double device_sample_rate,
   top->setProperty("qSamples", (double)q);
   top->setProperty("epoch", (double)epoch);
   top->setProperty("rootMuted", (bool)root.is_muted.load());
+  // The root's output stage (the master fader / balance) is bundle-level
+  // like its mute and rack: the root is not in `nodes`.
+  top->setProperty("rootGain", (double)root.gain.load());
+  top->setProperty("rootPan", (double)root.pan.load());
   top->setProperty("rootEffects", effectsBlob(root));
 
   juce::Array<juce::var> nodes;
@@ -487,6 +593,15 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
                         ? (double)o->getProperty("sampleRate")
                         : device_sample_rate;
   out.root_muted = (bool)o->getProperty("rootMuted");
+  // Absent = unity / center (bundles written before the master strip).
+  out.root_gain = o->hasProperty("rootGain")
+                      ? (float)juce::jlimit(0.0, 1.0,
+                                            (double)o->getProperty("rootGain"))
+                      : 1.0f;
+  out.root_pan = o->hasProperty("rootPan")
+                     ? (float)juce::jlimit(-1.0, 1.0,
+                                           (double)o->getProperty("rootPan"))
+                     : 0.0f;
   out.root_effects = o->getProperty("rootEffects");
   out.display_name = o->getProperty("name").toString();
   out.created = o->getProperty("created").toString();

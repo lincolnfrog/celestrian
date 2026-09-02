@@ -1111,9 +1111,12 @@ test.describe('Session shell (mock mode)', () => {
             await mockQ(page));
         await armBtn.click();
 
-        // The take commits: one solid rep, rail shows a period, ● disables
+        // The take commits: one solid rep, rail shows a period; ● stays
+        // live but means NEW TAKE now (arm targets emptiness, Q7 — a
+        // plain arm on content is refused; docs/takes.md §2)
         await expect(clipLane.locator('.rep:not(.ghost)')).toHaveCount(1);
-        await expect(armBtn).toBeDisabled(); // arm targets emptiness (Q7)
+        await expect(armBtn).toBeEnabled();
+        await expect(armBtn).toHaveAttribute('title', /new take/i);
     });
 
     test('DRUM FLOW: group ● records all empty tracks, full ones play (Q7)', async ({ page }) => {
@@ -1161,11 +1164,13 @@ test.describe('Session shell (mock mode)', () => {
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(2);
 
         // Arm targets EMPTINESS: with every track full, the group's ●
-        // has nothing to record and disables. (The old global-● verb
-        // "record into a fresh track" left with the global button —
+        // has nothing to RECORD — it is a NEW TAKE of the group's
+        // committed clips instead (docs/takes.md §2). (The old global-●
+        // verb "record into a fresh track" left with the global button —
         // owner ruling 2026-07-19h; adding the track is now explicit.)
         const groupArm = page.locator('.lane[data-kind="group"] .arm-btn').first();
-        await expect(groupArm).toBeDisabled();
+        await expect(groupArm).toBeEnabled();
+        await expect(groupArm).toHaveAttribute('title', /new take/i);
 
         // The modern flow: ＋ Add track → menu default (Q17), then ITS ●.
         await addDefaultTrack(page, '.lane-add .add-track-row-btn');

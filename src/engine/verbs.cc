@@ -203,7 +203,7 @@ void AudioEngine::moveChainSlot(const juce::String& uuid,
   record(std::move(e));
 }
 
-void AudioEngine::addVst3SlotToChain(
+void AudioEngine::addPluginSlotToChain(
     const juce::String& uuid, std::shared_ptr<celestrian::dsp::FxSlot> slot,
     int index) {
   if (slot == nullptr) return;
@@ -284,7 +284,7 @@ void AudioEngine::reviveVst3Slot(
   auto live = std::make_shared<celestrian::dsp::Vst3Slot>(
       std::move(instance), placeholder->pluginUid(),
       placeholder->displayName(), placeholder->fileOrIdentifier(),
-      placeholder->isInstrument());
+      placeholder->isInstrument(), placeholder->pluginFormat());
   live->setSlotUuid(placeholder->slotUuid());
   double sample_rate = cached_sample_rate_.load();
   if (sample_rate <= 0) sample_rate = kFallbackSampleRate;
@@ -317,6 +317,15 @@ void AudioEngine::setMidiArmed(const juce::String& uuid, bool on) {
     prepareEffects(*node);
     node->midi_armed.store(true);
     juce::Logger::writeToLog("AudioEngine: MIDI armed on " + uuid);
+  }
+}
+
+void AudioEngine::setMonitor(const juce::String& uuid, bool on) {
+  // A monitoring gesture (Q20), not an edit event: the atomic flips
+  // and the next block renders the input (or stops).
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
+          findNodeByUuid(root_node.get(), uuid))) {
+    clip->setMonitoring(on);
   }
 }
 

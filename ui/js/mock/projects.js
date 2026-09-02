@@ -39,7 +39,22 @@ const mockProjects = {
     recents: [],                  // [{id, name, path}]
     templates: [{ id: 'My Rig', name: 'My Rig', path: '/templates/My Rig' }],
     serial: 0,
+    // The base folder (engine parity ProjectManager::baseFolder): the
+    // projects root and the track-template library live under it.
+    base: '/Users/mock/Music/Celestrian',
 };
+
+/** The path the dialog verb picks in place of a chosen folder. */
+export const CHOSEN_ROOT = '/Volumes/Studio/Celestrian';
+
+/** The library folders the info publishes (engine parity: the
+ * projects root and the track-template library under the base). */
+function libraryFolders() {
+    return {
+        projectsRoot: mockProjects.base + '/Projects',
+        trackTemplatesRoot: mockProjects.base + '/TrackTemplates',
+    };
+}
 
 function projectDateId() {
     const d = new Date();
@@ -57,7 +72,24 @@ export function getProjectInfo() {
         mockProjects.recents.unshift({ id, name: id, path: '/projects/' + id });
         console.log('[MockBackend] Project born:', id);
     }
-    return JSON.stringify(mockProjects.current);
+    return JSON.stringify({ ...mockProjects.current, ...libraryFolders() });
+}
+
+/** Preferences: choose the base folder (engine parity
+ * ProjectManager::setBase — persisted there; in memory here). An empty
+ * path is refused. */
+export function setProjectsRoot(path) {
+    const p = String(path || '').trim();
+    if (!p) return false;
+    mockProjects.base = p.replace(/\/+$/, '');
+    console.log('[MockBackend] projects root →', mockProjects.base);
+    return true;
+}
+
+/** The dialog twin: "picks" CHOSEN_ROOT and answers it. */
+export function chooseProjectsRoot() {
+    setProjectsRoot(CHOSEN_ROOT);
+    return CHOSEN_ROOT;
 }
 
 export function renameProject(name) {

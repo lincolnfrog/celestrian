@@ -103,16 +103,6 @@ inline int64_t launchPointFor(int64_t origin, int64_t duration) {
 }
 
 /**
- * Normalized playhead position (0..1) for a clip, given the master transport
- * position and the clip's launch offset.
- */
-inline double playheadPercent(int64_t master_pos, int64_t launch_point,
-                              int64_t duration) {
-  if (duration <= 0) return 0.0;
-  return (double)((master_pos + launch_point) % duration) / (double)duration;
-}
-
-/**
  * The boundary at which a stop request is honored: the next clean multiple of
  * Q, or — for short recordings (L < Q/2) — the smallest subdivision of Q that
  * is still ahead of the recorded length.

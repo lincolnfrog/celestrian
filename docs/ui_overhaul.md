@@ -66,6 +66,20 @@ empty husks) while a single active island pays nothing for it.
   full ones; re-recording content is the takes feature. The rail's arm
   control on a group shows aggregate state over armable children
   (all / some / none) and disables when nothing is armable.
+- **Takes ride the record button (B4, docs/takes.md §6).** With nothing
+  empty beneath, ● on a committed clip — or on a group whose committed
+  direct clips exist — is a NEW TAKE (`newTake`; the ring carries a
+  dot): the lane keeps its tiles dimmed and `silent` under the live bar
+  while the slot renders silence, and ● again cancels. The rail head
+  carries the take chip `T<active>/<n>` (quiet with one take), which
+  opens the take list under the rail — per-take mini waveforms, ✓ on
+  the active row, click selects, × deletes (never the last), a `comp`
+  row. Comp mode is view state like the window editor: one band per Q
+  cell over the take tile in the cut-band grammar, badge `T<k>` or `·`,
+  a click cycles the cell and commits ONE `setComp` (⌘Z per click);
+  cells naming another take tint in that take's hue with its waveform
+  slice drawn over, at rest too. Escape closes the list (PANEL scope)
+  and leaves comp mode; the comp stays.
 - **Stacks are folds.** A group is a header (composite) lane plus
   indented child lanes; the chevron folds children away and the
   composite never moves. Sound-neutral by construction (I6b).
@@ -137,6 +151,30 @@ empty husks) while a single active island pays nothing for it.
   when the content really left. Client-side over the published bins;
   null polls are identity; a bin-count change reseeds. Bars = the
   moment, cream line = the song, tape curve = your EQ.
+- **The master strip lives in the transport bar** (B5). The root stack
+  IS the master bus — every node carries gate → fx → gain·pan
+  (composition.md §1), the root included — so the strip is the root's
+  output stage made visible: `#master-monitor` holds the two VU faces
+  (`#vu-l`/`#vu-r`), the vertical `#master-fader`, and the `#master-fx-btn`
+  chip. The METER is the post-fader master reading: the engine meters
+  the device buffers after `root_node->process` (audio_callback.cc), i.e.
+  after the root's gain·pan and rack, through an envelope follower
+  (~15 ms attack / ~400 ms release); each face carries a peak-hold tick
+  (parked ~1.5 s at the highest needle angle, then falling) and a clip
+  lamp that breathes above −3 dB and LATCHES solid when the follower
+  reads full scale — click the face to release it (vu_meter.js
+  `meterStep`, unit-pinned). The FADER is the root's `gain` through the
+  same `setNodeGain(rootId, v)` verb the rail dials use — attenuate-only
+  (unity is the ceiling, the no-boost law), double-click for unity, not
+  undoable like every mixer knob; it is a fader rather than a dial
+  because the master is a fader on every real deck. The FX chip opens
+  the root's rack as the FIRST row of the session — the identical
+  synthetic fx row a group rail's chip opens, keyed `fx:<rootId>` — so a
+  master reverb or compressor is one click; the chip shows the enabled
+  count at rest. `rootGain` / `rootFxCount` ride the view model beside
+  `rootId`. Persistence is bundle-level like the root's mute and rack:
+  `rootGain` / `rootPan` in session.json (absent = unity / center;
+  session_io_tests).
 
 ## 3. Visual language (Tape Room tokens)
 

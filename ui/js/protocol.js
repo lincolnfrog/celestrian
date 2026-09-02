@@ -33,7 +33,23 @@ export const BRIDGE_METHODS = [
 
     // State
     { name: 'getGraphState', params: [], returns: 'GraphState (focused node metadata tree + isPlaying/masterPos/masterVuL/masterVuR; per-node isSoloed since Q16)' },
-    { name: 'getWaveform', params: ['uuid', 'numPeaks'], returns: 'float[] peaks' },
+    { name: 'getWaveform', params: ['uuid', 'numPeaks'], returns: 'float[] peaks (the ACTIVE take)' },
+
+    // Takes and comping (docs/takes.md): a committed clip holds N takes
+    // sharing its one origin/period. newTake arms a further take of a
+    // committed clip (or of every committed direct child of a stack,
+    // one performance) at the slot's next top, captures exactly one
+    // period and auto-finishes; a stop before that cancels it. Take
+    // commits ride the take undo entry (undo restores the previous
+    // active take). Selection, deletion and the comp are UNDOABLE and
+    // refused mid-take. State publishes `takes`, `activeTake`, `comp`.
+    { name: 'newTake', params: ['uuid'] },
+    { name: 'selectTake', params: ['uuid', 'index'] },
+    { name: 'deleteTake', params: ['uuid', 'index'] },
+    // cells = one take index per Q cell of the period (−1 = active);
+    // [] clears. Audio clips only.
+    { name: 'setComp', params: ['uuid', 'cells'] },
+    { name: 'getTakeWaveform', params: ['uuid', 'index', 'numPeaks'], returns: 'float[] peaks of take `index`' },
     { name: 'dumpStateToFile', params: ['json'] },
 
     // Graph structure
@@ -56,11 +72,50 @@ export const BRIDGE_METHODS = [
     { name: 'saveSession', params: ['path?'], returns: 'true on success' },
     { name: 'loadSession', params: ['path?'], returns: 'true on success' },
 
+    // Bounce (design_language.md Q19, docs/bounce.md): render a node
+    // OFFLINE through the real render path to a stereo float WAV at
+    // the device rate — the island root for one effective cycle (the
+    // song), any other node for one effective period — with effect
+    // tails ringing past the end. Refused (false) while a take is
+    // live or armed, or when the node has no committed content.
+    // bounceWithDialog picks the path natively (default <node>.wav in
+    // the project folder); false when cancelled.
+    { name: 'bounce', params: ['uuid', 'path'], returns: 'true on success' },
+    { name: 'bounceWithDialog', params: ['uuid'], returns: 'true on success' },
+
+    // Audio file import (docs/import.md): a WAV/AIFF/FLAC becomes a
+    // committed take. `atQ` is a QTime [num, den] in the epoch frame
+    // (the drop's lane position); the import lands on the nearest Q
+    // boundary. An EMPTY clip (or a stack, which gains a clip child
+    // named after the file) takes a first take with the record path's
+    // hysteresis snap — establishing Q on a pre-Q island; a COMMITTED
+    // clip takes a NEW TAKE cut or zero-padded to its period. Undoable
+    // (rides Take/Untake). Refused (false) under a live take, on a
+    // MIDI track, or for an unreadable file. importAudioWithDialog
+    // picks the file natively (WAV/AIFF/FLAC); false when cancelled.
+    { name: 'importAudio', params: ['uuid', 'path', 'atQ'], returns: 'true on success' },
+    { name: 'importAudioWithDialog', params: ['uuid', 'atQ'], returns: 'true on success' },
+
+    // MIDI lane rendering (docs/vst3.md §11): a MIDI clip's notes,
+    // note-on/off PAIRED (an unpaired note-on runs to the take end),
+    // content positions as QTime on the island rate — fetched on demand
+    // like waveforms and cached by the UI on `midiEvents` + the active
+    // take. Empty for an audio clip or while a take is live on it.
+    { name: 'getMidiNotes', params: ['uuid'], returns: '[[posQnum, posQden, note, velocity, lenQnum, lenQden], ...]' },
+
     // The project model (docs/projects.md): a project is a FOLDER named
     // YYYYMMDD-NN (the ID — renames never move it), BORN at the first
     // committed take, continuously MIRRORED after. A template is a
-    // project with no performances (pre-Q by construction).
-    { name: 'getProjectInfo', params: [], returns: 'JSON {id, name, born}' },
+    // project with no performances (pre-Q by construction). The info
+    // carries the library folders the preferences panel shows: the
+    // projects root and the track-template library beneath it.
+    { name: 'getProjectInfo', params: [], returns: 'JSON {id, name, born, projectsRoot, trackTemplatesRoot}' },
+    // Preferences: the base folder (projects, templates, the track-
+    // template library) is a persisted choice — the audio device's
+    // discipline. chooseProjectsRoot picks it natively and answers the
+    // new path ("" when cancelled).
+    { name: 'setProjectsRoot', params: ['path'], returns: 'true on success' },
+    { name: 'chooseProjectsRoot', params: [], returns: 'the chosen path, or ""' },
     { name: 'renameProject', params: ['name'] },
     { name: 'saveProjectNow', params: [], returns: 'true on success' },
     { name: 'listTemplates', params: [], returns: 'JSON [{id, name, path}]' },
@@ -106,6 +161,13 @@ export const BRIDGE_METHODS = [
     // Right input of a stereo pair (−1 = mono). Channel count of a take
     // is fixed at arm; committed takes keep their recorded channels.
     { name: 'setNodeInputRight', params: ['uuid', 'channelIndex'] },
+    // Software input monitoring (design_language.md Q20): hear the
+    // clip's input through its own rack, gate, gain and pan — idle,
+    // armed or capturing — with no latency beyond the device round
+    // trip. Clips only; OFF by default; a monitoring gesture like solo
+    // (NOT undoable). Persisted + captured by track templates as input
+    // setup. State publishes as `monitor` per clip.
+    { name: 'setMonitor', params: ['uuid', 'on'] },
 
     // Mixer: pan/balance −1 (L) .. +1 (R). Balance law (center unity),
     // applied at render on clips and groups; NOT undoable (mixer knob —

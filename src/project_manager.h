@@ -38,6 +38,16 @@ class ProjectManager {
   juce::File projectsRoot() const;
   juce::File templatesRoot() const;
   void setRootForTest(const juce::File& base) { base_override_ = base; }
+  /** The base folder everything lives under (Projects/, Templates/,
+   * TrackTemplates/): ~/Music/Celestrian unless the user chose another
+   * in the preferences panel. */
+  juce::File baseFolder() const { return base(); }
+  /** Choose the base folder (the preferences panel). The choice
+   * persists to <app data>/Celestrian/projects_root.json — the audio
+   * device's discipline — and applies at once; the current project
+   * keeps mirroring to its own folder wherever it lives. False when the
+   * folder cannot be created. Message thread. */
+  bool setBase(const juce::File& dir);
 
   // --- state ---
   bool born() const { return folder_ != juce::File(); }
@@ -126,8 +136,15 @@ class ProjectManager {
   bool mirror(MirrorMode mode);
   void rememberLastTemplate(const juce::String& name);
 
+  /** Where the chosen base folder persists. */
+  static juce::File baseChoiceFile();
+
   AudioEngine& engine_;
   juce::File base_override_;
+  // The persisted choice, read once on first use (base() is called
+  // from every mirror tick). Empty = the default under ~/Music.
+  mutable juce::File chosen_base_;
+  mutable bool chosen_base_read_ = false;
   juce::File folder_;  // empty = unborn
   juce::String display_name_;
   juce::String created_;

@@ -46,8 +46,12 @@ bool isWorkerInvocation(const juce::StringArray& args) {
 }
 
 int probeFiles(const juce::StringArray& files, const juce::File& results) {
+  // The coordinator's formats, mirrored (docs/vst3.md §11).
   juce::AudioPluginFormatManager formats;
   formats.addFormat(new juce::VST3PluginFormat());
+#if JUCE_PLUGINHOST_AU && JUCE_MAC
+  formats.addFormat(new juce::AudioUnitPluginFormat());
+#endif
 
   juce::FileOutputStream out(results);
   if (out.failedToOpen()) return kUnreadableList;
