@@ -146,6 +146,13 @@ inline int64_t lcm(int64_t a, int64_t b) {
   return (int64_t)wide;
 }
 
+/** Positive modulo: `a mod m` in [0, m) for any sign of `a`; identity
+ * when `m <= 0` (no modulus). THE fold every cyclic phase uses —
+ * never hand-roll `((a % m) + m) % m`. */
+inline int64_t posMod(int64_t a, int64_t m) {
+  return m > 0 ? ((a % m) + m) % m : a;
+}
+
 namespace detail {
 /** Floor division for int128_t (C++ '/' truncates toward zero). */
 inline int64_t floordiv128(int128_t a, int128_t b) {

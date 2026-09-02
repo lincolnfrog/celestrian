@@ -6,8 +6,12 @@
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 /**
  * Recording through an active time-map (docs/time_maps.md phase 2).
@@ -48,13 +52,10 @@ class TimeMapRecordTests : public juce::UnitTest {
       stack.addChild(std::move(probe));
       stack.setLoopPoints(1000, 2000);  // window [1000, 2000), len 1000
 
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 16;
-      ctx.master_pos = 7500;
-      ctx.cycle_epoch = 7000;
-      ctx.island_pos = 7500;
-      stack.control(nullptr, 0, ctx);
+      NodeContext nc = contextFor(stack, 16, 7500);
+      nc.ctx.is_playing = true;
+      nc.ctx.cycle_epoch = 7000;
+      stack.control(nullptr, 0, nc.ctx);
 
       expect(p->called, "probe reached");
       expect(p->seen.map.active(), "map delivered active");
@@ -86,13 +87,10 @@ class TimeMapRecordTests : public juce::UnitTest {
       stack.setLoopPoints(1000, 2000);
       stack.setLoopWindowBypassed(true);
 
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 16;
-      ctx.master_pos = 7500;
-      ctx.cycle_epoch = 7000;
-      ctx.island_pos = 7500;
-      stack.control(nullptr, 0, ctx);
+      NodeContext nc = contextFor(stack, 16, 7500);
+      nc.ctx.is_playing = true;
+      nc.ctx.cycle_epoch = 7000;
+      stack.control(nullptr, 0, nc.ctx);
 
       expect(!p->seen.map.active(), "no map delivered");
       expectEquals(p->seen.map_count, 0, "map_count 0");
@@ -112,13 +110,9 @@ class TimeMapRecordTests : public juce::UnitTest {
       outer.addChild(std::move(inner));
       outer.setLoopPoints(1000, 2000);
 
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 16;
-      ctx.master_pos = 2500;
-      ctx.cycle_epoch = 0;
-      ctx.island_pos = 2500;
-      outer.control(nullptr, 0, ctx);
+      NodeContext nc = contextFor(outer, 16, 2500);  // cycle_epoch 0
+      nc.ctx.is_playing = true;
+      outer.control(nullptr, 0, nc.ctx);
 
       expectEquals(p->seen.map_count, 2,
                    "composed maps counted (recording refuses > 1)");
@@ -142,20 +136,18 @@ class TimeMapRecordTests : public juce::UnitTest {
     const float* ringPtrs[1] = {ring.data()};
 
     // Drive control in fixed blocks over [t, until) with the island
-    // facts a mapping-root graph would receive from the engine.
+    // facts a mapping-root graph receives from the engine (the root
+    // holds Q = 1000, epoch 0).
     auto driveControl = [&](StackNode& root, int64_t& t, int64_t until,
                             int block) {
+      NodeContext nc = contextFor(root, block);
       while (t < until) {
-        ProcessContext ctx;
-        ctx.num_samples = block;
+        nc.refresh();
+        ProcessContext& ctx = nc.ctx;
         ctx.is_playing = true;
         ctx.is_recording = true;
         ctx.master_pos = t;
         ctx.island_pos = t;
-        ctx.cycle_epoch = 0;
-        ctx.quantum = 1000;
-        ctx.island_epoch = 0;
-        ctx.island = &root;
         ctx.input_clock = t;
         ctx.prerecord_ring = ringPtrs;
         ctx.prerecord_ring_len = (int)ring.size();
@@ -247,18 +239,11 @@ class TimeMapRecordTests : public juce::UnitTest {
       // and identically on every pass (single-sample probes are
       // seam-exact even before the stage-5 block splitting).
       auto probeOut = [&](int64_t at) {
-        ProcessContext ctx;
-        ctx.num_samples = 1;
-        ctx.is_playing = true;
-        ctx.master_pos = at;
-        ctx.island_pos = at;
-        ctx.cycle_epoch = 0;
-        ctx.quantum = 1000;
-        ctx.island_epoch = 0;
-        ctx.island = &root;
+        NodeContext nc = contextFor(root, 1, at);
+        nc.ctx.is_playing = true;
         float out[1] = {0.0f};
         float* const outs[] = {out};
-        root.process(nullptr, outs, 0, 1, ctx);
+        root.process(nullptr, outs, 0, 1, nc.ctx);
         return out[0];
       };
       expectWithinAbsoluteError(probeOut(200), rampAt(2200), 1e-7f,
@@ -297,16 +282,9 @@ class TimeMapRecordTests : public juce::UnitTest {
           std::vector<float> out((size_t)n, 0.0f);
           float* outPtr = out.data();
           float* const outs[] = {outPtr};
-          ProcessContext ctx;
-          ctx.num_samples = n;
-          ctx.is_playing = true;
-          ctx.master_pos = t;
-          ctx.island_pos = t;
-          ctx.cycle_epoch = 0;
-          ctx.quantum = 1000;
-          ctx.island_epoch = 0;
-          ctx.island = &root;
-          root.process(nullptr, outs, 0, 1, ctx);
+          NodeContext nc = contextFor(root, n, t);
+          nc.ctx.is_playing = true;
+          root.process(nullptr, outs, 0, 1, nc.ctx);
           for (int i = 0; i < n; ++i) {
             const int64_t phase = (t + i) % 2000;
             const float expected = rampAt(2000 + phase);
@@ -404,9 +382,10 @@ class TimeMapRecordTests : public juce::UnitTest {
         "Through-map: multi-segment map folds segment-general "
         "(cells {Q1, Q3-Q5})");
     {
-      // Drive the CLIP directly with a crafted context — the phase-3
-      // editor doesn't exist yet, but the record path must already be
-      // segment-general (owner direction 2026-07-21).
+      // Drive the CLIP directly with a crafted context: the clip stands
+      // as its own island (no lifecycle events) and the test authors
+      // the map facts a mapping parent would deliver, plus Q = 1000 —
+      // the record path must be segment-general.
       ClipNode take("Take", 44100.0);
       timing::TimeMap cells;
       cells.n = 2;
@@ -417,24 +396,22 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       int64_t t = 2500;  // arm mid-Q inside the second segment's pass
       auto drive = [&](int64_t until) {
+        NodeContext nc = contextFor(take, 250);
+        ProcessContext& ctx = nc.ctx;
+        ctx.is_playing = true;
+        ctx.is_recording = true;
+        ctx.quantum = 1000;
+        ctx.map = cells;
+        ctx.map_heard_epoch = 0;
+        ctx.map_count = 1;
+        ctx.prerecord_ring = ringPtrs;
+        ctx.prerecord_ring_len = (int)ring.size();
+        ctx.prerecord_ring_channels = 1;
         while (t < until) {
-          ProcessContext ctx;
-          ctx.num_samples = 250;
-          ctx.is_playing = true;
-          ctx.is_recording = true;
           ctx.master_pos = t;  // (a real parent would deliver mapped time;
                                // the arm/capture math only uses island_pos)
           ctx.island_pos = t;
-          ctx.cycle_epoch = 0;
-          ctx.quantum = 1000;
-          ctx.island_epoch = 0;
-          ctx.map = cells;
-          ctx.map_heard_epoch = 0;
-          ctx.map_count = 1;
           ctx.input_clock = t;
-          ctx.prerecord_ring = ringPtrs;
-          ctx.prerecord_ring_len = (int)ring.size();
-          ctx.prerecord_ring_channels = 1;
           take.control(nullptr, 0, ctx);
           t += 250;
         }
@@ -659,7 +636,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       m.segs[1] = {2000, 3000};
       // Install (single-threaded test: inline delete of the old pointer
       // is fine — no audio thread).
-      delete s.exchangeMapOverride(new timing::TimeMap(m));
+      s.setMap(m);
       expect(s.isLoopWindowActive(), "override alone activates the map");
       expectEquals((juce::int64)s.getEffectivePeriod(), (juce::int64)2000,
                    "effective period = sum of segment lengths");
@@ -667,7 +644,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       // Bypass gates BOTH forms; the geometry survives underneath.
       s.setLoopWindowBypassed(true);
       expect(!s.activeTimeMap().active(), "bypass empties the map");
-      expect(s.mapOverride() != nullptr, "geometry survives bypass");
+      expect(s.hasSegmentMap(), "geometry survives bypass");
       s.setLoopWindowBypassed(false);
       expectEquals(s.activeTimeMap().n, 2, "un-bypass restores");
     }
@@ -1076,17 +1053,15 @@ class TimeMapRecordTests : public juce::UnitTest {
       cells.n = 2;
       cells.segs[0] = {250, 450};
       cells.segs[1] = {650, 850};
-      delete clip.exchangeMapOverride(new timing::TimeMap(cells));
+      clip.setMap(cells);
       clip.startPlayback();
 
       auto sampleAt = [&](int64_t t) {
         float out[1] = {0.0f};
         float* const outs[] = {out};
-        ProcessContext ctx;
-        ctx.num_samples = 1;
-        ctx.is_playing = true;
-        ctx.master_pos = t;
-        clip.process(nullptr, outs, 0, 1, ctx);
+        NodeContext nc = contextFor(clip, 1, t);
+        nc.ctx.is_playing = true;
+        clip.process(nullptr, outs, 0, 1, nc.ctx);
         return out[0];
       };
       const int64_t A = 100 + 250;  // origin + mapOffset(0)
@@ -1108,11 +1083,10 @@ class TimeMapRecordTests : public juce::UnitTest {
         std::vector<float> out((size_t)B, 0.0f);
         float* outPtr = out.data();
         float* const outs[] = {outPtr};
-        ProcessContext ctx;
-        ctx.num_samples = B;
-        ctx.is_playing = true;
-        ctx.master_pos = A + 150;  // crosses the seam at heard 200
-        clip.process(nullptr, outs, 0, 1, ctx);
+        // A block crossing the seam at heard 200.
+        NodeContext nc = contextFor(clip, B, A + 150);
+        nc.ctx.is_playing = true;
+        clip.process(nullptr, outs, 0, 1, nc.ctx);
         bool ok = true;
         for (int i = 0; i < B && ok; ++i) {
           const int64_t h = 150 + i;
@@ -1132,8 +1106,7 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // SPLICE COLLAPSE: the kept cells become the take; playback at
       // the same island moments is sample-identical.
-      auto old = clip.spliceToMap(cells);
-      delete clip.exchangeMapOverride(nullptr);
+      auto old = clip.spliceToMap(cells);  // geometry := the new full span
       expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)400,
                    "spliced duration = period");
       expectEquals((juce::int64)clip.origin_samples.load(), (juce::int64)350,
@@ -1147,7 +1120,7 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // UN-SPLICE: full material + map return; playback unchanged.
       auto displaced = clip.unspliceFromMap(std::move(old), 100, N, 0, N);
-      delete clip.exchangeMapOverride(new timing::TimeMap(cells));
+      clip.setMap(cells);
       expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)N,
                    "unspliced duration restored");
       expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,

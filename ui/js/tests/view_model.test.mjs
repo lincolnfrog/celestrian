@@ -247,12 +247,14 @@ test('nested group: composite period = children LCM; fold hides children', () =>
     assert.deepEqual(vm.lanes.map(l => l.depth), [0, 0, 1, 1, 1]);
     assert.equal(vm.lanes[4].groupId, grp.id);
 
-    grp.isExpanded = false;
-    const folded = deriveViewModel(state([clip(4), grp]));
+    // Fold is UI-local (I6b): the app shell's folded set, not a node
+    // field — the state is untouched.
+    const folded = deriveViewModel(state([clip(4), grp]),
+                                   { folded: new Set([grp.id]) });
     assert.equal(folded.lanes.length, 2); // folded: no children, no add row
     assert.equal(folded.lanes[1].folded, true);
-    // I6b is the engine's law; the VM's share of it: folding changes
-    // lane visibility only — cycle and geometry are identical.
+    // The VM's share of I6b: folding changes lane visibility only —
+    // cycle and geometry are identical.
     assert.equal(folded.cycleQ, vm.cycleQ);
     assert.deepEqual(folded.lanes[1].reps, g.reps);
 });

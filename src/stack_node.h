@@ -39,9 +39,9 @@ class GraphReclaimer {
  * it once per callback (ProcessContext.snap) and control()/render()
  * iterate its integer child indices — no locks. Removed nodes and
  * replaced snapshots go through the GraphReclaimer so an in-flight
- * callback never reads freed memory. Without a snapshot (single-threaded
- * unit tests driving nodes directly) process() falls back to the
- * ownership vector, which is race-free there by construction.
+ * callback never reads freed memory. There is no other traversal: a
+ * context without a snapshot is a contract violation (node-level tests
+ * build one through tests/test_utils.h NodeContext).
  */
 class StackNode : public AudioNode {
  public:
@@ -257,9 +257,15 @@ class StackNode : public AudioNode {
    * graph_snapshot.h).
    */
   int64_t getEffectivePeriod() const override;
+  /** THE message-thread effective-period fold (composition.md §3): the
+   * period `node` presents to its parent, with `skip` (and every
+   * one-shot) left out of the composition. getEffectivePeriod() is
+   * this with no skip; the audio thread uses snapEffectivePeriod. */
+  static int64_t effectivePeriodOf(const AudioNode& node,
+                                   const AudioNode* skip);
 
   // --- The SEQUENCE (docs/sequencer.md — the fractal sequencer) ---
-  // One atomic pointer, the map_override_/FxChain discipline: the
+  // One atomic pointer, the FxChain discipline: the
   // message thread swaps immutable Sequence objects (finalize()d) and
   // retires predecessors through the engine reclaimer; the audio
   // thread only loads. The bypass flag is the jam toggle (bypassed =
@@ -383,23 +389,22 @@ class StackNode : public AudioNode {
   bool inRest(const ProcessContext& context) const;
 
   /**
-   * Audio-thread child lookup, shared by both phase bodies: the
-   * whole-graph snapshot when the engine supplied one (index spans,
-   * structural consistency for the whole callback), else the ownership
-   * vector (the single-threaded node-level test path, race-free by
-   * construction). entryAt() is the child's snapshot entry index for
-   * ProcessContext.self (0 in the fallback, where `self` is unused).
+   * Audio-thread child lookup, shared by both phase bodies: this
+   * stack's child span in the whole-graph snapshot (index spans,
+   * structural consistency for the whole callback). entryAt() is the
+   * child's snapshot entry index — what ProcessContext.self carries
+   * down to it.
    */
   struct ChildView {
     const GraphSnapshot* snap;
     int self;
-    const std::vector<std::unique_ptr<AudioNode>>* owned;
     int count() const;
     int entryAt(int k) const;
     AudioNode* nodeAt(int k) const;
   };
   ChildView childView(const ProcessContext& context) const {
-    return {context.snap, context.self, &children};
+    jassert(context.snap != nullptr);  // the audio thread's only traversal
+    return {context.snap, context.self};
   }
 
   // Pre-split phase bodies (see control/render): each receives a
@@ -453,7 +458,7 @@ class StackNode : public AudioNode {
     const int64_t a0 = own_map.active() ? own_map.mapOffset(0) : 0;
     const int64_t fold = one_shot ? cycle : period;
     int64_t rel = context.master_pos - O - a0;
-    if (fold > 0) rel = ((rel % fold) + fold) % fold;
+    rel = timing::posMod(rel, fold);
     int done = 0;
     while (done < context.num_samples) {
       int64_t dist = context.num_samples - done;
@@ -503,7 +508,7 @@ class StackNode : public AudioNode {
   std::atomic<int64_t> epoch_samples_{0};
 
   // The sequence (docs/sequencer.md): immutable object behind ONE
-  // atomic pointer (map_override_ discipline — message thread swaps +
+  // atomic pointer (the FxChain discipline — message thread swaps +
   // reclaimer retirement; audio thread loads). The bypass flag gates
   // it exactly like loop_window_bypassed_ gates the map.
   std::atomic<const Sequence*> sequence_{nullptr};

@@ -27,6 +27,7 @@ import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
          trimBoundForPeriod, cutBounds, slideSegs } from '../map_edit.js';
 import { mapOffset } from '../time_map.js';
 import { posMod } from '../math_utils.js';
+import { DEBUG } from '../debug_flags.js';
 
 /* A cut/period length within this tolerance of a whole Q displays as
  * whole (and coherent); further off gets the ⚠ badge. */
@@ -182,14 +183,16 @@ function bandContentQ(st, body, clientX) {
 }
 
 /* Map-gesture flight recorder for flickers the mock cannot reproduce.
- * Ring of the last 400 gesture events — read `window.__mapDbg` in the
- * app's console after a repro. Also warns loudly when two renders under
- * a near-still pointer disagree on the pending segments (the flicker's
- * signature). */
-const mapDbgRing = (typeof window !== 'undefined')
-    ? (window.__mapDbg = []) : [];
+ * Exists only under `?debug=true` (debug_flags.js): a ring of the last
+ * 400 gesture events — read `window.__mapDbg` in the app's console
+ * after a repro. Also warns loudly when two renders under a near-still
+ * pointer disagree on the pending segments (the flicker's signature).
+ * Off, mapDbg is a no-op and `window.__mapDbg` is never defined. */
+const mapDbgRing = (DEBUG && typeof window !== 'undefined')
+    ? (window.__mapDbg = []) : null;
 let mapDbgPrev = null;
 function mapDbg(a, rec) {
+    if (!mapDbgRing) return;
     const e = Object.assign({ t: Math.round(performance.now()), a }, rec);
     mapDbgRing.push(e);
     if (mapDbgRing.length > 400) mapDbgRing.splice(0, mapDbgRing.length - 400);

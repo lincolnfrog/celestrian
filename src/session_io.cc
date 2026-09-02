@@ -123,13 +123,13 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
   // additive to the format (absent = single-window fallback). Stripped
   // with the window — a map is a fact about a performance.
   if (!opts.strip_performances) {
-    if (const auto* m = node.mapOverride()) {
+    if (const timing::TimeMap m = node.storedMap(); m.n >= 2) {
       juce::Array<juce::var> segs;
-      for (int i = 0; i < m->n; ++i) {
+      for (int i = 0; i < m.n; ++i) {
         auto* so = new juce::DynamicObject();
         so->setProperty("startQ",
-                        qvar(timing::fromSamples(m->segs[i].start, q)));
-        so->setProperty("endQ", qvar(timing::fromSamples(m->segs[i].end, q)));
+                        qvar(timing::fromSamples(m.segs[i].start, q)));
+        so->setProperty("endQ", qvar(timing::fromSamples(m.segs[i].end, q)));
         segs.add(juce::var(so));
       }
       o->setProperty("segmentsQ", segs);
@@ -181,8 +181,8 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     }
   } else {
     const auto& stack = static_cast<const StackNode&>(node);
-    o->setProperty("x", node.x_pos.load());
-    o->setProperty("y", node.y_pos.load());
+    // No view state is written (I6b): a session carries only musical
+    // facts. Loading ignores any view keys an older session carries.
     // THE STACK'S ORIGIN (Q18, composition.md §1) — additive: absent =
     // unanchored, and settleAnchors re-derives from content on load.
     // Stripped with performances like a clip's.
@@ -239,8 +239,6 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
   std::unique_ptr<AudioNode> node;
   if (type == "stack") {
     auto stack = std::make_unique<StackNode>(name);
-    stack->x_pos.store((double)o->getProperty("x"));
-    stack->y_pos.store((double)o->getProperty("y"));
     if (auto* kids = o->getProperty("nodes").getArray()) {
       for (const auto& c : *kids)
         if (auto ch = deserializeNode(c, q, epoch, sr, audioDir))
@@ -362,7 +360,7 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
           timing::toSamples(qread(sv.getProperty("startQ", {})), q),
           timing::toSamples(qread(sv.getProperty("endQ", {})), q)};
     }
-    delete node->exchangeMapOverride(new timing::TimeMap(m));
+    node->setMap(m);
   }
   node->setLoopWindowBypassed((bool)o->getProperty("loopBypassed"));
   if (auto* stack = dynamic_cast<StackNode*>(node.get());

@@ -422,8 +422,8 @@ class ClipNode : public AudioNode {
     s.base = content_base_.load();
     s.recorded = write_position.load();
     s.context_cycle = take_context_cycle_.load();
-    s.loop_start = loop_start_samples.load();
-    s.loop_end = loop_end_samples.load();
+    s.loop_start = getLoopStart();
+    s.loop_end = getLoopEnd();
     s.content_kind = content_kind_.load();
     s.cap_hit = cap_hit_.load();
     s.collapsed_from = collapsed_from_.load();

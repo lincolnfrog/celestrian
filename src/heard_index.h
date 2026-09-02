@@ -25,8 +25,10 @@
  */
 namespace celestrian::heard {
 
+/** timing::posMod, with "no modulus" reading as 0 (a fold with no
+ * period has no position). */
 inline int64_t posMod(int64_t a, int64_t m) {
-  return m > 0 ? ((a % m) + m) % m : 0;
+  return m > 0 ? timing::posMod(a, m) : 0;
 }
 
 /** A node's effective map: its active map, else its whole inner span

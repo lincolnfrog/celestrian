@@ -20,7 +20,7 @@ let undoStack = [];
 let redoStack = [];
 const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
-    'setNodePosition', 'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
+    'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
     'setSegments', 'setNodeInput', 'setNodeInputRight', 'setPeriodSource',
     // Chain STRUCTURE is undoable (docs/vst3.md §6); slot enable/params
     // stay non-undoable knobs like pan/gain.

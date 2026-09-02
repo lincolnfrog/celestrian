@@ -149,8 +149,8 @@ class TakeCapacityTests : public juce::UnitTest {
       clip.contentForTest().setSize(1, 3000, false, true, false);
       std::vector<float> in((size_t)BLOCK, 0.25f);
       float* ins[] = {in.data()};
-      ProcessContext ctx;
-      ctx.num_samples = BLOCK;
+      test_utils::NodeContext nc = test_utils::contextFor(clip, BLOCK);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
       for (int i = 0; i < 10 && clip.recState() != ClipNode::RecState::Idle;
            ++i) {

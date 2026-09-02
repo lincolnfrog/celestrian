@@ -21,10 +21,6 @@ export function createNode(type, parentId = null) {
         id: generateId(),
         name: type === 'clip' ? 'New Clip' : 'New Stack',
         type: type,
-        x: 0,
-        y: 0,
-        w: 200,
-        h: 100,
         duration: 0,
         isRecording: false,
         isPlaying: false,
@@ -39,10 +35,7 @@ export function createNode(type, parentId = null) {
         periodSource: 'own'
     };
 
-    if (type === 'stack') {
-        node.nodes = [];
-        node.isExpanded = true;
-    }
+    if (type === 'stack') node.nodes = [];
 
     // Add to parent or top-level
     if (parentId) {
@@ -163,18 +156,9 @@ export function reorderNode(nodeId, newParentId, newIndex) {
     settleAnchors();
 }
 
-export function setNodePosition(nodeId, x, y) {
-    const node = findNode(nodeId);
-    if (node) {
-        node.x = x;
-        node.y = y;
-        console.log('[MockBackend] Set position:', nodeId, 'to', x, y);
-    }
-}
-
 /**
  * Combine two nodes into a new stack.
- * Creates a new stack at the target's position, containing both nodes.
+ * Creates a new stack at the target's index, containing both nodes.
  */
 export function combineNodes(draggedId, targetId) {
     const draggedNode = findNode(draggedId);
@@ -202,11 +186,6 @@ export function combineNodes(draggedId, targetId) {
         id: `stack-${state.nextId++}`,
         name: 'Combined Stack',
         type: 'stack',
-        x: targetNode.x || 0,
-        y: targetNode.y || 0,
-        w: Math.max(targetNode.w || 400, draggedNode.w || 400),
-        h: 300,
-        isExpanded: true,
         // No fabricated Q: the island quantum is STORED state
         // (state.islandQ) — combining empty clips must not declare a
         // bogus Q here.
@@ -235,13 +214,13 @@ export function combineNodes(draggedId, targetId) {
 }
 
 /**
- * Shared flag flip behind the four toggle handlers: flips `node[key]`
- * and logs with the handler's label. `stackOnly` gates toggles that
- * only make sense on a stack (expand/collapse).
+ * Shared flag flip behind the toggle handlers: flips `node[key]` and
+ * logs with the handler's label. (Fold/expand is not among them —
+ * UI-local view state, I6b, never a bridge verb.)
  */
-function toggleNodeFlag(id, key, { label, stackOnly = false }) {
+function toggleNodeFlag(id, key, { label }) {
     const node = findNode(id);
-    if (!node || (stackOnly && node.type !== 'stack')) return;
+    if (!node) return;
     node[key] = !node[key];
     console.log(`[MockBackend] ${label}:`, id, '→', node[key]);
 }
@@ -260,10 +239,6 @@ export function toggleSolo(id) {
 
 export function toggleMute(id) {
     toggleNodeFlag(id, 'isMuted', { label: 'Toggle mute' });
-}
-
-export function toggleStackExpand(id) {
-    toggleNodeFlag(id, 'isExpanded', { label: 'Toggle expand', stackOnly: true });
 }
 
 export function setNodeInput(id, channelIndex) {

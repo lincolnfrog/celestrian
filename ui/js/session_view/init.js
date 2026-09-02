@@ -1,14 +1,14 @@
 /**
  * One-time wiring: bind the callback table, hook the transport /
- * creation / selection chrome, and install the single document-level
- * keyboard dispatcher (Escape, zoom, teleport — the four separate
- * keydown listeners of the pre-split file, merged so their ordering is
- * deterministic).
+ * creation / selection chrome, and register the session view's
+ * keyboard bindings (Escape, zoom, teleport, R) with the app-wide
+ * dispatcher in keys.js.
  */
 
 import { isGestureLive } from './gesture.js';
 import { initCtx, ctx } from './context.js';
-import { parseDropIds, isTypingTarget } from './sv_util.js';
+import { parseDropIds } from './sv_util.js';
+import { registerKey, SCOPE, ANY_MODIFIERS } from '../keys.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle, wireNavScroll } from './teleport.js';
@@ -78,43 +78,41 @@ export function initSessionView(callbacks) {
     wireKeyboard();
 }
 
-/** The unified keyboard dispatcher. Escape fires unconditionally
- * (clear selection, close the window editor, dismiss input menus —
- * matching the pre-split listeners' combined effect); the hotkeys
- * below it are gated on no-modifier and not-typing. */
+/** The view-scope bindings (keys.js). Escape fires under any modifier
+ * and while typing (clear selection, close the window editor, drop the
+ * audition, dismiss menus) unless a higher scope — an open status-strip
+ * panel — consumes it first; the hotkeys are no-modifier (Shift
+ * ignored: '+' and '{' carry it) and not-typing. */
 function wireKeyboard() {
-    document.addEventListener('keydown', e => {
-        if (e.key === 'Escape') {
-            // A live drag owns Escape (gesture.js cancels it in the
-            // capture phase and stops propagation; this guard is the
-            // belt to that suspender).
-            if (isGestureLive()) return;
-            clearSelection();
-            if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
-            // Esc drops any step audition (§11.3: "esc exits the loop").
-            if (ctx.cb.onEscapeAudition) ctx.cb.onEscapeAudition();
-            closeInputMenus();
-            closeCreationMenu();
-            return;
-        }
-        if (e.ctrlKey || e.metaKey || e.altKey) return;
-        if (isTypingTarget(e)) return;
-        // '=' is the unshifted '+' on ANSI layouts — accept both so the
-        // zoom hotkey works without holding Shift.
-        if (e.key === '+' || e.key === '=') zoomIn();
-        else if (e.key === '-' || e.key === '_') zoomOut();
-        // [ / ] walk the selected track's handles; { / } jump to the
-        // outer loop bounds (see teleport.js).
-        else if (e.key === '[') teleportToHandle(-1, false);
-        else if (e.key === ']') teleportToHandle(1, false);
-        else if (e.key === '{') teleportToHandle(-1, true);
-        else if (e.key === '}') teleportToHandle(1, true);
-        // R = the record key: press the selected track's (or group's) ●
-        // — a group cascades per Q7 (arm every empty member). While
-        // anything records, R stops it regardless of selection (the
-        // handler owns that logic; see app.js onRecordKey).
-        else if (e.key === 'r' || e.key === 'R') {
-            if (ctx.cb.onRecordKey) ctx.cb.onRecordKey(activeSelectedId());
-        }
+    const view = spec => registerKey({ scope: SCOPE.VIEW, ...spec });
+    view({ key: 'Escape', ignore: ANY_MODIFIERS, whileTyping: true, handler: () => {
+        // A live drag owns Escape (gesture.js cancels it in the
+        // capture phase and stops propagation; this guard is the
+        // belt to that suspender).
+        if (isGestureLive()) return;
+        clearSelection();
+        if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
+        // Esc drops any step audition (§11.3: "esc exits the loop").
+        if (ctx.cb.onEscapeAudition) ctx.cb.onEscapeAudition();
+        closeInputMenus();
+        closeCreationMenu();
+    } });
+    const hotkey = (key, handler) => view({ key, ignore: ['shift'], handler });
+    // '=' is the unshifted '+' on ANSI layouts — accept both so the
+    // zoom hotkey works without holding Shift.
+    hotkey(['+', '='], zoomIn);
+    hotkey(['-', '_'], zoomOut);
+    // [ / ] walk the selected track's handles; { / } jump to the
+    // outer loop bounds (see teleport.js).
+    hotkey('[', () => teleportToHandle(-1, false));
+    hotkey(']', () => teleportToHandle(1, false));
+    hotkey('{', () => teleportToHandle(-1, true));
+    hotkey('}', () => teleportToHandle(1, true));
+    // R = the record key: press the selected track's (or group's) ●
+    // — a group cascades per Q7 (arm every empty member). While
+    // anything records, R stops it regardless of selection (the
+    // handler owns that logic; see app.js onRecordKey).
+    hotkey('r', () => {
+        if (ctx.cb.onRecordKey) ctx.cb.onRecordKey(activeSelectedId());
     });
 }

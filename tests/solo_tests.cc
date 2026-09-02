@@ -16,8 +16,7 @@
  * Method: committed DC clips with DISTINCT amplitudes (0.1 / 0.2 /
  * 0.4) under two sibling stacks; the root's summed output at any
  * sample identifies exactly which subset sounded. Rendering runs the
- * production path — whole-graph snapshot + any_solo context flag —
- * and once through the no-snapshot parent-pointer fallback.
+ * production path — whole-graph snapshot + any_solo context flag.
  */
 
 #include <juce_core/juce_core.h>
@@ -33,6 +32,9 @@
 
 namespace celestrian {
 
+using test_utils::contextFor;
+using test_utils::NodeContext;
+
 namespace {
 
 /** A committed clip carrying a constant-amplitude take, already
@@ -42,11 +44,10 @@ std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
   auto clip = std::make_unique<ClipNode>(name, sr);
   std::vector<float> in((size_t)len, amp);
   float* const ins[] = {in.data()};
-  ProcessContext rec;
-  rec.num_samples = len;
-  rec.is_recording = true;
+  NodeContext rec = contextFor(*clip, len);
+  rec.ctx.is_recording = true;
   clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec);
+  clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
   clip->startPlayback();
   return clip;
@@ -80,25 +81,17 @@ class SoloTests : public juce::UnitTest {
     root.addChild(std::move(stackA));
     root.addChild(std::move(stackB));
 
-    std::unique_ptr<GraphSnapshot> snap(buildGraphSnapshot(root));
+    NodeContext nc = contextFor(root, N);
+    nc.ctx.is_playing = true;
 
     // Render the root through the production path: snapshot attached,
-    // any_solo scanned from the flags — exactly what the callback does.
-    auto rendered = [&](bool use_snapshot = true) {
+    // any_solo scanned from the flags at the block top — exactly what
+    // the callback does.
+    auto rendered = [&]() {
       std::vector<float> outL((size_t)N, 0.0f), outR((size_t)N, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = N;
-      play.is_playing = true;
-      if (use_snapshot) {
-        play.snap = snap.get();
-        play.self = 0;
-        play.any_solo = snapAnySolo(*snap);
-      } else {
-        play.any_solo = a1->is_soloed.load() || a2->is_soloed.load() ||
-                        b1->is_soloed.load() || A->is_soloed.load() ||
-                        root.is_soloed.load();
-      }
+      nc.refresh();
+      const ProcessContext& play = nc.ctx;
       // Two passes, read the second: solo edges FADE now (~10 ms, S7
       // smoothness law — sequencer.md §9; N = 441 = exactly one fade),
       // and these pins assert the SETTLED audibility resolution.
@@ -157,14 +150,6 @@ class SoloTests : public juce::UnitTest {
       a1->is_muted.store(true);
       near(rendered(), 0.0f, "soloed-but-muted a1 is silent; rest soloed out");
       a1->is_muted.store(false);
-    }
-
-    beginTest("no-snapshot fallback resolves the same ancestry");
-    {
-      clearSolos();
-      A->is_soloed.store(true);
-      near(rendered(false), 0.3f,
-           "parent-pointer walk (unit-test path) agrees with the snapshot");
       clearSolos();
     }
   }

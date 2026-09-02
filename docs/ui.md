@@ -50,7 +50,6 @@ while pending start.
 | `stopRecordingInNode` | uuid | Pure audio action |
 | `getGraphState` | none | Backend → Frontend data |
 | `getWaveform` | uuid, numPeaks | Audio data for visualization |
-| `toggleStackExpand` | uuid | UI state but persists across sessions |
 | `renameNode` | uuid, name | Pure data change |
 | `getInputList` | none | Hardware info |
 | `setNodeInput` | uuid, channelIndex | Audio config |
@@ -64,9 +63,8 @@ while pending start.
 
 | Operation | Status | Resolution |
 |-----------|--------|------------|
-| `createNode` | ✅ Fixed | Removed x,y params; child nodes append to parent. Top-level stacks use `setNodePosition` separately. |
+| `createNode` | ✅ Fixed | No x,y params; child nodes append to parent. (No node position exists in the engine since the session view.) |
 | `moveNode` | ✅ Fixed | Replaced with `reorderNode(nodeId, parentId, newIndex)` — frontend calculates index from drop position. |
-| `setNodePosition` | ✅ OK | Acceptable for top-level stacks (persistence-worthy visual state). |
 
 ---
 
@@ -79,7 +77,6 @@ controls.
 
 ## Notes on `setNodePosition`
 
-Acceptable for top-level stacks only (persistence-worthy visual
-state; never for clips within stacks, which are array-ordered).
-*(setNodePosition has no UI caller since the session view; removal
-pending.)*
+Gone (A5): no node x/y in the engine, protocol, or session — lane
+placement is a UI projection of `origin` (I6), fold state is UI-local
+(`ui/js/view_prefs.js`, I6b).

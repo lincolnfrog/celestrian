@@ -79,6 +79,9 @@ int64_t ClipNode::getEffectiveQuantum() const {
 
 void ClipNode::control(const float* const* input_channels,
                        int num_input_channels, const ProcessContext& context) {
+  // The island facts and the snapshot are this pass's only view of the
+  // graph (AudioNode::process states the contract).
+  jassert(context.snap != nullptr && context.island != nullptr);
   // A new block: last block's commit (if any) has been rendered-silent
   // once; playback proceeds from this block on.
   committed_this_block_.store(false);
@@ -112,11 +115,8 @@ void ClipNode::control(const float* const* input_channels,
     }
   }
   if (recState() == RecState::Capturing && stop_requested_.load()) {
-    // Island Q rides the context (no audio-thread parent walks); the
-    // walk is only the node-level unit-test fallback (single-threaded,
-    // race-free by construction).
-    const int64_t Q =
-        context.quantum > 0 ? context.quantum : getEffectiveQuantum();
+    // Island Q rides the context (no audio-thread parent walks).
+    const int64_t Q = context.quantum;
     if (Q > 0) {
       int64_t boundary = timing::nextStopBoundary(write_position.load(), Q);
       // Through-map: one map pass is the hard ceiling (ruling 2) — a
@@ -152,8 +152,7 @@ void ClipNode::control(const float* const* input_channels,
       // reaches it), else the buffer's extent.
       const int64_t cap = writableCapacity();
       const int64_t wp = write_position.load();
-      const int64_t Q =
-          context.quantum > 0 ? context.quantum : getEffectiveQuantum();
+      const int64_t Q = context.quantum;
       if (Q > 0) {
         if (cap - wp <= Q + 8192) {  // next boundary must still fit
           stop_requested_.store(true);
@@ -425,27 +424,16 @@ bool ClipNode::isSilencedThisBlock(const ProcessContext& context) const {
     // island, a leaf sounds iff it — or an ancestor — is soloed
     // (additive: every lit path sounds; fractal: a soloed group covers
     // its subtree). Index walk over the whole-graph snapshot — the
-    // audio thread never chases parent pointers. The pointer walk is
-    // only the unit-test fallback. Mute wins
-    // over solo (the container rule pinned in output_stage_tests).
-    if (context.snap) {
-      silenced = !snapIsUnderSolo(*context.snap, context.self);
-    } else {
-      const celestrian::AudioNode* curr = this;
-      while (curr != nullptr) {
-        if (curr->is_soloed.load()) {
-          silenced = false;
-          break;
-        }
-        curr = curr->getParent();
-      }
-    }
+    // audio thread never chases parent pointers. Mute wins over solo
+    // (the container rule pinned in output_stage_tests).
+    silenced = !snapIsUnderSolo(*context.snap, context.self);
   }
   return silenced;
 }
 
 void ClipNode::render(float* const* output_channels, int num_output_channels,
                       const ProcessContext& context) const {
+  jassert(context.snap != nullptr && context.island != nullptr);
   // A MIDI clip (phase 5) renders notes through its instrument — the
   // same kernel equation over a note sequence; one path handles
   // content, live play-through, and tails.
@@ -857,11 +845,9 @@ void ClipNode::renderMidi(float* const* output_channels,
 
 void ClipNode::armEvaluate(const ProcessContext& context) {
   // Island facts ride the context: quantum, invariant epoch, and the
-  // island root itself — no audio-thread parent walks. The walks are
-  // only the node-level unit-test fallback.
-  const int64_t Q =
-      context.quantum > 0 ? context.quantum : getEffectiveQuantum();
-  celestrian::AudioNode* island = context.island ? context.island : rootNode();
+  // island root itself — no audio-thread parent walks.
+  const int64_t Q = context.quantum;
+  celestrian::AudioNode* island = context.island;
 
   // Latency compensation: the performer plays against what they HEARD
   // (delayed by output latency); it reaches the software input latency
@@ -923,7 +909,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     if (reached) {
       // Freeze the take's map facts before capture begins.
       take_map_ = context.map;
-      map_anchor_off_ = ((t_rel % period) + period) % period;
+      map_anchor_off_ = timing::posMod(t_rel, period);
       through_map_capture_ = true;
       beginCapture(context, heard_target, heard);
       RtLog::instance().post(
@@ -938,8 +924,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // absolute-frame math with the epoch-rebased view anchors a take
   // whole cycles off. The INVARIANT epoch rides the context
   // (cycle_epoch gets re-based by windowed stacks; this one never is).
-  const int64_t epoch =
-      context.island ? context.island_epoch : getIslandEpoch();
+  const int64_t epoch = context.island_epoch;
 
   // Context loop = the loop the performer was listening to: longest
   // committed sibling, min Q — computed by the PARENT and passed down
@@ -1011,7 +996,7 @@ void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
   // take-marking folds by this — "which heard cycle" never matters, the
   // phase within it always does (Q14) — making the mark stable across
   // later frame growth and epoch re-bases.
-  celestrian::AudioNode* island = context.island ? context.island : rootNode();
+  celestrian::AudioNode* island = context.island;
   const int64_t heard = island->activeTakeHeardCycle();
   take_context_cycle_.store(heard > 0 ? heard
                                       : island->activeTakeIntrinsicCycle());
@@ -1201,13 +1186,14 @@ void ClipNode::commitRecording(int64_t final_duration,
     stop_requested_.store(false);
     awaiting_stop_at.store(0);
 
-    // Commit fires on the AUDIO thread (from process) with the context,
-    // or on the message thread (first-clip immediate stop) without one
-    // — the parent walks below are the message/unit-test path only.
-    celestrian::AudioNode* island =
-        ctx && ctx->island ? ctx->island : rootNode();
+    // Commit fires on the AUDIO thread (from control) with the context,
+    // whose island facts are the only ones it reads — or on the MESSAGE
+    // thread (first-clip immediate stop) without one, where the parent
+    // walks are legitimate.
+    jassert(ctx == nullptr || (ctx->snap != nullptr && ctx->island != nullptr));
+    celestrian::AudioNode* island = ctx ? ctx->island : rootNode();
     int64_t L = (int64_t)write_position.load();
-    int64_t Q = ctx && ctx->quantum > 0 ? ctx->quantum : getEffectiveQuantum();
+    int64_t Q = ctx ? ctx->quantum : getEffectiveQuantum();
     int64_t duration = L;
 
     const int64_t map_C = through_map_capture_ ? map_commit_cycle_.load() : 0;
@@ -1219,8 +1205,7 @@ void ClipNode::commitRecording(int64_t final_duration,
       // commit fired (stop boundary / one-period cap); C is WHAT
       // commits, so no duration snap applies.
       duration = map_C;
-      loop_start_samples.store(0);
-      loop_end_samples.store(duration);
+      setLoopPoints(0, duration);
       RtLog::instance().post(
           "ClipNode: Through-map commit - C=%lld (heard L=%lld)",
           (long long)map_C, (long long)L);
@@ -1228,8 +1213,7 @@ void ClipNode::commitRecording(int64_t final_duration,
       // Hysteresis snapping — shared math in timing.h.
       auto snap = timing::snapCommittedDuration(L, Q);
       duration = snap.duration;
-      loop_start_samples.store(0);
-      loop_end_samples.store(snap.loop_end);
+      setLoopPoints(0, snap.loop_end);
 
       if (snap.snapped) {
         RtLog::instance().post("ClipNode: Late Snap to B=%lld (L=%lld)",
@@ -1244,12 +1228,10 @@ void ClipNode::commitRecording(int64_t final_duration,
       duration = final_duration;
       RtLog::instance().post("ClipNode: Anticipatory Snap to B=%lld",
                              (long long)duration);
-      loop_start_samples.store(0);
-      loop_end_samples.store(duration);
+      setLoopPoints(0, duration);
     } else {
       // No quantum or fallback (first clip case)
-      loop_start_samples.store(0);
-      loop_end_samples.store(duration);
+      setLoopPoints(0, duration);
     }
 
     duration_samples.store(duration);  // > 0 is what "committed" means
@@ -1281,8 +1263,7 @@ void ClipNode::commitRecording(int64_t final_duration,
     // duration includes this take — computed here in SNAPSHOT space
     // (audio thread; graph_snapshot.h) and passed in, because the
     // island's own traversal is message-thread-only.
-    const int64_t intrinsic_after = ctx && ctx->snap
-                                        ? snapIntrinsicDuration(*ctx->snap, 0)
+    const int64_t intrinsic_after = ctx ? snapIntrinsicDuration(*ctx->snap, 0)
                                         : island->getIntrinsicDuration();
     island->takeCommitted(origin, intrinsic_after);
 

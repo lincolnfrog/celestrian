@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "audio_node.h"
+#include "clip_node.h"
 #include "midi_sequence.h"
 #include "take_storage.h"
 #include "sequence.h"
@@ -44,17 +45,15 @@ struct Edit {
     Explode,     // undo of Combine: dissolve stack `uuid`, restore kids
     Rename,      // s1 = name
     Mute,        // b1 = muted
-    LoopPoints,  // d1 = start, d2 = end (samples); may carry a removed
-                 // multi-segment override back on undo (setsMap/tmap)
+    LoopPoints,  // d1 = start, d2 = end (samples): the single-window
+                 // form of the node's ONE map. The inverse carries the
+                 // raw old map (setsMap/tmap), whatever its shape.
     LoopBypass,  // b1 = bypassed
-    Segments,    // tmap = the full multi-segment map (phase 3). Applied
-                 // by NORMALIZATION: n≥2 installs an immutable override,
-                 // n==1 writes the single-window atomics, n==0 clears
-                 // both. The inverse captures the RAW old storage.
+    Segments,    // tmap = the full map (any n); the node's storage is
+                 // replaced whole. The inverse carries the raw old map.
     PeriodSource,  // b1 = period from context (Q5 one-shot knob)
     Input,         // d1 = channel index (left / mono)
     InputR,        // d1 = right channel index of a stereo pair (−1 = mono)
-    Position,      // d1 = x, d2 = y
     CollapseTake,  // Q13 lock-collapse: the clip's window BECOMES the
                    // take (duration = window len, origin += start,
                    // content base shifts; window consumed). Forward
@@ -201,15 +200,7 @@ struct Edit {
   // displaced, like CollapseTake's buffer.
   struct TakePayload {
     juce::String uuid;
-    std::unique_ptr<juce::AudioBuffer<float>> buffer;  // audio content
-    std::unique_ptr<TakeStorage> storage;  // reserved storage the buffer refers to
-    std::unique_ptr<MidiSequence> midi;                // note content
-    int64_t origin = 0, duration = 0, base = 0, recorded = 0;
-    int64_t context_cycle = 0;
-    int64_t loop_start = 0, loop_end = 0;
-    int64_t collapsed_from = 0, collapse_origin_shift = 0;  // lock-collapse marker
-    int content_kind = 0;  // ClipNode::ContentKind
-    bool cap_hit = false;
+    ClipNode::TakeState state;  // the take exactly as stripTake returned it
   };
   std::vector<TakePayload> takes;
 

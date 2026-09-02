@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "qtime.h"
+
 /**
  * The reified time-map (time_maps.md §2) — ONE implementation shared by
  * clips and stacks.
@@ -66,7 +68,7 @@ struct TimeMap {
   int64_t mapOffset(int64_t heard_off) const {
     const int64_t p = period();
     if (p <= 0) return heard_off;
-    heard_off = ((heard_off % p) + p) % p;
+    heard_off = posMod(heard_off, p);
     for (int i = 0; i < n; ++i) {
       const int64_t len = segs[i].end - segs[i].start;
       if (heard_off < len) return segs[i].start + heard_off;
@@ -104,7 +106,7 @@ struct TimeMap {
   int64_t seamDistance(int64_t heard_off) const {
     const int64_t p = period();
     if (p <= 0) return 0;
-    heard_off = ((heard_off % p) + p) % p;
+    heard_off = posMod(heard_off, p);
     for (int i = 0; i < n; ++i) {
       const int64_t len = segs[i].end - segs[i].start;
       if (heard_off < len) return len - heard_off;

@@ -129,7 +129,7 @@ export function clip(periodQ, extra = {}) {
 export function stack(children, extra = {}) {
     return Object.assign({
         id: `stack-${nextId++}`, name: 'stack', type: 'stack',
-        nodes: children, origin: 0, effectiveQuantum: SCENE_Q, isExpanded: true,
+        nodes: children, origin: 0, effectiveQuantum: SCENE_Q,
         loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
         isMuted: false, isRecording: false,
     }, extra);

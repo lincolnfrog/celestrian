@@ -33,8 +33,8 @@
 
 import { interceptUndoableCall, mockUndo, mockRedo } from './mock/undo.js';
 import {
-    createNode, deleteNode, renameNode, reorderNode, setNodePosition,
-    combineNodes, toggleSolo, toggleMute, toggleStackExpand,
+    createNode, deleteNode, renameNode, reorderNode,
+    combineNodes, toggleSolo, toggleMute,
     setNodeInput, setNodeInputRight, setNodePan, setNodeGain,
     setPeriodSource,
 } from './mock/graph_crud.js';
@@ -100,7 +100,6 @@ export const handlers = {
     stopRecordingInNode,
     getGraphState: getState,
     getWaveform,
-    toggleStackExpand,
     createNode,
     deleteNode,
     undo: mockUndo,
@@ -109,7 +108,6 @@ export const handlers = {
     loadSession,
     renameNode,
     reorderNode,
-    setNodePosition,
     combineNodes,
     getInputList,
     setNodeInput,

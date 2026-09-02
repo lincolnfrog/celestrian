@@ -18,6 +18,8 @@
  * from the engine rather than patching locally.
  */
 
+import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
+
 let panel = null;
 let callNative = null;
 let onLog = () => { };
@@ -31,15 +33,16 @@ export function initAudioSettings(callNativeFn, log) {
     if (!btn) return;
     btn.addEventListener('click', () => togglePanel(btn));
 
-    // Close on outside click / Escape, like the project menu.
+    // Close on outside click / Escape, like the project menu. The
+    // panel scope wins Escape while open (keys.js), so the session
+    // view's Escape does not also clear the selection.
     document.addEventListener('click', (e) => {
         if (!panel) return;
         if (panel.contains(e.target) || e.target === btn) return;
         closePanel();
     });
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && panel) closePanel();
-    });
+    registerKey({ key: 'Escape', scope: SCOPE.PANEL, ignore: ANY_MODIFIERS,
+                  whileTyping: true, when: () => !!panel, handler: closePanel });
 
     // Surface the channel count on the button itself — the whole bug was
     // that "only 2 inputs" was invisible until you opened a track's menu.

@@ -161,12 +161,6 @@ MainComponent::MainComponent()
                                             args[0].toString(), (int)args[1]);
                                       },
                                       juce::var(juce::Array<juce::var>())))
-              .withNativeFunction("toggleStackExpand",
-                                  voidCall("toggleStackExpand", 1,
-                                           [this](const auto& args) {
-                                             audio_engine.toggleStackExpand(
-                                                 args[0].toString());
-                                           }))
               .withNativeFunction(
                   "createNode",
                   voidCall("createNode", 1,
@@ -314,14 +308,6 @@ MainComponent::MainComponent()
                                             args[1].toString());
                                       },
                                       juce::var(juce::String())))
-              .withNativeFunction("setNodePosition",
-                                  voidCall("setNodePosition", 3,
-                                           [this](const auto& args) {
-                                             audio_engine.setNodePosition(
-                                                 args[0].toString(),
-                                                 (double)args[1],
-                                                 (double)args[2]);
-                                           }))
               .withNativeFunction(
                   "getInputList",
                   valueCall("getInputList", 0,

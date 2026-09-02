@@ -125,7 +125,7 @@ test('nested active maps refuse the arm (phase-2 scope)', async () => {
 // === View model: the ruling-5 cue + heard-cursor honesty ===
 
 const mappedGroup = (extra = {}) => ({
-    id: 'g', name: 'G', type: 'stack', isExpanded: true,
+    id: 'g', name: 'G', type: 'stack',
     windowActive: true, loopStart: 1000, loopEnd: 3000, loopBypassed: false,
     nodes: [
         { id: 'a', name: 'A', type: 'clip', duration: 4000, origin: 0,
@@ -206,7 +206,7 @@ test('view model: committed through-map take tiles at its inner anchor', () => {
     const state = {
         quantum: 1000, islandEpoch: 1000, masterPos: 0, perf,
         nodes: [{
-            id: 'g', name: 'G', type: 'stack', isExpanded: true,
+            id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopStart: 1000, loopEnd: 3000, loopBypassed: false,
             nodes: [
                 { id: 'a', name: 'A', type: 'clip', duration: 4000, origin: 1000,

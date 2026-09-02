@@ -11,6 +11,9 @@
 
 namespace celestrian {
 
+using test_utils::contextFor;
+using test_utils::NodeContext;
+
 /**
  * Pan + stereo coverage (2026-07 mixing work):
  *  - the balance-law gain function itself,
@@ -50,18 +53,17 @@ class StereoPanTests : public juce::UnitTest {
       ClipNode clip("PanClip", sr);
       std::vector<float> in(4410, 0.5f);
       float* const ins[] = {in.data()};
-      ProcessContext rec;
-      rec.num_samples = (int)in.size();
-      rec.is_recording = true;
+      NodeContext rec = contextFor(clip, (int)in.size());
+      rec.ctx.is_recording = true;
       clip.startRecording();
-      clip.process(ins, nullptr, 1, 0, rec);
+      clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();
 
       clip.pan.store(-1.0f);
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = (int)outL.size();
+      NodeContext playNc = contextFor(clip, (int)outL.size());
+      ProcessContext& play = playNc.ctx;
       play.is_playing = true;
       clip.process(nullptr, outs, 0, 2, play);
 
@@ -88,11 +90,10 @@ class StereoPanTests : public juce::UnitTest {
 
       std::vector<float> left(4410, 0.25f), right(4410, 0.75f);
       float* const ins[] = {left.data(), right.data()};
-      ProcessContext rec;
-      rec.num_samples = (int)left.size();
-      rec.is_recording = true;
+      NodeContext rec = contextFor(clip, (int)left.size());
+      rec.ctx.is_recording = true;
       clip.startRecording();
-      clip.process(ins, nullptr, 2, 0, rec);
+      clip.process(ins, nullptr, 2, 0, rec.ctx);
       clip.stopRecording();
 
       expectEquals(clip.contentChannels(), 2, "content is stereo");
@@ -105,8 +106,8 @@ class StereoPanTests : public juce::UnitTest {
       // Stereo render: L content → out 0, R content → out 1.
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = (int)outL.size();
+      NodeContext playNc = contextFor(clip, (int)outL.size());
+      ProcessContext& play = playNc.ctx;
       play.is_playing = true;
       clip.process(nullptr, outs, 0, 2, play);
       expectWithinAbsoluteError(outL[100], 0.25f, 1.0e-6f, "L renders L");
@@ -142,10 +143,9 @@ class StereoPanTests : public juce::UnitTest {
       clip.startRecording();
       std::vector<float> in(1000, 1.0f);
       float* const ins[] = {in.data()};
-      ProcessContext rec;
-      rec.num_samples = (int)in.size();
-      rec.is_recording = true;
-      clip.process(ins, nullptr, 1, 0, rec);
+      NodeContext rec = contextFor(clip, (int)in.size());
+      rec.ctx.is_recording = true;
+      clip.process(ins, nullptr, 1, 0, rec.ctx);
       expectEquals(clip.contentChannels(), 1, "mono capture stays mono");
       clip.stopRecording();
     }
@@ -156,11 +156,10 @@ class StereoPanTests : public juce::UnitTest {
       auto clip = std::make_unique<ClipNode>("Child", sr);
       std::vector<float> in(4410, 0.5f);
       float* const ins[] = {in.data()};
-      ProcessContext rec;
-      rec.num_samples = (int)in.size();
-      rec.is_recording = true;
+      NodeContext rec = contextFor(*clip, (int)in.size());
+      rec.ctx.is_recording = true;
       clip->startRecording();
-      clip->process(ins, nullptr, 1, 0, rec);
+      clip->process(ins, nullptr, 1, 0, rec.ctx);
       clip->stopRecording();
       ClipNode* raw = clip.get();
       stack.addChild(std::move(clip));
@@ -169,10 +168,9 @@ class StereoPanTests : public juce::UnitTest {
       stack.pan.store(1.0f);  // hard right
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = (int)outL.size();
-      play.is_playing = true;
-      stack.process(nullptr, outs, 0, 2, play);
+      NodeContext play = contextFor(stack, (int)outL.size());
+      play.ctx.is_playing = true;
+      stack.process(nullptr, outs, 0, 2, play.ctx);
       expectEquals(outL[100], 0.0f, "group hard right silences L");
       expectWithinAbsoluteError(outR[100], 0.5f, 1.0e-6f,
                                 "group hard right keeps R");

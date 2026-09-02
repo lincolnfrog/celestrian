@@ -93,7 +93,7 @@ export const guardGesture = (node, onLost) => {
 /** True when the key event targets a text-entry surface (a form
  * control or a contentEditable rename editor) — global hotkeys (Space,
  * ⌘Z, ⌘S, zoom, teleport, R) must never fire while the user types.
- * The ONE copy: app.js's keyboard dispatcher imports it too. */
+ * The ONE copy: keys.js (the sole keydown dispatcher) applies it. */
 export const isTypingTarget = e => {
     const t = e.target;
     const tag = t && t.tagName;

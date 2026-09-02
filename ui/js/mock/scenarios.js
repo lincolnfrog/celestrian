@@ -10,10 +10,6 @@
  * second of audio at the mock's rate (mock/rate.js) — read at LOAD
  * time, so a scenario keeps its musical shape (1Q + 3Q, LCM 3Q, a take
  * 2.5Q in) at any rate.
- *
- * The x/y/w/h fields some older fixtures still carry are canvas-era
- * leftovers nothing renders (setNodePosition's twin); they go when the
- * protocol drops that method.
  */
 
 import { state, settleAnchors } from './state.js';
@@ -30,8 +26,7 @@ function makeClip(overrides) {
 
 /** Stack fixture factory — same contract as makeClip. */
 function makeStack(overrides) {
-    return { type: 'stack', isExpanded: true,
-             effectiveQuantum: quantumSamples(), ...overrides };
+    return { type: 'stack', effectiveQuantum: quantumSamples(), ...overrides };
 }
 
 // The full at-rest flag block older fixtures spell out on every clip.
@@ -200,8 +195,6 @@ export function loadScenario(name) {
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'LCM Test Stack',
-                w: 900,
-                h: 350,
                 effectiveQuantum: Q,     // the island quantum (1 s of audio)
                 loopStart: 0,            // Stack-level loop points (for collapsed mode)
                 loopEnd: 4 * Q,          // Full LCM duration (4Q)
@@ -220,8 +213,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-4q',
                         name: 'Clip 4Q',
-                        y: 120,
-                        w: 800,
                         duration: 4 * Q,         // 4Q
                         effectiveQuantum: Q,
                         isRecording: false,
@@ -242,8 +233,6 @@ export function loadScenario(name) {
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Polyrhythm Stack',
-                w: 2500,
-                h: 450,
                 nodes: [
                     makeClip({
                         id: 'clip-1q',
@@ -255,8 +244,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-4q',
                         name: 'Clip 4Q',
-                        y: 120,
-                        w: 800,
                         duration: 4 * Q,
                         effectiveQuantum: Q,
                         isRecording: false,
@@ -264,8 +251,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-3q',
                         name: 'Clip 3Q',
-                        y: 240,
-                        w: 600,
                         duration: 3 * Q,
                         effectiveQuantum: Q,
                         isRecording: false,
@@ -287,8 +272,6 @@ export function loadScenario(name) {
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Anchor Bug Test Stack',
-                w: 900,
-                h: 450,
                 effectiveQuantum: Q,     // the island quantum (1 s of audio)
                 nodes: [
                     makeClip({
@@ -305,8 +288,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-2',
                         name: 'Clip 4Q',
-                        y: 120,
-                        w: 800,
                         duration: 4 * Q,         // 4Q
                         effectiveQuantum: Q,
                         isRecording: false,
@@ -318,8 +299,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-3',
                         name: 'Clip 1Q@2Q',
-                        x: 400,
-                        y: 240,
                         duration: Q,             // 1Q
                         effectiveQuantum: Q,
                         isRecording: false,
@@ -343,8 +322,6 @@ export function loadScenario(name) {
             state.nodes = [makeStack({
                 id: 'parent-stack',
                 name: 'Parent Stack',
-                w: 900,
-                h: 500,
                 nodes: [
                     makeClip({
                         id: 'clip-1',
@@ -357,15 +334,10 @@ export function loadScenario(name) {
                     makeStack({
                         id: 'child-stack',
                         name: 'Nested Stack',
-                        x: 0,
-                        y: 120,
-                        w: 600,
-                        h: 250,
                         nodes: [
                             makeClip({
                                 id: 'nested-clip-1',
                                 name: 'Nested Clip A',
-                                w: 400,
                                 duration: 2 * Q,
                                 effectiveQuantum: Q,
                                 isRecording: false,
@@ -374,7 +346,6 @@ export function loadScenario(name) {
                             makeClip({
                                 id: 'nested-clip-2',
                                 name: 'Nested Clip B',
-                                y: 120,
                                 duration: Q,
                                 effectiveQuantum: Q,
                                 isRecording: false,
@@ -399,9 +370,6 @@ export function loadScenario(name) {
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Loop Bug Test Stack',
-                w: 700,
-                h: 350,
-                isExpanded: true,  // User will collapse in test
                 effectiveQuantum: Q,     // the island quantum (1 s of audio)
                 loopStart: 0,
                 loopEnd: 3 * Q,          // Full LCM = 3Q
@@ -420,8 +388,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-3q',
                         name: 'Clip 3Q',
-                        y: 120,
-                        w: 600,
                         duration: 3 * Q,         // 3Q
                         effectiveQuantum: Q,
                         isRecording: false,
@@ -451,7 +417,7 @@ export function loadScenario(name) {
                     loopStart: 0, loopEnd: 4 * Q, contextCycle: 4 * Q,
                 }),
                 makeStack({
-                    id: 'drums', name: 'Drums', w: 700, h: 350,
+                    id: 'drums', name: 'Drums',
                     sequence: {
                         steps: [1, 2, 3, 4].map(i => ({ name: String(i), len: Q })),
                         gates: { kick: [true, false, true, false],
@@ -459,7 +425,7 @@ export function loadScenario(name) {
                     },
                     sequenceBypassed: false,
                     nodes: ['kick', 'snare', 'hat'].map((id, i) => makeClip({
-                        id, name: id[0].toUpperCase() + id.slice(1), y: 120 * i,
+                        id, name: id[0].toUpperCase() + id.slice(1),
                         duration: Q, origin: 0, effectiveQuantum: Q,
                         ...IDLE_FLAGS, isPlaying: true,
                         loopStart: 0, loopEnd: Q, periodSource: 'context',
@@ -485,8 +451,6 @@ export function loadScenario(name) {
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Recording Test Stack',
-                w: 600,
-                h: 350,
                 nodes: [
                     makeClip({
                         id: 'clip-1',
@@ -502,8 +466,6 @@ export function loadScenario(name) {
                     makeClip({
                         id: 'clip-2',
                         name: 'New Clip',
-                        y: 120,
-                        w: 500,
                         duration: 2.5 * Q,       // 2.5Q — recording
                         effectiveQuantum: Q,
                         isRecording: true,

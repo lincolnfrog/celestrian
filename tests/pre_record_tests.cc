@@ -162,13 +162,6 @@ class PreRecordTests : public juce::UnitTest {
       }
       expect(capturing, "clip B captures after long playback");
 
-      // ...and the recording clip must sit at a CYCLE-RELATIVE x —
-      // context is 1Q here, so slot 0 — never an absolute-master slot.
-      double x =
-          (double)childVar(engine, 1).getDynamicObject()->getProperty("x");
-      expectEquals(x, 0.0,
-                   "recording clip stays on screen (cycle-relative slot)");
-
       // Commit still snaps cleanly to the grid.
       engine.stopRecordingInNode(clipB);
       for (int i = 0; i < 8 && childIsRecording(engine, 1); ++i) {
@@ -178,9 +171,6 @@ class PreRecordTests : public juce::UnitTest {
       const int64_t durB = childDuration(engine, 1);
       expect(durB > 0 && durB % 1000 == 0,
              "committed duration snaps to a Q multiple");
-      expectEquals(
-          (double)childVar(engine, 1).getDynamicObject()->getProperty("x"), 0.0,
-          "committed x is cycle-relative");
     }
 
     beginTest("Long clip over short groove loops at 0Q (field regression)");
@@ -285,22 +275,17 @@ class PreRecordTests : public juce::UnitTest {
       // the refcounted var — a dangling pointer here read freed memory).
       auto cVar = childVar(engine, 2);
       auto* c = cVar.getDynamicObject();
-      expectEquals((double)c->getProperty("x"), 0.0,
-                   "clip C anchors at view 0Q, not 3Q (epoch frame)");
       expectEquals((int64_t)(double)c->getProperty("origin"), (int64_t)15000,
                    "origin is the absolute boundary moment");
 
-      // Record 1.5Q, stop -> snaps to 2Q; committed x stays at 0Q and
-      // playback wraps at the clip's own top.
+      // Record 1.5Q, stop -> snaps to 2Q; playback wraps at the clip's
+      // own top.
       for (int i = 0; i < 3; ++i) processSilence(engine, 500);
       engine.stopRecordingInNode(clipC);
       for (int i = 0; i < 4 && childIsRecording(engine, 2); ++i) {
         processSilence(engine, 500);
       }
       expectEquals(childDuration(engine, 2), (int64_t)2000);
-      expectEquals(
-          (double)childVar(engine, 2).getDynamicObject()->getProperty("x"), 0.0,
-          "committed x remains at view 0Q");
       processSilence(engine, 500);
       const double playheadC =
           (double)childVar(engine, 2).getDynamicObject()->getProperty(

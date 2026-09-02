@@ -10,6 +10,9 @@
 
 namespace celestrian {
 
+using test_utils::contextFor;
+using test_utils::NodeContext;
+
 namespace {
 
 /** A committed clip carrying a constant-amplitude take, already playing. */
@@ -18,11 +21,10 @@ std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
   auto clip = std::make_unique<ClipNode>(name, sr);
   std::vector<float> in((size_t)len, amp);
   float* const ins[] = {in.data()};
-  ProcessContext rec;
-  rec.num_samples = len;
-  rec.is_recording = true;
+  NodeContext rec = contextFor(*clip, len);
+  rec.ctx.is_recording = true;
   clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec);
+  clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
   clip->startPlayback();
   return clip;
@@ -35,10 +37,9 @@ std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
 float renderPeak(AudioNode& node, int n = 4410, int64_t master_pos = 0) {
   std::vector<float> outL((size_t)n, 0.0f), outR((size_t)n, 0.0f);
   float* outs[] = {outL.data(), outR.data()};
-  ProcessContext play;
-  play.num_samples = n;
-  play.is_playing = true;
-  play.master_pos = master_pos;
+  NodeContext nc = contextFor(node, n, master_pos);
+  const ProcessContext& play = nc.ctx;
+  nc.ctx.is_playing = true;
   node.process(nullptr, outs, 0, 2, play);
   std::fill(outL.begin(), outL.end(), 0.0f);
   std::fill(outR.begin(), outR.end(), 0.0f);
@@ -126,10 +127,9 @@ class OutputStageTests : public juce::UnitTest {
       clip->pan.store(-1.0f);
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = 4410;
-      play.is_playing = true;
-      clip->process(nullptr, outs, 0, 2, play);
+      NodeContext play = contextFor(*clip, 4410);
+      play.ctx.is_playing = true;
+      clip->process(nullptr, outs, 0, 2, play.ctx);
       expectWithinAbsoluteError(outL[100], 0.25f, 1.0e-6f, "L = amp*gain");
       expectEquals(outR[100], 0.0f, "R silent at hard left");
 
@@ -149,10 +149,9 @@ class OutputStageTests : public juce::UnitTest {
       stack.pan.store(1.0f);
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = 4410;
-      play.is_playing = true;
-      stack.process(nullptr, outs, 0, 2, play);
+      NodeContext play = contextFor(stack, 4410);
+      play.ctx.is_playing = true;
+      stack.process(nullptr, outs, 0, 2, play.ctx);
       expectEquals(outL[100], 0.0f, "group hard right silences L");
       expectWithinAbsoluteError(outR[100], 0.25f, 1.0e-6f,
                                 "R carries gain*amp");
@@ -168,14 +167,12 @@ class OutputStageTests : public juce::UnitTest {
 
       std::vector<float> outL(4410, 0.0f), outR(4410, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = 4410;
-      play.is_playing = true;
-      // Q16 flags: the child itself is soloed, and the context knows a
-      // solo is lit somewhere.
+      // Q16 flags: the child itself is soloed, and the block top's scan
+      // tells the context a solo is lit somewhere.
       raw->is_soloed.store(true);
-      play.any_solo = true;
-      stack.process(nullptr, outs, 0, 2, play);
+      NodeContext play = contextFor(stack, 4410);
+      play.ctx.is_playing = true;
+      stack.process(nullptr, outs, 0, 2, play.ctx);
       expectEquals(std::abs(outL[100]) + std::abs(outR[100]), 0.0f,
                    "muted ancestor silences even a soloed child");
     }

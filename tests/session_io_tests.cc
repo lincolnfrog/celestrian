@@ -178,7 +178,7 @@ class SessionIoTests : public juce::UnitTest {
       cm.n = 2;
       cm.segs[0] = {0, Q};
       cm.segs[1] = {2 * Q, 3 * Q};
-      delete clip->exchangeMapOverride(new timing::TimeMap(cm));
+      clip->setMap(cm);
       const juce::String clipUuid = clip->getUuid();
       root.addChild(std::move(clip));
 
@@ -187,7 +187,7 @@ class SessionIoTests : public juce::UnitTest {
       sm.n = 2;
       sm.segs[0] = {Q / 2, Q};  // sub-Q punch shapes survive too
       sm.segs[1] = {2 * Q, 4 * Q};
-      delete nested->exchangeMapOverride(new timing::TimeMap(sm));
+      nested->setMap(sm);
       const juce::String nestedUuid = nested->getUuid();
       root.addChild(std::move(nested));
 
@@ -199,11 +199,11 @@ class SessionIoTests : public juce::UnitTest {
       auto* c = dynamic_cast<ClipNode*>(loaded.children[0].get());
       expect(c != nullptr && c->getUuid() == clipUuid, "clip restored");
       {
-        const auto* m = c->mapOverride();
-        expect(m != nullptr && m->n == 2, "clip map override restored");
-        expectEquals((juce::int64)m->segs[0].end, (juce::int64)Q,
+        const timing::TimeMap m = c->storedMap();
+        expect(m.n == 2, "clip map restored");
+        expectEquals((juce::int64)m.segs[0].end, (juce::int64)Q,
                      "clip segment 0");
-        expectEquals((juce::int64)m->segs[1].start, (juce::int64)(2 * Q),
+        expectEquals((juce::int64)m.segs[1].start, (juce::int64)(2 * Q),
                      "clip segment 1");
         expectEquals((juce::int64)c->getEffectivePeriod(), (juce::int64)(2 * Q),
                      "clip effective period from the map");
@@ -211,9 +211,9 @@ class SessionIoTests : public juce::UnitTest {
       auto* ns = dynamic_cast<StackNode*>(loaded.children[1].get());
       expect(ns != nullptr && ns->getUuid() == nestedUuid, "stack restored");
       {
-        const auto* m = ns->mapOverride();
-        expect(m != nullptr && m->n == 2, "stack map override restored");
-        expectEquals((juce::int64)m->segs[0].start, (juce::int64)(Q / 2),
+        const timing::TimeMap m = ns->storedMap();
+        expect(m.n == 2, "stack map restored");
+        expectEquals((juce::int64)m.segs[0].start, (juce::int64)(Q / 2),
                      "sub-Q punch boundary exact (QTime)");
       }
 
@@ -224,8 +224,7 @@ class SessionIoTests : public juce::UnitTest {
       for (auto& ch : loaded.children) root2.addChild(std::move(ch));
       expect(session_io::save(root2, (double)Q, dir2), "re-save");
       auto loaded2 = session_io::load(dir2, (double)Q);
-      expect(loaded2.ok && loaded2.children[0]->mapOverride() != nullptr &&
-                 loaded2.children[0]->mapOverride()->n == 2,
+      expect(loaded2.ok && loaded2.children[0]->storedMap().n == 2,
              "stable across a second round trip");
 
       // Templates strip the map with the window.
@@ -234,7 +233,7 @@ class SessionIoTests : public juce::UnitTest {
       strip.strip_performances = true;
       expect(session_io::save(root2, (double)Q, dir3, strip), "template save");
       auto loaded3 = session_io::load(dir3, (double)Q);
-      expect(loaded3.ok && loaded3.children[0]->mapOverride() == nullptr,
+      expect(loaded3.ok && !loaded3.children[0]->hasSegmentMap(),
              "template strips the map");
     }
 

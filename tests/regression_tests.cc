@@ -3,46 +3,54 @@
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
+
 namespace {
 
-// Regression-specific scaffolding. These helpers only move the repeated
-// CONSTRUCTION boilerplate out of the tests below: the engine/node call
-// sequences, their arguments, and their order are exactly the inline
-// code they replaced.
+// Regression-specific scaffolding: the repeated CONSTRUCTION
+// boilerplate of the tests below — the node call sequences, their
+// arguments, and their order.
 
-// Build a ClipNode owned by `parent` and return the raw pointer the
-// tests drive directly.
-ClipNode* addClip(StackNode& parent, const char* name, double sample_rate) {
+// Build a ClipNode owned by the island `nc` drives, republish the
+// snapshot (a structural edit), and aim `nc` at the new clip — the
+// tests drive it directly, so it receives the context its parent
+// would hand it.
+ClipNode* addClip(NodeContext& nc, const char* name, double sample_rate) {
   auto clip = std::make_unique<ClipNode>(name, sample_rate);
   auto* clip_ptr = clip.get();
-  parent.addChild(std::move(clip));
+  static_cast<StackNode*>(nc.root)->addChild(std::move(clip));
+  nc.rebuild();
+  nc.driveFrom(*clip_ptr);
   return clip_ptr;
 }
 
-// The repeated context triple. All other fields (latency, solo, ...)
-// stay at their defaults, exactly as the inline copies left them.
-ProcessContext makeRecordingContext(int sample_count, int64_t master_position) {
-  ProcessContext ctx;
-  ctx.num_samples = sample_count;
-  ctx.is_recording = true;
-  ctx.master_pos = master_position;
-  return ctx;
+// The island context for `parent`, recording, at (sample_count,
+// master_position). All other fields (latency, solo, ...) stay at the
+// engine-twin values.
+NodeContext makeRecordingContext(StackNode& parent, int sample_count,
+                                 int64_t master_position) {
+  NodeContext nc = contextFor(parent, sample_count, master_position);
+  nc.ctx.is_recording = true;
+  return nc;
 }
 
 // The repeated "record a ClipNode with known content at a known
-// position" scaffold: create the node under `parent`, point the shared
-// context at (sample_count, master_position) with is_recording = true,
-// then startRecording -> one process() over `inputs` -> stopRecording.
-// The caller's ctx is updated in place so follow-up steps (commit
-// loops, playback checks) continue from exactly the state the inline
-// code left behind.
-ClipNode* recordClipInto(StackNode& parent, const char* name,
+// position" scaffold: create the node under the island `nc` drives,
+// point the shared context at (sample_count, master_position) with
+// is_recording = true, then startRecording -> one process() over
+// `inputs` -> stopRecording. `nc` is updated in place so follow-up
+// steps (commit loops, playback checks) continue from exactly the
+// state this left behind.
+ClipNode* recordClipInto(NodeContext& nc, const char* name,
                          double sample_rate, float* const* inputs,
-                         int sample_count, int64_t master_position,
-                         ProcessContext& ctx) {
-  ClipNode* clip_ptr = addClip(parent, name, sample_rate);
+                         int sample_count, int64_t master_position) {
+  ClipNode* clip_ptr = addClip(nc, name, sample_rate);
+  ProcessContext& ctx = nc.ctx;
   ctx.num_samples = sample_count;
   ctx.is_recording = true;
   ctx.master_pos = master_position;
@@ -99,8 +107,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       for (int i = 0; i < 1000; ++i) clip1Input[i] = 0.5f;
       float* const clip1Inputs[] = {clip1Input};
 
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, clip1Inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, clip1Inputs, 1000, 0);
 
       // Verify Clip 1 established Q
       int64_t Q = parent.getEffectiveQuantum();
@@ -115,7 +124,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       // master_pos = 1000: start at EXACTLY 1Q (user's actual scenario)
       auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, clip2Inputs, 4000, 1000, ctx);
+          recordClipInto(nc, "Clip2", SR, clip2Inputs, 4000, 1000);
 
       // Continue processing to cross Q boundary and commit.
       // Keep the wall clock consistent with the samples processed: the
@@ -162,10 +171,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       beginTest("Clip 1 (First Clip) Should have Launch=0");
       const double SR = 44100.0;
       StackNode parent("Parent");
-      auto* clipPtr = addClip(parent, "Clip1", SR);
-
       // master_pos = 0: transport reset to 0
-      ProcessContext ctx = makeRecordingContext(512, 0);
+      NodeContext nc = makeRecordingContext(parent, 512, 0);
+      ProcessContext& ctx = nc.ctx;
+      auto* clipPtr = addClip(nc, "Clip1", SR);
 
       clipPtr->startRecording();
       // Process 2 blocks (1024 samples)
@@ -193,9 +202,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       beginTest("Clip 1 Stopped Mid-Block (Immediate Commit)");
       const double SR = 44100.0;
       StackNode parent("Parent");
-      auto* clipPtr = addClip(parent, "Clip1", SR);
-
-      ProcessContext ctx = makeRecordingContext(512, 0);
+      NodeContext nc = makeRecordingContext(parent, 512, 0);
+      ProcessContext& ctx = nc.ctx;
+      auto* clipPtr = addClip(nc, "Clip1", SR);
 
       clipPtr->startRecording();
       // Process block 0
@@ -247,14 +256,14 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float* const inputs[] = {dummyBuf};
 
       // Clip 1: 1Q (establishes quantum), Q = 1000
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       expectEquals(parent.getEffectiveQuantum(), (int64_t)1000);
 
       // Clip 2: 4Q, start at 1Q
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs, 4000, 1000, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs, 4000, 1000);
       ctx.master_pos = 5000;
       ctx.num_samples = 100;
       clip2Ptr->process(inputs, nullptr, 1, 0, ctx);  // Commit
@@ -263,7 +272,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // With context_loop = 4000 (4Q), next_q = 3000 (3Q)
       // Slot should be based on effective position: 2500 % 4000 = 2500
       // next_q=3000 <= context=4000, so slot should use effective_pos
-      auto* clip3Ptr = addClip(parent, "Clip3", SR);
+      auto* clip3Ptr = addClip(nc, "Clip3", SR);
 
       ctx.master_pos = 2500;
       ctx.num_samples = 100;
@@ -288,13 +297,13 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float* const inputs[] = {dummyBuf};
 
       // Clip 1: 1Q = 1000 samples
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       // Clip 2: 4Q at slot 0 (starts at 1Q boundary — master_pos 1000,
       // the Q boundary after clip 1)
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs, 4000, 1000, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs, 4000, 1000);
       // Keep is_recording=true so samples continue writing until commit
       // boundary
       ctx.master_pos = 5000;
@@ -311,7 +320,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // next_q = ceil(10500/1000) * 1000 = 11000
       // Since next_q > context_loop, slot should use next_q / Q
       // BUT we don't want it to shoot off the screen
-      auto* clip3Ptr = addClip(parent, "Clip3", SR);
+      auto* clip3Ptr = addClip(nc, "Clip3", SR);
 
       ctx.master_pos = 10500;
       ctx.num_samples = 100;
@@ -340,12 +349,13 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float* const inputs[] = {dummyBuf};
 
       // Clip 1: 1Q = 1000 samples
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       // Clip 2: Start recording at Q boundary, then call process() 100 times
       // This simulates the real audio loop behavior
-      auto* clip2Ptr = addClip(parent, "Clip2", SR);
+      auto* clip2Ptr = addClip(nc, "Clip2", SR);
 
       ctx.master_pos = 500;  // Mid-way through first Q
       clip2Ptr->startRecording();
@@ -383,12 +393,13 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float* const inputs[] = {dummyBuf};
 
       // Clip 1: 1Q (establishes Q=1000)
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       // Clip 2: Start at master_pos = 1100 (between 1Q and 2Q, >512 from 2Q)
       // Should snap to next Q boundary = 2Q = 2000
-      auto* clip2Ptr = addClip(parent, "Clip2", SR);
+      auto* clip2Ptr = addClip(nc, "Clip2", SR);
 
       ctx.master_pos = 1100;
       ctx.num_samples = 100;
@@ -420,12 +431,12 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float* const inputs[] = {dummyBuf};
 
       // Clip 1: 1Q = 1000 samples
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       // Clip 2: 4Q to establish multi-clip context
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs, 4000, 0, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs, 4000, 0);
       ctx.num_samples = 1500;
       clip2Ptr->process(inputs, nullptr, 1, 0, ctx);
 
@@ -433,7 +444,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // master_pos = 1500 (between 1Q and 2Q)
       // effective_pos should be ~1500, next_q = 2000
       // slot should be 2 (anchoring at 2Q), NOT 3
-      auto* clip3Ptr = addClip(parent, "Clip3", SR);
+      auto* clip3Ptr = addClip(nc, "Clip3", SR);
 
       ctx.master_pos = 1500;  // Between 1Q and 2Q
       ctx.num_samples = 100;
@@ -463,16 +474,15 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float input[1000] = {0.5f};
       float* const inputs[] = {input};
 
-      ProcessContext ctx;
-      auto* clip1Ptr =
-          recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      auto* clip1Ptr = recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       // Clip 2: 8Q (8000 samples)
       float input8k[8000] = {0.3f};
       float* const inputs8k[] = {input8k};
 
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs8k, 8000, 0, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs8k, 8000, 0);
 
       // Commit clip 2
       ctx.is_recording = true;
@@ -485,8 +495,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float input4k[4000] = {0.2f};
       float* const inputs4k[] = {input4k};
 
-      auto* clip3Ptr =
-          recordClipInto(parent, "Clip3", SR, inputs4k, 4000, 0, ctx);
+      auto* clip3Ptr = recordClipInto(nc, "Clip3", SR, inputs4k, 4000, 0);
 
       // Commit clip 3
       while (clip3Ptr->isAwaitingStop()) {
@@ -503,8 +512,11 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float out[512] = {0.0f};
       float* const outputs[] = {out, out};
 
+      nc.driveFrom(*clip1Ptr);
       clip1Ptr->process(nullptr, outputs, 0, 2, ctx);
+      nc.driveFrom(*clip2Ptr);
       clip2Ptr->process(nullptr, outputs, 0, 2, ctx);
+      nc.driveFrom(*clip3Ptr);
       clip3Ptr->process(nullptr, outputs, 0, 2, ctx);
 
       // At master_pos=0, all clips with launch_point=0 should have playhead~0%
@@ -542,9 +554,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float input[4000] = {0.0f};
       float* const inputs[] = {input, input};
 
-      ProcessContext ctx;
-      auto* clip1Ptr =
-          recordClipInto(parent, "Clip1", SR, inputs, 4000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      auto* clip1Ptr = recordClipInto(nc, "Clip1", SR, inputs, 4000, 0);
       // Commit
       ctx.master_pos = 4000;
       while (clip1Ptr->isAwaitingStop()) {
@@ -552,7 +564,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       }
 
       // Create Clip 3
-      auto* clip3Ptr = addClip(parent, "Clip3", SR);
+      auto* clip3Ptr = addClip(nc, "Clip3", SR);
 
       // Attempt to record at 3900 (3.9Q)
       ctx.master_pos = 3900;
@@ -590,8 +602,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Clip 1: 1Q (establishes quantum)
       float input1[1000] = {0.5f};
       float* const inputs1[] = {input1};
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs1, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs1, 1000, 0);
 
       int64_t Q = parent.getEffectiveQuantum();
       expectEquals(Q, (int64_t)1000, "Clip 1 should establish Q = 1000");
@@ -600,8 +613,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float input2[4000] = {0.3f};
       float* const inputs2[] = {input2};
 
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs2, 4000, 0, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs2, 4000, 0);
 
       // Process to commit
       while (clip2Ptr->isAwaitingStop()) {
@@ -610,7 +622,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
         clip2Ptr->process(inputs1, nullptr, 1, 0, ctx);
       }
 
-      // CRITICAL: loop_end_samples must equal duration, NOT effectiveQuantum
+      // The committed window is the whole take: loopEnd == duration, NOT Q.
       int64_t loopEnd = clip2Ptr->getLoopEnd();
       int64_t duration = clip2Ptr->duration_samples.load();
 
@@ -619,9 +631,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           ", loopEnd=" + juce::String(loopEnd) + ", Q=" + juce::String(Q));
 
       expectEquals(loopEnd, duration,
-                   "loop_end_samples MUST equal duration, not Q!");
-      expect(loopEnd != Q,
-             "loop_end_samples should NOT equal Q (that was the bug!)");
+                   "loopEnd MUST equal duration, not Q!");
+      expect(loopEnd != Q, "loopEnd should NOT equal Q");
     }
 
     // CRITICAL TEST: Verify actual audio output loops at correct position
@@ -636,8 +647,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       for (int i = 0; i < 1000; ++i) input1[i] = 0.1f;  // Uniform signal
       float* const inputs1[] = {input1};
 
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs1, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs1, 1000, 0);
 
       int64_t Q = parent.getEffectiveQuantum();
       expectEquals(Q, (int64_t)1000, "Q should be 1000");
@@ -653,8 +665,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       for (int i = 3000; i < 4000; ++i) input2[i] = 0.4f;  // Q3
       float* const inputs2[] = {input2};
 
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs2, 4000, 0, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs2, 4000, 0);
 
       // Process to commit
       while (clip2Ptr->isAwaitingStop()) {
@@ -722,8 +733,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       for (int i = 0; i < 1000; ++i) input1[i] = 0.1f;
       float* const inputs1[] = {input1};
 
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs1, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs1, 1000, 0);
 
       int64_t Q = parent.getEffectiveQuantum();
       expectEquals(Q, (int64_t)1000, "Q should be 1000");
@@ -735,8 +747,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       for (int i = 1000; i < 2000; ++i) input2[i] = 0.5f;  // Second half
       float* const inputs2[] = {input2};
 
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs2, 2000, 0, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs2, 2000, 0);
 
       // Process to commit - should snap to 2Q
       while (clip2Ptr->isAwaitingStop()) {
@@ -794,15 +805,16 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       for (int i = 0; i < 1000; ++i) input1[i] = 0.1f;
       float* const inputs1[] = {input1};
 
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs1, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs1, 1000, 0);
 
       int64_t Q = parent.getEffectiveQuantum();
       expectEquals(Q, (int64_t)1000, "Q should be 1000");
 
       // Clip 2: Start recording at master_pos=500 (mid-loop)
       // First half = 0.1, Second half = 0.5
-      auto* clip2Ptr = addClip(parent, "Clip2", SR);
+      auto* clip2Ptr = addClip(nc, "Clip2", SR);
 
       float input2[2000];
       for (int i = 0; i < 1000; ++i) input2[i] = 0.1f;     // First half
@@ -872,15 +884,16 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float input1[1000] = {0.5f};
       float* const inputs1[] = {input1};
 
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs1, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs1, 1000, 0);
 
       int64_t Q = parent.getEffectiveQuantum();
       expectEquals(Q, (int64_t)1000, "Clip 1 should establish Q=1000");
 
       // === Clip 2: User clicks record at 500 (0.5Q) ===
       // Recording should snap to start at 1000 (1Q = next 0Q boundary)
-      auto* clip2Ptr = addClip(parent, "Clip2", SR);
+      auto* clip2Ptr = addClip(nc, "Clip2", SR);
 
       // Simulate user clicking record at master_pos = 500 (mid-loop)
       ctx.master_pos = 500;
@@ -951,15 +964,15 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       float* const inputs[] = {dummyBuf};
 
       // === Clip 1: 1Q (establishes quantum) ===
-      ProcessContext ctx;
-      recordClipInto(parent, "Clip1", SR, inputs, 1000, 0, ctx);
+      NodeContext nc = contextFor(parent);
+      ProcessContext& ctx = nc.ctx;
+      recordClipInto(nc, "Clip1", SR, inputs, 1000, 0);
 
       int64_t Q = parent.getEffectiveQuantum();
       expectEquals(Q, (int64_t)1000, "Clip 1 should establish Q = 1000");
 
       // === Clip 2: 4Q (establishes 4Q context loop) ===
-      auto* clip2Ptr =
-          recordClipInto(parent, "Clip2", SR, inputs, 4000, 0, ctx);
+      auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs, 4000, 0);
 
       // Process to commit clip 2
       ctx.num_samples = 1000;
@@ -975,7 +988,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       // === Clip 3: Start recording at 2Q, record for 1Q ===
       // This is the bug case: should anchor at x=400 (2Q slot), not x=0
-      auto* clip3Ptr = addClip(parent, "Clip3", SR);
+      auto* clip3Ptr = addClip(nc, "Clip3", SR);
 
       // Start recording at master_pos = 2000 (exactly 2Q)
       ctx.master_pos = 2000;

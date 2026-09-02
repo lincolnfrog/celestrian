@@ -102,7 +102,7 @@ test('view model: multi-segment group lane — dims data, chip, no brackets', ()
     const state = {
         quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
         nodes: [{
-            id: 'g', name: 'G', type: 'stack', isExpanded: true,
+            id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
             loopStart: 0, loopEnd: 0,
             segments: [0, 1000, 2000, 3000],
@@ -161,7 +161,7 @@ test('view model: multi-segment CLIP lane rests in heard time (srcSegs)', () => 
     const state2 = {
         quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
         nodes: [{
-            id: 'g', name: 'G', type: 'stack', isExpanded: true,
+            id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
             loopStart: 0, loopEnd: 0, segments: [0, 1000, 2000, 3000],
             nodes: [
@@ -214,7 +214,7 @@ test('view model: cut-band fields (design A, 2026-07-22)', () => {
     const groupState = (extraKids = []) => ({
         quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
         nodes: [{
-            id: 'g', name: 'G', type: 'stack', isExpanded: true,
+            id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
             loopStart: 0, loopEnd: 0, segments: [0, 1000, 2000, 4000],
             nodes: [
@@ -270,7 +270,7 @@ test('view model: enclosing map projects excluded regions onto children', () => 
     const state = {
         quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
         nodes: [{
-            id: 'g', name: 'G', type: 'stack', isExpanded: true,
+            id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
             loopStart: 0, loopEnd: 0, segments: [0, 1000, 2000, 4000],
             nodes: [

@@ -2,8 +2,12 @@
 
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 /**
  * Tests for stack loop windows as time-maps (docs/time_maps.md phase 1).
@@ -32,11 +36,10 @@ class StackLoopTests : public juce::UnitTest {
       std::vector<float> ramp((size_t)len);
       for (int i = 0; i < len; ++i) ramp[(size_t)i] = (float)(i + 1) * 0.0001f;
       float* const rampIn[] = {ramp.data()};
-      ProcessContext ctx;
-      ctx.num_samples = len;
-      ctx.is_recording = true;
+      NodeContext nc = contextFor(*clip, len);
+      nc.ctx.is_recording = true;
       clip->startRecording();
-      clip->process(rampIn, nullptr, 1, 0, ctx);
+      clip->process(rampIn, nullptr, 1, 0, nc.ctx);
       clip->stopRecording();
       return clip;
     };
@@ -44,30 +47,24 @@ class StackLoopTests : public juce::UnitTest {
 
     beginTest("I6b: expansion does not change the sound");
     {
-      // Identical processing with the stack expanded vs collapsed must
-      // produce identical output — the invariant the old Loop-on-Collapse
-      // model violated.
-      for (bool expanded : {true, false}) {
-        StackNode stack("TestStack");
-        stack.addChild(makeRampClip(3000));
-        static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
-        stack.setLoopPoints(0, 1000);
-        stack.is_expanded.store(expanded);
+      // Expansion is unrepresentable in the engine (no view state on
+      // AudioNode), so there is no toggle to exercise: the window's
+      // output is the whole fact.
+      StackNode stack("TestStack");
+      stack.addChild(makeRampClip(3000));
+      static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
+      stack.setLoopPoints(0, 1000);
 
-        ProcessContext ctx;
-        ctx.is_playing = true;
-        ctx.num_samples = 1;
-        ctx.master_pos = 1500;  // window active: maps to 1500 % 1000 = 500
+      // window active: maps to 1500 % 1000 = 500
+      NodeContext nc = contextFor(stack, 1, 1500);
+      nc.ctx.is_playing = true;
 
-        float out[1] = {0.0f};
-        float* const outs[] = {out};
-        stack.process(nullptr, outs, 0, 1, ctx);
+      float out[1] = {0.0f};
+      float* const outs[] = {out};
+      stack.process(nullptr, outs, 0, 1, nc.ctx);
 
-        expectWithinAbsoluteError(
-            out[0], rampValue(500), 0.0001f,
-            juce::String("windowed output identical when ") +
-                (expanded ? "expanded" : "collapsed"));
-      }
+      expectWithinAbsoluteError(out[0], rampValue(500), 0.0001f,
+                                "windowed output maps the clock");
     }
 
     beginTest("Bypass toggle silences the window (data, not view)");
@@ -77,10 +74,9 @@ class StackLoopTests : public juce::UnitTest {
       static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
       stack.setLoopPoints(0, 1000);
 
-      ProcessContext ctx;
+      NodeContext nc = contextFor(stack, 1, 1500);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_playing = true;
-      ctx.num_samples = 1;
-      ctx.master_pos = 1500;
 
       float out[1] = {0.0f};
       float* const outs[] = {out};
@@ -112,10 +108,9 @@ class StackLoopTests : public juce::UnitTest {
       static_cast<ClipNode*>(stack.getChild(0))->startPlayback();
       stack.setLoopPoints(200, 1200);  // len 1000, start 200
 
-      ProcessContext ctx;
+      NodeContext nc = contextFor(stack, 1, 7500);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_playing = true;
-      ctx.num_samples = 1;
-      ctx.master_pos = 7500;
       ctx.cycle_epoch = 7000;  // epoch-rebased frame (e.g. after a commit)
 
       float out[1] = {0.0f};
@@ -132,13 +127,11 @@ class StackLoopTests : public juce::UnitTest {
                                 "t_child = O + start + ((t - O - start) mod "
                                 "len) (the one anchoring law)");
 
-      // Deterministic: same t, same epoch, same output — regardless of
-      // any interleaved view changes.
-      stack.is_expanded.store(!stack.is_expanded.load());
+      // Deterministic: same t, same epoch, same output.
       out[0] = 0.0f;
       stack.process(nullptr, outs2, 0, 1, ctx);
       expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
-                                "phase independent of view state changes");
+                                "phase is a pure function of (t, epoch)");
     }
 
     beginTest("Windowed stack re-bases cycle_epoch for children");
@@ -154,15 +147,12 @@ class StackLoopTests : public juce::UnitTest {
       outer.addChild(std::move(inner));
       outer.setLoopPoints(1000, 2000);  // outer window: [1000, 2000)
 
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 1;
-      ctx.master_pos = 2500;
-      ctx.cycle_epoch = 0;
+      NodeContext nc = contextFor(outer, 1, 2500);  // cycle_epoch 0
+      nc.ctx.is_playing = true;
 
       float out[1] = {0.0f};
       float* const outs[] = {out};
-      outer.process(nullptr, outs, 0, 1, ctx);
+      outer.process(nullptr, outs, 0, 1, nc.ctx);
 
       // Outer: rel = 2500 mod 1000 = 500 → child time 0+1000+500 = 1500,
       // child epoch 1000. Inner: rel = (1500 − 1000) mod 300 = 200 →
@@ -180,14 +170,12 @@ class StackLoopTests : public juce::UnitTest {
       stack.setLoopPoints(1000, 500);  // invalid
       expect(!stack.isLoopWindowActive());
 
-      ProcessContext ctx;
-      ctx.is_playing = true;
-      ctx.num_samples = 1;
-      ctx.master_pos = 2500;
+      NodeContext nc = contextFor(stack, 1, 2500);
+      nc.ctx.is_playing = true;
 
       float out[1] = {0.0f};
       float* const outs[] = {out};
-      stack.process(nullptr, outs, 0, 1, ctx);
+      stack.process(nullptr, outs, 0, 1, nc.ctx);
       expectWithinAbsoluteError(out[0], rampValue(2500), 0.0001f,
                                 "invalid window passes the clock through");
     }
@@ -203,10 +191,9 @@ class StackLoopTests : public juce::UnitTest {
       clip->setLoopPoints(1000, 2000);
       expect(clip->isLoopWindowActive(), "subset window is active");
 
-      ProcessContext ctx;
+      NodeContext nc = contextFor(*clip, 1, 2500);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_playing = true;
-      ctx.num_samples = 1;
-      ctx.master_pos = 2500;
 
       float out[1] = {0.0f};
       float* const outs[] = {out};
@@ -285,10 +272,10 @@ class StackLoopTests : public juce::UnitTest {
       const int64_t loop_2q = 88200;
       stack.setLoopPoints(0, loop_2q);
 
-      ProcessContext ctx;
+      // A very high monotonic position.
+      NodeContext nc = contextFor(stack, 100, 132295000);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_playing = true;
-      ctx.num_samples = 100;
-      ctx.master_pos = 132295000;  // very high monotonic position
 
       float out[100] = {0.0f};
       float* const outs[] = {out};

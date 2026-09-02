@@ -190,7 +190,7 @@ inline int64_t throughMapDest(int64_t heard_i, int64_t anchor_off,
   const int64_t origin_inner = map.mapOffset(anchor_off);
   const int64_t inner = map.mapOffset(anchor_off + heard_i);
   int64_t d = inner - origin_inner;
-  if (commit_cycle > 0) d = ((d % commit_cycle) + commit_cycle) % commit_cycle;
+  d = posMod(d, commit_cycle);
   return d;
 }
 

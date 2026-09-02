@@ -196,59 +196,6 @@ class EngineBridgeTests : public juce::UnitTest {
                                 "and the original (mono) right");
     }
 
-    beginTest("setNodePosition is undoable and drags coalesce to ONE step");
-    {
-      AudioEngine engine;
-      engine.createNode("stack");
-      const juce::String uuid = lastTopLevelId(engine);
-      const double original_x = doubleProperty(engine, uuid, "x");
-      const double original_y = doubleProperty(engine, uuid, "y");
-
-      double final_x = 0.0, final_y = 0.0;
-      for (int i = 0; i < 10; ++i) {
-        final_x = 100.0 + 7.0 * i;
-        final_y = 200.0 + 11.0 * i;
-        engine.setNodePosition(uuid, final_x, final_y);
-      }
-      expectWithinAbsoluteError(doubleProperty(engine, uuid, "x"), final_x,
-                                1e-9, "final drag position applied (x)");
-      expectWithinAbsoluteError(doubleProperty(engine, uuid, "y"), final_y,
-                                1e-9, "final drag position applied (y)");
-
-      // ONE undo returns to the ORIGINAL position: the ten drags
-      // coalesced (editsCoalesce keeps the oldest inverse).
-      engine.undo();
-      expectWithinAbsoluteError(doubleProperty(engine, uuid, "x"), original_x,
-                                1e-9, "one undo restores the original x");
-      expectWithinAbsoluteError(doubleProperty(engine, uuid, "y"), original_y,
-                                1e-9, "one undo restores the original y");
-      expect(topLevelCount(engine.getGraphState()) == 1,
-             "the stack itself survived the position undo");
-
-      // Proof the whole drag was exactly ONE entry: the next undo is the
-      // stack's create, not another position step.
-      engine.undo();
-      expect(topLevelCount(engine.getGraphState()) == 0,
-             "second undo removes the stack (no intermediate drag steps)");
-
-      engine.redo();  // re-insert the stack
-      expect(topLevelCount(engine.getGraphState()) == 1,
-             "redo re-adds the stack");
-      engine.redo();  // re-apply the position step
-      // Redo restores the FINAL dragged position, not the first
-      // coalesced edit's target: the forward stored on the redo stack is
-      // captured live at undo time (applyEditImpl reads the node's
-      // current coordinates — the end of the drag — before restoring the
-      // original), so coalescing keeps the oldest INVERSE but redo
-      // lands on the newest position. That is the desirable gesture
-      // semantics: undo/redo hop between "before the drag" and "after
-      // the drag".
-      expectWithinAbsoluteError(doubleProperty(engine, uuid, "x"), final_x,
-                                1e-9, "redo restores the final x");
-      expectWithinAbsoluteError(doubleProperty(engine, uuid, "y"), final_y,
-                                1e-9, "redo restores the final y");
-    }
-
     beginTest("toggleLoopWindow (LoopBypass) round-trips through undo/redo");
     {
       AudioEngine engine;

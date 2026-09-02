@@ -24,7 +24,7 @@ namespace celestrian {
  *    envelope below is a PURE function of position, so render output
  *    never depends on block boundaries (render purity).
  *
- * Threading (the map_override_ / FxChain discipline): an immutable
+ * Threading (the FxChain discipline): an immutable
  * heap object behind ONE atomic pointer on StackNode. The MESSAGE
  * thread builds a fresh Sequence (finalize() before publishing) and
  * retires the predecessor through the engine reclaimer; the audio

@@ -1129,6 +1129,12 @@ function withinShot(reps, shot, cycleQ) {
  * committed content yet) measures from its received cycle top — its
  * mark is 0, the empty case.
  */
+/** Fold is UI-local view state (I6b): the app shell's folded set
+ * (view_prefs.js), never a node field the engine publishes. */
+function isFolded(node, ctx) {
+    return !!(ctx.folded && ctx.folded.has(node.id));
+}
+
 function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
     const { quantum, cycleQ, qEstablished, fxOpen, lanes, state, lcmQ } = ctx;
     if (ctx.provisionalDefiner && node.id === ctx.soleQDefinerId) {
@@ -1137,7 +1143,7 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
         // — and its children show their whole takes beneath (no map
         // context: the selection is Q being defined, not a part).
         pushDefinerLane(node, depth, ctx);
-        if (!(node.isExpanded === false)) {
+        if (!isFolded(node, ctx)) {
             // The mics draw in the same BUFFER frame as the definer
             // lane above them (one full tile from 0 — the trim view
             // ignores the epoch, which the re-trim moves under them);
@@ -1186,7 +1192,7 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
     const groupFields = {
         kind: 'group',
         depth,
-        folded: node.isExpanded === false,
+        folded: isFolded(node, ctx),
         groupArm: groupArmState(node),
         // The map cue on the MAPPING group itself: a take is
         // recording through this window right now.
@@ -1373,7 +1379,7 @@ function pushDefinerLane(node, depth, ctx) {
         armable: false,
         inputChannel: node.inputChannel ?? -1,
         isQDefiner: true,
-        folded: node.type === 'stack' && node.isExpanded === false,
+        folded: node.type === 'stack' && isFolded(node, ctx),
         groupArm: node.type === 'stack' ? groupArmState(node) : undefined,
     }));
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
@@ -1762,6 +1768,8 @@ function pushLane(node, depth, mapCtx, ctx) {
  *          song + its step-audition window), nodes: [...] } with
  *        clip/stack nodes; a stack's children ride `nodes`.
  * opts.maxDepth:   fold depth guard (default 8).
+ * opts.folded:     Set of stack ids folded (children hidden — I6b view
+ *                  state, view_prefs.js).
  * opts.fxOpen:     Set of lane ids whose effects row is expanded.
  * opts.seqOpen:    Set of stack ids whose sequencer grid is expanded.
  * opts.windowEdit: Set of lane ids in the window EDIT view.
@@ -1950,6 +1958,8 @@ export function deriveViewModel(state, opts = {}) {
         // Stacks whose sequencer grid is expanded (view state, the
         // fxOpen pattern — docs/sequencer.md §9 S15).
         seqOpen: opts.seqOpen || null,
+        // Folded stacks (I6b view state — the app shell's set).
+        folded: opts.folded || null,
         // The cycle top-level lanes hear (§12.2): the root song when
         // sequenced, else the audible loop.
         scopeCycleQ: rootSeqSamples > 0 ? rootSeqSamples / quantum

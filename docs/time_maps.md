@@ -371,7 +371,9 @@ Recording through an active map works end to end:
 indirection were both considered and rejected):**
 
 - **Storage**: multi-segment maps live behind ONE atomic pointer per
-  node (`AudioNode::map_override_`, message-thread swap + reclaimer
+  node (today: ONE inline seqlocked `TimeMap`, `AudioNode::storedMap` /
+  `setMap`, a window being the n = 1 case — the heap override pointer
+  described next was retired 2026-09-01; message-thread swap + reclaimer
   retire — the D4 content-buffer discipline); the loop atomics remain
   the single-segment form; the bypass flag gates both.
   `activeTimeMap()` prefers the override, so every phase-2 consumer

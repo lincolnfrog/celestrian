@@ -16,23 +16,27 @@
 
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 class RenderPurityTests : public juce::UnitTest {
  public:
   RenderPurityTests() : juce::UnitTest("Pure render (section 2.3)") {}
 
   // One-sample render at master time t (distinct channel buffers — the
-  // clip sums into every channel).
-  static float renderAt(const AudioNode& node, int64_t t) {
+  // clip sums into every channel). The node is the island root of the
+  // context (mutable only to build its snapshot); render itself is
+  // called through the const interface.
+  static float renderAt(AudioNode& node, int64_t t) {
     float outL[4] = {0.0f}, outR[4] = {0.0f};
     float* outs[] = {outL, outR};
-    ProcessContext ctx;
-    ctx.num_samples = 1;
-    ctx.is_playing = true;
-    ctx.master_pos = t;
-    node.render(outs, 2, ctx);
+    NodeContext nc = contextFor(node, 1, t);
+    nc.ctx.is_playing = true;
+    static_cast<const AudioNode&>(node).render(outs, 2, nc.ctx);
     return outL[0];
   }
 
@@ -44,11 +48,10 @@ class RenderPurityTests : public juce::UnitTest {
     for (int i = 0; i < N; ++i) ramp[i] = (float)i / N;
     {
       float* ins[] = {ramp.data()};
-      ProcessContext recCtx;
-      recCtx.num_samples = N;
-      recCtx.is_recording = true;
+      NodeContext rec = contextFor(clip, N);
+      rec.ctx.is_recording = true;
       clip.startRecording();
-      clip.process(ins, nullptr, 1, 0, recCtx);
+      clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();  // Q == 0 → immediate commit (message path)
     }
 
@@ -60,9 +63,8 @@ class RenderPurityTests : public juce::UnitTest {
       expectWithinAbsoluteError(renderAt(clip, 100), 0.0f, 1e-9f,
                                 "no playback in the commit block");
       // One control pass (idle clip: clears the gate, decides nothing).
-      ProcessContext ctl;
-      ctl.num_samples = 1;
-      clip.control(nullptr, 0, ctl);
+      NodeContext ctl = contextFor(clip, 1);
+      clip.control(nullptr, 0, ctl.ctx);
       expectWithinAbsoluteError(renderAt(clip, 100), ramp[100], 1e-6f,
                                 "playback from the next block on");
     }
@@ -98,15 +100,13 @@ class RenderPurityTests : public juce::UnitTest {
       auto* child = owned.get();
       {
         float* ins[] = {ramp.data()};
-        ProcessContext recCtx;
-        recCtx.num_samples = N;
-        recCtx.is_recording = true;
+        NodeContext rec = contextFor(*child, N);
+        rec.ctx.is_recording = true;
         child->startRecording();
-        child->process(ins, nullptr, 1, 0, recCtx);
+        child->process(ins, nullptr, 1, 0, rec.ctx);
         child->stopRecording();
-        ProcessContext ctl;  // clear the commit gate
-        ctl.num_samples = 1;
-        child->control(nullptr, 0, ctl);
+        NodeContext ctl = contextFor(*child, 1);  // clear the commit gate
+        child->control(nullptr, 0, ctl.ctx);
       }
       root.addChild(std::move(owned));
       const float a = renderAt(root, 123);

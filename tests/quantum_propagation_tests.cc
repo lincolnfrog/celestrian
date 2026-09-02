@@ -2,8 +2,12 @@
 
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 class QuantumPropagationTests : public juce::UnitTest {
  public:
@@ -30,11 +34,10 @@ class QuantumPropagationTests : public juce::UnitTest {
 
       // Establish quantum in clip1
       clip1Ptr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 100;
-      ctx.is_recording = true;
-      ctx.master_pos = 0;
-      clip1Ptr->process(inputs, nullptr, 1, 0, ctx);
+      NodeContext nc = contextFor(root, 100, 0);
+      nc.driveFrom(*clip1Ptr);
+      nc.ctx.is_recording = true;
+      clip1Ptr->process(inputs, nullptr, 1, 0, nc.ctx);
 
       clip1Ptr->stopRecording();
       expectEquals((int)clip1Ptr->getIntrinsicDuration(), 100);
@@ -52,9 +55,10 @@ class QuantumPropagationTests : public juce::UnitTest {
       auto* c1 = clip1.get();
       root.addChild(std::move(clip1));
 
-      ProcessContext ctx;
+      NodeContext nc = contextFor(root, 0, 0);
+      nc.driveFrom(*c1);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
 
       c1->startRecording();
       ctx.num_samples = 1000;
@@ -68,6 +72,8 @@ class QuantumPropagationTests : public juce::UnitTest {
       auto clip2 = std::make_unique<ClipNode>("Short", 44100.0);
       auto* c2 = clip2.get();
       root.addChild(std::move(clip2));
+      nc.rebuild();  // structure changed; Q now 1000
+      nc.driveFrom(*c2);
 
       c2->startRecording();
       ctx.num_samples = 480;
@@ -101,22 +107,20 @@ class QuantumPropagationTests : public juce::UnitTest {
       auto* qPtr = q.get();
       root.addChild(std::move(q));
 
-      ProcessContext ctx;
-      ctx.is_recording = true;
-      ctx.master_pos = 0;
+      NodeContext nc = contextFor(root, 1000, 0);
+      nc.driveFrom(*qPtr);
+      nc.ctx.is_recording = true;
       qPtr->startRecording();
-      ctx.num_samples = 1000;
-      qPtr->process(inputs, nullptr, 1, 0, ctx);
+      qPtr->process(inputs, nullptr, 1, 0, nc.ctx);
       qPtr->stopRecording();  // Q = 1000
 
       // Nested stack with 1000- and 1500-sample clips: composite = 3000.
       auto makeCommitted = [&](int len) {
         auto clip = std::make_unique<ClipNode>("C", 44100.0);
         clip->startRecording();
-        ProcessContext c;
-        c.is_recording = true;
-        c.num_samples = len;
-        clip->process(inputs, nullptr, 1, 0, c);
+        NodeContext c = contextFor(*clip, len);
+        c.ctx.is_recording = true;
+        clip->process(inputs, nullptr, 1, 0, c.ctx);
         clip->stopRecording();
         return clip;
       };
@@ -140,16 +144,18 @@ class QuantumPropagationTests : public juce::UnitTest {
       root.addChild(std::move(masterClip));
 
       masterPtr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 1000;
+      NodeContext nc = contextFor(root, 1000, 0);
+      nc.driveFrom(*masterPtr);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
       auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
       auto slavePtr = slaveClip.get();
       root.addChild(std::move(slaveClip));
+      nc.rebuild();
+      nc.driveFrom(*slavePtr);
 
       slavePtr->startRecording();
       ctx.num_samples = 1100;  // 1.1x Q. Threshold 15%.
@@ -173,16 +179,18 @@ class QuantumPropagationTests : public juce::UnitTest {
       root.addChild(std::move(masterClip));
 
       masterPtr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 1000;
+      NodeContext nc = contextFor(root, 1000, 0);
+      nc.driveFrom(*masterPtr);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
       auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
       auto slavePtr = slaveClip.get();
       root.addChild(std::move(slaveClip));
+      nc.rebuild();
+      nc.driveFrom(*slavePtr);
 
       slavePtr->startRecording();
       ctx.num_samples = 950;  // 0.95x Q. Tolerance is 10% (100 samples).
@@ -208,16 +216,18 @@ class QuantumPropagationTests : public juce::UnitTest {
       root.addChild(std::move(masterClip));
 
       masterPtr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 1000;
+      NodeContext nc = contextFor(root, 1000, 0);
+      nc.driveFrom(*masterPtr);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
       auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
       auto slavePtr = slaveClip.get();
       root.addChild(std::move(slaveClip));
+      nc.rebuild();
+      nc.driveFrom(*slavePtr);
 
       slavePtr->startRecording();
       ctx.num_samples = 2500;  // 2.5x Q. Threshold 15% (150 samples).
@@ -244,16 +254,18 @@ class QuantumPropagationTests : public juce::UnitTest {
       root.addChild(std::move(masterClip));
 
       masterPtr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 1000;
+      NodeContext nc = contextFor(root, 1000, 0);
+      nc.driveFrom(*masterPtr);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
       auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
       auto slavePtr = slaveClip.get();
       root.addChild(std::move(slaveClip));
+      nc.rebuild();
+      nc.driveFrom(*slavePtr);
 
       slavePtr->startRecording();
       ctx.num_samples = 700;  // Outside 150 samples of 500 or 1000.

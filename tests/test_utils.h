@@ -13,13 +13,104 @@
 
 #include <algorithm>
 #include <functional>
+#include <memory>
 #include <set>
 #include <vector>
 
 #include "../src/audio_engine.h"
+#include "../src/graph_snapshot.h"
+#include "../src/stack_node.h"
 
 namespace celestrian {
 namespace test_utils {
+
+/**
+ * The test-side twin of the engine callback's ProcessContext fill
+ * (AudioEngine::audioDeviceIOCallbackWithContext): a node-level test
+ * drives process()/control()/render() with a REAL whole-graph snapshot
+ * and the island facts the engine hands down, so the node under test
+ * runs the one audio-thread law — nothing in src/ tolerates a missing
+ * snapshot. Keep refresh() in lockstep with the callback.
+ *
+ * `root` is the island root the engine would process: a StackNode, or
+ * a lone ClipNode standing as its own island (Q 0, epoch 0, no take
+ * lifecycle — the first-take path). The snapshot pins STRUCTURE:
+ * rebuild() after addChild/removeChild. The island facts are re-read
+ * at every engine block top, so refresh() before a block whenever they
+ * may have moved (a commit established Q, setQuantum, a solo toggle).
+ * Test-authored overrides on `ctx` (cycle_epoch, map facts, rings,
+ * MIDI) go AFTER the last refresh()/rebuild(), which overwrite the
+ * engine-owned fields.
+ */
+struct NodeContext {
+  AudioNode* root = nullptr;
+  const AudioNode* target = nullptr;  // the node ctx.self addresses
+  std::unique_ptr<GraphSnapshot> snap;
+  ProcessContext ctx;
+
+  /** Entry index of `node` in the snapshot, -1 when it is not there. */
+  int indexOf(const AudioNode& node) const {
+    for (size_t i = 0; i < snap->entries.size(); ++i) {
+      if (snap->entries[i].node == &node) return (int)i;
+    }
+    return -1;
+  }
+
+  /** Aim ctx.self at `node` — the entry its parent stack would hand it
+   * — for a test that drives a nested node directly. */
+  void driveFrom(const AudioNode& node) {
+    target = &node;
+    ctx.self = indexOf(node);
+    jassert(ctx.self >= 0);
+  }
+
+  /** Re-read the island facts into ctx exactly as the callback does. */
+  void refresh() {
+    ctx.snap = snap.get();
+    ctx.island = root;
+    if (const auto* stack = dynamic_cast<const StackNode*>(root)) {
+      const StackNode::IslandFacts facts = stack->readIslandFacts();
+      ctx.quantum = facts.quantum;
+      ctx.island_epoch = facts.epoch;
+      ctx.island_generation = facts.generation;
+      ctx.stop_generation = stack->stopGeneration();
+    } else {
+      ctx.quantum = 0;
+      ctx.island_epoch = 0;
+      ctx.island_generation = 0;
+      ctx.stop_generation = 0;
+    }
+    ctx.cycle_epoch = ctx.island_epoch;
+    ctx.any_solo = snapAnySolo(*snap);
+    ctx.context_cycle =
+        snapEffectiveCycle(*snap, ctx.quantum, (int64_t)ctx.sample_rate);
+  }
+
+  /** Rebuild the snapshot after a structural edit, keep aiming at the
+   * same node, then refresh(). */
+  void rebuild() {
+    snap.reset(buildGraphSnapshot(*root));
+    refresh();
+    driveFrom(*target);
+  }
+};
+
+/** A NodeContext for `root` at `master_pos` (island_pos alongside, as
+ * the engine sets both from one transport read), `num_samples` wide,
+ * aimed at the root itself. */
+inline NodeContext contextFor(AudioNode& root, int num_samples = 0,
+                              int64_t master_pos = 0) {
+  NodeContext nc;
+  nc.root = &root;
+  nc.target = &root;
+  nc.snap.reset(buildGraphSnapshot(root));
+  nc.ctx.num_samples = num_samples;
+  nc.ctx.master_pos = master_pos;
+  nc.ctx.island_pos = master_pos;
+  nc.refresh();
+  nc.driveFrom(root);
+  return nc;
+}
 
 /**
  * Drives `total_samples` of silent input through the engine's real

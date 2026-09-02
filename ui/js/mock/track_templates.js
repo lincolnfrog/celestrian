@@ -53,7 +53,6 @@ function build(tpl) {
         id: generateId(),
         name: tpl.name || (tpl.type === 'stack' ? 'New Stack' : 'New Clip'),
         type: tpl.type,
-        x: 0, y: 0, w: 200, h: 100,
         duration: 0,
         isRecording: false,
         isPlaying: false,
@@ -69,7 +68,6 @@ function build(tpl) {
     };
     if (tpl.type === 'stack') {
         base.nodes = (tpl.children || []).map(build);
-        base.isExpanded = true;
     } else {
         base.inputChannel = tpl.inputChannel ?? -1;
         base.inputChannelR = tpl.inputChannelR ?? -1;

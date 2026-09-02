@@ -335,11 +335,10 @@ class QTimeLockTests : public juce::UnitTest {
       std::vector<float> ramp(N);
       for (int i = 0; i < N; ++i) ramp[i] = (float)i / N;  // content[j] = j/N
       float* ins[] = {ramp.data()};
-      ProcessContext recCtx;
-      recCtx.num_samples = N;
-      recCtx.is_recording = true;
+      test_utils::NodeContext rec = test_utils::contextFor(clip, N);
+      rec.ctx.is_recording = true;
       clip.startRecording();
-      clip.process(ins, nullptr, 1, 0, recCtx);
+      clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();
       clip.origin_samples.store(100);
 
@@ -352,11 +351,9 @@ class QTimeLockTests : public juce::UnitTest {
         // channel, so aliased arrays double the sample.
         float outL[4] = {0.0f}, outR[4] = {0.0f};
         float* outs[] = {outL, outR};
-        ProcessContext playCtx;
-        playCtx.num_samples = 1;
-        playCtx.is_playing = true;
-        playCtx.master_pos = t;
-        clip.process(nullptr, outs, 0, 2, playCtx);
+        test_utils::NodeContext play = test_utils::contextFor(clip, 1, t);
+        play.ctx.is_playing = true;
+        clip.process(nullptr, outs, 0, 2, play.ctx);
         return outL[0];
       };
       // Loop top at its performance moment, and one period later.

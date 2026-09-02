@@ -11,15 +11,17 @@ import { callNative, log, getState } from './backend.js';
 import { deriveViewModel, findNodeInTree, isArmable, hasInstrument }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
-         activeSelectedId, isTypingTarget }
+         activeSelectedId }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initAudioSettings } from './audio_settings.js';
 import { initPluginPanel } from './plugin_panel.js';
 import { updateMasterVU, initMasterFader, updateMasterFader }
     from './vu_meter.js';
+import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
+import { foldedStacks, toggleFolded, migrateFolds } from './view_prefs.js';
+import { DEBUG } from './debug_flags.js';
 
-const DEBUG = new URLSearchParams(window.location.search).get('debug') === 'true';
 const dbg = m => { if (DEBUG) log(m); };
 
 /* ---------- tuning constants ---------- */
@@ -560,7 +562,8 @@ async function startPolling() {
                     }
                 }
                 const vm = deriveViewModel(state,
-                    { fxOpen, windowEdit, seqOpen, pinFrameQ: mapDragPinQ(),
+                    { folded: foldedStacks(projectInfo.id),
+                      fxOpen, windowEdit, seqOpen, pinFrameQ: mapDragPinQ(),
                       pinFoldQ: mapDragPinFoldQ() });
                 patchSessionView(vm, {
                     livePeaks,
@@ -639,6 +642,9 @@ function refreshProjectInfo(announceSave = false) {
         if (!info || typeof info !== 'object') return;
         const wasBorn = projectInfo.born;
         projectInfo = info;
+        // Folds are UI-local, scoped by project id (view_prefs.js):
+        // birth carries the pre-birth session's folds onto the project.
+        if (!wasBorn && info.born) migrateFolds('', info.id);
         // The menu button IS the project's identity in the chrome: quiet
         // "Project ▾" pre-birth, the display name once it exists.
         const btn = document.getElementById('project-menu-btn');
@@ -819,47 +825,33 @@ function settlePendingPause(state) {
     }
 }
 
+/** The app-scope hotkeys (keys.js): transport, undo/redo, project
+ * save/open. Typing targets never reach them (the dispatcher's guard). */
 function wireKeyboard() {
-    window.addEventListener('keydown', e => {
-        if (isTypingTarget(e)) return;
-        if (e.code === 'Space') {
-            e.preventDefault();
-            onSpace();
-            return;
-        }
-        // Undo / redo (edits-as-events, §2.2 Step 1). Cmd/Ctrl+Z undoes;
-        // Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes. The next poll refreshes
-        // the view from the restored graph.
-        if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
-            e.preventDefault();
-            if (e.shiftKey) {
-                callNative('redo');
-                setLogLine('Redo');
-            } else {
-                callNative('undo');
-                setLogLine('Undo');
-            }
-            return;
-        }
-        if (e.ctrlKey && (e.key === 'y' || e.key === 'Y')) {
-            e.preventDefault();
-            callNative('redo');
-            setLogLine('Redo');
-            return;
-        }
-        // ⌘S = checkpoint the PROJECT (docs/projects.md): the mirror
-        // already saves continuously; an explicit save births an unborn
-        // project (intent enough) and stamps the folder now.
-        if ((e.metaKey || e.ctrlKey) && (e.key === 's' || e.key === 'S')) {
-            e.preventDefault();
-            callNative('saveProjectNow').then(() => refreshProjectInfo(true));
-            return;
-        }
-        if ((e.metaKey || e.ctrlKey) && (e.key === 'o' || e.key === 'O')) {
-            e.preventDefault();
-            call('loadSession', [''], 'Session loaded', 'Load cancelled');
-        }
-    });
+    const app = spec => registerKey({ scope: SCOPE.APP, ...spec });
+    app({ code: 'Space', ignore: ANY_MODIFIERS, handler: e => {
+        e.preventDefault();
+        onSpace();
+    } });
+    // Undo / redo (edits-as-events, §2.2 Step 1). Cmd/Ctrl+Z undoes;
+    // Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes. The next poll refreshes
+    // the view from the restored graph.
+    const undo = e => { e.preventDefault(); callNative('undo'); setLogLine('Undo'); };
+    const redo = e => { e.preventDefault(); callNative('redo'); setLogLine('Redo'); };
+    app({ key: 'z', modifiers: ['primary'], handler: undo });
+    app({ key: 'z', modifiers: ['primary', 'shift'], handler: redo });
+    app({ key: 'y', modifiers: ['ctrl'], handler: redo });
+    // ⌘S = checkpoint the PROJECT (docs/projects.md): the mirror
+    // already saves continuously; an explicit save births an unborn
+    // project (intent enough) and stamps the folder now.
+    app({ key: 's', modifiers: ['primary'], handler: e => {
+        e.preventDefault();
+        callNative('saveProjectNow').then(() => refreshProjectInfo(true));
+    } });
+    app({ key: 'o', modifiers: ['primary'], handler: e => {
+        e.preventDefault();
+        call('loadSession', [''], 'Session loaded', 'Load cancelled');
+    } });
 }
 
 function initApp() {
@@ -871,7 +863,9 @@ function initApp() {
         // monitoring gesture, like auditionStep. The engine refuses
         // mid-take (the UI locks the gesture too).
         onSeek: samples => callNative('seekTransport', samples),
-        onFold: id => callNative('toggleStackExpand', id),
+        // Fold is UI-local (I6b): never a bridge call. The next poll
+        // re-derives the view from the folded set.
+        onFold: id => toggleFolded(projectInfo.id, id),
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
         onAddTrack: () => callNative('createNode', 'clip', ''),

@@ -10,6 +10,8 @@
  * (session_view/fx_row.js, phase 3), fed by the same known-plugin list.
  */
 
+import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
+
 let panel = null;
 let callNative = null;
 let onLog = () => { };
@@ -24,15 +26,15 @@ export function initPluginPanel(callNativeFn, log) {
     if (!btn) return;
     btn.addEventListener('click', () => togglePanel());
 
-    // Close on outside click / Escape, like the device panel.
+    // Close on outside click / Escape, like the device panel (the
+    // panel scope wins Escape while open — keys.js).
     document.addEventListener('click', (e) => {
         if (!panel) return;
         if (panel.contains(e.target) || e.target === btn) return;
         closePanel();
     });
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && panel) closePanel();
-    });
+    registerKey({ key: 'Escape', scope: SCOPE.PANEL, ignore: ANY_MODIFIERS,
+                  whileTyping: true, when: () => !!panel, handler: closePanel });
 }
 
 function closePanel() {

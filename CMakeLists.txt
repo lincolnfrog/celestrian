@@ -111,6 +111,15 @@ target_sources(Celestrian PRIVATE
     src/main_component.cc
     src/audio_engine.h
     src/audio_engine.cc
+    src/engine/engine_internal.h
+    src/engine/island_geometry.cc
+    src/engine/edit_log.cc
+    src/engine/take_service.cc
+    src/engine/transport.cc
+    src/engine/verbs.cc
+    src/engine/map_edits.cc
+    src/engine/audio_callback.cc
+    src/engine/device_service.cc
     src/timing.h
     src/clip_node.cc
     src/take_storage.cc
@@ -229,6 +238,14 @@ target_sources(CelestrianTests PRIVATE
     src/take_storage.cc
     src/stack_node.cc
     src/audio_engine.cc
+    src/engine/island_geometry.cc
+    src/engine/edit_log.cc
+    src/engine/take_service.cc
+    src/engine/transport.cc
+    src/engine/verbs.cc
+    src/engine/map_edits.cc
+    src/engine/audio_callback.cc
+    src/engine/device_service.cc
     src/session_io.cc
     src/project_manager.cc
     src/plugin_host_service.cc

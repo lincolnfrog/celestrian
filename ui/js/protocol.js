@@ -12,9 +12,8 @@
  * If you add a bridge method: add it HERE first, then to both backends.
  *
  * `params` and `returns` are documentation (not runtime-enforced yet); all
- * sample-domain values are int64 samples. (setNodePosition's x/y are a
- * canvas-era leftover the session view never sends — kept only until
- * the C++ side and this list drop it together.)
+ * sample-domain values are int64 samples. No verb carries view state
+ * (I6b): fold/expand and lane placement are UI-local (view_prefs.js).
  */
 export const BRIDGE_METHODS = [
     { name: 'ping', params: [], returns: "'pong'" },
@@ -42,9 +41,7 @@ export const BRIDGE_METHODS = [
     { name: 'deleteNode', params: ['uuid'] },
     { name: 'renameNode', params: ['uuid', 'name'] },
     { name: 'reorderNode', params: ['uuid', 'newParentUuid', 'newIndex'] },
-    { name: 'setNodePosition', params: ['uuid', 'x', 'y'] },
     { name: 'combineNodes', params: ['draggedUuid', 'targetUuid'], returns: 'new stack uuid' },
-    { name: 'toggleStackExpand', params: ['uuid'] },
 
     // Undo / redo (edits-as-events, unification_audit.md §2.2 Step 1).
     // Every structural + property mutation is reversible; canUndo/canRedo

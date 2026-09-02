@@ -146,8 +146,9 @@ class MidiTests : public juce::UnitTest {
       installStubSynth(clip, sr);
       const juce::MidiBuffer midi = noteOnBuffer();
 
-      ProcessContext idle;  // transport stopped, no content
-      idle.num_samples = 256;
+      // Transport stopped, no content.
+      test_utils::NodeContext nc = test_utils::contextFor(clip, 256);
+      ProcessContext& idle = nc.ctx;
       idle.live_midi = &midi;
 
       std::vector<float> left(256, 0.0f), right(256, 0.0f);

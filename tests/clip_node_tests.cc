@@ -4,8 +4,12 @@
 
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 class ClipNodeTests : public juce::UnitTest {
  public:
@@ -22,10 +26,9 @@ class ClipNodeTests : public juce::UnitTest {
       expect(!node.isRecording());
 
       // Trigger the audio thread start
-      ProcessContext ctx;
-      ctx.num_samples = 1;
-      ctx.is_recording = true;
-      node.process(nullptr, nullptr, 0, 0, ctx);
+      NodeContext nc = contextFor(node, 1);
+      nc.ctx.is_recording = true;
+      node.process(nullptr, nullptr, 0, 0, nc.ctx);
 
       expect(node.isRecording());
       expect(!node.isPendingStart());
@@ -44,12 +47,11 @@ class ClipNodeTests : public juce::UnitTest {
       for (int i = 0; i < 100; ++i) input[i] = 1.0f;  // DC signal
       float* const inputs[] = {input};
 
-      ProcessContext context;
-      context.num_samples = 100;
-      context.is_recording = true;
+      NodeContext nc = contextFor(node, 100);
+      nc.ctx.is_recording = true;
 
       // First process starts it and captures 100 samples
-      node.process(inputs, nullptr, 1, 0, context);
+      node.process(inputs, nullptr, 1, 0, nc.ctx);
 
       expectEquals(node.getWritePosition(), 100);
 
@@ -78,11 +80,10 @@ class ClipNodeTests : public juce::UnitTest {
       // Write some samples
       float input[10] = {0.5f};
       float* const inputs[] = {input};
-      ProcessContext context;
-      context.num_samples = 10;
-      context.is_recording = true;
+      NodeContext nc = contextFor(node, 10);
+      nc.ctx.is_recording = true;
       node.startRecording();
-      node.process(inputs, nullptr, 1, 0, context);
+      node.process(inputs, nullptr, 1, 0, nc.ctx);
       node.stopRecording();
 
       node.startPlayback();
@@ -96,11 +97,10 @@ class ClipNodeTests : public juce::UnitTest {
 
       float input[10] = {0.8f};
       float* const inputs[] = {input};
-      ProcessContext context;
-      context.num_samples = 10;
-      context.is_recording = true;  // MUST be true for node to capture
+      NodeContext nc = contextFor(node, 10);
+      nc.ctx.is_recording = true;  // MUST be true for node to capture
 
-      node.process(inputs, nullptr, 1, 0, context);
+      node.process(inputs, nullptr, 1, 0, nc.ctx);
       node.stopRecording();
 
       expect(node.isPlaying());  // New behavior: auto-starts playback
@@ -113,8 +113,8 @@ class ClipNodeTests : public juce::UnitTest {
       node.startRecording();
 
       // First process call to start the recording
-      ProcessContext context;
-      context.num_samples = 1;
+      NodeContext nc = contextFor(node, 1);
+      ProcessContext& context = nc.ctx;
       context.is_recording = true;
       node.process(nullptr, nullptr, 0, 0, context);
       expect(node.isRecording());
@@ -137,11 +137,10 @@ class ClipNodeTests : public juce::UnitTest {
       float input[10] = {0.5f, -0.7f, 0.2f, 0.0f, 0.0f,
                          0.0f, 0.0f,  0.0f, 0.0f, 0.0f};
       float* const inputs[] = {input};
-      ProcessContext context;
-      context.num_samples = 10;
-      context.is_recording = true;
+      NodeContext nc = contextFor(node, 10);
+      nc.ctx.is_recording = true;
 
-      node.process(inputs, nullptr, 1, 0, context);
+      node.process(inputs, nullptr, 1, 0, nc.ctx);
       expectWithinAbsoluteError(node.getCurrentPeak(), 0.7f, 0.001f);
     }
 
@@ -156,11 +155,10 @@ class ClipNodeTests : public juce::UnitTest {
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[100] = {0.0f};
       float* const dummyIns[] = {dummyIn};
-      ProcessContext dummyCtx;
-      dummyCtx.num_samples = 100;
-      dummyCtx.is_recording = true;
+      NodeContext dummyNc = contextFor(*dummy, 100);
+      dummyNc.ctx.is_recording = true;
       dummy->startRecording();
-      dummy->process(dummyIns, nullptr, 1, 0, dummyCtx);
+      dummy->process(dummyIns, nullptr, 1, 0, dummyNc.ctx);
       dummy->stopRecording();
       parent.addChild(std::move(dummy));
 
@@ -169,9 +167,9 @@ class ClipNodeTests : public juce::UnitTest {
       parent.addChild(std::move(node));
 
       // Start recording at master_pos = 125 (Phase = 25 relative to Q=100)
-      ProcessContext ctx;
-      ctx.num_samples = 50;
-      ctx.master_pos = 125;
+      NodeContext nc = contextFor(parent, 50, 125);
+      nc.driveFrom(*nodePtr);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
 
       // First sample is 0.5, rest 0.0
@@ -202,7 +200,7 @@ class ClipNodeTests : public juce::UnitTest {
       // Actually check if rotation logic is applied correctly.
 
       // For now, just verify duration is correct
-      expectEquals(nodePtr->loop_end_samples.load(), (int64_t)100);
+      expectEquals(nodePtr->getLoopEnd(), (int64_t)100);
     }
 
     beginTest("Origin Alignment: content plays at its origin");
@@ -220,11 +218,10 @@ class ClipNodeTests : public juce::UnitTest {
         auto clip = std::make_unique<ClipNode>(name, SR);
         std::vector<float> in((size_t)len, 0.0f);
         float* const ins[] = {in.data()};
-        ProcessContext ctx;
-        ctx.num_samples = len;
-        ctx.is_recording = true;
+        NodeContext nc = contextFor(*clip, len);
+        nc.ctx.is_recording = true;
         clip->startRecording();
-        clip->process(ins, nullptr, 1, 0, ctx);
+        clip->process(ins, nullptr, 1, 0, nc.ctx);
         clip->stopRecording();  // No parent yet -> no Q -> immediate commit
         return clip;
       };
@@ -243,9 +240,9 @@ class ClipNodeTests : public juce::UnitTest {
       float rec1[150];
       for (int i = 0; i < 150; ++i) rec1[i] = v(i);
       float* const recIns1[] = {rec1};
-      ProcessContext recCtx;
-      recCtx.num_samples = 150;
-      recCtx.master_pos = 100;
+      NodeContext recNc = contextFor(parent, 150, 100);
+      recNc.driveFrom(*c);
+      ProcessContext& recCtx = recNc.ctx;
       recCtx.is_recording = true;
 
       c->startRecording();
@@ -268,10 +265,10 @@ class ClipNodeTests : public juce::UnitTest {
       // at cycle moment 100 replays at cycle moment 100 (I1).
       float outL[10] = {0.0f};
       float* const outs[] = {outL};
-      ProcessContext playCtx;
-      playCtx.num_samples = 10;
+      NodeContext playNc = contextFor(parent, 10, 100);
+      playNc.driveFrom(*c);
+      ProcessContext& playCtx = playNc.ctx;
       playCtx.is_playing = true;
-      playCtx.master_pos = 100;
       c->process(nullptr, outs, 0, 1, playCtx);
       for (int i = 0; i < 10; ++i) {
         expectWithinAbsoluteError(outL[i], v(i), 0.0001f);
@@ -307,12 +304,12 @@ class ClipNodeTests : public juce::UnitTest {
         input[i] = (float)(i % 100) / 100.0f;  // Ramp pattern
       float* const inputs[] = {input};
 
-      ProcessContext recCtx;
-      recCtx.num_samples = 1000;
-      recCtx.is_recording = true;
+      NodeContext recNc = contextFor(parent, 1000);
+      recNc.driveFrom(*clipPtr);
+      recNc.ctx.is_recording = true;
 
       clipPtr->startRecording();
-      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->process(inputs, nullptr, 1, 0, recNc.ctx);
       clipPtr->stopRecording();
 
       // Default loop points should span full clip
@@ -329,12 +326,11 @@ class ClipNodeTests : public juce::UnitTest {
       float out[10] = {0.0f};
       float* const outputs[] = {out, out};
 
-      ProcessContext playCtx;
-      playCtx.num_samples = 10;
-      playCtx.is_playing = true;
-      playCtx.master_pos = 0;
+      NodeContext playNc = contextFor(parent, 10, 0);
+      playNc.driveFrom(*clipPtr);
+      playNc.ctx.is_playing = true;
 
-      clipPtr->process(nullptr, outputs, 0, 2, playCtx);
+      clipPtr->process(nullptr, outputs, 0, 2, playNc.ctx);
       // Verify playhead is within loop region
       expect(clipPtr->playhead_pos.load() >= 0.0);
     }
@@ -356,13 +352,12 @@ class ClipNodeTests : public juce::UnitTest {
       for (int i = 0; i < 1000; ++i) masterInput[i] = 0.1f;
       float* const masterInputs[] = {masterInput};
 
-      ProcessContext ctx;
-      ctx.num_samples = 1000;
-      ctx.is_recording = true;
-      ctx.master_pos = 0;
+      NodeContext nc = contextFor(parent, 1000, 0);
+      nc.driveFrom(*masterPtr);
+      nc.ctx.is_recording = true;
 
       masterPtr->startRecording();
-      masterPtr->process(masterInputs, nullptr, 1, 0, ctx);
+      masterPtr->process(masterInputs, nullptr, 1, 0, nc.ctx);
       masterPtr->stopRecording();
       expectEquals(parent.getEffectiveQuantum(), (int64_t)1000);
 
@@ -431,10 +426,10 @@ class ClipNodeTests : public juce::UnitTest {
 
       float in[50] = {0.5f};
       float* const ins[] = {in};
-      ProcessContext ctx;
-      ctx.num_samples = 50;
+      NodeContext nc = contextFor(parent, 50, 100);  // target 1000: too far
+      nc.driveFrom(*c);                               // for immediate start
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 100;  // target 1000: too far for immediate start
 
       c->startRecording();
       c->process(ins, nullptr, 1, 0, ctx);
@@ -470,10 +465,10 @@ class ClipNodeTests : public juce::UnitTest {
       float in[300];
       for (int i = 0; i < 300; ++i) in[i] = 0.4f;
       float* const ins[] = {in};
-      ProcessContext ctx;
-      ctx.num_samples = 300;
+      NodeContext nc = contextFor(parent, 300, 0);  // on the boundary:
+      nc.driveFrom(*c);                             // capture starts now
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 0;  // on the boundary: capture starts immediately
 
       c->startRecording();
       c->process(ins, nullptr, 1, 0, ctx);  // L = 300
@@ -518,10 +513,10 @@ class ClipNodeTests : public juce::UnitTest {
       float in[300];
       for (int i = 0; i < 300; ++i) in[i] = 0.4f;
       float* const ins[] = {in};
-      ProcessContext ctx;
-      ctx.num_samples = 50;
+      NodeContext nc = contextFor(parent, 50, 100);  // target 1000: beyond
+      nc.driveFrom(*c);                               // the near window
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
-      ctx.master_pos = 100;  // target 1000: beyond the near window
 
       c->startRecording();
       expectEquals(peakCount(c->getWaveform(8)), 0, "Armed: no peaks");
@@ -600,8 +595,9 @@ class ClipNodeTests : public juce::UnitTest {
 
       float in[50] = {0.5f};
       float* const ins[] = {in};
-      ProcessContext ctx;
-      ctx.num_samples = 50;
+      NodeContext nc = contextFor(parent, 50);
+      nc.driveFrom(*c);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
 
       // Click at master 1600 = heard phase 900, 100 before the heard
@@ -629,8 +625,9 @@ class ClipNodeTests : public juce::UnitTest {
 
       float in[50] = {0.5f};
       float* const ins[] = {in};
-      ProcessContext ctx;
-      ctx.num_samples = 50;
+      NodeContext nc = contextFor(parent, 50);
+      nc.driveFrom(*c);
+      ProcessContext& ctx = nc.ctx;
       ctx.is_recording = true;
 
       // Click at master 1100 = heard 400: target 1700, 600 away (> 512)
@@ -661,11 +658,10 @@ class ClipNodeTests : public juce::UnitTest {
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[1000] = {0.0f};
       float* const dummyIns[] = {dummyIn};
-      ProcessContext dummyCtx;
-      dummyCtx.num_samples = 1000;  // Q = 1000 samples
-      dummyCtx.is_recording = true;
+      NodeContext dummyNc = contextFor(*dummy, 1000);  // Q = 1000 samples
+      dummyNc.ctx.is_recording = true;
       dummy->startRecording();
-      dummy->process(dummyIns, nullptr, 1, 0, dummyCtx);
+      dummy->process(dummyIns, nullptr, 1, 0, dummyNc.ctx);
       dummy->stopRecording();
       parent.addChild(std::move(dummy));
 
@@ -674,13 +670,13 @@ class ClipNodeTests : public juce::UnitTest {
 
       // Start recording
       nodePtr->startRecording();
-      ProcessContext ctx;
-      ctx.num_samples = 500;  // Record 500 samples (half of Q)
-      ctx.is_recording = true;
+      NodeContext nc = contextFor(parent, 500);  // 500 samples (half of Q)
+      nc.driveFrom(*nodePtr);
+      nc.ctx.is_recording = true;
       float input[500];
       for (int i = 0; i < 500; ++i) input[i] = 0.5f;
       float* const inputs[] = {input};
-      nodePtr->process(inputs, nullptr, 1, 0, ctx);
+      nodePtr->process(inputs, nullptr, 1, 0, nc.ctx);
 
       // Stop recording - should NOT commit immediately
       // Should set is_awaiting_stop and wait for next Q (1000)

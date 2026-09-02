@@ -46,6 +46,9 @@
 
 namespace celestrian {
 
+using test_utils::contextFor;
+using test_utils::NodeContext;
+
 namespace {
 
 constexpr double kSr = 44100.0;
@@ -59,11 +62,10 @@ std::unique_ptr<ClipNode> makeDcClip(const char* name, float amp,
   auto clip = std::make_unique<ClipNode>(name, kSr);
   std::vector<float> in((size_t)len, amp);
   const float* const ins[] = {in.data()};
-  ProcessContext rec;
-  rec.num_samples = len;
-  rec.is_recording = true;
+  NodeContext rec = contextFor(*clip, len);
+  rec.ctx.is_recording = true;
   clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec);
+  clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
   clip->startPlayback();
   return clip;
@@ -76,11 +78,10 @@ std::unique_ptr<ClipNode> makeRampClip(const char* name, int len = kLen) {
   std::vector<float> in((size_t)len);
   for (int i = 0; i < len; ++i) in[(size_t)i] = (float)i / (float)len;
   const float* const ins[] = {in.data()};
-  ProcessContext rec;
-  rec.num_samples = len;
-  rec.is_recording = true;
+  NodeContext rec = contextFor(*clip, len);
+  rec.ctx.is_recording = true;
   clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec);
+  clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
   clip->startPlayback();
   return clip;
@@ -127,19 +128,12 @@ class SequencerTests : public juce::UnitTest {
    * on first render) — sequential drivers pass warm=false. */
   static std::vector<float> renderAt(StackNode& root, int64_t t, int n,
                                      bool warm = true) {
-    std::unique_ptr<GraphSnapshot> snap(buildGraphSnapshot(root));
     auto once = [&](int64_t at, int count) {
       std::vector<float> outL((size_t)count, 0.0f), outR((size_t)count, 0.0f);
       float* outs[] = {outL.data(), outR.data()};
-      ProcessContext play;
-      play.num_samples = count;
-      play.is_playing = true;
-      play.master_pos = at;
-      play.island_pos = at;
-      play.snap = snap.get();
-      play.self = 0;
-      play.any_solo = snapAnySolo(*snap);
-      root.process(nullptr, outs, 0, 2, play);
+      NodeContext play = contextFor(root, count, at);
+      play.ctx.is_playing = true;
+      root.process(nullptr, outs, 0, 2, play.ctx);
       return outL;
     };
     if (warm) once(t, n);

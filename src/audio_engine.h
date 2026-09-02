@@ -96,11 +96,6 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
   // Stack Management
   /**
-   * Toggles the expand/collapse state of a stack.
-   */
-  void toggleStackExpand(const juce::String& uuid);
-
-  /**
    * Creates a new node of the specified type.
    * If parent_uuid is provided, adds to that stack; otherwise to the
    * root. The node is appended to the end of the parent's children.
@@ -132,11 +127,6 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   void reorderNode(const juce::String& node_uuid,
                    const juce::String& new_parent_uuid, int new_index);
-
-  /**
-   * Updates a node's position (for freeform positioning of top-level stacks).
-   */
-  void setNodePosition(const juce::String& node_uuid, double x, double y);
 
   /**
    * Combines two sibling-level nodes into a new stack placed at the target's
@@ -702,7 +692,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * yet) counts as coherent. */
   static bool isPeriodCoherentWithQuantum(int64_t period, int64_t quantum);
   /** TWO-ANCHOR CONTINUITY riders (see the continuityOrigin note in
-   * audio_engine.cc), shared by setLoopPoints and setSegments: re-anchor
+   * engine/island_geometry.cc), shared by setLoopPoints and setSegments: re-anchor
    * the clip's origin so the sounding sample keeps sounding (while
    * playing), then place the island epoch by the CYCLE-TOP RULE: if the
    * clip DEFINES the island's cycle after the edit (its new period is a

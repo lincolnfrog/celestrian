@@ -11,6 +11,9 @@
 
 namespace celestrian {
 
+using test_utils::contextFor;
+using test_utils::NodeContext;
+
 namespace {
 
 constexpr double kSr = 44100.0;
@@ -21,11 +24,10 @@ std::unique_ptr<ClipNode> makeClip(const char* name, float amp, int64_t len) {
   auto clip = std::make_unique<ClipNode>(name, kSr);
   std::vector<float> in((size_t)len, amp);
   float* const ins[] = {in.data()};
-  ProcessContext rec;
-  rec.num_samples = (int)len;
-  rec.is_recording = true;
+  NodeContext rec = contextFor(*clip, (int)len);
+  rec.ctx.is_recording = true;
   clip->startRecording();
-  clip->process(ins, nullptr, 1, 0, rec);
+  clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
   clip->startPlayback();
   return clip;
@@ -37,12 +39,9 @@ std::unique_ptr<ClipNode> makeClip(const char* name, float amp, int64_t len) {
 float renderAt(AudioNode& node, int64_t pos) {
   std::vector<float> outL((size_t)kQ, 0.0f), outR((size_t)kQ, 0.0f);
   float* outs[] = {outL.data(), outR.data()};
-  ProcessContext play;
-  play.num_samples = (int)kQ;
-  play.is_playing = true;
-  play.master_pos = pos;
-  play.island_pos = pos;
-  node.process(nullptr, outs, 0, 2, play);
+  NodeContext play = contextFor(node, (int)kQ, pos);
+  play.ctx.is_playing = true;
+  node.process(nullptr, outs, 0, 2, play.ctx);
   return outL[100];
 }
 

@@ -32,7 +32,7 @@ StackNode::StackNode(juce::String node_name) : AudioNode(std::move(node_name)) {
 }
 
 StackNode::~StackNode() {
-  // Same lifetime argument as map_override_/chain_ (AudioNode's dtor):
+  // Same lifetime argument as chain_ (AudioNode's dtor):
   // nodes only die via the reclaimer's grace, so no in-flight audio can
   // still be reading the sequence here.
   delete sequence_.load();
@@ -47,7 +47,6 @@ juce::var StackNode::getMetadata() const {
   auto base = AudioNode::getMetadata();
   auto* obj = base.getDynamicObject();
   obj->setProperty("childCount", (int)kids.size());
-  obj->setProperty("isExpanded", (bool)is_expanded.load());
   // Loop window state (loopBypassed/windowActive) publishes from the
   // AudioNode base — fractal with clips (I5). The stack's `playhead`
   // field carries the window phase fraction while the window is active.
@@ -130,29 +129,28 @@ int64_t StackNode::getIntrinsicDuration() const {
 }
 
 int64_t StackNode::getEffectivePeriod() const {
-  // E-C: an active map on this stack IS the period (base class).
-  if (const timing::TimeMap map = activeTimeMap(); map.active()) {
+  return effectivePeriodOf(*this, nullptr);
+}
+
+int64_t StackNode::effectivePeriodOf(const AudioNode& node,
+                                     const AudioNode* skip) {
+  // THE EFFECTIVE-PERIOD CHAIN (composition.md §3, I12): map ▸ active
+  // sequence ▸ intrinsic (clip) / LCM of the children's effective
+  // periods (stack). One-shots contribute nothing (Q5); `skip` is left
+  // out (the "everyone else" a map edit is judged against). The
+  // audio-thread twin is snapEffectivePeriod (graph_snapshot.h).
+  if (&node == skip || node.periodFromContext()) return 0;
+  const auto* stack = dynamic_cast<const StackNode*>(&node);
+  if (stack == nullptr) return node.getEffectivePeriod();
+  if (const timing::TimeMap map = stack->activeTimeMap(); map.active()) {
     return map.period();
   }
-  // THE PERIOD LAW (docs/sequencer.md §2): an active sequence sets the
-  // stack's effective period to the sequence length — the song is what
-  // the stack IS from outside (steps concatenate; they never LCM).
-  // Composition order per the S9 law: a map on this same node selects
-  // spans OF the sequence timeline, which is why it won above.
-  if (const int64_t seq_len = activeSequenceLen(); seq_len > 0) {
+  if (const int64_t seq_len = stack->activeSequenceLen(); seq_len > 0) {
     return seq_len;
   }
-  // Otherwise LCM of children's EFFECTIVE periods — windowed children
-  // contribute their window length, so nested windows shorten the
-  // audible cycle. Same shape as getIntrinsicDuration, one recursion
-  // deeper in honesty.
-  const auto& kids = children;  // message thread: ownership vector
-  if (kids.empty()) return 0;
-
   int64_t composite = 0;
-  for (const auto& child : kids) {
-    if (child->periodFromContext()) continue;  // Q5: one-shots excluded
-    composite = timing::foldPeriod(composite, child->getEffectivePeriod());
+  for (const auto& child : stack->ownedChildren()) {
+    composite = timing::foldPeriod(composite, effectivePeriodOf(*child, skip));
   }
   return composite;
 }
@@ -161,11 +159,8 @@ bool StackNode::oneShotFacts(const ProcessContext& context,
                              const timing::TimeMap& own_map, int64_t& shot,
                              int64_t& cycle) const {
   if (!period_from_context_.load()) return false;
-  shot = own_map.active()
-             ? own_map.period()
-             : (context.snap != nullptr
-                    ? snapIntrinsicDuration(*context.snap, context.self)
-                    : getIntrinsicDuration());
+  shot = own_map.active() ? own_map.period()
+                          : snapIntrinsicDuration(*context.snap, context.self);
   cycle = context.context_cycle;
   return shot > 0 && cycle > shot;
 }
@@ -176,7 +171,7 @@ bool StackNode::inRest(const ProcessContext& context) const {
   if (!oneShotFacts(context, own_map, shot, cycle)) return false;
   const int64_t a0 = own_map.active() ? own_map.mapOffset(0) : 0;
   int64_t h = context.master_pos - frameOrigin(context) - a0;
-  h = ((h % cycle) + cycle) % cycle;
+  h = timing::posMod(h, cycle);
   return h >= shot;
 }
 
@@ -315,14 +310,11 @@ std::unique_ptr<AudioNode> StackNode::removeChild(int index) {
 }
 
 int StackNode::ChildView::count() const {
-  return snap ? snap->entries[(size_t)self].childCount : (int)owned->size();
+  return snap->entries[(size_t)self].childCount;
 }
-int StackNode::ChildView::entryAt(int k) const {
-  return snap ? snap->childAt(self, k) : 0;
-}
+int StackNode::ChildView::entryAt(int k) const { return snap->childAt(self, k); }
 AudioNode* StackNode::ChildView::nodeAt(int k) const {
-  return snap ? snap->entries[(size_t)snap->childAt(self, k)].node
-              : (*owned)[(size_t)k].get();
+  return snap->entries[(size_t)snap->childAt(self, k)].node;
 }
 
 ProcessContext StackNode::childContext(const ProcessContext& context) const {
@@ -381,21 +373,11 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
     child_context.context_cycle = seq->total;
   } else {
     int64_t fold = 0;
-    const GraphSnapshot* snap = context.snap;
-    const int n = snap ? snap->entries[(size_t)context.self].childCount
-                       : (int)children.size();
-    for (int k = 0; k < n; ++k) {
-      int64_t p = 0;
-      if (snap) {
-        const int child = snap->childAt(context.self, k);
-        if (snap->entries[(size_t)child].node->periodFromContext()) continue;
-        p = snapEffectivePeriod(*snap, child);
-      } else {
-        const AudioNode* child = children[(size_t)k].get();
-        if (child->periodFromContext()) continue;
-        p = child->getEffectivePeriod();
-      }
-      fold = timing::foldPeriod(fold, p);
+    const ChildView kids = childView(context);
+    for (int k = 0; k < kids.count(); ++k) {
+      if (kids.nodeAt(k)->periodFromContext()) continue;
+      fold = timing::foldPeriod(
+          fold, snapEffectivePeriod(*context.snap, kids.entryAt(k)));
     }
     if (fold > 0) {
       child_context.context_cycle =
@@ -448,6 +430,7 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
 
 void StackNode::control(const float* const* input_channels,
                         int num_input_channels, const ProcessContext& context) {
+  jassert(context.snap != nullptr && context.island != nullptr);
   // Block-top origin adoption (Q18): a stack renders with a gated
   // origin exactly like a clip — see AudioNode::adoptOriginGate.
   adoptOriginGate(context);
@@ -464,7 +447,7 @@ void StackNode::controlChildren(const float* const* input_channels,
   ProcessContext child_context = childContext(context);
 
   // Children come from the WHOLE-GRAPH snapshot (one engine-side load
-  // per callback) or the ownership fallback — see ChildView.
+  // per callback) — see ChildView.
   const ChildView kids = childView(context);
   const int child_count = kids.count();
 
@@ -476,14 +459,10 @@ void StackNode::controlChildren(const float* const* input_channels,
   int64_t longest_committed = 0;
   for (int k = 0; k < child_count; ++k) {
     const AudioNode* child = kids.nodeAt(k);
-    int64_t d = 0;
-    if (child->getNodeType() == NodeType::Clip) {
-      d = child->duration_samples.load();
-    } else if (context.snap != nullptr) {
-      d = snapIntrinsicDuration(*context.snap, kids.entryAt(k));
-    } else {
-      d = child->getIntrinsicDuration();  // single-threaded test fallback
-    }
+    const int64_t d =
+        child->getNodeType() == NodeType::Clip
+            ? child->duration_samples.load()
+            : snapIntrinsicDuration(*context.snap, kids.entryAt(k));
     if (d > longest_committed) longest_committed = d;
   }
   // Under an ACTIVE map the heard loop IS the map period (time_maps.md
@@ -508,6 +487,7 @@ void StackNode::controlChildren(const float* const* input_channels,
 
 void StackNode::render(float* const* output_channels, int num_output_channels,
                        const ProcessContext& context) const {
+  jassert(context.snap != nullptr && context.island != nullptr);
   // Render twin of control's seam split: both phases must see the SAME
   // mapped child clock, run for run (the shared driver guarantees it).
   forEachSeamRun(
@@ -541,7 +521,7 @@ void StackNode::renderChildren(float* const* output_channels,
     if (map.active() && p > 0) {
       // Heard phase from this stack's own anchor (Q18).
       int64_t rel = context.master_pos - frameOrigin(context) - map.mapOffset(0);
-      rel = ((rel % p) + p) % p;
+      rel = timing::posMod(rel, p);
       playhead_pos.store((double)rel / (double)p);
     } else {
       playhead_pos.store(0.0);

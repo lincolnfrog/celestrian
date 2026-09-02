@@ -55,7 +55,7 @@ under an actively rendering clip because render loads the pointer once
 per block. Never resize or swap a buffer the audio thread might be
 CAPTURING into (compaction skips armed/recording clips).
 *Phase 3 (2026-07-22):* a node's multi-segment map override follows
-the same discipline — ONE atomic pointer (`AudioNode::map_override_`),
+the same discipline — ONE atomic pointer (`AudioNode::chain_`; a node's time-map is an inline seqlocked value, `AudioNode::storedMap`, not a heap object),
 message-thread swaps, superseded maps retired through the reclaimer,
 audio thread loads at most once per call. A multi-segment
 lock-collapse SPLICES a new content buffer in; the displaced buffer is

@@ -129,12 +129,11 @@ class MidiRecordTests : public juce::UnitTest {
       expect(clip.recState() == ClipNode::RecState::Armed);
       clip.midi_armed.store(true);  // hear the take while recording
 
-      ProcessContext ctx;
+      test_utils::NodeContext nc = test_utils::contextFor(clip, 256, 0);
+      ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
-      ctx.num_samples = 256;
       ctx.is_playing = true;
       ctx.is_recording = true;
-      ctx.master_pos = 0;
       std::vector<float> left(1024, 0.0f), right(1024, 0.0f);
       float* outs[] = {left.data(), right.data()};
 
@@ -286,9 +285,9 @@ class MidiRecordTests : public juce::UnitTest {
       MidiHistory hist;
       clip.startRecording();
 
-      ProcessContext ctx;
+      test_utils::NodeContext nc = test_utils::contextFor(clip, 256);
+      ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
-      ctx.num_samples = 256;
       ctx.is_playing = true;
       ctx.is_recording = true;
       ctx.midi_history = &hist;
@@ -333,7 +332,8 @@ class MidiRecordTests : public juce::UnitTest {
       // The fold is a per-event point map through timing::throughMapDest
       // (the audio path's captureWrite fold): a take armed through a
       // two-segment map [100,200)+[500,600) (period 200) into C = 800.
-      // Anchor a parent so island facts resolve (unit-test fallback).
+      // The island root carries Q; the clip is driven directly with
+      // the map facts a mapping parent would deliver.
       StackNode root("Root");
       const int64_t Q = 200;
       root.setQuantum(Q, 0);
@@ -344,13 +344,12 @@ class MidiRecordTests : public juce::UnitTest {
       c2->startRecording(/*through_map_commit_cycle=*/800);
       expect(c2->contentKind() == ClipNode::ContentKind::Midi);
 
-      ProcessContext ctx;
+      test_utils::NodeContext nc = test_utils::contextFor(root, 100, 0);
+      nc.driveFrom(*c2);
+      ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
-      ctx.num_samples = 100;
       ctx.is_playing = true;
       ctx.is_recording = true;
-      ctx.quantum = Q;
-      ctx.island = &root;
       timing::TimeMap map;
       map.n = 2;
       map.segs[0] = {100, 200};

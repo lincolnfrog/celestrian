@@ -83,8 +83,8 @@ export async function toggleInputMenu(row) {
         i => ctx.cb.onSetInputRight(lane.id, i));
 }
 
-/** Input menus dismiss on outside press (Escape lives in init.js'
- * unified keyboard dispatcher). */
+/** Input menus dismiss on outside press (Escape is init.js' view-scope
+ * binding in the keys.js dispatcher). */
 export function wireMenuDismiss() {
     document.addEventListener('pointerdown', e => {
         if (!e.target.closest('.input-menu') && !e.target.closest('.input-btn')) {

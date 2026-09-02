@@ -63,7 +63,7 @@ reference/aliasing question) and unifies four roadmap features into
 one primitive.
 
 **The Sequence** is a per-stack object, stored beside the stack's
-time-map (the same atomic-pointer discipline as `map_override_`):
+time-map (the atomic-pointer discipline of the effect chain, `chain_`):
 
 ```
 sequence = {
@@ -286,7 +286,7 @@ nested-active-maps refusal precedent).
 ## 7. Implementation sketch (revised for the fractal model)
 
 - **Storage**: `sequence` behind one atomic pointer per StackNode
-  (the `map_override_` discipline); `Edit::Sequence` undoable with
+  (the `chain_` atomic-pointer discipline); `Edit::Sequence` undoable with
   raw-state inverse; save format additive (`sequence` block, QTime
   lengths); templates may strip or carry it (rule with S8 round).
 - **Engine**: step resolve per callback from snapshot + clock (prefix

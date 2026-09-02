@@ -13,11 +13,11 @@
  * The implementation lives in js/session_view/; this file is the
  * public barrel — the names app.js imports:
  *
- *   init.js      — one-time wiring + the unified keyboard dispatcher
+ *   init.js      — one-time wiring + the view's key bindings (keys.js)
  *   patch.js     — patchSessionView (top-level per-poll patch)
  *   drag_pin.js  — the map-gesture frame pin (mapDragPinQ/…FoldQ)
  *   selection.js — activeSelectedId (the keyboard verbs' target)
- *   sv_util.js   — isTypingTarget (shared by both keyboard dispatchers)
+ *   sv_util.js   — isTypingTarget (the dispatcher's typing guard)
  *
  * plus the internal modules: context (shared ctx + expando contract),
  * sv_util, selection, zoom, animator, teleport (nav dock + [ / ]),

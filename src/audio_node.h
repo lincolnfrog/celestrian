@@ -118,9 +118,9 @@ struct ProcessContext {
   // The engine loads ONE snapshot per callback and passes it down; each
   // node receives its own entry index (`self`) from its parent. All
   // audio-thread structure traversal (children, ancestors) goes through
-  // `snap` — never through per-node pointers. Null only in node-level
-  // unit tests driving process() directly (single-threaded, where the
-  // ownership-vector fallback is race-free by construction).
+  // `snap` — never through per-node pointers. Never null when a node
+  // is processed: node-level unit tests build a real snapshot
+  // (tests/test_utils.h NodeContext, the callback's twin).
   const GraphSnapshot* snap = nullptr;
   int self = 0;  // this node's entry index in `snap`
 
@@ -128,7 +128,8 @@ struct ProcessContext {
   // quantum (0 = unestablished), the
   // INVARIANT island epoch (unlike cycle_epoch, never re-based by
   // windowed stacks on the way down), and the island root — the target
-  // of take lifecycle events and establishIsland.
+  // of take lifecycle events and establishIsland. Like `snap`, never
+  // null when a node is processed.
   int64_t quantum = 0;
   int64_t island_epoch = 0;
   AudioNode* island = nullptr;
@@ -257,8 +258,7 @@ class AudioNode {
       : node_name(std::move(node_name)), node_uuid(juce::Uuid().toString()) {}
   virtual ~AudioNode() {
     // Nodes only die via the reclaimer (2-callback grace), so no
-    // in-flight audio can still be reading the override or chain here.
-    delete map_override_.load();
+    // in-flight audio can still be reading the chain here.
     delete chain_.load();
   }
 
@@ -290,11 +290,15 @@ class AudioNode {
    * whole-graph phase separation: every decision in the graph settles
    * before the first sample renders, so render never observes state
    * that changes mid-pass (§2.3 "events applied between blocks").
-   * Node-level tests call it directly on a single node.
+   * Node-level tests call it directly on a single node with a context
+   * built the way the callback builds one (tests/test_utils.h
+   * NodeContext): the snapshot and the island root are the audio
+   * thread's only structure and island facts.
    */
   void process(const float* const* input_channels,
                float* const* output_channels, int num_input_channels,
                int num_output_channels, const ProcessContext& context) {
+    jassert(context.snap != nullptr && context.island != nullptr);
     control(input_channels, num_input_channels, context);
     render(output_channels, num_output_channels, context);
   }
@@ -313,15 +317,14 @@ class AudioNode {
     obj->setProperty("id", node_uuid);
     obj->setProperty("name", node_name);
     obj->setProperty("type", getNodeTypeString());
-    obj->setProperty("x", (double)x_pos.load());
-    obj->setProperty("y", (double)y_pos.load());
     obj->setProperty("currentPeak", (float)last_block_peak.load());
     if (isRecording())
       obj->setProperty("duration", (double)live_duration_samples.load());
     else
       obj->setProperty("duration", (double)duration_samples.load());
-    obj->setProperty("loopStart", (double)loop_start_samples.load());
-    obj->setProperty("loopEnd", (double)loop_end_samples.load());
+    const timing::TimeMap stored = storedMap();
+    obj->setProperty("loopStart", (double)(stored.n == 1 ? stored.segs[0].start : 0));
+    obj->setProperty("loopEnd", (double)(stored.n == 1 ? stored.segs[0].end : 0));
     // Loop window state — fractal (I5): published for clips and stacks
     // alike; `playhead` carries the window phase while active.
     obj->setProperty("loopBypassed", (bool)loop_window_bypassed_.load());
@@ -332,11 +335,11 @@ class AudioNode {
                      period_from_context_.load() ? "context" : "own");
     // Multi-segment map (phase 3): flat [s0,e0,s1,e1,...] in samples,
     // present only when an override is installed.
-    if (const timing::TimeMap* m = map_override_.load()) {
+    if (stored.n >= 2) {
       juce::Array<juce::var> segs;
-      for (int i = 0; i < m->n; ++i) {
-        segs.add((double)m->segs[i].start);
-        segs.add((double)m->segs[i].end);
+      for (int i = 0; i < stored.n; ++i) {
+        segs.add((double)stored.segs[i].start);
+        segs.add((double)stored.segs[i].end);
       }
       obj->setProperty("segments", segs);
     }
@@ -385,9 +388,9 @@ class AudioNode {
                                     duration_samples.load(), q_samples)));
     obj->setProperty(
         "windowStartQ",
-        qtimeVar(timing::fromSamples(loop_start_samples.load(), q_samples)));
+        qtimeVar(timing::fromSamples(getLoopStart(), q_samples)));
     obj->setProperty("windowEndQ", qtimeVar(timing::fromSamples(
-                                       loop_end_samples.load(), q_samples)));
+                                       getLoopEnd(), q_samples)));
     return juce::var(obj);
   }
 
@@ -438,16 +441,16 @@ class AudioNode {
   virtual float getCurrentPeak() const = 0;
 
   // Hierarchy. The parent pointer is a MESSAGE-THREAD convenience
-  // (metadata walks, engine helpers) plus the single-threaded unit-test
-  // fallback; the audio thread resolves ancestry through the
-  // whole-graph snapshot (ProcessContext.snap) and receives island
-  // facts in the context — it never walks these pointers.
+  // (metadata walks, engine helpers); the audio thread resolves
+  // ancestry through the whole-graph snapshot (ProcessContext.snap)
+  // and receives island facts in the context — it never walks these
+  // pointers.
   void setParent(AudioNode* p) { parent.store(p); }
   AudioNode* getParent() const { return parent.load(); }
 
   /** Topmost node of this subtree — the island root under the current
-   * one-island model. Message thread / unit-test fallback only; the
-   * audio thread uses ProcessContext.island. */
+   * one-island model. Message thread only; the audio thread uses
+   * ProcessContext.island. */
   AudioNode* rootNode() {
     AudioNode* n = this;
     while (auto* p = n->getParent()) n = p;
@@ -498,31 +501,71 @@ class AudioNode {
    * and must not leak into either permanently. */
   virtual int64_t activeTakeIntrinsicCycle() const { return 0; }
 
-  void setLoopPoints(int64_t start, int64_t end) {
-    loop_start_samples.store(start);
-    loop_end_samples.store(end);
+  // --- THE MAP (time_maps.md §2, composition.md §1): ONE storage ---
+  // A node's geometry is one TimeMap value: a single window is the
+  // n == 1 case, a cell/punch map is n >= 2, no geometry is n == 0.
+  // Stored inline behind a seqlock (all-atomic fields, like the island
+  // facts): the MESSAGE thread writes whole values, the audio thread
+  // reads a consistent copy per block — no heap map, no reclaimer.
+  /** The stored geometry, bypass ignored (message or audio thread). */
+  timing::TimeMap storedMap() const {
+    timing::TimeMap m;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+      const uint32_t s1 = map_seq_.load(std::memory_order_acquire);
+      m.n = map_n_.load(std::memory_order_relaxed);
+      for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
+        m.segs[i].start = map_start_[i].load(std::memory_order_relaxed);
+        m.segs[i].end = map_end_[i].load(std::memory_order_relaxed);
+      }
+      const uint32_t s2 = map_seq_.load(std::memory_order_acquire);
+      if ((s1 & 1u) == 0 && s1 == s2) break;
+    }
+    if (m.n < 0 || m.n > timing::TimeMap::kMaxSegments) m.n = 0;
+    return m;
   }
-
-  int64_t getLoopStart() const { return loop_start_samples.load(); }
-  int64_t getLoopEnd() const { return loop_end_samples.load(); }
+  /** Replace the geometry (message thread). n == 0 clears it. */
+  void setMap(const timing::TimeMap& m) {
+    map_seq_.fetch_add(1, std::memory_order_release);  // odd = writing
+    map_n_.store(m.n, std::memory_order_relaxed);
+    for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
+      map_start_[i].store(i < m.n ? m.segs[i].start : 0,
+                          std::memory_order_relaxed);
+      map_end_[i].store(i < m.n ? m.segs[i].end : 0, std::memory_order_relaxed);
+    }
+    map_seq_.fetch_add(1, std::memory_order_release);  // even = stable
+  }
+  /** The single-window form: [start, end) as one segment (empty when
+   * end <= start). */
+  void setLoopPoints(int64_t start, int64_t end) {
+    setMap(timing::TimeMap::single(start, end));
+  }
+  /** The single window's bounds; (0, 0) when there is none or the
+   * geometry is a multi-segment map (see hasSegmentMap). */
+  int64_t getLoopStart() const {
+    const timing::TimeMap m = storedMap();
+    return m.n == 1 ? m.segs[0].start : 0;
+  }
+  int64_t getLoopEnd() const {
+    const timing::TimeMap m = storedMap();
+    return m.n == 1 ? m.segs[0].end : 0;
+  }
+  /** True when the geometry is a cell/punch map (n >= 2). */
+  bool hasSegmentMap() const { return storedMap().n >= 2; }
 
   // --- Loop window state (time_maps.md phase 1, fractal per I5) ---
   /**
-   * Whether the loop window is bypassed. A window is ACTIVE iff it is
-   * valid (end > start) and not bypassed — independent of expansion
-   * (I6b: collapse is purely visual). Lives on the BASE node: a clip's
-   * loop region is the single-segment case of the stack's time-map
-   * (time_maps.md "one implementation, fractal"), so window state and
-   * its toggle apply uniformly to clips and stacks.
+   * Whether the map is bypassed. A map is ACTIVE iff it has segments
+   * and is not bypassed — independent of expansion (I6b: collapse is
+   * purely visual). Lives on the BASE node: a clip's loop region is
+   * the single-segment case of the stack's time-map, so window state
+   * and its toggle apply uniformly to clips and stacks.
    */
   bool isLoopWindowBypassed() const { return loop_window_bypassed_.load(); }
   void setLoopWindowBypassed(bool bypassed) {
     loop_window_bypassed_.store(bypassed);
   }
   virtual bool isLoopWindowActive() const {
-    return !loop_window_bypassed_.load() &&
-           (map_override_.load() != nullptr ||
-            loop_end_samples.load() > loop_start_samples.load());
+    return !loop_window_bypassed_.load() && map_n_.load() > 0;
   }
 
   /** The period-source knob (Q5): true = one-shot (period := context
@@ -530,36 +573,16 @@ class AudioNode {
   bool periodFromContext() const { return period_from_context_.load(); }
 
   /**
-   * The node's ACTIVE time-map as the reified value type (time_maps.md
-   * §2): the multi-segment override when one is installed (phase 3),
-   * else a single segment from the phase-1 window atomics; empty when
-   * bypassed/invalid (the bypass flag gates BOTH forms). Consumers must
-   * be segment-general — use period()/mapOffset()/seamDistance(), never
-   * the raw loop atomics. Audio-thread safe: one atomic pointer load /
-   * atomic scalar loads into a POD value. VIRTUAL for one reason: a
+   * The node's ACTIVE time-map (time_maps.md §2): the stored geometry,
+   * or none when bypassed. Consumers are segment-general — use
+   * period()/mapOffset()/seamDistance(). VIRTUAL for one reason: a
    * StackNode's STEP AUDITION (docs/sequencer.md §11.2) derives a
-   * one-segment map from its sequence and overrides the authored
-   * window while it is on — every consumer sees an ordinary map.
+   * one-segment map from its sequence and overrides the authored map
+   * while it is on — every consumer sees an ordinary map.
    */
   virtual timing::TimeMap activeTimeMap() const {
     if (loop_window_bypassed_.load()) return timing::TimeMap::none();
-    if (const timing::TimeMap* m = map_override_.load()) return *m;
-    return timing::TimeMap::single(loop_start_samples.load(),
-                                   loop_end_samples.load());
-  }
-
-  // --- Multi-segment map storage (time_maps.md phase 3) ---
-  // The override is reached through ONE atomic pointer (the
-  // content-buffer discipline): null = the single-segment window in the
-  // loop atomics; non-null = an immutable multi-segment TimeMap. The
-  // MESSAGE thread swaps it and retires the old pointer through the
-  // engine reclaimer (an in-flight callback may read it for ≤2 more
-  // callbacks); the audio thread only loads it.
-  const timing::TimeMap* mapOverride() const { return map_override_.load(); }
-  /** Swap in `fresh` (heap-owned, or null to clear); returns the OLD
-   * pointer, which the caller must retire — never delete inline. */
-  const timing::TimeMap* exchangeMapOverride(const timing::TimeMap* fresh) {
-    return map_override_.exchange(fresh);
+    return storedMap();
   }
 
   // --- The effect chain (docs/vst3.md phase 2) ---
@@ -684,11 +707,6 @@ class AudioNode {
     return 0;
   }
 
-  // Freeform canvas position for TOP-LEVEL stacks only — an opaque
-  // blob the engine persists for the frontend (ui.md). Clips never
-  // write these: lane x is a UI projection of `origin` (I6).
-  std::atomic<double> x_pos{0.0}, y_pos{0.0};
-
   // Transport state
   // View telemetry, written by the CONST render phase (§2.3): an output
   // for the UI, not musical state — the sanctioned exception to render
@@ -700,10 +718,14 @@ class AudioNode {
   mutable float user_gate_{-1.0f};
   std::atomic<int64_t> duration_samples{0};       // Length of the loop
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
-  std::atomic<int64_t> loop_start_samples{0};
-  std::atomic<int64_t> loop_end_samples{0};
-  // Loop window bypass flag (time_maps.md). Window phase is pure
-  // arithmetic on the received clock — no private counter, fractal.
+  // THE MAP's storage (see storedMap/setMap): a seqlock over all-atomic
+  // segment fields; n == 0 means no geometry.
+  std::atomic<uint32_t> map_seq_{0};
+  std::atomic<int> map_n_{0};
+  std::atomic<int64_t> map_start_[timing::TimeMap::kMaxSegments]{};
+  std::atomic<int64_t> map_end_[timing::TimeMap::kMaxSegments]{};
+  // Map bypass flag (time_maps.md). Window phase is pure arithmetic on
+  // the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};
   // THE PERIOD-SOURCE KNOB (Q5, kernel.md §2): false
   // = the node's period is its own length (a loop, the default); true =
@@ -715,10 +737,6 @@ class AudioNode {
   // what keeps a composite honestly periodic in its claimed period
   // (I1). Undoable (a musical fact, unlike the mixer knobs).
   std::atomic<bool> period_from_context_{false};
-  // Multi-segment map override (phase 3; see mapOverride above): owned
-  // here, swapped on the message thread, retired via the reclaimer.
-  std::atomic<const timing::TimeMap*> map_override_{nullptr};
-
   // The effect chain (dsp/fx_chain.h): ONE atomic pointer, message
   // thread swaps + reclaimer retirement, audio thread loads per block
   // (see fxChain above). Every node is born with the
@@ -750,8 +768,8 @@ class AudioNode {
   // full mix of full-scale takes cannot clip the device; boost lives in
   // the compressor's makeup). A MIXER fact like pan: not undoable.
   std::atomic<float> gain{1.0f};
-  std::atomic<bool> is_expanded{
-      true};  // UI state: expanded (true) or collapsed (false)
+  // No view state lives here (I6b, design_language.md): fold/expand and
+  // canvas position are UI-local, never engine facts.
   std::atomic<float> last_block_peak{0.0f};
 
   // THE canonical timing fact (docs/kernel.md, composition.md §1 — Q18):
@@ -804,9 +822,8 @@ class AudioNode {
   // The audio thread never walks parent chains (island facts and
   // ancestry ride ProcessContext / the graph snapshot — see setParent).
   // Readers are message-thread walks (metadata, engine helpers,
-  // rootNode()) and the single-threaded unit-test fallback in
-  // getEffectiveQuantum; the atomic is belt-and-braces for the
-  // reorder/combine reparent, not a load-bearing sync point.
+  // rootNode(), getEffectiveQuantum); the atomic is belt-and-braces
+  // for the reorder/combine reparent, not a load-bearing sync point.
   std::atomic<AudioNode*> parent{nullptr};
 
  protected:

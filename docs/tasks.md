@@ -49,35 +49,58 @@ Nothing in Tier D is required for 1.0.
   (`anchored` + `origin` on stacks, the settle rule, subtree origin
   shifts). Done = `stack_origin.test.mjs` + VM tests + one e2e green,
   and a field session with the five-mic drum group as a one-shot.
-- [ ] **A2 — One window storage.** Fold the phase-1 loop atomics into
-  the `TimeMap` value behind `map_override_` (n = 1 for windows);
-  delete the Segments/LoopPoints normalization, the three "is this
-  window real" tests, and the `setsMap/tmap` rider plumbing.
-- [ ] **A3 — Delete the snapshot-less fallback path.** Node-level unit
-  tests build a `GraphSnapshot`; `ChildView`'s ownership branch, the
-  `rootNode()` walks and `getEffectiveQuantum()` parent chains in
-  clip_node.cc go with it.
-- [ ] **A4 — `is_expanded` leaves the engine.** View state per I6b;
-  the bridge round-trip and session field retire (UI-local, persisted
-  with the projects UI prefs).
-- [ ] **A5 — Remove `setNodePosition` and node x/y.** No UI caller since
-  the session view; strip protocol, engine, mock (about 40 scenario
-  literals) and the undo set; loading older sessions ignores the keys.
-- [ ] **A6 — Split `audio_engine.cc`.** Island-geometry law (definers,
-  continuity, cycle-top rule, anchoring) → `island_geometry.cc`; the
-  edit log → `edit_log.cc`; take lifecycle → `take_service.cc`; device
-  + calibration → `audio_device_service.cc`; the callback → its own
-  file so performance.md §1 is reviewable in one screen.
-- [ ] **A7 — One keyboard dispatcher.** app.js, session_view/init.js,
-  audio_settings.js and plugin_panel.js each listen for keydown with
-  different typing guards; one dispatcher with one guard.
+- [x] **A2 — One window storage** ✅ 2026-09-01: a node's geometry is
+  ONE inline `TimeMap` behind a seqlock (`AudioNode::storedMap` /
+  `setMap`; a window is the n = 1 case) — the loop atomics, the heap
+  override pointer, its reclaimer retirement and the LoopPoints/
+  Segments normalization are gone; inverses carry the raw old map.
+  Same pass: `timing::posMod` replaces ten hand-rolled folds; ONE
+  message-thread effective-period fold (`StackNode::effectivePeriodOf`,
+  `periodExcluding` deleted; the snapshot twin stays for the audio
+  thread); `Edit::TakePayload` embeds `ClipNode::TakeState` (the
+  13-field copy is gone).
+- [x] **A3 — Delete the snapshot-less fallback path** ✅ 2026-09-01:
+  node-level tests build a real `GraphSnapshot` through
+  `test_utils::contextFor` (the callback's test-side twin: `refresh`,
+  `rebuild`, `driveFrom`); `ChildView`'s ownership branch, the
+  snapshot-or-children folds, and every audio-thread
+  `getEffectiveQuantum()` / `rootNode()` / parent-pointer solo walk are
+  gone; `process`/`control`/`render` assert the snapshot and island.
+  The parent walks survive only on the message thread.
+- [x] **A4 — `is_expanded` leaves the engine** ✅ 2026-09-01: folded
+  groups are UI-local (`ui/js/view_prefs.js`, per project id in
+  localStorage, session-only before a project is born); `toggleStackExpand`
+  and `isExpanded` are gone from all three layers. Expansion is
+  unrepresentable in the engine — I6b by construction.
+- [x] **A5 — `setNodePosition` and node x/y removed** ✅ 2026-09-01:
+  `Edit::Kind::Position`, the verb, the metadata, the session fields and
+  every mock fixture literal are gone; older sessions load (unknown keys
+  are ignored). `Segments` is the only coalescing edit kind.
+- [x] **A6 — Split `audio_engine.cc`** ✅ 2026-09-01 (no behavior
+  change; one class, eight files under `src/engine/`): `island_geometry.cc`
+  (definers, continuity, anchoring, Q re-establishment, scrubs),
+  `edit_log.cc` (applyEdit + inverses, undo/redo), `take_service.cc`
+  (arm, group arm, settle, compaction), `transport.cc` (play/seek/state),
+  `verbs.cc` (bridge verbs), `map_edits.cc` (windows, segments,
+  sequences), `audio_callback.cc` (the ONE audio-thread file —
+  performance.md §1 reviews it), `device_service.cc` (device,
+  calibration, MIDI inputs). `audio_engine.cc` keeps construction,
+  publishGraph, the reclaimer and save/load (159 lines).
+  `engine/engine_internal.h` declares the three helpers shared across
+  files.
+- [x] **A7 — One keyboard dispatcher** ✅ 2026-09-01: `ui/js/keys.js`
+  (`registerKey` with one typing guard, Cmd/Ctrl normalization and
+  scopes APP < VIEW < PANEL); the four module listeners are gone. The
+  one intended change: Escape with a panel open closes only the panel.
+  gesture.js keeps its transient capture-phase Escape for live drags.
 - [ ] **A8 — Small residue.** `ProcessContext::is_recording` (always
   true; tests write it), `timing::playheadPercent` (golden-pinned, no
-  engine caller), gate `window.__mapDbg` behind a debug flag without a
-  circular import.
-- [ ] **A9 — Comment hygiene rule.** Adopt in .agent/style.md: a comment
-  states what is true now; history goes in the docs. Retire changelog
-  comments as files are touched.
+  engine caller). ~~`window.__mapDbg` gating~~ ✅ `ui/js/debug_flags.js`
+  (a leaf module; the recorder exists only with `?debug=true`).
+- [x] **A9 — Comment hygiene rule** ✅ 2026-09-01: the rule is in
+  .agent/style.md and a full present-tense pass ran over src/ and
+  ui/js + ui/css (comment-only, verified by stripping comments and
+  diffing).
 
 ## Tier B: Product to 1.0
 

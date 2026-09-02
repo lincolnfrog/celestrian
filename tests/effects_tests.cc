@@ -7,8 +7,12 @@
 #include "../src/dsp/effects.h"
 #include "../src/dsp/fx_chain.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 /**
  * Built-in effects (src/dsp/effects.h): canonical-behavior tests.
@@ -297,11 +301,10 @@ class EffectsTests : public juce::UnitTest {
       std::vector<float> in(8820, 0.0f);
       in[0] = 1.0f;
       float* const ins[] = {in.data()};
-      ProcessContext rec;
-      rec.num_samples = (int)in.size();
-      rec.is_recording = true;
+      NodeContext rec = contextFor(clip, (int)in.size());
+      rec.ctx.is_recording = true;
       clip.startRecording();
-      clip.process(ins, nullptr, 1, 0, rec);
+      clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();
       clip.startPlayback();
 
@@ -314,11 +317,9 @@ class EffectsTests : public juce::UnitTest {
 
       std::vector<float> out(8820, 0.0f);
       float* outs[] = {out.data()};
-      ProcessContext play;
-      play.num_samples = (int)out.size();
-      play.is_playing = true;
-      play.master_pos = 0;
-      clip.process(nullptr, outs, 0, 1, play);
+      NodeContext play = contextFor(clip, (int)out.size(), 0);
+      play.ctx.is_playing = true;
+      clip.process(nullptr, outs, 0, 1, play.ctx);
 
       expectWithinAbsoluteError(out[0], 1.0f, 0.01f, "dry impulse");
       expectWithinAbsoluteError(out[2205], 0.8f, 0.01f,
@@ -332,11 +333,10 @@ class EffectsTests : public juce::UnitTest {
       std::vector<float> in(8820, 0.0f);
       in[0] = 1.0f;
       float* const ins[] = {in.data()};
-      ProcessContext rec;
-      rec.num_samples = (int)in.size();
-      rec.is_recording = true;
+      NodeContext rec = contextFor(*clip, (int)in.size());
+      rec.ctx.is_recording = true;
       clip->startRecording();
-      clip->process(ins, nullptr, 1, 0, rec);
+      clip->process(ins, nullptr, 1, 0, rec.ctx);
       clip->stopRecording();
       clip->startPlayback();
       stack.addChild(std::move(clip));
@@ -350,11 +350,9 @@ class EffectsTests : public juce::UnitTest {
 
       std::vector<float> out(8820, 0.0f);
       float* outs[] = {out.data()};
-      ProcessContext play;
-      play.num_samples = (int)out.size();
-      play.is_playing = true;
-      play.master_pos = 0;
-      stack.process(nullptr, outs, 0, 1, play);
+      NodeContext play = contextFor(stack, (int)out.size(), 0);
+      play.ctx.is_playing = true;
+      stack.process(nullptr, outs, 0, 1, play.ctx);
 
       expectWithinAbsoluteError(out[0], 1.0f, 0.01f, "dry impulse via stack");
       expectWithinAbsoluteError(out[2205], 0.8f, 0.01f,

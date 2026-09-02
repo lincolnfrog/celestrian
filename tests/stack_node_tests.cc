@@ -2,8 +2,12 @@
 
 #include "../src/clip_node.h"
 #include "../src/stack_node.h"
+#include "test_utils.h"
 
 namespace celestrian {
+
+using test_utils::contextFor;
+using test_utils::NodeContext;
 
 class StackNodeTests : public juce::UnitTest {
  public:
@@ -42,16 +46,16 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs1[] = {in1};
       float* const inputs2[] = {in2};
 
-      ProcessContext recCtx;
-      recCtx.num_samples = 10;
-      recCtx.is_recording = true;
-
+      NodeContext rec1 = contextFor(*clip1, 10);
+      rec1.ctx.is_recording = true;
       clip1->startRecording();
-      clip1->process(inputs1, nullptr, 1, 0, recCtx);
+      clip1->process(inputs1, nullptr, 1, 0, rec1.ctx);
       clip1->stopRecording();
 
+      NodeContext rec2 = contextFor(*clip2, 10);
+      rec2.ctx.is_recording = true;
       clip2->startRecording();
-      clip2->process(inputs2, nullptr, 1, 0, recCtx);
+      clip2->process(inputs2, nullptr, 1, 0, rec2.ctx);
       clip2->stopRecording();
 
       root.addChild(std::move(clip1));
@@ -65,15 +69,14 @@ class StackNodeTests : public juce::UnitTest {
       }
       float* const outputs[] = {outL, outR};
 
-      ProcessContext playCtx;
-      playCtx.num_samples = 10;
-      playCtx.is_playing = true;
+      NodeContext play = contextFor(root, 10);
+      play.ctx.is_playing = true;
 
       // Start playback on both children
       static_cast<ClipNode*>(root.getChild(0))->startPlayback();
       static_cast<ClipNode*>(root.getChild(1))->startPlayback();
 
-      root.process(nullptr, outputs, 0, 2, playCtx);
+      root.process(nullptr, outputs, 0, 2, play.ctx);
 
       // Sum should be 0.2 + 0.3 = 0.5 in both channels
       for (int i = 0; i < 10; ++i) {
@@ -93,15 +96,15 @@ class StackNodeTests : public juce::UnitTest {
       float in2[1] = {0.5f};
       float* const ins1[] = {in1};
       float* const ins2[] = {in2};
-      ProcessContext ctx;
-      ctx.num_samples = 1;
-      ctx.is_recording = true;
-
+      NodeContext rec1 = contextFor(*clip1, 1);
+      rec1.ctx.is_recording = true;
       clip1->startRecording();
-      clip1->process(ins1, nullptr, 1, 0, ctx);
+      clip1->process(ins1, nullptr, 1, 0, rec1.ctx);
       clip1->stopRecording();
+      NodeContext rec2 = contextFor(*clip2, 1);
+      rec2.ctx.is_recording = true;
       clip2->startRecording();
-      clip2->process(ins2, nullptr, 1, 0, ctx);
+      clip2->process(ins2, nullptr, 1, 0, rec2.ctx);
       clip2->stopRecording();
 
       root.addChild(std::move(clip1));
@@ -121,12 +124,11 @@ class StackNodeTests : public juce::UnitTest {
 
       float in[1] = {0.9f};
       float* const ins[] = {in};
-      ProcessContext ctx;
-      ctx.num_samples = 1;
-      ctx.is_recording = true;
+      NodeContext nc = contextFor(root, 1);
+      nc.ctx.is_recording = true;
 
       clipPtr->startRecording();
-      root.process(ins, nullptr, 1, 0, ctx);
+      root.process(ins, nullptr, 1, 0, nc.ctx);
 
       expectEquals(clipPtr->getWritePosition(), 1);
       expectWithinAbsoluteError(clipPtr->getCurrentPeak(), 0.9f, 0.0001f);
@@ -149,16 +151,16 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs1[] = {in1};
       float* const inputs2[] = {in2};
 
-      ProcessContext recCtx;
-      recCtx.num_samples = 10;
-      recCtx.is_recording = true;
-
+      NodeContext rec1 = contextFor(*clip1Ptr, 10);
+      rec1.ctx.is_recording = true;
       clip1Ptr->startRecording();
-      clip1Ptr->process(inputs1, nullptr, 1, 0, recCtx);
+      clip1Ptr->process(inputs1, nullptr, 1, 0, rec1.ctx);
       clip1Ptr->stopRecording();
 
+      NodeContext rec2 = contextFor(*clip2Ptr, 10);
+      rec2.ctx.is_recording = true;
       clip2Ptr->startRecording();
-      clip2Ptr->process(inputs2, nullptr, 1, 0, recCtx);
+      clip2Ptr->process(inputs2, nullptr, 1, 0, rec2.ctx);
       clip2Ptr->stopRecording();
 
       root.addChild(std::move(clip1));
@@ -172,10 +174,9 @@ class StackNodeTests : public juce::UnitTest {
       float outR[10] = {0.0f};
       float* const outputs[] = {outL, outR};
 
-      ProcessContext playCtx;
-      playCtx.num_samples = 10;
+      NodeContext play = contextFor(root, 10);  // no solo lit anywhere
+      ProcessContext& playCtx = play.ctx;
       playCtx.is_playing = true;
-      playCtx.any_solo = false;  // no solo lit anywhere
 
       root.process(nullptr, outputs, 0, 2, playCtx);
       expect(std::abs(outL[0] - 1.0f) < 0.0001f,
@@ -187,7 +188,7 @@ class StackNodeTests : public juce::UnitTest {
         outR[i] = 0.0f;
       }
       clip1Ptr->is_soloed.store(true);
-      playCtx.any_solo = true;
+      play.refresh();  // the block top re-scans the solo flags
 
       // Settle the S7 fade (~10 ms — sequencer.md §9): solo edges ramp
       // now; one 441-sample block consumes the whole fade.
@@ -216,33 +217,29 @@ class StackNodeTests : public juce::UnitTest {
       for (int i = 0; i < 100; ++i) in[i] = 0.5f;
       float* const inputs[] = {in};
 
-      ProcessContext recCtx;
-      recCtx.num_samples = 100;
-      recCtx.is_recording = true;
+      NodeContext rec = contextFor(*clipPtr, 100);
+      rec.ctx.is_recording = true;
 
       clipPtr->startRecording();
-      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->process(inputs, nullptr, 1, 0, rec.ctx);
       clipPtr->stopRecording();
 
       root.addChild(std::move(clip));
 
-      // Set stack loop region to [20, 40] and COLLAPSE the stack
+      // Set stack loop region to [20, 40]
       root.setLoopPoints(20, 40);
-      root.is_expanded.store(false);
 
       clipPtr->startPlayback();
 
       // Process with master_pos = 50, should map to:
       // loop_duration = 40 - 20 = 20
       // effective_pos = 20 + (50 % 20) = 20 + 10 = 30
-      ProcessContext playCtx;
-      playCtx.num_samples = 1;
-      playCtx.is_playing = true;
-      playCtx.master_pos = 50;
+      NodeContext play = contextFor(root, 1, 50);
+      play.ctx.is_playing = true;
 
       float outL[1] = {0.0f};
       float* const outputs[] = {outL};
-      root.process(nullptr, outputs, 0, 1, playCtx);
+      root.process(nullptr, outputs, 0, 1, play.ctx);
 
       // ClipNode should have received master_pos = 30, which maps into its
       // recorded content Expected behavior verified by checking audio output
@@ -262,33 +259,29 @@ class StackNodeTests : public juce::UnitTest {
       for (int i = 0; i < 100; ++i) in[i] = 0.5f;
       float* const inputs[] = {in};
 
-      ProcessContext recCtx;
-      recCtx.num_samples = 100;
-      recCtx.is_recording = true;
+      NodeContext rec = contextFor(*clipPtr, 100);
+      rec.ctx.is_recording = true;
 
       clipPtr->startRecording();
-      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->process(inputs, nullptr, 1, 0, rec.ctx);
       clipPtr->stopRecording();
 
       root.addChild(std::move(clip));
 
-      // Set stack loop region to [20, 40] and EXPAND the stack.
-      // time_maps.md/I6b: expansion is purely visual — the window stays
-      // ACTIVE. (The old Loop-on-Collapse model bypassed it here.)
+      // Set stack loop region to [20, 40]. time_maps.md/I6b: expansion
+      // is UI-local and unrepresentable here — the window is ACTIVE
+      // whatever the view shows.
       root.setLoopPoints(20, 40);
-      root.is_expanded.store(true);
 
       clipPtr->startPlayback();
 
       // master_pos = 50 maps to 20 + (50 % 20) = 30, same as collapsed
-      ProcessContext playCtx;
-      playCtx.num_samples = 1;
-      playCtx.is_playing = true;
-      playCtx.master_pos = 50;
+      NodeContext play = contextFor(root, 1, 50);
+      play.ctx.is_playing = true;
 
       float outL[1] = {0.0f};
       float* const outputs[] = {outL};
-      root.process(nullptr, outputs, 0, 1, playCtx);
+      root.process(nullptr, outputs, 0, 1, play.ctx);
 
       expect(outL[0] > 0.0f,
              "Active window applies identically when expanded (I6b)");
@@ -296,12 +289,10 @@ class StackNodeTests : public juce::UnitTest {
 
     beginTest("Loop Window: Nested - inner window applies, outer unset");
     {
-      StackNode outer("Outer");
-      outer.is_expanded.store(true);  // view state only; outer has no window
+      StackNode outer("Outer");  // outer has no window
 
       auto inner = std::make_unique<StackNode>("Inner");
-      inner->is_expanded.store(false);  // Inner collapsed - applies its loop
-      inner->setLoopPoints(10, 30);
+      inner->setLoopPoints(10, 30);  // inner applies its loop
 
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
       auto clipPtr = clip.get();
@@ -311,12 +302,11 @@ class StackNodeTests : public juce::UnitTest {
       for (int i = 0; i < 100; ++i) in[i] = 0.5f;
       float* const inputs[] = {in};
 
-      ProcessContext recCtx;
-      recCtx.num_samples = 100;
-      recCtx.is_recording = true;
+      NodeContext rec = contextFor(*clipPtr, 100);
+      rec.ctx.is_recording = true;
 
       clipPtr->startRecording();
-      clipPtr->process(inputs, nullptr, 1, 0, recCtx);
+      clipPtr->process(inputs, nullptr, 1, 0, rec.ctx);
       clipPtr->stopRecording();
 
       inner->addChild(std::move(clip));
@@ -326,14 +316,12 @@ class StackNodeTests : public juce::UnitTest {
 
       // Outer expanded: passes master_pos = 50 unchanged
       // Inner collapsed with loop [10, 30]: maps to 10 + (50 % 20) = 20
-      ProcessContext playCtx;
-      playCtx.num_samples = 1;
-      playCtx.is_playing = true;
-      playCtx.master_pos = 50;
+      NodeContext play = contextFor(outer, 1, 50);
+      play.ctx.is_playing = true;
 
       float outL[1] = {0.0f};
       float* const outputs[] = {outL};
-      outer.process(nullptr, outputs, 0, 1, playCtx);
+      outer.process(nullptr, outputs, 0, 1, play.ctx);
 
       expect(outL[0] > 0.0f,
              "Nested stacks should apply their own collapse "
