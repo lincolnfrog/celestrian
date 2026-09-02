@@ -1,3 +1,13 @@
+// session_io — the session bundle format: a directory holding
+// session.json plus audio/*.wav (one file per committed audio take).
+// The format is device-independent: musical positions (origins, loop
+// points, maps) are stored as QTime and rendered back at the load-time
+// sample rate. This file owns serializeNode / deserializeNode (the node
+// tree: takes, windows, maps, sequences, fx chains, MIDI content),
+// readBundleInfo (the project picker's summary), applyEffects (rack
+// restore from the metadata blob) and save / load (the bundle level:
+// root rack, island (Q, epoch), sample rate). Message thread only.
+
 #include "session_io.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -173,6 +183,14 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     const auto& stack = static_cast<const StackNode&>(node);
     o->setProperty("x", node.x_pos.load());
     o->setProperty("y", node.y_pos.load());
+    // THE STACK'S ORIGIN (Q18, composition.md §1) — additive: absent =
+    // unanchored, and settleAnchors re-derives from content on load
+    // (pre-Q18 sessions). Stripped with performances like a clip's.
+    if (!opts.strip_performances && node.isAnchored()) {
+      o->setProperty("anchored", true);
+      o->setProperty("originQ", qvar(timing::originQ(node.origin_samples.load(),
+                                                     epoch, q)));
+    }
     // The SEQUENCE (docs/sequencer.md) — additive block. Step lengths
     // are musical facts (QTime on the island exchange rate, D-T3);
     // gates key the children's uuids, which the session preserves.
@@ -265,6 +283,13 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
       }
       stack->setSequenceBypassed((bool)so->getProperty("bypassed"));
     }
+    // Q18: an anchored stack's origin is a stored fact; absent key =
+    // unanchored (settleAnchors derives one from content after load).
+    if ((bool)stack->isAnchored() == false && (bool)o->getProperty("anchored")) {
+      stack->setAnchor(
+          true, epoch + timing::toSamples(qread(o->getProperty("originQ")), q),
+          0);
+    }
     node = std::move(stack);
   } else {
     auto clip = std::make_unique<ClipNode>(name, sr);
@@ -351,8 +376,6 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
 
 }  // namespace
 
-// getMetadata()'s param keys match setParam()'s keys exactly, so restore
-// is generic: for each fx, replay enabled + every numeric field.
 BundleInfo readBundleInfo(const juce::File& dir) {
   BundleInfo out;
   const auto jf = dir.getChildFile("session.json");
@@ -366,6 +389,8 @@ BundleInfo readBundleInfo(const juce::File& dir) {
   return out;
 }
 
+// getMetadata()'s param keys match setParam()'s keys exactly, so restore
+// is generic: for each fx, replay enabled + every numeric field.
 void applyEffects(AudioNode& node, const juce::var& blob,
                   double sr, const std::function<void(dsp::FxChain*)>& retire) {
   // Array form only (owner ruling 2026-08-15, no back-compat): a

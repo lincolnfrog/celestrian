@@ -152,16 +152,6 @@ test('generateCompositeWaveform', async (t) => {
         nodes
     });
 
-    await t.test('returns backend waveform when available', () => {
-        const stack = { ...makeStack([]), waveform: [0.1, 0.2, 0.3] };
-        const cache = new Map();
-        const result = generateCompositeWaveform({
-            stack, stackDuration: 4 * Q, effectiveQ: Q,
-            canvasWidth: 200, livePeaks: new Map(), cache
-        });
-        assert.deepEqual(result, [0.1, 0.2, 0.3]);
-    });
-
     await t.test('returns empty array for stack with no children', () => {
         const stack = { id: 'stack-1' };
         const cache = new Map();

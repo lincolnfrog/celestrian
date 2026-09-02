@@ -28,7 +28,8 @@
  *   devices.js    — audio device / input / latency-calibration mocks
  *   effects.js    — effect rack defaults and setters
  *   projects.js   — project model + in-memory session save/load
- *   scenarios.js  — test scenario loaders + the launch-ritual boot
+ *   scenarios.js  — test scenario loaders (boots 'empty': the launch
+ *                   ritual is retired, Q17 parity)
  */
 
 import { interceptUndoableCall, mockUndo, mockRedo } from './mock/undo.js';

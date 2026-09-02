@@ -159,7 +159,7 @@ class TakeCapacityTests : public juce::UnitTest {
         ctx.input_clock += BLOCK;
       }
       expect(clip.recState() == ClipNode::RecState::Idle,
-             "auto-committed at the wall — never a zombie");
+             "auto-committed at the wall - never a zombie");
       expect(clip.capHit(), "the cap-hit fact is surfaced");
       expectEquals(clip.getIntrinsicDuration(), clip.recordedLength(),
                    "clean commit: duration == written material");

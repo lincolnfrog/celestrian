@@ -1,3 +1,18 @@
+// ClipNode — the leaf: one take (audio samples or MIDI notes) with its
+// origin, loop window and fx rack. This file owns
+//   - control(): the recording state machine (arm -> capture -> pending
+//     stop -> commit), capture from the pre-record ring / MIDI history
+//     with latency compensation, the D4 wall guard, through-map takes;
+//   - the arm math (armEvaluate / beginCapture: first-clip epoch, Q-grid
+//     targets, through-map anchors) and commitRecording (duration, loop
+//     points, island establishment, lifecycle events to the root);
+//   - render() / renderMidi(): const playback positioned by origin
+//     against the received clock, then the output stage (gate -> fx ->
+//     gain*pan);
+//   - the metadata and waveform readouts for the UI.
+// Content/storage management (reservations, swaps, trims) lives in
+// clip_node.h alongside the state it guards.
+
 #include "clip_node.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -146,7 +161,7 @@ void ClipNode::control(const float* const* input_channels,
           stop_requested_.store(true);
           cap_hit_.store(true);
           RtLog::instance().post(
-              "ClipNode: take reached the reservation bound — finishing "
+              "ClipNode: take reached the reservation bound - finishing "
               "at the last clean boundary");
         }
       } else if (cap - wp <= context.num_samples) {
@@ -154,7 +169,7 @@ void ClipNode::control(const float* const* input_channels,
         commit_master_pos.store(context.master_pos);
         cap_hit_.store(true);
         RtLog::instance().post(
-            "ClipNode: first take reached the reservation bound — "
+            "ClipNode: first take reached the reservation bound - "
             "committed at %lld samples",
             (long long)wp);
         commitRecording(-1, &context);
@@ -255,9 +270,11 @@ void ClipNode::control(const float* const* input_channels,
           }
         }
         finishCaptureBlock(samples_to_write, blockPeak, context);
-        // Note: if samples_to_write <= 0, buffer is full - just stop
-        // writing. Do NOT commit here; wait for explicit stop.
       }
+      // samples_to_write <= 0 means the buffer is full: the D4 wall
+      // guard at the top of this pass has already requested a clean
+      // finish at the last boundary that fits (or committed a pre-Q
+      // take at the wall), so there is nothing to do here.
     }
   }
 }
@@ -265,9 +282,6 @@ void ClipNode::control(const float* const* input_channels,
 void ClipNode::finishCaptureBlock(int written, float block_peak,
                                   const ProcessContext& context) {
   last_block_peak.store(block_peak);
-  if (block_peak > current_max_peak.load()) {
-    current_max_peak.store(block_peak);
-  }
 
   const int64_t start_position = write_position.load();
   write_position.fetch_add(written);
@@ -287,7 +301,7 @@ void ClipNode::finishCaptureBlock(int written, float block_peak,
   if (through_map_capture_ && end_position >= take_map_.period()) {
     commit_master_pos.store(context.master_pos);
     RtLog::instance().post(
-        "ClipNode: through-map take completed one map period — "
+        "ClipNode: through-map take completed one map period - "
         "committing");
     commitRecording(-1, &context);
   }
@@ -601,7 +615,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // unpanned mono sum). Mute short-circuited above (isSilenced),
         // so the fader here is just `gain`.
         float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-        outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr,
+        outputStageGains(pan.load(), gain.load(), gl, gr,
                          fader);
         for (int ch = 0; ch < num_output_channels; ++ch) {
           if (output_channels[ch] == nullptr) continue;
@@ -672,7 +686,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       fxProcess(fx_scratch_.data(), fx_scratch2_.data(), context.num_samples,
                 /*stereo_in=*/false, context.live_midi);
       float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-      outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr,
+      outputStageGains(pan.load(), gain.load(), gl, gr,
                        fader);
       for (int ch = 0; ch < num_output_channels; ++ch) {
         if (output_channels[ch] == nullptr) continue;
@@ -823,7 +837,7 @@ void ClipNode::renderMidi(float* const* output_channels,
     }
   }
   float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-  outputStageGains(pan.load(), gain.load(), MuteState::AUDIBLE, gl, gr, fader);
+  outputStageGains(pan.load(), gain.load(), gl, gr, fader);
   for (int ch = 0; ch < num_output_channels; ++ch) {
     if (output_channels[ch] == nullptr) continue;
     const bool right = ch == 1 && num_output_channels >= 2;
@@ -857,10 +871,10 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
 
   // Latency compensation: the performer plays against what they HEARD
   // (delayed by output latency); it reaches the software input latency
-  // later. Total compensation = input + output (or the calibrated
-  // round trip, which the engine substitutes for both).
+  // later. context.input_latency carries the whole round trip (input +
+  // output, or the calibrated figure the engine substitutes for both).
   int64_t compensated_pos =
-      context.master_pos - (context.input_latency + context.output_latency);
+      context.master_pos - context.input_latency;
   if (compensated_pos < 0) compensated_pos = 0;
 
   if (Q <= 0) {
@@ -890,7 +904,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   if (map_commit_cycle_.load() > 0 && context.map.active()) {
     const int64_t period = context.map.period();
     int64_t heard =
-        context.island_pos - (context.input_latency + context.output_latency);
+        context.island_pos - context.input_latency;
     if (heard < 0) heard = 0;
     int64_t rel_h = heard - context.map_heard_epoch;
     if (rel_h < 0) rel_h = 0;
@@ -900,8 +914,9 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     // The anchor's inner position, absolute: segments select view
     // positions of the mapping node's received frame, whose cycle top
     // is map_heard_epoch (the one-frame rule, time_maps.md §2).
-    const int64_t origin =
-        context.map_heard_epoch + context.map.mapOffset(t_rel);
+    // (Q18: the map's inner positions are offsets from the mapping
+    // stack's ORIGIN — map_origin; map_heard_epoch = map_origin + a0.)
+    const int64_t origin = context.map_origin + context.map.mapOffset(t_rel);
 
     origin_samples.store(origin);
     origin_rt_.store(origin);
@@ -1032,7 +1047,7 @@ void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
   // window are picked up (the pickup / first-clip reach-back).
   midi_capture_next_clock_ =
       capture_next_clock_ -
-      (context.input_latency + context.output_latency) + context.midi_latency;
+      context.input_latency + context.midi_latency;
   midi_history_cursor_ =
       context.midi_history ? context.midi_history->oldestSeq() : 0;
   capture_held_.clear();
@@ -1124,8 +1139,6 @@ bool ClipNode::prepareRecording(int64_t through_map_commit_cycle) {
   through_map_capture_ = false;
   cap_hit_.store(false);
   write_position.store(0);
-  read_position.store(0);
-  current_max_peak.store(0.0f);
   awaiting_start_at.store(0);
   stop_requested_.store(false);
   stop_pending_gen_.store(0);
@@ -1178,7 +1191,7 @@ void ClipNode::stopRecording(bool island_has_quantum, uint32_t group_generation)
           stop_requested_.store(true);
         }
         juce::Logger::writeToLog(
-            "ClipNode: Stop requested — finishing to the next boundary");
+            "ClipNode: Stop requested - finishing to the next boundary");
       } else {
         // First clip: immediate commit. The recorded length stands in
         // for the commit position — a node-level diagnostic only.
@@ -1221,7 +1234,7 @@ void ClipNode::commitRecording(int64_t final_duration,
       loop_start_samples.store(0);
       loop_end_samples.store(duration);
       RtLog::instance().post(
-          "ClipNode: Through-map commit — C=%lld (heard L=%lld)",
+          "ClipNode: Through-map commit - C=%lld (heard L=%lld)",
           (long long)map_C, (long long)L);
     } else if (Q > 0 && final_duration <= 0) {
       // Hysteresis snapping — shared math in timing.h.
@@ -1251,8 +1264,7 @@ void ClipNode::commitRecording(int64_t final_duration,
       loop_end_samples.store(duration);
     }
 
-    duration_samples.store(duration);  // CRITICAL: Store final duration so UI
-                                       // knows clip is valid!
+    duration_samples.store(duration);  // > 0 is what "committed" means
 
     // First committed clip in the island establishes Q — stored once at
     // the island root, never derived again (P0-3; Q survives its
@@ -1300,7 +1312,6 @@ void ClipNode::commitRecording(int64_t final_duration,
 
 void ClipNode::startPlayback() {
   if (duration_samples.load() > 0) {
-    read_position.store(0);
     is_playing.store(true);
   }
 }

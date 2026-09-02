@@ -9,6 +9,7 @@
 import {
     state, generateId, findNode, findParent, removeNodeFromParent,
     committedClipCount, findSoleCommittedClip, definerStackNode,
+    settleAnchors,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 import { quantumSamples } from './rate.js';
@@ -95,24 +96,34 @@ export function deleteNode(id) {
             console.log('[MockBackend] Q13 re-open: uncollapsed', survivor.id);
         }
     }
-    // The GROUP twin: back down to a definer stack whose members were
-    // group-collapsed — full takes back, the trim back on the stack.
+    // The GROUP twin (engine parity uncollapseGroupNow, Q18): back down
+    // to a definer stack whose members were group-collapsed — full
+    // takes back, the trim back on the stack, and the subtree's ORIGINS
+    // unwound by the collapse shift (the group collapse shifted both
+    // the buffer view and the origin, like the sole-clip collapse).
     {
         const ds = definerStackNode();
         if (ds && ds._precollapse) {
+            const shift = ds._precollapse.shift || 0;
             (ds.nodes || []).forEach(m => {
                 if (m.type !== 'clip' || !m._precollapse) return;
                 m.duration = m._precollapse.dur;
                 m.loopStart = 0;
                 m.loopEnd = m._precollapse.dur;
+                m.origin = (m.origin || 0) - shift;
                 delete m._precollapse;
             });
+            ds.origin = (ds.origin || 0) - shift;
             ds.loopStart = ds._precollapse.ls;
             ds.loopEnd = ds._precollapse.le;
             delete ds._precollapse;
             console.log('[MockBackend] Q13 re-open: group uncollapsed', ds.id);
         }
     }
+    // Q18: the last content leaving a stack un-anchors it (engine
+    // parity applyEdit(Remove) → settleAnchors); undo's snapshot
+    // restores the exact stored origin.
+    settleAnchors();
     console.log('[MockBackend] Deleted node:', id);
 }
 
@@ -145,6 +156,10 @@ export function reorderNode(nodeId, newParentId, newIndex) {
         state.nodes.splice(index, 0, node);
         console.log('[MockBackend] Reordered node:', nodeId, 'to TOP LEVEL at', index);
     }
+    // Q18 (engine parity applyEdit(Move) → settleAnchors): committed
+    // content entering an unanchored stack anchors it at the child's
+    // origin; the last content leaving un-anchors the old parent.
+    settleAnchors();
 }
 
 export function setNodePosition(nodeId, x, y) {
@@ -208,6 +223,12 @@ export function combineNodes(draggedId, targetId) {
     } else {
         insertList.push(newStack);
     }
+
+    // Q18 (composition.md §5, engine parity applyEdit(Combine) →
+    // settleAnchors): a post-hoc group anchors at min(member origins)
+    // — the earliest committed descendant — when any member holds
+    // committed content; empty members leave it unanchored.
+    settleAnchors();
 
     console.log('[MockBackend] Combined nodes into stack:', newStack.id);
     return newStack.id;
@@ -283,13 +304,16 @@ export function setNodeGain(id, gain) {
 }
 
 // The Q5 period-source knob — UNDOABLE (a musical fact, unlike the
-// mixer knobs). CLIPS ONLY (engine parity: a stack has no origin to
-// anchor a firing to); refusals pop their pre-pushed undo snapshot.
+// mixer knobs). Clips AND stacks (Q18, composition.md §0 — a stack
+// fires from its origin like a clip: the drum group as a one-shot;
+// engine parity AudioEngine::setPeriodSource). An identity set records
+// nothing; refusals pop their pre-pushed undo snapshot.
 export function setPeriodSource(id, source) {
     const node = findNode(id);
-    if (!node || node.type !== 'clip') {
+    const next = source === 'context' ? 'context' : 'own';
+    if (!node || (node.periodSource || 'own') === next) {
         popUndoForRefusal();
         return;
     }
-    node.periodSource = source === 'context' ? 'context' : 'own';
+    node.periodSource = next;
 }

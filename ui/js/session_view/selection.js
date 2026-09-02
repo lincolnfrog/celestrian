@@ -14,7 +14,7 @@ export const selection = new Set();
 // selection does not re-assert itself.
 let userCleared = false;
 
-export function updateSelectionBar() {
+function updateSelectionBar() {
     const bar = document.getElementById('selection-bar');
     if (!bar) return;
     const n = selection.size;

@@ -140,7 +140,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           "TEST DEBUG: Clip2 origin=" + juce::String(origin) +
           ", duration=" + juce::String(duration));
 
-      expectEquals(origin % 1000, (int64_t)0, "origin ≡ 0 (mod 1Q context)");
+      expectEquals(origin % 1000, (int64_t)0, "origin == 0 (mod 1Q context)");
 
       // The user-facing invariant ("loops to 0Q"): recording began at
       // t=1000 and ran 5000 samples, so the content wraps at t=6000 —

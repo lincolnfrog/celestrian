@@ -57,7 +57,6 @@ while pending start.
 | `setLoopPoints` | uuid, startSamples, endSamples | Correctly uses samples |
 | `toggleLoopWindow` | uuid | Window activation is data, not view state (time_maps.md) |
 | `startLatencyCalibration` / `getLatencyCalibration` | — | Hardware measurement (performance.md §7) |
-| `togglePlay` | uuid | Pure audio state |
 | `toggleSolo` | uuid | Pure audio state |
 | `toggleMute` | uuid | Pure audio state |
 
@@ -71,42 +70,16 @@ while pending start.
 
 ---
 
-## Detailed Fixes Required
+## Detailed fixes
 
-### 1. `moveNode` → `reorderNode` (Critical for Drag & Drop)
-
-**Current (BROKEN):**
-```javascript
-// Frontend calculates pixel Y, backend converts to index
-await callNative('moveNode', id, parentId, index * 120);
-```
-
-**Proposed:**
-```javascript
-// Frontend calculates index directly from drop position
-await callNative('reorderNode', id, parentId, dropIndex);
-```
-
-Backend receives the index directly and inserts at that position.
-
-### 2. `createNode` Cleanup
-
-For child nodes (clips in stacks), remove x/y:
-```javascript
-await callNative('createNode', 'clip', parentId);  // Appends to parent
-```
-
-For top-level stacks that need positioning:
-```javascript
-const id = await callNative('createNode', 'stack');
-await callNative('setNodePosition', id, x, y);
-```
-
----
+Resolved 2026-07 (P2-9 `backend.js` facade; `moveNode` → `reorderNode`,
+`createNode` without x/y). Per-node `togglePlay` was deleted with Q16
+(2026-08-13): mute/solo plus the one transport are the per-node play
+controls.
 
 ## Notes on `setNodePosition`
 
-This is acceptable for **top-level stacks only**:
-- Stack position in the grid needs to persist across sessions
-- This is "persistence-worthy" visual state
-- Should NOT be used for clips within stacks (those are array-ordered)
+Acceptable for top-level stacks only (persistence-worthy visual
+state; never for clips within stacks, which are array-ordered).
+*(setNodePosition has no UI caller since the session view; removal
+pending.)*

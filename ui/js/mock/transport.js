@@ -11,7 +11,7 @@
 // Deterministic mode uses advanceBy() for exact sample-count stepping.
 
 import { posMod } from '../math_utils.js';
-import { state, effectiveQuantumForState } from './state.js';
+import { state, effectiveQuantumForState, shiftOrigins } from './state.js';
 import { effectiveCycle } from './cycles.js';
 import { recView, growRecordingClips } from './recording.js';
 
@@ -37,7 +37,7 @@ export const DEFAULT_SAMPLES_PER_TICK = 2205;
  * sweep) need this to know how long a loop takes on the wall clock:
  * `loopSeconds = loopSamples / SIMULATED_SAMPLES_PER_SECOND`.
  */
-export const POLL_INTERVAL_MS = 50;
+const POLL_INTERVAL_MS = 50;
 export const SIMULATED_SAMPLES_PER_SECOND =
     DEFAULT_SAMPLES_PER_TICK * (1000 / POLL_INTERVAL_MS);
 
@@ -98,19 +98,13 @@ export function seekTransport(posSamples) {
     else if (pos < 0) pos = 0;
     const epochOld = state.islandEpoch || 0;
     state.islandEpoch = state.masterPos - pos;
-    // THE CONTENT-FRAME LAW (engine parity, 2026-08-30): a seek is a
-    // phase jump of the whole island — every clip origin rides the
-    // epoch delta, so placement on the grid (origin − epoch) is
-    // unchanged and playback lands at the requested phase (clips are
-    // origin-anchored; the epoch alone moved only the cursor).
+    // A seek is a phase jump of the whole island (composition.md §5,
+    // engine parity AudioEngine::seekTransport): every origin — clips
+    // AND stacks (Q18) — rides the epoch delta, so placement on the
+    // grid (origin − epoch) is unchanged and playback lands at the
+    // requested phase. shiftOrigins(root, delta) is the one primitive.
     const delta = state.islandEpoch - epochOld;
-    if (delta !== 0) {
-        const ride = nodes => (nodes || []).forEach(n => {
-            if (n.type === 'clip') n.origin = (n.origin || 0) + delta;
-            else ride(n.nodes);
-        });
-        ride(state.nodes);
-    }
+    if (delta !== 0) state.nodes.forEach(n => shiftOrigins(n, delta));
     console.log(`[MockBackend] seekTransport → rel=${pos} (epoch=${state.islandEpoch})`);
     return true;
 }

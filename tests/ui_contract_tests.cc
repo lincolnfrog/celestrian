@@ -37,7 +37,7 @@ class UiContractTests : public juce::UnitTest {
   UiContractTests() : juce::UnitTest("UI Contract Capture", "Audio Engine") {}
 
   void runTest() override {
-    beginTest("record→commit publishes a coherent display contract");
+    beginTest("record->commit publishes a coherent display contract");
 
     const int Q = 1000;
     const int BLOCK = 100;  // fine-grained polls: one per block

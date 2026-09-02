@@ -93,13 +93,14 @@ inline QTime periodQ(int64_t duration_samples, int64_t q_samples) {
 }
 
 /**
- * Where playback starts within a clip so that when the context phase equals
- * the recording start phase, the clip plays its first recorded sample.
- * docs/recording.md Example 2: duration=8Q, startPhase=2Q -> launch=6Q.
+ * Where playback starts within a clip so that a clip whose origin sits
+ * `origin` samples into the frame plays its first recorded sample at
+ * that moment (kernel.md: origin is THE timing fact; the launch point
+ * is a projection of it). duration=8Q, origin=2Q -> launch=6Q.
  */
-inline int64_t launchPointFor(int64_t start_phase, int64_t duration) {
+inline int64_t launchPointFor(int64_t origin, int64_t duration) {
   if (duration <= 0) return 0;
-  return (duration - (start_phase % duration)) % duration;
+  return (duration - (origin % duration)) % duration;
 }
 
 /**

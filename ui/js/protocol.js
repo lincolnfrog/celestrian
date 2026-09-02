@@ -12,7 +12,9 @@
  * If you add a bridge method: add it HERE first, then to both backends.
  *
  * `params` and `returns` are documentation (not runtime-enforced yet); all
- * sample-domain values are int64 samples, positions are CSS pixels.
+ * sample-domain values are int64 samples. (setNodePosition's x/y are a
+ * canvas-era leftover the session view never sends — kept only until
+ * the C++ side and this list drop it together.)
  */
 export const BRIDGE_METHODS = [
     { name: 'ping', params: [], returns: "'pong'" },

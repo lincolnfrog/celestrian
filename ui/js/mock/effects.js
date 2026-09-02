@@ -26,7 +26,7 @@ const BUILT_IN_DEFAULTS = [
 
 /** A fresh default chain: the four built-ins in canonical order, all
  * disabled — FxChain::makeDefault's twin. */
-export function defaultEffects() {
+function defaultEffects() {
     return {
         chain: BUILT_IN_DEFAULTS.map(([type, params]) => ({
             slot: 'slot-' + type + '-' + (++slotCounter),

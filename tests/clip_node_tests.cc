@@ -614,7 +614,7 @@ class ClipNodeTests : public juce::UnitTest {
       expectEquals(c->origin_samples.load(), (int64_t)1700,
                    "origin = the boundary the performer heard");
       expectEquals((c->origin_samples.load() - 700) % 1000, (int64_t)0,
-                   "origin ≡ 0 (mod Q) in the EPOCH frame");
+                   "origin == 0 (mod Q) in the EPOCH frame");
     }
 
     beginTest("Arm farther out: awaits the boundary, then starts on it");

@@ -5,7 +5,9 @@
 > (stacks.md caution banner) with one primitive. Companion: kernel.md
 > (this is migration step 4 made concrete).
 >
-> Status: **proposal — owner-reviewed direction, not yet implemented.**
+> Status: **spec — phases 1–3 implemented (2026-07-09 / 07-21 / 07-22);
+> the phase records below are journal.** The 2026-07-22 → 07-25
+> gesture-UX rounds under phase 3 are history (heading inline).
 
 ---
 
@@ -37,6 +39,13 @@ period = Σ (bi − ai)
 m(t)  = cycle_epoch + walk_segments( (t − cycle_epoch) mod period )
 ```
 
+> **SUPERSEDED 2026-09-01 (Q18, composition.md §2):** the stack form
+> above anchored the map at the RECEIVED epoch; since Q18 every node
+> has its own origin and the map anchors at `origin + mapOffset(0)` for
+> clips and stacks alike: `inner(t) = mapOffset((t − origin − a0) mod
+> period)`, `t_child = origin + inner(t)`. The warning below described
+> the epoch-anchored form and is kept for the reasoning.
+>
 > ⚠️ **The mapped time stays in the received frame** (the `cycle_epoch +`
 > term). Segments select *view positions* of the cycle; children align by
 > their ABSOLUTE origins, so a map that emits epoch-stripped small values
@@ -137,6 +146,14 @@ default, sub-Q slicing possible, UX enforces Q coherence):
 
 - **Cell mode (default):** toggle Q cells on/off directly on the
   composite waveform — a step-sequencer gesture, natural for drums.
+
+> **SUPERSEDED 2026-08-09 (engine_lcm_guard.md):** the free-length
+> escape hatch in the next bullet ("A modifier breaks the link …
+> 1.37Q ⚠ — permitted") no longer exists. Every map/window period is a
+> whole multiple or exact divisor of Q, refused categorically by the
+> editor, the engine and the mock; the ⚠ badge is defensive display
+> only. Kept as written for the reasoning.
+
 - **Punch mode (mistake-ectomy):** drag inside the waveform to place a
   cut's in-point anywhere; the out-point **snaps to in + kQ** — the two
   edges are linked and move in lockstep, so incoherent cuts are
@@ -383,6 +400,13 @@ indirection were both considered and rejected):**
   multi-segment definer is a SPLICE COPY (kept cells → exact-size
   buffer; the edit inverse OWNS the pre-splice buffer + map, so undo
   un-splices — the owned-subtree precedent).
+### Gesture-UX journal (2026-07-22 → 07-25)
+
+*(history — the iteration record of the cut-band / expanded-drag
+editor; what survived is the current code. Free-length cuts and the
+"⌥ free" gestures mentioned below were abolished 2026-08-09 —
+engine_lcm_guard.md.)*
+
 - **The SEQUENCER — CUT BANDS (§4 via the 2026-07-22 mock round; the
   first modal cell/punch editor shipped briefly and was replaced after
   one field session: its full-lane punch surface intercepted the
@@ -395,7 +419,9 @@ indirection were both considered and rejected):**
   cut → it heals; drag the chip → the cut SLIDES freely, length held
   (the "exclude 1Q off the boundary" move); drag a handle → resize,
   length snapping to whole Qs on release (⌥ free, badged "N.NNQ ⚠" —
-  the seam theorem visible). ONE `setSegments` per finished gesture =
+  the seam theorem visible) *[SUPERSEDED 2026-08-09, engine_lcm_guard.md:
+  no free mode — the ⌥ resize escape hatch is removed; the ⚠ badge is
+  defensive display only]*. ONE `setSegments` per finished gesture =
   one undo step. The vocabulary split: leading/trailing exclusions are
   the WINDOW brackets' domain; bands are only the INNER gaps — the two
   gestures never overlap. `ui/js/map_edit.js` holds the pure algebra
@@ -680,7 +706,7 @@ bands; the multi-segment heard cursor shipped seam-aware on the amber
 line — the WHITE cursor still sweeps the audible cycle linearly over
 intrinsic-frame group lanes, with the amber line as the honest one.)
 
-## Content-frame law (2026-08-30, docs/loop_region_audit.md)
+## Content-frame law (2026-08-30, docs/archive/loop_region_audit.md §0)
 
 Clips read their buffers ORIGIN-relative on the monotonic clock; a
 stack window selects EPOCH-relative view positions of its cycle. The two

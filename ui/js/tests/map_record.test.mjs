@@ -38,8 +38,16 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     await callNative('setLoopPoints', groupId, 1000, 3000);
 
     // Arm C through the map at heard rel 4500 → heard target 5000
-    // (next Q on the period grid), anchor offset 1000 → inner origin =
-    // epoch + mapOffset(1000) = epoch + 2000 = 3000.
+    // (next Q on the period grid). Q18 (composition.md §2, engine
+    // clip_node.cc through-map arm): the map's inner positions are
+    // offsets from the mapping STACK's origin (anchored at take A's
+    // origin, 0 — not the epoch, 1000): the heard grid anchor is
+    // origin + a0 = 1000 (≡ the epoch here), and the anchor's inner
+    // position is origin + mapOffset(1000) = 0 + 2000 = 2000.
+    // (Pre-Q18 the stack map anchored at the epoch, giving 3000.)
+    const stackOrigin = nodeById(groupId).origin;
+    assert.equal(stackOrigin, 0, 'the group anchored at take A\'s origin');
+    assert.equal(nodeById(groupId).anchored, true);
     setMasterPos(epoch + 4500);
     const cId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', cId);
@@ -66,7 +74,8 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     const c = nodeById(cId);
     assert.equal(c.isRecording, false, 'one-period cap auto-committed');
     assert.equal(c.duration, 4000, 'commit duration = C (dense inner cycle)');
-    assert.equal(c.origin, 3000, 'origin = the anchor\'s inner position');
+    assert.equal(c.origin, stackOrigin + 2000,
+        'origin = stack origin + mapOffset(heard offset) (Q18)');
     assert.equal(c.contextCycle, 2000, 'heard frame = the map period cycle');
     assert.equal(getState().islandEpoch, epoch,
         'no epoch re-base (C divides the island cycle)');
@@ -90,8 +99,8 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
         'stop boundary on the heard grid, clamped to the period');
     advanceBy(400);
     assert.equal(nodeById(dId).duration, 4000, 'short take commits dense C');
-    assert.equal(nodeById(dId).origin, 3000,
-        'second-pass anchor folds to the same inner position');
+    assert.equal(nodeById(dId).origin, stackOrigin + 2000,
+        'second-pass anchor folds to the same inner position (Q18)');
 });
 
 test('nested active maps refuse the arm (phase-2 scope)', async () => {

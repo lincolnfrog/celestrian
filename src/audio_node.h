@@ -1,5 +1,27 @@
 #pragma once
 
+/**
+ * AudioNode — the fractal node of the Celestrian graph. A node is either
+ * a ClipNode (a leaf: one take, audio samples or MIDI notes) or a
+ * StackNode (a container that sums its children); stacks nest without
+ * limit, and the session root is itself a stack — the island root that
+ * owns Q and the epoch.
+ *
+ * Every node splits its per-block work in two (the control/render
+ * split, §2.3): control() is the mutating pass — recording decisions,
+ * capture, take lifecycle — and render() is a CONST pass that only
+ * produces output for the received clock. The output stage is the same
+ * for every node: render (leaf) or sum (stack) → time-map → pre-fx gate
+ * (mute / solo / sequencer, ramped) → fx rack → gain·pan (balance law)
+ * → parent. Mute is that ramped gate, not a fader value, so an effect
+ * tail rings through a closed gate.
+ *
+ * ProcessContext is the bundle of per-block facts a parent hands DOWN
+ * to each child. Nothing on the audio thread walks UP: island facts,
+ * ancestry and structure arrive in the context (and its whole-graph
+ * snapshot), never through parent pointers.
+ */
+
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 
@@ -15,9 +37,31 @@ class AudioNode;
 struct GraphSnapshot;
 
 /**
- * Context for audio processing, passed down the recursive graph.
- * POD-only: this struct is copied per stack per block on the audio thread,
- * so it must never carry heap-owning members (e.g. juce::String).
+ * The per-block facts, passed DOWN the graph: the engine builds one per
+ * callback and every stack copies and re-scopes it for its children
+ * (StackNode::childContext). POD-only: copied per stack per block on the
+ * audio thread, so it must never carry heap-owning members (juce::String).
+ *
+ * Field groups:
+ *  - Clock facts: master_pos is the RECEIVED clock (re-based by a
+ *    windowed stack, folded by an active map on the way down — what
+ *    render positions against); island_pos / island_epoch are the
+ *    INVARIANT island clock and its origin (through-map arm triggers,
+ *    origin math); cycle_epoch is the received frame's cycle top (window
+ *    phase); map_heard_epoch is the heard grid anchor under an active map
+ *    (arm targets in heard time).
+ *  - Island facts: quantum, island (the lifecycle-event target), and the
+ *    island / stop generations that let the audio thread adopt multi-field
+ *    edits as one fact.
+ *  - Recording context: context_loop (the longest committed sibling — arm
+ *    math), the latency compensation, is_recording.
+ *  - Render context: context_cycle (the Q5 one-shot period), map +
+ *    map_count (the innermost active map), gate_g0/g1 (the sequencer gate
+ *    ramp), any_solo.
+ *  - Capture plumbing: the pre-record ring + input_clock, live_midi,
+ *    midi_history + midi_latency.
+ *  - Structure: snap + self (the whole-graph snapshot and this node's
+ *    entry in it).
  */
 struct ProcessContext {
   // Default is a test-only fallback; the engine always overwrites this
@@ -30,9 +74,10 @@ struct ProcessContext {
   // Global transport master position (in samples)
   int64_t master_pos = 0;
 
-  // Latency compensation (in samples)
+  // Recording alignment (in samples): the whole round trip a performer
+  // plays against — input + output device latency, or the calibrated
+  // round trip when one was measured (the engine folds both in here).
   int input_latency = 0;
-  int output_latency = 0;
 
   // Solo canon (Q16): true when ANY node in the island is soloed —
   // computed once per callback from the snapshot's per-node atomic
@@ -155,6 +200,11 @@ struct ProcessContext {
   // product), which recording refuses until phase 3+.
   timing::TimeMap map{};
   int64_t map_heard_epoch = 0;
+  // The mapping stack's ORIGIN (Q18, composition.md §2): the map's
+  // inner positions are offsets from it, so a through-map take's inner
+  // origin is map_origin + mapOffset(heard offset). map_heard_epoch
+  // above is map_origin + mapOffset(0) — the heard grid anchor.
+  int64_t map_origin = 0;
   int map_count = 0;
 };
 
@@ -180,23 +230,20 @@ inline void panGains(float pan, float& gain_l, float& gain_r) {
   gain_r = p < 0.0f ? 1.0f + p : 1.0f;
 }
 
-/** Mute at the output stage (an enum so call sites read as intent,
- * not a bare bool — style.md). */
-enum class MuteState { AUDIBLE, MUTED };
-
 /**
  * THE OUTPUT STAGE scalars (unification_audit.md §2.4): every node's
  * signal reaches its parent through one resolution — render/sum →
- * time-map → fx → gain·pan → parent. `gl`/`gr` are that stage's
- * channel gains: the balance-law pan gains scaled by the fader, and 0
- * when muted — mute IS gain 0 at the output stage, not a separate
- * audibility mechanism (fixes D1: containers silence like leaves).
+ * time-map → pre-fx gate → fx → gain·pan → parent. `gl`/`gr` are that
+ * stage's channel gains: the balance-law pan gains scaled by the fader;
  * `fader` is the mono/extra-channel scalar (pan does not apply there).
+ * Mute is NOT a fader value here: it is the PRE-FX ramped gate
+ * (gateEndpoints, S7), so a muted node's effect tail still reaches its
+ * parent while it rings out.
  */
-inline void outputStageGains(float pan, float gain, MuteState mute, float& gl,
-                             float& gr, float& fader) {
+inline void outputStageGains(float pan, float gain, float& gl, float& gr,
+                             float& fader) {
   panGains(pan, gl, gr);
-  fader = mute == MuteState::MUTED ? 0.0f : gain;
+  fader = gain;
   gl *= fader;
   gr *= fader;
 }
@@ -269,8 +316,6 @@ class AudioNode {
     obj->setProperty("type", getNodeTypeString());
     obj->setProperty("x", (double)x_pos.load());
     obj->setProperty("y", (double)y_pos.load());
-    obj->setProperty("w", (double)width.load());
-    obj->setProperty("h", (double)height.load());
     obj->setProperty("currentPeak", (float)last_block_peak.load());
     if (isRecording())
       obj->setProperty("duration", (double)live_duration_samples.load());
@@ -323,6 +368,9 @@ class AudioNode {
                      (double)timing::launchPointFor(origin_samples.load(),
                                                     duration_samples.load()));
     obj->setProperty("origin", (double)origin_samples.load());
+    // Q18: a stack's origin is a stored fact only once anchored; the UI
+    // draws an anchored group's take mark like a clip's.
+    obj->setProperty("anchored", (bool)anchored_.load());
 
     // Device-independent musical facts (Q12 / D-T3): the same values
     // projected onto the island's musical frame through the ONE law
@@ -643,7 +691,6 @@ class AudioNode {
   // blob the engine persists for the frontend (ui.md). Clips never
   // write these: lane x is a UI projection of `origin` (I6).
   std::atomic<double> x_pos{0.0}, y_pos{0.0};
-  std::atomic<double> width{200.0}, height{100.0};
 
   // Transport state
   // View telemetry, written by the CONST render phase (§2.3): an output
@@ -710,15 +757,59 @@ class AudioNode {
       true};  // UI state: expanded (true) or collapsed (false)
   std::atomic<float> last_block_peak{0.0f};
 
-  // THE canonical timing fact (docs/kernel.md): the cycle moment this
-  // node's content[0] belongs to, in performance-time samples. Set once
-  // when recording starts. Launch point, anchor, and visual x are all
-  // projections of this value.
+  // THE canonical timing fact (docs/kernel.md, composition.md §1 — Q18):
+  // the monotonic-clock moment this node's inner time 0 belongs to, in
+  // performance-time samples. A CLIP: the moment content[0] occurred,
+  // set when recording starts. A STACK: the zero of its inner timeline,
+  // set when committed content first enters its subtree (the earliest
+  // descendant's origin — AudioEngine::settleAnchors) and cleared when
+  // the last content leaves. Launch point, lane x, and every map's
+  // anchor are projections of this one value; a parent may move it (and
+  // with it the whole subtree — composition.md §5) but never derive it.
   std::atomic<int64_t> origin_samples{0};
+  // ANCHORED (stacks; composition.md §1): true once origin_samples is a
+  // stored fact. An unanchored stack's inner zero is the RECEIVED cycle
+  // top for the block (no member exists to disagree — the empty case,
+  // not a second law). Clips are anchored iff they hold content and
+  // never consult the flag.
+  std::atomic<bool> anchored_{false};
+  bool isAnchored() const { return anchored_.load(); }
+  /** Message thread: anchor at `origin` (settleAnchors, Combine, load)
+   * or clear. Gated like every message-thread origin write. */
+  void setAnchor(bool anchored, int64_t origin, uint32_t gate) {
+    anchored_.store(anchored);
+    setOriginGated(origin, gate);
+  }
+  // The origin the AUDIO thread renders with: adopted from
+  // origin_samples at a block top whose island generation has reached
+  // origin_gate_gen_ (ProcessContext::island_generation — a writer that
+  // moves origins with the epoch names one generation for both, so a
+  // block renders new origins against the new epoch or neither).
+  // Audio-thread writers (arm, commit) store both directly.
+  std::atomic<int64_t> origin_rt_{0};
+  std::atomic<uint32_t> origin_gate_gen_{0};
+  /** Message thread: set the origin so that the audio thread adopts it
+   * only at a block top carrying island generation >= `gate` (0 = the
+   * next block top). */
+  void setOriginGated(int64_t origin, uint32_t gate) {
+    origin_gate_gen_.store(gate);
+    origin_samples.store(origin);
+  }
+  /** Block-top adoption (call first in control()). */
+  void adoptOriginGate(const ProcessContext& context) {
+    if (context.island_generation >= origin_gate_gen_.load()) {
+      origin_rt_.store(origin_samples.load());
+    }
+  }
+  /** The rendering origin (audio thread). */
+  int64_t renderOrigin() const { return origin_rt_.load(); }
 
-  // Atomic because the audio thread walks parent chains (quantum lookup,
-  // solo ancestry) while the message thread reparents nodes during
-  // reorder/combine operations.
+  // The audio thread never walks parent chains (island facts and
+  // ancestry ride ProcessContext / the graph snapshot — see setParent).
+  // Readers are message-thread walks (metadata, engine helpers,
+  // rootNode()) and the single-threaded unit-test fallback in
+  // getEffectiveQuantum; the atomic is belt-and-braces for the
+  // reorder/combine reparent, not a load-bearing sync point.
   std::atomic<AudioNode*> parent{nullptr};
 
  protected:

@@ -92,11 +92,15 @@ export const guardGesture = (node, onLost) => {
     return () => { armed = false; cleanup(); };
 };
 
-/** True when the key event targets a text-entry control — global
- * hotkeys (zoom, teleport) must never fire while the user types. */
+/** True when the key event targets a text-entry surface (a form
+ * control or a contentEditable rename editor) — global hotkeys (Space,
+ * ⌘Z, ⌘S, zoom, teleport, R) must never fire while the user types.
+ * The ONE copy: app.js's keyboard dispatcher imports it too. */
 export const isTypingTarget = e => {
-    const tag = e.target.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    const t = e.target;
+    const tag = t && t.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        !!(t && t.isContentEditable);
 };
 
 /** Approximate Q equality, matching fmtQ's fp-noise tolerance: display

@@ -157,14 +157,17 @@ export function patchRail(row, lane, vm) {
             : 'Sequencer: gate this group’s tracks over steps (the song grid)');
     }
 
-    // Period-source toggle (Q5): ↺ = loop, 1× = one-shot.
+    // Period-source toggle (Q5; groups too since Q18): ↺ = loop,
+    // 1× = one-shot.
     const ps = row.querySelector('.oneshot-btn');
     if (ps) {
         setText(ps, lane.oneShot ? '1×' : '↺');
+        const what = lane.kind === 'group' ? 'the whole group' : 'it';
         const t = lane.oneShot
-            ? 'One-shot: sounds once per cycle at its spot — click to loop'
+            ? 'One-shot: ' + what + ' sounds once per cycle at its spot ' +
+              '— click to loop'
             : 'Loops at its own length — click for one-shot ' +
-              '(sounds once per cycle)';
+              '(' + what + ' sounds once per cycle)';
         if (ps.title !== t) ps.title = t;
         ps.classList.toggle('on', !!lane.oneShot);
     }

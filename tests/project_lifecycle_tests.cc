@@ -97,7 +97,7 @@ class ProjectLifecycleTests : public juce::UnitTest {
                   .getChildFile("session.json")
                   .existsAsFile(),
              "no auto-created Default template");
-      expect(!pm.born(), "unborn — the seed take dates the project");
+      expect(!pm.born(), "unborn - the seed take dates the project");
     }
 
     beginTest("duplicateProject() forks forward");

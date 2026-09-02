@@ -143,7 +143,7 @@ export function bandState(lane, vm, cycleQ) {
 /** Flatten a segment edit to samples and hand it to the engine — after
  * the categorical coherence guard. `segsQ === null` is a refusal from
  * the interval algebra: keep the previous map, commit nothing. */
-export function commitBandSegs(st, segsQ) {
+function commitBandSegs(st, segsQ) {
     if (segsQ === null) return;  // refusal: keep the previous map
     // CATEGORICAL COHERENCE (owner ruling 2026-08-09): no gesture may
     // commit a fractional-period map — the engine refuses them too
@@ -166,7 +166,7 @@ export function commitBandSegs(st, segsQ) {
  * pointer lives in heard time — hop through the map to the RAW
  * position it selects; on a raw-framed lane it's a plain wrap into
  * the take's period. */
-export function bandContentQ(st, body, clientX) {
+function bandContentQ(st, body, clientX) {
     const r = body.getBoundingClientRect();
     const laneQ = ((clientX - r.left) / r.width) * st.cycleQ;
     if (st.heard && st.periodQ > 0) {

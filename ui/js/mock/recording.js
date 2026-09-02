@@ -14,6 +14,7 @@ import { activeGeometryOutside,
     rootActiveMap, auditionMapOf, serializeGraph,
     committedClipCount, findSoleCommittedClip, anyNodeRecording,
     effectiveQuantumForState, definerStackNode,
+    shiftOrigins, settleAnchors, frameOriginOf, nodeInner,
 } from './state.js';
 import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
 import { committedCycle, effectiveCycle } from './cycles.js';
@@ -124,12 +125,16 @@ export function startRecordingInNode(id) {
         }
     }
 
-    // The GROUP twin (engine parity Edit::CollapseGroup, audit
-    // 2026-08-30 §3.5): a trimmed definer STACK collapses to its
-    // window before any arm — members' duration := len, content shifts
-    // by the window start, ORIGINS STAY (the group window anchors at
-    // the epoch == the members' origin, so the origin does not move —
-    // unlike the clip collapse), stack window consumed.
+    // The GROUP twin (engine parity collapseGroupNow, Q18 — composition
+    // .md §5 "lock-collapse at the second arm, clip or stack definer"):
+    // a trimmed definer STACK collapses to its window before any arm —
+    // members' duration := len, content base shifts by the window
+    // start, and the ORIGIN of the whole subtree (stack AND members)
+    // shifts by the window start too — exactly the sole-clip law
+    // (window top → origin), since the stack's window anchors at the
+    // stack's own origin. Audio-neutral: inner s + ((t − O − s) mod
+    // len) before == base s + ((t − (O + s)) mod len) after. Stack
+    // window consumed.
     {
         const ds = definerStackNode();
         if (ds && !activeGeometryOutside(ds) &&
@@ -145,17 +150,17 @@ export function startRecordingInNode(id) {
                 members.every(m => m.duration === D)) {
                 pushUndo();
                 members.forEach(m => {
-                    m._precollapse = { dur: D, ls: 0, le: D, origin: m.origin || 0,
-                                       group: true };
+                    m._precollapse = { dur: D, ls: 0, le: D, group: true };
                     m.duration = len;
                     m.loopStart = 0;
                     m.loopEnd = len;
                 });
-                ds._precollapse = { ls, le };
+                shiftOrigins(ds, ls);
+                ds._precollapse = { ls, le, shift: ls };
                 ds.loopStart = 0;
                 ds.loopEnd = 0;
                 console.log('[MockBackend] Q13 group lock-collapse:', ds.id,
-                    '→ members duration =', len);
+                    '→ members duration =', len, '(origins +', ls + ')');
             }
         }
     }
@@ -279,7 +284,9 @@ function armClip(node) {
             if (p.type !== 'stack') continue;
             if (auditionMapOf(p)) { aimed = true; break; }
             if (activeSeqLen(p) > 0) {
-                const rel = state.masterPos - state.islandEpoch;
+                // The song position is inner(t) from the STACK's own
+                // frame (Q18, engine StackNode::childContext cue lookup).
+                const rel = nodeInner(p, state.masterPos);
                 const i = stepIndexAt(p.sequence, rel);
                 if (stepCued(p.sequence, i)) {
                     p.auditionStep = i;
@@ -353,10 +360,16 @@ function armClip(node) {
             const cueBase = sequenced && gAudStep >= 0 &&
                 stepCued(gseq, gAudStep)
                 ? seqBounds(gseq)[gAudStep] : 0;
-            // Single-level mock: the mapping group's received frame is
-            // the island frame, so its heard grid anchor is the epoch.
-            mapArm = { map, period, C, heardEpoch: state.islandEpoch,
-                       cueBase };
+            // Q18 (engine parity StackNode::childContext →
+            // map_origin / map_heard_epoch): the map's inner positions
+            // are offsets from the mapping node's ORIGIN (an anchored
+            // stack's own; the received cycle top otherwise — and the
+            // synthetic root's frame is the epoch), and the heard grid
+            // anchor the arm math runs against is origin + mapOffset(0).
+            const mapOrigin = g._root ? (state.islandEpoch || 0)
+                                      : frameOriginOf(g);
+            mapArm = { map, period, C, mapOrigin,
+                       heardEpoch: mapOrigin + mapOffset(map, 0), cueBase };
         }
     }
 
@@ -378,10 +391,12 @@ function armClip(node) {
         node._mapArm = {
             C: mapArm.C,
             period: mapArm.period,
+            // The anchor's inner position, absolute (engine parity
+            // clip_node.cc through-map arm): map_origin + mapOffset(t_rel).
             // The cue composition subtracts the step base: the audition
             // map selects [stepStart, stepEnd) of the song, the cue
             // re-bases that span to the song top (engine parity).
-            innerOrigin: mapArm.heardEpoch +
+            innerOrigin: mapArm.mapOrigin +
                 mapOffset(mapArm.map, tRel) - (mapArm.cueBase || 0),
         };
         node.duration = 0;
@@ -625,6 +640,12 @@ export function commitClip(node, duration) {
         state.islandEpoch = foldedOrigin;
         scrubIncoherentGeometry(state.islandQ);
     }
+    // Q18 (engine parity reconcileTakes → settleAnchors): the first
+    // content under a stack anchors it — a group take anchors its group
+    // at the take's origin, and every unanchored ancestor up to the
+    // root. Rides the take's undo entry (the pending snapshot predates
+    // it, so Untake un-anchors).
+    settleAnchors();
 
     console.log(`[MockBackend] Committed ${node.id}: Dur=${duration} (Q=${Q})`);
     reconcileTakes();

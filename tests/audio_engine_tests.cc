@@ -195,7 +195,7 @@ class AudioEngineTests : public juce::UnitTest {
       engine.toggleSolo(uuidA);
       expect(soloedOf(0), "A soloed");
       engine.toggleSolo(uuidB);  // ADDITIVE: B joins, A stays lit
-      expect(soloedOf(0) && soloedOf(1), "solos sum — never radio-button");
+      expect(soloedOf(0) && soloedOf(1), "solos sum - never radio-button");
       engine.toggleSolo(uuidA);  // A off, B still lit
       expect(!soloedOf(0) && soloedOf(1), "un-solo is per-node too");
       engine.toggleSolo(uuidB);
@@ -375,8 +375,7 @@ class AudioEngineTests : public juce::UnitTest {
                  ", After: " + juce::String(pos_after));
     }
 
-    beginTest(
-        "LCM Timeline: Polyrhythmic Snap 3Q->6Q (Fix Verification - Refined)");
+    beginTest("LCM Timeline: 1Q + 4Q + 3Q takes, monotonic clock (no snap)");
     {
       AudioEngine engine;
 
@@ -428,32 +427,28 @@ class AudioEngineTests : public juce::UnitTest {
       process(3 * Q - 50);
       engine.stopRecordingInNode(id3);
 
-      // Trigger snap logic
       process(50);  // Total = 3 * 44100
 
-      int64_t end_pos =
-          (juce::int64)engine.getGraphState().getDynamicObject()->getProperty(
-              "masterPos");
-
-      // Verification:
-      // Started at 1Q. Recorded 3Q.
-      // Pos = 4Q.
-      // Snap to 0.
-
-      bool isNearZero = end_pos < Q;
-
-      juce::Logger::writeToLog("TEST VERIFY: EndPos=" + juce::String(end_pos));
-
-      // FIXME: Flaky assertion due to integration test timing.
-      // expect(isNearZero, "Transport should snap to ~0 (modulo 4Q). Actual: "
-      // +
-      //                        juce::String(end_pos));
-      (void)isNearZero;
+      // Post-kernel expectation (kernel.md): the clock is monotonic and
+      // never snaps. Every block since the first arm advanced it: 1Q +
+      // 4Q + 1Q + 3Q of samples driven. The UI sees it in two parts —
+      // islandEpoch (re-based on cycle growth by the commits above,
+      // StackNode::rebaseEpochOnGrowth) plus islandPos (the epoch-
+      // relative clock) — whose sum is the raw transport position.
+      const auto state3 = engine.getGraphState();
+      const int64_t epoch =
+          (juce::int64)state3.getDynamicObject()->getProperty("islandEpoch");
+      const int64_t island_pos =
+          (juce::int64)state3.getDynamicObject()->getProperty("islandPos");
+      expectEquals(epoch + island_pos, (int64_t)(9 * Q),
+                   "transport = samples driven since t=0 (no snap, no wrap)");
+      expectGreaterOrEqual(island_pos, (int64_t)0,
+                           "the island clock never runs ahead of its epoch");
     }
 
     // REGRESSION TEST: Bug fix for nested stack LCM calculation
     // BUG: calculateTimelineLength only looked at direct children of
-    // focused_node. When clips are inside a nested stack, it was using
+    // the root. When clips are inside a nested stack, it was using
     // getIntrinsicDuration() which returns MIN, not LCM. This caused transport
     // to wrap at 1Q instead of 2Q.
     beginTest("LCM Timeline: Nested Stack Must Use Recursive LCM");
@@ -699,7 +694,7 @@ class AudioEngineTests : public juce::UnitTest {
       // the monotonic transport (kernel.md step 3); the behavioral
       // guarantee is the playhead check below.
       expectEquals((clip2LaunchPoint + clip2Origin) % clip2Duration, (int64_t)0,
-                   "launch ≡ (−origin) mod duration");
+                   "launch == (-origin) mod duration");
 
       // Assert playhead is close to 0% — the true user-facing invariant:
       // right after commit the clip plays from its own top.

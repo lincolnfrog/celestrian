@@ -11,6 +11,7 @@ import { mapPeriod, mapOffset, mapActive, heardOffsetOf } from '../time_map.js';
 import {
     state, findNode, nodeMap, intrinsicOfNode, subtreeRecording,
     anyNodeRecording, isQ13SoleDefiner, isQ13DefinerStack,
+    frameOriginOf, isAnchored, shiftOrigins, innerUnder, originForHeard,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 import { lcm } from '../math_utils.js';
@@ -30,19 +31,25 @@ import { activeSeqLen, retimeSequences } from './sequence.js';
  * expected), and the island epoch rides the SAME whole-Q delta so
  * the edited clip's frame position — the timeline the user drew —
  * is unchanged. The fold, not the clip, absorbs the difference. */
-export function continuityOrigin(node, oldMap, newMap) {
-    const dur = node.duration || 0;
+/* Q18: ONE implementation for clips and stacks (engine parity
+ * continuityOrigin) — the node's inner position now (the node
+ * equation, state.innerUnder) re-anchored under the new map. For a
+ * stack the returned origin moves its whole subtree (the caller's
+ * shiftOrigins); an unanchored stack measures from its received cycle
+ * top and nothing moves. */
+function continuityOrigin(node, oldMap, newMap) {
+    const dur = intrinsicOfNode(node);
     const eff = m => (m && mapActive(m) && mapPeriod(m) > 0)
         ? m : { segs: [[0, dur]] };
-    if (!(dur > 0)) return node.origin || 0;
+    const org = frameOriginOf(node);
+    if (!(dur > 0)) return org;
     const o = eff(oldMap), nm = eff(newMap);
     const period = mapPeriod(nm);
-    if (!(period > 0) || !(mapPeriod(o) > 0)) return node.origin || 0;
+    if (!(period > 0) || !(mapPeriod(o) > 0)) return org;
     const t0 = state.masterPos;
-    const p0 = mapOffset(o, t0 - (node.origin || 0) - mapOffset(o, 0));
-    const hNew = heardOffsetOf(nm, p0);
-    if (hNew < 0) return node.origin || 0;  // sounding region removed
-    return t0 - mapOffset(nm, 0) - hNew;
+    const p0 = innerUnder(o, org, t0);
+    if (heardOffsetOf(nm, p0) < 0) return org;  // sounding region removed
+    return originForHeard(nm, t0, p0, 0);
 }
 
 /** The island's audible period WITHOUT `skip` (engine parity:
@@ -75,25 +82,32 @@ function periodExcluding(node, skip) {
  * and the Q13 sole-definer re-trim). Otherwise two-anchor continuity
  * (2026-08-09) rides the epoch by the origin's whole-Q delta. Nothing
  * audible moves either way. */
-export function applyMapEditRiders(node, oldMap, newMap) {
-    const org = node.origin || 0;
+function applyMapEditRiders(node, oldMap, newMap) {
+    // Q18 (engine parity attachMapEditRiders): a stack's frame is its
+    // own origin once anchored, else its received cycle top; the riders
+    // then apply to clips and stacks alike. A re-anchor on a stack
+    // moves its whole subtree (applySetsOrigin → shiftOrigins); an
+    // unanchored stack has no content — nothing moves.
+    const anchored = isAnchored(node);
+    const org = frameOriginOf(node);
     const org2 = state.isPlaying ? continuityOrigin(node, oldMap, newMap) : org;
-    if (org2 !== org) node.origin = org2;
+    if (org2 !== org && anchored) shiftOrigins(node, org2 - org);
     const q = state.islandQ;
-    const delta = org2 - org;
+    const delta = anchored ? org2 - org : 0;
     const epoch = state.islandEpoch || 0;
     const active = newMap && mapActive(newMap) && mapPeriod(newMap) > 0;
     const a0 = active ? mapOffset(newMap, 0) : 0;
     const top = org2 + a0;
-    const newPeriod = Math.round(active ? mapPeriod(newMap) : (node.duration || 0));
+    const newPeriod = Math.round(active ? mapPeriod(newMap) : intrinsicOfNode(node));
     let others = periodExcluding({ type: 'stack', nodes: state.nodes }, node);
     if (q > 0) others = others > 0 ? lcm(others, q) : q;
     const definer = newPeriod > 0 && (others <= 0 || newPeriod % others === 0);
     const topOffFrame = definer && posMod(top - epoch, newPeriod) !== 0;
-    // Content-frame law (engine parity epochViewStep, 2026-08-30): the
-    // epoch moves only in steps that keep every windowed group's
-    // content selection (its map is epoch-relative).
-    const step = epochViewStep(q);
+    // The epoch moves in whole Qs. (Q18: no windowed-group guard is
+    // needed any more — a stack's map anchors at the stack's OWN
+    // origin, so an epoch move never re-selects content anywhere; the
+    // 2026-08-30 epochViewStep is gone, composition.md §8.)
+    const step = q > 0 ? q : 0;
     if (step > 0 && topOffFrame && posMod(top - epoch, step) === 0) {
         state.islandEpoch = top;
         return;
@@ -101,22 +115,6 @@ export function applyMapEditRiders(node, oldMap, newMap) {
     if (delta !== 0 && step > 0 && delta % step === 0) {
         state.islandEpoch = epoch + delta;
     }
-}
-
-/** lcm(Q, the inner cycle of every stack with an active map) — the
- * epoch-move granularity that keeps windowed groups' content. */
-function epochViewStep(q) {
-    let step = q > 0 ? q : 0;
-    const walk = nodes => (nodes || []).forEach(n => {
-        if (n.type !== 'stack') return;
-        if (!n.loopBypassed && mapActive(nodeMap(n))) {
-            const inner = stackInnerCycle(n);
-            if (inner > 0) step = step > 0 ? lcm(step, inner) : inner;
-        }
-        walk(n.nodes);
-    });
-    walk(state.nodes);
-    return step;
 }
 /** Legacy name (tests import it). */
 export const applyTwoAnchorContinuity = applyMapEditRiders;
@@ -239,8 +237,6 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     // Pre-edit window (the phase-preserve math below needs it).
     const oldLs = node.loopStart || 0;
     const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
-    const oldLs0 = node.loopStart || 0;   // unclamped (stacks have no duration)
-    const oldLe0 = node.loopEnd || 0;
     node.loopStart = loopStart;
     node.loopEnd = loopEnd;
     stampWindowDomain(node);
@@ -284,12 +280,17 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         state.islandEpoch = node.origin || 0;
         console.log('[MockBackend] Q13 window clear → Q =', state.islandQ);
     } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
-        // Q13 FOR GROUPS (engine parity, AudioEngine::setLoopPoints
-        // stack branch, 2026-08-21): the definer STACK's window
-        // re-establishes the island — Q := window length, epoch solved
-        // so the inner position sounding now does not move (pos(t) =
-        // start + ((t − epoch) mod len)). The window stays on the stack
-        // (it IS the part); children untouched, no later collapse.
+        // Q13 FOR GROUPS — ONE PATH with the sole clip (Q18, composition
+        // .md §5; engine parity AudioEngine::setLoopPoints): the definer
+        // STACK's window re-establishes the island exactly as a sole
+        // clip's does — Q := window length, epoch := origin' + start —
+        // PHASE-PRESERVING by the node equation: the inner position
+        // sounding now (state.nodeInner, measured from the STACK's own
+        // origin) folds into the new window, origin' = t0 − pT, and the
+        // origin shift moves the stack's whole SUBTREE (shiftOrigins),
+        // so the members follow their group with no per-member riders
+        // (the 2026-08-30 origin riders are gone). The window stays on
+        // the stack (it IS the part); children stay whole.
         // MEMBERS WHOLE (engine parity, the window riders on the
         // stack-definer LoopPoints edit, 2026-08-30): a member still
         // carrying its own single window (a group take committed
@@ -310,45 +311,37 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         if (inner > 0) loopEnd = Math.min(loopEnd, inner);
         node.loopStart = loopStart;
         node.loopEnd = loopEnd;
+        const anchored = isAnchored(node);
+        const O = frameOriginOf(node);
         if (loopEnd > loopStart && inner > 0) {
-            // THE CONTENT-FRAME LAW (engine parity, 2026-08-30): the
-            // stack window selects epoch-relative view positions while
-            // members read origin-relative — the members' origins ride
-            // with the epoch (origin' := t0 − (pT − start), epoch :=
-            // origin'), the sole-clip path's math made fractal. The
-            // sounding sample is read by the ACTUAL playback equation.
             const t0 = state.masterPos;
-            const epoch0 = state.islandEpoch || 0;
             const len = loopEnd - loopStart;
-            const oldLen = oldLe0 - oldLs0;
-            const members = (node.nodes || []).filter(c =>
-                c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
-            const origin0 = members.length ? (members[0].origin || 0) : 0;
-            const p0 = (!node.loopBypassed && oldLen > 0)
-                ? posMod(epoch0 + oldLs0 + posMod(t0 - epoch0, oldLen) - origin0, inner)
-                : posMod(t0 - origin0, inner);
+            // The inner position sounding NOW by the actual playback
+            // equation (the pre-edit map — the whole inner cycle when
+            // none was active), folded into the new window.
+            const oldMap = (mapActive(oldMapPre) && mapPeriod(oldMapPre) > 0)
+                ? oldMapPre : { segs: [[0, inner]] };
+            const p0 = innerUnder(oldMap, O, t0);
             const pT = loopStart + posMod(p0 - loopStart, len);
-            const origin1 = t0 - (pT - loopStart);
-            members.forEach(c => { c.origin = origin1; });
+            const origin1 = t0 - pT;
+            if (anchored) shiftOrigins(node, origin1 - O);
             retimeSequences(state.islandQ, len);  // sequences track Q
             state.islandQ = len;
-            state.islandEpoch = origin1;
+            state.islandEpoch = origin1 + loopStart;
             console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
         } else if (!(loopEnd > loopStart) && inner > 0) {
-            // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (E8, group
-            // twin): Q := the members' whole take, epoch := their
-            // common origin.
-            const members = (node.nodes || []).filter(c =>
-                c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
+            // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (E8, one path
+            // with the clip): Q := the whole inner cycle, epoch := the
+            // stack's origin (the content-frame identity).
             retimeSequences(state.islandQ, inner);
             state.islandQ = inner;
-            if (members.length) state.islandEpoch = members[0].origin || 0;
+            state.islandEpoch = anchored ? O : (state.islandEpoch || 0);
             console.log('[MockBackend] Q13 group window clear → Q =',
                 state.islandQ);
         }
-    } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
-               !anyNodeRecording()) {
-        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders).
+    } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {
+        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders)
+        // — clips and stacks alike since Q18.
         applyMapEditRiders(node, oldMapPre,
             loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
                                 : { segs: [] });
@@ -473,44 +466,42 @@ export function setSegments(id, flat) {
         state.islandEpoch = node.origin + a0;
         console.log('[MockBackend] Q13 segments re-trim → Q =', period);
     } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
-        // Q13 FOR GROUPS, multi-segment (engine parity, audit
-        // 2026-08-30 §4.8): Q := period; the stack map anchors at the
-        // EPOCH, so epoch' = t0 − heardOffsetOf(pT) and the members'
-        // origins ride (origin' := epoch'), members whole.
+        // Q13 FOR GROUPS, multi-segment — ONE PATH with the clip
+        // definer (Q18; engine parity AudioEngine::setSegments): Q :=
+        // period, epoch := origin' + mapOffset(0), with the
+        // phase-preserving re-anchor generalized through the map: the
+        // inner position sounding now (from the STACK's own origin)
+        // re-anchors under the new map (inverse-mapped when still
+        // covered; the old heard phase folds into the new period when
+        // the cut removed it), and the origin shift moves the subtree
+        // (shiftOrigins). Members whole (the definer invariant).
         const map = { segs };
         const period = mapPeriod(map);
+        const a0 = mapOffset(map, 0);
         const t0 = state.masterPos;
-        const epoch0 = state.islandEpoch || 0;
         const members = (node.nodes || []).filter(c =>
             c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
         if (period > 0 && members.length) {
-            const inner = intrinsicOfNode(node);
-            const origin0 = members[0].origin || 0;
-            const oldActive = mapActive(oldMap) && mapPeriod(oldMap) > 0;
-            const p0 = oldActive
-                ? posMod(epoch0 + mapOffset(oldMap, posMod(t0 - epoch0,
-                      mapPeriod(oldMap))) - origin0, inner)
-                : posMod(t0 - origin0, inner);
-            let h = heardOffsetOf(map, p0);
-            if (h < 0) {
-                const oldH = oldActive ? posMod(t0 - epoch0, mapPeriod(oldMap)) : 0;
-                h = posMod(oldH, period);
+            const O = frameOriginOf(node);
+            let originNew = t0 - a0;  // no old map: heard phase 0 at t0
+            if (mapActive(oldMap) && mapPeriod(oldMap) > 0) {
+                const p0 = innerUnder(oldMap, O, t0);
+                originNew = originForHeard(map, t0, p0, heardOffsetOf(oldMap, p0));
             }
-            const epoch1 = t0 - h;
+            if (isAnchored(node)) shiftOrigins(node, originNew - O);
             members.forEach(c => {
-                c.origin = epoch1;
                 c.loopStart = 0;
                 c.loopEnd = c.duration;
                 delete c.segments;
             });
             retimeSequences(state.islandQ, period);  // sequences track Q
             state.islandQ = period;
-            state.islandEpoch = epoch1;
+            state.islandEpoch = originNew + a0;
             console.log('[MockBackend] Q13 group segments re-trim → Q =', period);
         }
-    } else if (node.type === 'clip' && (node.duration || 0) > 0 &&
-               !anyNodeRecording()) {
-        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders).
+    } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {
+        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders)
+        // — clips and stacks alike since Q18.
         applyMapEditRiders(node, oldMap, { segs });
     }
     console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));

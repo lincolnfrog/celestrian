@@ -1,4 +1,5 @@
 #include <juce_core/juce_core.h>
+#include <juce_events/juce_events.h>
 
 #include <iostream>
 
@@ -28,6 +29,13 @@ int main(int argc, char* argv[]) {
   for (int i = 1; i < argc; ++i) args.add(juce::String::fromUTF8(argv[i]));
   if (celestrian::scan_worker::isWorkerInvocation(args))
     return celestrian::scan_worker::run(args);
+
+  // One MessageManager for the whole run, owned by THIS thread: JUCE
+  // asserts (JUCE_ASSERT_MESSAGE_THREAD / _MANAGER_EXISTS) whenever an
+  // AudioDeviceManager or a MessageListener is built without one, which
+  // every AudioEngine construction in the suite does. Tests that create
+  // their own ScopedJuceInitialiser_GUI just nest (reference counted).
+  const juce::ScopedJuceInitialiser_GUI juce_runtime;
 
   ConsoleRunner runner;
   runner.setAssertOnFailure(false);

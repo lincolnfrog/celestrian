@@ -71,13 +71,13 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
 
 ### 1. Recording & Live Creation
 * **Phase-Locked Loop (PLL) Recording**:
-    - **Instant Capture**: New recordings begin immediately on user request to capture the creative spark.
+    - **Instant Capture**: New recordings begin immediately on user request to capture the creative spark. *(superseded: arm target = next Q boundary in the heard frame, Q11)*
     - **Anchor Phase**: Each clip remembers where in the quantum grid it was recorded (its "anchor phase"). This determines its visual X-offset position.
     - **Cyclic Alignment**: The system anchors the recording to the master quantum phase via the clip's **origin** — the cycle moment its first sample belongs to. Playback reads `content[(t − origin) mod duration]`; no buffer rotation exists (see docs/kernel.md).
     - **Hysteresis-Based Snapping**:
         - **Anticipatory Stop (Early)**: If the user stops within the tolerance *before* a clean boundary, recording continues until that boundary is reached to avoid cutting off audio.
-        - **Late Snap (Late)**: If the user stops within the tolerance *after* a clean boundary, recording ends immediately and the clip is truncated to that boundary.
-        - **Instant Stop (Future: Loop Region)**: If stopped outside the tolerance, recording ends immediately. The **Loop Region** is automatically set to the previous clean multiple, preserving the "tail" for later editing.
+        - **Late Snap (Late)**: If the user stops within the tolerance *after* a clean boundary, recording ends immediately and the clip is truncated to that boundary. *(superseded 2026-07-10: stops always run forward to the next boundary)*
+        - **Instant Stop (Future: Loop Region)**: If stopped outside the tolerance, recording ends immediately. The **Loop Region** is automatically set to the previous clean multiple, preserving the "tail" for later editing. *(superseded 2026-07-10: stops always run forward to the next boundary; the snap-back-with-auto-window idea is deferred — design_language.md §1 "Hysteresis snap")*
 * **Launch Point**: Each clip has a draggable "launch point" marker (like Ableton's clip start arrow). When global transport starts:
     - Playback begins from the launch point, not position 0
     - This ensures clips recorded mid-quantum stay aligned with their recording context
@@ -178,7 +178,7 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
 
 ### 9. Corpus & Automation
 * **Global Settings**: A centralized store for user-tunable engine parameters.
-    - **Hysteresis Tolerance**: Percentage (default 15%) determining if a recording stop should snap to the nearest quantum boundary.
+    - **Hysteresis Tolerance**: Percentage (default 15%) determining if a recording stop should snap to the nearest quantum boundary. *(mechanism deleted 2026-07-16, Q14 — any click before a boundary means that boundary; stops run forward)*
 * **Loop/Box Library**: A metadata-rich catalog storing BPM, length, and music key for every asset.
 * **Procedural Automation**: Features to automatically combine existing library elements into new structures.
 * **Infinite Radio Mode**: An offline operation mode that generates an infinite stream of music from the user’s clip and box catalog.
@@ -204,9 +204,10 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
 5. **Data Model Scalability & Persistence**: Representing a nested, non-deterministic graph of audio states requires a robust data model that can handle large corpora of structures without performance degradation.
 6. **UI Information Density**: Navigating "boxes-within-boxes" requires a high-fidelity navigation system (e.g., zoomable interface or deep breadcrumbs) to prevent user disorientation in complex projects.
 
-## 8. Multi-Stack & Meta-Management
+## 10. Multi-Stack & Meta-Management
+<!-- (was a second "8."; renumbered 2026-09-01) -->
 - **Stack Independence**: Future versions will support multiple "Stacks". Each stack should be able to define its own Quantum/Time origin.
 - **Quantum Inheritance**: When creating a new stack, the user should be able to choose between:
     - **Inherit**: Inherit the quantum/grid from an existing stack (sync).
     - **New Song**: Start fresh with a new quantum and time origin (polyrhythm/independent).
-- **Transport Reset**: For the *First Clip* in a "New Song" stack, the Transport should reset to 0 to ensure the recording defines the origin (No start offset).
+- **Transport Reset**: For the *First Clip* in a "New Song" stack, the Transport should reset to 0 to ensure the recording defines the origin (No start offset). *(superseded: the clock never resets; the first arm captures the island epoch — kernel.md)*

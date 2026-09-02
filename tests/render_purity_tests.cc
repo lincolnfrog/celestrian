@@ -21,7 +21,7 @@ namespace celestrian {
 
 class RenderPurityTests : public juce::UnitTest {
  public:
-  RenderPurityTests() : juce::UnitTest("Pure render (§2.3)") {}
+  RenderPurityTests() : juce::UnitTest("Pure render (section 2.3)") {}
 
   // One-sample render at master time t (distinct channel buffers — the
   // clip sums into every channel).
@@ -88,7 +88,7 @@ class RenderPurityTests : public juce::UnitTest {
       expectEquals(clip.origin_samples.load(), origin, "origin untouched");
       expectEquals(clip.getIntrinsicDuration(), dur, "duration untouched");
       expectEquals(clip.getLoopStart(), ls, "window untouched");
-      expectEquals(clip.getLoopEnd(), le, "…");
+      expectEquals(clip.getLoopEnd(), le, "...");
     }
 
     beginTest("stack render is pure too (mix through the fractal)");

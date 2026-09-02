@@ -249,8 +249,14 @@ class ContentFrameTests : public juce::UnitTest {
       expectEquals(rootProp(engine, "quantum"), P, "Q := the map period");
       const int64_t epoch1 = rootProp(engine, "islandEpoch");
       for (const auto& id : ids) {
-        expectEquals((int64_t)deepProp(engine, id, "origin"), epoch1,
-                     "members' origins ride with the epoch");
+        // Q18: the map anchors at the stack's origin + mapOffset(0); the
+        // members moved with their group (origin == the stack's).
+        expectEquals((int64_t)deepProp(engine, id, "origin"),
+                     epoch1 - m.segs[0].start,
+                     "members' origins == stack origin == epoch - a0");
+        expectEquals((int64_t)deepProp(engine, stack_id, "origin"),
+                     (int64_t)deepProp(engine, id, "origin"),
+                     "the stack carries the same origin");
         expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D, "members whole");
       }
       std::vector<std::pair<int64_t, float>> out;

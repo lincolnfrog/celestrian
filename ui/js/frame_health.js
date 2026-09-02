@@ -21,21 +21,18 @@
  * "frame_health_cases" (pinned by ui/js/tests/frame_health.test.mjs).
  */
 
-import { lcm } from './math_utils.js';
+import { timelineLcm } from './timeline_model.js';
 
 export const kBlowupRatio = 4;
 
 const EPS = 1e-9;
 
-/** lcm over a list of positive integers-in-Q (0 = empty). */
+/** lcm over a list of positive integers-in-Q, seeded (0 = empty). The
+ * same rule as timelineLcm (round, skip non-positives, seed folds in
+ * like a member) — one implementation, this name kept for the Q-space
+ * callers. */
 export function lcmAll(values, seed = 0) {
-    let acc = seed > 0 ? Math.round(seed) : 0;
-    for (const v of values) {
-        if (!(v > 0)) continue;
-        const r = Math.round(v);
-        acc = acc > 0 ? lcm(acc, r) : r;
-    }
-    return acc;
+    return timelineLcm(values, seed > 0 ? seed : 0);
 }
 
 /**

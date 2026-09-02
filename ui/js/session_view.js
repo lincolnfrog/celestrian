@@ -11,11 +11,13 @@
  * interactions are injected as callbacks from app.js.
  *
  * Split into js/session_view/ (2026-08-11); this file is the public
- * barrel — the four names app.js imports:
+ * barrel — the names app.js imports:
  *
  *   init.js      — one-time wiring + the unified keyboard dispatcher
  *   patch.js     — patchSessionView (top-level per-poll patch)
  *   drag_pin.js  — the map-gesture frame pin (mapDragPinQ/…FoldQ)
+ *   selection.js — activeSelectedId (the keyboard verbs' target)
+ *   sv_util.js   — isTypingTarget (shared by both keyboard dispatchers)
  *
  * plus the internal modules: context (shared ctx + expando contract),
  * sv_util, selection, zoom, animator, teleport (nav dock + [ / ]),
@@ -28,3 +30,4 @@ export { initSessionView } from './session_view/init.js';
 export { patchSessionView } from './session_view/patch.js';
 export { mapDragPinQ, mapDragPinFoldQ } from './session_view/drag_pin.js';
 export { activeSelectedId } from './session_view/selection.js';
+export { isTypingTarget } from './session_view/sv_util.js';

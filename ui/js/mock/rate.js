@@ -27,7 +27,7 @@
  */
 
 /** The rate the mock has always assumed, and still does by default. */
-export const DEFAULT_SAMPLE_RATE = 44100;
+const DEFAULT_SAMPLE_RATE = 44100;
 
 let sample_rate = DEFAULT_SAMPLE_RATE;
 

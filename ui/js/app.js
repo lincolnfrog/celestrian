@@ -1,13 +1,17 @@
 // Celestrian app shell (docs/ui_overhaul.md): backend poll → pure view
 // model → thin DOM patch. Backend selection lives in backend.js (P2-9);
-// all timeline math lives in view_model.js / timeline_model.js; all DOM
-// lives in session_view.js. This file is glue: polling, waveform peak
-// fetching, and the bridge-call callbacks.
+// all timeline math lives in view_model.js / timeline_model.js; the
+// session grid's DOM lives in session_view.js (and the status-strip
+// popovers in audio_settings.js / plugin_panel.js). This file is glue:
+// polling, waveform peak fetching, the bridge-call callbacks, the
+// global keyboard verbs, and the small chrome it owns directly — the
+// log line, the master fader/VU wiring, and the Project menu.
 
 import { callNative, log, getState } from './backend.js';
-import { deriveViewModel } from './view_model.js';
+import { deriveViewModel, findNodeInTree, isArmable, hasInstrument }
+    from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
-         activeSelectedId }
+         activeSelectedId, isTypingTarget }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initAudioSettings } from './audio_settings.js';
@@ -64,14 +68,10 @@ function scheduleVerify(id, check, okMsg, refusedMsg) {
             const state = getState !== null
                 ? getState() : await callNative('getGraphState');
             if (!state) return;
-            let n = null;
-            (function findIn(nodes) {
-                for (const c of nodes || []) {
-                    if (c.id === id) { n = c; return; }
-                    findIn(c.children);
-                    if (n) return;
-                }
-            })(state.nodes);
+            // Children ride `nodes` in the published tree (an earlier
+            // inline walker read `children` and never found a nested
+            // clip, so grouped edits got no verdict at all).
+            const n = findNodeInTree(state.nodes, id);
             if (!n) return;  // node gone: a refusal message would lie
             setLogLine(check(n) ? okMsg : refusedMsg);
         } catch (_) { /* the poll will tell the story */ }
@@ -180,7 +180,6 @@ function clipsUnder(node, out = []) {
     (node.nodes || []).forEach(c => clipsUnder(c, out));
     return out;
 }
-const isArmableClip = c => c.isRecording || c.isPendingStart || !(c.duration > 0);
 const isHotClip = c => c.isRecording || c.isPendingStart;
 
 /* PER-TRACK RECORD (owner ruling 2026-07-19h): there is NO global
@@ -208,7 +207,7 @@ async function onArm(lane) {
         setLogLine('Stopped recording');
         return;
     }
-    const targets = clips.filter(isArmableClip);
+    const targets = clips.filter(isArmable);
     if (targets.length === 0) {
         setLogLine('Nothing to record — tracks already have takes');
         return;
@@ -505,10 +504,6 @@ function patchCalibrateButton(state) {
  * flight).
  */
 let midiTargetPending = null;
-function hasInstrumentSlot(node) {
-    return !!(node && node.effects && Array.isArray(node.effects.chain) &&
-        node.effects.chain.some(s => s.isInstrument));
-}
 function syncMidiTarget() {
     let desired = null;
     for (const n of lastNodesById.values()) {
@@ -519,7 +514,7 @@ function syncMidiTarget() {
     }
     if (!desired) {
         const sel = lastNodesById.get(activeSelectedId());
-        if (hasInstrumentSlot(sel)) desired = sel.id;
+        if (hasInstrument(sel)) desired = sel.id;
     }
     if (!desired) { midiTargetPending = null; return; }
     const node = lastNodesById.get(desired);
@@ -790,13 +785,6 @@ function initProjectUI() {
     setInterval(refreshProjectInfo, PROJECT_POLL_MS);  // birth/rename follow the mirror
 }
 
-/** True when a key event targets a text-entry surface — the global
- *  shortcuts (Space, ⌘Z, ⌘S, …) must not fire while typing. */
-function isTypingTarget(t) {
-    return t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
-        t.tagName === 'SELECT' || t.isContentEditable;
-}
-
 /* SPACE = STOP EVERYTHING (owner request 2026-08-21: "space bar stops
  * playback but not recording, it should do both"; R stays the record
  * key). With a take rolling, Space requests the stop — the take finishes
@@ -835,7 +823,7 @@ function settlePendingPause(state) {
 
 function wireKeyboard() {
     window.addEventListener('keydown', e => {
-        if (isTypingTarget(e.target)) return;
+        if (isTypingTarget(e)) return;
         if (e.code === 'Space') {
             e.preventDefault();
             onSpace();
@@ -900,6 +888,10 @@ function initApp() {
         // fresh save appears without a reload).
         getTrackTemplates: async () =>
             parseMaybeJson(await callNative('listTrackTemplates')) || [],
+        // The fx row's "+" picker data (docs/vst3.md phase 3): fetched
+        // per open, like the templates — session_view never touches
+        // the backend itself.
+        getKnownPlugins: async () => await callNative('getKnownPlugins') || [],
         onCreateFromTemplate: (name, groupId) =>
             call('createFromTrackTemplate', [name, groupId || ''],
                 `"${name}" added — named and routed (⌘Z undoes it whole)`,

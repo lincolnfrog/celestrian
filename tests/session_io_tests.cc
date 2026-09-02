@@ -264,7 +264,7 @@ class SessionIoTests : public juce::UnitTest {
                    "origin still 2Q (den)");
     }
 
-    beginTest("AudioEngine save → load populates the graph and is stable");
+    beginTest("AudioEngine save -> load populates the graph and is stable");
     {
       // Build a source bundle from a hand graph, load it into an engine.
       StackNode src("SessionRoot");
@@ -303,7 +303,7 @@ class SessionIoTests : public juce::UnitTest {
       expect(n2 != nullptr && n2->size() == 1, "stable node count");
       expect((*n2)[0].getProperty("id", "").toString() ==
                  (*nodes)[0].getProperty("id", "").toString(),
-             "uuid stable across save→load→save→load");
+             "uuid stable across save->load->save->load");
     }
   }
 };

@@ -780,10 +780,42 @@ test.describe('One-shot toggle (period source, Q5)', () => {
         await expect(lane.locator('.rep.ghost')).toHaveCount(3);
     });
 
-    test('groups have no period-source toggle', async ({ page }) => {
-        await loadHarness(page, 'Stack with 3 Clips');
-        await expect(page.locator('.lane[data-kind="group"] .oneshot-btn'))
-            .toHaveCount(0);
+    // Q18 (docs/composition.md §0, §9): a stack has an origin, so a
+    // group can be a one-shot — the drum kit fires once per cycle from
+    // the moment it was performed. (Pre-Q18 this test pinned "groups
+    // have no period-source toggle".)
+    test('a GROUP toggles to one-shot from its rail chip: dashed tile, no ghosts, frame relaxes', async ({ page }) => {
+        // Stack 1 (2Q beat) beside Stack 2 (3Q melody): frame 6Q.
+        await loadHarness(page, 'Multiple Stacks');
+        const ruler = page.locator('#ruler .tick-label').last();
+        await expect(ruler).toHaveText(/6Q/);
+        const group = page.locator('.lane[data-kind="group"]').first();
+        await expect(group.locator('.rep.ghost')).toHaveCount(2);
+
+        const ps = group.locator('.oneshot-btn');
+        await expect(ps).toHaveText('↺');
+        await ps.click();
+
+        // One-shot group: the chip flips, the lane body carries the
+        // dashed styling, only the take tile remains, the state knob
+        // round-trips on the STACK, and the frame relaxes to the 3Q
+        // melody (a one-shot never extends the fold).
+        await expect(ps).toHaveText('1×');
+        await expect(group.locator('.lane-body')).toHaveClass(/one-shot/);
+        await expect(group.locator('.rep.ghost')).toHaveCount(0);
+        await expect(group.locator('.rep')).toHaveCount(1);
+        expect((await stackState(page)).periodSource).toBe('context');
+        await expect(ruler).toHaveText(/3Q/);
+        // The member draws whole beneath: one tile, no echoes.
+        const beat = page.locator('.lane[data-kind="clip"]').first();
+        await expect(beat.locator('.rep.ghost')).toHaveCount(0);
+
+        // A musical fact: ⌘Z takes it back.
+        await page.keyboard.press(process.platform === 'darwin'
+            ? 'Meta+z' : 'Control+z');
+        await expect(ps).toHaveText('↺');
+        await expect(group.locator('.rep.ghost')).toHaveCount(2);
+        await expect(ruler).toHaveText(/6Q/);
     });
 });
 
@@ -1605,7 +1637,7 @@ test.describe('Q-definer trim on a group take', () => {
         await applyRate(page);
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
-        await page.click('button:has-text("Empty Canvas")');
+        await page.click('button:has-text("Empty session")');
         await page.waitForTimeout(200);
     }
     async function recordGroupTake(page, seconds) {

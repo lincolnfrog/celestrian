@@ -1,9 +1,11 @@
 /**
  * Effects panel (docs/ui_overhaul.md effects bar; docs/vst3.md phase 2).
  *
- * A synthetic row under the lane: one card per CHAIN SLOT (the four
- * built-ins today; VST3 chips arrive in phase 3), each a power switch
- * + sliders. Built once from EFFECT_SCHEMA; values PATCH in place, and
+ * A synthetic row under the lane: one card per built-in CHAIN SLOT
+ * (EFFECT_SCHEMA), each a power switch + sliders, plus a "+" chip
+ * whose picker (fed by the injected getKnownPlugins callback) adds a
+ * VST3 plugin to the chain (docs/vst3.md phase 3). Built once from
+ * EFFECT_SCHEMA; values PATCH in place, and
  * the patch keeps the DOM card order in CHAIN order (a reorder — undo,
  * load — just re-appends the cards). Bridge edits are keyed by the
  * published slot uuid (card.dataset.slot, refreshed each patch). A
@@ -14,7 +16,6 @@
 
 import { ctx } from './context.js';
 import { el, setText } from './sv_util.js';
-import { callNative } from '../backend.js';
 import { EFFECT_SCHEMA } from '../effect_schema.js';
 import {
     drawEqViz, drawCompViz, drawEchoViz, drawReverbViz,
@@ -107,7 +108,8 @@ async function openPluginPicker(row, anchor) {
     menu.appendChild(el('div', 'fx-picker-head mono', { textContent: 'ADD PLUGIN' }));
     let plugins = [];
     try {
-        plugins = await callNative('getKnownPlugins') || [];
+        plugins = ctx.cb.getKnownPlugins
+            ? (await ctx.cb.getKnownPlugins()) || [] : [];
     } catch (err) { /* backend without plugin support: empty list */ }
     if (!plugins.length) {
         menu.appendChild(el('div', 'fx-picker-empty',

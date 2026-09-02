@@ -134,7 +134,7 @@ class ProjectManagerTests : public juce::UnitTest {
       ProjectManager pm2(engine2);
       pm2.setRootForTest(tempBase);
       expect(pm2.newFromTemplate("My Rig"), "loads");
-      expect(!pm2.born(), "unborn — the seed take will date it");
+      expect(!pm2.born(), "unborn - the seed take will date it");
       expectEquals(engine2.islandCommittedClipCount(), 0, "no takes");
     }
 
@@ -152,7 +152,7 @@ class ProjectManagerTests : public juce::UnitTest {
       auto* bn = nodesOf(boot);
       expect(bn == nullptr || bn->size() == 0, "boot stage is empty");
       expect(pm.newFromTemplate("My Rig"), "explicit new-from still works");
-      expect(!pm.born(), "still unborn — the seed take dates the project");
+      expect(!pm.born(), "still unborn - the seed take dates the project");
       const juce::var s = engine.getGraphState();
       auto* n = nodesOf(s);
       expect(n && n->size() == 1 &&

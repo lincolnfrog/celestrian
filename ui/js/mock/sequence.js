@@ -22,10 +22,10 @@ import {
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 
-export const MAX_STEPS = 64;
+const MAX_STEPS = 64;
 
 /** Total length of a stored sequence object (0 = none/empty). */
-export function seqTotal(seq) {
+function seqTotal(seq) {
     if (!seq || !Array.isArray(seq.steps)) return 0;
     return seq.steps.reduce((t, s) => t + (s.len > 0 ? Math.round(s.len) : 0), 0);
 }
@@ -163,7 +163,7 @@ export function auditionMap(holder) {
 }
 
 /** The root as a sequence holder (state.rootSequence & co.). */
-export function rootHolder() {
+function rootHolder() {
     return {
         get sequence() { return state.rootSequence; },
         get sequenceBypassed() { return state.rootSequenceBypassed; },

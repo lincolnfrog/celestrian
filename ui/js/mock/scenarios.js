@@ -1,34 +1,37 @@
 /**
- * mock/scenarios.js — test scenario loaders and the launch-ritual boot.
- * Scenario graphs are hand-written fixtures (many predate the stored
- * islandQ field — effectiveQuantumForState's legacy derivation exists
- * for them); makeClip/makeStack below collapse the repeated literals
- * while keeping each scenario's resulting state field-for-field
- * identical to the historical hand-rolled objects.
+ * mock/scenarios.js — test scenario loaders (and the 'empty' boot).
+ * Scenario graphs are hand-written fixtures in the CURRENT state shape:
+ * every scenario with committed content sets the STORED island Q
+ * (`state.islandQ`, published as `quantum`) the way a real first
+ * commit would — there is no derivation fallback any more.
+ * makeClip/makeStack collapse the repeated literals.
  *
  * SAMPLE RATE: every fixture length below used to be a literal derived
  * from 44100 (1Q = 44100, 3Q = 132300, "2.5Q" = 110250 …). They are now
  * multiples of `Q` — one second of audio at the mock's rate
  * (mock/rate.js) — read at LOAD time, so a scenario keeps its musical
  * shape (1Q + 3Q, LCM 3Q, a take 2.5Q in) at any rate.
+ *
+ * The x/y/w/h fields some older fixtures still carry are canvas-era
+ * leftovers nothing renders (setNodePosition's twin); they go when the
+ * protocol drops that method.
  */
 
-import { state } from './state.js';
+import { state, settleAnchors } from './state.js';
 import { clearUndoHistory } from './undo.js';
 import { transport, DEFAULT_SAMPLES_PER_TICK } from './transport.js';
 import { recView } from './recording.js';
 import { quantumSamples } from './rate.js';
 
-/** Clip fixture factory: the invariant base every scenario clip shares
- * (type + default geometry); `overrides` supplies the rest and NOTHING
- * is added beyond it, so fixtures keep their historical field sets. */
+/** Clip fixture factory: the invariant base every scenario clip shares;
+ * `overrides` supplies the rest and NOTHING is added beyond it. */
 function makeClip(overrides) {
-    return { type: 'clip', x: 0, y: 0, w: 200, h: 100, ...overrides };
+    return { type: 'clip', ...overrides };
 }
 
 /** Stack fixture factory — same contract as makeClip. */
 function makeStack(overrides) {
-    return { type: 'stack', x: 100, y: 100, isExpanded: true,
+    return { type: 'stack', isExpanded: true,
              effectiveQuantum: quantumSamples(), ...overrides };
 }
 
@@ -94,58 +97,56 @@ export function loadScenario(name) {
             break;
 
         case 'single-clip':
+            // One committed 2 s take — the SOLE clip, so it is the Q13
+            // definer: a first commit stores Q = its own duration.
+            state.islandQ = 2 * Q;
             state.nodes = [makeClip({
                 id: 'clip-1',
                 name: 'Recorded Clip',
-                w: 400,
-                duration: 2.0,
+                duration: 2 * Q,
                 ...IDLE_FLAGS,
-                effectiveQuantum: 2.0,
+                effectiveQuantum: 2 * Q,
                 inputChannel: 0,
             })];
             state.nextId = 2;
             break;
 
         case 'stack-with-clips':
+            // 2Q + 3Q + 1Q under one stack (LCM 6Q); Q = 1 s.
+            state.islandQ = Q;
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Main Stack',
-                w: 600,
-                h: 400,
-                effectiveQuantum: 2.0,
+                effectiveQuantum: Q,
                 nodes: [
                     makeClip({
                         id: 'clip-1',
                         name: 'Clip A',
-                        w: 400,
-                        duration: 2.0,
+                        duration: 2 * Q,
                         loopStart: 0,  // Match native C++ backend defaults
                         loopEnd: 0,    // Match native C++ backend defaults (triggers bug!)
                         ...IDLE_FLAGS,
-                        effectiveQuantum: 2.0,
+                        effectiveQuantum: Q,
                         inputChannel: 0,
                     }),
                     makeClip({
                         id: 'clip-2',
                         name: 'Clip B',
-                        y: 120,
-                        w: 600,
-                        duration: 3.0,
+                        duration: 3 * Q,
                         loopStart: 0,
                         loopEnd: 0,
                         ...IDLE_FLAGS,
-                        effectiveQuantum: 2.0,
+                        effectiveQuantum: Q,
                         inputChannel: 0,
                     }),
                     makeClip({
                         id: 'clip-3',
                         name: 'Clip C',
-                        y: 240,
-                        duration: 1.0,
+                        duration: Q,
                         loopStart: 0,
                         loopEnd: 0,
                         ...IDLE_FLAGS,
-                        effectiveQuantum: 2.0,
+                        effectiveQuantum: Q,
                         inputChannel: 0,
                     }),
                 ],
@@ -154,40 +155,32 @@ export function loadScenario(name) {
             break;
 
         case 'multiple-stacks':
+            // Two sibling stacks, a 2Q beat and a 3Q melody; Q = 1 s.
+            state.islandQ = Q;
             state.nodes = [
                 makeStack({
                     id: 'stack-1',
                     name: 'Stack 1',
-                    x: 50,
-                    y: 50,
-                    w: 500,
-                    h: 300,
-                    effectiveQuantum: 2.0,
+                    effectiveQuantum: Q,
                     nodes: [
                         makeClip({
                             id: 'clip-1',
                             name: 'Beat',
-                            w: 400,
-                            duration: 2.0,
-                            effectiveQuantum: 2.0,
+                            duration: 2 * Q,
+                            effectiveQuantum: Q,
                         }),
                     ],
                 }),
                 makeStack({
                     id: 'stack-2',
                     name: 'Stack 2',
-                    x: 600,
-                    y: 50,
-                    w: 500,
-                    h: 300,
-                    effectiveQuantum: 3.0,
+                    effectiveQuantum: Q,
                     nodes: [
                         makeClip({
                             id: 'clip-2',
                             name: 'Melody',
-                            w: 600,
-                            duration: 3.0,
-                            effectiveQuantum: 3.0,
+                            duration: 3 * Q,
+                            effectiveQuantum: Q,
                         }),
                     ],
                 }),
@@ -202,6 +195,7 @@ export function loadScenario(name) {
         // Example 1: 1Q + 4Q (LCM = 4Q)
         // Expected: Clip 1 (1Q) should have 3 ghosts, Clip 2 (4Q) should have 0 ghosts
         case 'example-1q-4q':
+            state.islandQ = Q;
             state.isPlaying = true;
             state.masterPos = 0.5 * Q;  // 0.5Q into the timeline
             state.nodes = [makeStack({
@@ -245,6 +239,7 @@ export function loadScenario(name) {
         // Example 2: 1Q + 4Q + 3Q (LCM = 12Q)
         // Expected: Clip 1 has 11 ghosts, Clip 2 has 2 ghosts, Clip 3 has 3 ghosts
         case 'example-1q-4q-3q':
+            state.islandQ = Q;
             state.nodes = [makeStack({
                 id: 'stack-1',
                 name: 'Polyrhythm Stack',
@@ -287,6 +282,7 @@ export function loadScenario(name) {
             // ========================================
             // Scenario: Clip 1 = 1Q, Clip 2 = 4Q, Clip 3 = 1Q at 2Q
             // Expected: Clip 3 x=400 (2Q slot), ghosts wrap at 0Q→2Q
+            state.islandQ = Q;
             state.isPlaying = true;
             state.masterPos = 2 * Q;    // 2Q in samples
             state.nodes = [makeStack({
@@ -342,6 +338,7 @@ export function loadScenario(name) {
             // ========================================
             // Nested Stacks Scenario
             // ========================================
+            state.islandQ = Q;
             state.isPlaying = true;
             state.masterPos = 0.5 * Q;
             state.nodes = [makeStack({
@@ -397,6 +394,7 @@ export function loadScenario(name) {
         // Reproduces bug: 1Q + 3Q clips, collapse, modify loop to 0-2Q
         // Bug: Loop alternates between 1Q and 2Q instead of consistent 2Q
         case '1q-3q-loop-bug':
+            state.islandQ = Q;
             state.isPlaying = true;
             state.masterPos = 0;
             state.nodes = [makeStack({
@@ -482,6 +480,7 @@ export function loadScenario(name) {
             // Recording Scenario (for ghost testing)
             // ========================================
             // Simulates: Clip 1 = 1Q committed, Clip 2 = actively recording at ~2.5Q
+            state.islandQ = Q;
             state.isPlaying = true;
             state.masterPos = 2.5 * Q;  // 2.5Q in samples
             state.nodes = [makeStack({
@@ -522,6 +521,12 @@ export function loadScenario(name) {
         default:
             console.warn('[MockBackend] Unknown scenario:', name);
     }
+    // Q18 (engine parity: a loaded session anchors its stacks from
+    // content): hand-written fixtures carry no stack origins — every
+    // stack holding committed content anchors at its earliest
+    // committed descendant's origin, exactly as the first content
+    // would have anchored it live.
+    settleAnchors();
 }
 
 // Boot EMPTY (Q17 parity, ruled 2026-08-13 — the launch ritual is

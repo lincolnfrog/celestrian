@@ -288,7 +288,7 @@ class TakeUndoTests : public juce::UnitTest {
       for (int i = 0; i < 400 && engine.hasActiveTake(); ++i) process(512);
       engine.getGraphState();
       expectEquals(bitsOf(gatesOf(engine), g), juce::String(""),
-                   "the group's row is untouched — a deeper take lands ungated");
+                   "the group's row is untouched - a deeper take lands ungated");
       expect(engine.canUndo(), "the take itself is still undoable");
     }
   }

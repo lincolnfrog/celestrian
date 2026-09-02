@@ -60,8 +60,13 @@ class TimeMapRecordTests : public juce::UnitTest {
       expect(p->seen.map.active(), "map delivered active");
       expectEquals((juce::int64)p->seen.map.period(), (juce::int64)1000,
                    "map period");
-      expectEquals((juce::int64)p->seen.map_heard_epoch, (juce::int64)7000,
-                   "heard grid anchor = the RECEIVED cycle top");
+      // Q18: the heard grid anchor is O + a0 (the map's inner start
+      // sounds at its own moment); O = the received top for an
+      // unanchored stack, and map_origin carries O itself.
+      expectEquals((juce::int64)p->seen.map_heard_epoch, (juce::int64)8000,
+                   "heard grid anchor = O + mapOffset(0)");
+      expectEquals((juce::int64)p->seen.map_origin, (juce::int64)7000,
+                   "map_origin = the mapping stack's frame origin");
       expectEquals(p->seen.map_count, 1, "one active map on the chain");
       // rel = (7500 − 7000) mod 1000 = 500 → folded clock 7000+1000+500.
       expectEquals((juce::int64)p->seen.master_pos, (juce::int64)8500,
@@ -186,14 +191,18 @@ class TimeMapRecordTests : public juce::UnitTest {
       auto* take = takeOwned.get();
       root.addChild(std::move(takeOwned));
 
-      // Play up to t = 500, then arm THROUGH the map (C = inner 4Q).
+      // Q18: the window anchors at O + a0 = 0 + 1000 — pass tops at
+      // t ≡ 1000 (mod 2000), so the heard offset at t is (t − 1000) mod
+      // 2000. Play up to t = 1500 (heard offset 500), then arm THROUGH
+      // the map (C = inner 4Q).
       int64_t t = 0;
-      driveControl(root, t, 500, 250);
+      driveControl(root, t, 1500, 250);
       take->startRecording(4000);
-      // rel_h = 500 → heard target 1000; anchor offset 1000 (mid-pass)
-      // → inner origin = mapOffset(1000) = 2000. Capture runs one full
-      // period (never stopped) and the cap auto-finishes at 2000 heard.
-      driveControl(root, t, 3500, 250);
+      // rel_h = 500 → heard target 1000 (absolute 2000); anchor offset
+      // 1000 (mid-pass) → inner origin = mapOffset(1000) = 2000.
+      // Capture runs one full period (never stopped) and the cap
+      // auto-finishes at 2000 heard.
+      driveControl(root, t, 4500, 250);
 
       expect(take->recState() == ClipNode::RecState::Idle,
              "one-period cap auto-committed the take");
@@ -218,12 +227,14 @@ class TimeMapRecordTests : public juce::UnitTest {
       // LITERAL SILENCE (ruling 2).
       const auto& buf = take->getAudioBuffer();
       const float* data = buf.getReadPointer(0);
+      // Capture ran absolute [2000, 4000): heard order k was performed
+      // at 2000 + k.
       for (int k : {0, 1, 500, 999}) {
-        expectWithinAbsoluteError(data[k], rampAt(1000 + k), 1e-7f,
+        expectWithinAbsoluteError(data[k], rampAt(2000 + k), 1e-7f,
                                   "pre-seam run at heard order");
       }
       for (int k : {0, 500, 999}) {
-        expectWithinAbsoluteError(data[3000 + k], rampAt(2000 + k), 1e-7f,
+        expectWithinAbsoluteError(data[3000 + k], rampAt(3000 + k), 1e-7f,
                                   "post-seam run folded to the tail");
       }
       for (int k : {1000, 1500, 2999}) {
@@ -260,10 +271,10 @@ class TimeMapRecordTests : public juce::UnitTest {
       // inner timeline honestly — content at its performed inner
       // moments, silence in the gaps. Nothing was baked.
       root.setLoopWindowBypassed(true);
-      expectWithinAbsoluteError(probeOut(2500), rampAt(1500), 1e-7f,
+      expectWithinAbsoluteError(probeOut(2500), rampAt(2500), 1e-7f,
                                 "I9: inner 2500 holds the sample "
                                 "performed there");
-      expectWithinAbsoluteError(probeOut(1500), rampAt(2500), 1e-7f,
+      expectWithinAbsoluteError(probeOut(1500), rampAt(3500), 1e-7f,
                                 "I9: inner 1500 (post-seam material)");
       expectWithinAbsoluteError(probeOut(3500), 0.0f, 0.0f,
                                 "I9: unvisited inner time is silent");
@@ -276,8 +287,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       // map in real block sizes reproduces the fed input sample for
       // sample — including blocks that CROSS the map seam (the stage-5
       // sub-block split; before it, each seam blurred up to a block).
-      // Heard phase φ = t mod 2000 was performed at heard time
-      // 1000 + ((φ − 1000) mod 2000).
+      // Heard offset φ = (t − 1000) mod 2000 was performed at absolute
+      // time 2000 + ((φ − 1000) mod 2000) = 2000 + (t mod 2000).
       {
         bool allMatch = true;
         int64_t firstMismatch = -1;
@@ -298,8 +309,7 @@ class TimeMapRecordTests : public juce::UnitTest {
           root.process(nullptr, outs, 0, 1, ctx);
           for (int i = 0; i < n; ++i) {
             const int64_t phase = (t + i) % 2000;
-            const float expected =
-                rampAt(1000 + (((phase - 1000) % 2000) + 2000) % 2000);
+            const float expected = rampAt(2000 + phase);
             if (std::abs(out[(size_t)i] - expected) > 1e-7f) {
               allMatch = false;
               firstMismatch = t + i;
@@ -466,7 +476,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       }
     }
 
-    beginTest("Bypassed map at arm → plain recording (ruling 4)");
+    beginTest("Bypassed map at arm -> plain recording (ruling 4)");
     {
       StackNode root("Root");
       root.establishIsland(1000, 0);
@@ -494,7 +504,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectWithinAbsoluteError(data[0], rampAt(1000), 1e-7f,
                                 "linear capture from the target");
       expectWithinAbsoluteError(data[1999], rampAt(2999), 1e-7f,
-                                "linear to the boundary — no fold");
+                                "linear to the boundary - no fold");
     }
 
     beginTest(
@@ -652,7 +662,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       delete s.exchangeMapOverride(new timing::TimeMap(m));
       expect(s.isLoopWindowActive(), "override alone activates the map");
       expectEquals((juce::int64)s.getEffectivePeriod(), (juce::int64)2000,
-                   "effective period = Σ segment lengths");
+                   "effective period = sum of segment lengths");
       expectEquals(s.activeTimeMap().n, 2, "activeTimeMap returns it");
       // Bypass gates BOTH forms; the geometry survives underneath.
       s.setLoopWindowBypassed(true);
@@ -878,7 +888,7 @@ class TimeMapRecordTests : public juce::UnitTest {
     }
 
     beginTest(
-        "ENGINE: two-anchor continuity — sounding sample kept, "
+        "ENGINE: two-anchor continuity - sounding sample kept, "
         "frame position invariant (owner ruling 2026-08-09)");
     {
       AudioEngine engine;
@@ -1008,7 +1018,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals((juce::int64)p0Of(orgB1, m1), (juce::int64)p0,
                    "covered position keeps sounding across the edit");
       expectEquals((juce::int64)(orgB1 - ep1), (juce::int64)(orgB - ep0),
-                   "frame position (org − epoch) invariant");
+                   "frame position (org - epoch) invariant");
       expectEquals((juce::int64)(((orgB1 - orgB) % dA + dA) % dA),
                    (juce::int64)0, "the delta is a whole number of Qs");
 

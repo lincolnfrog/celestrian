@@ -25,8 +25,7 @@ namespace celestrian {
  * every MidiInput backend stamps with). The timestamped drain spreads
  * the events that arrived since the previous drain across the block
  * in proportion (the MidiMessageCollector rule): sub-block onsets for
- * both play-through and recording. The legacy drain (no timestamps)
- * lands everything at offset 0.
+ * both play-through and recording.
  *
  * Overflow drops the NEWEST event and counts it (droppedCount — a
  * diagnostics readout, not a hidden truncation; the UI can surface
@@ -52,26 +51,15 @@ class MidiInputQueue {
     event.time = message.getTimeStamp();
   }
 
-  /** Audio-thread side: appends every pending event to `out` at block
-   * offset 0. `out` must have been ensureSize'd on the message thread
-   * (the engine preallocates) so addEvent never grows it here. */
-  void drainTo(juce::MidiBuffer& out) {
-    const auto scope = fifo_.read(fifo_.getNumReady());
-    for (int i = 0; i < scope.blockSize1; ++i)
-      out.addEvent(events_[(size_t)(scope.startIndex1 + i)].bytes,
-                   events_[(size_t)(scope.startIndex1 + i)].size, 0);
-    for (int i = 0; i < scope.blockSize2; ++i)
-      out.addEvent(events_[(size_t)(scope.startIndex2 + i)].bytes,
-                   events_[(size_t)(scope.startIndex2 + i)].size, 0);
-  }
-
   /**
-   * Audio-thread side, TIMESTAMPED (phase 5): `now_seconds` is the
+   * Audio-thread side: appends every pending event to `out`. `out` must
+   * have been ensureSize'd on the message thread (the engine
+   * preallocates) so addEvent never grows it here. `now_seconds` is the
    * callback's entry time on the same clock as the event stamps. The
-   * interval since the previous timestamped drain is mapped onto
-   * [0, num_samples): an event stamped a fraction f of the way through
-   * that interval lands at offset f·num_samples (clamped). The first
-   * drain (no interval yet) and unstamped events land at 0.
+   * interval since the previous drain is mapped onto [0, num_samples):
+   * an event stamped a fraction f of the way through that interval
+   * lands at offset f·num_samples (clamped). The first drain (no
+   * interval yet) and unstamped events land at 0.
    */
   void drainTo(juce::MidiBuffer& out, int num_samples, double now_seconds) {
     const double elapsed = last_drain_time_ > 0.0 ? now_seconds - last_drain_time_

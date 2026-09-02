@@ -39,7 +39,7 @@
   (both must pass); solo per the Q16 canon over the gated population.
 - **S5 — Recording under an active sequence: OPEN**, owner flagged as
   the key question — addressed in §4 with a proposed answer, awaiting
-  ruling.
+  ruling. *(Ruled as S8, see §9.)*
 - **S6 — Vocabulary: RULED with amendment.** The feature is the
   **Sequencer** (owner: *"I conceptualize it kind of like a drum
   pad"*). Adopted here: the per-stack object is a **Sequence**, its
@@ -149,9 +149,10 @@ identical each time around.
 - **The guardrail is S2 as ruled**: cycle-multiple snapping makes
   seqLen a multiple of the inner cycle by default ⇒ identical passes.
 - **The escape hatch is deliberate**: un-snapped step lengths are the
-  ⌥-free-drag of this feature (the "1.37Q ⚠" precedent) — a drifting
-  song is a legitimate ambient/generative instrument, chosen on
-  purpose, badged visibly.
+  ⌥-free-drag of this feature (the "1.37Q ⚠" precedent — free-length
+  cuts were abolished 2026-08-09, engine_lcm_guard.md; the ⚠ badge is
+  defensive only) — a drifting song is a legitimate ambient/generative
+  instrument, chosen on purpose, badged visibly.
 - Cue-mode entrances (§3) also restore per-pass determinism, since a
   cued child restarts identically each visit.
 
@@ -558,7 +559,7 @@ unchanged); setSequence while a take is live (existing mid-take gate);
 editing the auditioned step's length while a take is live (the
 mid-take map-edit refusal, inherited because the window IS the step).
 
-### 11.4 The commit cycle — **S18 (needs a ruling)**
+### 11.4 The commit cycle — **S18 (needs a ruling)** *(ruled, §11.10)*
 
 `startRecordingInNode` computes `C = max(mapping->getIntrinsicDuration(),
 period)` — the mapping node's INTRINSIC cycle. Under a sequence that is
@@ -589,7 +590,7 @@ authored over the song** (a region that need not be a whole step is
 `C = max(seqLen, period)` when the mapping node's sequence is active).
 One line in startRecordingInNode decides by `audition_step_ ≥ 0`.
 
-### 11.5 Auto-gate at commit — **S19 (S8 ruled the what; the how needs a nod)**
+### 11.5 Auto-gate at commit — **S19 (S8 ruled the what; the how needs a nod)** *(ruled, §11.10)*
 
 Takes are not undo entries (commit is an audio-thread event), so
 "undo removes take + gates as one edit" (mockup round 2) is not
@@ -684,7 +685,7 @@ sequences travel on the inverse Insert as `Edit::seq_riders`), so ⌘Z
 restores the grid AND the song together. Mock twin:
 `retimeSequences`.
 
-### 11.8 S16 — window domain (needs a ruling; small)
+### 11.8 S16 — window domain (needs a ruling; small) *(ruled, §11.10)*
 
 Only MANUAL windows on sequenced stacks need it (the audition is
 derived, 11.2). Proposal: `window_domain_` ∈ {intrinsic, sequence} on

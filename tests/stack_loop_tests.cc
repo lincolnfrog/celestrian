@@ -122,20 +122,22 @@ class StackLoopTests : public juce::UnitTest {
       float* const outs2[] = {out};
       stack.process(nullptr, outs2, 0, 1, ctx);
 
-      // rel = (7500 − 7000) mod 1000 = 500. The window selects VIEW
-      // positions, staying in the received frame:
-      // t_child = 7000 + 200 + 500 = 7700 → ramp clip (origin 0,
-      // dur 3000) plays 7700 mod 3000 = 1700.
-      expectWithinAbsoluteError(out[0], rampValue(1700), 0.0001f,
-                                "t_child = epoch + start + rel (view "
-                                "positions, frame preserved)");
+      // Q18 (composition.md §2): an UNANCHORED stack measures from the
+      // received cycle top O = 7000, and the map anchors at O + a0 like
+      // a clip's: inner = 200 + ((7500 − 7000 − 200) mod 1000) = 500 →
+      // t_child = 7000 + 500 = 7500 → ramp clip (origin 0, dur 3000)
+      // plays 7500 mod 3000 = 1500 (window content sounds at its own
+      // performed moment: content 200 at t ≡ 7200).
+      expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
+                                "t_child = O + start + ((t - O - start) mod "
+                                "len) (the one anchoring law)");
 
       // Deterministic: same t, same epoch, same output — regardless of
       // any interleaved view changes.
       stack.is_expanded.store(!stack.is_expanded.load());
       out[0] = 0.0f;
       stack.process(nullptr, outs2, 0, 1, ctx);
-      expectWithinAbsoluteError(out[0], rampValue(1700), 0.0001f,
+      expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
                                 "phase independent of view state changes");
     }
 
@@ -231,7 +233,7 @@ class StackLoopTests : public juce::UnitTest {
                                 "re-activation restores the clip window");
     }
 
-    beginTest("E-C: getEffectivePeriod — windows shorten the audible cycle");
+    beginTest("E-C: getEffectivePeriod - windows shorten the audible cycle");
     {
       // A lone 2Q-ish stack windowed to 1000: the audible period IS the
       // window (the field bug: the playhead sailed past the window

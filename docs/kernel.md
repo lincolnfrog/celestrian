@@ -5,8 +5,9 @@
 > sing?" — and I believe the answer is yes, it's small, and the codebase
 > has been converging on it all week without naming it.
 >
-> Status: **proposal** — with the underlying principles ratified by the
-> owner on 2026-07-07 (see design_language.md §5):
+> Status: **spec — implemented** (migration steps 1–4 complete; time-maps
+> phases 1–3 landed 2026-07-09/21/22). The underlying principles were
+> ratified by the owner on 2026-07-07 (see design_language.md §5):
 >
 > - **Q2 ruling** — Audio Memory is the *sole* timing principle; the LCM
 >   is display machinery. The kernel's playback equation is a direct
@@ -23,13 +24,17 @@
 > - **Q8** — resolved by principle: the transport simplification in §3
 >   is an internal mechanism choice, valid iff I1 holds (it does, by
 >   construction).
-> - **Q9 (origin units under warp)** — deferred by owner until "warp"
+> - ~~**Q9 (origin units under warp)** — deferred by owner until "warp"
 >   is a real concept; §6's first risk stays open and gates step 2 of
->   the migration.
+>   the migration.~~ Superseded by **Q12** (2026-07-16): rational
+>   `QTime` adopted now; nothing gates the (completed) migration.
 
 ---
 
 ## 1. The problem, stated as a state inventory
+
+*(history — the migration is complete; the six fields below are gone,
+one `origin` per clip remains.)*
 
 What the engine currently stores *per clip* to answer one question —
 "where does this content belong in time?":
@@ -71,8 +76,11 @@ view*: `phase(t, period, epoch) = (t − epoch) mod period`.
 - `origin` — the moment on the master clock its content belongs to
   (design_language.md: the performance-time of `content[0]`).
 - `period` — how often it recurs. A looping clip: its own length. A
-  one-shot: its context's cycle. A composite: LCM of children periods.
-  A windowed composite: its window length.
+  one-shot: its context's cycle. A composite: ~~LCM of children
+  periods; a windowed composite: its window length~~ — its EFFECTIVE
+  period, in precedence: active map period ▸ active sequence length ▸
+  LCM of the children's effective periods (sequencer.md §2;
+  `AudioNode::getEffectivePeriod`).
 - `content` — samples (leaf) or children (composite).
 
 **Playback** is one equation applied recursively:
@@ -82,10 +90,21 @@ out(node, t) = content[(t − origin) mod period]            — leaf
 out(node, t) = Σ out(child, m(t))                          — composite
 ```
 
-where `m` is the node's **time-map** — identity for an expanded stack,
-`m(t) = window_start + ((t − collapse_epoch) mod window_len)` for a
-collapsed one. Time-maps are the only mechanism that ever transforms
-time, and they compose by nesting.
+where `m` is the node's **time-map** — identity for a node with no
+active map, and for a node with an ACTIVE map (Q18, 2026-09-01,
+composition.md §2 — one law for clips and stacks, anchored at the
+node's OWN origin):
+
+```
+inner(t) = mapOffset((t − origin − a0) mod period)     a0 = mapOffset(0)
+m(t)     = origin + inner(t)
+```
+
+Activation is data, independent of collapse — the loop-on-collapse form
+this sentence originally carried was convicted by I6b (2026-07-09), and
+the epoch-anchored stack form that replaced it was retired by Q18 (a
+stack now stores an origin like a clip). Time-maps are the only
+mechanism that ever transforms time, and they compose by nesting.
 
 **Recording** is the same equation run backwards:
 
@@ -120,6 +139,8 @@ invariant (I1–I4, I6) becomes true *by construction*: there is nothing
 to drift because there is nothing derived-but-stored.
 
 ## 3. The transport dissolves
+
+*(history — the migration is complete; every branch below is deleted.)*
 
 The P0-4 state machine was going to tame the transport branch-pile.
 Under the kernel, each branch is examined and found to be compensating
@@ -181,6 +202,8 @@ Sanity checks against the canonical examples (recording.md):
   transcription of §2's table — the UI never invents timing again.
 
 ## 5. Migration path (incremental, each step shippable)
+
+*(history — the migration is complete; all four steps are ✅.)*
 
 The kernel is adoptable without a rewrite; most steps are deletions.
 
@@ -263,13 +286,15 @@ The kernel is adoptable without a rewrite; most steps are deletions.
    stored at the root (`StackNode::setQuantum`), established at first
    commit or when committed content enters an empty island; composite
    duration corrected from min-of-children to LCM-of-children.
-4. **Time-maps** — 🔶 in progress: **phase 1 done (2026-07-09,
-   time_maps.md)** — loop windows are the first named time-map
+4. ✅ **Time-maps — done** (time_maps.md): **phase 1 (2026-07-09)** —
+   loop windows are the first named time-map
    (`(t − cycle_epoch) mod len` via `ProcessContext.cycle_epoch`;
    `internal_transport_` deleted; activation is data, collapse purely
-   visual). Remaining: recording-through-map (phase 2), non-contiguous
-   segments + cell/punch editor (phase 3); warp and serial connections
-   later reuse the same primitive.
+   visual); **phase 2 (2026-07-21)** — recording through an active map
+   on the reified `TimeMap` type; **phase 3 (2026-07-22)** —
+   multi-segment maps, fully fractal, with the cut-band editor. Warp
+   and serial connections (cue steps, sequencer.md §13) reuse the same
+   primitive.
 
 Estimated end-state deletions: the six-field clip timing block, the
 rotation machinery, the transport branch-pile, `internal_transport_`,
@@ -280,9 +305,12 @@ timing state is exactly `origin`; the clock is never mutated; the
 recording lifecycle is an explicit state machine; commits are events
 handled by the island root; traversal is cast-free; context flows down
 through `ProcessContext`. Migration step 4 (time-maps phases 2–3)
-remains, gated on QTime (Q12, in place since the same day).
+landed 2026-07-21/22 on QTime (Q12, in place since 2026-07-16).
 
 ## 6. Risks and open questions
+
+*(history — the migration is complete; the first two risks were
+resolved by Q12 and Q1/Q13, the last by the field arc of 2026-07.)*
 
 - **Q-rational vs sample origins** (design_language.md Q9): decide
   before step 2; retrofitting units is the expensive path.

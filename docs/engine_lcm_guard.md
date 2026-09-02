@@ -50,9 +50,11 @@ Engine (refusal, mirrored in the mock for parity):
 - `AudioEngine::setLoopPoints` refuses a window (post-clamp) whose
   length is neither a whole multiple nor an exact divisor of Q.
 - Sole exception, per the ruling's own carve-out: the Q13
-  sole-definer re-trim (clip, one committed clip on the island, no
-  take in flight), where the edit *re-establishes* Q rather than
-  fighting it. One-shots (`periodSource: context`) never contribute a
+  sole-definer re-trim — the definer CLIP (one committed clip on the
+  island, no take in flight) or, since Q13-for-groups (design_language
+  Q13, 2026-08-21), the definer STACK (its direct clip children are the
+  island's only committed content, recorded as one take) — where the
+  edit *re-establishes* Q rather than fighting it. One-shots (`periodSource: context`) never contribute a
   period to the LCM in the first place (Q5) and need no exception.
 - Mock parity: `mock_backend.js setSegments` / `setLoopPoints` refuse
   identically, so the harness cannot drift from the engine on this.

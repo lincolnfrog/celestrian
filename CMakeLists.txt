@@ -204,7 +204,6 @@ target_sources(CelestrianTests PRIVATE
     tests/session_io_tests.cc
     tests/session_negative_tests.cc
     tests/project_lifecycle_tests.cc
-    tests/repro_first_clip_bug.cc
     tests/ui_contract_tests.cc
     tests/effects_stereo_tests.cc
     tests/effects_tests.cc
@@ -216,6 +215,7 @@ target_sources(CelestrianTests PRIVATE
     tests/take_undo_tests.cc
     tests/content_frame_tests.cc
     tests/audit_regression_tests.cc
+    tests/stack_origin_tests.cc
     tests/solo_tests.cc
     tests/track_template_tests.cc
     tests/plugin_host_tests.cc

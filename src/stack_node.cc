@@ -1,3 +1,17 @@
+// StackNode — the container: sums its children through the group fx
+// rack, and when it is the session root owns the island facts. This
+// file owns
+//   - child ownership edits (add / insert / remove / clear; message
+//     thread only — the audio thread reads the graph snapshot);
+//   - childContext(): the per-scope re-scoping of ProcessContext
+//     (window-mapped clock, context loop/cycle, active map, gate);
+//   - control() / render(): recursion over the snapshot with map-seam
+//     block splitting, the summing scratch buffer, the sequencer gate
+//     and the group output stage;
+//   - the seqlock'd island triple (Q, epoch, generation) and the take
+//     lifecycle events (takeArmed / takeCommitted / epoch re-base);
+//   - period / duration / metadata / waveform readouts.
+
 #include "stack_node.h"
 
 #include "graph_snapshot.h"
@@ -144,6 +158,29 @@ int64_t StackNode::getEffectivePeriod() const {
     composite = timing::foldPeriod(composite, child->getEffectivePeriod());
   }
   return composite;
+}
+
+bool StackNode::oneShotFacts(const ProcessContext& context,
+                             const timing::TimeMap& own_map, int64_t& shot,
+                             int64_t& cycle) const {
+  if (!period_from_context_.load()) return false;
+  shot = own_map.active()
+             ? own_map.period()
+             : (context.snap != nullptr
+                    ? snapIntrinsicDuration(*context.snap, context.self)
+                    : getIntrinsicDuration());
+  cycle = context.context_cycle;
+  return shot > 0 && cycle > shot;
+}
+
+bool StackNode::inRest(const ProcessContext& context) const {
+  const timing::TimeMap own_map = activeTimeMap();
+  int64_t shot = 0, cycle = 0;
+  if (!oneShotFacts(context, own_map, shot, cycle)) return false;
+  const int64_t a0 = own_map.active() ? own_map.mapOffset(0) : 0;
+  int64_t h = context.master_pos - frameOrigin(context) - a0;
+  h = ((h % cycle) + cycle) % cycle;
+  return h >= shot;
 }
 
 int64_t StackNode::getEffectiveQuantum() const {
@@ -308,26 +345,30 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   ProcessContext child_context = context;
 
   const timing::TimeMap map = activeTimeMap();
+  // THE ANCHOR (Q18, composition.md §2): this stack's own origin once
+  // anchored, else the received cycle top (the empty case).
+  const int64_t O = frameOrigin(context);
   if (map.active()) {
-    const int64_t rel = context.master_pos - context.cycle_epoch;
-
-    // The map selects VIEW positions of the received cycle, so the
-    // mapped time stays IN THE RECEIVED FRAME:
-    // t_child = epoch + mapOffset(rel). Children align by their
-    // ABSOLUTE origins — dropping the epoch here shifted every child
-    // whose origin ≢ 0 (mod duration): field bug 2026-07-09, "2Q clip
-    // loops its Q2 when the window selects Q1". (mapOffset folds rel
-    // by the map period, negatives included.)
-    child_context.master_pos = context.cycle_epoch + map.mapOffset(rel);
-    // Time-map facts for the subtree (phase 2): the map itself and the
-    // RECEIVED frame's cycle top — the heard grid anchor through-map
-    // arm math runs against. Captured BEFORE the re-base below.
+    // THE ONE EQUATION, stack form: inner(t) = mapOffset((t − O − a0)
+    // mod P) and children hear t_child = O + inner(t) — the clip law
+    // (clip_node.cc render) with the stack's origin in place of the
+    // clip's. Window content sounds at its own performed moment; a
+    // windowed group of mics recorded as one take renders identically
+    // to each mic windowed alone (the content-frame law by construction
+    // — it used to be enforced by origin riders). mapOffset folds by the
+    // map period, negatives included.
+    const int64_t a0 = map.mapOffset(0);
+    child_context.master_pos = O + map.mapOffset(context.master_pos - O - a0);
+    // Time-map facts for the subtree (phase 2): the map, its origin, and
+    // the heard grid anchor (O + a0 — pass tops occur at island times ≡
+    // it mod the period) that through-map arm math runs against.
     child_context.map = map;
-    child_context.map_heard_epoch = context.cycle_epoch;
+    child_context.map_origin = O;
+    child_context.map_heard_epoch = O + a0;
     ++child_context.map_count;
-    // For nested maps: the child frame's cycle top is where the map
-    // lands at heard phase 0 (the first segment's start).
-    child_context.cycle_epoch = context.cycle_epoch + map.mapOffset(0);
+    // The child frame's cycle top is where the map lands at heard phase
+    // 0 (the first segment's start).
+    child_context.cycle_epoch = O + a0;
   }
 
   // === THE CONTEXT CYCLE (Q5 one-shot period) ===
@@ -390,14 +431,14 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // song timeline).
   if (const Sequence* seq = activeSequence();
       seq != nullptr && seq->any_cue && seq->total > 0) {
-    const int64_t srel =
-        seq->fold(child_context.master_pos - context.cycle_epoch);
+    // The song position is inner(t) measured from this stack's frame
+    // (Q18: its origin, not the received epoch).
+    const int64_t srel = seq->fold(child_context.master_pos - O);
     const int i = seq->stepAt(srel);
     if (seq->cueAt(i)) {
       const int64_t step_len = seq->bounds[i + 1] - seq->bounds[i];
-      child_context.master_pos =
-          context.cycle_epoch + (srel - seq->bounds[i]);
-      child_context.cycle_epoch = context.cycle_epoch;
+      child_context.master_pos = O + (srel - seq->bounds[i]);
+      child_context.cycle_epoch = O;
       // Mode-2 record INTO a cued step (S21): the through-map arm math
       // places the take at context.map's inner positions — compose the
       // audition map with the cue so the take lands where cue playback
@@ -415,6 +456,9 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
 
 void StackNode::control(const float* const* input_channels,
                         int num_input_channels, const ProcessContext& context) {
+  // Block-top origin adoption (Q18): a stack renders with a gated
+  // origin exactly like a clip — see AudioNode::adoptOriginGate.
+  adoptOriginGate(context);
   forEachSeamRun(input_channels, num_input_channels, context,
                  [this](const float* const* ins, int input_count,
                         const ProcessContext& sub) {
@@ -434,13 +478,21 @@ void StackNode::controlChildren(const float* const* input_channels,
 
   // Recording context, passed DOWN (P1-6): the longest committed child
   // duration in this scope. Recording/armed children contribute 0
-  // (duration resets at arm); nested-stack children contribute their
-  // stored duration_samples (0 — stacks don't store one), matching the
-  // historical sibling-scan semantics exactly. A CONTROL fact: render
-  // never needs it.
+  // (duration resets at arm); a nested STACK contributes its inner
+  // cycle like any other loop the performer hears (Q18 — composition.md
+  // §8 retired the "stacks contribute 0" carve-out). A CONTROL fact:
+  // render never needs it.
   int64_t longest_committed = 0;
   for (int k = 0; k < child_count; ++k) {
-    const int64_t d = kids.nodeAt(k)->duration_samples.load();
+    const AudioNode* child = kids.nodeAt(k);
+    int64_t d = 0;
+    if (child->getNodeType() == NodeType::Clip) {
+      d = child->duration_samples.load();
+    } else if (context.snap != nullptr) {
+      d = snapIntrinsicDuration(*context.snap, kids.entryAt(k));
+    } else {
+      d = child->getIntrinsicDuration();  // single-threaded test fallback
+    }
     if (d > longest_committed) longest_committed = d;
   }
   // Under an ACTIVE map the heard loop IS the map period (time_maps.md
@@ -496,13 +548,18 @@ void StackNode::renderChildren(float* const* output_channels,
     const timing::TimeMap map = activeTimeMap();
     const int64_t p = map.period();
     if (map.active() && p > 0) {
-      int64_t rel = context.master_pos - context.cycle_epoch;
+      // Heard phase from this stack's own anchor (Q18).
+      int64_t rel = context.master_pos - frameOrigin(context) - map.mapOffset(0);
       rel = ((rel % p) + p) % p;
       playhead_pos.store((double)rel / (double)p);
     } else {
       playhead_pos.store(0.0);
     }
   }
+  // ONE-SHOT REST (Q18): in the rest region the group's children are
+  // not rendered — the sum is silence, the gate and rack still run so
+  // tails ring — exactly a one-shot clip's rest (clip_node.cc render).
+  const bool rest = inRest(context);
 
   const ChildView kids = childView(context);
   const int child_count = kids.count();
@@ -557,12 +614,9 @@ void StackNode::renderChildren(float* const* output_channels,
   // gated off in a cued step is off in THAT step, not in step 0).
   int64_t seq_rel0 = 0;
   if (seq != nullptr) {
-    int64_t mapped = context.master_pos;
-    if (const timing::TimeMap map = activeTimeMap(); map.active()) {
-      mapped = context.cycle_epoch +
-               map.mapOffset(context.master_pos - context.cycle_epoch);
-    }
-    seq_rel0 = seq->fold(mapped - context.cycle_epoch);
+    // inner(t) from this stack's own anchor (Q18) — the same fold
+    // childContext's cue lookup uses.
+    seq_rel0 = seq->fold(innerOf(context, activeTimeMap()));
   }
 
   for (int k = 0; k < child_count; ++k) {
@@ -580,10 +634,13 @@ void StackNode::renderChildren(float* const* output_channels,
       child_context.gate_g1 = 1.0f;
     }
 
-    // Child renders into our mix_buffer.
+    // Child renders into our mix_buffer (not in a one-shot rest region:
+    // the cleared buffer IS the silence).
     child_context.self = kids.entryAt(k);
-    child->render(mix_buffer.getArrayOfWritePointers(), num_output_channels,
-                  child_context);
+    if (!rest) {
+      child->render(mix_buffer.getArrayOfWritePointers(),
+                    num_output_channels, child_context);
+    }
 
     if (use_accum) {
       for (int ch = 0; ch < accum_ch; ++ch) {
@@ -635,7 +692,7 @@ void StackNode::renderChildren(float* const* output_channels,
     // stereo pair get the fader-scaled unpanned channel-0 signal (the
     // historical duplicate-mono behavior).
     float gl = 1.0f, gr = 1.0f, fader = 1.0f;
-    outputStageGains(group_pan, group_gain, MuteState::AUDIBLE, gl, gr, fader);
+    outputStageGains(group_pan, group_gain, gl, gr, fader);
     for (int ch = 0; ch < num_output_channels; ++ch) {
       if (output_channels[ch] == nullptr) continue;
       const int src = std::min(ch, accum_ch - 1);
@@ -662,8 +719,9 @@ juce::var StackNode::getWaveform(int num_peaks) const {
   // If we only have one child, return its waveform directly to save compute
   if (kids.size() == 1) return kids[0]->getWaveform(num_peaks);
 
-  // Aggregate: Sum peaks from all children (simplified for now)
-  // Future: Better recursive mixdown normalization
+  // Aggregate: the per-bin average of the children's peak arrays — a
+  // display approximation, not a mixdown (gain, pan and fx are not
+  // applied).
   juce::Array<juce::var> aggregatePeaks;
   for (int i = 0; i < num_peaks; ++i) aggregatePeaks.add(0.0f);
 
@@ -688,7 +746,7 @@ juce::var StackNode::getWaveform(int num_peaks) const {
   return aggregatePeaks;
 }
 
-AudioNode* StackNode::findNodeByUuid(const juce::String& uuid) {
+AudioNode* StackNode::findByUuid(const juce::String& uuid) {
   if (getUuid() == uuid) return this;
 
   // Virtual recursion (findByUuid) — no per-child dynamic_cast.
@@ -699,7 +757,7 @@ AudioNode* StackNode::findNodeByUuid(const juce::String& uuid) {
   return nullptr;
 }
 
-bool StackNode::isAnyChildRecording() const {
+bool StackNode::isArmedOrRecording() const {
   // Virtual dispatch replaces the old per-child dynamic_cast: clips
   // answer from their recording state machine, nested stacks recurse
   // via their own isArmedOrRecording override.

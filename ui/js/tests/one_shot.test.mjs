@@ -15,7 +15,7 @@ import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import { findByName } from './helpers.mjs';
 
-test('setPeriodSource round-trips, clips only, undoable', async () => {
+test('setPeriodSource round-trips, clips AND stacks, undoable', async () => {
     loadScenario('stack-with-clips');
     const clip = findByName(getState().nodes, 'Clip A');
     assert.notEqual(findByName(getState().nodes, 'Clip A').periodSource,
@@ -30,17 +30,22 @@ test('setPeriodSource round-trips, clips only, undoable', async () => {
     assert.equal(findByName(getState().nodes, 'Clip A').periodSource,
         'own', 'undo restores the loop');
 
-    // Clip-only: a stack refuses AND pops its pre-pushed undo snapshot.
-    // (Known mock drift shared by every refusal path: the dispatch
-    // clears redo before the handler can refuse; the engine refuses
-    // before recording. Undo balance is the load-bearing property.)
+    // Q18 (composition.md §0 — "a stack can be a one-shot"): stacks
+    // take the knob too, undoably. (Pre-Q18 they refused: "a stack has
+    // no origin to anchor a firing to".) An IDENTITY set records
+    // nothing — it pops its pre-pushed undo snapshot (engine parity:
+    // setPeriodSource returns before recording when unchanged).
     const stack = getState().nodes.find(n => n.type === 'stack');
-    const undoBefore = getState().canUndo;
     await callNative('setPeriodSource', stack.id, 'context');
+    assert.equal(getState().nodes.find(n => n.type === 'stack').periodSource,
+        'context', 'stacks accept the knob');
+    await callNative('undo');
     assert.notEqual(getState().nodes.find(n => n.type === 'stack').periodSource,
-        'context', 'stacks refuse the knob');
+        'context', 'undo restores the looping group');
+    const undoBefore = getState().canUndo;
+    await callNative('setPeriodSource', stack.id, 'own');  // identity
     assert.equal(getState().canUndo, undoBefore,
-        'refusal leaves the undo stack balanced');
+        'an identity set leaves the undo stack balanced');
 });
 
 test('one-shots are excluded from the cycle (mock + VM frame)', async () => {

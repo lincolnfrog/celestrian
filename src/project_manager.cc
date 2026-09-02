@@ -61,7 +61,7 @@ void ProjectManager::tick() {
     folder_ = nextSerialFolder();
     display_name_ = folder_.getFileName();
     created_ = juce::Time::getCurrentTime().toISO8601(true);
-    juce::Logger::writeToLog("ProjectManager: project born — " +
+    juce::Logger::writeToLog("ProjectManager: project born - " +
                              folder_.getFullPathName());
   }
   mirror(MirrorMode::INCREMENTAL);

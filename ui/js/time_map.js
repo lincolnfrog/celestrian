@@ -88,11 +88,6 @@ export function heardOffsetOf(map, inner) {
     return -1;
 }
 
-/**
- * Samples from heardOff for which the map advances CONTINUOUSLY: the
- * distance to the end of the containing segment. Segment boundaries
- * always count as seams. Returns 0 when the map is inactive.
- */
 /** A PUBLISHED node's window-activity verdict — the engine's
  * `windowActive` when the field is present, else derived exactly the
  * way the engine does (not bypassed, and either a multi-segment map or
@@ -105,6 +100,11 @@ export function nodeWindowActive(n) {
          (n.loopEnd || 0) > (n.loopStart || 0)));
 }
 
+/**
+ * Samples from heardOff for which the map advances CONTINUOUSLY: the
+ * distance to the end of the containing segment. Segment boundaries
+ * always count as seams. Returns 0 when the map is inactive.
+ */
 export function seamDistance(map, heardOff) {
     const p = mapPeriod(map);
     if (p <= 0) return 0;

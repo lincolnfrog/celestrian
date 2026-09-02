@@ -27,6 +27,7 @@
 import {
     lcm, calculateStackLCM, commensuratePeriod, computeEffectiveQuantum,
     nextStopBoundary, timelineLcm, stackEffectivePeriod, isAuditionWindow,
+    activeSequenceSamples,
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
@@ -40,8 +41,8 @@ const EPS = 1e-9;
 
 // Degenerate-frame guard: a frame where cycle/period exceeds this must
 // never explode into thousands of tiles (e.g. Q not yet established).
-// Shared by unrollReps (mirrored by computeGhostTiles in px space) and
-// the take-phase scan in the heard-clip lane builder.
+// Shared by unrollReps and the take-phase scan in the heard-clip lane
+// builder.
 const MAX_TILES = 256;
 
 /**
@@ -173,7 +174,7 @@ function displayPeriodQ(node, quantum) {
  * Unroll a lane across the cycle: tiles at q ≡ offsetQ (mod periodQ),
  * clipped to [0, cycleQ). Exactly one unclipped tile is the take
  * (ghost: false); clipped pieces are marked wrapped. Q-unit exact —
- * no pixel tolerances (computeGhostTiles is the px-space equivalent).
+ * no pixel tolerances.
  *
  * @param {Object} opts
  * @param {number} opts.periodQ   tile period in Q
@@ -186,7 +187,7 @@ function displayPeriodQ(node, quantum) {
 export function unrollReps({ periodQ, offsetQ, cycleQ, takeQ, maxTiles = MAX_TILES }) {
     if (periodQ <= 0 || cycleQ <= 0) return [];
     // Safety net: a degenerate frame (e.g. Q not yet established) must
-    // never explode into thousands of tiles (mirrors computeGhostTiles)
+    // never explode into thousands of tiles
     if (cycleQ / periodQ > maxTiles) return [];
     const reps = [];
     // The tiling grid runs at q ≡ offsetQ (mod periodQ) — NEVER derived
@@ -245,10 +246,19 @@ export function windowDragTarget({ edge, rawQ, startQ, endQ, maxQ }) {
 /**
  * Arm targets emptiness (Q7 refinement): a clip with content cannot be
  * re-recorded (no overdub by design) — group record captures the empty
- * clips and just plays the full ones.
+ * clips and just plays the full ones. Shared with app.js's record
+ * handler (one rule, one copy).
  */
-function isArmable(clip) {
+export function isArmable(clip) {
     return clip.isRecording || clip.isPendingStart || !(clip.duration > 0);
+}
+
+/** Does the node's published chain carry an instrument slot (docs/
+ * vst3.md §8)? The rail's MIDI-arm affordance and app.js's live MIDI
+ * target selection read the same rule. */
+export function hasInstrument(node) {
+    return !!(node && node.effects && Array.isArray(node.effects.chain) &&
+        node.effects.chain.some(s => s.isInstrument));
 }
 
 /**
@@ -319,8 +329,7 @@ function laneCommon(node, state) {
             : 0,
         // MIDI (docs/vst3.md §8): the rail's arm affordance appears
         // only when the chain carries an instrument slot.
-        hasInstrument: !!(node.effects && Array.isArray(node.effects.chain) &&
-            node.effects.chain.some(s => s.isInstrument)),
+        hasInstrument: hasInstrument(node),
         midiArmed: !!node.midiArmed,
         // Content kind (phase 5): a MIDI track records notes from the
         // keyboard into its instrument — the audio-input picker is
@@ -748,8 +757,10 @@ function memberCommonWindow(stack) {
     return win;
 }
 
-/** A node by id anywhere in the tree (the published definerId). */
-function findNodeInTree(nodes, id) {
+/** A node by id anywhere in the published tree (children ride
+ * `nodes`, engine and mock alike — never `children`). Used for the
+ * published definerId here and by app.js's post-commit verification. */
+export function findNodeInTree(nodes, id) {
     for (const n of nodes || []) {
         if (n.id === id) return n;
         if (n.type === 'stack') {
@@ -853,10 +864,10 @@ function seqTotalSamples(s) {
     return s.steps.reduce((t, x) => t + (x.len > 0 ? Math.round(x.len) : 0), 0);
 }
 
-/** The ACTIVE sequence length in samples (0 = none/bypassed). */
+/** The ACTIVE sequence length in samples (0 = none/bypassed) — the
+ * timeline_model rule, applied to a holder (node or the root state). */
 function activeSeqSamples(holder) {
-    const s = seqOf(holder);
-    return s && !s.bypassed ? seqTotalSamples(s) : 0;
+    return activeSequenceSamples(holder);
 }
 
 /**
@@ -1072,10 +1083,63 @@ function buildRulerTicks(qEstablished, cycleQ) {
 }
 
 /**
- * Group (stack) lane + its children (recursive via pushLane).
+ * ONE-SHOT display (Q5 / recording.md Example 3; groups too since Q18,
+ * composition.md §9): NO ghost repetitions — the take tile alone marks
+ * the one firing per cycle; the rest of the lane is honest silence.
+ * …except under a SEQUENCED (or otherwise shorter) scope cycle (§12.2):
+ * the hit fires once per pass of that cycle, so its echoes tile at the
+ * scope period — what sounds, shown. Shared by clip and group lanes.
  */
-function pushGroupLane(node, depth, mapCtx, ctx) {
-    const { quantum, cycleQ, qEstablished, fxOpen, lanes, state } = ctx;
+function oneShotReps(reps, lanePeriodQ, scopeQ, cycleQ) {
+    reps = reps.filter(r => !r.ghost);
+    const take = reps[0];
+    if (take && scopeQ > 0 && scopeQ < cycleQ - EPS &&
+        cycleQ / scopeQ <= MAX_TILES) {
+        const lenQ = Math.min(lanePeriodQ, scopeQ);
+        const first = posMod(take.startQ, scopeQ);
+        for (let s = first; s < cycleQ; s += scopeQ) {
+            if (Math.abs(s - take.startQ) < EPS) continue;
+            const endQ = Math.min(cycleQ, s + lenQ);
+            if (endQ - s <= EPS) continue;
+            reps.push({ startQ: s, endQ, ghost: true,
+                        wrapped: endQ !== s + lenQ });
+        }
+        reps.sort((a, b) => a.startQ - b.startQ);
+    }
+    return reps;
+}
+
+/**
+ * MEMBERS OF A ONE-SHOT GROUP draw whole beneath it (composition.md
+ * §9, G-2): the group's children render only while the group's phase
+ * is inside its shot — so a member's tiles outside the shot span
+ * [startQ, startQ + lenQ) (wrapped in the frame) are silence and are
+ * dropped. A one-take member keeps exactly its take tile.
+ */
+function withinShot(reps, shot, cycleQ) {
+    if (!shot || !(shot.lenQ > 0)) return reps;
+    const spans = [[shot.startQ, Math.min(cycleQ, shot.startQ + shot.lenQ)]];
+    if (shot.startQ + shot.lenQ > cycleQ + EPS) {
+        spans.push([0, shot.startQ + shot.lenQ - cycleQ]);
+    }
+    return reps.filter(r => spans.some(([a, b]) =>
+        Math.min(r.endQ, b) - Math.max(r.startQ, a) > EPS));
+}
+
+/**
+ * Group (stack) lane + its children (recursive via pushLane).
+ *
+ * offsetQ: the stack's tiling-grid phase in the frame — (origin − epoch)
+ * in Q, rotated by the recording shift (pushLane computes it exactly
+ * as for a clip). GROUP LANES GET A TAKE MARK (Q18, composition.md
+ * §9): an ANCHORED stack's lane x is that phase, exactly a clip's
+ * takeStartQ; brackets, dims, cut bands and the heard-time cursor on
+ * the lane are INNER positions offset by it. An unanchored stack (no
+ * committed content yet) measures from its received cycle top — its
+ * mark is 0, the empty case.
+ */
+function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
+    const { quantum, cycleQ, qEstablished, fxOpen, lanes, state, lcmQ } = ctx;
     if (ctx.provisionalDefiner && node.id === ctx.soleQDefinerId) {
         // Q13 FOR GROUPS: the definer stack renders the same trim view
         // a sole clip does — the whole take with the selection over it
@@ -1122,6 +1186,13 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
     const gwin = mapOf(node, quantum);
     const intrinsicQ = intrinsicPeriodQ(node, quantum);
     const editable = qEstablished && intrinsicQ >= 2 && !subtreeRec(node);
+    // THE ANCHOR (Q18): an anchored stack's origin is a stored fact the
+    // engine publishes; the VM reads it and never derives it.
+    const anchored = !!node.anchored;
+    const gOffsetQ = anchored ? offsetQ : 0;
+    const relQ = anchored
+        ? ((node.origin || 0) - ctx.epochSamples) / quantum : 0;
+    const oneShot = node.periodSource === 'context';
     const groupFields = {
         kind: 'group',
         depth,
@@ -1131,6 +1202,7 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
         // recording through this window right now.
         mapRecording: !!(gwin && gwin.active && subtreeRec(node)),
         mapSuspended: !!(gwin && gwin.suspended),  // S16
+        anchored,
     };
     let lane;
     if (ctx.windowEdit && ctx.windowEdit.has(node.id) &&
@@ -1143,26 +1215,46 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
                !isAuditionWindow(node)) {
         // THE HEARD VIEW — the same default a windowed clip has (I5,
         // the 2026-08-21 ruling): the lane's material IS the window's
-        // content, tiled at the window length from frame 0 (groups
-        // anchor at 0: a composite is derived machinery, not a
-        // performance). Chip + edge grips + seams are the chrome; the
-        // raw inner cycle is one grab away.
+        // content, tiled at the window length where it audibly
+        // sounds. ONE ANCHORING LAW (Q18, composition.md §2): the
+        // window content's start sounds at origin + a0 — the heard top
+        // within the period is posMod(offset + a0, period), exactly a
+        // windowed clip's (pushHeardClipLane). Chip + edge grips +
+        // seams are the chrome; the raw inner cycle is one grab away.
+        const heardTopQ = periodQ > 0
+            ? posMod(gOffsetQ + gwin.segs[0][0], periodQ) : 0;
         lane = Object.assign(laneCommon(node, state), groupFields,
             heardViewFields({ win: gwin, lanePeriodQ: periodQ, intrinsicQ,
-                              heardTopQ: 0, cycleQ, qEstablished,
+                              heardTopQ, cycleQ, qEstablished,
                               editable }));
+        if (oneShot) {
+            lane.reps = oneShotReps(lane.reps, periodQ, ctx.scopeCycleQ || 0,
+                                    cycleQ);
+        }
     } else {
+        // Take marking for the group (Q14's rule, as for a clip without
+        // a contextCycle): an era stack (origin ≥ epoch) marks its
+        // performed cycle position; a pre-epoch one marks the first
+        // full repetition.
+        const takeQ = anchored && relQ >= 0 && lcmQ > 0
+            ? posMod(gOffsetQ, lcmQ) : undefined;
+        let reps = qEstablished
+            ? unrollReps({ periodQ, offsetQ: gOffsetQ, cycleQ, takeQ })
+            : [];
+        // A ONE-SHOT GROUP renders like a one-shot clip (composition.md
+        // §9): the dashed composite tile at its take mark, no ghosts.
+        if (oneShot) reps = oneShotReps(reps, periodQ, ctx.scopeCycleQ || 0, cycleQ);
         lane = Object.assign(laneCommon(node, state), groupFields, {
             periodQ,
             // The window EDIT range: [0, inner cycle] — the brackets'
             // clamp bound.
             intrinsicQ,
             // Before Q exists there is nothing meaningful to tile.
-            // Groups anchor at frame 0 (origin-based take marking
-            // would draw meaningless wrap slivers).
-            reps: qEstablished
-                ? unrollReps({ periodQ, offsetQ: 0, cycleQ })
-                : [],
+            reps,
+            // The take tile's frame position: the CONTENT-frame origin
+            // of this lane (Q18 — a group's take mark, like a clip's).
+            // Window brackets/dims/bands anchor here.
+            takeStartQ: (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
             // A bypassed/suspended map over the raw inner cycle:
             // multi-segment maps draw dims + one chip, never
             // brackets (geometry edits live in the editor); single
@@ -1230,8 +1322,16 @@ function pushGroupLane(node, depth, mapCtx, ctx) {
         // members, else inherited). One-shot lanes echo at it (§12.2).
         const prevScope = ctx.scopeCycleQ;
         ctx.scopeCycleQ = scopeCycleQOf(node, quantum, prevScope);
+        // A ONE-SHOT GROUP's children sound only inside its shot
+        // (composition.md §2 rest region): member lanes keep the tiles
+        // within it — drawn whole beneath the dashed group tile.
+        const prevShot = ctx.oneShotShot;
+        ctx.oneShotShot = oneShot && !lane.windowEditing
+            ? { startQ: lane.takeStartQ || 0, lenQ: lane.periodQ || 0 }
+            : null;
         (node.nodes || []).forEach(c =>
             pushLane(c, depth + 1, ownMap || mapCtx, ctx));
+        ctx.oneShotShot = prevShot;
         ctx.scopeCycleQ = prevScope;
         // An ACTIVE sequence projects its gates onto the child lanes as
         // dims (the display side of the period law — sequencer.md §9:
@@ -1407,8 +1507,9 @@ function childSrcSegsUnderMap(segsQ, offsetQ, periodQ, intrinsicQ) {
  * @param {number} o.lanePeriodQ  the map period in Q (the part length)
  * @param {number} o.intrinsicQ   the raw extent the segs index into
  * @param {number} o.heardTopQ    where the loop's heard TOP sits within
- *                                its own period (content rotation — a
- *                                clip's origin phase; 0 for a group)
+ *                                its own period (content rotation — the
+ *                                node's origin + a0 phase; 0 for an
+ *                                unanchored group, Q18)
  * @param {number} o.cycleQ       the display frame
  * @param {boolean} o.qEstablished
  * @param {boolean} o.editable    whether the cut/trim chrome is live
@@ -1552,29 +1653,14 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
             : [];
     // ONE-SHOT display (Q5 / recording.md Example 3): NO ghost
     // repetitions — the take tile alone marks the one firing per
-    // cycle; the rest of the lane is honest silence. The dashed
-    // styling rides lane.oneShot in the patch layer.
+    // cycle (oneShotReps). The dashed styling rides lane.oneShot in
+    // the patch layer.
     if (node.periodSource === 'context') {
-        reps = reps.filter(r => !r.ghost);
-        // …except under a SEQUENCED (or otherwise shorter) scope cycle
-        // (§12.2): the hit fires once per pass of that cycle, so its
-        // echoes tile at the scope period — what sounds, shown.
-        const scopeQ = ctx.scopeCycleQ || 0;
-        const take = reps[0];
-        if (take && scopeQ > 0 && scopeQ < cycleQ - EPS &&
-            cycleQ / scopeQ <= MAX_TILES) {
-            const lenQ = Math.min(lanePeriodQ, scopeQ);
-            const first = posMod(take.startQ, scopeQ);
-            for (let s = first; s < cycleQ; s += scopeQ) {
-                if (Math.abs(s - take.startQ) < EPS) continue;
-                const endQ = Math.min(cycleQ, s + lenQ);
-                if (endQ - s <= EPS) continue;
-                reps.push({ startQ: s, endQ, ghost: true,
-                            wrapped: endQ !== s + lenQ });
-            }
-            reps.sort((a, b) => a.startQ - b.startQ);
-        }
+        reps = oneShotReps(reps, lanePeriodQ, ctx.scopeCycleQ || 0, cycleQ);
     }
+    // Under a ONE-SHOT GROUP: only the tiles inside the group's shot
+    // sound (members drawn whole beneath, composition.md §9).
+    if (ctx.oneShotShot) reps = withinShot(reps, ctx.oneShotShot, cycleQ);
     if (heardFields) heardFields.reps = reps;  // one-shot filter applied
     lanes.push(Object.assign(laneCommon(node, state), {
         kind: 'clip',
@@ -1648,7 +1734,7 @@ function pushLane(node, depth, mapCtx, ctx) {
         - ctx.shiftQ;
 
     if (node.type === 'stack') {
-        pushGroupLane(node, depth, mapCtx, ctx);
+        pushGroupLane(node, depth, mapCtx, ctx, offsetQ);
         return;
     }
     if (ctx.provisionalDefiner && node.id === ctx.soleQDefinerId) {
@@ -1678,27 +1764,50 @@ function pushLane(node, depth, mapCtx, ctx) {
 /**
  * deriveViewModel(state[, opts])
  *
- * state: the getGraphState() shape — { masterPos, isPlaying, origin,
- *        soloedId, nodes: [...] } with clip/stack nodes as published by
- *        the engine (origins ABSOLUTE, samples everywhere).
- * opts.maxDepth: fold depth guard (default 8).
+ * state: the getGraphState() shape as published by the engine (and the
+ *        mock's publish.js) — samples everywhere, origins ABSOLUTE:
+ *        { id (root uuid), masterPos, islandPos, isPlaying,
+ *          quantum (STORED island Q; 0 = unestablished), islandEpoch
+ *          (origin = legacy fallback), definerId (Q13), perf.sampleRate,
+ *          sequence / windowActive / loopStart / loopEnd (the root's
+ *          song + its step-audition window), nodes: [...] } with
+ *        clip/stack nodes; a stack's children ride `nodes`.
+ * opts.maxDepth:   fold depth guard (default 8).
+ * opts.fxOpen:     Set of lane ids whose effects row is expanded.
+ * opts.seqOpen:    Set of stack ids whose sequencer grid is expanded.
+ * opts.windowEdit: Set of lane ids in the window EDIT view.
+ * opts.pinFrameQ / opts.pinFoldQ: the map-gesture frame pin (drag_pin).
  *
- * Returns Q-unit view model:
+ * Returns the Q-unit view model:
  * {
- *   quantum, epochSamples, cycleQ, playheadQ, isPlaying,
- *   armAtQ,                       // next Q boundary (Q11); cycleQ ≡ 0 (↺)
+ *   quantum, epochSamples, sampleRate, isPlaying, qEstablished,
+ *   cycleQ,          // the DISPLAY FRAME lanes tile
+ *   lcmQ,            // the committed cycle (≤ cycleQ while a take grows)
+ *   loopCycleQ,      // the AUDIBLE cycle (a step audition shortens it)
+ *   loopStartQ,      // frame origin of the audible loop (Q13 trim view)
+ *   frameExtended, playheadQ,
+ *   armAtQ,          // next Q boundary (Q11); cycleQ ≡ 0 (↺)
+ *   soleQDefinerId, provisionalDefiner,   // Q13
  *   ruler: { cycleQ, ticks: [{ q, major }] },
- *   lanes: [{
- *     id, name, kind: 'clip'|'group', depth,
- *     periodQ,                    // effective period (window-aware, E-C)
- *     reps: [{ startQ, endQ, ghost, wrapped }],
- *     window: { startQ, endQ, active, bypassed } | null,
- *     muted, soloed, recording, armed,
- *     armable,                    // clips: arm targets emptiness (Q7)
- *     recordingLengthQ,           // recording lanes only
- *     folded,                     // group lanes only
- *     groupArm: { state: 'all'|'some'|'none', armable: count },
- *   }]
+ *   rootId,          // setSequence/toggleSequence target
+ *   rootSeq: { bypassed, totalQ, stepCount, auditionStep, drift } | null,
+ *   rootWindow: { startQ, endQ, step } | null,  // root audition brackets
+ *   lanes: [ rows in render order — kind decides the shape:
+ *     'clip' | 'group': laneCommon fields (id, name, muted, soloed,
+ *        recording, awaitingStop, armed, effects, fxCount, hasInstrument,
+ *        midiArmed, isMidi, pan, gain, oneShot, inputChannelR, channels)
+ *        + depth, periodQ, intrinsicQ, reps: [{ startQ, endQ, ghost,
+ *        wrapped, srcSegs?, srcTopFrac? }], window | null, windowChipQ,
+ *        mapMulti, mapSegs, mapBypassed, mapSuspended, bandSegs,
+ *        bandTotalQ, bandHeard, bandEditable, throughMap, underMap,
+ *        armable (clips), recordingLengthQ (recording lanes), folded /
+ *        groupArm / groupCycleQ / seqDims (groups), health (frame_health
+ *        blowup/drift verdicts), definer/edit-view fields per builder;
+ *     'fx':  { id: 'fx:'+ownerId, ownerId, depth, effects } (effects row);
+ *     'seq': { id: 'seq:'+ownerId, ownerId, depth, bypassed, steps,
+ *              totalQ, auditionStep, innerCycleQ, editable, children };
+ *     'add': { id: 'add:'+groupId, groupId, depth } (the group's ＋ row)
+ *   ]
  * }
  */
 export function deriveViewModel(state, opts = {}) {

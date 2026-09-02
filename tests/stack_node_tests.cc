@@ -251,7 +251,7 @@ class StackNodeTests : public juce::UnitTest {
              "window applied");
     }
 
-    beginTest("Loop Window: Active Window Applies (expanded view — I6b)");
+    beginTest("Loop Window: Active Window Applies (expanded view - I6b)");
     {
       StackNode root("Root");
       auto clip = std::make_unique<ClipNode>("Clip", 44100.0);
@@ -294,7 +294,7 @@ class StackNodeTests : public juce::UnitTest {
              "Active window applies identically when expanded (I6b)");
     }
 
-    beginTest("Loop Window: Nested — inner window applies, outer unset");
+    beginTest("Loop Window: Nested - inner window applies, outer unset");
     {
       StackNode outer("Outer");
       outer.is_expanded.store(true);  // view state only; outer has no window

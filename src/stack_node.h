@@ -13,10 +13,12 @@ namespace celestrian {
 
 /**
  * Sink for graph objects that must outlive their removal from the audio
- * thread's view. The audio thread may still be reading a retired child
- * snapshot (or a removed node) for the duration of the callback that was
- * in flight when the mutation happened; the reclaimer (the engine) defers
- * the actual delete until the audio thread has provably moved on.
+ * thread's view. The audio thread traverses the whole-graph snapshot
+ * (graph_snapshot.h) it loaded at the top of the callback, so a removed
+ * node, a swapped content buffer, a replaced fx chain or a superseded
+ * snapshot may still be read for the callback in flight when the message
+ * thread replaced it; the reclaimer (the engine) defers the actual delete
+ * until the audio thread has provably moved on (a two-callback grace).
  */
 class GraphReclaimer {
  public:
@@ -31,12 +33,15 @@ class GraphReclaimer {
  * This enables the hierarchical structure of stacks-within-stacks.
  *
  * Threading model: the `children` vector (ownership) belongs to the
- * message thread. Every structural mutation republishes an immutable
- * child-pointer snapshot that the audio thread reads with a single atomic
- * load — process() takes no locks. Retired snapshots and removed nodes go
- * through the GraphReclaimer so an in-flight callback never reads freed
- * memory. Without a reclaimer (single-threaded unit tests) retired
- * objects are freed immediately.
+ * message thread and the audio thread never reads it. After every
+ * structural mutation the engine publishes ONE whole-graph snapshot
+ * (AudioEngine::publishGraph, graph_snapshot.h); the audio thread loads
+ * it once per callback (ProcessContext.snap) and control()/render()
+ * iterate its integer child indices — no locks. Removed nodes and
+ * superseded snapshots go through the GraphReclaimer so an in-flight
+ * callback never reads freed memory. Without a snapshot (single-threaded
+ * unit tests driving nodes directly) process() falls back to the
+ * ownership vector, which is race-free there by construction.
  */
 class StackNode : public AudioNode {
  public:
@@ -71,7 +76,6 @@ class StackNode : public AudioNode {
    */
   NodeType getNodeType() const override { return NodeType::Stack; }
 
-  juce::String getNodeTypeString() const override { return "stack"; }
   float getCurrentPeak() const override { return last_block_peak.load(); }
 
   int64_t getIntrinsicDuration() const override;
@@ -103,20 +107,16 @@ class StackNode : public AudioNode {
   std::vector<std::unique_ptr<AudioNode>> clearChildren();
 
   /**
-   * Recursively searches for a node by its UUID within this stack and its
+   * Recursive UUID lookup, self included, through this stack and its
    * sub-stacks. (Message thread only.)
    */
-  AudioNode* findNodeByUuid(const juce::String& uuid);
-  AudioNode* findByUuid(const juce::String& uuid) override {
-    return findNodeByUuid(uuid);
-  }
+  AudioNode* findByUuid(const juce::String& uuid) override;
 
   /**
-   * Recursively checks if any child node (including nested stacks) is
-   * armed or recording. (Message thread only.)
+   * True when any child (nested stacks recurse) is armed or recording.
+   * (Message thread only.)
    */
-  bool isAnyChildRecording() const;
-  bool isArmedOrRecording() const override { return isAnyChildRecording(); }
+  bool isArmedOrRecording() const override;
 
   /** Number of children. (Message thread only.) */
   int getNumChildren() const { return (int)children.size(); }
@@ -137,10 +137,12 @@ class StackNode : public AudioNode {
 
   // --- Island quantum (P0-3 / kernel.md migration step 1) ---
   /**
-   * Sets the island's quantum and cycle epoch. Called exactly once, when
-   * the first committed clip enters this scope. Q survives its creator
-   * (owner ruling, design_language.md Q1): muting or deleting the
-   * establishing clip does not change it.
+   * Sets the island's quantum and cycle epoch. Called when the first
+   * committed clip establishes the island, and again whenever a
+   * message-thread edit re-establishes the grid: a definer re-trim, a
+   * revert to empty, a geometry scrub, a seek, a session load. Q survives
+   * its creator otherwise (owner ruling, design_language.md Q1): muting
+   * or deleting the establishing clip does not change it.
    */
   void setQuantum(int64_t quantum, int64_t epoch) {
     setIslandFacts(quantum, epoch, island_generation_.load());
@@ -352,6 +354,32 @@ class StackNode : public AudioNode {
    * same child clock. `self`/`context_loop` are set by the caller. */
   ProcessContext childContext(const ProcessContext& context) const;
 
+  // --- Q18 (composition.md §2): the stack's frame ---
+  /** The origin this stack's inner timeline is measured from, for the
+   * block: its own rendering origin once anchored, else the RECEIVED
+   * cycle top (the empty case — no member exists to disagree). */
+  int64_t frameOrigin(const ProcessContext& context) const {
+    return anchored_.load() ? origin_rt_.load() : context.cycle_epoch;
+  }
+  /** inner(t) for this block's first sample: mapOffset((t − O − a0) mod
+   * P) under an active map, else t − O. */
+  int64_t innerOf(const ProcessContext& context,
+                  const timing::TimeMap& own_map) const {
+    const int64_t O = frameOrigin(context);
+    if (!own_map.active()) return context.master_pos - O;
+    return own_map.mapOffset(context.master_pos - O - own_map.mapOffset(0));
+  }
+  /** ONE-SHOT STACK facts (Q5 generalized by Q18): true when this stack
+   * sounds once per context cycle. `shot` = the span that sounds (map
+   * period, else the inner cycle); `cycle` = the context cycle it
+   * rests against. Audio-thread safe (snapshot-space intrinsic). */
+  bool oneShotFacts(const ProcessContext& context,
+                    const timing::TimeMap& own_map, int64_t& shot,
+                    int64_t& cycle) const;
+  /** The phase within the one-shot cycle for this block's first sample
+   * is in the REST region (nothing sounds; tails ring). */
+  bool inRest(const ProcessContext& context) const;
+
   /**
    * Audio-thread child lookup, shared by both phase bodies: the
    * whole-graph snapshot when the engine supplied one (Tier 3 Step 3 —
@@ -406,21 +434,36 @@ class StackNode : public AudioNode {
     // corners — the (g0, g1) endpoints renderChildren hands each child
     // are then exact, and output never depends on block boundaries.
     const Sequence* seq = activeSequence();
-    if ((!own_map.active() && seq == nullptr) || context.num_samples <= 0) {
+    // A ONE-SHOT stack (Q18) splits at its shot/rest boundaries too, so
+    // no run straddles the moment the group falls silent or fires.
+    int64_t shot = 0, cycle = 0;
+    const bool one_shot = oneShotFacts(context, own_map, shot, cycle);
+    if ((!own_map.active() && seq == nullptr && !one_shot) ||
+        context.num_samples <= 0) {
       body(channels, channel_count, context);
       return;
     }
     const int64_t period = own_map.active() ? own_map.period() : 0;
     const int64_t fade = Sequence::fadeSamples(context.sample_rate);
-    int64_t rel = context.master_pos - context.cycle_epoch;
-    if (period > 0) rel = ((rel % period) + period) % period;
+    // THE ANCHOR (Q18): every fold here is measured from this stack's
+    // own origin + a0 — the same anchor childContext maps with, so the
+    // runs and the mapped child clock agree sample for sample.
+    const int64_t O = frameOrigin(context);
+    const int64_t a0 = own_map.active() ? own_map.mapOffset(0) : 0;
+    const int64_t fold = one_shot ? cycle : period;
+    int64_t rel = context.master_pos - O - a0;
+    if (fold > 0) rel = ((rel % fold) + fold) % fold;
     int done = 0;
     while (done < context.num_samples) {
       int64_t dist = context.num_samples - done;
-      if (period > 0) {
+      const bool resting = one_shot && rel >= shot;
+      if (one_shot) {
+        dist = std::min<int64_t>(dist, resting ? cycle - rel : shot - rel);
+      }
+      if (period > 0 && !resting) {
         dist = std::min<int64_t>(dist, own_map.seamDistance(rel));
       }
-      if (seq != nullptr) {
+      if (seq != nullptr && !resting) {
         // Corner distance in the CHILD clock (composition law: the map
         // selects song positions; the sequence is looked up there).
         const int64_t crel = period > 0 ? own_map.mapOffset(rel) : rel;
@@ -445,7 +488,7 @@ class StackNode : public AudioNode {
       sub.input_clock = context.input_clock + done;
       body(run_channels, run_channel_count, sub);
       done += run;
-      rel = period > 0 ? (rel + run) % period : rel + run;
+      rel = fold > 0 ? (rel + run) % fold : rel + run;
     }
   }
 

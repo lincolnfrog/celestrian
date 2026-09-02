@@ -331,7 +331,7 @@ class CallbackEdgeTests : public juce::UnitTest {
       expect(drain_elapsed_ms < 5000.0, "one drain sweep returns promptly");
       expectEquals(first_drain_count, (int)RtLog::kSlots - 1,
                    "first drain forwards exactly one full ring "
-                   "(AbstractFifo capacity is kSlots - 1) — the overflow "
+                   "(AbstractFifo capacity is kSlots - 1) - the overflow "
                    "posts were dropped, not queued");
       expectEquals(second_drain_count, first_drain_count,
                    "second drain has nothing left to forward");

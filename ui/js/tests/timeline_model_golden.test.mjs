@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 
 import {
     timelineLcm, launchPointFor, playheadPercent,
-    nextStopBoundary, snapCommittedDuration, computeGhostTiles,
+    nextStopBoundary, snapCommittedDuration,
     armTarget, originQ, throughMapDest
 } from '../timeline_model.js';
 import { toSamples } from '../qtime.js';
@@ -119,23 +119,4 @@ test('golden: TimeMap (reified map: period / mapOffset / seamDistance)', () => {
             check(seamDistance(map, p.h), p.seam, `${c.name} seamDistance(h=${p.h})`);
         }
     }
-});
-
-// --- Ghost tiling (JS-only; the C++ engine does not render ghosts) ---
-
-test('ghost tiles: 1Q clip at 0 in 4Q timeline -> 3 ghosts', () => {
-    const tiles = computeGhostTiles({ clipStartPx: 0, clipWidthPx: 200, timelineWidthPx: 800 });
-    assert.equal(tiles.length, 3, '1Q+4Q ghost count (recording.md: 3 ghosts)');
-    assert.equal(tiles.map(t => t.x).join(','), '200,400,600', '1Q+4Q ghost positions');
-});
-
-test('ghost tiles: 1Q clip anchored at 2Q in 4Q timeline -> wrap-around ghosts', () => {
-    const tiles = computeGhostTiles({ clipStartPx: 400, clipWidthPx: 200, timelineWidthPx: 800 });
-    assert.equal(tiles.map(t => t.x).join(','), '0,200,600',
-        'anchored clip left-wrap + right ghosts');
-});
-
-test('ghost tiles: clip fills timeline -> no ghosts', () => {
-    const tiles = computeGhostTiles({ clipStartPx: 0, clipWidthPx: 800, timelineWidthPx: 800 });
-    assert.equal(tiles.length, 0, '4Q clip in 4Q timeline has no ghosts');
 });

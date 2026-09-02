@@ -341,11 +341,27 @@ class PreRecordTests : public juce::UnitTest {
       }
       expectEquals(childDuration(engine, 1), (int64_t)2000);
 
-      // Window: just Q1 of the (re-based) cycle.
-      engine.setLoopPoints(stackId, 0, 1000);
+      // Q18 (composition.md §2): the stack is ANCHORED at its earliest
+      // content's origin — clip A's, 0 — and its window selects INNER
+      // positions from there, never view positions of the re-based
+      // frame. Clip B (origin 7000 ≡ 1000 mod its 2Q) sits at inner 1Q;
+      // the UI draws the group's take mark at (origin − epoch) mod frame
+      // and translates bracket geometry by it, so "the first Q you see"
+      // (frame [0, 1Q) = clip B's first half) is inner [1Q, 2Q).
+      {
+        const juce::var st = engine.getGraphState();
+        const auto* so = st.getProperty("nodes", juce::var())
+                             .getArray()
+                             ->getReference(0)
+                             .getDynamicObject();
+        expect((bool)so->getProperty("anchored"), "the group is anchored");
+        expectEquals((int64_t)(double)so->getProperty("origin"), (int64_t)0,
+                     "anchored at the earliest content's origin");
+      }
+      engine.setLoopPoints(stackId, 1000, 2000);
 
-      // Everything must now loop its OWN Q1: clip B's playhead stays in
-      // the first half of its 2Q content, and advances (not stuck).
+      // Clip B's playhead stays in the first half of its 2Q content,
+      // and advances (not stuck).
       double minPh = 1.0, maxPh = 0.0;
       for (int i = 0; i < 8; ++i) {
         processSilence(engine, 500);
@@ -354,10 +370,22 @@ class PreRecordTests : public juce::UnitTest {
                 "playhead");
         minPh = std::min(minPh, ph);
         maxPh = std::max(maxPh, ph);
-        expect(ph < 0.5, "clip B loops its Q1 under the Q1 window (playhead=" +
+        expect(ph < 0.5, "clip B loops its first Q under the inner [1Q, 2Q) window (playhead=" +
                              juce::String(ph) + ")");
       }
       expect(maxPh > minPh, "playhead advances within the window");
+
+      // And the complementary inner window [0, 1Q) is clip B's SECOND
+      // half — the window names material, not frame positions.
+      engine.setLoopPoints(stackId, 0, 1000);
+      for (int i = 0; i < 8; ++i) {
+        processSilence(engine, 500);
+        const double ph =
+            (double)childVar(engine, 1).getDynamicObject()->getProperty(
+                "playhead");
+        expect(ph >= 0.5, "inner [0, 1Q) is clip B's second half (playhead=" +
+                              juce::String(ph) + ")");
+      }
     }
 
     beginTest("Uncalibrated engines still capture from the block start");

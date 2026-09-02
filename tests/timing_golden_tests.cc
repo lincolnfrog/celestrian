@@ -77,7 +77,7 @@ class TimingGoldenTests : public juce::UnitTest {
                             asInt64(c, "duration"));
         double expected = (double)c.getProperty("expected", 0.0);
         expect(std::abs(actual - expected) < 1e-9,
-               c.getProperty("name", "?").toString() + " — expected " +
+               c.getProperty("name", "?").toString() + " - expected " +
                    juce::String(expected) + ", got " + juce::String(actual));
       }
     }

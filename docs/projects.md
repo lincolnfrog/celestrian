@@ -1,6 +1,6 @@
 # Projects: Folders, Birth, the Mirror, and Templates
 
-> Status: **canon** — owner-ratified 2026-07-19f (both forks ruled:
+> Status: **spec** — owner-ratified 2026-07-19f (both forks ruled:
 > birth at first committed take; continuous mirror). Implemented the
 > same night: `src/project_manager.{h,cc}`, session_io SaveOptions,
 > bridge + mock + UI. Pinned by `tests/project_manager_tests.cc`.
@@ -57,12 +57,21 @@ whichever instrument wants to start, Q is born, build.
 
 ## The launch ritual (owner-refined 2026-07-19g)
 
-- Boot = the last template used or saved. On the very first run, the
+> **SUPERSEDED 2026-08-13 by Q17 "Boot empty" (design_language.md):**
+> the first bullet below — boot into the last/Default template, "never
+> boots into an empty screen" — is retired along with
+> `ensureLaunchSession`'s seeded "Track 1". The app boots EMPTY; `R`
+> creates + arms the default track; every + is a template picker.
+> Whole-session templates remain an explicit save-as / new-from choice
+> in the Project menu. The remaining bullets (per-track record, tempo
+> chip, post-hoc groups, selection) stand.
+
+- ~~Boot = the last template used or saved. On the very first run, the
   app BUILDS the minimal **Default** template (one ready track,
   "Track 1"), saves it, and boots into it — the user edits their setup
   and saves over Default (the Ableton default-set ritual). **The app
   never boots into an empty screen, and recording is always one
-  click.**
+  click.**~~
 - **PER-TRACK RECORD, no global button** (owner ruling 2026-07-19h,
   supersedes the same-day staging model): the track's ● is THE record
   verb — the core journey is "song looping → ＋ Track → hit its ● →

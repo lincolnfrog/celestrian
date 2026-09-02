@@ -6,7 +6,7 @@
  */
 
 import { committedClipCount, anyNodeRecording,
-         serializeGraph, restoreGraph } from './state.js';
+         serializeGraph, restoreGraph, settleAnchors } from './state.js';
 import { clearUndoHistory } from './undo.js';
 import { loadScenario } from './scenarios.js';
 
@@ -23,6 +23,9 @@ export function saveSession(_path) {
 export function loadSession(_path) {
     if (!mockSavedSession) return false;
     restoreGraph(mockSavedSession);
+    // Q18 (engine parity loadSession → settleAnchors): a session that
+    // predates stack origins anchors its stacks from content on load.
+    settleAnchors();
     clearUndoHistory();
     return true;
 }

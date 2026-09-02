@@ -57,7 +57,7 @@ class UndoTests : public juce::UnitTest {
   UndoTests() : juce::UnitTest("Undo / Redo (edits-as-events)") {}
 
   void runTest() override {
-    beginTest("create → undo removes it → redo re-adds the SAME node");
+    beginTest("create -> undo removes it -> redo re-adds the SAME node");
     {
       AudioEngine engine;
       engine.createNode("clip");
@@ -96,7 +96,7 @@ class UndoTests : public juce::UnitTest {
       expect(nameOf(engine.getGraphState(), uuid) == "A", "redo -> A");
     }
 
-    beginTest("delete → undo restores the node (uuid + name preserved)");
+    beginTest("delete -> undo restores the node (uuid + name preserved)");
     {
       AudioEngine engine;
       engine.createNode("clip");
@@ -175,7 +175,7 @@ class UndoTests : public juce::UnitTest {
              "order restored by undo");
     }
 
-    beginTest("combine → undo restores the two siblings");
+    beginTest("combine -> undo restores the two siblings");
     {
       AudioEngine engine;
       engine.createNode("clip");

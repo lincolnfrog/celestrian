@@ -45,6 +45,11 @@ shared/ui_contract_capture.json
 # Test logs
 ui/playwright-report/
 ui/test-results/
+test-results/
+
+# Derived / runtime artifacts (never source)
+ui/node_modules/
+celestrian_state.json
 
 # Claude
 .claude/

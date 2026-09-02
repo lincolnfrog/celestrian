@@ -11,18 +11,17 @@
  * code never talks to it directly.
  */
 
-const logArea = document.getElementById('debug-log');
 const pendingCalls = new Map();
 let resultIdCounter = 0;
 
 const CALL_TIMEOUT_MS = 1000;  // event-path call: resolve null after this
 const INIT_POLL_MS = 500;      // how often initBridge probes for __JUCE__
-const LOG_CAP = 50;            // max lines kept in the on-page debug log
 
 /**
- * Debug log fan-out: writes `m` to (1) the browser console, (2) the C++
- * terminal via the `nativeLog` bridge method, and (3) the on-page
- * #debug-log panel when present (pruned to LOG_CAP lines).
+ * Debug log fan-out: writes `m` to (1) the browser console and (2) the
+ * C++ terminal (stdout) via the `nativeLog` bridge method. (The on-page
+ * log panel this once fed is gone — the status strip's log line in
+ * app.js is the user-facing surface.)
  *
  * The nativeLog leg is failure-safe: callNative's own error path calls
  * log(), so a throwing nativeLog must be swallowed here rather than
@@ -35,16 +34,6 @@ export function log(m) {
         // rejects) on failure, but guard the synchronous part too.
         callNative('nativeLog', m);
     } catch (_) { /* never let logging recurse into logging */ }
-    if (!logArea) return;
-    const line = document.createElement('div');
-    line.style.borderBottom = "1px solid #ffffff11";
-    line.style.padding = "2px 0";
-    line.textContent = `> ${m}`;
-    logArea.appendChild(line);
-    logArea.scrollTop = logArea.scrollHeight;
-
-    // Prune logs
-    if (logArea.children.length > LOG_CAP) logArea.removeChild(logArea.firstChild);
 }
 
 /**
@@ -113,9 +102,10 @@ export async function callNative(name, ...args) {
  * `window.bridgeInited` latch, invokes `onReady` if given, and fires the
  * 'bridge-ready' window event. Until the bridge appears it is a no-op —
  * the INIT_POLL_MS interval below keeps probing, since JUCE injects
- * __JUCE__ at its own pace during page load.
+ * __JUCE__ at its own pace during page load. Module-private: nothing
+ * imports it; the poll below is its only caller.
  */
-export function initBridge(onReady) {
+function initBridge(onReady) {
     const b = window.__JUCE__;
     if (b && b.backend && !window.bridgeInited) {
         if (typeof b.backend.addEventListener === 'function') {

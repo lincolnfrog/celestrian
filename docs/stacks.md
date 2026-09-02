@@ -54,7 +54,7 @@ Users can modify the **loop region** of a composite (stack) to control which por
 
 **C++ Architecture**: All loop/anchor logic is in the base `AudioNode` class:
 - `loop_start_samples`, `loop_end_samples` - shared by ClipNode and StackNode
-- `anchor_phase_samples`, `launch_point_samples` - shared inheritance
+- ~~`anchor_phase_samples`, `launch_point_samples` - shared inheritance~~ *(fields deleted 2026-07-16 — one stored `origin` per clip; launch point derives at read time, kernel.md)*
 - `setLoopPoints()`, `getLoopStart()`, `getLoopEnd()` - shared API
 
 **Frontend (JS)**:
@@ -64,6 +64,15 @@ Users can modify the **loop region** of a composite (stack) to control which por
 
 
 ---
+
+> **SUPERSEDED 2026-07-09 by ui_overhaul.md ("Tape Room").** The
+> visual-design sections from here through "Visual Distinction" —
+> nested headers, the "flag" indent, colored-border collapsed stacks,
+> `stack-styles.css` — describe the retired canvas UI. The session view
+> renders a group as a composite header lane plus indented child lanes
+> on ONE shared time axis (ui_overhaul.md §2, display laws §6). Kept
+> for the reasoning (playhead alignment was the goal; I2 is now
+> structural).
 
 ## Visual Design: Always-Visible Stack Waveform
 
@@ -166,7 +175,7 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 
 ### CUJ 1: Create Empty Sub-Stack
 1. User clicks "+" in parent stack
-2. Menu shows: "New Clip" / "New Stack"
+2. Menu shows: "New Clip" / "New Stack" *(superseded by Q17, 2026-08-13: every + is a template picker — "Track" default row + the user's subtree templates; groups arrive post-hoc by drag or whole via a group template, never as a "New Stack" item)*
 3. User picks "New Stack"
 4. Empty sub-stack appears, user can drag clips into it
 
@@ -229,6 +238,13 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 ## Audio Behavior
 
 ### Solo/Mute Cascade
+
+> **SUPERSEDED 2026-08-13 by Q16 (design_language.md):** solo is
+> island-wide (any solo mutes every leaf without a soloed ancestor,
+> anywhere in the island — not "within its context"), additive
+> (multiple solos sum), and fractal (solo on a group solos its
+> subtree). Mute cascades as below.
+
 ```
 if (stack.isMuted) → all children muted
 if (stack.isSoloed) → all children play (unless individually muted)
@@ -267,7 +283,7 @@ When a stack is collapsed, it displays a **composite waveform** showing the summ
 
 ### Ghost Clips and Collapsed Stacks
 
-**Ghost clips are NOT rendered when a stack is collapsed.** Since the collapsed view shows the stack as a single composite unit (like a clip), ghost repetitions are irrelevant.
+**Ghost clips are NOT rendered when a stack is collapsed.** Since the collapsed view shows the stack as a single composite unit (like a clip), ghost repetitions are irrelevant. *(superseded 2026-07-16 by Q14c: echoes mark every audible repetition, clips and groups alike — a collapsed group's composite tiles its echoes across the cycle in the echo tone)*
 
 **Implementation** (app.js ghost rendering):
 ```javascript
@@ -367,7 +383,7 @@ function renderNode(node, parentStack) {
 - [x] Update `StackNode` to accept child stacks
 - [x] Recursive LCM calculation
 - [x] Recursive solo/mute logic
-- [x] Loop logic shared via `AudioNode` base class (loopStart, loopEnd, anchorPhase, launchPoint)
+- [x] Loop logic shared via `AudioNode` base class (loopStart, loopEnd; ~~anchorPhase, launchPoint~~ — deleted 2026-07-16, derived from `origin`)
 
 ### Phase 2: UI Rendering (Partial ✓)
 - [x] Collapsed sub-stack appearance (colored border)
@@ -559,15 +575,6 @@ Child anchor phases are **independent** of stack loop processing:
 | `child.anchor_phase_samples` | Preserved unchanged |
 | `child.loop_start/end` | Child's own loop - applied after receiving position |
 | `child.x` position | Visual offset in UI - not affected by stack loop |
-
----
-
-### Keyboard Shortcut
-
-> [!TIP]
-> **TODO**: Implement quick-toggle keyboard shortcut (e.g., `Space+Click` or `E`) to collapse/expand stack for rapid loop preview.
-
-This allows quickly hearing the looped output without losing context of where you are in the expanded view.
 
 ---
 

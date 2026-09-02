@@ -114,7 +114,7 @@ struct Edit {
   int index = -1;            // structural: destination/source index
   int index2 = -1;           // Explode: second child's source index
 
-  juce::String s1, s2;  // name / fx id / param key
+  juce::String s1;  // name (Rename) / fx slot id (chain edits)
   double d1 = 0.0, d2 = 0.0;
   bool b1 = false;
 
@@ -133,7 +133,13 @@ struct Edit {
   // sounding buffer position does not move — the grid re-derives, the
   // audio flows. The inverse captures the old origin the same way.
   bool setsOrigin = false;
-  int64_t iorg = 0;  // clip origin to set
+  int64_t iorg = 0;  // the node's origin to set (a stack's shifts its subtree)
+  // DEFINER RE-ANCHOR LIFTS ANCESTORS (Q18): a definer's ancestors were
+  // anchored BECAUSE of it (the island's only content), so its origin
+  // shift carries them too — the root's origin stays congruent with the
+  // epoch (root maps/sequences measure from it). Never set by the
+  // locked-island riders (other content owns those ancestors).
+  bool liftsAncestors = false;
   // WINDOW RIDERS: further nodes whose single-window loop points this
   // edit sets alongside its main mutation (applied after it; the
   // inverse captures each node's old points the same way). Two
@@ -151,18 +157,20 @@ struct Edit {
     timing::TimeMap tmap{};
   };
   std::vector<WindowRider> windows;
-  // ORIGIN RIDERS (2026-08-30, the content-frame law): the definer
-  // STACK's re-trim re-anchors every member's origin together with the
-  // epoch — a stack window selects epoch-relative view positions, and
-  // members read their buffers origin-relative, so the two frames must
-  // move together or the trimmed loop re-selects content (field video
-  // 2026-08-29: the loop jumped by `start` on every release). Applied
-  // after the main mutation; the inverse captures each old origin.
-  struct OriginRider {
+  // ANCHOR RIDERS (Q18, composition.md §5): stacks whose anchoring
+  // this edit changed — content entering an unanchored stack anchors
+  // it at the earliest descendant's origin; the last content leaving
+  // un-anchors it. Captured by AudioEngine::settleAnchors into the
+  // inverse so undo restores the exact stored origin, never a
+  // re-derivation. (The 2026-08-30 per-member ORIGIN riders are gone:
+  // a stack's origin now moves its subtree — setsOrigin/iorg on a stack
+  // shifts every descendant.)
+  struct AnchorRider {
     juce::String uuid;
+    bool anchored = false;
     int64_t origin = 0;
   };
-  std::vector<OriginRider> origins;
+  std::vector<AnchorRider> anchors;
   // S16 window domain (docs/sequencer.md §11.8), LoopPoints/Segments on
   // a STACK: −1 = derive from whether the sequence is active (forward
   // edits), 0/1 = set explicitly (inverses restore the old stamp).

@@ -1,9 +1,10 @@
 # Celestrian Design Language
 
 > Written 2026-07-07 from a full pass over `docs/`; adopted as canon
-> through owner review (§5 records the rulings, Q1–Q11, with dates and
-> quotes). Vocabulary, numbered invariants (I1–I9), worked examples in
-> the house style, and the question record. Companion: `kernel.md`.
+> through owner review (§5 records the rulings, Q1–Q17, with dates and
+> quotes, and indexes the rulings recorded in other docs). Vocabulary,
+> numbered invariants (I1–I9), worked examples in the house style, and
+> the question record. Companion: `kernel.md`.
 >
 > Status: **spec** — the invariants are binding; violations are bugs
 > (several have been found and fixed by citing them).
@@ -20,7 +21,7 @@ one-line definitions.
 |---|---|
 | **Quantum (Q)** | The atomic musical duration of an island, in samples. Established by the first committed take; the grid everything snaps to. "One bar." |
 | **Island** | The scope within which Q is shared. One island = one song = one time grid. Distinct islands are musically unrelated universes on the same canvas. |
-| **Origin** | The master-cycle moment a clip's content belongs to: the performance-time at which `content[0]` occurred. *(Today this is smeared across `anchor_phase`, `launch_point`, `recording_start_phase`, rotation, and `x_pos` — see kernel.md.)* |
+| **Origin** | The monotonic-clock moment a node's inner time 0 belongs to: for a clip, the performance-time at which `content[0]` occurred; for a stack, the zero of its inner timeline (Q18, composition.md). Stored once per node, never derived; launch point and lane x are projections of it. |
 | **Performance time** | The frame the musician lives in: what they *heard*. Input arriving at master time `t` was performed at `t − C` (C = calibrated round trip). All musical positions are performance-time. |
 | **Arrival time** | When audio physically reaches the input. Never a musical position; only capture plumbing (the pre-record ring) thinks in arrival time. |
 | **Context loop** | The loop the performer was listening to when they hit record: the longest committed sibling (min Q). Determines how their intent wraps. |
@@ -32,7 +33,7 @@ one-line definitions.
 | **One-shot** | A clip that sounds once per context cycle instead of looping at its own length. *(See Q5 — the current formula in design.md/recording.md is garbled.)* |
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM. |
 | **Loop window** | A `[start, end)` restriction on a node's cycle — a one-segment time-map. Active iff valid and not bypassed; independent of view state (time_maps.md, implemented 2026-07-09). |
-| **Time-map** | THE mechanism that transforms time: an ordered segment list phased off the cycle epoch, `m(t) = segments[(t − epoch) mod period]`. Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md, kernel.md). |
+| **Time-map** | THE mechanism that transforms time: an ordered segment list over a node's inner timeline, anchored at the node's own origin: `inner(t) = mapOffset((t − origin − a0) mod period)` (composition.md §2; the epoch-anchored stack form was retired by Q18). Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md). |
 | **Hysteresis snap** | Gesture quantization with tolerance. ARM: the target is always the next Q boundary in the HEARD (latency-compensated, epoch-relative) frame — so ANY click before a boundary means that boundary; the old 25%-window deferral mechanism was deleted 2026-07-16 (it overshot by a full Q when compensation was small — Q14). STOP — **owner ruling 2026-07-10: always forward** — a stop request records on to the NEXT boundary (`nextStopBoundary`, computed by the audio thread; the UI shows "finishing…" via `isAwaitingStop`). The snap-BACK idea ("I hit stop a bit late" → keep the whole take, auto-add a loop window ending at the previous boundary) is deliberately deferred: *"too complicated — keep it simple for now; the user can post-hoc fix it by moving the boundary. Explore later if I hit it in practice."* |
 | **Fractality** | The law that any subtree, collapsed, obeys exactly the laws of a clip. If a rule doesn't hold recursively, it isn't a rule yet. |
 
@@ -69,7 +70,9 @@ several already are.
   moves any *other* clip. Ghost extents may grow; nothing shifts.
 - **I5 — Fractality.** Every behavior specified for a clip must be
   specified (and equal) for a collapsed composite. A feature that only
-  works at depth 0 is unfinished.
+  works at depth 0 is unfinished. *(Made true by construction for time
+  by Q18: every node has an origin — composition.md. The list continues
+  there as I10–I16.)*
 - **I6 — Pure Projection.** Every pixel is a pure function of engine
   state. The UI holds no timing state of its own; identical state ⇒
   identical pixels. *(This is the precise form of "UI = Data" — the
@@ -251,6 +254,40 @@ Found during the 2026-07-07 pass; statuses updated 2026-07-09:
 First review round: 2026-07-07 (owner answered Q1, Q2, Q4, Q7, Q8, Q9;
 Q3, Q5, Q6, Q10 not yet reviewed).
 
+### Rulings recorded elsewhere (index, 2026-09-01)
+
+§5 is the ruling INDEX (docs/README.md ground rules): a ruling may live
+in the doc that owns its feature, but each has a pointer here.
+
+- **Q18 — every node has an origin** (2026-09-01): composition.md §0.
+  Stacks store an origin (the moment their inner time 0 belongs to);
+  one anchoring law for every node (`inner(t) = mapOffset((t − origin −
+  a0) mod P)`); re-anchoring a node re-anchors its subtree; a stack can
+  be a one-shot. Owner: *"I agree, groups should be able to be
+  anchored. I could imagine recording drums (a group of 5 clips) as a
+  one-shot for example."* Deletes the epoch-anchored stack law, the
+  origin riders, `epochViewStep`, and the definer-stack twins of the
+  Q13 paths (composition.md §8). Invariants I10–I16 are numbered there.
+
+- **S1–S22 — the Sequencer** (2026-08-19 → 08-27): sequencer.md §0
+  (S1–S7), §9 (S8–S15; S17 opened), §11 (S16–S19, implementation
+  record §11.10), §13 (S20–S22 cue steps). §2 is the period /
+  composition law: effective period = window ▸ active sequence ▸
+  children's effective LCM.
+- **Q-V1–V5 — VST3 hosting** (2026-08-15): vst3.md §9 (promote at
+  first VST3 slot; no PDC for now; MidiClipNode → content kind; QTime
+  notes in the save format; tests link the hosting code).
+- **Map coherence is categorical** (2026-08-09): engine_lcm_guard.md —
+  every map/window period is a whole multiple or exact divisor of Q,
+  refused on both sides; free-length cuts abolished; the Q13 definer
+  re-trim (clip or stack) is the sole exception.
+- **Projects model** (2026-07-19f–j): projects.md — birth at first
+  committed take, continuous mirror, per-track record (2026-07-19h),
+  post-hoc groups by drag; the launch ritual is superseded by Q17.
+- **Display laws 13 / 14** (2026-08-21 / 2026-08-27): ui_overhaul.md
+  §6 — a window sets the part's length for groups exactly as for
+  clips; the ruler is the seek surface.
+
 ### Resolved
 
 **Q1. Why does take #1 get to be dictator forever?**
@@ -309,7 +346,7 @@ I1 holds. kernel.md's monotonic-clock design satisfies I1 by
 construction, so the transport simplification is an implementation
 choice needing no further design ruling.
 
-### Deferred (TODO — discuss later)
+### Second batch (Q7 resolved 2026-07-09; Q9 superseded by Q12)
 
 **Q7. Recording is the only non-fractal verb.**
 **RESOLVED (2026-07-09) — group arm.** The owner ruled via the drum
@@ -492,7 +529,7 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   stay whole. The members' ORIGINS re-anchor together with the epoch
   (`origin' := t0 − (pT − start)` for every member, `epoch := origin'`
   — the sole-clip math made fractal; CONTENT-FRAME LAW 2026-08-30,
-  docs/loop_region_audit.md §0: a stack window selects epoch-relative
+  docs/archive/loop_region_audit.md §0: a stack window selects epoch-relative
   view positions while members read origin-relative, so solving the
   epoch alone — the 2026-08-21 form — made the trimmed loop jump by
   `start` on every release). **Lock-collapse, the group twin (audit
@@ -512,7 +549,7 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   another take anywhere (a third mic recorded later, a new track)
   ends the definer state.
   **Two refinements (fresh audit 2026-08-31, fuzz-found —
-  docs/loop_region_audit.md §7):** (1) **ONLY GEOMETRY WINS** — a
+  docs/archive/loop_region_audit.md §7):** (1) **ONLY GEOMETRY WINS** — a
   re-establishment moves the grid under every OTHER authored window or
   map in the island, stranding it permanently incoherent, so BOTH
   definer paths engage only while the definer's geometry is the

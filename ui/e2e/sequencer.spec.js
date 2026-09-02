@@ -174,7 +174,7 @@ test.describe('Sequencer (docs/sequencer.md)', () => {
         // takes (every scenario fixture wraps clips in a stack).
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
-        await page.click('button:has-text("Empty Canvas")');
+        await page.click('button:has-text("Empty session")');
         await page.evaluate(async () => {
             const t = window.celestrian;
             const rec = async (len, first) => {
@@ -226,7 +226,7 @@ test.describe('Sequencer (docs/sequencer.md)', () => {
         // take (through the step: a step-sized part, S18) → Esc.
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
-        await page.click('button:has-text("Empty Canvas")');
+        await page.click('button:has-text("Empty session")');
         await page.evaluate(async () => {
             const t = window.celestrian;
             const rec = async (len, first) => {
@@ -331,7 +331,7 @@ test.describe('Sequencer (docs/sequencer.md)', () => {
     test('FRAME-HEALTH BADGE (§11.6): the drift face + its one-click snap', async ({ page }) => {
         await page.goto('/index_test.html');
         await page.waitForSelector('#test-controls', { timeout: 5000 });
-        await page.click('button:has-text("Empty Canvas")');
+        await page.click('button:has-text("Empty session")');
         await page.evaluate(async () => {
             const t = window.celestrian;
             const rec = async (len, first) => {

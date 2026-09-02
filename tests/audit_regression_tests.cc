@@ -54,7 +54,7 @@ int64_t rootProp(AudioEngine& e, const char* prop) {
 class AuditRegressionTests : public juce::UnitTest {
  public:
   AuditRegressionTests()
-      : juce::UnitTest("Fresh-audit regressions (2026-08-31)") {}
+      : juce::UnitTest("Loop region regressions (audit 2026-08-31)") {}
 
   void runTest() override {
     const int64_t D = 40960;  // 80 blocks of 512

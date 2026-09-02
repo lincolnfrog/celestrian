@@ -8,15 +8,25 @@
  * invariants — the seam where mock-vs-engine drift kept producing field
  * bugs ("squish and stretch when the recording ends").
  *
- * Regenerate the fixture with the CelestrianTests Debug binary.
+ * Regenerate the fixture with the CelestrianTests Debug binary. The
+ * capture is gitignored: on a fresh clone (no C++ test run yet) this
+ * file SKIPS with a one-line note instead of failing `npm test`.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 
 import { deriveViewModel } from '../view_model.js';
-import { loadSharedJson } from './helpers.mjs';
+import { loadSharedJson, repoRoot } from './helpers.mjs';
 
+const capturePath = path.join(repoRoot, 'shared', 'ui_contract_capture.json');
+if (!existsSync(capturePath)) {
+    console.log('engine replay: SKIPPED — shared/ui_contract_capture.json '
+        + 'not found (run the CelestrianTests Debug binary to capture it)');
+    process.exit(0);
+}
 const fixture = loadSharedJson('ui_contract_capture.json');
 
 const vms = fixture.polls.map(p => ({ tag: p._tag, vm: deriveViewModel(p) }));

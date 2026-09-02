@@ -264,11 +264,17 @@ test('GROUPS: a first group take is the Q-definer — its window re-defines Q', 
     for (const id of ids) {
         assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D],
             'children untouched (whole takes)');
-        // Content-frame law (2026-08-30): the members' origins ride
-        // with the epoch so the window names BUFFER samples.
-        assert.equal(find(id).origin, getState().islandEpoch,
-            'members re-anchored together with the epoch (epoch == origin)');
+        // Q18 (composition.md §5, G-1): the trim re-anchors the STACK
+        // and its subtree by one delta — the members' origins equal the
+        // stack's — and epoch := origin' + start. (Pre-Q18 the members
+        // rode with the epoch, epoch == member origin: the
+        // epoch-anchored stack map, retired.)
+        assert.equal(find(id).origin, s.origin,
+            'members ride with their stack (no per-member riders)');
     }
+    assert.equal(s.anchored, true, 'the definer stack is anchored');
+    assert.equal(getState().islandEpoch, s.origin + D / 4,
+        'epoch = stack origin + window start (composition.md §5)');
     // The frame: the whole take is now 2Q; the selection is the 1Q
     // part [0.5Q, 1.5Q).
     vm = deriveViewModel(getState());
@@ -356,10 +362,11 @@ test('GROUPS: a second take LOCKS Q and COLLAPSES the group to its window (fract
     advanceBy(D / 2);
     assert.equal(find(t2).isRecording, false, 'take 2 committed');
     assert.equal(getState().quantum, D / 2, 'Q locked at the trimmed length');
-    // GROUP LOCK-COLLAPSE (audit 2026-08-30 §3.5): the trimmed region IS
-    // the take now — members are 1Q whole takes, the stack window is
-    // consumed, and the members' ORIGINS did not move (the group window
-    // anchored at the epoch == origin).
+    // GROUP LOCK-COLLAPSE (audit 2026-08-30 §3.5; Q18 composition.md
+    // §5): the trimmed region IS the take now — members are 1Q whole
+    // takes, the stack window is consumed, and the SUBTREE's origins
+    // shifted by the window start (the sole-clip law; pinned in
+    // stack_origin.test.mjs).
     assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'stack window consumed');
     for (const id of ids) {
         assert.equal(find(id).duration, D / 2, 'member collapsed to the window');
@@ -385,11 +392,16 @@ test('GROUPS: a multi-segment map on the definer stack re-establishes Q (the pun
         [D / 8, 3 * D / 8, D / 2, 3 * D / 4]);
     const P = (3 * D) / 8 - D / 8 + (3 * D) / 4 - D / 2;
     assert.equal(getState().quantum, P, 'Q := the map period');
+    // Q18 (composition.md §5): the members ride with their STACK, and
+    // epoch := origin' + mapOffset(0) — the first cell's start.
+    // (Pre-Q18: members' origin == epoch, the epoch-anchored stack map.)
     for (const id of ids) {
-        assert.equal(find(id).origin, getState().islandEpoch,
-            'members ride with the epoch (content-frame law)');
+        assert.equal(find(id).origin, find(stackId).origin,
+            'members ride with their stack (subtree anchoring)');
         assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D], 'members whole');
     }
+    assert.equal(getState().islandEpoch, find(stackId).origin + D / 8,
+        'epoch = stack origin + mapOffset(0)');
     const segs = find(stackId).segments;
     assert.deepEqual(segs, [D / 8, 3 * D / 8, D / 2, 3 * D / 4], 'map on the stack');
 });

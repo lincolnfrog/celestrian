@@ -46,9 +46,9 @@
    and aborts the wait). `backend.js` attaches the namespace during async
    module init; racing it was a ~1-in-3 full-suite flake that never
    reproduced solo.
-8. **Poll opacity/style assertions.** `stack-styles.css` animates fades
-   over 0.2 s; a single computed-style read lands mid-transition under
-   parallel-worker load. Use `expect.poll` (or `toHaveCSS`), not a
+8. **Poll opacity/style assertions.** `ui/css/session.css` animates
+   fades and morphs (~0.2 s transitions); a single computed-style read
+   lands mid-transition under parallel-worker load. Use `expect.poll` (or `toHaveCSS`), not a
    `waitForTimeout` + one-shot read.
 9. **`index_test.html` must not statically import anything that reaches
    `backend.js`.** Static imports hoist above the `window.celestrian`
@@ -95,6 +95,11 @@
    mock's dialect passed every test and broke on hardware ("recording
    loops the old cycle"). Before keying UI behavior off a state field's
    semantics, read its producer in `src/*.cc` — then make the mock match.
+12. **Run the C++ tests once before `npm test` on a fresh clone.**
+   `ui/js/tests/engine_replay.test.mjs` reads
+   `shared/ui_contract_capture.json`, which the C++ Debug test binary
+   (`tests/ui_contract_tests.cc`) writes — with no capture on disk the
+   replay suite has nothing to replay.
 
 ## Adding a bridge method
 
@@ -115,8 +120,9 @@ For UI iteration without a C++ rebuild:
 
 ```bash
 cd ui
-python3 -m http.server 8000   # file:// won't work (CORS)
-# open http://localhost:8000/index_test.html
+npx serve . -p 8080           # file:// won't work (CORS); port 8080 =
+                              # .claude/launch.json + playwright.config.js
+# open http://localhost:8080/index_test.html
 ```
 
 Backend selection lives in `ui/js/backend.js` (the P2-9 facade — the
@@ -124,15 +130,39 @@ only module that knows mock vs harness vs JUCE bridge; in `?mock=true`
 mode it exposes Playwright helpers as `window.__celestrianTest`). The mock (`ui/js/mock_backend.js`) holds **state +
 protocol only** — all timing math is imported from `timeline_model.js`
 so it cannot drift from the UI or, via golden vectors, from the C++
-engine. Scenario definitions live in `loadScenario()`; the sidebar in
-`index_test.html` switches them. Limitations: no real audio, simulated
-waveforms, state resets on reload.
+engine. Scenario definitions live in `ui/js/mock/scenarios.js`
+(re-exported as `loadScenario`); the sidebar in `index_test.html`
+switches them. Limitations: no real audio, simulated waveforms, state
+resets on reload.
 
 ## Field debugging
 
 The app's **📦 Dump State** button writes `celestrian_state.json` (app
-cwd), containing per-node timing fields (`origin`, `launchPoint`,
-`anchorPhase`, `duration`, `x`, `windowActive`, `loopBypassed`) and the
-`perf` block (DSP load, xruns, latency compensation, `calibrated`,
-`sampleRate`). Asking for a dump is the fastest way to diagnose
-alignment issues — it has settled every field bug so far in one glance.
+cwd), containing per-node timing fields (`origin`, `launchPoint`
+(derived), `duration`, `contextCycle`, `periodSource`, `windowActive`,
+`loopBypassed`, `segments`) and the `perf` block (DSP load, xruns,
+latency compensation, `calibrated`, `sampleRate`). Asking for a dump is
+the fastest way to diagnose alignment issues — it has settled every
+field bug so far in one glance.
+
+### Field checklist: loop regions
+
+*(Lifted from docs/archive/loop_region_audit.md §5, 2026-08-30.)*
+
+- After a definer trim, the composite should NOT change shape, the loop
+  should NOT jump, and undo should return exactly the previous window
+  and its sound.
+- Ruler seek: the audio must jump with the cursor. If it sounds like it
+  did before (cursor moves, music doesn't), the seek epoch re-base has
+  regressed (`seekTransport` carrying origins — time_maps.md
+  content-frame law).
+- Five-mic group takes: `dumpState` and check every member's `origin`
+  and `duration` are identical; if not, send the dump (the
+  members-whole invariant, design_language.md Q13-for-groups).
+- After take 2 against a trimmed group: the members should read as 1Q
+  whole takes (collapsed), the group as a plain 1Q part; deleting take
+  2 brings the full takes and the trim back (lock-collapse / re-open ⟹
+  uncollapse, Q13).
+- A release that briefly snaps a bracket back then forward is the
+  reconcile-during-drag guard regressed (or a hold longer than 1.5 s:
+  bridge latency).

@@ -14,9 +14,9 @@
  *      periodQ/intrinsicQ >= 0 and reps within [0, cycleQ + eps].
  *   I2 Q coherence: every ACTIVE non-definer window/map period is a
  *      whole multiple or exact divisor of state.quantum.
- *   I3 content-frame law (docs/time_maps.md "Content-frame law"): for
- *      the DEFINER STACK (state.definerId) with an ACTIVE map,
- *      epoch === members' origin (mod member duration).
+ *   I3 subtree anchoring (docs/composition.md I10/I11, Q18): the
+ *      DEFINER STACK (state.definerId) is anchored and its members'
+ *      origins equal the stack's (they ride with their parent).
  *   I4 undo/redo round-trip: graph-shape facts (ids, durations,
  *      origins, loop points, segments, quantum, epoch) return EXACTLY
  *      after k undos + k redos.
@@ -268,17 +268,28 @@ function checkInvariants() {
         }
     }
 
-    // I3 — content-frame law for the DEFINER STACK with an active map:
-    // epoch === member origin (mod member duration).
+    // I3 — subtree anchoring (composition.md I10/I11, Q18) for the
+    // DEFINER STACK: the stack is ANCHORED (it holds committed content)
+    // and its members' origins ride with it — a member's origin equals
+    // the stack's, since the group's one take anchored the stack there
+    // and every re-anchor since (definer trim, seek, lock-collapse)
+    // moved the whole subtree by one delta. (The pre-Q18 form, "epoch
+    // ≡ member origin (mod duration)", encoded the epoch-anchored stack
+    // map: after a Q18 trim epoch = origin + window start, so that
+    // congruence is no longer a law — composition.md §4.)
     if (st.definerId && !IGNORE.has('I3')) {
         const d = findIn(st.nodes, st.definerId);
-        if (d && d.type === 'stack' && d.windowActive) {
+        if (d && d.type === 'stack') {
+            if (!d.anchored) {
+                return { inv: 'I3', msg: `definer stack ${d.id}: holds ` +
+                    `committed content but is not anchored` };
+            }
             for (const m of d.nodes || []) {
                 if (m.type !== 'clip' || !(m.duration > 0) || m.isRecording) continue;
-                if (!wholeMultiple(st.islandEpoch - (m.origin || 0), m.duration)) {
-                    return { inv: 'I3', msg: `definer stack ${d.id}: epoch ` +
-                        `${st.islandEpoch} !== member ${m.id} origin ${m.origin} ` +
-                        `(mod ${m.duration})` };
+                if ((m.origin || 0) !== (d.origin || 0)) {
+                    return { inv: 'I3', msg: `definer stack ${d.id}: origin ` +
+                        `${d.origin} !== member ${m.id} origin ${m.origin} ` +
+                        `(the subtree must ride with its stack)` };
                 }
             }
         }

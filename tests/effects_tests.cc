@@ -102,7 +102,7 @@ class EffectsTests : public juce::UnitTest {
                                 "below threshold passes through");
     }
 
-    beginTest("Echo: delayed copies at time·sr, scaled by mix then feedback");
+    beginTest("Echo: delayed copies at time*sr, scaled by mix then feedback");
     {
       dsp::FxEcho echo;
       echo.prepare(sr);
@@ -115,7 +115,7 @@ class EffectsTests : public juce::UnitTest {
       expectWithinAbsoluteError(x[0], 1.0f, 0.001f, "dry passes through");
       expectWithinAbsoluteError(x[4410], 0.8f, 0.001f, "first echo = mix");
       expectWithinAbsoluteError(x[8820], 0.4f, 0.001f,
-                                "second echo = mix·feedback");
+                                "second echo = mix*feedback");
     }
 
     beginTest("Reverb: an impulse grows a tail that decays");

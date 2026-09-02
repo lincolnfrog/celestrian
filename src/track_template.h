@@ -166,7 +166,7 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
         }
       } else {
         juce::Logger::writeToLog(
-            "track_templates::build — template carries a sequence but the "
+            "track_templates::build - template carries a sequence but the "
             "island has no Q yet; sequence skipped");
       }
     }

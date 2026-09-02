@@ -1,105 +1,97 @@
 # Celestrian Technical Learnings & Reference
 
-This document captures technical insights, "gotchas", and debugging strategies- **Use `log()` for Debugging**: In JS, always use `log()` instead of `console.log()` to ensure output writes to `celestrian_debug.log`.
-- **Generic AudioNode Abstraction**: Logic should be generic on `AudioNode`. Avoid casting to `ClipNode` or `BoxNode` unless absolutely necessary. Arbitrary nesting (Box containing Boxes) is a core requirement.
-- **State Dumps**: Use the "📦 Dump State" button in the UI (or `getGraphState()` in C++) to inspect the full JSON tree of the session for debugging.! Use `tail -100 celestrian_debug.log` and `cat celestrian_state.json`.
-
-# Technology & Logic
-
-## Debugging
-
-### Logging Pipeline
-To debug JS issues without a browser console:
-1.  **Usage**: Import `log` from `bridge.js` (`import { log } from './bridge.js';`).
-2.  **Call**: `log("Your message");` inside `app.js`.
-3.  **Route**: JS `log` -> `callNative('nativeLog')` -> C++ `juce::Logger` -> `celestrian_debug.log`.
-4.  **View**: Check `celestrian_debug.log` in the root directory.
-
-*Note: Standard `console.log` only prints to the invisible browser console.*
+This document captures technical insights, gotchas, and debugging
+strategies that are still true against the code (trued 2026-09-01).
+Architecture and timing canon live in `docs/` (start at
+`docs/design_language.md`); this file is only the practical tips.
 
 ## 1. Architecture & Audio Engine
 
-### "Magnetic Quantum" Audio Recording
-*   **Concept**: `ClipNode` uses a "magnetic" stop logic.
-*   **Behavior**: When a user presses stop, the engine *continues* recording until it hits a "Quantum Boundary" (a multiple of the first clip's length).
-*   **Purpose**: Ensures every clip is a perfect loop multiple of the project's rhythmic core, allowing for seamless looping without complex time-stretching in the early stages.
+### Stops run forward to the boundary
+*   When the user presses stop, `ClipNode` keeps recording until the
+    NEXT Q boundary (`nextStopBoundary`, chosen by the audio thread;
+    the UI shows "finishing…" via `isAwaitingStop`). There is no
+    downward snap (owner ruling 2026-07-10). Arms target the next Q
+    boundary in the heard frame (Q11).
 
-### Recursive Audio Graph
-*   **BoxNode as Mixer**: Every `BoxNode` is a sub-mixer that sums its children.
-*   **Local Scratch Buffer**: To prevent feedback and summing errors, each `BoxNode` sums children into a local `mixBuffer` before adding to the parent's buffer.
-*   **Lazy Resizing**: Buffers are resized lazily inside `process()` to handle dynamic channel changes without constant reallocations.
-
-### Thread Safety
-*   **UI vs Audio**: Graph modifications (adding/removing nodes) happen on the Message Thread. Audio processing happens on the Realtime Thread.
-*   **Strategy**: Currently using `std::mutex` in `BoxNode` to protect child lists processing. Future optimization: lock-free queues for parameter updates.
+### Thread safety
+*   Audio on the realtime thread, UI on the Message Thread. The audio
+    thread is lock-free and allocation-free — `docs/performance.md §1`
+    is the contract. Shared structures (content buffers, time-maps,
+    sequences, fx chains) are swapped by the message thread through
+    atomic pointers and retired via the reclaimer (the D4 discipline);
+    parameters are atomics.
+*   Nesting is generic on `AudioNode` (`ClipNode` / `StackNode`);
+    context flows down through `ProcessContext`, never by casting.
 
 ---
 
 ## 2. JUCE 8 & WebView Integration
 
-### The "Invoke" Pattern (JS <-> C++)
-JUCE 8's `withNativeFunction` uses an event-based handshake (not direct `window` exposure).
+### The "Invoke" pattern (JS <-> C++)
+JUCE 8's `withNativeFunction` uses an event-based handshake, not direct
+`window` exposure — see `callNative` in `ui/js/bridge.js`
+(`__juce__invoke` / `__juce__complete`). Adding a bridge method touches
+three places (`protocol.js`, `main_component.cc`, `mock_backend.js`) or
+the contract test fails — see `style.md`.
 
-**JS Pattern** (see `ui/js/bridge.js`):
-```javascript
-async function callNative(name, ...args) {
-    // 1. Generate unique result ID
-    // 2. Listen for __juce__complete
-    // 3. Emit __juce__invoke
-}
-```
+### Logging
+*   Use `log()` (imported from `bridge.js`), **not** `console.log()`.
+    Route: JS `log` → `callNative('nativeLog')` → `juce::Logger` →
+    `celestrian_debug.log` in the project root (`src/main.cc`).
+    `console.log` only reaches the invisible WebView console.
+*   The nativeLog leg is failure-safe (a throwing bridge is swallowed).
 
-> See `style.md` for the **Three-Layer Handshake** checklist when adding new bridge functions.
+### State dumps
+*   The 📦 Dump State button writes `celestrian_state.json` (app cwd)
+    with every node's timing fields and the `perf` block. Ask for a
+    dump first for any alignment bug — it has settled every field bug
+    so far in one glance (`docs/test_harness.md`, Field debugging).
 
-### Debugging & Logging
-*   **Rule**: Use `log()` (imported from `bridge.js`), **NOT** `console.log()`.
-*   **Why**: standard `console.log` messages in the WebView are often swallowed or not bridged to the native C++ stdout in production/release builds. The `log()` helper explicitly bridges the message to the C++ logger, ensuring it appears in your terminal.
-
-### Resource Loading
-*   **Problem**: CORS blocking local file access (`file://`).
-*   **Solution**: Use `withResourceProvider` with a custom scheme (e.g., `http://celestrian.local/`).
-*   **Mapping**: Map requests to the `ui/` directory relative to the executable (macOS Bundle support included).
+### Resource loading
+*   `file://` is blocked by CORS; the app serves `ui/` through
+    `withResourceProvider` (`src/main_component.cc`) under a custom
+    scheme, mapped relative to the executable (macOS bundle aware).
 
 ### Permissions (macOS)
-*   Required CMake Flag: `MICROPHONE_PERMISSION_ENABLED TRUE`
-*   Required CMake Flag: `MICROPHONE_PERMISSION_ENABLED TRUE`
-*   Effect: Automatically adds usage descriptions to `Info.plist`.
+*   CMake: `MICROPHONE_PERMISSION_ENABLED TRUE` (adds the usage
+    description to `Info.plist`).
 
-### Stale Bundle Resources
-*   **Problem**: Changing JS/CSS files in `ui/` might not trigger a re-copy to the app bundle (`Celestrian.app/Contents/MacOS/ui`).
-*   **Symptom**: `[JS]` logs missing new messages, behavior unchanged after edits.
-*   **Fix**: Manually copy: `cp -r ui/ build/.../Celestrian.app/Contents/MacOS/ui/` or force a clean build.
+### Stale bundle resources
+*   The app bundle's `ui/` copy is refreshed only on relink. JS/CSS-only
+    edits can leave the field build running stale UI (symptom: `[JS]`
+    logs missing new messages). Force a relink or sync `ui/` into
+    `Celestrian.app/Contents/MacOS/ui/` by hand.
+
+### Stale test binary
+*   Run `build/CelestrianTests_artefacts/Debug/CelestrianTests`. A
+    stale binary at the non-`Debug/` path once reported green for
+    months (`docs/test_harness.md` gotcha 1).
 
 ---
 
 ## 3. UI Interaction & Rendering (WebView)
 
-### Transport Event Handling
-*   **Issue**: `click` events on buttons can be flaky or slow.
-*   **Fix**: Use `mousedown` for transport controls (Play, Record, Solo). It's more responsive and reliable in the WebView environment.
+### Idempotent DOM writes
+*   WebKit swallows a click whose mousedown-target text node was
+    replaced before mouseup, and the 50 ms poll tick makes unconditional
+    writes hit most human clicks. Never write a DOM value that has not
+    changed (`setText`/`setHtml`/`setTitle` in `session_view/sv_util.js`;
+    display law 2, `docs/ui_overhaul.md §6`).
 
-### Global JS Hooks
-*   **Issue**: Race conditions if C++ tries to call JS functions before they are defined.
-*   **Fix**: Define global hooks (`window.togglePlayback`, etc.) at the **very top** of `app.js` or `bridge.js`, before any DOMContentLoaded listeners.
+### Canvas sizing
+*   `width="100%"` in HTML is not enough: size the backing store in JS
+    from the CSS box × devicePixelRatio (`fitCanvas` in `ui/js/theme.js`)
+    or the render is blurry.
 
-### Waveform Rendering
-*   **Canvas Sizing**: `width="100%"` in HTML is not enough. You must explicitly set `canvas.width = clientWidth` in JS to avoid blurry rendering.
-*   **Flexbox Clipping**: A canvas inside a `flex-grow` container often overflows. Use **CSS Grid** (`grid-template-rows: auto 1fr`) for robust vertical containment.
-*   **Visibility Floor**: During silence, draw a 1px line so the user knows the system is working.
+### Overlays and hit-testing
+*   Overlay layers are `pointer-events: none` with `pointer-events:
+    auto` on their interactive children (`ui/css/session.css`). New
+    chrome inside an overlay must opt in or it cannot be grabbed —
+    and synthetic-event tests bypass hit-testing, so verify
+    interactive elements with real input in the browser harness.
 
----
-
-## 4. Debugging Cheatsheet
-
-### "The UI is frozen / Loading..."
-*   **Cause**: JS Error in the polling loop (`syncUI`) or Bridge timeout.
-*   **Check**: Look at the terminal output. We pipe JS logs to C++ stdout via `log()`.
-*   **Fix**: Wrap the `syncUI` loop in a `try/catch` block to prevent one error from killing the interface.
-
-### "I can't see the Canvas"
-*   **Diagnostic 1**: Apply `background: purple` to the canvas in CSS. If you don't see purple, it's a layout/size issue (0 height).
-*   **Diagnostic 2**: Draw a hard-coded red "X" in the JS render loop. If you see purple but no X, the render loop isn't running.
-
-### "Clicks aren't registering"
-*   **Cause**: Transparent overlays (like `creation-ui`) might be covering the buttons.
-*   **Fix**: Add `pointer-events: none` to container overlays, and `pointer-events: auto` to their interactive children.
+### Motion
+*   Every animation respects `prefers-reduced-motion` (`session.css`).
+    Time-based glides use `setTimeout`, not rAF, when they must run
+    while the tab is unfocused (webviews throttle rAF).

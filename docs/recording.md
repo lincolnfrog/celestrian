@@ -27,10 +27,17 @@ While recording Clip 2+, faint vertical lines appear at each Q boundary:
 - Only visible when `effectiveQuantum` is established (Clip 1 defines Q)
 
 ### Orange Launch Marker
-Shows where playback will start for clips recorded mid-loop:
-- Only appears when `anchorPhase > 0`
-- Position = `(launchPoint / duration) * 100%`
-- Hidden for clips recorded at 0Q (anchor=0)
+
+> **SUPERSEDED (session view, 2026-07-09; `anchorPhase` deleted
+> 2026-07-16).** There is no launch marker in the session view: a
+> clip's tiles sit at their origin phase on the shared time axis, which
+> IS the information the marker carried. Launch point derives at read
+> time (`(−origin) mod period`).
+
+~~Shows where playback will start for clips recorded mid-loop:~~
+- ~~Only appears when `anchorPhase > 0`~~
+- ~~Position = `(launchPoint / duration) * 100%`~~
+- ~~Hidden for clips recorded at 0Q (anchor=0)~~
 
 ---
 
@@ -132,14 +139,20 @@ Outer Stack:
 
 ## Key Data Points
 
+*(Table trued 2026-09-01. `launch_point_samples`, `anchor_phase_samples`
+and `trigger_master_position` were deleted 2026-07-16 — kernel.md §5
+step 2; `launchPoint` in metadata derives at read time.)*
+
 | Field | Description | Set When |
 |-------|-------------|----------|
-| **`origin_samples`** | **THE canonical timing fact** (kernel.md): the absolute performance moment the clip's `content[0]` belongs to. Everything below is a projection of it. | Recording arms |
-| `launch_point_samples` | Derived: `(−origin) mod duration` — kept as a stored field for UI/metadata compatibility | Recording commits |
-| `anchor_phase_samples` | Derived: cycle-relative position within Q, for the UI marker | Recording arms |
-| `trigger_master_position` | The armed boundary (absolute); feeds the x/slot math until P1-7 | Recording arms |
-| `duration_samples` | Total clip length (heard-time hysteresis snap) | Recording commits |
-| `loop_start/end` | Playable region within clip | Recording commits |
+| **`origin`** | **THE canonical timing fact** (kernel.md): the absolute performance moment the clip's `content[0]` belongs to (samples on the monotonic clock; QTime offset from the island epoch in the save format, Q12). Every other timing quantity — launch point `(−origin) mod period`, tile x, playhead — is a projection of it. | Recording arms (folded per Q15 / re-anchored per Q13 at edits) |
+| `duration` | Total clip length, samples (heard-time snap to the next boundary; live written length while recording) | Recording commits |
+| `periodSource` | `own` (loops at `duration`) or `context` (one-shot: period = the context cycle, Q5) — a knob, not a formula | Default `own`; the ↺/1× chip toggles it (undoable) |
+| window / map | The node's time-map: single-segment loop points (`loop_start/end` + bypass flag) or a multi-segment `segments` override; active iff valid and not bypassed (time_maps.md). Periods are whole multiples or exact divisors of Q (engine_lcm_guard.md) | Commit sets the full span; edits thereafter |
+| `contextCycle` | The heard frame the take was performed against (effective island cycle at arm) — the fold modulus for take marking (Q14b) | Recording arms |
+| buffer | The content: a dense sample buffer in origin frame (no rotation, no remap); immutable after commit | Recording commits |
+
+Island facts `(Q, epoch)` live once, at the session root (Q1, Q13).
 
 ### The Epoch Frame (one frame for everything)
 
@@ -304,7 +317,7 @@ Clip 2:    [██████████████████████�
 Clip 3:                        [┄┄┄1Q┄┄┄]             (1Q @ 3Q, ONE-SHOT)
                                ↑ dashed border, no ghosts
 ```
-- Clip 3 duration < remaining context → treated as one-shot
+- Clip 3 duration < remaining context → treated as one-shot *(superseded by Q5: one-shot is a period-source knob — `periodSource: context` — not a duration rule; the values in this example are unchanged)*
 - Plays once when master reaches 3Q, doesn't loop
 - Visual: dashed border, no ghost repetitions
 
@@ -577,6 +590,13 @@ When you stop recording at timeline=6Q:
 
 ### Implementation Requirements
 
+> **SUPERSEDED (kernel.md, 2026-07-07/16):** the clock is monotonic and
+> never wraps; `global_transport_pos % timeline_length` below is the
+> old model. The published `masterPos` is a DERIVED view — `t mod
+> effective cycle` while idle/playing, growing linearly while recording
+> (ui.md "masterPos contract"). The LCM is recomputed as described but
+> over EFFECTIVE periods (window ▸ sequence ▸ children).
+
 1. **Calculate Timeline Length**:
    ```cpp
    int64_t timeline_length = LCM(all_clip_durations);
@@ -730,19 +750,9 @@ Step 5: Stop Clip 3 at 3Q
 
 ### Current Implementation Issues
 
-> [!CAUTION]
-> The current implementation has several known issues that violate these invariants.
-
-**Known Bugs (as of 2026-01-05):**
-1. **Ghost Extension Lag**: Ghosts are created based on `timelineWidth` but cursor position can exceed this during recording
-2. **Cursor Jump at Commit**: When clip 3 (3Q) commits, cursor may jump unexpectedly (e.g., 3Q → 6Q)
-3. **Abstraction Problem**: The UI calculates cursor position and ghost extents separately, leading to race conditions
-
-**Suggested Fix Direction:**
-The root issue is that ghost extent and cursor position are calculated using different values (`timelineWidth` vs `masterPos`). A cleaner abstraction would:
-- Use a single source of truth for "how far the timeline extends"
-- Create ghosts based on this extent, not on separate calculations
-- Ensure cursor position always falls within created ghost bounds
+*(historical; all items closed by the 2026-07 kernel migration — one
+`deriveViewModel` derives ghost extent and cursor from the same state,
+ui_overhaul.md §4.)*
 
 ---
 

@@ -83,7 +83,7 @@ export function interceptUndoableCall(method, arg0) {
 }
 
 /** Did the current dispatch push a snapshot? (Coalesced calls didn't.) */
-export function wasPushedThisCall() {
+function wasPushedThisCall() {
     return undoPushedForCall;
 }
 
@@ -107,7 +107,7 @@ export function popUndoForRefusal() {
 }
 
 /** Overwrite the coalescing key (rarely needed outside the dispatch). */
-export function markLastUndoable(method, arg0) {
+function markLastUndoable(method, arg0) {
     lastUndoable = { method, arg0 };
 }
 

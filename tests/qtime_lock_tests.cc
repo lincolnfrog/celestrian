@@ -172,7 +172,7 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), qLocked, "still locked with 2 clips");
 
       engine.deleteNode(c2);  // 2 → 1: Q untouched but re-opens
-      expectEquals(islandQ(engine), qLocked, "delete 2→1 leaves Q as-is");
+      expectEquals(islandQ(engine), qLocked, "delete 2->1 leaves Q as-is");
 
       engine.setLoopPoints(c1, 0, 12345);  // now provisional again
       expectEquals(islandQ(engine), (int64_t)12345,
@@ -211,7 +211,7 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), len, "Q unmoved");
       expectEquals(clipProp(engine, c1, "loopStart"), (int64_t)0,
                    "window consumed (full span)");
-      expectEquals(clipProp(engine, c1, "loopEnd"), len, "…");
+      expectEquals(clipProp(engine, c1, "loopEnd"), len, "...");
 
       // THE regression: take 2 lands ON the grid.
       const int64_t rel = clipOrigin(engine, c2) - islandEp(engine);
@@ -225,10 +225,10 @@ class QTimeLockTests : public juce::UnitTest {
       engine.undo();  // remove c2
       expectEquals(clipProp(engine, c1, "duration"), dur0,
                    "undo restores the full buffer");
-      expectEquals(clipOrigin(engine, c1), originT, "…and the origin");
+      expectEquals(clipOrigin(engine, c1), originT, "...and the origin");
       expectEquals(clipProp(engine, c1, "loopStart"), ws,
-                   "…and the trim window");
-      expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "…");
+                   "...and the trim window");
+      expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "...");
       engine.redo();  // re-insert c2
       engine.redo();  // re-collapse
       expectEquals(clipProp(engine, c1, "duration"), len, "redo re-collapses");
@@ -254,10 +254,10 @@ class QTimeLockTests : public juce::UnitTest {
 
       engine.deleteNode(c2);  // 2 → 1: re-open ⟹ uncollapse
       expectEquals(clipProp(engine, c1, "duration"), dur0,
-                   "full buffer restored — trimming longer is possible again");
+                   "full buffer restored - trimming longer is possible again");
       expectEquals(clipProp(engine, c1, "loopStart"), ws,
                    "the trim survives as the window");
-      expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "…");
+      expectEquals(clipProp(engine, c1, "loopEnd"), ws + len, "...");
       expectEquals(islandQ(engine), len,
                    "Q untouched (still the trimmed loop)");
 
@@ -363,7 +363,7 @@ class QTimeLockTests : public juce::UnitTest {
       expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
                                 "island phase 0 sounds buffer[loopStart]");
       expectWithinAbsoluteError(sampleAt(100 + ws + len), ramp[ws], 1e-6f,
-                                "…and every period after");
+                                "...and every period after");
       // Mid-window content sounds at ITS performed moment (Audio Memory
       // applied to the surviving material).
       expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123], 1e-6f,
@@ -379,13 +379,13 @@ class QTimeLockTests : public juce::UnitTest {
       expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
                                 "collapsed take: phase 0 = old loop top");
       expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123], 1e-6f,
-                                "…content unchanged mid-take");
+                                "...content unchanged mid-take");
       clip.uncollapseFromWindow(ws, N);
       expectEquals(clip.getIntrinsicDuration(), (int64_t)N,
                    "uncollapse restores");
-      expectEquals(clip.getLoopStart(), ws, "…including the trim");
+      expectEquals(clip.getLoopStart(), ws, "...including the trim");
       expectWithinAbsoluteError(sampleAt(100 + ws), ramp[ws], 1e-6f,
-                                "…and playback is unchanged");
+                                "...and playback is unchanged");
     }
 
     beginTest(
@@ -408,13 +408,13 @@ class QTimeLockTests : public juce::UnitTest {
       cells.segs[1] = {q0 / 2, (3 * q0) / 4};
       engine.setSegments(c1, cells);
 
-      expectEquals(islandQ(engine), q0 / 2, "Q := the map period (Σ cells)");
+      expectEquals(islandQ(engine), q0 / 2, "Q := the map period (sum of cells)");
       expectEquals(islandEp(engine), clipOrigin(engine, c1),
                    "epoch = origin' + mapOffset(0) (first cell at 0)");
 
       engine.undo();
       expectEquals(islandQ(engine), q0, "undo restores the grid");
-      expectEquals(islandEp(engine), ep0, "…and the epoch");
+      expectEquals(islandEp(engine), ep0, "...and the epoch");
       engine.redo();
       expectEquals(islandQ(engine), q0 / 2, "redo re-establishes");
 
@@ -557,7 +557,7 @@ class QTimeLockTests : public juce::UnitTest {
       }
       expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
                    "re-open: the trim is the stack window again");
-      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), ws + len, "…");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), ws + len, "...");
       engine.undo();  // re-insert take 2 AND re-collapse (uuid2 rider)
       for (const auto& id : ids) {
         expectEquals((int64_t)deepProp(engine, id, "duration"), len,
@@ -791,8 +791,15 @@ class QTimeLockTests : public juce::UnitTest {
                        "members re-anchored together");
           expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D, "members whole");
         }
-        expectEquals(islandEp(engine), (int64_t)deepProp(engine, ids[0], "origin"),
-                     "epoch == members' origin (window names buffer samples)");
+        // Q18: the window anchors at the STACK's origin (== the members',
+        // one take) and the cycle top is the window top: epoch == origin
+        // + start. The subtree moved as one (no per-member riders).
+        expectEquals((int64_t)deepProp(engine, stack_id, "origin"),
+                     (int64_t)deepProp(engine, ids[0], "origin"),
+                     "the stack's origin == its members' (one take)");
+        expectEquals(islandEp(engine),
+                     (int64_t)deepProp(engine, ids[0], "origin") + start,
+                     "epoch == origin + start (the window top is the cycle top)");
         end_sent = (int64_t)deepProp(engine, stack_id, "loopEnd");
         process(3333);
       }

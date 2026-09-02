@@ -1,9 +1,10 @@
 /**
  * Composite Waveform Generator
  *
- * Generates a composite waveform for stack headers by layering each
- * child clip's peaks onto a unified timeline. Results are cached and
- * only regenerated when children change.
+ * Generates the composite waveform a GROUP LANE draws (the session
+ * view's group row tiles, lane_body.js) by layering each child clip's
+ * peaks onto a unified timeline. Results are cached and only
+ * regenerated when children change.
  *
  * The composite is the group's AUDIBLE mixdown: each child contributes
  * what it sounds, not what was recorded. A child's active time-map
@@ -123,11 +124,9 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
  * @returns {Array} Peak data array for the composite waveform
  */
 export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0, raw = false }) {
-    // If backend provides waveform data, use it directly
-    if (stack.waveform && stack.waveform.length > 0) {
-        return stack.waveform;
-    }
-
+    // No published shortcut exists: neither the engine nor the mock
+    // publishes a `waveform` on stacks — the mixdown is always built
+    // here from the children's peaks.
     if (!stack.nodes) return [];
 
     const targetPeaks = Math.ceil(canvasWidth * 2);

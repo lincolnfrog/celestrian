@@ -47,11 +47,12 @@ Celestrian includes a suite of unit tests built with the `juce::UnitTest` framew
 cmake --build build --target CelestrianTests
 
 # Run the tests
-./build/CelestrianTests_artefacts/CelestrianTests
+./build/CelestrianTests_artefacts/Debug/CelestrianTests
 ```
 
 ## Development
 
 - **Source Code**: `src/` (C++20, JUCE 8)
 - **UI**: `ui/` (HTML/CSS/JS)
-- **Design Docs**: `.agent/design_doc.md`
+- **Design Docs**: `docs/README.md` (the index; start with `docs/design_language.md`)
+- **UI tests**: `cd ui && npm install && npm test` (run the C++ test binary once first — it writes `shared/ui_contract_capture.json`, which the engine-replay test reads)

@@ -31,7 +31,7 @@ class SessionNegativeTests : public juce::UnitTest {
   void runTest() override {
     const int64_t Q = 48000;
 
-    beginTest("load: nonexistent directory → ok == false");
+    beginTest("load: nonexistent directory ->ok == false");
     {
       const juce::File missing =
           juce::File::getSpecialLocation(juce::File::tempDirectory)
@@ -42,7 +42,7 @@ class SessionNegativeTests : public juce::UnitTest {
       expectEquals(loaded.children.size(), (size_t)0, "no children invented");
     }
 
-    beginTest("load: directory without session.json → ok == false");
+    beginTest("load: directory without session.json ->ok == false");
     {
       auto dir = freshTempDir("neg_no_json");
       auto loaded = session_io::load(dir, (double)Q);
@@ -50,7 +50,7 @@ class SessionNegativeTests : public juce::UnitTest {
       expectEquals(loaded.children.size(), (size_t)0, "no children invented");
     }
 
-    beginTest("load: malformed session.json → ok == false, no crash");
+    beginTest("load: malformed session.json ->ok == false, no crash");
     {
       auto dir = freshTempDir("neg_bad_json");
       dir.getChildFile("session.json").replaceWithText("{ not json !!");
@@ -60,7 +60,7 @@ class SessionNegativeTests : public juce::UnitTest {
     }
 
     beginTest(
-        "load: session.json referencing a missing wav → clip loads EMPTY, "
+        "load: session.json referencing a missing wav ->clip loads EMPTY, "
         "session still ok");
     {
       StackNode root("MissingWavRoot");

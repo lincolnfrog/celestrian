@@ -280,24 +280,23 @@ class ClipNode : public AudioNode {
    * now reads as performed exactly; the cut material stays in the
    * buffer, unreachable except by uncollapse (undo). Message thread;
    * all-atomic (same exposure discipline as setLoopPoints). */
-  void collapseToWindow(int64_t shift, int64_t len, bool shift_origin = true) {
-    // EXPLICIT COLLAPSE MARKERS (audit 2026-08-30 §3.1; NESTING per the
-    // fresh audit 2026-08-31 #2 — collapse → cancel take → re-trim →
-    // arm again is a legal second collapse): `collapsed_from_` keeps
-    // the ORIGINAL duration (set only on the first level) and
-    // `collapse_origin_shift_` ACCUMULATES what the collapses added to
-    // the origin, exactly mirroring content_base_ — so the re-opening
-    // restore (which unwinds ALL levels from the markers) stays exact.
+  void collapseToWindow(int64_t shift, int64_t len) {
+    // EXPLICIT COLLAPSE MARKERS (audit 2026-08-30 §3.1; nesting: collapse
+    // → cancel take → re-trim → arm again is a legal second collapse):
+    // `collapsed_from_` keeps the ORIGINAL duration (set only on the
+    // first level) and `collapse_origin_shift_` ACCUMULATES what the
+    // collapses added to the origin, exactly mirroring content_base_ —
+    // so the re-opening restore (which unwinds ALL levels from the
+    // markers) stays exact.
     //
-    // `shift_origin`: a CLIP window anchors at origin + start, so its
-    // collapse moves the origin by `shift` to stay audio-neutral. A
-    // GROUP window anchors at the island epoch (== the members'
-    // origin), so a group collapse moves only the content base — the
-    // origin stays (heard = s + ((t − origin) mod len) both ways).
+    // The origin moves by `shift` for every collapse (Q18): a window
+    // anchors at origin + start whether it lives on the clip or on its
+    // group, so window top → origin keeps the collapse audio-neutral in
+    // both cases (a group collapse shifts the stack's origin alongside).
     if (collapsed_from_.load() == 0) collapsed_from_.store(duration_samples.load());
-    collapse_origin_shift_.fetch_add(shift_origin ? shift : 0);
+    collapse_origin_shift_.fetch_add(shift);
     content_base_.store(content_base_.load() + shift);
-    if (shift_origin) origin_samples.store(origin_samples.load() + shift);
+    origin_samples.store(origin_samples.load() + shift);
     duration_samples.store(len);
     setLoopPoints(0, len);
   }
@@ -322,15 +321,6 @@ class ClipNode : public AudioNode {
       collapsed_from_.store(0);
       collapse_origin_shift_.store(0);
     }
-  }
-  /** Message thread: set the origin so that the audio thread adopts it
-   * only at a block top carrying island generation >= `gate` (the
-   * writer publishes `gate` after the epoch — origins and epoch land in
-   * the same block; audit 2026-08-30 §3.2). `gate` 0 = adopt at the
-   * next block top. */
-  void setOriginGated(int64_t origin, uint32_t gate) {
-    origin_gate_gen_.store(gate);
-    origin_samples.store(origin);
   }
   /** True when the committed content is a lock-collapsed window of a
    * longer recording (trimmed-away material still in the buffer). */
@@ -644,7 +634,6 @@ class ClipNode : public AudioNode {
   mutable std::atomic<bool> committed_this_block_{false};
 
   std::atomic<int> write_position{0};
-  std::atomic<int> read_position{0};
 
   // Q13 lock-collapse: storage offset of the committed content (see
   // getContentBase). Playback/waveform/save add it; capture never does
@@ -725,12 +714,8 @@ class ClipNode : public AudioNode {
   // A parked group-stop generation (0 = none); becomes stop_requested_
   // at the block top whose context carries a generation >= this.
   std::atomic<uint32_t> stop_pending_gen_{0};
-  // The origin the AUDIO thread renders with (adopted from
-  // origin_samples at a block top, gated by origin_gate_gen_ — see
-  // ProcessContext::island_generation). Audio-thread writes of
-  // origin_samples (arm, commit) set both directly.
-  std::atomic<int64_t> origin_rt_{0};
-  std::atomic<uint32_t> origin_gate_gen_{0};
+  // (origin_rt_ / origin_gate_gen_ / setOriginGated live on AudioNode
+  // since Q18 — stacks render with a gated origin too.)
   std::atomic<bool> is_playing{false};
 
   std::atomic<int64_t> awaiting_start_at{
@@ -744,7 +729,6 @@ class ClipNode : public AudioNode {
       0};  // Master pos when recording commits
 
   double sample_rate;
-  std::atomic<float> current_max_peak{0.0f};
 
   int preferred_input_channel = 0;
   // Right input of a stereo pair; −1 = mono clip (the default). Like

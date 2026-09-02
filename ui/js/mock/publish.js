@@ -9,7 +9,7 @@ import { posMod } from '../math_utils.js';
 import { mapPeriod, mapActive, mapOffset } from '../time_map.js';
 import { isQ13SoleDefiner, activeGeometryOutside, state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
          windowSuspendedOf, committedClipCount, findSoleCommittedClip,
-         definerStackNode } from './state.js';
+         definerStackNode, frameOriginOf } from './state.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
@@ -61,6 +61,12 @@ export function enrichNodes(nodes) {
         if (node.type === 'stack') {
             updatedNode.windowDomain = node.windowDomain === 'sequence' ? 'sequence' : 'intrinsic';
             updatedNode.windowSuspended = windowSuspendedOf(node);
+            // Q18 (composition.md §1, engine parity AudioNode::
+            // getMetadata): a stack's origin is a STORED fact once
+            // anchored — the UI draws an anchored group's take mark
+            // like a clip's. Published on every stack.
+            updatedNode.anchored = !!node.anchored;
+            updatedNode.origin = node.origin || 0;
         }
         // Effect chain state publishes on EVERY node (engine parity:
         // AudioNode::getMetadata always carries `effects` = {chain,
@@ -133,14 +139,13 @@ export function enrichNodes(nodes) {
         if (windowActive) {
             const m = activeMapOf(node);
             const loopLen = mapPeriod(m);
-            // Engine parity: a STACK's map phase is island-aligned
-            // ((t − epoch) mod period); a CLIP's anchors at
-            // origin + mapOffset(0) — the ANCHORING LAW (phase 3),
-            // whose single-segment case is origin + loopStart
-            // (clip_node.cc, 2026-07-19).
-            const anchor = node.type === 'clip'
-                ? (node.origin || 0) + mapOffset(m, 0)
-                : state.islandEpoch;
+            // ONE ANCHORING LAW (Q18, composition.md §2; engine parity
+            // StackNode::renderChildren telemetry / clip_node.cc): every
+            // node's map anchors at its OWN origin + mapOffset(0) — a
+            // clip's, or an anchored stack's (an unanchored stack
+            // measures from its received cycle top — the empty case).
+            // The epoch-anchored stack form is retired.
+            const anchor = frameOriginOf(node) + mapOffset(m, 0);
             const rel = state.masterPos - anchor;
             updatedNode.playhead = posMod(rel, loopLen) / loopLen;
         }

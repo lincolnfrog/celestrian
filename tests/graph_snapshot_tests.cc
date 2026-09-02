@@ -83,8 +83,8 @@ class GraphSnapshotTests : public juce::UnitTest {
                    "intrinsic (LCM 300,400 = 1200)");
       expectEquals(snapEffectivePeriod(*snap, 0), root.getEffectivePeriod(),
                    "effective (LCM 300, window 200 = 600)");
-      expectEquals(snapIntrinsicDuration(*snap, 0), (int64_t)1200, "…values");
-      expectEquals(snapEffectivePeriod(*snap, 0), (int64_t)600, "…");
+      expectEquals(snapIntrinsicDuration(*snap, 0), (int64_t)1200, "...values");
+      expectEquals(snapEffectivePeriod(*snap, 0), (int64_t)600, "...");
     }
 
     beginTest(

@@ -799,7 +799,7 @@ void MainComponent::chooseSessionPath(
       juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
           .getChildFile("Celestrian Sessions");
   const auto title =
-      saving ? juce::String("Save session as…") : juce::String("Open session");
+      saving ? juce::String("Save session as...") : juce::String("Open session");
   session_chooser_ = std::make_unique<juce::FileChooser>(title, start);
 
   const int flags = juce::FileBrowserComponent::canSelectDirectories |

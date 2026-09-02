@@ -51,17 +51,3 @@ export const EFFECT_SCHEMA = [
         ],
     },
 ];
-
-/** Schema lookup by chain-entry type ("eq", "compressor", ...). */
-export function schemaFor(type) {
-    return EFFECT_SCHEMA.find(fx => fx.type === type) || null;
-}
-
-/**
- * Enabled-slot count for a node's published effects state
- * ({chain: [...]} — docs/vst3.md phase 2).
- */
-export function enabledFxCount(effects) {
-    if (!effects || !Array.isArray(effects.chain)) return 0;
-    return effects.chain.filter(s => s.enabled).length;
-}

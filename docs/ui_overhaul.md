@@ -41,8 +41,11 @@ empty husks) while a single active island pays nothing for it.
   layout. A single playhead line crosses ruler and all lanes (I8).
 - **The cycle is drawn.** Q ruler across the island; the cycle end
   marked `↺`; a small cycle-boundary tick at each repetition start.
-- **Record is the loudest thing on screen.** Global ● records into a
-  new lane of the active island; per-lane arm on the rail. An armed lane
+- **Record is the loudest thing on screen.** ~~Global ● records into a
+  new lane of the active island~~ *(superseded by PER-TRACK RECORD,
+  owner ruling 2026-07-19h, projects.md: the track's ● is THE record
+  verb; the transport carries no record button)*; per-lane arm on the
+  rail. An armed lane
   shows a marker at the next Q boundary: "your take starts here" (Q11).
 - **The recording frame is TAKE-ANCHORED** (2026-07-09, from the field
   dump): while recording, the frame anchors at the take's start — the
@@ -67,11 +70,17 @@ empty husks) while a single active island pays nothing for it.
   indented child lanes; the chevron folds children away and the
   composite never moves. Sound-neutral by construction (I6b).
 - **The main (non-ghost) tile is the first full repetition** (owner
-  ruling 2026-07-10). A looping clip has no privileged historical rep —
+  ruling 2026-07-10). *SUPERSEDED 2026-07-16 by Q14 (design_language.md):
+  whole cycle-counts still fold away, but the performed PHASE is kept —
+  the take tile marks at `(origin − epoch) mod contextCycle`; only
+  takes with no honest position in the current frame keep
+  first-full-rep.* A looping clip has no privileged historical rep —
   "which cycle it was recorded in" is not a musical fact, so
   origin-modular take marking (which drew the bright tile mid-frame) is
   wrong; only the clip's PHASE (origin mod period) shapes the tile
-  grid. Groups tile from frame 0 (a composite is not a performance).
+  grid. ~~Groups tile from frame 0 (a composite is not a performance).~~
+  *(Superseded 2026-09-01 by Q18: a group has an origin and its lane
+  carries a take mark like a clip's — composition.md §9.)*
   Waveforms are display-normalized to the clip's own peak: waveforms
   show shape, meters show level.
 - **Loop windows live on the lane.** Bracket overlay `[ ]`: drag to edit
@@ -131,6 +140,13 @@ empty husks) while a single active island pays nothing for it.
 
 ## 3. Visual language (Tape Room tokens)
 
+> **SUPERSEDED — palette.** The token VALUES below are the 2026-07-09
+> pitch; the shipped theme is `ui/css/session.css` ("Gunmetal &
+> walnut": matte gunmetal chassis, walnut side rails, light only from
+> lit elements). The rules under the table — red reserved for record,
+> echoes in a cool tone, distance-legible sizing, reduced-motion —
+> stand; read the CSS for colors.
+
 Warm hardware world; lanes read as tape strips; red is reserved for
 record. Sized to be read from six feet with an instrument in hand.
 
@@ -162,27 +178,35 @@ record. Sized to be read from six feet with an instrument in hand.
 
 ## 4. Architecture (P2-10, riding along)
 
+*(As built — trued 2026-09-01; the original 2026-07-09 sketch named
+`patch_dom.js`, "timeline_model.js only" and "23 protocol methods".)*
+
 ```
-backend state ──▶ deriveViewModel(state)   pure, unit-testable,
-                                           timeline_model.js only
-              ──▶ patchDOM(viewModel)      thin, keyed, no math
+backend state ──▶ deriveViewModel(state)   pure, unit-testable:
+                    view_model.js (display) over timeline_model.js
+                    (kernel math, golden-pinned to src/timing.h)
+              ──▶ session_view.js + ui/js/session_view/*.js
+                    (the patch layer: keyed reconciliation, Q→px)
 ```
 
 - `ui/js/view_model.js` — `deriveViewModel(state, viewPrefs)` returns
-  plain data: `{ transport, ruler: ticks[], lanes: [{ rail, reps:
-  [{xQ, wQ, ghost}], window, armAtQ }], playheadQ }`. **All geometry in
-  Q units**; the *only* Q→px conversion happens in the patch layer with
-  one scale function — I2 by construction, and the ghost/cursor
-  "abstraction mismatch" bug class dies structurally (extent and cursor
-  come from the same derivation).
-- `ui/js/patch_dom.js` — keyed reconciliation of lanes/reps; no
-  `getBoundingClientRect` per frame; no destroy-and-recreate.
-- **True recursion**: `renderNode(node, depth)` — depth-3 stacks render
-  (the current hand-unrolled syncUI silently drops them).
-- **Logging gated behind a DEBUG flag** — kills the per-frame
-  `nativeLog` native calls from clip_updater/ghost_renderer/syncUI.
-- **Bridge untouched.** All 23 protocol methods stay; this is a
-  frontend-only project (the contract test keeps everyone honest).
+  plain data (lanes, reps, windows, arm marks, playhead, frame). **All
+  geometry in Q units**; the *only* Q→px conversion happens in the
+  patch layer with one scale function — I2 by construction, and the
+  ghost/cursor "abstraction mismatch" bug class dies structurally
+  (extent and cursor come from the same derivation). Kernel math
+  (periods, LCMs, launch points, time-maps) is imported from
+  `timeline_model.js`, never re-derived.
+- `ui/js/session_view.js` + `ui/js/session_view/*.js` (lane_build,
+  lane_body, rail, ruler, window_edit, map_bands, seq_grid, …) — keyed
+  reconciliation of lanes/reps; no `getBoundingClientRect` per frame;
+  no destroy-and-recreate (display law 4).
+- **True recursion**: lanes build per node depth — nested groups render
+  at any depth.
+- **Logging gated behind a DEBUG flag** — no per-frame `nativeLog`.
+- **Bridge grows with features, contract-tested.** `ui/js/protocol.js`
+  carries ~60 methods (63 on 2026-09-01); every addition lands in all
+  three places or `protocol_contract.test.mjs` fails.
 - Replaced wholesale: `clip_updater.js`, `ghost_renderer.js`, the
   syncUI body in `app.js`, `stack_element.js`/`node_element.js` DOM
   builders, and the stack CSS. `timeline_model.js`, `backend.js`,
@@ -248,15 +272,20 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
      inputs). The menu fetches `getInputList` on open (hot-plugged
      interfaces appear without reload); picking calls `setNodeInput`;
      disabled while the lane records. Dismiss = outside press / Escape.
-4. **Drag.** Rail-handle reorder with visible drop lines; **combine only
-   via explicit modifier/drop chip** — never the silent default of a
-   sloppy drop (today's center-drop surprise).
-5. **Polish + performance pass.** Ghost/cycle-tick rendering, waveform
-   quality at distance, status-strip log drawer, reduced-motion.
-6. **Test realignment.** Playwright specs rewritten against the new DOM
-   (record flow, window toggle, fold, reorder); the slow visual-math
-   specs (`ghost_positioning`, `cursor_bugs`, …) become millisecond VM
-   unit tests.
+4. **Drag.** ✅ Done — differently (2026-07-19h/j, projects.md):
+   HTML5 rail drag where **drop-on-clip COMBINES** the two into a new
+   group, drop-on-group moves the track inside, and the ＋ Track row is
+   the drag-out target; a selected rail carries the whole selection.
+   No drop-lines and no within-parent reorder were built (groups are a
+   post-hoc gesture; order is by creation). The original plan's
+   "visible drop lines + explicit combine modifier" did not ship.
+5. **Polish + performance pass.** 🔶 Partial: reduced-motion and
+   manual horizontal zoom (`session_view/zoom.js`, ⌘/Ctrl+wheel, +/−)
+   exist. NOT built: the px-per-Q floor with playhead auto-follow (§7)
+   and the status-strip log drawer.
+6. **Test realignment.** ✅ Done — 68 Playwright e2e tests across
+   `ui/e2e/*.spec.js` against the session-view DOM; the old visual-math
+   specs became VM unit tests (`ui/js/tests/*.test.mjs`).
 
 ## 6. The display laws
 
@@ -300,7 +329,12 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
    (their alien amplitude scale re-normalizes the composite to nothing).
 9. **The main tile is the first full repetition** (owner ruling): a
    looping clip has no privileged historical rep; only phase shapes the
-   grid. Groups tile from frame 0 (a composite is not a performance).
+   grid. Groups tile from frame 0 (a composite is not a performance)
+   *[the group half superseded 2026-09-01 by Q18: groups have origins
+   and take marks — composition.md §9]*.
+   *SUPERSEDED 2026-07-16 by Q14/Q14b: the performed PHASE is kept — the
+   take tile marks at its heard phase `(origin − epoch) mod
+   contextCycle`; whole cycle-counts still fold away. Groups unchanged.*
 10. **The bar's edge is "now".** The recording bar extends to the
     playhead (both glide with the same 140ms timing); the written
     content trails inside by the latency compensation, honestly (E-E).
@@ -436,12 +470,12 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
   LCM (vm.cycleQ vs vm.lcmQ), so scroll-mode is a patch-layer change.
   Build in phase 5.
 
-- **Templates** (Q7 companion ruling): a saved node subtree — structure,
-  names, input assignments — loadable into a session ("drum stack" =
-  one click). Needs a bridge method pair (save/load template) and a
-  home in the transport or an "add" menu; intersects Save/Load
-  (roadmap Segment 6). UI slot reserved in the shell; backend work
-  scheduled after phase 3.
+- ✅ **Templates** (Q7 companion ruling) — done: Q17 (2026-08-13,
+  tasks.md Tier 3) made every + a template picker over a global
+  subtree library (`src/track_template.h`, `ui/js/mock/track_templates.js`);
+  whole-session templates live in projects.md. Original note: a saved
+  node subtree — structure, names, input assignments — loadable into a
+  session ("drum stack" = one click).
 - **Takes** (Q7 companion, owner-deferred until core workflow lands):
   "new take" on the record button (context menu or long-press), a take
   list per clip to switch between; never duplicate-track/mute-old. VM
@@ -462,7 +496,9 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable,
   hysteresis entry amended). The snap-back-with-auto-loop-window idea is
   deferred until it hurts in practice. Mock aligned to awaiting-stop;
   the rail shows "finishing…" while the take runs to its boundary.
-- One-shot rendering (dashed, E-D style) — lands with time-maps phase 2.
+- ✅ One-shot rendering (dashed, E-D style) — done 2026-08-06 with the
+  period-source knob (Q5; tasks.md Tier 3): dashed tile, no ghosts,
+  ↺/1× rail chip.
 - Waveform peak rendering quality at distance — iterate on hardware
   (clap-test workflow).
 - Island switcher chrome — deferred until multi-island (Q10).

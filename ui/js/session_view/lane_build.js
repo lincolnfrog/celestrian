@@ -144,13 +144,14 @@ export function buildLane(lane) {
     // group at its output stage. The engine value streams while
     // dragging; `_hot` keeps the 50ms tick from fighting the gesture
     // (the fx-slider lesson).
-    // Period-source toggle (Q5) — clips only, in the HEAD next to the
-    // dials (the foot button row is at the rail's full width; a foot
-    // chip overflowed): ↺ = loops at its own length; 1× = one-shot
-    // (sounds once per context cycle at its origin, then rests). A
-    // musical fact — undoable engine-side. Groups never get one (a
-    // stack has no origin to anchor a firing to).
-    if (lane.kind === 'clip') {
+    // Period-source toggle (Q5) — clips AND groups, in the HEAD next
+    // to the dials (the foot button row is at the rail's full width; a
+    // foot chip overflowed): ↺ = loops at its own length; 1× =
+    // one-shot (sounds once per context cycle at its origin, then
+    // rests). A musical fact — undoable engine-side. Groups take it
+    // since Q18 (composition.md §0): a stack has an origin, so a drum
+    // group fires once per cycle from the moment it was performed.
+    {
         const ps = el('button', 'rail-btn oneshot-btn mono');
         ps.addEventListener('click', () => {
             const l = row._lane;

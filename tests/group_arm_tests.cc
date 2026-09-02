@@ -93,7 +93,7 @@ class GroupArmTests : public juce::UnitTest {
     constexpr int64_t Q = 44100;
 
     // =====================================================================
-    beginTest("I2: first-take group arm — one origin, one duration, one Q");
+    beginTest("I2: first-take group arm - one origin, one duration, one Q");
     {
       AudioEngine engine;
       auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
@@ -140,7 +140,7 @@ class GroupArmTests : public juce::UnitTest {
     }
 
     // =====================================================================
-    beginTest("Q7: arm targets emptiness — committed member just plays");
+    beginTest("Q7: arm targets emptiness - committed member just plays");
     {
       AudioEngine engine;
       auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
@@ -214,7 +214,7 @@ class GroupArmTests : public juce::UnitTest {
     }
 
     // =====================================================================
-    beginTest("Direct arm on a committed clip is refused (takes ≠ arm)");
+    beginTest("Direct arm on a committed clip is refused (takes != arm)");
     {
       AudioEngine engine;
       auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
@@ -226,7 +226,7 @@ class GroupArmTests : public juce::UnitTest {
       engine.startRecordingInNode(id);
       expect(!boolOf(engine, id, "isPendingStart") &&
                  !boolOf(engine, id, "isRecording"),
-             "committed clip stays Idle — re-recording is the takes feature");
+             "committed clip stays Idle - re-recording is the takes feature");
       expect(!engine.hasActiveTake(), "no phantom take armed");
       expectEquals(propOf(engine, id, "duration"), committed_len,
                    "content untouched");

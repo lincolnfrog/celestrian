@@ -11,8 +11,8 @@
  * can read `state.masterPos` / `state.islandQ` without `|| 0` guards.
  */
 
-import { singleSegment, mapActive } from '../time_map.js';
-import { lcm } from '../math_utils.js';
+import { singleSegment, mapActive, mapOffset, mapPeriod } from '../time_map.js';
+import { lcm, posMod } from '../math_utils.js';
 
 // In-memory state
 export const state = {
@@ -283,41 +283,203 @@ export function rootActiveMap() {
     });
 }
 
-// Intrinsic composite duration (clip: duration; stack: LCM of children).
+// Intrinsic composite duration (clip: duration; stack: LCM of the
+// LOOPING children — one-shots excluded, engine parity
+// StackNode::getIntrinsicDuration / composition.md §1).
 export function intrinsicOfNode(n) {
     if (n.type !== 'stack') return n.isRecording ? 0 : (n.duration || 0);
     let comp = 0;
     (n.nodes || []).forEach(c => {
+        if (c.periodSource === 'context') return;
         const d = intrinsicOfNode(c);
         if (d > 0) comp = comp > 0 ? lcm(comp, d) : d;
     });
     return comp;
 }
 
+// --- Q18: origins on every node (composition.md §5, engine parity
+// AudioEngine::settleAnchors / shiftOriginsGated / cycleTopOf) ---
+
+/** Committed content anywhere in `node`'s subtree (engine
+ * hasCommittedContent): a clip with material, or a stack holding one. */
+export function hasCommittedContent(node) {
+    if (node.type !== 'stack') return !node.isRecording && (node.duration || 0) > 0;
+    return (node.nodes || []).some(hasCommittedContent);
+}
+
+/** The earliest committed descendant's origin (Infinity when none). */
+export function earliestCommittedOrigin(node) {
+    if (node.type !== 'stack') {
+        return hasCommittedContent(node) ? (node.origin || 0) : Infinity;
+    }
+    let best = Infinity;
+    for (const c of node.nodes || []) best = Math.min(best, earliestCommittedOrigin(c));
+    return best;
+}
+
+/** shiftOrigins (composition.md §5, I11): re-anchoring a node
+ * re-anchors its SUBTREE — the node's origin and every descendant's
+ * move by the same delta. The one primitive behind the definer trim,
+ * continuity, lock-collapse and seek, for clips and stacks alike. */
+export function shiftOrigins(node, delta) {
+    if (!delta) return;
+    node.origin = (node.origin || 0) + delta;
+    if (node.type === 'stack') (node.nodes || []).forEach(c => shiftOrigins(c, delta));
+}
+
+/** A stack's anchoring (engine StackNode::isAnchored): true once
+ * committed content exists in its subtree and the settle stored an
+ * origin. Clips are always anchored. */
+export function isAnchored(node) {
+    return node.type !== 'stack' || !!node.anchored;
+}
+
+/** The RECEIVED cycle top of `node`'s frame (engine AudioEngine::
+ * cycleTopOf): the island epoch, mapped down through every enclosing
+ * active map — each mapping ancestor's child frame tops at
+ * O + mapOffset(0), O being its own origin once anchored, else the top
+ * it received. The mock's root is synthetic (no node): its frame is
+ * the epoch, through the root's step audition when one is on. */
+export function cycleTopOf(node) {
+    const parent = findParent(node.id);
+    if (!parent) {
+        const top = state.islandEpoch || 0;
+        const m = rootActiveMap();
+        return m ? top + mapOffset(m, 0) : top;
+    }
+    const top = cycleTopOf(parent);
+    const m = activeMapOf(parent);
+    if (!m) return top;
+    const O = parent.anchored ? (parent.origin || 0) : top;
+    return O + mapOffset(m, 0);
+}
+
+/** THE ANCHOR (composition.md §2): the origin a node's inner timeline
+ * is measured from — its own once anchored (clips always), else the
+ * received cycle top (the empty case; engine StackNode::frameOrigin). */
+export function frameOriginOf(node) {
+    return isAnchored(node) ? (node.origin || 0) : cycleTopOf(node);
+}
+
+/** THE NODE EQUATION (engine heard::nodeInner): the inner position
+ * `node` presents at clock `t` under `map` (its active map, else its
+ * whole inner span) anchored at `origin`:
+ * inner(t) = mapOffset((t − O − a0) mod P). */
+export function innerUnder(map, origin, t) {
+    const period = mapPeriod(map);
+    if (!(period > 0)) return 0;
+    return mapOffset(map, posMod(t - origin - mapOffset(map, 0), period));
+}
+
+/** A node's effective map (engine heard::effectiveMap): the active
+ * map, else the full inner span [0, D). */
+export function effectiveMapOf(node) {
+    const m = activeMapOf(node);
+    if (m && mapPeriod(m) > 0) return m;
+    return { segs: [[0, intrinsicOfNode(node)]] };
+}
+
+/** nodeInner(node, t): the node equation on the node's current state. */
+export function nodeInner(node, t) {
+    return innerUnder(effectiveMapOf(node), frameOriginOf(node), t);
+}
+
+/** The origin that makes a node present inner position `p` at `t0`
+ * under map `m` (engine heard::originForHeard) — or, when the new map
+ * no longer covers `p`, the old heard phase `fallbackH` folded into the
+ * new period. */
+export function originForHeard(m, t0, p, fallbackH) {
+    const period = mapPeriod(m);
+    let h = heardOffsetOfMap(m, p);
+    if (h < 0) h = posMod(fallbackH, period);
+    return t0 - mapOffset(m, 0) - h;
+}
+
+// (Lazy twin of time_map.heardOffsetOf — kept local so state.js stays
+// the leaf module; identical semantics.)
+function heardOffsetOfMap(map, inner) {
+    let acc = 0;
+    for (const [s, e] of map.segs || []) {
+        if (inner >= s && inner < e) return acc + (inner - s);
+        acc += e - s;
+    }
+    return -1;
+}
+
+/**
+ * SETTLE ANCHORS (engine AudioEngine::settleAnchors, composition.md
+ * §5): every stack whose anchoring disagrees with its content settles —
+ * the first committed content under a stack anchors it at the EARLIEST
+ * committed descendant's origin (set once, never re-derived while
+ * anchored); the last content leaving un-anchors it. Geometry authored
+ * while unanchored was expressed from the received cycle top: it is
+ * re-expressed from the new origin so nothing audible moves (a window
+ * the new origin cannot carry is cleared — the establishment-scrub
+ * discipline). Pre-order, like the engine's forEachStack: a parent's
+ * anchoring is settled before its children read their cycle top.
+ * Undo needs no riders here: the snapshot restores the exact stored
+ * `anchored`/`origin` (the engine's Edit::anchors made observable).
+ */
+export function settleAnchors(nodes = state.nodes) {
+    (nodes || []).forEach(n => {
+        if (n.type !== 'stack') return;
+        settleStack(n);
+        settleAnchors(n.nodes);
+    });
+}
+
+function settleStack(n) {
+    const has = hasCommittedContent(n);
+    if (has === !!n.anchored) return;
+    if (!has) {
+        n.anchored = false;
+        n.origin = 0;
+        return;
+    }
+    const oldTop = cycleTopOf(n);
+    const origin = earliestCommittedOrigin(n);
+    const shift = origin - oldTop;  // inner positions move by −shift
+    const inner = intrinsicOfNode(n);
+    if (shift !== 0 && inner > 0) {
+        const d = posMod(shift, inner);
+        const shifted = ([s, e]) => {
+            let ns = s - d, ne = e - d;
+            if (ns < 0) { ns += inner; ne += inner; }
+            return ne <= inner ? [ns, ne] : null;  // representable?
+        };
+        if (Array.isArray(n.segments) && n.segments.length >= 2) {
+            const fresh = n.segments.map(shifted);
+            if (fresh.every(Boolean)) {
+                n.segments = fresh.sort((a, b) => a[0] - b[0]);
+            } else {
+                delete n.segments;
+                n.loopStart = 0;
+                n.loopEnd = 0;
+                console.log('[MockBackend] cleared a pre-anchor map on', n.id);
+            }
+        } else if ((n.loopEnd || 0) > (n.loopStart || 0)) {
+            const w = shifted([n.loopStart || 0, n.loopEnd || 0]);
+            if (w) { [n.loopStart, n.loopEnd] = w; }
+            else {
+                n.loopStart = 0;
+                n.loopEnd = 0;
+                console.log('[MockBackend] cleared a pre-anchor window on', n.id);
+            }
+        }
+    }
+    n.anchored = true;
+    n.origin = origin;
+}
+
 /**
  * The island quantum, mirroring the C++ model (P0-3): a STORED fact
  * (`state.islandQ` — established at first commit, re-established by a
- * provisional re-trim, reverted when the last committed clip goes).
- * The legacy min-duration/declared derivation survives only for
- * scenario fixtures that predate the stored field.
+ * provisional re-trim, reverted when the last committed clip goes;
+ * 0 = unestablished). Scenario fixtures set it directly, so there is
+ * no derivation from node durations here.
  */
 export function effectiveQuantumForState() {
-    if (state.islandQ > 0) return state.islandQ;
-    let minDuration = 0;
-    let declaredQ = 0;
-
-    const visit = (nodes) => (nodes || []).forEach(n => {
-        if (n.type === 'clip' && !n.isRecording && n.duration > 0) {
-            if (minDuration === 0 || n.duration < minDuration) minDuration = n.duration;
-        }
-        if (n.effectiveQuantum > 0 && (declaredQ === 0 || n.effectiveQuantum < declaredQ)) {
-            declaredQ = n.effectiveQuantum;
-        }
-        if (n.nodes) visit(n.nodes);
-    });
-    visit(state.nodes);
-
-    return minDuration > 0 ? minDuration : declaredQ;
+    return state.islandQ;
 }
 
 /**

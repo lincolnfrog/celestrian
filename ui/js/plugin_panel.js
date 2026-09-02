@@ -5,8 +5,9 @@
  * reuses the .audio-panel styles): lists the known VST3 plugins and
  * drives a rescan. Scanning runs on a backend background thread; while
  * it runs this panel polls getPluginScanStatus and re-fetches the list
- * on completion. Chain integration (adding a plugin to a node) arrives
- * in phases 2-3 — this panel is the registry view only.
+ * on completion. This panel is the registry view only: adding a
+ * plugin to a node's chain is the fx row's "+" picker
+ * (session_view/fx_row.js, phase 3), fed by the same known-plugin list.
  */
 
 let panel = null;

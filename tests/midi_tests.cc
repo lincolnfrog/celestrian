@@ -62,7 +62,7 @@ class MidiTests : public juce::UnitTest {
 
       juce::MidiBuffer out;
       out.ensureSize(1024);
-      queue.drainTo(out);
+      queue.drainTo(out, 512, 0.0);
       expectEquals(out.getNumEvents(), 2, juce::String("two channel events"));
       int note_ons = 0, controllers = 0;
       for (const auto metadata : out) {
@@ -77,7 +77,7 @@ class MidiTests : public juce::UnitTest {
       // Drained: a second drain is empty.
       juce::MidiBuffer again;
       again.ensureSize(64);
-      queue.drainTo(again);
+      queue.drainTo(again, 512, 0.0);
       expectEquals(again.getNumEvents(), 0, juce::String("queue drained"));
     }
 
@@ -91,7 +91,7 @@ class MidiTests : public juce::UnitTest {
           queue.push(juce::MidiMessage::noteOn(1, 60, (juce::uint8)100));
         juce::MidiBuffer out;
         out.ensureSize(MidiInputQueue::kCapacity * 4);
-        queue.drainTo(out);
+        queue.drainTo(out, 512, 0.0);
         expectEquals(out.getNumEvents(), batch,
                      juce::String("cycle drains its batch"));
       }
@@ -103,7 +103,7 @@ class MidiTests : public juce::UnitTest {
       expectGreaterThan(queue.droppedCount(), 0);
       juce::MidiBuffer out;
       out.ensureSize(MidiInputQueue::kCapacity * 4);
-      queue.drainTo(out);
+      queue.drainTo(out, 512, 0.0);
       expectEquals(out.getNumEvents(), (int)MidiInputQueue::kCapacity - 1,
                    juce::String("capacity bounds the drain"));
     }

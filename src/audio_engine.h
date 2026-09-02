@@ -102,8 +102,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
 
   /**
    * Creates a new node of the specified type.
-   * If parent_uuid is provided, adds to that stack; otherwise uses
-   * focused_node. The node is appended to the end of the parent's children.
+   * If parent_uuid is provided, adds to that stack; otherwise to the
+   * root. The node is appended to the end of the parent's children.
    * Visual positioning is handled by the frontend.
    */
   void createNode(const juce::String& type,
@@ -594,9 +594,6 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // the island root: owns Q, epoch, and the take-lifecycle counter).
   std::unique_ptr<celestrian::StackNode> root_node;
 
-  // Navigation focus (no stack needed for single-level editing)
-  celestrian::AudioNode* focused_node = nullptr;
-
   // Global Transport (kernel.md step 3): MONOTONIC. The clock only moves
   // forward while playing and is NEVER reset or rebased — not by
   // commits, not by first clips (the island epoch is captured as data
@@ -636,10 +633,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<int> cached_input_latency_{0};
   std::atomic<int> cached_output_latency_{0};
   std::atomic<double> cached_sample_rate_{kFallbackSampleRate};
-  std::atomic<int> cached_block_size_{512};
 
   /** Attaches the transport/undo/VU/perf properties every getGraphState
-   * shape carries (focused-node and empty-fallback branches must publish
+   * shape carries (root-metadata and empty-fallback branches must publish
    * the same set — this is the one place it is defined). */
   void attachTransportState(juce::DynamicObject& state, double master_view,
                             double island_view) const;
@@ -729,9 +725,35 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * their own quantum). Attaches setsOrigin/setsIsland to `e`; no-op
    * when the origin doesn't move. */
   void attachMapEditRiders(celestrian::Edit& e,
-                           const celestrian::ClipNode& clip,
+                           const celestrian::AudioNode& node,
                            const celestrian::timing::TimeMap& new_map,
                            int64_t quantum);
+
+  // --- Q18: origins on every node (composition.md §5) ---
+  /** Move a node's origin and EVERY descendant's by `delta`, gated on
+   * the island generation `gate` (0 = adopt at the next block top).
+   * The one re-anchoring primitive: definer trims, continuity, seek. */
+  void shiftOriginsGated(celestrian::AudioNode& node, int64_t delta,
+                         uint32_t gate);
+  /** Apply an edit's setsOrigin/iorg to `node` as a subtree shift
+   * (delta = iorg − current origin), capturing the old origin into the
+   * inverse. No-op unless e.setsOrigin. */
+  void applySetsOrigin(celestrian::AudioNode& node, const celestrian::Edit& e,
+                       celestrian::Edit& inv, uint32_t gate);
+  /** Anchoring settle (composition.md §5): a stack whose subtree just
+   * gained its first committed content anchors at the earliest
+   * descendant's origin; a stack whose last content left un-anchors.
+   * Never re-derives an anchored stack's origin. Changes are captured
+   * into `inv.anchors` so undo restores the exact stored values. Runs
+   * after every structural / take edit and after load. */
+  void settleAnchors(celestrian::Edit& inv);
+  /** Apply an edit's anchor riders (undo/redo of a settle), capturing
+   * the current state into the inverse. */
+  void applyAnchorRiders(const celestrian::Edit& e, celestrian::Edit& inv);
+  /** The received cycle top a node's frame is measured from — the
+   * message-thread twin of ProcessContext.cycle_epoch at that node
+   * (island epoch, re-based by each anchored+mapped ancestor). */
+  int64_t cycleTopOf(const celestrian::AudioNode& node) const;
   /** prepare() a node's rack at the device rate (falling back to
    * kFallbackSampleRate before any device has started) — the
    * prepare-BEFORE-enable ordering every effect mutation must follow. */
@@ -777,10 +799,6 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * DETACHED assembly (Combine, undo-held subtrees) stamped onto a
    * nested stack. Re-asserted after every structural edit. */
   void scrubNestedIslandFacts();
-  /** The epoch-move granularity that keeps every windowed group's
-   * content selection: lcm(Q, the inner cycle of each stack with an
-   * active map). Content-frame law, 2026-08-30. */
-  int64_t epochViewStep(int64_t quantum) const;
   /** A seek re-frames every absolute time in the session; the undo and
    * redo logs (which store absolute origins/epochs) ride the same
    * delta so undo restores PLACEMENT, not stale absolutes (fresh audit

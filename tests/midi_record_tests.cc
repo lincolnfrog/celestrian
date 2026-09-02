@@ -92,13 +92,6 @@ class MidiRecordTests : public juce::UnitTest {
       expectEquals(offsets[1], 100, juce::String("25% of the interval"));
       expectEquals(offsets[2], 300, juce::String("75% of the interval"));
       expectEquals(offsets[3], 399, juce::String("future clamps to the end"));
-
-      // The untimestamped legacy drain still lands everything at 0.
-      queue.push(a);
-      out.clear();
-      queue.drainTo(out);
-      for (const auto metadata : out)
-        expectEquals(metadata.samplePosition, 0, juce::String("legacy 0"));
     }
 
     beginTest("MidiHistory: arrival-indexed ring with monotone sequence");
@@ -301,7 +294,6 @@ class MidiRecordTests : public juce::UnitTest {
       ctx.midi_history = &hist;
       ctx.midi_latency = 100;  // output latency: keys arrive 100 late
       ctx.input_latency = 0;
-      ctx.output_latency = 0;
 
       // Already in the history before the arm block: one event that
       // precedes the take's window (dropped) and one inside it (the
@@ -319,9 +311,9 @@ class MidiRecordTests : public juce::UnitTest {
       expectEquals(clip.getWritePosition(), 156, juce::String("lead honored"));
       expectEquals(clip.midiSequence().count(), 2);
       expectEquals((int)clip.midiSequence()[0].pos, 20,
-                   juce::String("reach-back event at 1120 → 20"));
+                   juce::String("reach-back event at 1120 -> 20"));
       expectEquals((int)clip.midiSequence()[1].pos, 50,
-                   juce::String("1150 → 50 (100 samples compensated)"));
+                   juce::String("1150 -> 50 (100 samples compensated)"));
 
       // Block 1: arrival 1300 → 156 + (1300 − 1256) = 200.
       pushHistory(hist, 1300, noteOff(60));

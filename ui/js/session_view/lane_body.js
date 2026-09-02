@@ -1,5 +1,10 @@
 /**
- * Lane body: gridlines, reps, window, arm.
+ * Lane body: the per-lane grid area — gridlines, rep tiles (waveform
+ * canvases: material, ghosts, the live recording bar, map-sliced
+ * content), the overlay layer (window brackets + trim grips, cut
+ * bands and seams, the arm marker, the sound cursor, sequence-step
+ * dims and cue hairlines, the window/map chips), and the composite
+ * canvas a group row draws.
  *
  * RECONCILED IN LAYERS, never nuked: destroying and recreating every
  * gridline/rep/canvas on any key change made commits (and every Q
@@ -298,7 +303,6 @@ export function patchLaneBody(row, lane, vm, aux) {
             repsL.appendChild(div);
         }
         const cls = 'rep' + (rep.ghost ? ' ghost' : '') +
-            (rep.echo ? ' echo' : '') +
             (rep.bar
                 ? ' recording-bar' + (lane.throughMap ? ' map-bar' : '')
                 : '');
@@ -320,7 +324,7 @@ export function patchLaneBody(row, lane, vm, aux) {
         const redrew = drawRepCanvas(div, {
             peaks, cssWidth: cssW, cssHeight: bodyH,
             isComposite: lane.kind === 'group', live: !!rep.bar, pxPerSlot,
-            src: rep.srcSegs || (rep.src ? [rep.src] : null),
+            src: rep.srcSegs || null,
             isGhost: !!rep.ghost,
             rotFrac: rep.srcTopFrac || 0,
         });
@@ -654,7 +658,14 @@ function lanePeaks(lane, aux, bodyW = 0) {
         canvasWidth, livePeaks: aux.livePeaks,
         cache: ctx.compositeCache,
         excludeIds: aux.pendingFetch,
-        epochSamples: aux.epochSamples || 0,
+        // THE COMPOSITE'S FRAME (Q18, composition.md §9): the group's
+        // tile sits at its take mark and the heard view's srcSegs are
+        // INNER positions, so the mixdown is built in the STACK's own
+        // frame — x = 0 is the stack's origin (inner time 0), each
+        // member's content at its origin relative to that. An
+        // unanchored stack (no content) keeps the epoch frame.
+        epochSamples: node.anchored ? (node.origin || 0)
+                                    : (aux.epochSamples || 0),
         // The Q-definer trim view frames the RAW take with the
         // selection over it (pushDefinerLane); its members draw their
         // whole takes beneath. The composite must be the same raw
