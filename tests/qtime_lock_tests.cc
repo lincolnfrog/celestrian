@@ -336,7 +336,6 @@ class QTimeLockTests : public juce::UnitTest {
       for (int i = 0; i < N; ++i) ramp[i] = (float)i / N;  // content[j] = j/N
       float* ins[] = {ramp.data()};
       test_utils::NodeContext rec = test_utils::contextFor(clip, N);
-      rec.ctx.is_recording = true;
       clip.startRecording();
       clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();

@@ -151,7 +151,6 @@ class TakeCapacityTests : public juce::UnitTest {
       float* ins[] = {in.data()};
       test_utils::NodeContext nc = test_utils::contextFor(clip, BLOCK);
       ProcessContext& ctx = nc.ctx;
-      ctx.is_recording = true;
       for (int i = 0; i < 10 && clip.recState() != ClipNode::RecState::Idle;
            ++i) {
         clip.control(ins, 1, ctx);

@@ -133,7 +133,6 @@ class MidiRecordTests : public juce::UnitTest {
       ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
       ctx.is_playing = true;
-      ctx.is_recording = true;
       std::vector<float> left(1024, 0.0f), right(1024, 0.0f);
       float* outs[] = {left.data(), right.data()};
 
@@ -215,7 +214,6 @@ class MidiRecordTests : public juce::UnitTest {
       // down during the take — lift it before listening back.
       synth->note_held = false;
       clip.midi_armed.store(false);
-      ctx.is_recording = false;
       ctx.live_midi = nullptr;
       ctx.num_samples = 1024;
       ctx.master_pos = 0;  // origin (first-clip arm at compensated 0)
@@ -315,7 +313,6 @@ class MidiRecordTests : public juce::UnitTest {
       ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
       ctx.is_playing = true;
-      ctx.is_recording = true;
       ctx.midi_history = &hist;
       ctx.midi_latency = 100;  // window opens at arrival 1100
       ctx.input_latency = 0;
@@ -363,7 +360,6 @@ class MidiRecordTests : public juce::UnitTest {
       ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
       ctx.is_playing = true;
-      ctx.is_recording = true;
       juce::MidiBuffer b0;
       b0.addEvent(noteOn(72, 64), 100);
       ctx.live_midi = &b0;
@@ -394,7 +390,6 @@ class MidiRecordTests : public juce::UnitTest {
       ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
       ctx.is_playing = true;
-      ctx.is_recording = true;
       ctx.midi_history = &hist;
       ctx.midi_latency = 100;  // output latency: keys arrive 100 late
       ctx.input_latency = 0;
@@ -462,7 +457,6 @@ class MidiRecordTests : public juce::UnitTest {
       ProcessContext& ctx = nc.ctx;
       ctx.sample_rate = sr;
       ctx.is_playing = true;
-      ctx.is_recording = true;
       timing::TimeMap map;
       map.n = 2;
       map.segs[0] = {100, 200};

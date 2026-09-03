@@ -302,7 +302,6 @@ class EffectsTests : public juce::UnitTest {
       in[0] = 1.0f;
       float* const ins[] = {in.data()};
       NodeContext rec = contextFor(clip, (int)in.size());
-      rec.ctx.is_recording = true;
       clip.startRecording();
       clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();
@@ -334,7 +333,6 @@ class EffectsTests : public juce::UnitTest {
       in[0] = 1.0f;
       float* const ins[] = {in.data()};
       NodeContext rec = contextFor(*clip, (int)in.size());
-      rec.ctx.is_recording = true;
       clip->startRecording();
       clip->process(ins, nullptr, 1, 0, rec.ctx);
       clip->stopRecording();

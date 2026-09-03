@@ -19,7 +19,7 @@ import { activeGeometryOutside,
 import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
 import { committedCycle, effectiveCycle } from './cycles.js';
 import { setMidiArmed } from './effects.js';
-import { activeSeqLen, stepCued, stepIndexAt, seqBounds } from './sequence.js';
+import { activeSeqLen, stepCued, stepIndexAt, firstVisitSpan } from './sequence.js';
 
 export const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
 
@@ -479,9 +479,10 @@ function armClip(node) {
             // Mode-2 into a CUED step composes the cue (engine parity,
             // StackNode::childContext): the take lands at the SONG TOP
             // [0, stepLen) — cue playback reads it there.
+            // The audition loops the step's FIRST visit (§14).
             const cueBase = sequenced && gAudStep >= 0 &&
                 stepCued(gseq, gAudStep)
-                ? seqBounds(gseq)[gAudStep] : 0;
+                ? (firstVisitSpan(gseq, gAudStep) || [0])[0] : 0;
             // Q18 (engine parity StackNode::childContext →
             // map_origin / map_heard_epoch): the map's inner positions
             // are offsets from the mapping node's ORIGIN (an anchored

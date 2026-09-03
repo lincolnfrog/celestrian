@@ -77,7 +77,11 @@ juce::var StackNode::getMetadata() const {
   // The sequence (docs/sequencer.md), published RAW like segments —
   // bypassed geometry survives in the UI (I9; the VM derives active).
   // Steps in samples like every metadata length; gates as uuid → one
-  // 0/1 per step (UI-friendly; absent uuid = inherit ON).
+  // 0/1 per step (UI-friendly; absent uuid = inherit ON). The
+  // successor graph rides each step (`next`, absent = the loop
+  // successor); the seed, the derived PROGRAM (step index per visit)
+  // and the radio flag publish beside them (sequencer.md §14) — the
+  // UI lays its timeline out over the program.
   if (const Sequence* s = sequence_.load()) {
     auto* so = new juce::DynamicObject();
     so->setProperty("bypassed", (bool)sequence_bypassed_.load());
@@ -87,9 +91,16 @@ juce::var StackNode::getMetadata() const {
       stepo->setProperty("name", st.name);
       stepo->setProperty("len", (double)st.len);
       stepo->setProperty("cue", st.cue);
+      if (!st.next.empty())
+        stepo->setProperty("next", Sequence::successorsVar(st));
       steps.add(juce::var(stepo));
     }
     so->setProperty("steps", steps);
+    so->setProperty("seed", (double)s->seed);
+    juce::Array<juce::var> program;
+    for (int k = 0; k < s->visit_count; ++k) program.add(s->visit_step[k]);
+    so->setProperty("program", program);
+    so->setProperty("radio", s->radio);
     auto* gateso = new juce::DynamicObject();
     for (const auto& row : s->gates) {
       juce::Array<juce::var> bits;
@@ -408,10 +419,12 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
     // The song position is inner(t) measured from this stack's frame
     // (Q18: its origin, not the received epoch).
     const int64_t srel = seq->fold(child_context.master_pos - O);
-    const int i = seq->stepAt(srel);
-    if (seq->cueAt(i)) {
-      const int64_t step_len = seq->bounds[i + 1] - seq->bounds[i];
-      child_context.master_pos = O + (srel - seq->bounds[i]);
+    // The PROGRAM is the timeline (§14): the lookup is by VISIT, so a
+    // step the program revisits re-bases on every entrance.
+    const int k = seq->visitAt(srel);
+    if (seq->cueOfVisit(k)) {
+      const int64_t step_len = seq->visitLen(k);
+      child_context.master_pos = O + (srel - seq->bounds[k]);
       child_context.cycle_epoch = O;
       // Mode-2 record INTO a cued step (S21): the through-map arm math
       // places the take at context.map's inner positions — compose the
@@ -419,7 +432,7 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
       // will read it (the song top, [0, stepLen)). Only the audition
       // aimed at THIS step composes; an authored multi-step window
       // over cued steps is refused at arm (audio_engine).
-      if (auditionStep() == i && child_context.map.active() &&
+      if (auditionStep() == seq->visit_step[k] && child_context.map.active() &&
           step_len > 0) {
         child_context.map = timing::TimeMap::single(0, step_len);
       }

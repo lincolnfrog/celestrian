@@ -47,13 +47,11 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs2[] = {in2};
 
       NodeContext rec1 = contextFor(*clip1, 10);
-      rec1.ctx.is_recording = true;
       clip1->startRecording();
       clip1->process(inputs1, nullptr, 1, 0, rec1.ctx);
       clip1->stopRecording();
 
       NodeContext rec2 = contextFor(*clip2, 10);
-      rec2.ctx.is_recording = true;
       clip2->startRecording();
       clip2->process(inputs2, nullptr, 1, 0, rec2.ctx);
       clip2->stopRecording();
@@ -97,12 +95,10 @@ class StackNodeTests : public juce::UnitTest {
       float* const ins1[] = {in1};
       float* const ins2[] = {in2};
       NodeContext rec1 = contextFor(*clip1, 1);
-      rec1.ctx.is_recording = true;
       clip1->startRecording();
       clip1->process(ins1, nullptr, 1, 0, rec1.ctx);
       clip1->stopRecording();
       NodeContext rec2 = contextFor(*clip2, 1);
-      rec2.ctx.is_recording = true;
       clip2->startRecording();
       clip2->process(ins2, nullptr, 1, 0, rec2.ctx);
       clip2->stopRecording();
@@ -125,7 +121,6 @@ class StackNodeTests : public juce::UnitTest {
       float in[1] = {0.9f};
       float* const ins[] = {in};
       NodeContext nc = contextFor(root, 1);
-      nc.ctx.is_recording = true;
 
       clipPtr->startRecording();
       root.process(ins, nullptr, 1, 0, nc.ctx);
@@ -152,13 +147,11 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs2[] = {in2};
 
       NodeContext rec1 = contextFor(*clip1Ptr, 10);
-      rec1.ctx.is_recording = true;
       clip1Ptr->startRecording();
       clip1Ptr->process(inputs1, nullptr, 1, 0, rec1.ctx);
       clip1Ptr->stopRecording();
 
       NodeContext rec2 = contextFor(*clip2Ptr, 10);
-      rec2.ctx.is_recording = true;
       clip2Ptr->startRecording();
       clip2Ptr->process(inputs2, nullptr, 1, 0, rec2.ctx);
       clip2Ptr->stopRecording();
@@ -218,7 +211,6 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs[] = {in};
 
       NodeContext rec = contextFor(*clipPtr, 100);
-      rec.ctx.is_recording = true;
 
       clipPtr->startRecording();
       clipPtr->process(inputs, nullptr, 1, 0, rec.ctx);
@@ -260,7 +252,6 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs[] = {in};
 
       NodeContext rec = contextFor(*clipPtr, 100);
-      rec.ctx.is_recording = true;
 
       clipPtr->startRecording();
       clipPtr->process(inputs, nullptr, 1, 0, rec.ctx);
@@ -303,7 +294,6 @@ class StackNodeTests : public juce::UnitTest {
       float* const inputs[] = {in};
 
       NodeContext rec = contextFor(*clipPtr, 100);
-      rec.ctx.is_recording = true;
 
       clipPtr->startRecording();
       clipPtr->process(inputs, nullptr, 1, 0, rec.ctx);

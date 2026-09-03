@@ -2413,6 +2413,88 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     box-shadow: inset 0 12px 16px -14px var(--map-amber);
 }
 
+/* --- SUCCESSORS (docs/sequencer.md §14): the → pip on the step header
+   opens the popover naming what may follow the step. Lit when the step
+   carries its own list; the popover is one row per step (toggle +
+   weight). A radio's grid shows the graph (one column per step); an
+   orphan (unreachable) step waits in the footer as a chip. --- */
+.seq-next {
+    width: auto;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    opacity: 0;
+    transition: opacity 0.12s;
+}
+.seq-hcell:hover .seq-next, .seq-next.on { opacity: 1; }
+.seq-next.on {
+    color: var(--amber-bright);
+    border-color: var(--amber-bright);
+    background: color-mix(in srgb, var(--amber-bright) 16%, transparent);
+}
+.seq-next-pop {
+    position: absolute;
+    top: 100%;
+    z-index: 30;
+    min-width: 150px;
+    margin-top: 3px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--amber-bright);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    font-size: 0.64rem;
+}
+.seq-next-pop.in-foot { position: relative; top: auto; margin: 0 6px; }
+.seq-next-title { color: var(--amber-bright); margin-bottom: 4px; }
+.seq-next-line { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.seq-next-opt {
+    flex: 1;
+    text-align: left;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 0.64rem;
+    color: var(--text-dim);
+}
+.seq-next-opt.on {
+    color: var(--text);
+    border-color: var(--amber-bright);
+    background: color-mix(in srgb, var(--amber-bright) 16%, transparent);
+}
+.seq-next-add {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border-radius: 4px;
+    font-size: 0.66rem;
+    color: var(--text-dim);
+}
+.seq-next-add:hover { color: var(--amber-bright); border-color: var(--amber-bright); }
+.seq-next-w {
+    width: 40px;
+    font: inherit;
+    font-size: 0.64rem;
+    color: var(--text);
+    background: var(--lane);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+}
+.seq-next-hint { margin-top: 4px; color: var(--text-dim); font-size: 0.58rem; }
+.seq-radio { color: var(--amber-bright); }
+.seq-reroll, .seq-orphan {
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 4px;
+    font-size: 0.62rem;
+    color: var(--amber-bright);
+}
+.seq-orphan { color: var(--text-dim); border-style: dashed; }
+.seq-reroll:hover, .seq-orphan:hover { border-color: var(--amber-bright); }
+.lane-seq.radio .seq-total { color: var(--amber-bright); }
+
 /* The lane echo of a cued span: a top hairline + pip, NOT a dim (the
    span still sounds — it re-bases). Display only (pure projection). */
 .seq-cue-span {

@@ -26,7 +26,7 @@
 import {
     lcm, calculateStackLCM, commensuratePeriod, computeEffectiveQuantum,
     nextStopBoundary, timelineLcm, stackEffectivePeriod, isAuditionWindow,
-    activeSequenceSamples,
+    activeSequenceSamples, sequenceProgram, sequenceTotalSamples,
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
@@ -428,7 +428,21 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
         // CUE (docs/sequencer.md ss3, S22): the step re-bases the
         // subtree to the song top - the header pip is the control.
         cue: !!st.cue,
+        // The successor graph (§14): [{to, w}]; empty = the loop
+        // successor. The header's → pip edits it.
+        next: Array.isArray(st.next)
+            ? st.next.map(n => ({ to: n.to, w: n.w })) : [],
     })) : [];
+    // THE PROGRAM (§14): the grid's COLUMNS are the visits — a step
+    // the walk plays twice has two columns, both editing the one step
+    // — so step boundaries stay on the shared time axis.
+    const prog = sequenceProgram(s);
+    const visits = [];
+    let totalQ = 0;
+    prog.visits.forEach(i => {
+        visits.push({ step: i, startQ: totalQ, lenQ: steps[i].lenQ });
+        totalQ += steps[i].lenQ;
+    });
     return {
         kind: 'seq',
         id: 'seq:' + ownerId,
@@ -437,7 +451,12 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
         depth,
         bypassed: !!(s && s.bypassed),
         steps,
-        totalQ: steps.reduce((t, x) => t + x.lenQ, 0),
+        visits,
+        totalQ,
+        // The radio (§6): period-less — the seed is its performance.
+        radio: !!prog.radio,
+        seed: s ? ((s.seed || 0) >>> 0) : 0,
+        reachable: steps.map((_, i) => !!prog.reachable[i]),
         // The step audition (§11.2): which step loops, −1 = none.
         auditionStep: auditionStepOf(s),
         // The append/creation default: one inner cycle (S2 —
@@ -483,7 +502,9 @@ function seqRow(node, depth, quantum, qEstablished) {
 function attachSeqDims(lanes, from, to, children, seq, quantum) {
     const stepsQ = seq.steps.map(
         st => (st.len > 0 ? Math.round(st.len) : 0) / quantum);
-    const totalQ = stepsQ.reduce((a, b) => a + b, 0);
+    // THE PROGRAM is the timeline (§14): spans tile over the visits.
+    const visits = sequenceProgram(seq).visits;
+    const totalQ = visits.reduce((t, k) => t + stepsQ[k], 0);
     if (!(totalQ > 0)) return;
     // CUED spans (ss3): every child under the scope replays the song
     // top during a cued step - the lanes mark those spans so the
@@ -491,8 +512,8 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
     const cueSegsQ = [];
     {
         let pos = 0;
-        seq.steps.forEach((st, k) => {
-            if (st.cue) cueSegsQ.push([pos, pos + stepsQ[k]]);
+        visits.forEach(k => {
+            if (seq.steps[k].cue) cueSegsQ.push([pos, pos + stepsQ[k]]);
             pos += stepsQ[k];
         });
     }
@@ -504,7 +525,8 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             const bits = seq.gates ? seq.gates[lane.id] : null;
             offSegs = [];
             let pos = 0, runStart = null;
-            stepsQ.forEach((lenQ, k) => {
+            visits.forEach(k => {
+                const lenQ = stepsQ[k];
                 const on = bits ? !!bits[k] : true;
                 if (!on && runStart === null) runStart = pos;
                 if (on && runStart !== null) {
@@ -903,9 +925,9 @@ function auditionStepOf(s) {
     return i >= 0 && s && i < s.steps.length ? i : -1;
 }
 
-/** Total sequence length in samples (steps CONCATENATE — S10). */
+/** Total PROGRAM length in samples (visits CONCATENATE — S10, §14). */
 function seqTotalSamples(s) {
-    return s.steps.reduce((t, x) => t + (x.len > 0 ? Math.round(x.len) : 0), 0);
+    return sequenceTotalSamples(s);
 }
 
 /** The ACTIVE sequence length in samples (0 = none/bypassed) — the

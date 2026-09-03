@@ -16,6 +16,27 @@ import { ensureEffects } from './effects.js';
 import { getCalibrationSamples } from './devices.js';
 import { getSampleRate, toSeconds } from './rate.js';
 import { publishTakes } from './takes.js';
+import { programOf } from '../sequence_program.js';
+
+/**
+ * A stored sequence as the engine publishes it (StackNode::getMetadata):
+ * steps (with cue and any successors), gates, the seed, the derived
+ * PROGRAM (step index per visit) and the radio flag (sequencer.md §14).
+ */
+function publishedSequence(seq, bypassed, auditionStep) {
+    const prog = programOf(seq.steps, seq.seed || 0);
+    return {
+        bypassed,
+        steps: seq.steps.map(s => ({
+            ...s, ...(s.next ? { next: s.next.map(n => ({ ...n })) } : {}) })),
+        gates: Object.fromEntries(Object.entries(seq.gates || {})
+            .map(([k, v]) => [k, [...v]])),
+        seed: (seq.seed || 0) >>> 0,
+        program: prog.visits.slice(),
+        radio: prog.radio,
+        auditionStep,
+    };
+}
 
 /**
  * Recursively project raw graph nodes into the ENGINE's published
@@ -78,13 +99,9 @@ export function enrichNodes(nodes) {
         // StackNode::getMetadata: published RAW (bypassed geometry
         // survives — I9; the VM derives active).
         if (node.type === 'stack' && node.sequence) {
-            updatedNode.sequence = {
-                bypassed: !!node.sequenceBypassed,
-                steps: node.sequence.steps.map(s => ({ ...s })),
-                gates: Object.fromEntries(Object.entries(
-                    node.sequence.gates || {}).map(([k, v]) => [k, [...v]])),
-                auditionStep: auditionMapOf(node) ? node.auditionStep : -1,
-            };
+            updatedNode.sequence = publishedSequence(
+                node.sequence, !!node.sequenceBypassed,
+                auditionMapOf(node) ? node.auditionStep : -1);
         }
         // Mixer + period-source facts publish on EVERY node (engine
         // parity: metadata always carries them; hand-written scenario
@@ -228,14 +245,9 @@ export function getState() {
         // The ROOT's sequence (docs/sequencer.md) — engine parity: the
         // root StackNode's metadata carries it top-level.
         ...(state.rootSequence ? {
-            sequence: {
-                bypassed: !!state.rootSequenceBypassed,
-                steps: state.rootSequence.steps.map(s => ({ ...s })),
-                gates: Object.fromEntries(Object.entries(
-                    state.rootSequence.gates || {})
-                    .map(([k, v]) => [k, [...v]])),
-                auditionStep: rootActiveMap() ? state.rootAuditionStep : -1,
-            },
+            sequence: publishedSequence(
+                state.rootSequence, !!state.rootSequenceBypassed,
+                rootActiveMap() ? state.rootAuditionStep : -1),
         } : {}),
         // The root's DERIVED audition window (§11.2) — engine parity:
         // the root StackNode publishes windowActive/loopStart/loopEnd

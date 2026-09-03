@@ -93,10 +93,13 @@ Nothing in Tier D is required for 1.0.
   scopes APP < VIEW < PANEL); the four module listeners are gone. The
   one intended change: Escape with a panel open closes only the panel.
   gesture.js keeps its transient capture-phase Escape for live drags.
-- [ ] **A8 — Small residue.** `ProcessContext::is_recording` (always
-  true; tests write it), `timing::playheadPercent` (golden-pinned, no
-  engine caller). ~~`window.__mapDbg` gating~~ ✅ `ui/js/debug_flags.js`
-  (a leaf module; the recorder exists only with `?debug=true`).
+- [x] **A8 — Small residue** ✅ 2026-09-02: `ProcessContext::is_recording`
+  is gone (it was always true; capture is gated by the node's own
+  state — 70 test writes and the one test that only exercised the flag
+  deleted); `playheadPercent` is gone from both timing mirrors and the
+  golden vectors (no caller in either). `window.__mapDbg` gating ✅
+  `ui/js/debug_flags.js` (a leaf module; the recorder exists only with
+  `?debug=true`).
 - [x] **A9 — Comment hygiene rule** ✅ 2026-09-01: the rule is in
   .agent/style.md and a full present-tense pass ran over src/ and
   ui/js + ui/css (comment-only, verified by stripping comments and
@@ -154,15 +157,23 @@ Nothing in Tier D is required for 1.0.
 
 ## Tier C: The sequencer's last step
 
-- [ ] **C1 — Successor graphs + the seed (step 5, S12).** Weighted
-  successors per step (branch-with-chance), root-only stochastic, the
-  seed stored as data so a "radio" pass is reproducible. Needs the
-  period-less-node rule stated in composition.md §3 (stochastic
-  successors have no period → root only).
+- [x] **C1 — Successor graphs + the seed** ✅ 2026-09-02 (sequencer.md
+  §14): `Step::next` = weighted successors, `Sequence::seed`; finalize
+  unrolls the PROGRAM (visits) — periodic when the deterministic walk
+  returns to step 0, else a RADIO (root only, S12; nested blocks demote
+  on load) unrolled to a 256-visit horizon. Every consumer (gates, cue,
+  audition, period, frame) reads the program; the JS mirror
+  (`ui/js/sequence_program.js`) is golden-pinned against the engine.
+  UI: visit columns, the → successors popover, orphan chips, the radio
+  badge + ⟳ re-roll. Same pass: the ROOT's sequence is now persisted
+  (`rootSequence`) — it was lost on reopen before.
 - [ ] **C2 — Per-step fades** (S13): `fadeInQ`/`fadeOutQ` on the step
   format.
-- [ ] **C3 — Nested stochastic sequences** (proposed under S12): decide
-  whether a nested stack's radio is legal once C1 lands.
+- [ ] **C3 — Nested stochastic sequences** (proposed under S12): refused
+  by rule today (a nested block that unrolls to a radio is demoted to
+  the loop on load; the verb refuses). Legalizing it would mean treating
+  the horizon total as a period — a different rule from "no period";
+  decide only if field use asks.
 
 ## Tier D: Vision (post-1.0)
 
@@ -213,8 +224,7 @@ Small, concrete, each a half-day or less unless marked. None blocks
   question 7).
 - [ ] **Engine perf:** cache `StackNode::getIntrinsicDuration` (walks
   children per call on the message thread) if the perf meters ever
-  care; `ProcessContext::is_recording` and `timing::playheadPercent`
-  residue (A8).
+  care.
 - [ ] **Test coverage shape** (from the 2026-09-01 audit): the DOM patch
   layer (`lane_body.js`, `map_bands.js`, `patch.js`, `rail.js`) is
   e2e-only and `app.js` glue has few units — the confirmed UI bug lived

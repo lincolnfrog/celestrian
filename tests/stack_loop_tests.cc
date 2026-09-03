@@ -37,7 +37,6 @@ class StackLoopTests : public juce::UnitTest {
       for (int i = 0; i < len; ++i) ramp[(size_t)i] = (float)(i + 1) * 0.0001f;
       float* const rampIn[] = {ramp.data()};
       NodeContext nc = contextFor(*clip, len);
-      nc.ctx.is_recording = true;
       clip->startRecording();
       clip->process(rampIn, nullptr, 1, 0, nc.ctx);
       clip->stopRecording();

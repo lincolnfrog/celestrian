@@ -17,6 +17,7 @@
 import { lcm } from './math_utils.js';
 import { qtime, toSamples, fromSamples } from './qtime.js';
 import { flatSegPeriod, mapOffset, nodeWindowActive } from './time_map.js';
+import { programOf } from './sequence_program.js';
 
 // Re-exported for consumers that fold periods on top of this module's
 // cycle math (view_model.js); the canonical home is math_utils.js.
@@ -195,7 +196,39 @@ export function calculateStackLCM(stackNodes, effectiveQ) {
 export function activeSequenceSamples(node) {
     const s = node && node.sequence;
     if (!s || s.bypassed || !Array.isArray(s.steps)) return 0;
-    return s.steps.reduce((t, x) => t + (x.len > 0 ? Math.round(x.len) : 0), 0);
+    return sequenceTotalSamples(s);
+}
+
+/**
+ * The PROGRAM of a published sequence (docs/sequencer.md §14): the
+ * step index of every visit. The engine (and the mock) publish it as
+ * `program`; a fixture without one unrolls (steps, seed) locally.
+ */
+export function sequenceProgram(s) {
+    if (!s || !Array.isArray(s.steps) || !s.steps.length) {
+        return { visits: [], radio: false, reachable: [], firstVisit: [] };
+    }
+    if (Array.isArray(s.program) && s.program.length) {
+        const visits = s.program.filter(i => Number.isInteger(i) && i >= 0 &&
+                                             i < s.steps.length);
+        return {
+            visits,
+            radio: !!s.radio,
+            reachable: s.steps.map((_, i) => visits.includes(i)),
+            firstVisit: s.steps.map((_, i) => visits.indexOf(i)),
+        };
+    }
+    return programOf(s.steps, s.seed || 0);
+}
+
+export function sequenceVisits(s) {
+    return sequenceProgram(s).visits;
+}
+
+/** Total PROGRAM length in samples (visits CONCATENATE — S10). */
+export function sequenceTotalSamples(s) {
+    const lens = s.steps.map(x => (x.len > 0 ? Math.round(x.len) : 0));
+    return sequenceVisits(s).reduce((t, i) => t + lens[i], 0);
 }
 
 /**

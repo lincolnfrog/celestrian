@@ -36,7 +36,6 @@ class QuantumPropagationTests : public juce::UnitTest {
       clip1Ptr->startRecording();
       NodeContext nc = contextFor(root, 100, 0);
       nc.driveFrom(*clip1Ptr);
-      nc.ctx.is_recording = true;
       clip1Ptr->process(inputs, nullptr, 1, 0, nc.ctx);
 
       clip1Ptr->stopRecording();
@@ -58,7 +57,6 @@ class QuantumPropagationTests : public juce::UnitTest {
       NodeContext nc = contextFor(root, 0, 0);
       nc.driveFrom(*c1);
       ProcessContext& ctx = nc.ctx;
-      ctx.is_recording = true;
 
       c1->startRecording();
       ctx.num_samples = 1000;
@@ -109,7 +107,6 @@ class QuantumPropagationTests : public juce::UnitTest {
 
       NodeContext nc = contextFor(root, 1000, 0);
       nc.driveFrom(*qPtr);
-      nc.ctx.is_recording = true;
       qPtr->startRecording();
       qPtr->process(inputs, nullptr, 1, 0, nc.ctx);
       qPtr->stopRecording();  // Q = 1000
@@ -119,7 +116,6 @@ class QuantumPropagationTests : public juce::UnitTest {
         auto clip = std::make_unique<ClipNode>("C", 44100.0);
         clip->startRecording();
         NodeContext c = contextFor(*clip, len);
-        c.ctx.is_recording = true;
         clip->process(inputs, nullptr, 1, 0, c.ctx);
         clip->stopRecording();
         return clip;
@@ -147,7 +143,6 @@ class QuantumPropagationTests : public juce::UnitTest {
       NodeContext nc = contextFor(root, 1000, 0);
       nc.driveFrom(*masterPtr);
       ProcessContext& ctx = nc.ctx;
-      ctx.is_recording = true;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
@@ -182,7 +177,6 @@ class QuantumPropagationTests : public juce::UnitTest {
       NodeContext nc = contextFor(root, 1000, 0);
       nc.driveFrom(*masterPtr);
       ProcessContext& ctx = nc.ctx;
-      ctx.is_recording = true;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
@@ -219,7 +213,6 @@ class QuantumPropagationTests : public juce::UnitTest {
       NodeContext nc = contextFor(root, 1000, 0);
       nc.driveFrom(*masterPtr);
       ProcessContext& ctx = nc.ctx;
-      ctx.is_recording = true;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 
@@ -257,7 +250,6 @@ class QuantumPropagationTests : public juce::UnitTest {
       NodeContext nc = contextFor(root, 1000, 0);
       nc.driveFrom(*masterPtr);
       ProcessContext& ctx = nc.ctx;
-      ctx.is_recording = true;
       masterPtr->process(inputs, nullptr, 1, 0, ctx);
       masterPtr->stopRecording();
 

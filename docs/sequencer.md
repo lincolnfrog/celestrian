@@ -951,6 +951,89 @@ mock twins `ui/js/mock/sequence.js` + `ui/js/mock/recording.js`; VM
 
 ---
 
+## 14. Build step 5 — SUCCESSOR GRAPHS + THE SEED (implementation record, 2026-09-02)
+
+The radio of §6, built. S12 as ruled: root-only stochastic
+successors; the seed is data (saved, re-rollable, exportable).
+
+**The model.** Each step carries `next: [{to, w}]` — its weighted
+successors; empty = the loop successor `(i+1) mod n` (S3). The
+sequence carries a `seed` (uint32). The **PROGRAM** is the walk from
+step 0: a list of VISITS (a step index each). Every timeline question
+— position → step, gates, cues, the audition span, the period — reads
+through the program, never the raw step list. A plain song's program
+is `0, 1, …, n−1`: today's behaviour exactly.
+
+**Purity.** A draw at visit k is `mix32(seed ^ mix32(k·φ + c))`
+(lowbias32, integer-only) mod the weight sum — a counter hash, so
+`(sequence, seed)` unrolls to ONE program on the message thread
+(`Sequence::finalize`) and the audio thread derives "which step at t"
+from snapshot + clock alone (I6). The JS mirror
+(`ui/js/sequence_program.js`) reproduces the walk bit for bit — pinned
+by `sequence_program_cases` in shared/timing_golden.json from both
+sides.
+
+**Periodic vs RADIO (the rule composition.md §3 names).** When every
+visited step has exactly one candidate successor AND the walk returns
+to step 0, the program is that loop and `total` is its period — a
+jump graph (A → C → A, B orphaned) is a legitimate 2-step song
+anywhere in the tree. Otherwise the sequence is a **radio**: it has no
+period, so it is legal on the ROOT only (`setSequence` refuses it
+nested with a log; a nested block in a session or template is DEMOTED
+to the loop on load, `Sequence::linearize`). Two things make a radio:
+a branch with chance (two or more candidates), or an **intro** — a
+deterministic walk that revisits a step other than 0 (0 → 1 → 2 → 1 →
+2 …). A radio's program is the walk unrolled to the **horizon**
+(`kMaxVisits` = 256 visits), after which it repeats; the horizon total
+is what the root's frame folds on (masterPos wrap, the ruler, the
+grid). Long enough for hours of song-stacks; the infinite station that
+never repeats is Tier D (extend the program on the message thread as
+the transport nears the horizon — the seed makes that pure too).
+
+**What rides the program.** Cue re-bases per VISIT (a cued step
+revisited re-bases on every entrance; S20 cuts at every seam). The
+gate envelope runs over visits (runs merge across revisits of on-steps;
+the all-on fast path reads the REACHABLE mask, so an orphan's gate is
+irrelevant). The step audition loops the step's FIRST visit; an orphan
+has no span and refuses. S21's arm-inside-a-cued-step reads the visit
+under the playhead. The frame-health faces read the program total.
+
+**Persistence.** Additive: `next` per step and `seed` on the block in
+metadata, session and templates (the template's index-keyed gates are
+untouched — successors name STEP indices, which the template keeps).
+Same pass: the ROOT's own sequence is now persisted (`rootSequence`,
+bundle-level like the master rack; `LoadedSession.root_sequence`,
+applied after Q) — before this the session's song was lost on reopen,
+and a radio lives on the root by rule.
+
+**UI (ui/js/session_view/seq_grid.js).** While the program is
+periodic the grid's COLUMNS are its visits in program order (a
+deterministic loop plays each step at most once, so a column is a
+step, time-honest). A RADIO's grid shows the GRAPH instead — one
+equal-width column per reachable step in list order (the horizon
+would be hundreds of slivers); the lanes stay the honest timeline and
+the frame chip reads the whole program. The header's → pip opens the
+SUCCESSORS popover: one row per step — the name = "ONLY this follows"
+(a single successor, legal anywhere, so re-routing a nested song never
+passes through a branch), ＋/− adds or drops it as a branch candidate,
+a weight when on; the default (next step, weight 1) stores as no list;
+every change is one setSequence (one undo step). Orphans have no column and
+wait in the footer as ⤳ chips (click: choose what follows them; right-
+click: delete; deleting a step re-indexes every edge). A radio's
+footer shows `📻 radio · seed xxxxxxxx` and `⟳ re-roll` (a new seed via
+setSequence — undoable; the seed is the performance). The lanes tile
+their dims and cue marks over the program.
+
+Pinned by the "SUCCESSORS" section of tests/sequencer_tests.cc, the
+"sequence program" golden section (both mirrors),
+ui/js/tests/successors.test.mjs and ui/e2e/successors.spec.js.
+
+Open under this step: **C3** (tasks.md) — whether a nested radio
+should ever be legal (it would need the horizon total as a period, a
+different rule from "no period"); refused until someone needs it.
+
+---
+
 ## Appendix: the first-draft options (history)
 
 The 2026-08-19 first draft pitched three options: **A** — one

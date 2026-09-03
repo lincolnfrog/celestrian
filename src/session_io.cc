@@ -39,6 +39,37 @@ QTime qread(const juce::var& v) {
 // The chain array verbatim (docs/vst3.md §6): the chain's metadata IS
 // the save format — [{slot, type, enabled, ...params}] in signal order.
 // (Scope telemetry lives outside the chain and never appears here.)
+// A stack's SEQUENCE block (docs/sequencer.md): steps as QTime lengths
+// with cue + successors, the seed, gates keyed by child uuid, the
+// bypass flag. Void when the stack has none. ONE writer for nested
+// stacks and the root (the root's block is bundle-level).
+juce::var sequenceVar(const StackNode& stack, int64_t q) {
+  const Sequence* s = stack.sequencePtr();
+  if (s == nullptr) return juce::var();
+  auto* so = new juce::DynamicObject();
+  so->setProperty("bypassed", stack.isSequenceBypassed());
+  juce::Array<juce::var> steps;
+  for (const auto& st : s->steps) {
+    auto* stepo = new juce::DynamicObject();
+    stepo->setProperty("name", st.name);
+    stepo->setProperty("lenQ", qvar(timing::fromSamples(st.len, q)));
+    if (st.cue) stepo->setProperty("cue", true);  // additive
+    if (!st.next.empty())
+      stepo->setProperty("next", Sequence::successorsVar(st));  // additive
+    steps.add(juce::var(stepo));
+  }
+  so->setProperty("steps", steps);
+  if (s->seed != 0) so->setProperty("seed", (double)s->seed);  // additive
+  auto* gateso = new juce::DynamicObject();
+  for (const auto& row : s->gates) {
+    juce::Array<juce::var> bits;
+    for (int i = 0; i < s->numSteps(); ++i) bits.add(s->on(row.mask, i));
+    gateso->setProperty(row.uuid, bits);
+  }
+  so->setProperty("gates", juce::var(gateso));
+  return juce::var(so);
+}
+
 juce::var effectsBlob(const AudioNode& node) {
   return node.fxChain()->getMetadata(/*include_persistent_state=*/true);
 }
@@ -278,33 +309,12 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
       o->setProperty("originQ", qvar(timing::originQ(node.origin_samples.load(),
                                                      epoch, q)));
     }
-    // The SEQUENCE (docs/sequencer.md) — additive block. Step lengths
-    // are musical facts (QTime on the island exchange rate); gates key
-    // the children's uuids, which the session preserves.
-    // Stripped with performances: a sequence references committed
-    // takes' children and lengths in Q — meaningless pre-Q.
+    // The SEQUENCE (docs/sequencer.md) — additive block. Stripped with
+    // performances: a sequence references committed takes' children
+    // and lengths in Q — meaningless pre-Q.
     if (!opts.strip_performances && q > 0) {
-      if (const Sequence* s = stack.sequencePtr()) {
-        auto* so = new juce::DynamicObject();
-        so->setProperty("bypassed", stack.isSequenceBypassed());
-        juce::Array<juce::var> steps;
-        for (const auto& st : s->steps) {
-          auto* stepo = new juce::DynamicObject();
-          stepo->setProperty("name", st.name);
-          stepo->setProperty("lenQ", qvar(timing::fromSamples(st.len, q)));
-          if (st.cue) stepo->setProperty("cue", true);  // additive
-          steps.add(juce::var(stepo));
-        }
-        so->setProperty("steps", steps);
-        auto* gateso = new juce::DynamicObject();
-        for (const auto& row : s->gates) {
-          juce::Array<juce::var> bits;
-          for (int i = 0; i < s->numSteps(); ++i) bits.add(s->on(row.mask, i));
-          gateso->setProperty(row.uuid, bits);
-        }
-        so->setProperty("gates", juce::var(gateso));
-        o->setProperty("sequence", juce::var(so));
-      }
+      const juce::var so = sequenceVar(stack, q);
+      if (!so.isVoid()) o->setProperty("sequence", so);
     }
     juce::Array<juce::var> kids;
     for (const auto& child : stack.ownedChildren())
@@ -336,38 +346,12 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     // engine forces the island values on the real root after attaching.
     stack->setQuantum(0, 0);
     // The SEQUENCE (docs/sequencer.md): rebuild from the additive
-    // block. Pre-graph node — no old pointer, no retire needed.
-    if (auto* so = o->getProperty("sequence").getDynamicObject()) {
-      auto seq = std::make_unique<Sequence>();
-      if (auto* steps = so->getProperty("steps").getArray()) {
-        for (const auto& sv : *steps) {
-          if ((int)seq->steps.size() >= Sequence::kMaxSteps) break;
-          Sequence::Step st;
-          st.len = timing::toSamples(qread(sv.getProperty("lenQ", {})), q);
-          st.name = sv.getProperty("name", {}).toString();
-          st.cue = (bool)sv.getProperty("cue", false);
-          if (st.len > 0) seq->steps.push_back(std::move(st));
-        }
-      }
-      if (auto* g = so->getProperty("gates").getDynamicObject()) {
-        for (const auto& p : g->getProperties()) {
-          Sequence::GateRow row;
-          row.uuid = p.name.toString();
-          row.mask = 0;
-          if (auto* bits = p.value.getArray()) {
-            for (int i = 0; i < bits->size() && i < Sequence::kMaxSteps; ++i) {
-              if ((bool)(*bits)[i]) row.mask |= (1ull << i);
-            }
-          }
-          seq->gates.push_back(std::move(row));
-        }
-      }
-      if (!seq->steps.empty()) {
-        seq->finalize();
-        delete stack->exchangeSequence(seq.release());
-      }
-      stack->setSequenceBypassed((bool)so->getProperty("bypassed"));
-    }
+    // block. Pre-graph node — no old pointer, no retire needed. Every
+    // stack built here is NESTED (the root is the engine's own), so a
+    // radio in the block is demoted (root only, S12).
+    applySequenceVar(*stack, o->getProperty("sequence"), q,
+                     SequenceScope::NESTED,
+                     [](const Sequence* old) { delete old; });
     // Q18: an anchored stack's origin is a stored fact; absent key =
     // unanchored (settleAnchors derives one from content after load).
     if ((bool)stack->isAnchored() == false && (bool)o->getProperty("anchored")) {
@@ -568,6 +552,13 @@ bool save(const StackNode& root, double device_sample_rate,
   top->setProperty("rootGain", (double)root.gain.load());
   top->setProperty("rootPan", (double)root.pan.load());
   top->setProperty("rootEffects", effectsBlob(root));
+  // The root's own SEQUENCE (the session's song — sequencer.md §10:
+  // fractal, root included) is bundle-level like its mute and rack.
+  // Pre-Q it has no exchange rate: skipped with the rest of the grid.
+  if (!opts.strip_performances && q > 0) {
+    const juce::var so = sequenceVar(root, q);
+    if (!so.isVoid()) top->setProperty("rootSequence", so);
+  }
 
   juce::Array<juce::var> nodes;
   for (const auto& child : root.ownedChildren())
@@ -603,6 +594,7 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
                                            (double)o->getProperty("rootPan"))
                      : 0.0f;
   out.root_effects = o->getProperty("rootEffects");
+  out.root_sequence = o->getProperty("rootSequence");
   out.display_name = o->getProperty("name").toString();
   out.created = o->getProperty("created").toString();
 
@@ -615,6 +607,54 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   }
   out.ok = true;
   return out;
+}
+
+void applySequenceVar(StackNode& stack, const juce::var& block, int64_t q,
+                      SequenceScope scope,
+                      const std::function<void(const Sequence*)>& retire) {
+  auto* so = block.getDynamicObject();
+  if (so == nullptr) return;
+  auto seq = std::make_unique<Sequence>();
+  if (auto* steps = so->getProperty("steps").getArray()) {
+    for (const auto& sv : *steps) {
+      if ((int)seq->steps.size() >= Sequence::kMaxSteps) break;
+      Sequence::Step st;
+      st.len = timing::toSamples(qread(sv.getProperty("lenQ", {})), q);
+      st.name = sv.getProperty("name", {}).toString();
+      st.cue = (bool)sv.getProperty("cue", false);
+      Sequence::readSuccessors(sv, st);
+      if (st.len > 0) seq->steps.push_back(std::move(st));
+    }
+  }
+  seq->seed = (uint32_t)(int64_t)(double)so->getProperty("seed");
+  if (auto* g = so->getProperty("gates").getDynamicObject()) {
+    for (const auto& p : g->getProperties()) {
+      Sequence::GateRow row;
+      row.uuid = p.name.toString();
+      row.mask = 0;
+      if (auto* bits = p.value.getArray()) {
+        for (int i = 0; i < bits->size() && i < Sequence::kMaxSteps; ++i) {
+          if ((bool)(*bits)[i]) row.mask |= (1ull << i);
+        }
+      }
+      seq->gates.push_back(std::move(row));
+    }
+  }
+  if (!seq->steps.empty()) {
+    seq->finalize();
+    // ROOT-ONLY RADIO (S12): a nested block that unrolls to a radio
+    // keeps its steps and gates but loses its successors.
+    if (seq->radio && scope == SequenceScope::NESTED) {
+      juce::Logger::writeToLog(
+          "session_io: nested stack '" + stack.getName() +
+          "' carries a radio; successors dropped (root only, S12)");
+      seq->linearize();
+    }
+    if (const Sequence* old = stack.exchangeSequence(seq.release())) {
+      retire(old);
+    }
+  }
+  stack.setSequenceBypassed((bool)so->getProperty("bypassed"));
 }
 
 }  // namespace celestrian::session_io

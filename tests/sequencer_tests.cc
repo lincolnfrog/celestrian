@@ -63,7 +63,6 @@ std::unique_ptr<ClipNode> makeDcClip(const char* name, float amp,
   std::vector<float> in((size_t)len, amp);
   const float* const ins[] = {in.data()};
   NodeContext rec = contextFor(*clip, len);
-  rec.ctx.is_recording = true;
   clip->startRecording();
   clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
@@ -79,7 +78,6 @@ std::unique_ptr<ClipNode> makeRampClip(const char* name, int len = kLen) {
   for (int i = 0; i < len; ++i) in[(size_t)i] = (float)i / (float)len;
   const float* const ins[] = {in.data()};
   NodeContext rec = contextFor(*clip, len);
-  rec.ctx.is_recording = true;
   clip->startRecording();
   clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();
@@ -118,6 +116,7 @@ class SequencerTests : public juce::UnitTest {
     testAudition();
     testWindowDomain();
     testCueSteps();
+    testSuccessors();
   }
 
  private:
@@ -925,6 +924,380 @@ class SequencerTests : public juce::UnitTest {
       auto* g2 = dynamic_cast<StackNode*>(preQ.get());
       expect(g2 != nullptr && g2->sequencePtr() == nullptr,
              "no Q yet: subtree builds, sequence skipped");
+    }
+  }
+
+  // === SUCCESSOR GRAPHS + THE SEED (docs/sequencer.md §6, §14; S12
+  // root-only radio) — the PROGRAM is the timeline. ===
+  void testSuccessors() {
+    /** A step with one explicit successor. */
+    auto step = [](int64_t len, const char* name, int to,
+                   bool cue = false) {
+      Sequence::Step st;
+      st.len = len;
+      st.name = name;
+      st.cue = cue;
+      st.next.push_back({to, 1});
+      return st;
+    };
+    auto payloadWith = [](std::vector<std::vector<int>> nexts,
+                          double seed) {
+      auto* payload = new juce::DynamicObject();
+      juce::Array<juce::var> steps;
+      for (size_t i = 0; i < nexts.size(); ++i) {
+        auto* s = new juce::DynamicObject();
+        s->setProperty("name", juce::String("s") + juce::String((int)i));
+        s->setProperty("len", 1000.0);
+        juce::Array<juce::var> next;
+        for (int to : nexts[i]) {
+          auto* n = new juce::DynamicObject();
+          n->setProperty("to", to);
+          n->setProperty("w", 1);
+          next.add(juce::var(n));
+        }
+        if (!next.isEmpty()) s->setProperty("next", next);
+        steps.add(juce::var(s));
+      }
+      payload->setProperty("steps", steps);
+      payload->setProperty("seed", seed);
+      return juce::var(payload);
+    };
+    auto seqOf = [](const juce::var& state) {
+      return state.getProperty("sequence", juce::var());
+    };
+
+    beginTest("S12: a deterministic jump graph is periodic; an unreachable "
+              "step never sounds");
+    {
+      // 0 -> 2 -> 0: step 1 is orphaned.
+      Sequence s;
+      s.steps.push_back(step(kLen, "a", 2));
+      s.steps.push_back({kLen, "b"});
+      s.steps.push_back(step(kLen, "c", 0));
+      s.finalize();
+      expect(!s.radio, "a loop that returns to step 0 is periodic");
+      expectEquals(s.visit_count, 2, "two visits");
+      expectEquals(s.visit_step[0], 0);
+      expectEquals(s.visit_step[1], 2);
+      expectEquals(s.total, (int64_t)(2 * kLen), "the program is the period");
+      expect(!s.reachableStep(1), "step 1 is unreachable");
+      expectEquals(s.first_visit[1], -1);
+      expectEquals(s.first_visit[2], 1);
+      expectEquals(s.stepAt(kLen + 1), 2, "position lookup runs on visits");
+      // A mask off only on the orphan is effectively all-on; a mask on
+      // only the orphan is silence.
+      expectWithinAbsoluteError(s.gainAt(0b101ull, 10, kFade), 1.0f, 1e-6f,
+                                "orphan gate is irrelevant: constant 1");
+      expectWithinAbsoluteError(s.gainAt(0b010ull, 10, kFade), 0.0f, 1e-6f,
+                                "only the orphan on: silence");
+      // The plain loop reads as before.
+      Sequence plain;
+      plain.steps.push_back({kLen, "a"});
+      plain.steps.push_back({kLen, "b"});
+      plain.finalize();
+      expect(plain.isPlainLoop() && !plain.radio, "default successors = the loop");
+    }
+
+    beginTest("S12: an intro that never returns is a RADIO, unrolled to the "
+              "horizon");
+    {
+      Sequence s;
+      s.steps.push_back({kLen, "intro"});
+      s.steps.push_back({kLen, "a"});
+      s.steps.push_back(step(kLen, "b", 1));
+      s.finalize();
+      expect(s.radio, "no deterministic return to step 0 = period-less");
+      expectEquals(s.visit_count, Sequence::kMaxVisits, "the horizon");
+      expectEquals(s.visit_step[0], 0);
+      expectEquals(s.visit_step[1], 1);
+      expectEquals(s.visit_step[2], 2);
+      expectEquals(s.visit_step[3], 1, "the vamp repeats a, b");
+      expectEquals(s.visit_step[4], 2);
+      expectEquals(s.total, (int64_t)(Sequence::kMaxVisits * kLen));
+      s.linearize();
+      expect(!s.radio && s.isPlainLoop(), "linearize demotes it to the loop");
+    }
+
+    beginTest("the seed is data: one seed, one program; weights bias the draw");
+    {
+      Sequence s;
+      Sequence::Step a;
+      a.len = kLen;
+      a.next = {{1, 1}, {2, 3}};
+      s.steps.push_back(a);
+      s.steps.push_back(step(kLen, "one", 0));
+      s.steps.push_back(step(kLen, "two", 0));
+      s.seed = 0x1234;
+      s.finalize();
+      expect(s.radio, "a branch with chance is a radio");
+      Sequence again = s;
+      again.finalize();
+      bool same = again.visit_count == s.visit_count;
+      for (int k = 0; same && k < s.visit_count; ++k) {
+        same = again.visit_step[k] == s.visit_step[k];
+      }
+      expect(same, "the same (sequence, seed) unrolls identically");
+      Sequence other = s;
+      other.seed = 0x1235;
+      other.finalize();
+      bool differs = false;
+      for (int k = 0; k < s.visit_count && !differs; ++k) {
+        differs = other.visit_step[k] != s.visit_step[k];
+      }
+      expect(differs, "another seed is another performance");
+      int ones = 0, twos = 0;
+      for (int k = 0; k < s.visit_count; ++k) {
+        if (s.visit_step[k] == 1) ++ones;
+        if (s.visit_step[k] == 2) ++twos;
+      }
+      expect(twos > ones, "3:1 weighting lands on 'two' more often");
+    }
+
+    beginTest("CUE on a revisited step re-bases EVERY entrance; the audition "
+              "loops the first visit; an orphan cannot be auditioned");
+    {
+      // intro | A (cued) | B -> A ...: A is visited at k = 1, 3, 5, ...
+      auto* cs = new Sequence();
+      cs->steps.push_back({kLen, "intro"});
+      cs->steps.push_back({kLen, "A", true});
+      cs->steps.push_back(step(kLen, "B", 1));
+      cs->finalize();
+      expectEquals(cs->visit_step[3], 1, "A again at visit 3");
+      expectEquals(cs->songToContent(cs->bounds[1] + 100), (int64_t)100,
+                   "first visit re-bases to the song top");
+      expectEquals(cs->songToContent(cs->bounds[3] + 100), (int64_t)100,
+                   "the revisit re-bases too");
+      expectEquals(cs->songToContent(cs->bounds[2] + 100),
+                   cs->bounds[2] + 100, "a plain visit is identity");
+      expect(cs->cutBetween(2, 3), "the seam into the revisit is a cut");
+      StackNode stack("island");
+      stack.addChild(makeRampClip("r"));
+      delete stack.exchangeSequence(cs);
+      stack.setAuditionStep(1);
+      const timing::TimeMap m = stack.auditionMap();
+      expect(m.active(), "audition of a revisited step has a span");
+      expectEquals(m.segs[0].start, cs->bounds[1], "…its FIRST visit");
+      expectEquals(m.segs[0].end, cs->bounds[2]);
+      // Orphan: no span.
+      auto* os = new Sequence();
+      os->steps.push_back(step(kLen, "a", 2));
+      os->steps.push_back({kLen, "orphan"});
+      os->steps.push_back(step(kLen, "c", 0));
+      os->finalize();
+      delete stack.exchangeSequence(os);
+      stack.setAuditionStep(1);
+      expect(!stack.auditionMap().active(), "an orphan has no audition span");
+      stack.setAuditionStep(-1);
+    }
+
+    beginTest("engine: a radio is ROOT-ONLY; the root publishes program, "
+              "seed and radio; re-roll is one undoable edit");
+    {
+      AudioEngine engine;
+      const juce::String rootId =
+          engine.getGraphState().getProperty("id", "").toString();
+      engine.createNode("stack");
+      const juce::String groupId =
+          (*engine.getGraphState().getProperty("nodes", {}).getArray())[0]
+              .getProperty("id", "")
+              .toString();
+      expect(groupId.isNotEmpty(), "nested stack created");
+
+      // Nested: the branch is refused, nothing recorded.
+      engine.setSequence(groupId, payloadWith({{1, 2}, {0}, {0}}, 5.0));
+      auto findNode = [&](const juce::var& state, const juce::String& id) {
+        juce::var found;
+        if (auto* nodes = state.getProperty("nodes", juce::var()).getArray()) {
+          for (auto& n : *nodes) {
+            if (n.getProperty("id", "").toString() == id) found = n;
+          }
+        }
+        return found;
+      };
+      expect(!seqOf(findNode(engine.getGraphState(), groupId)).isObject(),
+             "a nested radio is refused (S12)");
+      // Nested: a deterministic graph that returns to 0 is fine.
+      engine.setSequence(groupId, payloadWith({{2}, {}, {0}}, 0.0));
+      const juce::var g = seqOf(findNode(engine.getGraphState(), groupId));
+      expect(g.isObject(), "a periodic jump graph is legal nested");
+      expect(!(bool)g.getProperty("radio", true), "…and is not a radio");
+      expectEquals(g.getProperty("program", juce::var()).getArray()->size(),
+                   2, "program published: [0, 2]");
+
+      // Root: the branch is accepted and published.
+      engine.setSequence(rootId, payloadWith({{1, 2}, {0}, {0}}, 5.0));
+      juce::var r = seqOf(engine.getGraphState());
+      expect(r.isObject(), "the root takes a radio");
+      expect((bool)r.getProperty("radio", false), "radio flag published");
+      expectEquals((int)(double)r.getProperty("seed", -1.0), 5, "seed echoes");
+      expectEquals(r.getProperty("program", juce::var()).getArray()->size(),
+                   Sequence::kMaxVisits, "the program fills the horizon");
+      expect(r.getProperty("steps", juce::var())[0]
+                 .getProperty("next", juce::var())
+                 .isArray(),
+             "successors published per step");
+      // Re-roll = the same payload with another seed: one edit.
+      engine.setSequence(rootId, payloadWith({{1, 2}, {0}, {0}}, 6.0));
+      expectEquals((int)(double)seqOf(engine.getGraphState())
+                       .getProperty("seed", -1.0),
+                   6, "re-rolled");
+      engine.undo();
+      expectEquals((int)(double)seqOf(engine.getGraphState())
+                       .getProperty("seed", -1.0),
+                   5, "undo restores the previous seed");
+      // A successor out of range is malformed: refused.
+      engine.setSequence(rootId, payloadWith({{7}, {0}, {0}}, 5.0));
+      expectEquals((int)(double)seqOf(engine.getGraphState())
+                       .getProperty("seed", -1.0),
+                   5, "out-of-range successor refused; unchanged");
+      // Auditioning an orphan is refused.
+      engine.setSequence(rootId, payloadWith({{2}, {}, {0}}, 0.0));
+      engine.auditionStep(rootId, 1);
+      expectEquals((int)seqOf(engine.getGraphState())
+                       .getProperty("auditionStep", 0),
+                   -1, "orphan audition refused");
+      engine.auditionStep(rootId, 2);
+      expectEquals((int)seqOf(engine.getGraphState())
+                       .getProperty("auditionStep", -1),
+                   2, "a reachable step auditions");
+      engine.auditionStep(rootId, -1);
+    }
+
+    beginTest("session: successors + seed round-trip on a group AND on the "
+              "root; a nested radio in a bundle is demoted");
+    {
+      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                     .getChildFile("celestrian_seq_succ_io_test");
+      dir.deleteRecursively();
+      {
+        // The root's own song, with a branch: bundle-level.
+        AudioEngine engine;
+        const juce::String rootId =
+            engine.getGraphState().getProperty("id", "").toString();
+        // A committed take establishes Q (the grid's exchange rate) —
+        // driven through the production callback.
+        std::vector<float> inBuf((size_t)512, 0.1f);
+        auto process = [&](int total) {
+          float* ins[] = {inBuf.data()};
+          float outL[512], outR[512];
+          float* outs[] = {outL, outR};
+          int remaining = total;
+          while (remaining > 0) {
+            const int n = std::min(remaining, 512);
+            engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+            remaining -= n;
+          }
+        };
+        auto prop = [&](const char* key) {
+          const juce::var nodes = engine.getGraphState().getProperty("nodes", {});
+          return (int64_t)(double)(*nodes.getArray())[0].getProperty(key, 0.0);
+        };
+        engine.createNode("clip");
+        const juce::String clipId =
+            (*engine.getGraphState().getProperty("nodes", {}).getArray())[0]
+                .getProperty("id", "")
+                .toString();
+        engine.startRecordingInNode(clipId);
+        process(100);
+        process(44100);
+        engine.stopRecordingInNode(clipId);
+        for (int i = 0; i < 200 && prop("isRecording") != 0; ++i) process(512);
+        expect(prop("duration") > 0, "Q established");
+        engine.setSequence(rootId, payloadWith({{1, 2}, {0}, {0}}, 99.0));
+        expect(engine.saveSession(dir.getFullPathName()), "save ok");
+      }
+      {
+        AudioEngine engine;
+        expect(engine.loadSession(dir.getFullPathName()), "load ok");
+        const juce::var r = seqOf(engine.getGraphState());
+        expect(r.isObject(), "the root's song came back");
+        expect((bool)r.getProperty("radio", false), "…still a radio");
+        expectEquals((int)(double)r.getProperty("seed", -1.0), 99,
+                     "…with its seed (the run is reproducible)");
+      }
+      dir.deleteRecursively();
+
+      // A nested stack: successors and the seed persist; a hand-written
+      // radio in the block is demoted to the loop on load.
+      StackNode outer("island");
+      auto group = std::make_unique<StackNode>("song");
+      auto c = makeDcClip("b", 0.2f);
+      group->addChild(std::move(c));
+      auto* gs = new Sequence();
+      gs->steps.push_back(step(kLen, "a", 2));
+      gs->steps.push_back({kLen, "orphan"});
+      gs->steps.push_back(step(kLen, "c", 0));
+      gs->seed = 7;
+      gs->finalize();
+      delete group->exchangeSequence(gs);
+      outer.addChild(std::move(group));
+      outer.setQuantum(kLen, 0);
+      expect(session_io::save(outer, kSr, dir, {}), "group save ok");
+      auto back = session_io::load(dir, kSr);
+      auto* gBack = dynamic_cast<StackNode*>(back.children[0].get());
+      const Sequence* s = gBack ? gBack->sequencePtr() : nullptr;
+      expect(s != nullptr, "sequence came back");
+      if (s != nullptr) {
+        expectEquals((int)s->steps[0].next.size(), 1, "successor back");
+        expectEquals(s->steps[0].next[0].to, 2);
+        expectEquals((int)s->seed, 7, "seed back");
+        expectEquals(s->visit_count, 2, "program rebuilt: [0, 2]");
+      }
+      // Hand-edit the bundle: make the group a radio (2 -> 1).
+      const auto jf = dir.getChildFile("session.json");
+      auto json = juce::JSON::parse(jf.loadFileAsString());
+      auto* nodes = json.getProperty("nodes", juce::var()).getArray();
+      auto seqVar = (*nodes)[0].getProperty("sequence", juce::var());
+      auto* steps = seqVar.getProperty("steps", juce::var()).getArray();
+      {
+        auto* n = new juce::DynamicObject();
+        n->setProperty("to", 1);
+        n->setProperty("w", 1);
+        juce::Array<juce::var> next;
+        next.add(juce::var(n));
+        (*steps)[2].getDynamicObject()->setProperty("next", next);
+      }
+      jf.replaceWithText(juce::JSON::toString(json));
+      auto demoted = session_io::load(dir, kSr);
+      auto* gd = dynamic_cast<StackNode*>(demoted.children[0].get());
+      const Sequence* ds = gd ? gd->sequencePtr() : nullptr;
+      expect(ds != nullptr && !ds->radio && ds->isPlainLoop(),
+             "a nested radio is demoted to the loop on load (S12)");
+      dir.deleteRecursively();
+    }
+
+    beginTest("S14: a template carries successors + seed; a radio builds "
+              "linear (templates are nested)");
+    {
+      StackNode group("song");
+      auto c1 = makeDcClip("kick", 0.1f);
+      group.addChild(std::move(c1));
+      auto* gs = new Sequence();
+      Sequence::Step a;
+      a.len = kLen;
+      a.next = {{1, 1}, {2, 2}};
+      gs->steps.push_back(a);
+      gs->steps.push_back(step(kLen, "one", 0));
+      gs->steps.push_back(step(kLen, "two", 0));
+      gs->seed = 11;
+      gs->finalize();
+      delete group.exchangeSequence(gs);
+      const juce::var tpl = track_templates::capture(group, kLen);
+      const juce::var so = tpl.getProperty("sequence", juce::var());
+      expect(so.isObject(), "capture carries the sequence");
+      expectEquals((int)(double)so.getProperty("seed", -1.0), 11, "seed captured");
+      expect(so.getProperty("steps", juce::var())[0]
+                 .getProperty("next", juce::var())
+                 .isArray(),
+             "successors captured");
+      auto rebuilt = track_templates::build(tpl, kSr, kLen);
+      auto* g = dynamic_cast<StackNode*>(rebuilt.get());
+      const Sequence* s = g ? g->sequencePtr() : nullptr;
+      expect(s != nullptr && !s->radio, "a template's radio builds linear");
+      if (s != nullptr) {
+        expectEquals((int)s->seed, 11, "the seed still rides along");
+        expect(s->isPlainLoop(), "…as the plain loop");
+      }
     }
   }
 

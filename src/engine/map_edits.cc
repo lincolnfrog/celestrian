@@ -426,9 +426,26 @@ void AudioEngine::setSequence(const juce::String& uuid,
               "AudioEngine::setSequence refused - non-positive step length");
           return;
         }
+        // The successor graph (sequencer.md §14): [{to, w}] — a target
+        // outside the step list is malformed, refused like a bad
+        // length (the UI never sends one).
+        if (auto* next = sv.getProperty("next", {}).getArray()) {
+          for (const auto& nv : *next) {
+            celestrian::Sequence::Successor s;
+            s.to = (int)nv.getProperty("to", -1);
+            s.weight = (int)nv.getProperty("w", 1);
+            if (s.to < 0 || s.to >= steps->size() || s.weight <= 0) {
+              juce::Logger::writeToLog(
+                  "AudioEngine::setSequence refused - successor out of range");
+              return;
+            }
+            st.next.push_back(s);
+          }
+        }
         seq->steps.push_back(std::move(st));
       }
     }
+    seq->seed = (uint32_t)(int64_t)(double)o->getProperty("seed");
     if (auto* g = o->getProperty("gates").getDynamicObject()) {
       for (const auto& p : g->getProperties()) {
         celestrian::Sequence::GateRow row;
@@ -445,6 +462,15 @@ void AudioEngine::setSequence(const juce::String& uuid,
     }
     if (!seq->steps.empty()) {
       seq->finalize();
+      // ROOT-ONLY RADIO (S12, composition.md §3): a period-less
+      // program cannot contribute a period to a parent, so it is
+      // legal only where no ancestor needs one — the root.
+      if (seq->radio && stack != root_node.get()) {
+        juce::Logger::writeToLog(
+            "AudioEngine::setSequence refused - a radio (stochastic or "
+            "non-returning successors) has no period; root only (S12)");
+        return;
+      }
       e.seq = std::move(seq);
     }
     // NOTE (S10): step lengths are NOT gated on Q coherence —
@@ -476,10 +502,10 @@ void AudioEngine::auditionStep(const juce::String& uuid, int step) {
   }
   if (step >= 0) {
     const celestrian::Sequence* s = stack->activeSequence();
-    if (s == nullptr || step >= s->numSteps()) {
+    if (s == nullptr || !s->reachableStep(step)) {
       juce::Logger::writeToLog(
-          "AudioEngine::auditionStep refused - no such step in an active "
-          "sequence");
+          "AudioEngine::auditionStep refused - no such step in the active "
+          "program (unreachable steps have no span)");
       return;
     }
   }

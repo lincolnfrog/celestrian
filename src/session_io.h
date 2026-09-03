@@ -50,6 +50,9 @@ struct LoadedSession {
   float root_gain = 1.0f;
   float root_pan = 0.0f;
   juce::var root_effects;  // fx blob for the root stack (may be void)
+  // The root's own sequence block (may be void) — applied by the
+  // engine once Q is set on the root (applySequenceVar, ROOT scope).
+  juce::var root_sequence;
   std::vector<std::unique_ptr<AudioNode>> children;
   juce::String display_name;  // project display name (docs/projects.md)
   juce::String created;       // creation stamp, echoed verbatim
@@ -90,6 +93,20 @@ BundleInfo readBundleInfo(const juce::File& dir);
 
 /** Parse a bundle. `ok` is false on any failure (missing/invalid json). */
 LoadedSession load(const juce::File& dir, double device_sample_rate);
+
+/** Where a sequence block lands: the island ROOT may carry a radio
+ * (S12); a NESTED stack may not — its successors are dropped. */
+enum class SequenceScope { ROOT, NESTED };
+
+/**
+ * Install a sequence block (the `sequence` / `rootSequence` shape
+ * sequenceVar writes) on `stack`, materialized against `q`. The old
+ * sequence pointer, if any, goes to `retire` — the engine hands the
+ * reclaimer for a live root; a pre-graph node deletes inline.
+ */
+void applySequenceVar(StackNode& stack, const juce::var& block, int64_t q,
+                      SequenceScope scope,
+                      const std::function<void(const Sequence*)>& retire);
 
 /** Rebuild a node's fx chain from a saved chain array (docs/vst3.md
  * §6; fillParams() keys match setParam() keys, so replay is generic).

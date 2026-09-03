@@ -4,30 +4,53 @@
  *
  * Storage shape (identical to the engine's metadata publish, so
  * publish.js can pass it through verbatim):
- *   node.sequence          = { steps: [{name, len}], gates: {uuid: [bool]} }
+ *   node.sequence          = { steps: [{name, len, cue, next?}],
+ *                              gates: {uuid: [bool]}, seed }
  *   node.sequenceBypassed  = bool   (the jam toggle — survives replace,
  *                                    like the loop-window bypass flag)
  * The synthetic root ('mock-root') stores the same pair on `state`
  * (state.rootSequence / state.rootSequenceBypassed) and publishes it
  * top-level, mirroring the engine root's metadata.
  *
+ * THE PROGRAM (§14): every timeline question here — total length,
+ * step at a position, bounds, the audition span — reads through the
+ * unrolled program of (steps, seed) (sequence_program.js, the engine
+ * mirror), never the raw step list. A radio (period-less program) is
+ * legal on the ROOT only (S12): nested targets refuse it.
+ *
  * Semantics mirrored: mid-take gate (refuse while a take is armed or
  * recording in the subtree), 1..64 steps with positive lengths, free
  * lengths ACCEPTED (S10: steps concatenate — the UI snaps and badges),
- * clear on a null/empty payload.
+ * successors in range with positive weights, clear on a null/empty
+ * payload.
  */
 
 import {
     state, findNode, subtreeRecording, anyNodeRecording,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
+import { programOf, visitBounds } from '../sequence_program.js';
 
 const MAX_STEPS = 64;
 
-/** Total length of a stored sequence object (0 = none/empty). */
+/** The unrolled program of a stored sequence ({visits, radio, …}). */
+export function seqProgram(seq) {
+    if (!seq || !Array.isArray(seq.steps) || !seq.steps.length) {
+        return { visits: [], radio: false, reachable: [], firstVisit: [] };
+    }
+    return programOf(seq.steps, seq.seed || 0);
+}
+
+/** Step lengths in samples (rounded, non-negative). */
+function stepLens(seq) {
+    return seq.steps.map(s => (s.len > 0 ? Math.round(s.len) : 0));
+}
+
+/** Total PROGRAM length of a stored sequence object (0 = none/empty). */
 function seqTotal(seq) {
     if (!seq || !Array.isArray(seq.steps)) return 0;
-    return seq.steps.reduce((t, s) => t + (s.len > 0 ? Math.round(s.len) : 0), 0);
+    const lens = stepLens(seq);
+    return seqProgram(seq).visits.reduce((t, i) => t + lens[i], 0);
 }
 
 /** The ACTIVE sequence length of a node-or-root holder (period law). */
@@ -48,11 +71,27 @@ function resolve(id) {
                 set auditionStep(v) { state.rootAuditionStep = v; },
             },
             recording: anyNodeRecording(),
+            isRoot: true,
         };
     }
     const node = findNode(id);
     if (!node || node.type !== 'stack') return null;
-    return { holder: node, recording: subtreeRecording(node) };
+    return { holder: node, recording: subtreeRecording(node), isRoot: false };
+}
+
+/** Normalize a payload step's successor list; null = malformed. */
+function readSuccessors(step, stepCount) {
+    if (step.next == null) return [];
+    if (!Array.isArray(step.next)) return null;
+    const next = [];
+    for (const s of step.next) {
+        const to = Number(s && s.to), w = Number(s && s.w != null ? s.w : 1);
+        if (!Number.isInteger(to) || to < 0 || to >= stepCount || !(w > 0)) {
+            return null;
+        }
+        next.push({ to, w: Math.floor(w) });
+    }
+    return next;
 }
 
 export function setSequence(id, payload) {
@@ -79,11 +118,30 @@ export function setSequence(id, payload) {
         popUndoForRefusal();
         return;
     }
-    const steps = payload.steps.map(s => ({
+    const nexts = payload.steps.map(s => readSuccessors(s, payload.steps.length));
+    if (nexts.some(n => n === null)) {
+        console.log('[MockBackend] setSequence refused — successor out of range');
+        popUndoForRefusal();
+        return;
+    }
+    const steps = payload.steps.map((s, i) => ({
         name: String(s.name || ''), len: Math.round(s.len),
         // CUE (docs/sequencer.md ss3, S11/S20-S22): a cued step
         // re-bases the subtree to the step top.
-        cue: !!s.cue }));
+        cue: !!s.cue,
+        // The successor graph (§14): empty = the loop successor.
+        ...(nexts[i].length ? { next: nexts[i] } : {}),
+    }));
+    const seed = Number.isFinite(Number(payload.seed))
+        ? (Number(payload.seed) >>> 0) : 0;
+    // ROOT-ONLY RADIO (S12, composition.md §3): a period-less program
+    // cannot give its parent a period.
+    if (programOf(steps, seed).radio && !t.isRoot) {
+        console.log('[MockBackend] setSequence refused — a radio has no ' +
+            'period; root only (S12)');
+        popUndoForRefusal();
+        return;
+    }
     const gates = {};
     for (const [uuid, bits] of Object.entries(payload.gates || {})) {
         gates[uuid] = steps.map((_, i) => !!(bits && bits[i]));
@@ -92,7 +150,7 @@ export function setSequence(id, payload) {
     // follows a resize, never a delete).
     const before = t.holder.sequence ? t.holder.sequence.steps.length : 0;
     if (before !== steps.length) t.holder.auditionStep = -1;
-    t.holder.sequence = { steps, gates };
+    t.holder.sequence = { steps, gates, seed };
     console.log('[MockBackend] Sequence set on', id, '-', steps.length,
         'steps,', seqTotal(t.holder.sequence), 'samples');
 }
@@ -102,7 +160,8 @@ export function setSequence(id, payload) {
  * AudioEngine::auditionStep: a MONITORING gesture (not undoable, not
  * persisted) — `holder.auditionStep` (−1 = none; the root stores
  * state.rootAuditionStep). While set and the sequence is active, the
- * holder's time-map IS the step's span, derived (see auditionMap).
+ * holder's time-map IS the step's FIRST visit's span, derived (see
+ * auditionMap). An unreachable step has no span: refused.
  */
 export function auditionStep(id, step) {
     const t = resolve(id);
@@ -117,8 +176,9 @@ export function auditionStep(id, step) {
     const n = Number(step);
     if (n >= 0) {
         const seq = activeSeqLen(t.holder) > 0 ? t.holder.sequence : null;
-        if (!seq || n >= seq.steps.length) {
-            console.log('[MockBackend] auditionStep refused — no such step');
+        if (!seq || n >= seq.steps.length || !seqProgram(seq).reachable[n]) {
+            console.log('[MockBackend] auditionStep refused — no such step ' +
+                'in the active program');
             return;
         }
     }
@@ -131,24 +191,37 @@ export function stepCued(seq, i) {
     return !!(seq && seq.steps && seq.steps[i] && seq.steps[i].cue);
 }
 
-/** Step index at folded position rel (samples) of a stored sequence. */
+/** Step index at folded position rel (samples) of a stored sequence —
+ * through the PROGRAM (the visit's step). */
 export function stepIndexAt(seq, rel) {
-    const total = seqTotal(seq);
-    if (!(total > 0)) return -1;
-    let r = ((rel % total) + total) % total;
-    for (let i = 0; i < seq.steps.length; i++) {
-        const len = seq.steps[i].len > 0 ? Math.round(seq.steps[i].len) : 0;
-        if (r < len) return i;
-        r -= len;
-    }
-    return seq.steps.length - 1;
+    const k = visitIndexAt(seq, rel);
+    return k < 0 ? -1 : seqProgram(seq).visits[k];
 }
 
-/** Step bounds (samples) of a stored sequence: [b0, b1, ..., bn]. */
+/** Visit index at folded position rel (samples); −1 with no program. */
+export function visitIndexAt(seq, rel) {
+    const total = seqTotal(seq);
+    if (!(total > 0)) return -1;
+    const b = seqBounds(seq);
+    const r = ((rel % total) + total) % total;
+    for (let k = 0; k + 1 < b.length; k++) {
+        if (r < b[k + 1]) return k;
+    }
+    return b.length - 2;
+}
+
+/** VISIT bounds (samples) of a stored sequence: [b0, b1, ..., bN]. */
 export function seqBounds(seq) {
-    const b = [0];
-    (seq && seq.steps || []).forEach(s => b.push(b[b.length - 1] + (s.len > 0 ? Math.round(s.len) : 0)));
-    return b;
+    if (!seq || !Array.isArray(seq.steps)) return [0];
+    return visitBounds(seqProgram(seq).visits, stepLens(seq));
+}
+
+/** The span [start, end) of step i's FIRST visit, or null. */
+export function firstVisitSpan(seq, i) {
+    const k = seqProgram(seq).firstVisit[i];
+    if (!(k >= 0)) return null;
+    const b = seqBounds(seq);
+    return b[k + 1] > b[k] ? [b[k], b[k + 1]] : null;
 }
 
 /** The DERIVED audition map of a holder (node or the root holder), or
@@ -157,18 +230,8 @@ export function auditionMap(holder) {
     const i = holder.auditionStep;
     if (!(i >= 0)) return null;
     if (activeSeqLen(holder) <= 0) return null;
-    const b = seqBounds(holder.sequence);
-    if (i + 1 >= b.length) return null;
-    return { segs: [[b[i], b[i + 1]]] };
-}
-
-/** The root as a sequence holder (state.rootSequence & co.). */
-function rootHolder() {
-    return {
-        get sequence() { return state.rootSequence; },
-        get sequenceBypassed() { return state.rootSequenceBypassed; },
-        get auditionStep() { return state.rootAuditionStep ?? -1; },
-    };
+    const span = firstVisitSpan(holder.sequence, i);
+    return span ? { segs: [span] } : null;
 }
 
 export function toggleSequence(id) {

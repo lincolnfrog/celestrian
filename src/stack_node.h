@@ -302,13 +302,17 @@ class StackNode : public AudioNode {
   int auditionStep() const { return audition_step_.load(); }
   void setAuditionStep(int step) { audition_step_.store(step); }
   /** The audition's derived map, or none when no audition applies
-   * (no step set, sequence inactive, or the index no longer exists). */
+   * (no step set, sequence inactive, or the index no longer exists).
+   * A step the program visits more than once loops its FIRST visit
+   * (sequencer.md §14); an unreachable step has no span. */
   timing::TimeMap auditionMap() const {
     const int i = audition_step_.load();
     if (i < 0) return timing::TimeMap::none();
     const Sequence* s = activeSequence();
     if (s == nullptr || i >= s->numSteps()) return timing::TimeMap::none();
-    return timing::TimeMap::single(s->bounds[i], s->bounds[i + 1]);
+    const int k = s->first_visit[i];
+    if (k < 0) return timing::TimeMap::none();
+    return timing::TimeMap::single(s->bounds[k], s->bounds[k + 1]);
   }
   bool auditionActive() const { return auditionMap().active(); }
 

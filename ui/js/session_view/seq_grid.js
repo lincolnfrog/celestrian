@@ -2,14 +2,24 @@
  * THE SEQUENCER GRID (docs/sequencer.md §9, S15 — "the pad grid is the
  * one control, at every depth"): a synthetic row under a stack lane
  * (the fx-row expansion pattern). Rows = the stack's direct children,
- * columns = steps, pads = gates.
+ * columns = the PROGRAM's visits, pads = gates.
  *
  * TIME-HONEST LAYOUT: the pads live in the lane-body column and span
- * its full width, so step boundaries sit ON
- * the shared time axis — a 2Q step ends exactly where 2Q is on the
- * ruler (I2 in spirit). Row names live in the RAIL column (mirrored
- * fixed-height rows), and the append verb lives in the footer, so
- * nothing non-temporal steals width from the timeline.
+ * its full width, so visit boundaries sit ON the shared time axis — a
+ * 2Q step ends exactly where 2Q is on the ruler (I2 in spirit). Row
+ * names live in the RAIL column (mirrored fixed-height rows), and the
+ * append verb lives in the footer, so nothing non-temporal steals
+ * width from the timeline.
+ *
+ * THE PROGRAM (§14): the walk from step 0 through each step's
+ * successors. While the program is PERIODIC the columns are its visits
+ * in program order (a deterministic loop plays each step at most once,
+ * so a column IS a step, time-honest). A RADIO unrolls to the horizon
+ * — hundreds of visits — so its grid shows the GRAPH instead: one
+ * equal-width column per step in list order; the lanes remain the
+ * honest timeline. A step the program never reaches has no column —
+ * it waits in the footer as an orphan chip until it is re-linked or
+ * deleted.
  *
  * Grammar (ruled): pad click = toggle · drag across pads = paint ·
  * row-name click = whole-row toggle · header dblclick = rename ·
@@ -18,7 +28,9 @@
  * cycle) · footer chip = bypass toggle (the jam comes back) · header ⟲
  * = LOOP THIS STEP (the step audition, docs/sequencer.md §11.2: the
  * song folds to the step — audition it, or arm a track and record INTO
- * it; click ⟲ again or Esc to stop).
+ * it; click ⟲ again or Esc to stop) · header → = the SUCCESSORS
+ * popover (which steps may follow, with weights — a branch with
+ * chance makes the song a RADIO) · footer ⟳ re-roll = a new seed.
  *
  * One setSequence per finished gesture = one undo step (engine-side).
  * The grid REBUILDS when its shape signature changes and only patches
@@ -29,6 +41,7 @@ import { ctx } from './context.js';
 import { el, setText, fmtQ } from './sv_util.js';
 import { kBlowupRatio, cycleMinutes, fmtDuration } from '../frame_health.js';
 import { lcm } from '../math_utils.js';
+import { programOf, randomSeed } from '../sequence_program.js';
 
 /** Build the synthetic grid row once; content renders in patch. */
 export function buildSeqGrid(row, lane) {
@@ -46,8 +59,12 @@ function payloadOf(lane, quantum, mutate) {
     const p = {
         steps: lane.steps.map(s => ({
             name: s.name, len: Math.round(s.lenQ * quantum),
-            cue: !!s.cue })),
+            cue: !!s.cue,
+            ...(s.next && s.next.length
+                ? { next: s.next.map(n => ({ to: n.to, w: n.w })) } : {}),
+        })),
         gates: {},
+        seed: lane.seed >>> 0,
     };
     lane.children.forEach(c => { p.gates[c.id] = c.gates.slice(); });
     if (mutate) mutate(p);
@@ -56,7 +73,53 @@ function payloadOf(lane, quantum, mutate) {
     for (const [id, bits] of Object.entries(p.gates)) {
         if (bits.every(Boolean)) delete p.gates[id];
     }
+    // Canonical successors: an empty list IS the loop successor.
+    p.steps.forEach(s => { if (s.next && !s.next.length) delete s.next; });
     return p;
+}
+
+/** The visit columns of a step list (Q units) — the VM's shape. */
+function visitsOf(steps, seed) {
+    const prog = programOf(steps, seed);
+    const visits = [];
+    let pos = 0;
+    prog.visits.forEach(i => {
+        visits.push({ step: i, startQ: pos, lenQ: steps[i].lenQ });
+        pos += steps[i].lenQ;
+    });
+    return { visits, totalQ: pos, radio: prog.radio,
+             reachable: steps.map((_, i) => !!prog.reachable[i]) };
+}
+
+/**
+ * The grid's COLUMNS: [{step, start, len}] over a `total` — the visits
+ * (time-honest, in Q) while the program is periodic; the reachable
+ * STEPS at equal widths (the graph) for a radio.
+ */
+function columnsOf(lane) {
+    if (!lane.radio) {
+        return { cols: (lane.visits || []).map(v => ({
+                     step: v.step, start: v.startQ, len: v.lenQ })),
+                 total: lane.totalQ > 0 ? lane.totalQ : 1 };
+    }
+    const cols = [];
+    lane.steps.forEach((s, i) => {
+        if (lane.reachable && !lane.reachable[i]) return;
+        cols.push({ step: i, start: cols.length, len: 1 });
+    });
+    return { cols, total: Math.max(1, cols.length) };
+}
+
+/** The column that is PLAYING at `rel` (Q into the program), or −1. */
+function playingColumn(lane, rel) {
+    let visit = -1;
+    (lane.visits || []).forEach((v, k) => {
+        if (visit < 0 && rel < v.startQ + v.lenQ) visit = k;
+    });
+    if (visit < 0) return -1;
+    if (!lane.radio) return visit;
+    const step = lane.visits[visit].step;
+    return columnsOf(lane).cols.findIndex(c => c.step === step);
 }
 
 function commit(row, mutate) {
@@ -68,8 +131,10 @@ function commit(row, mutate) {
     // COMPOSE (a fast double-click on "+ step" adds two steps, not one
     // twice). The next poll's published state confirms and rebuilds.
     lane.steps = p.steps.map(s => ({
-        name: s.name, lenQ: s.len / row._quantum, cue: !!s.cue }));
-    lane.totalQ = lane.steps.reduce((t, x) => t + x.lenQ, 0);
+        name: s.name, lenQ: s.len / row._quantum, cue: !!s.cue,
+        next: s.next ? s.next.map(n => ({ ...n })) : [] }));
+    lane.seed = p.seed >>> 0;
+    Object.assign(lane, visitsOf(lane.steps, lane.seed));
     lane.children.forEach(c => {
         const bits = p.gates[c.id];
         c.gates = bits ? bits.slice() : lane.steps.map(() => true);
@@ -83,11 +148,13 @@ export function patchSeqGrid(row, lane, vm) {
     row._sampleRate = vm.sampleRate || 44100;
     row.classList.toggle('bypassed', !!lane.bypassed);
     row.classList.toggle('locked', !lane.editable);
+    row.classList.toggle('radio', !!lane.radio);
 
     const sig = JSON.stringify({
-        s: lane.steps, b: lane.bypassed, e: lane.editable,
+        s: lane.steps, v: lane.visits, b: lane.bypassed, e: lane.editable,
         c: lane.children.map(c => [c.id, c.name, c.gates]),
         q: lane.qEstablished, a: lane.auditionStep, h: lane.health || null,
+        r: lane.radio, d: lane.seed,
     });
     row.classList.toggle('auditioning', lane.auditionStep >= 0);
     if (row._seqSig !== sig) {
@@ -95,24 +162,20 @@ export function patchSeqGrid(row, lane, vm) {
         rebuild(row, lane);
     }
 
-    // The playing column: the owner's sequence phase. The frame equals
-    // the song when the sequence defines it (period law), so the
-    // playhead's fold names the step.
+    // The playing column: the owner's program phase. The frame equals
+    // the program when the sequence defines it (period law), so the
+    // playhead's fold names the visit.
     const body = row.querySelector('.seq-body');
-    if (lane.steps.length && lane.totalQ > 0 && vm.isPlaying &&
+    if (lane.visits.length && lane.totalQ > 0 && vm.isPlaying &&
         !lane.bypassed) {
         const rel = ((vm.playheadQ % lane.totalQ) + lane.totalQ) % lane.totalQ;
-        let pos = 0, playing = -1;
-        lane.steps.forEach((s, i) => {
-            if (playing < 0 && rel < pos + s.lenQ) playing = i;
-            pos += s.lenQ;
-        });
-        body.querySelectorAll('[data-step]').forEach(cell => {
+        const playing = playingColumn(lane, rel);
+        body.querySelectorAll('[data-col]').forEach(cell => {
             cell.classList.toggle('playing',
-                Number(cell.dataset.step) === playing);
+                Number(cell.dataset.col) === playing);
         });
     } else {
-        body.querySelectorAll('[data-step].playing')
+        body.querySelectorAll('[data-col].playing')
             .forEach(c => c.classList.remove('playing'));
     }
 }
@@ -122,6 +185,7 @@ function rebuild(row, lane) {
     const body = row.querySelector('.seq-body');
     rail.textContent = '';
     body.textContent = '';
+    closeNextPopover(row);
 
     // The rail column mirrors the body's rows at fixed heights: the
     // label sits beside the header row, one name beside each pad row.
@@ -150,41 +214,42 @@ function rebuild(row, lane) {
     }
 
     const totalQ = lane.totalQ > 0 ? lane.totalQ : 1;
+    const { cols, total } = columnsOf(lane);
+    row._cols = cols;
 
     // EXACT time positions (the pct() idiom every timeline overlay
     // uses): cells are absolutely positioned by left/width percent, so
     // a 2Q step's boundary sits ON 2Q of the ruler — flex-grow skews
-    // boundaries by each cell's constant padding.
-    const startsQ = [];
-    {
-        let pos = 0;
-        lane.steps.forEach(s => { startsQ.push(pos); pos += s.lenQ; });
-    }
-    const place = (elx, i) => {
-        elx.style.left = (startsQ[i] / totalQ * 100) + '%';
+    // boundaries by each cell's constant padding. (A radio's columns
+    // are the graph at equal widths — §14.)
+    const place = (elx, k) => {
+        elx.style.left = (cols[k].start / total * 100) + '%';
         elx.style.width =
-            'calc(' + (lane.steps[i].lenQ / totalQ * 100) + '% - 4px)';
+            'calc(' + (cols[k].len / total * 100) + '% - 4px)';
     };
 
-    // Header row: step cells only — full body width IS the time axis.
+    // Header row: one cell per COLUMN — full body width IS the time axis.
     const head = el('div', 'seq-grid-row seq-head');
-    lane.steps.forEach((s, i) => {
+    cols.forEach((c, k) => {
+        const i = c.step;
+        const s = lane.steps[i];
         const cell = el('div', 'seq-hcell mono');
+        cell.dataset.col = String(k);
         cell.dataset.step = String(i);
-        place(cell, i);
+        place(cell, k);
         const nm = el('span', 'seq-hname',
             { textContent: s.name || String(i + 1) });
         nm.title = 'Double-click to rename · right-click to delete step';
         nm.addEventListener('dblclick', () => renameStep(row, cell, i));
         const len = el('span', 'seq-hlen', { textContent: fmtQ(s.lenQ) + 'Q' });
-        // \u21e4 — CUE (S22): a per-step pip on the header toggles
+        // ⇤ — CUE (S22): a per-step pip on the header toggles
         // gate-mode <-> cue-mode. A cued step re-bases
         // its span to the SONG TOP (docs/sequencer.md ss3 — the serial
         // primitive: verse-box then chorus-box). Rides setSequence
         // (one undo step, whole-object swap).
         const cued = !!s.cue;
         const cue = el('button', 'seq-cue mono', {
-            textContent: '\u21e4',
+            textContent: '⇤',
             title: cued
                 ? 'Cued: this step replays the song top - click to ' +
                   'return it to gate mode (in-phase)'
@@ -197,6 +262,10 @@ function rebuild(row, lane) {
             commit(row, p => { p.steps[i].cue = !p.steps[i].cue; });
         });
         cell.classList.toggle('cued', cued);
+        // → — SUCCESSORS (§14): which steps may follow this one. Lit
+        // when the step names its own successors (the default is the
+        // next step in the list).
+        const next = successorPip(row, cell, i);
         // The resize grip: a VISIBLE handle (the bracket vocabulary —
         // a hairline is not discoverable).
         const grip = el('span', 'seq-grip', {
@@ -222,7 +291,7 @@ function rebuild(row, lane) {
             ctx.cb.onAuditionStep(l.ownerId, looping ? -1 : i);
         });
         cell.classList.toggle('looping', looping);
-        cell.append(nm, len, cue, loop, grip);
+        cell.append(nm, len, cue, next, loop, grip);
         cell.addEventListener('contextmenu', e => {
             e.preventDefault();
             deleteStep(row, i);
@@ -245,10 +314,13 @@ function rebuild(row, lane) {
         rail.appendChild(nm);
 
         const r = el('div', 'seq-grid-row');
-        child.gates.forEach((on, i) => {
+        cols.forEach((c, k) => {
+            const i = c.step;
+            const on = !!child.gates[i];
             const col = el('div', 'seq-col');
+            col.dataset.col = String(k);
             col.dataset.step = String(i);
-            place(col, i);
+            place(col, k);
             const pad = el('button', 'seq-pad');
             pad.classList.toggle('on', on);
             pad.title = (on ? 'On' : 'Off') + ' — click to toggle, drag to paint';
@@ -279,11 +351,54 @@ function rebuild(row, lane) {
     // eye lands there after the last step).
     const foot = el('div', 'seq-foot mono');
     foot.appendChild(el('span', 'seq-total',
-        { textContent: 'seq · ' + fmtQ(totalQ) + 'Q' }));
+        { textContent: (lane.radio ? 'radio · ' : 'seq · ') +
+                       fmtQ(totalQ) + 'Q' }));
     if (!row._lane.editable) {
         foot.appendChild(el('span', 'seq-lock',
             { textContent: '● recording — sequence locked' }));
     }
+    // THE RADIO (§6, §14): a period-less program. The seed IS the
+    // performance — shown so a run can be named; ⟳ re-rolls it (one
+    // setSequence, one undo step).
+    if (lane.radio) {
+        const seedHex = (lane.seed >>> 0).toString(16).padStart(8, '0');
+        foot.appendChild(el('span', 'seq-radio', {
+            textContent: '📻 radio · seed ' + seedHex,
+            title: 'This song branches (or never returns to its top), so ' +
+                'it has no period — the seed decides every branch; the ' +
+                'same seed always plays the same run. ' +
+                'It repeats after ' + (lane.visits || []).length +
+                ' steps. The grid shows the graph; the lanes show the ' +
+                'run.' }));
+        const reroll = el('button', 'seq-reroll', {
+            textContent: '⟳ re-roll',
+            title: 'A new seed: a new run of the same song (undoable)' });
+        reroll.addEventListener('click', () => {
+            commit(row, p => { p.seed = randomSeed(); });
+        });
+        foot.appendChild(reroll);
+    }
+    // ORPHANS (§14): steps the program never reaches have no column.
+    // They wait here — click to re-link (the successors popover),
+    // right-click to delete.
+    lane.steps.forEach((s, i) => {
+        if (lane.reachable && lane.reachable[i]) return;
+        const chip = el('button', 'seq-orphan mono', {
+            textContent: '⤳ ' + (s.name || String(i + 1)),
+            title: 'Unreachable: no step leads here. Click to choose ' +
+                'what follows it, then point a step at it (or ' +
+                'right-click to delete it)' });
+        chip.dataset.step = String(i);
+        chip.addEventListener('click', e => {
+            e.stopPropagation();
+            openNextPopover(row, chip, i);
+        });
+        chip.addEventListener('contextmenu', e => {
+            e.preventDefault();
+            deleteStep(row, i);
+        });
+        foot.appendChild(chip);
+    });
     // THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6): only when an
     // edit warrants it — the blowup face (this song's length explodes
     // the parent frame) and the drift face (passes differ). Each offer
@@ -361,6 +476,143 @@ function rebuild(row, lane) {
     body.appendChild(foot);
 }
 
+/** The → pip on a header cell: opens the successors popover. */
+function successorPip(row, cell, i) {
+    const s = row._lane.steps[i];
+    const explicit = !!(s.next && s.next.length);
+    const pip = el('button', 'seq-next mono', {
+        textContent: '→',
+        title: explicit
+            ? 'This step names what follows it — click to edit ' +
+              '(several with weights = a branch with chance: a radio)'
+            : 'What follows this step? (default: the next step; ' +
+              'several with weights = a branch with chance: a radio)',
+    });
+    pip.classList.toggle('on', explicit);
+    pip.addEventListener('click', e => {
+        e.stopPropagation();
+        openNextPopover(row, cell, i);
+    });
+    return pip;
+}
+
+/** The effective successor list of step i: explicit, else the loop. */
+function candidatesOf(lane, i) {
+    const s = lane.steps[i];
+    if (s.next && s.next.length) return s.next.map(n => ({ ...n }));
+    return [{ to: (i + 1) % lane.steps.length, w: 1 }];
+}
+
+function closeNextPopover(row) {
+    if (row._nextPop) {
+        row._nextPop.remove();
+        row._nextPop = null;
+    }
+    if (row._nextPopOff) {
+        document.removeEventListener('pointerdown', row._nextPopOff, true);
+        row._nextPopOff = null;
+    }
+}
+
+/**
+ * THE SUCCESSORS POPOVER (§14): one row per step — a toggle (is it a
+ * candidate to follow step i?) and, when on, its weight. Every change
+ * is one setSequence (one undo step, the pad-toggle precedent). The
+ * default (only the next step, weight 1) stores as NO explicit list.
+ */
+function openNextPopover(row, anchor, i) {
+    const lane = row._lane;
+    if (!lane || !lane.editable) return;
+    if (row._nextPop && row._nextPop._step === i) { closeNextPopover(row); return; }
+    closeNextPopover(row);
+    const pop = el('div', 'seq-next-pop mono');
+    pop._step = i;
+    pop.dataset.step = String(i);
+    const name = lane.steps[i].name || String(i + 1);
+    pop.appendChild(el('div', 'seq-next-title', {
+        textContent: 'after ' + name + ' →' }));
+    const current = candidatesOf(lane, i);
+    const write = list => {
+        const n = lane.steps.length;
+        const canonical = list.length === 1 && list[0].to === (i + 1) % n &&
+                          list[0].w === 1;
+        commit(row, p => {
+            if (canonical) delete p.steps[i].next;
+            else p.steps[i].next = list.map(x => ({ to: x.to, w: x.w }));
+        });
+        closeNextPopover(row);
+    };
+    lane.steps.forEach((s, j) => {
+        const line = el('div', 'seq-next-line');
+        const entry = current.find(c => c.to === j);
+        // The name = "ONLY this follows" (a single successor — legal
+        // anywhere); ＋/− = add or drop it as a BRANCH candidate (two
+        // or more make the song a radio: root only). Re-routing a
+        // nested song never has to pass through a branch.
+        const opt = el('button', 'seq-next-opt', {
+            textContent: (s.name || String(j + 1)) + (j === i ? ' (again)' : ''),
+            title: 'Click: ONLY ' + (s.name || String(j + 1)) +
+                   ' follows ' + name });
+        opt.dataset.to = String(j);
+        opt.classList.toggle('on', !!entry);
+        opt.addEventListener('click', e => {
+            e.stopPropagation();
+            write([{ to: j, w: entry ? entry.w : 1 }]);
+        });
+        const add = el('button', 'seq-next-add mono', {
+            textContent: entry ? '−' : '＋',
+            title: entry
+                ? 'Drop this branch'
+                : 'Add as a branch: ' + name + ' may go here OR elsewhere ' +
+                  '(a chance = a radio, root only)' });
+        add.dataset.to = String(j);
+        add.addEventListener('click', e => {
+            e.stopPropagation();
+            const list = current.filter(c => c.to !== j);
+            if (!entry) list.push({ to: j, w: 1 });
+            if (!list.length) return;  // a step always has a successor
+            write(list);
+        });
+        line.append(opt, add);
+        if (entry) {
+            const w = el('input', 'seq-next-w', {
+                type: 'number', min: '1', max: '99', value: String(entry.w),
+                title: 'Weight: the relative chance of this branch' });
+            w.dataset.to = String(j);
+            w.addEventListener('pointerdown', e => e.stopPropagation());
+            w.addEventListener('keydown', e => {
+                e.stopPropagation();
+                if (e.key === 'Escape') closeNextPopover(row);
+            });
+            w.addEventListener('change', () => {
+                const v = Math.max(1, Math.min(99, Math.round(Number(w.value)) || 1));
+                write(current.map(c => (c.to === j ? { to: j, w: v } : c)));
+            });
+            line.appendChild(w);
+        }
+        pop.appendChild(line);
+    });
+    if (current.length > 1) {
+        pop.appendChild(el('div', 'seq-next-hint', {
+            textContent: 'a branch with chance — the song is a radio ' +
+                '(root only); the seed decides' }));
+    }
+    // Anchor under the header cell (or beside an orphan chip).
+    const head = row.querySelector('.seq-head');
+    if (anchor.classList.contains('seq-hcell') && head) {
+        pop.style.left = anchor.style.left;
+        head.appendChild(pop);
+    } else {
+        anchor.parentElement.appendChild(pop);
+        pop.classList.add('in-foot');
+    }
+    row._nextPop = pop;
+    row._nextPopOff = e => {
+        if (!pop.contains(e.target)) closeNextPopover(row);
+    };
+    document.addEventListener('pointerdown', row._nextPopOff, true);
+}
+
 function paintPad(row, childId, step, on) {
     const child = row._lane.children.find(c => c.id === childId);
     if (!child || child.gates[step] === on) return;
@@ -382,6 +634,13 @@ function deleteStep(row, i) {
     commit(row, p => {
         p.steps.splice(i, 1);
         for (const bits of Object.values(p.gates)) bits.splice(i, 1);
+        // Successors name steps by index: drop edges into the deleted
+        // step, shift the ones past it.
+        p.steps.forEach(s => {
+            if (!s.next) return;
+            s.next = s.next.filter(n => n.to !== i)
+                .map(n => ({ to: n.to > i ? n.to - 1 : n.to, w: n.w }));
+        });
     });
 }
 
@@ -414,9 +673,11 @@ function renameStep(row, cell, i) {
     input.addEventListener('blur', () => finish(true));
 }
 
-/** Step resize: pointer drag on the grip; live flex preview; ONE
+/** Step resize: pointer drag on the grip; live preview; ONE
  * setSequence on release. Snap: whole inner cycles (S2 default);
- * ⌥ = whole Qs. Minimum 1Q. */
+ * ⌥ = whole Qs. Minimum 1Q. `i` is the step. A periodic grid previews
+ * every column's new position; a radio's graph columns stay put (only
+ * the length label moves). */
 function wireGrip(grip, row, i) {
     grip.addEventListener('pointerdown', e => {
         e.preventDefault();
@@ -438,19 +699,22 @@ function wireGrip(grip, row, i) {
             liveLenQ = ev.altKey
                 ? Math.max(1, Math.round(rawQ))
                 : Math.max(cyc, Math.round(rawQ / cyc) * cyc);
-            // Live preview: recompute EVERY cell's exact time position
+            // Live preview: recompute EVERY column's exact time position
             // (the total changes, so every boundary moves).
             const stepsQ = lane.steps.map(
-                (s, k) => (k === i ? liveLenQ : s.lenQ));
-            const newTotal = stepsQ.reduce((a, b) => a + b, 0) || 1;
-            let pos = 0;
-            const lefts = stepsQ.map(l => { const x = pos; pos += l; return x; });
-            row.querySelectorAll('.seq-hcell, .seq-col').forEach(c => {
-                const k = Number(c.dataset.step);
-                c.style.left = (lefts[k] / newTotal * 100) + '%';
-                c.style.width =
-                    'calc(' + (stepsQ[k] / newTotal * 100) + '% - 4px)';
-            });
+                (s, j) => (j === i ? liveLenQ : s.lenQ));
+            const visitsQ = lane.visits.map(v => stepsQ[v.step]);
+            const newTotal = visitsQ.reduce((a, b) => a + b, 0) || 1;
+            if (!lane.radio) {
+                let pos = 0;
+                const lefts = visitsQ.map(l => { const x = pos; pos += l; return x; });
+                row.querySelectorAll('.seq-hcell, .seq-col').forEach(c => {
+                    const kk = Number(c.dataset.col);
+                    c.style.left = (lefts[kk] / newTotal * 100) + '%';
+                    c.style.width =
+                        'calc(' + (visitsQ[kk] / newTotal * 100) + '% - 4px)';
+                });
+            }
             // LIVE frame-health readout (§11.6): warn as soon as the
             // provisional song length would blow up the parent frame
             // (⚠) or drift against the inner cycle (↯).

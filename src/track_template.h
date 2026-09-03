@@ -73,9 +73,12 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
         stepo->setProperty("name", st.name);
         stepo->setProperty("lenQ", (double)st.len / (double)q_samples);
         if (st.cue) stepo->setProperty("cue", true);  // additive
+        if (!st.next.empty())
+          stepo->setProperty("next", Sequence::successorsVar(st));
         steps.add(juce::var(stepo));
       }
       so->setProperty("steps", steps);
+      if (s->seed != 0) so->setProperty("seed", (double)s->seed);
       // Gates by child INDEX: [{child: i, bits: [0/1...]}].
       juce::Array<juce::var> gates;
       auto* mutableStack = const_cast<StackNode*>(stack);
@@ -143,9 +146,11 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
                 (double)sv.getProperty("lenQ", 0.0) * (double)q_samples);
             st.name = sv.getProperty("name", juce::var()).toString();
             st.cue = (bool)sv.getProperty("cue", false);
+            Sequence::readSuccessors(sv, st);
             if (st.len > 0) seq->steps.push_back(std::move(st));
           }
         }
+        seq->seed = (uint32_t)(int64_t)(double)so->getProperty("seed");
         if (auto* gates = so->getProperty("gates").getArray()) {
           for (const auto& gv : *gates) {
             const int child = (int)gv.getProperty("child", -1);
@@ -164,6 +169,14 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
         }
         if (!seq->steps.empty()) {
           seq->finalize();
+          // A template always builds a NESTED stack: a radio is root-
+          // only (S12), so its successor graph is dropped here.
+          if (seq->radio) {
+            juce::Logger::writeToLog(
+                "track_templates::build - template carries a radio; "
+                "successors dropped (a radio is root-only, S12)");
+            seq->linearize();
+          }
           delete stack->exchangeSequence(seq.release());
           stack->setSequenceBypassed(
               (bool)so->getProperty("bypassed"));

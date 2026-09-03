@@ -13,6 +13,7 @@
 
 import { singleSegment, mapActive, mapOffset, mapPeriod } from '../time_map.js';
 import { lcm, posMod } from '../math_utils.js';
+import { programOf, visitBounds } from '../sequence_program.js';
 
 // In-memory state
 export const state = {
@@ -264,16 +265,19 @@ export function windowSuspendedOf(n) {
 }
 
 // Lazy twin of mock/sequence.js auditionMap (no import cycle: sequence.js
-// imports state.js). Kept minimal and in lockstep.
+// imports state.js). Kept minimal and in lockstep: the span is the
+// step's FIRST visit in the PROGRAM (docs/sequencer.md §14).
 export function auditionMapOf(holder) {
     const i = holder.auditionStep;
     if (!(i >= 0) || holder.sequenceBypassed) return null;
     const steps = holder.sequence && holder.sequence.steps;
     if (!steps || i >= steps.length) return null;
-    let b = 0;
-    for (let k = 0; k < i; k++) b += steps[k].len > 0 ? Math.round(steps[k].len) : 0;
-    const len = steps[i].len > 0 ? Math.round(steps[i].len) : 0;
-    return len > 0 ? { segs: [[b, b + len]] } : null;
+    const lens = steps.map(s => (s.len > 0 ? Math.round(s.len) : 0));
+    const prog = programOf(steps, holder.sequence.seed || 0);
+    const k = prog.firstVisit[i];
+    if (!(k >= 0)) return null;
+    const b = visitBounds(prog.visits, lens);
+    return b[k + 1] > b[k] ? { segs: [[b[k], b[k + 1]]] } : null;
 }
 
 // The ROOT's active map (the root's audition — the root has no authored

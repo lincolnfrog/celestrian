@@ -45,7 +45,6 @@ std::unique_ptr<ClipNode> makePlayingClip(const char* name, double sr,
   std::vector<float> in((size_t)len, amp);
   float* const ins[] = {in.data()};
   NodeContext rec = contextFor(*clip, len);
-  rec.ctx.is_recording = true;
   clip->startRecording();
   clip->process(ins, nullptr, 1, 0, rec.ctx);
   clip->stopRecording();

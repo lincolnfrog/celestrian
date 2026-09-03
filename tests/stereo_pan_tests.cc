@@ -54,7 +54,6 @@ class StereoPanTests : public juce::UnitTest {
       std::vector<float> in(4410, 0.5f);
       float* const ins[] = {in.data()};
       NodeContext rec = contextFor(clip, (int)in.size());
-      rec.ctx.is_recording = true;
       clip.startRecording();
       clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();
@@ -91,7 +90,6 @@ class StereoPanTests : public juce::UnitTest {
       std::vector<float> left(4410, 0.25f), right(4410, 0.75f);
       float* const ins[] = {left.data(), right.data()};
       NodeContext rec = contextFor(clip, (int)left.size());
-      rec.ctx.is_recording = true;
       clip.startRecording();
       clip.process(ins, nullptr, 2, 0, rec.ctx);
       clip.stopRecording();
@@ -144,7 +142,6 @@ class StereoPanTests : public juce::UnitTest {
       std::vector<float> in(1000, 1.0f);
       float* const ins[] = {in.data()};
       NodeContext rec = contextFor(clip, (int)in.size());
-      rec.ctx.is_recording = true;
       clip.process(ins, nullptr, 1, 0, rec.ctx);
       expectEquals(clip.contentChannels(), 1, "mono capture stays mono");
       clip.stopRecording();
@@ -157,7 +154,6 @@ class StereoPanTests : public juce::UnitTest {
       std::vector<float> in(4410, 0.5f);
       float* const ins[] = {in.data()};
       NodeContext rec = contextFor(*clip, (int)in.size());
-      rec.ctx.is_recording = true;
       clip->startRecording();
       clip->process(ins, nullptr, 1, 0, rec.ctx);
       clip->stopRecording();

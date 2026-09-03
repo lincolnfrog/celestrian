@@ -11,7 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    timelineLcm, launchPointFor, playheadPercent,
+    timelineLcm, launchPointFor,
     nextStopBoundary, snapCommittedDuration,
     armTarget, originQ, throughMapDest
 } from '../timeline_model.js';
@@ -40,12 +40,6 @@ test('golden: timelineLcm', () => {
 test('golden: launchPointFor', () => {
     for (const c of golden.launch_point_cases) {
         check(launchPointFor(c.startPhase, c.duration), c.expected, c.name);
-    }
-});
-
-test('golden: playheadPercent', () => {
-    for (const c of golden.playhead_cases) {
-        near(playheadPercent(c.masterPos, c.launchPoint, c.duration), c.expected);
     }
 });
 

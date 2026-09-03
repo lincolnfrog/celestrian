@@ -143,6 +143,17 @@ bool AudioEngine::loadSession(const juce::String& path) {
   celestrian::session_io::applyEffects(
       *root_node, loaded.root_effects, loaded.sample_rate,
       [this](celestrian::dsp::FxChain* old) { retireOwned(old); });
+  // The root's own song (sequencer.md §10) — after Q, which its step
+  // lengths are measured in. The root is where a radio may live.
+  root_node->setAuditionStep(-1);
+  if (loaded.root_sequence.isObject()) {
+    celestrian::session_io::applySequenceVar(
+        *root_node, loaded.root_sequence, loaded.q_samples,
+        celestrian::session_io::SequenceScope::ROOT,
+        [this](const celestrian::Sequence* old) { retireOwned(old); });
+  } else if (const auto* old = root_node->exchangeSequence(nullptr)) {
+    retireOwned(old);  // the loaded bundle has no root song
+  }
   // Q18: pre-Q18 sessions carry no stack origins — anchor from content
   // (the same rule the first content applied live).
   {

@@ -145,7 +145,6 @@ class TimeMapRecordTests : public juce::UnitTest {
         nc.refresh();
         ProcessContext& ctx = nc.ctx;
         ctx.is_playing = true;
-        ctx.is_recording = true;
         ctx.master_pos = t;
         ctx.island_pos = t;
         ctx.input_clock = t;
@@ -399,7 +398,6 @@ class TimeMapRecordTests : public juce::UnitTest {
         NodeContext nc = contextFor(take, 250);
         ProcessContext& ctx = nc.ctx;
         ctx.is_playing = true;
-        ctx.is_recording = true;
         ctx.quantum = 1000;
         ctx.map = cells;
         ctx.map_heard_epoch = 0;

@@ -35,14 +35,13 @@ ClipNode* addClip(NodeContext& nc, const char* name, double sample_rate) {
 NodeContext makeRecordingContext(StackNode& parent, int sample_count,
                                  int64_t master_position) {
   NodeContext nc = contextFor(parent, sample_count, master_position);
-  nc.ctx.is_recording = true;
   return nc;
 }
 
 // The repeated "record a ClipNode with known content at a known
 // position" scaffold: create the node under the island `nc` drives,
-// point the shared context at (sample_count, master_position) with
-// is_recording = true, then startRecording -> one process() over
+// point the shared context at (sample_count, master_position), then
+// startRecording -> one process() over
 // `inputs` -> stopRecording. `nc` is updated in place so follow-up
 // steps (commit loops, playback checks) continue from exactly the
 // state this left behind.
@@ -52,7 +51,6 @@ ClipNode* recordClipInto(NodeContext& nc, const char* name,
   ClipNode* clip_ptr = addClip(nc, name, sample_rate);
   ProcessContext& ctx = nc.ctx;
   ctx.num_samples = sample_count;
-  ctx.is_recording = true;
   ctx.master_pos = master_position;
   clip_ptr->startRecording();
   clip_ptr->process(inputs, nullptr, 1, 0, ctx);
@@ -157,7 +155,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       ctx.master_pos = 6000;
       ctx.num_samples = 100;
       ctx.is_playing = true;
-      ctx.is_recording = false;
       float out[100] = {0.0f};
       float* const outs[] = {out};
       clip2Ptr->process(nullptr, outs, 0, 1, ctx);
@@ -233,7 +230,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Playback at master=1024 should be 0%.
       // effective = (1024 + 0) % 1024 = 0.
 
-      ctx.is_recording = false;
       ctx.is_playing = true;
       ctx.master_pos = 1024;
       clipPtr->process(nullptr, nullptr, 0, 2, ctx);
@@ -304,8 +300,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Clip 2: 4Q at slot 0 (starts at 1Q boundary — master_pos 1000,
       // the Q boundary after clip 1)
       auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs, 4000, 1000);
-      // Keep is_recording=true so samples continue writing until commit
-      // boundary
+      // Samples continue writing until the commit boundary.
       ctx.master_pos = 5000;
       ctx.num_samples =
           1500;  // write_position 4000 + 1500 = 5500, crosses 5000
@@ -485,7 +480,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       auto* clip2Ptr = recordClipInto(nc, "Clip2", SR, inputs8k, 8000, 0);
 
       // Commit clip 2
-      ctx.is_recording = true;
       while (clip2Ptr->isAwaitingStop()) {
         ctx.master_pos += 1000;
         clip2Ptr->process(inputs, nullptr, 1, 0, ctx);
@@ -504,7 +498,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       }
 
       // Now test: at LCM = 8Q = 8000 samples, all clips should be at 0%
-      ctx.is_recording = false;
       ctx.is_playing = true;
       ctx.master_pos = 0;  // Start of LCM cycle = all at 0%
       ctx.num_samples = 512;
@@ -569,7 +562,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Attempt to record at 3900 (3.9Q)
       ctx.master_pos = 3900;
       ctx.num_samples = 100;  // Process up to 4000
-      ctx.is_recording = false;
 
       clip3Ptr->startRecording();
 
@@ -685,7 +677,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // If wrongly looping at 1Q: effective_pos = 1500 % 1000 = 500 → reads
       // ~0.1 If correctly looping at 4Q+: effective_pos = 1500 % 4000+ = 1500 →
       // reads ~0.2
-      ctx.is_recording = false;
       ctx.is_playing = true;
       ctx.master_pos = 1500;
       ctx.num_samples = 1;
@@ -773,7 +764,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // If looping at 1Q: effective_pos = 1500 % 1000 = 500 → reads ~0.1 (FIRST
       // half) If looping at 2Q: effective_pos = 1500 % 2000 = 1500 → reads ~0.5
       // (SECOND half)
-      ctx.is_recording = false;
       ctx.is_playing = true;
       ctx.master_pos = 1500;
       ctx.num_samples = 1;
@@ -852,7 +842,6 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expect(loopEnd != Q, "loopEnd should NOT equal Q (1Q)!");
 
       // Key test: Play at 1.5Q - should read SECOND half (0.5), not first (0.1)
-      ctx.is_recording = false;
       ctx.is_playing = true;
       ctx.master_pos =
           1500 + 1000;  // Offset by launch point (1Q since started at 1Q)

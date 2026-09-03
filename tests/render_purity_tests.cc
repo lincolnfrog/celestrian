@@ -49,7 +49,6 @@ class RenderPurityTests : public juce::UnitTest {
     {
       float* ins[] = {ramp.data()};
       NodeContext rec = contextFor(clip, N);
-      rec.ctx.is_recording = true;
       clip.startRecording();
       clip.process(ins, nullptr, 1, 0, rec.ctx);
       clip.stopRecording();  // Q == 0 → immediate commit (message path)
@@ -101,7 +100,6 @@ class RenderPurityTests : public juce::UnitTest {
       {
         float* ins[] = {ramp.data()};
         NodeContext rec = contextFor(*child, N);
-        rec.ctx.is_recording = true;
         child->startRecording();
         child->process(ins, nullptr, 1, 0, rec.ctx);
         child->stopRecording();
