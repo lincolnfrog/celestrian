@@ -167,8 +167,13 @@ Nothing in Tier D is required for 1.0.
   UI: visit columns, the → successors popover, orphan chips, the radio
   badge + ⟳ re-roll. Same pass: the ROOT's sequence is now persisted
   (`rootSequence`) — it was lost on reopen before.
-- [ ] **C2 — Per-step fades** (S13): `fadeInQ`/`fadeOutQ` on the step
-  format.
+- [x] **C2 — Per-step fades** ✅ 2026-09-03 (S13, sequencer.md §15):
+  `Step::fade_in`/`fade_out` (samples; `fadeInQ`/`fadeOutQ` in session +
+  templates, retimed with Q) shape a gate run's ramps at its first/last
+  step, floored by the anti-pop micro-fade, shrunk proportionally when
+  they do not fit; the seam-run corner distance is mask-aware so block
+  splits stay exact. UI: the length chip's fades popover + ◢/◣ markers;
+  lanes draw the ramps as gradients.
 - [ ] **C3 — Nested stochastic sequences** (proposed under S12): refused
   by rule today (a nested block that unrolls to a radio is demoted to
   the loop on load; the verb refuses). Legalizing it would mean treating

@@ -56,6 +56,11 @@ juce::var sequenceVar(const StackNode& stack, int64_t q) {
     if (st.cue) stepo->setProperty("cue", true);  // additive
     if (!st.next.empty())
       stepo->setProperty("next", Sequence::successorsVar(st));  // additive
+    // Per-step fades (S13): musical lengths, QTime like lenQ. Additive.
+    if (st.fade_in > 0)
+      stepo->setProperty("fadeInQ", qvar(timing::fromSamples(st.fade_in, q)));
+    if (st.fade_out > 0)
+      stepo->setProperty("fadeOutQ", qvar(timing::fromSamples(st.fade_out, q)));
     steps.add(juce::var(stepo));
   }
   so->setProperty("steps", steps);
@@ -623,6 +628,10 @@ void applySequenceVar(StackNode& stack, const juce::var& block, int64_t q,
       st.name = sv.getProperty("name", {}).toString();
       st.cue = (bool)sv.getProperty("cue", false);
       Sequence::readSuccessors(sv, st);
+      if (sv.hasProperty("fadeInQ"))
+        st.fade_in = timing::toSamples(qread(sv.getProperty("fadeInQ", {})), q);
+      if (sv.hasProperty("fadeOutQ"))
+        st.fade_out = timing::toSamples(qread(sv.getProperty("fadeOutQ", {})), q);
       if (st.len > 0) seq->steps.push_back(std::move(st));
     }
   }

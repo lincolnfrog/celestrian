@@ -1034,6 +1034,45 @@ different rule from "no period"); refused until someone needs it.
 
 ---
 
+## 15. Build step 6 — PER-STEP FADES (S13, implementation record, 2026-09-03)
+
+S13's committed future work, built: *"I could definitely imagine
+wanting a part to fade out over a few seconds."*
+
+**The model.** Each step carries `fade_in` / `fade_out` (samples;
+musical — QTime in the session, Q counts in templates, scaled with Q
+on a definer re-trim like `len`). 0 = no musical fade. The fades are
+properties of the STEP, applied to every child's gate RUN through it:
+a run ramps in over its FIRST step's fade-in and out over its LAST
+step's fade-out. The S7 anti-pop micro-fade (10 ms) is the floor — a
+ramp is never shorter than it, so nothing ever pops. Ramps that do
+not fit the run shrink proportionally so they meet
+(`Sequence::rampsOf`); with no musical fades this reproduces the old
+symmetric half-run clamp exactly. Cue seams still cut (S20) — a cued
+step's own fades shape the dip on each side.
+
+**Purity kept.** The envelope stays a pure function of position
+(`gainAt`); the seam-run splitter's corner distance became MASK-AWARE
+(`cornerDistance(rel, fade, mask)`) — the parent folds it over every
+gate row plus the all-on mask, and every visit boundary is always a
+corner — so each block still has constant-slope gain and (g0, g1) are
+exact. Pinned: the same span rendered in odd chunks is byte-identical.
+
+**Wire format (additive).** `fadeIn` / `fadeOut` samples in metadata
+and the verb payload (negatives clamp to 0, absent when 0);
+`fadeInQ` / `fadeOutQ` in session blocks and templates.
+
+**UI.** The step header's length chip opens the FADES popover (fade
+in / fade out in Q, one setSequence per change); the chip wears ◢ / ◣
+while a fade is set. The lanes project the ramps as gradients into
+and out of the dims (`seqDims[].fadeSegsQ` — runs merged across the
+wrap and broken at cue seams, engine parity `runAround`).
+
+Pinned by the "S13" section of tests/sequencer_tests.cc,
+ui/js/tests/step_fades.test.mjs and ui/e2e/step_fades.spec.js.
+
+---
+
 ## Appendix: the first-draft options (history)
 
 The 2026-08-19 first draft pitched three options: **A** — one

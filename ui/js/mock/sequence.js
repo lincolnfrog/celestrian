@@ -131,6 +131,10 @@ export function setSequence(id, payload) {
         cue: !!s.cue,
         // The successor graph (§14): empty = the loop successor.
         ...(nexts[i].length ? { next: nexts[i] } : {}),
+        // Per-step fades (S13, §15): samples, never negative; absent
+        // when 0 (the anti-pop micro-fade only).
+        ...(s.fadeIn > 0 ? { fadeIn: Math.round(s.fadeIn) } : {}),
+        ...(s.fadeOut > 0 ? { fadeOut: Math.round(s.fadeOut) } : {}),
     }));
     const seed = Number.isFinite(Number(payload.seed))
         ? (Number(payload.seed) >>> 0) : 0;
@@ -275,6 +279,8 @@ export function retimeSequences(oldQ, newQ) {
             ...h.sequence,
             steps: h.sequence.steps.map(st => ({
                 ...st, len: Math.round(st.len * newQ / oldQ),
+                ...(st.fadeIn > 0 ? { fadeIn: Math.round(st.fadeIn * newQ / oldQ) } : {}),
+                ...(st.fadeOut > 0 ? { fadeOut: Math.round(st.fadeOut * newQ / oldQ) } : {}),
             })),
         };
     });

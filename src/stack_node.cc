@@ -93,6 +93,8 @@ juce::var StackNode::getMetadata() const {
       stepo->setProperty("cue", st.cue);
       if (!st.next.empty())
         stepo->setProperty("next", Sequence::successorsVar(st));
+      if (st.fade_in > 0) stepo->setProperty("fadeIn", (double)st.fade_in);
+      if (st.fade_out > 0) stepo->setProperty("fadeOut", (double)st.fade_out);
       steps.add(juce::var(stepo));
     }
     so->setProperty("steps", steps);

@@ -462,7 +462,12 @@ void AudioEngine::setIslandQuantum(int64_t q, int64_t epoch,
     if (old_q <= 0) return;  // nothing musical to scale from
     auto* fresh = new celestrian::Sequence(*cur);
     for (auto& st : fresh->steps) {
-      st.len = (int64_t)std::llround((double)st.len * (double)q / (double)old_q);
+      const auto scale = [&](int64_t v) {
+        return (int64_t)std::llround((double)v * (double)q / (double)old_q);
+      };
+      st.len = scale(st.len);
+      st.fade_in = scale(st.fade_in);  // fades are musical too (S13)
+      st.fade_out = scale(st.fade_out);
     }
     fresh->finalize();
     if (const auto* old = stack.exchangeSequence(fresh)) retireOwned(old);

@@ -2230,7 +2230,34 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border: 1px solid var(--map-amber);
     border-radius: 3px;
 }
-.seq-hlen { color: var(--map-amber); }
+.seq-hlen { color: var(--map-amber); cursor: pointer; }
+.seq-hlen:hover { text-decoration: underline dotted; }
+/* The FADES popover (§15): two Q inputs under the length chip. */
+.seq-fade-pop {
+    position: absolute;
+    top: 100%;
+    z-index: 30;
+    min-width: 150px;
+    margin-top: 3px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--map-amber);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    font-size: 0.64rem;
+}
+.seq-fade-title { color: var(--map-amber); margin-bottom: 4px; }
+.seq-fade-line { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+.seq-fade-line label { flex: 1; color: var(--text-dim); }
+.seq-fade-q {
+    width: 48px;
+    font: inherit;
+    font-size: 0.64rem;
+    color: var(--text);
+    background: var(--lane);
+    border: 1px solid var(--hairline);
+    border-radius: 3px;
+}
 /* The step-resize grip: a VISIBLE bracket-style handle (a hairline is
    not discoverable). Wide hit area; the bar brightens on hover like
    the loop brackets. */
@@ -2336,6 +2363,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) {
     .seq-dim { animation: none; }
 }
+/* PER-STEP FADES (docs/sequencer.md §15): the ramp at a gate run's
+   edge — a gradient out of the dim (fade in) or into it (fade out).
+   Display only (pure projection of the envelope). */
+.seq-fade { position: absolute; top: 0; bottom: 0; }
+.seq-fade.in { background: linear-gradient(to right, rgba(16, 22, 25, 0.68), transparent); }
+.seq-fade.out { background: linear-gradient(to right, transparent, rgba(16, 22, 25, 0.68)); }
 
 /* The ROOT sequencer chip: the session's own song. It lives in the
    ruler row's rail spacer — the root stack's "rail" — right above the

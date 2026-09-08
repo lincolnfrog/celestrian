@@ -769,6 +769,20 @@ function patchSeqDims(body, lane, cycleQ) {
                 d.style.width = pct(to - from, cycleQ);
                 layer.appendChild(d);
             }
+            // PER-STEP FADES (S13, sequencer.md §15): the ramp at a
+            // run's edge reads as a gradient into / out of the dim.
+            for (const [s, e, kind] of dims.fadeSegsQ || []) {
+                const from = base + s;
+                const to = Math.min(base + e, cycleQ);
+                if (to - from <= 1e-9) continue;
+                const f = el('div', 'seq-fade ' + kind);
+                f.dataset.layer = String(li);
+                f.style.left = pct(from, cycleQ);
+                f.style.width = pct(to - from, cycleQ);
+                f.title = kind === 'in' ? 'Fades in over this span'
+                                        : 'Fades out over this span';
+                layer.appendChild(f);
+            }
             // CUED spans (docs/sequencer.md ss3): the subtree replays
             // the SONG TOP here - marked, not dimmed (it still sounds;
             // it just re-bases). The pip echoes the grid header's.

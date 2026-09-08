@@ -475,10 +475,16 @@ class StackNode : public AudioNode {
       }
       if (seq != nullptr && !resting) {
         // Corner distance in the CHILD clock (composition law: the map
-        // selects song positions; the sequence is looked up there).
+        // selects song positions; the sequence is looked up there) —
+        // per gate row (ramp corners depend on the run, S13), plus the
+        // all-on mask every row-less child inherits.
         const int64_t crel = period > 0 ? own_map.mapOffset(rel) : rel;
-        dist = std::min<int64_t>(dist,
-                                 seq->cornerDistance(seq->fold(crel), fade));
+        const int64_t srel = seq->fold(crel);
+        dist = std::min<int64_t>(dist, seq->cornerDistance(srel, fade, ~0ull));
+        for (const auto& row : seq->gates) {
+          dist = std::min<int64_t>(dist,
+                                   seq->cornerDistance(srel, fade, row.mask));
+        }
       }
       const int run = (int)std::min<int64_t>(context.num_samples - done, dist);
       Ch* shifted[kMaxSplitChannels];

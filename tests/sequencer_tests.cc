@@ -117,6 +117,7 @@ class SequencerTests : public juce::UnitTest {
     testWindowDomain();
     testCueSteps();
     testSuccessors();
+    testStepFades();
   }
 
  private:
@@ -924,6 +925,192 @@ class SequencerTests : public juce::UnitTest {
       auto* g2 = dynamic_cast<StackNode*>(preQ.get());
       expect(g2 != nullptr && g2->sequencePtr() == nullptr,
              "no Q yet: subtree builds, sequence skipped");
+    }
+  }
+
+  // === PER-STEP FADES (S13, docs/sequencer.md §15): a run ramps in
+  // over its first step's fade_in and out over its last step's
+  // fade_out; the anti-pop micro-fade is the floor. ===
+  void testStepFades() {
+    beginTest("S13: a step's fade_in / fade_out set the run's ramps; the "
+              "anti-pop micro-fade is the floor");
+    {
+      Sequence s;
+      s.steps.push_back({kLen, "a"});
+      Sequence::Step b;
+      b.len = 4 * kLen;
+      b.name = "b";
+      b.fade_in = kLen;
+      b.fade_out = 2 * kLen;
+      s.steps.push_back(b);
+      s.finalize();
+      const uint64_t m = 0b10ull;  // b alone: the run is [kLen, 5kLen)
+      expectWithinAbsoluteError(s.gainAt(m, kLen + kLen / 2, kFade), 0.5f,
+                                1e-6f, "mid fade-in (1Q ramp)");
+      expectWithinAbsoluteError(s.gainAt(m, 2 * kLen, kFade), 1.0f, 1e-6f,
+                                "fade-in complete after 1Q");
+      expectWithinAbsoluteError(s.gainAt(m, 3 * kLen, kFade), 1.0f, 1e-6f,
+                                "interior");
+      expectWithinAbsoluteError(s.gainAt(m, 4 * kLen, kFade), 0.5f, 1e-6f,
+                                "mid fade-out (2Q ramp, 1Q before the end)");
+      expectWithinAbsoluteError(s.gainAt(m, 5 * kLen - 1, kFade), 0.0f,
+                                1e-3f, "closed at the run's end");
+      // Step a has no musical fade: the 10 ms anti-pop still applies.
+      expectWithinAbsoluteError(s.gainAt(0b01ull, kFade / 2, kFade), 0.5f,
+                                2e-3f, "anti-pop floor on an unfaded step");
+      // Corners for THIS mask: the ramp ends are corners; a foreign
+      // mask sees only the visit boundary.
+      expectEquals(s.cornerDistance(kLen, kFade, m), (int64_t)kLen,
+                   "next corner from the run start = end of the fade-in");
+      expectEquals(s.cornerDistance(2 * kLen, kFade, m), (int64_t)kLen,
+                   "then the start of the fade-out (3Q)");
+      expectEquals(s.cornerDistance(kLen, kFade, 0b01ull), (int64_t)(4 * kLen),
+                   "a mask off here sees only the visit boundary");
+    }
+
+    beginTest("S13: fades longer than the run shrink proportionally and meet");
+    {
+      Sequence s;
+      s.steps.push_back({kLen, "a"});
+      Sequence::Step b;
+      b.len = kLen;
+      b.fade_in = 3 * kLen;
+      b.fade_out = kLen;
+      s.steps.push_back(b);
+      s.finalize();
+      const uint64_t m = 0b10ull;  // run = [kLen, 2kLen): 3:1 → 3/4Q, 1/4Q
+      const int64_t start = kLen;
+      expectWithinAbsoluteError(s.gainAt(m, start + 3 * kLen / 4, kFade), 1.0f,
+                                2e-3f, "the ramps meet at 3/4 of the run");
+      expectWithinAbsoluteError(s.gainAt(m, start + 3 * kLen / 8, kFade), 0.5f,
+                                2e-3f, "mid fade-in of the shrunk ramp");
+      expectWithinAbsoluteError(s.gainAt(m, 2 * kLen - kLen / 8, kFade), 0.5f,
+                                2e-3f, "mid fade-out of the shrunk ramp");
+      expectEquals(s.cornerDistance(start, kFade, m), (int64_t)(3 * kLen / 4),
+                   "the meeting point is the one corner");
+    }
+
+    beginTest("S13: render purity with a musical fade (block-split "
+              "independent), and the ramp replaces the 10 ms one");
+    {
+      StackNode root("island");
+      root.addChild(makeDcClip("b", 0.4f));
+      const juce::String bId = root.ownedChildren()[0]->getUuid();
+      auto* seq = new Sequence();
+      seq->steps.push_back({kLen, "one"});
+      Sequence::Step two;
+      two.len = 2 * kLen;
+      two.name = "two";
+      two.fade_in = kLen / 2;  // a musical half-Q fade-in
+      seq->steps.push_back(two);
+      seq->gates.push_back({bId, 0b10ull});
+      seq->finalize();
+      delete root.exchangeSequence(seq);
+
+      const int n = kLen;  // from 100 before the seam through the ramp
+      const int64_t t0 = (int64_t)kLen - 100;
+      auto big = renderAt(root, t0, n);
+      expectWithinAbsoluteError(big[0], 0.0f, 1e-5f, "closed before entry");
+      expectWithinAbsoluteError(big[(size_t)(100 + kLen / 4)], 0.2f, 3e-3f,
+                                "a quarter Q in: half amplitude (2205-sample "
+                                "ramp, not 441)");
+      expectWithinAbsoluteError(big[(size_t)(100 + kLen / 2 + 50)], 0.4f,
+                                3e-3f, "full after half a Q");
+      std::vector<float> chunks;
+      int64_t t = t0;
+      int left = n;
+      while (left > 0) {
+        const int c = std::min(left, 97);
+        auto part = renderAt(root, t, c);
+        chunks.insert(chunks.end(), part.begin(), part.begin() + c);
+        t += c;
+        left -= c;
+      }
+      // The envelope is exact at every corner; within a ramp the child
+      // applies a float32 per-sample increment, so a 2205-sample ramp
+      // rendered as one block differs from 97-sample pieces by float
+      // noise only (observed ≤ 4e-6, well under one LSB of 16-bit).
+      for (int i = 0; i < n; i += 37) {
+        expectWithinAbsoluteError(chunks[(size_t)i], big[(size_t)i], 2e-5f,
+                                  "block splits do not change the output");
+      }
+    }
+
+    beginTest("S13: fades persist — metadata, session (QTime), template "
+              "(scaled), and they retime with Q");
+    {
+      // The verb + metadata.
+      AudioEngine engine;
+      const juce::String rootId =
+          engine.getGraphState().getProperty("id", "").toString();
+      auto* payload = new juce::DynamicObject();
+      {
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "a");
+        s1->setProperty("len", 2000.0);
+        s1->setProperty("fadeIn", 500.0);
+        s1->setProperty("fadeOut", -7.0);  // clamps to 0 (absent)
+        steps.add(juce::var(s1));
+        auto* s2 = new juce::DynamicObject();
+        s2->setProperty("name", "b");
+        s2->setProperty("len", 2000.0);
+        s2->setProperty("fadeOut", 1000.0);
+        steps.add(juce::var(s2));
+        payload->setProperty("steps", steps);
+      }
+      engine.setSequence(rootId, juce::var(payload));
+      const juce::var st = engine.getGraphState().getProperty("sequence", {});
+      const juce::var s0 = st.getProperty("steps", {})[0];
+      const juce::var s1v = st.getProperty("steps", {})[1];
+      expectEquals((int)(double)s0.getProperty("fadeIn", 0.0), 500, "fadeIn published");
+      expect(!s0.hasProperty("fadeOut"), "a clamped-to-0 fade is absent");
+      expectEquals((int)(double)s1v.getProperty("fadeOut", 0.0), 1000,
+                   "fadeOut published");
+
+      // Session round trip on a group (QTime), and a template rebuilt
+      // at another Q (fades are Q counts).
+      StackNode outer("island");
+      auto group = std::make_unique<StackNode>("song");
+      auto c = makeDcClip("b", 0.2f);
+      group->addChild(std::move(c));
+      auto* gs = new Sequence();
+      gs->steps.push_back({kLen, "a"});
+      Sequence::Step two;
+      two.len = 2 * kLen;
+      two.fade_in = kLen / 2;
+      two.fade_out = kLen;
+      gs->steps.push_back(two);
+      gs->finalize();
+      delete group->exchangeSequence(gs);
+      StackNode* g = group.get();
+      outer.addChild(std::move(group));
+      outer.setQuantum(kLen, 0);
+      auto dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                     .getChildFile("celestrian_seq_fade_io_test");
+      dir.deleteRecursively();
+      expect(session_io::save(outer, kSr, dir, {}), "save ok");
+      auto back = session_io::load(dir, kSr);
+      auto* gBack = dynamic_cast<StackNode*>(back.children[0].get());
+      const Sequence* s = gBack ? gBack->sequencePtr() : nullptr;
+      expect(s != nullptr, "sequence back");
+      if (s != nullptr) {
+        expectEquals(s->steps[1].fade_in, (int64_t)(kLen / 2), "fade_in back");
+        expectEquals(s->steps[1].fade_out, (int64_t)kLen, "fade_out back");
+        expectEquals(s->steps[0].fade_in, (int64_t)0, "absent = 0");
+      }
+      dir.deleteRecursively();
+      const juce::var tpl = track_templates::capture(*g, kLen);
+      auto rebuilt = track_templates::build(tpl, kSr, /*q_samples=*/2 * kLen);
+      auto* rg = dynamic_cast<StackNode*>(rebuilt.get());
+      const Sequence* rs = rg ? rg->sequencePtr() : nullptr;
+      expect(rs != nullptr, "template sequence rebuilt");
+      if (rs != nullptr) {
+        expectEquals(rs->steps[1].fade_in, (int64_t)kLen,
+                     "a half-Q fade at 2×Q is a whole old Q");
+        expectEquals(rs->steps[1].fade_out, (int64_t)(2 * kLen),
+                     "fade_out scaled with Q");
+      }
     }
   }
 

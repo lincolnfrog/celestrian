@@ -75,6 +75,10 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
         if (st.cue) stepo->setProperty("cue", true);  // additive
         if (!st.next.empty())
           stepo->setProperty("next", Sequence::successorsVar(st));
+        if (st.fade_in > 0)
+          stepo->setProperty("fadeInQ", (double)st.fade_in / (double)q_samples);
+        if (st.fade_out > 0)
+          stepo->setProperty("fadeOutQ", (double)st.fade_out / (double)q_samples);
         steps.add(juce::var(stepo));
       }
       so->setProperty("steps", steps);
@@ -147,6 +151,10 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
             st.name = sv.getProperty("name", juce::var()).toString();
             st.cue = (bool)sv.getProperty("cue", false);
             Sequence::readSuccessors(sv, st);
+            st.fade_in = (int64_t)std::llround(
+                (double)sv.getProperty("fadeInQ", 0.0) * (double)q_samples);
+            st.fade_out = (int64_t)std::llround(
+                (double)sv.getProperty("fadeOutQ", 0.0) * (double)q_samples);
             if (st.len > 0) seq->steps.push_back(std::move(st));
           }
         }

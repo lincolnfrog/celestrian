@@ -426,6 +426,12 @@ void AudioEngine::setSequence(const juce::String& uuid,
               "AudioEngine::setSequence refused - non-positive step length");
           return;
         }
+        // Per-step fades (S13, sequencer.md §15): samples, never
+        // negative; a fade longer than the run shrinks at render.
+        st.fade_in = std::max<int64_t>(
+            0, (int64_t)(double)sv.getProperty("fadeIn", 0.0));
+        st.fade_out = std::max<int64_t>(
+            0, (int64_t)(double)sv.getProperty("fadeOut", 0.0));
         // The successor graph (sequencer.md §14): [{to, w}] — a target
         // outside the step list is malformed, refused like a bad
         // length (the UI never sends one).

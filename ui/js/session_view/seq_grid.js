@@ -62,6 +62,8 @@ function payloadOf(lane, quantum, mutate) {
             cue: !!s.cue,
             ...(s.next && s.next.length
                 ? { next: s.next.map(n => ({ to: n.to, w: n.w })) } : {}),
+            ...(s.fadeInQ > 0 ? { fadeIn: Math.round(s.fadeInQ * quantum) } : {}),
+            ...(s.fadeOutQ > 0 ? { fadeOut: Math.round(s.fadeOutQ * quantum) } : {}),
         })),
         gates: {},
         seed: lane.seed >>> 0,
@@ -132,7 +134,9 @@ function commit(row, mutate) {
     // twice). The next poll's published state confirms and rebuilds.
     lane.steps = p.steps.map(s => ({
         name: s.name, lenQ: s.len / row._quantum, cue: !!s.cue,
-        next: s.next ? s.next.map(n => ({ ...n })) : [] }));
+        next: s.next ? s.next.map(n => ({ ...n })) : [],
+        fadeInQ: (s.fadeIn || 0) / row._quantum,
+        fadeOutQ: (s.fadeOut || 0) / row._quantum }));
     lane.seed = p.seed >>> 0;
     Object.assign(lane, visitsOf(lane.steps, lane.seed));
     lane.children.forEach(c => {
@@ -241,7 +245,16 @@ function rebuild(row, lane) {
             { textContent: s.name || String(i + 1) });
         nm.title = 'Double-click to rename · right-click to delete step';
         nm.addEventListener('dblclick', () => renameStep(row, cell, i));
-        const len = el('span', 'seq-hlen', { textContent: fmtQ(s.lenQ) + 'Q' });
+        // The length chip: click = the FADES popover (S13, §15). The
+        // markers show a fade in (◢) / out (◣) on the step.
+        const len = el('span', 'seq-hlen', {
+            textContent: (s.fadeInQ > 0 ? '◢' : '') + fmtQ(s.lenQ) + 'Q' +
+                         (s.fadeOutQ > 0 ? '◣' : ''),
+            title: 'Click: fade this step in / out (in Q)' });
+        len.addEventListener('click', e => {
+            e.stopPropagation();
+            openFadePopover(row, cell, i);
+        });
         // ⇤ — CUE (S22): a per-step pip on the header toggles
         // gate-mode <-> cue-mode. A cued step re-bases
         // its span to the SONG TOP (docs/sequencer.md ss3 — the serial
@@ -523,10 +536,15 @@ function closeNextPopover(row) {
 function openNextPopover(row, anchor, i) {
     const lane = row._lane;
     if (!lane || !lane.editable) return;
-    if (row._nextPop && row._nextPop._step === i) { closeNextPopover(row); return; }
+    if (row._nextPop && row._nextPop._step === i &&
+        row._nextPop._kind === 'next') {
+        closeNextPopover(row);
+        return;
+    }
     closeNextPopover(row);
     const pop = el('div', 'seq-next-pop mono');
     pop._step = i;
+    pop._kind = 'next';
     pop.dataset.step = String(i);
     const name = lane.steps[i].name || String(i + 1);
     pop.appendChild(el('div', 'seq-next-title', {
@@ -606,6 +624,64 @@ function openNextPopover(row, anchor, i) {
         anchor.parentElement.appendChild(pop);
         pop.classList.add('in-foot');
     }
+    row._nextPop = pop;
+    row._nextPopOff = e => {
+        if (!pop.contains(e.target)) closeNextPopover(row);
+    };
+    document.addEventListener('pointerdown', row._nextPopOff, true);
+}
+
+/**
+ * THE FADES POPOVER (S13, §15): fade in / fade out for step i, in Q
+ * (0 = the anti-pop micro-fade only). A gate run that starts on the
+ * step ramps in over the fade-in; one that ends on it ramps out over
+ * the fade-out. Each change is one setSequence (one undo step).
+ */
+function openFadePopover(row, anchor, i) {
+    const lane = row._lane;
+    if (!lane || !lane.editable) return;
+    if (row._nextPop && row._nextPop._step === i &&
+        row._nextPop._kind === 'fade') {
+        closeNextPopover(row);
+        return;
+    }
+    closeNextPopover(row);
+    const pop = el('div', 'seq-fade-pop mono');
+    pop._step = i;
+    pop._kind = 'fade';
+    pop.dataset.step = String(i);
+    const s = lane.steps[i];
+    pop.appendChild(el('div', 'seq-fade-title', {
+        textContent: (s.name || String(i + 1)) + ' · fades (Q)' }));
+    const field = (label, key, value) => {
+        const line = el('div', 'seq-fade-line');
+        const lab = el('label', '', { textContent: label });
+        const input = el('input', 'seq-fade-q', {
+            type: 'number', min: '0', step: '0.25', value: String(value),
+            title: '0 = no musical fade (the 10 ms anti-pop only)' });
+        input.dataset.fade = key;
+        input.addEventListener('pointerdown', e => e.stopPropagation());
+        input.addEventListener('keydown', e => {
+            e.stopPropagation();
+            if (e.key === 'Escape') closeNextPopover(row);
+            if (e.key === 'Enter') input.blur();
+        });
+        input.addEventListener('change', () => {
+            const q = Math.max(0, Number(input.value) || 0);
+            commit(row, p => {
+                const samples = Math.round(q * row._quantum);
+                if (samples > 0) p.steps[i][key] = samples;
+                else delete p.steps[i][key];
+            });
+        });
+        line.append(lab, input);
+        return line;
+    };
+    pop.appendChild(field('fade in', 'fadeIn', s.fadeInQ || 0));
+    pop.appendChild(field('fade out', 'fadeOut', s.fadeOutQ || 0));
+    const head = row.querySelector('.seq-head');
+    pop.style.left = anchor.style.left;
+    head.appendChild(pop);
     row._nextPop = pop;
     row._nextPopOff = e => {
         if (!pop.contains(e.target)) closeNextPopover(row);

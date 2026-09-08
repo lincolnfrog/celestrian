@@ -432,6 +432,9 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
         // successor. The header's → pip edits it.
         next: Array.isArray(st.next)
             ? st.next.map(n => ({ to: n.to, w: n.w })) : [],
+        // Per-step fades (S13, §15) in Q; 0 = the anti-pop micro-fade.
+        fadeInQ: (st.fadeIn > 0 ? Math.round(st.fadeIn) : 0) / quantum,
+        fadeOutQ: (st.fadeOut > 0 ? Math.round(st.fadeOut) : 0) / quantum,
     })) : [];
     // THE PROGRAM (§14): the grid's COLUMNS are the visits — a step
     // the walk plays twice has two columns, both editing the one step
@@ -518,7 +521,14 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
         });
     }
     const childIds = new Set((children || []).map(c => c.id));
-    let offSegs = null;  // the CURRENT direct child's off spans
+    const startsQ = [];
+    {
+        let pos = 0;
+        visits.forEach(k => { startsQ.push(pos); pos += stepsQ[k]; });
+    }
+    const cued = k => !!seq.steps[k].cue;
+    let offSegs = null;   // the CURRENT direct child's off spans
+    let fadeSegs = null;  // …and its fade ramps (S13)
     for (let i = from; i < to; i++) {
         const lane = lanes[i];
         if (childIds.has(lane.id)) {
@@ -537,6 +547,9 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             });
             if (runStart !== null) offSegs.push([runStart, totalQ]);
             if (!offSegs.length) offSegs = null;
+            fadeSegs = fadeSegsOf(visits, stepsQ, startsQ, totalQ, bits,
+                                  cued, seq.steps, quantum);
+            if (!fadeSegs.length) fadeSegs = null;
         }
         // A layer attaches when the child has OFF spans OR the scope
         // has cued spans (cue re-bases everyone, gated or not).
@@ -547,10 +560,82 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             // reads outermost first. A lane is silent where ANY
             // enclosing sequence silences it (the fractal gate).
             lane.seqDims = [{ periodQ: totalQ, offSegsQ: offSegs || [],
-                              cueSegsQ: cueSegsQ.length ? cueSegsQ : null },
+                              cueSegsQ: cueSegsQ.length ? cueSegsQ : null,
+                              ...(fadeSegs ? { fadeSegsQ: fadeSegs } : {}) },
                             ...(lane.seqDims || [])];
         }
     }
+}
+
+/**
+ * The ON-runs of a child's gates over the program's visits — engine
+ * parity Sequence::runAround: contiguous on-visits merge, INCLUDING
+ * across the wrap, and break at cue seams (S20). Returns [{first,
+ * last}] visit indices; a run that is the whole program with no seam
+ * is `whole` (constant gain — no ramps anywhere).
+ */
+function onRunsOf(visits, bits, cued) {
+    const n = visits.length;
+    if (!n) return [];
+    const on = k => (bits ? !!bits[visits[k]] : true);
+    const cut = (a, b) => cued(visits[a]) || cued(visits[b]);
+    let start = -1;
+    for (let i = 0; i < n; i++) {
+        const p = (i + n - 1) % n;
+        if (on(i) && (!on(p) || cut(p, i))) { start = i; break; }
+    }
+    if (start < 0) return on(0) ? [{ first: 0, last: n - 1, whole: true }] : [];
+    const runs = [];
+    let i = start, seen = 0;
+    while (seen < n) {
+        if (!on(i)) { i = (i + 1) % n; seen++; continue; }
+        let last = i, len = 1;
+        while (len < n && on((last + 1) % n) && !cut(last, (last + 1) % n)) {
+            last = (last + 1) % n;
+            len++;
+        }
+        runs.push({ first: i, last });
+        seen += len;
+        i = (last + 1) % n;
+    }
+    return runs;
+}
+
+/**
+ * PER-STEP FADE ramps (S13, §15) as display segments over the program:
+ * [[fromQ, toQ, 'in'|'out'], …]. A run ramps in over its FIRST step's
+ * fadeInQ and out over its LAST step's fadeOutQ; ramps that do not fit
+ * the run shrink proportionally so they meet (engine parity
+ * Sequence::rampsOf). Segments crossing the wrap are split.
+ */
+function fadeSegsOf(visits, stepsQ, startsQ, totalQ, bits, cued, steps,
+                    quantum) {
+    const q = v => (v > 0 ? Math.round(v) : 0);
+    const segs = [];
+    const push = (from, len, kind) => {
+        if (!(len > 1e-9)) return;
+        const a = ((from % totalQ) + totalQ) % totalQ;
+        if (a + len <= totalQ + 1e-9) segs.push([a, a + len, kind]);
+        else { segs.push([a, totalQ, kind]); segs.push([0, a + len - totalQ, kind]); }
+    };
+    for (const r of onRunsOf(visits, bits, cued)) {
+        if (r.whole) continue;
+        const n = visits.length;
+        let runLen = 0;
+        for (let k = r.first;; k = (k + 1) % n) {
+            runLen += stepsQ[k];
+            if (k === r.last) break;
+        }
+        let fIn = q(steps[visits[r.first]].fadeIn) / quantum;
+        let fOut = q(steps[visits[r.last]].fadeOut) / quantum;
+        if (fIn + fOut > runLen && fIn + fOut > 0) {
+            fIn = fIn * runLen / (fIn + fOut);
+            fOut = runLen - fIn;
+        }
+        push(startsQ[r.first], fIn, 'in');
+        push(startsQ[r.first] + runLen - fOut, fOut, 'out');
+    }
+    return segs;
 }
 
 /**

@@ -73,6 +73,12 @@ struct Sequence {
     bool cue = false;
     // The successor graph (§6): empty = the loop successor (i+1) mod n.
     std::vector<Successor> next;
+    // PER-STEP FADES (S13, §15): musical ramp lengths in samples. A
+    // gate run that STARTS on this step ramps in over fade_in; one that
+    // ENDS on it ramps out over fade_out. 0 = the anti-pop micro-fade
+    // only (the ramp is never shorter than that).
+    int64_t fade_in = 0;
+    int64_t fade_out = 0;
   };
   struct GateRow {
     juce::String uuid;      // a DIRECT child of the owning stack
@@ -303,16 +309,64 @@ struct Sequence {
     return rel < 0 ? rel + total : rel;
   }
 
-  // --- THE GATE ENVELOPE (S7: fades, never hard cuts) ---
+  // --- THE GATE ENVELOPE (S7: fades, never hard cuts; S13: per-step
+  // musical fades) ---
   //
   // For a child with gate mask m, the dry-signal gain at folded
   // position `rel` is a PURE piecewise-linear function of the program:
-  // 0 across off-visits, 1 across on-runs, with a linear ramp of
-  // `fade` samples at each run edge (clamped to half the run when a
-  // run is shorter than two fades). Contiguous on-visits merge into one
-  // run, INCLUDING across the wrap (S3: the program loops).
-  // Because this is schedule-derived — not integrator state — identical
-  // (state, t) yields identical output regardless of block splits (I6).
+  // 0 across off-visits, 1 across on-runs, with a linear ramp at each
+  // run edge — the anti-pop `fade`, or the step's own fade_in (at the
+  // run's first step) / fade_out (at its last step) when longer. When
+  // the two ramps do not fit the run they shrink proportionally so they
+  // meet. Contiguous on-visits merge into one run, INCLUDING across the
+  // wrap (S3: the program loops). Because this is schedule-derived —
+  // not integrator state — identical (state, t) yields identical output
+  // regardless of block splits (I6).
+
+  /** The on-run of mask `m` around visit `k` (which must be on): its
+   * first/last visits, start and length — wrapping, broken at cue
+   * seams (S20). */
+  struct Run {
+    int first = 0;
+    int last = 0;
+    int64_t start = 0;
+    int64_t len = 0;
+  };
+  Run runAround(uint64_t m, int k) const {
+    const int n = visit_count;
+    Run r;
+    r.first = k;
+    while (onVisit(m, (r.first + n - 1) % n) &&
+           !cutBetween((r.first + n - 1) % n, r.first))
+      r.first = (r.first + n - 1) % n;
+    r.last = k;
+    while (onVisit(m, (r.last + 1) % n) &&
+           !cutBetween(r.last, (r.last + 1) % n))
+      r.last = (r.last + 1) % n;
+    r.start = bounds[r.first];
+    for (int v = r.first;; v = (v + 1) % n) {
+      r.len += bounds[v + 1] - bounds[v];
+      if (v == r.last) break;
+    }
+    return r;
+  }
+
+  /** The run's two ramp lengths: max(anti-pop, the step's fade), then
+   * shrunk proportionally so f_in + f_out ≤ run length. */
+  void rampsOf(const Run& r, int64_t fade, int64_t& f_in,
+               int64_t& f_out) const {
+    const int64_t in = steps[(size_t)visit_step[r.first]].fade_in;
+    const int64_t out = steps[(size_t)visit_step[r.last]].fade_out;
+    f_in = in > fade ? in : fade;
+    f_out = out > fade ? out : fade;
+    if (f_in < 0) f_in = 0;
+    if (f_out < 0) f_out = 0;
+    const int64_t sum = f_in + f_out;
+    if (sum > r.len && sum > 0) {
+      f_in = f_in * r.len / sum;
+      f_out = r.len - f_in;
+    }
+  }
 
   /** Gain ∈ [0, 1] for mask `m` at position `rel` (folded internally). */
   float gainAt(uint64_t m, int64_t rel, int64_t fade) const {
@@ -326,61 +380,49 @@ struct Sequence {
     if ((m & reachable) == 0) return 0.0f;  // all off: constant silence
     const int k = visitAt(rel);
     if (!onVisit(m, k)) return 0.0f;
-    // Run edges: walk to the first/last on-visit of this run (wrapping).
-    // A cue boundary (cutBetween) BREAKS the run even when the mask is
-    // on across it — the S20 micro-fade dip at every cue seam. The walk
-    // terminates: with no cued step the all-on mask took the fast path
-    // above; with one, its edges are cuts.
-    int first = k;
-    while (onVisit(m, (first + n - 1) % n) &&
-           !cutBetween((first + n - 1) % n, first))
-      first = (first + n - 1) % n;
-    int last = k;
-    while (onVisit(m, (last + 1) % n) && !cutBetween(last, (last + 1) % n))
-      last = (last + 1) % n;
-    const int64_t run_start = bounds[first];
-    int64_t run_len = 0;
-    for (int v = first;; v = (v + 1) % n) {
-      run_len += bounds[v + 1] - bounds[v];
-      if (v == last) break;
+    const Run r = runAround(m, k);
+    int64_t f_in = 0, f_out = 0;
+    rampsOf(r, fade, f_in, f_out);
+    const int64_t din = fold(rel - r.start);  // distance into run
+    const int64_t dout = r.len - din;         // distance to run end
+    float g = 1.0f;
+    if (f_in > 0 && din < f_in) g = (float)din / (float)f_in;
+    if (f_out > 0 && dout < f_out) {
+      const float go = (float)dout / (float)f_out;
+      if (go < g) g = go;
     }
-    const int64_t din = fold(rel - run_start);        // distance into run
-    const int64_t dout = run_len - din;               // distance to run end
-    const int64_t f = fade < run_len / 2 ? fade : run_len / 2;
-    if (f <= 0) return 1.0f;
-    const int64_t d = din < dout ? din : dout;
-    return d >= f ? 1.0f : (float)d / (float)f;
+    return g;
   }
 
   /**
-   * Samples from folded `rel` to the NEXT envelope corner (any mask):
-   * corners live at visit boundaries and boundaries ± fade, plus visit
-   * midpoints (covering runs shorter than two fades). Render splits
-   * blocks here so each run has constant-slope gain — the (g0, g1)
-   * endpoints the parent hands each child are then exact. Only the
-   * current visit and its successor can hold the next corner (the
-   * successor's start is itself a corner), so the scan is O(log).
+   * Samples from folded `rel` to the NEXT envelope corner for mask
+   * `m`: every visit boundary (the cue re-base and the step lookup are
+   * per visit, so no run may straddle one), plus — inside an on-run —
+   * the two ramp corners. Render splits blocks here so each run has
+   * constant-slope gain: the (g0, g1) endpoints the parent hands each
+   * child are then exact. O(log visits) plus the run walk.
    */
-  int64_t cornerDistance(int64_t rel, int64_t fade) const {
+  int64_t cornerDistance(int64_t rel, int64_t fade, uint64_t m) const {
     const int n = visit_count;
     if (n <= 0 || total <= 0) return 1;
-    int64_t best = total;
+    rel = fold(rel);
+    const int k = visitAt(rel);
+    int64_t best = bounds[k + 1] - rel;  // the next visit boundary
+    if (best <= 0) best = 1;
+    const bool constant =
+        ((m & reachable) == reachable && !any_cue) || (m & reachable) == 0;
+    if (constant || !onVisit(m, k)) return best;
+    const Run r = runAround(m, k);
+    int64_t f_in = 0, f_out = 0;
+    rampsOf(r, fade, f_in, f_out);
     auto consider = [&](int64_t c) {
       c = fold(c);
       int64_t d = c - rel;
       if (d <= 0) d += total;
       if (d < best) best = d;
     };
-    const int k = visitAt(rel);
-    for (int step = 0; step < 2; ++step) {
-      const int v = (k + step) % n;
-      const int64_t b = bounds[v];
-      consider(b);
-      consider(b - fade);
-      consider(b + fade);
-      // Midpoint corner: where a short run's in/out ramps intersect.
-      consider(b + (bounds[v + 1] - b) / 2);
-    }
+    consider(r.start + f_in);
+    consider(r.start + r.len - f_out);
     return best > 0 ? best : 1;
   }
 
