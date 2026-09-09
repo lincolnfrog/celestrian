@@ -42,7 +42,7 @@ int topLevelCount(const juce::var& state) {
 }
 
 /** The uuid of the newest top-level node created by `engine.createNode`. */
-juce::String lastTopLevelId(const AudioEngine& engine) {
+juce::String lastTopLevelId(AudioEngine& engine) {
   const juce::var state = engine.getGraphState();
   auto* nodes = nodesOf(state);
   return (nodes && nodes->size() > 0)
@@ -50,13 +50,13 @@ juce::String lastTopLevelId(const AudioEngine& engine) {
              : juce::String();
 }
 
-double doubleProperty(const AudioEngine& engine, const juce::String& uuid,
+double doubleProperty(AudioEngine& engine, const juce::String& uuid,
                       const juce::Identifier& property) {
   return (double)nodeVar(engine.getGraphState(), uuid)
       .getProperty(property, -999.0);
 }
 
-bool boolProperty(const AudioEngine& engine, const juce::String& uuid,
+bool boolProperty(AudioEngine& engine, const juce::String& uuid,
                   const juce::Identifier& property) {
   return (bool)nodeVar(engine.getGraphState(), uuid)
       .getProperty(property, false);
@@ -64,7 +64,7 @@ bool boolProperty(const AudioEngine& engine, const juce::String& uuid,
 
 /** The chain-entry var of the first slot with `type` in a node's
  * published effects.chain array; void when absent. */
-juce::var chainEntry(const AudioEngine& engine, const juce::String& uuid,
+juce::var chainEntry(AudioEngine& engine, const juce::String& uuid,
                      const juce::String& type) {
   const juce::var node = nodeVar(engine.getGraphState(), uuid);
   const juce::var chain = node.getProperty("effects", juce::var())
@@ -77,13 +77,13 @@ juce::var chainEntry(const AudioEngine& engine, const juce::String& uuid,
 }
 
 /** effects.chain[type].<key> from a node's metadata (numeric). */
-double effectProperty(const AudioEngine& engine, const juce::String& uuid,
+double effectProperty(AudioEngine& engine, const juce::String& uuid,
                       const juce::String& fx, const juce::Identifier& key) {
   return (double)chainEntry(engine, uuid, fx).getProperty(key, -999.0);
 }
 
 /** The slot uuid of the first `type` slot (the bridge's addressing). */
-juce::String slotIdOf(const AudioEngine& engine, const juce::String& uuid,
+juce::String slotIdOf(AudioEngine& engine, const juce::String& uuid,
                       const juce::String& type) {
   return chainEntry(engine, uuid, type).getProperty("slot", "").toString();
 }

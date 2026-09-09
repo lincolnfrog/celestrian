@@ -37,6 +37,14 @@ freed via `AudioEngine::retire()` — the deleter runs only after the callback
 counter has advanced two callbacks past retirement. This covers nodes AND
 superseded graph snapshots (publish the successor first, then retire).
 Never `delete` a node or snapshot directly from a mutation path.
+*The stamp is taken AFTER the publish (audit D5-1, 2026-09-08):* a node
+detached during an edit stays reachable through the OLD snapshot until
+`publishGraph` exchanges it, so a detached graph node goes through
+`retireNode()`, which PARKS it; `publishGraph` moves parked nodes into
+the graveyard stamped with the post-exchange count, re-stamps every
+pending item to that count (belt and braces), then retires the old
+snapshot. Detached subtrees an inverse edit owns (Remove, Explode) are
+not retired at all until their log entry is dropped.
 
 **Phase split (§2.3, 2026-07-19e):** each callback runs CONTROL over the
 whole graph (decisions + capture: arm, boundaries, commit — the only
@@ -60,7 +68,15 @@ through the reclaimer, audio thread loads at most once per call. *A
 node's time-map* is different: an inline seqlocked value
 (`AudioNode::storedMap` / `setMap` — all-atomic segment fields, like
 the island facts), so a window edit is a value write with no heap and
-no retirement. A multi-segment lock-collapse SPLICES a new content
+no retirement. *The seqlock is stated once* (`src/seq_locked.h`,
+`SeqLock`, audit D5-2, 2026-09-08): the map, the island triple and the
+take table all use it. Writer: odd bump (relaxed), RELEASE fence,
+payload stores, even bump (release). Reader: acquire load, payload
+loads, ACQUIRE fence, relaxed re-load. Any other order admits a torn
+read on ARM64 (x86 TSO hides it). Bounded retry (16); after the bound
+the reader takes what it has, clamped — the writer is the message
+thread, so the bound is never hit in practice (tests/seq_lock_tests.cc
+hammers all three). A multi-segment lock-collapse SPLICES a new content
 buffer in; the displaced buffer is owned by the undo entry (never freed
 inline) and the un-splice retires the spliced one.
 *Documented deviation (time_maps.md phase 2, 2026-07-21):* a

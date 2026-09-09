@@ -13,6 +13,7 @@
  * Everything here is pure (unit-tested); the rAF loop lives in the
  * patch layer.
  */
+import { posMod } from './math_utils.js';
 
 // Velocity blend weights: how much of the running estimate survives each
 // observation vs. how much the new instantaneous sample contributes. A
@@ -34,7 +35,7 @@ const CORRECT_EASE = 0.3;
 export function forwardDelta(targetQ, lastQ, loopQ) {
     const d = targetQ - lastQ;
     if (!(loopQ > 0)) return d;
-    return ((d % loopQ) + loopQ) % loopQ;
+    return posMod(d, loopQ);
 }
 
 /**
@@ -67,7 +68,7 @@ export function advancePosition(posQ, velQperMs, dtMs, loopQ) {
 export function correctPosition(posQ, targetQ, loopQ, maxErrQ = 0.2) {
     let e = targetQ - posQ;
     if (loopQ > 0) {
-        e = ((e % loopQ) + loopQ) % loopQ;
+        e = posMod(e, loopQ);
         if (e > loopQ / 2) e -= loopQ;
     }
     if (Math.abs(e) > maxErrQ) return targetQ;

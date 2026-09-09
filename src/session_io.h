@@ -37,6 +37,12 @@ namespace celestrian::session_io {
  * view-freeze bookkeeping.
  */
 
+/** The bundle format version this build writes. A bundle whose
+ * `version` is NEWER is refused on load (it may carry facts this build
+ * cannot honor, and the 3 s mirror would then overwrite it with a
+ * lossy re-serialization); older and unversioned bundles load. */
+constexpr int kSessionVersion = 1;
+
 /** Result of a load: the island facts + the reconstructed top-level
  * children (owned by the caller until swapped into the root). */
 struct LoadedSession {

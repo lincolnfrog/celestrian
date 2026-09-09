@@ -105,6 +105,16 @@ bool AudioEngine::bounce(const juce::String& uuid,
                              " has no committed content");
     return false;
   }
+  // THE SPAN CAP: the render buffer is sized from the span, and a
+  // saturated (lcm-capped) or merely huge effective period would be an
+  // int overflow or a bad_alloc on the message thread. The arm path
+  // caps the same quantity at the take ceiling (take_service.cc).
+  if (span > celestrian::ClipNode::kMaxTakeSamples) {
+    juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +
+                             " spans " + juce::String(span) +
+                             " samples, past the take ceiling");
+    return false;
+  }
 
   // The device falls silent for the render: removeAudioCallback returns
   // only once no callback is in flight, so the graph's DSP scratch

@@ -175,6 +175,151 @@ class UndoTests : public juce::UnitTest {
              "order restored by undo");
     }
 
+    beginTest("Move refuses a destination inside the moved subtree");
+    {
+      // A stack moved into its own descendant would become a self-owning
+      // cycle (and the parent walks would never terminate): refused at
+      // the applier, nothing recorded.
+      AudioEngine engine;
+      engine.createNode("stack");
+      const juce::String outer = idAt(engine.getGraphState(), 0);
+      engine.createNode("stack", outer);
+      const juce::String inner = nestedId(engine.getGraphState(), 0, 0);
+      const bool couldUndoBefore =
+          (bool)engine.getGraphState().getProperty("canUndo", false);
+
+      engine.reorderNode(outer, inner, 0);  // into its own child
+      auto s = engine.getGraphState();
+      expect(childCount(s) == 1 && idAt(s, 0) == outer, "graph untouched");
+      expect(nestedId(s, 0, 0) == inner, "inner still inside outer");
+      expect((bool)s.getProperty("canUndo", false) == couldUndoBefore,
+             "no edit recorded for the refused move");
+
+      engine.reorderNode(outer, outer, 0);  // into itself
+      s = engine.getGraphState();
+      expect(childCount(s) == 1 && idAt(s, 0) == outer &&
+                 nestedId(s, 0, 0) == inner,
+             "self-parent refused too");
+    }
+
+    beginTest("hot clips refuse Move and Combine; Explode refuses a hot "
+              "member; the island take counter survives");
+    {
+      AudioEngine engine;
+      engine.createNode("stack");
+      const juce::String stackId = idAt(engine.getGraphState(), 0);
+      engine.createNode("clip", stackId);
+      engine.createNode("clip", stackId);
+      engine.createNode("clip");
+      const juce::String hot = nestedId(engine.getGraphState(), 0, 0);
+      const juce::String peer = nestedId(engine.getGraphState(), 0, 1);
+      const juce::String outside = idAt(engine.getGraphState(), 1);
+      engine.startRecordingInNode(hot);  // -> Armed (a live take)
+      const bool couldUndoBefore =
+          (bool)engine.getGraphState().getProperty("canUndo", false);
+
+      engine.reorderNode(hot, stackId, 1);
+      auto s = engine.getGraphState();
+      expect(nestedId(s, 0, 0) == hot, "armed clip not moved");
+      expect((bool)s.getProperty("canUndo", false) == couldUndoBefore,
+             "refused move recorded nothing");
+
+      expect(engine.combineNodes(hot, outside).isEmpty(),
+             "combine of an armed clip refused");
+      expect(engine.combineNodes(outside, hot).isEmpty(),
+             "combine INTO an armed clip refused");
+      s = engine.getGraphState();
+      expect(childCount(s) == 2 && idAt(s, 1) == outside,
+             "graph untouched by the refused combines");
+
+      // D4-16: two armed clips combined — refused, and the counter is
+      // still balanced: cancelling both leaves no active take, so the
+      // very same combine then succeeds.
+      engine.startRecordingInNode(outside);
+      expect(engine.combineNodes(hot, outside).isEmpty(),
+             "combine of two armed clips refused");
+      engine.stopRecordingInNode(hot);      // Armed -> cancel
+      engine.stopRecordingInNode(outside);  // Armed -> cancel
+      const juce::String combined = engine.combineNodes(hot, outside);
+      expect(combined.isNotEmpty(), "idle again: combine succeeds");
+
+      // Explode (the undo of a Combine) with a hot member is refused
+      // and the undo entry is KEPT: cancel, then the same undo works.
+      // (`peer`, armed in the OTHER stack, does not make this Explode
+      // hot — the guard is per addressed node, not island-wide.)
+      engine.startRecordingInNode(peer);
+      const juce::String member = [&] {
+        auto st = engine.getGraphState();
+        for (int i = 0; i < childCount(st); ++i) {
+          if (idAt(st, i) == combined) return nestedId(st, i, 0);
+        }
+        return juce::String();
+      }();
+      expect(member.isNotEmpty(), "combined stack has a member");
+      engine.startRecordingInNode(member);
+      engine.undo();  // Explode refused: a member is hot
+      bool present = false;
+      s = engine.getGraphState();
+      for (int i = 0; i < childCount(s); ++i) {
+        if (idAt(s, i) == combined) present = true;
+      }
+      expect(present, "combined stack survives the refused explode");
+      engine.stopRecordingInNode(member);  // cancel
+      engine.undo();  // the KEPT entry applies now (peer still armed)
+      engine.stopRecordingInNode(peer);
+      present = false;
+      s = engine.getGraphState();
+      for (int i = 0; i < childCount(s); ++i) {
+        if (idAt(s, i) == combined) present = true;
+      }
+      expect(!present, "after cancel the kept undo entry explodes it");
+    }
+
+    beginTest("Combine/Explode is an inverse pair: redo reuses the SAME "
+              "stack (uuid, name, mute survive)");
+    {
+      AudioEngine engine;
+      engine.createNode("clip");
+      engine.createNode("clip");
+      auto s = engine.getGraphState();
+      const juce::String a = idAt(s, 0);
+      const juce::String b = idAt(s, 1);
+      const juce::String stackId = engine.combineNodes(a, b);
+      expect(stackId.isNotEmpty(), "combined");
+      engine.renameNode(stackId, "Verse");
+      engine.toggleMute(stackId);
+      auto stackProp = [&](const char* key) {
+        auto st = engine.getGraphState();
+        for (int i = 0; i < childCount(st); ++i) {
+          if (idAt(st, i) == stackId) {
+            return (*nodesOf(st))[i].getProperty(key, juce::var());
+          }
+        }
+        return juce::var();
+      };
+      expect(stackProp("name").toString() == "Verse", "renamed");
+      expect((bool)stackProp("isMuted"), "muted");
+
+      engine.undo();  // unmute
+      engine.undo();  // rename back
+      engine.undo();  // explode
+      s = engine.getGraphState();
+      expect(childCount(s) == 2 && idAt(s, 0) == a && idAt(s, 1) == b,
+             "exploded back to two siblings in their original order");
+
+      engine.redo();  // combine: must reuse the SAME stack object
+      s = engine.getGraphState();
+      expect(childCount(s) == 1 && idAt(s, 0) == stackId,
+             "redo restored the stack with its ORIGINAL uuid");
+      engine.redo();  // rename, addressed to that uuid
+      expect(stackProp("name").toString() == "Verse",
+             "redo of the rename resolves (not dropped)");
+      engine.redo();  // mute
+      expect((bool)stackProp("isMuted"), "redo of the mute resolves");
+      expect(!(bool)engine.getGraphState().getProperty("canRedo", false),
+             "redo branch fully replayed");
+    }
+
     beginTest("combine -> undo restores the two siblings");
     {
       AudioEngine engine;

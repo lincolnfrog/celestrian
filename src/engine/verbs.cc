@@ -123,6 +123,7 @@ juce::String AudioEngine::combineNodes(const juce::String& dragged_uuid,
   celestrian::Edit inv = applyEdit(std::move(e));
   if (inv.kind == celestrian::Edit::Kind::Nop) return {};
   const juce::String new_uuid = inv.uuid;  // Explode carries the new stack
+  reconcileTakes();  // log order: settled takes enter BEFORE this entry
   pushUndo(std::move(inv));
   juce::Logger::writeToLog("combineNodes: Combined " + dragged_uuid + " + " +
                            target_uuid + " into stack " + new_uuid);

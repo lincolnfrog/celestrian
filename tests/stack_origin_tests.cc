@@ -195,6 +195,72 @@ class StackOriginTests : public juce::UnitTest {
                    "the exact stored origin comes back");
     }
 
+    beginTest("Anchoring a WINDOWED empty group re-expresses its map; undo "
+              "of the first take puts the authored map back");
+    {
+      // Geometry authored while a stack is unanchored is measured from
+      // its received cycle top; anchoring re-expresses it from the new
+      // origin (settleAnchors). The anchor rider must carry the map it
+      // replaced, or undo of the take leaves the rewritten geometry.
+      AudioEngine engine;
+      int64_t clock = 0;
+      // A solo take first: Q = 1Q, epoch 0 — so the group's later take
+      // lands at a NON-ZERO phase from the epoch (shift != 0).
+      engine.createNode("clip");
+      const juce::String solo = lastTopLevelId(engine);
+      {
+        juce::StringArray ids;
+        ids.add(solo);
+        engine.startRecordingInNode(solo);
+        driveRamp(engine, Q, clock, true, nullptr);
+        engine.stopRecordingInNode(solo);
+        settle(engine, clock, ids, true);
+      }
+      engine.createNode("stack");
+      const juce::String stack_id = lastTopLevelId(engine);
+      engine.createNode("clip", stack_id);
+      juce::StringArray ids;
+      {
+        const juce::var s = engine.getGraphState();
+        clipIdsUnder(findVar(s, stack_id), ids);
+      }
+      // The authored (pre-anchor) window on the EMPTY group.
+      const int64_t ws = Q / 2, we = Q;
+      engine.setLoopPoints(stack_id, ws, we);
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "window authored on the empty group");
+      expect(!deepBool(engine, stack_id, "anchored"), "still unanchored");
+
+      // Arm at a later phase so the take's origin is off the epoch.
+      driveRamp(engine, Q + Q / 2, clock, true, nullptr);
+      engine.startRecordingInNode(stack_id);
+      driveRamp(engine, 2 * Q, clock, true, nullptr);
+      engine.stopRecordingInNode(stack_id);
+      settle(engine, clock, ids, true);
+      expect(deepBool(engine, stack_id, "anchored"), "group anchored");
+      const int64_t origin = (int64_t)deepProp(engine, stack_id, "origin");
+      const int64_t inner = (int64_t)deepProp(engine, ids[0], "duration");
+      expect(origin > 0 && inner > 0, "take placed off the epoch");
+      const int64_t ls = (int64_t)deepProp(engine, stack_id, "loopStart");
+      const int64_t le = (int64_t)deepProp(engine, stack_id, "loopEnd");
+      expect(!(ls == ws && le == we),
+             "anchoring re-expressed (or cleared) the authored map");
+
+      engine.undo();  // the group take
+      expect(!deepBool(engine, stack_id, "anchored"), "undo un-anchors");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
+                   "undo restores the AUTHORED window start");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), we,
+                   "undo restores the AUTHORED window end");
+
+      engine.redo();
+      expect(deepBool(engine, stack_id, "anchored"), "redo re-anchors");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ls,
+                   "redo re-applies the re-expressed map");
+      expectEquals((int64_t)deepProp(engine, stack_id, "loopEnd"), le,
+                   "redo re-applies the re-expressed map (end)");
+    }
+
     beginTest("A windowed group anchors at ITS origin: epoch re-bases and seeks never re-select content");
     {
       AudioEngine engine;

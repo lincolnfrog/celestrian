@@ -14,7 +14,7 @@
  *    engine) uses.
  */
 
-import { lcm } from './math_utils.js';
+import { lcm, posMod } from './math_utils.js';
 import { qtime, toSamples, fromSamples } from './qtime.js';
 import { flatSegPeriod, mapOffset, nodeWindowActive } from './time_map.js';
 import { programOf } from './sequence_program.js';
@@ -35,7 +35,7 @@ export function throughMapDest(heardI, anchorOff, map, commitCycle) {
     const originInner = mapOffset(map, anchorOff);
     const inner = mapOffset(map, anchorOff + heardI);
     let d = inner - originInner;
-    if (commitCycle > 0) d = ((d % commitCycle) + commitCycle) % commitCycle;
+    if (commitCycle > 0) d = posMod(d, commitCycle);
     return d;
 }
 

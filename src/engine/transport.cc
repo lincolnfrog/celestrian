@@ -32,6 +32,11 @@ bool AudioEngine::seekTransport(double pos_samples) {
   // UI mirrors the refusal (ruler shows a locked cursor), but the
   // engine owns the rule.
   if (root_node == nullptr) return false;
+  // Settle any take the audio thread committed since the last poll
+  // FIRST: shiftHistoryAbsolutes below re-frames the log, and a take
+  // that has not entered it yet would carry a pre-seek epoch into its
+  // later Untake entry (record/undo/redo reconcile the same way).
+  reconcileTakes();
   if (root_node->hasActiveTake() || root_node->isArmedOrRecording()) {
     return false;
   }
@@ -113,16 +118,17 @@ void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
   for (auto& e : redo_) shiftEdit(e);
 }
 
-juce::var AudioEngine::getGraphState() const {
-  // Forward any log lines queued by the audio thread (UI polls this
-  // every ~50 ms, so this doubles as the RtLog drain point).
+void AudioEngine::tick() {
+  // Forward any log lines queued by the audio thread.
   celestrian::RtLog::instance().drain();
-  // The poll is also where settled takes enter the undo log (see
-  // PendingTake): message-thread bookkeeping on a const read path —
-  // the one sanctioned const_cast, for the same reason the RtLog drain
-  // lives here.
-  const_cast<AudioEngine*>(this)->reconcileTakes();
-  const_cast<AudioEngine*>(this)->growLiveTakes();
+  // Settled takes enter the undo log (see PendingTake), and every live
+  // take keeps its storage headroom.
+  reconcileTakes();
+  growLiveTakes();
+}
+
+juce::var AudioEngine::getGraphState() {
+  tick();
 
   // Cycle view of the monotonic clock (kernel.md step 3): the engine
   // never wraps its transport; the UI-facing masterPos is derived here.

@@ -1054,6 +1054,9 @@ void MainComponent::chooseProjectsRoot(
 }
 
 void MainComponent::timerCallback() {
+  // Engine housekeeping independent of the WebView's poll cadence (a
+  // throttled poll must not starve a live take's storage grower).
+  audio_engine.tick();
   // Hot-plugged MIDI keyboards join on the heartbeat (cheap: enable is
   // an idempotent per-device check).
   audio_engine.refreshMidiInputs();

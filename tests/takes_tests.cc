@@ -282,6 +282,61 @@ class TakesTests : public juce::UnitTest {
                    "the only entry above the clip creation was take 0");
     }
 
+    beginTest("(a') a cancelled new take leaves the slot's context cycle untouched");
+    {
+      // take_context_cycle_ is a SLOT fact captured for the slot's first
+      // take. A retake under a grown island cycle used to overwrite it
+      // at its arm and never restore it when the retake cancelled.
+      AudioEngine engine;
+      int64_t clock = 0;
+      // A full-length take once Q exists: arm (pends to the boundary),
+      // capture `len` less a block, stop (pads to the boundary = len).
+      auto recordFull = [&](int64_t len) {
+        engine.createNode("clip");
+        juce::String cid;
+        {
+          const juce::var s = engine.getGraphState();
+          juce::StringArray ids;
+          clipIdsUnder(s, ids);
+          cid = ids[ids.size() - 1];
+        }
+        auto* c = clipOf(engine, cid);
+        engine.startRecordingInNode(cid);
+        for (int i = 0; i < 4000 && !c->isRecording(); ++i)
+          driveRamp(engine, BLOCK, clock);
+        driveRamp(engine, len - BLOCK, clock);
+        engine.stopRecordingInNode(cid);
+        settle(engine, clock);
+        return cid;
+      };
+      // The island's first take has no cycle to perform against (its
+      // context cycle is 0 by construction); the SECOND clip performs
+      // against the 1D cycle — that is the slot fact under test.
+      recordFirst(engine, clock, D);
+      settle(engine, clock);
+      const juce::String id = recordFull(D);
+      expectEquals((int64_t)deepProp(engine, id, "duration"), D,
+                   "second clip is 1D");
+      const int64_t cc = (int64_t)deepProp(engine, id, "contextCycle");
+      expectEquals(cc, D, "slot context cycle captured at its first take");
+      // A third, longer clip grows the heard cycle (LCM = 2D).
+      const juce::String big = recordFull(2 * D);
+      expectEquals((int64_t)deepProp(engine, big, "duration"), 2 * D,
+                   "third clip is 2D");
+      engine.getGraphState();
+      auto* clip = clipOf(engine, id);
+      driveRamp(engine, D / 3, clock);
+      engine.newTake(id);
+      for (int i = 0; i < 400 && !clip->isRecording(); ++i) driveRamp(engine, BLOCK, clock);
+      expect(clip->isRecording(), "capturing");
+      driveRamp(engine, D / 2, clock);
+      engine.stopRecordingInNode(id);  // short of the period: cancels
+      settle(engine, clock);
+      expectEquals(clip->takeCount(), 1, "cancelled: still one take");
+      expectEquals((int64_t)deepProp(engine, id, "contextCycle"), cc,
+                   "the slot's context cycle is exactly what it was");
+    }
+
     beginTest("(b) selectTake back to take 0 is sample-exact; undo/redo of the selection");
     {
       AudioEngine engine;

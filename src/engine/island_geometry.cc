@@ -258,7 +258,7 @@ void AudioEngine::attachMapEditRiders(
   // and a re-base would be pure churn (a 1Q loop under a 1Q Q: every
   // whole-Q epoch is the same frame).
   const bool top_off_frame =
-      definer && (((top - epoch) % new_period) + new_period) % new_period != 0;
+      definer && celestrian::timing::posMod(top - epoch, new_period) != 0;
   // The epoch moves in whole Qs. (Q18: a stack's map anchors at the
   // stack's OWN origin, so an epoch move never re-selects content
   // anywhere — no windowed-group guard is needed.)
@@ -353,8 +353,8 @@ void AudioEngine::settleAnchors(celestrian::Edit& inv) {
     back.uuid = stack.getUuid();
     back.anchored = stack.isAnchored();
     back.origin = stack.origin_samples.load();
-    inv.anchors.push_back(std::move(back));
     if (!has) {
+      inv.anchors.push_back(std::move(back));
       stack.setAnchor(false, 0, 0);
       return;
     }
@@ -380,6 +380,11 @@ void AudioEngine::settleAnchors(celestrian::Edit& inv) {
       };
       const celestrian::timing::TimeMap m = stack.storedMap();
       if (m.n > 0) {
+        // The rider carries the pre-anchor map: undo of the take that
+        // anchored this stack must put the authored geometry back, not
+        // leave the re-expressed (or cleared) one standing.
+        back.setsMap = true;
+        back.tmap = m;
         celestrian::timing::TimeMap fresh;
         bool ok = true;
         for (int i = 0; i < m.n && ok; ++i) {
@@ -403,6 +408,7 @@ void AudioEngine::settleAnchors(celestrian::Edit& inv) {
       }
     }
     stack.setAnchor(true, origin, 0);
+    inv.anchors.push_back(std::move(back));
   });
 }
 
@@ -416,6 +422,13 @@ void AudioEngine::applyAnchorRiders(const celestrian::Edit& e,
     back.uuid = r.uuid;
     back.anchored = stack->isAnchored();
     back.origin = stack->origin_samples.load();
+    if (r.setsMap) {
+      // Copy-swap like every rider: the inverse carries the map this
+      // one displaces (the re-expressed geometry, for redo).
+      back.setsMap = true;
+      back.tmap = stack->storedMap();
+      stack->setMap(r.tmap);
+    }
     inv.anchors.push_back(std::move(back));
     stack->setAnchor(r.anchored, r.origin, 0);
   }

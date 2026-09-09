@@ -248,6 +248,29 @@ class BounceTests : public juce::UnitTest {
              "an unknown node is refused");
     }
 
+    beginTest("Refused past the span cap (the take ceiling)");
+    {
+      // The render buffer is sized from the span: a saturated lcm or a
+      // merely huge effective period must be refused before any
+      // allocation, exactly where the arm path caps the same quantity.
+      AudioEngine engine;
+      engine.createNode("clip");
+      const juce::String id = celestrian::test_utils::firstNodeId(engine);
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(
+          engine.findNodeByUuidForTest(id));
+      expect(clip != nullptr, "clip found");
+      if (clip != nullptr) {
+        // The clip's effective period is its intrinsic duration: stamp
+        // one past the ceiling (no buffer is allocated for it).
+        clip->duration_samples.store(celestrian::ClipNode::kMaxTakeSamples + 1);
+        const juce::File wav = dir.getChildFile("huge.wav");
+        expect(!engine.bounce(id, wav.getFullPathName()),
+               "a span past kMaxTakeSamples is refused");
+        expect(!wav.exists(), "no file");
+        clip->duration_samples.store(0);
+      }
+    }
+
     beginTest("TAIL: an echo rings past the span and ends under -90 dBFS");
     {
       AudioEngine engine;

@@ -102,8 +102,8 @@ class ClipNode : public AudioNode {
    * Assigns the preferred hardware input channel for this clip (the
    * LEFT channel of a stereo pair when a right input is also set).
    */
-  void setInputChannel(int index) { preferred_input_channel = index; }
-  int getInputChannel() const { return preferred_input_channel; }
+  void setInputChannel(int index) { preferred_input_channel.store(index); }
+  int getInputChannel() const { return preferred_input_channel.load(); }
   /**
    * Assigns the RIGHT hardware input of a stereo pair; −1 (default)
    * keeps the clip mono. The channel COUNT of a take is fixed at arm
@@ -111,11 +111,15 @@ class ClipNode : public AudioNode {
    * mid-take does nothing until the next arm.
    */
   void setInputChannelRight(int index) {
-    preferred_input_channel_right = index;
+    preferred_input_channel_right.store(index);
   }
-  int getInputChannelRight() const { return preferred_input_channel_right; }
+  int getInputChannelRight() const {
+    return preferred_input_channel_right.load();
+  }
   /** Two device inputs assigned → the next take captures stereo. */
-  bool isStereoInput() const { return preferred_input_channel_right >= 0; }
+  bool isStereoInput() const {
+    return preferred_input_channel_right.load() >= 0;
+  }
   /**
    * Software input monitoring (Q20, design_language.md §5): while on,
    * render adds this block's arrivals for the clip's input channel(s)
@@ -298,24 +302,24 @@ class ClipNode : public AudioNode {
    * buffer, unreachable except by uncollapse (undo). Message thread;
    * all-atomic (same exposure discipline as setLoopPoints). */
   void collapseToWindow(int64_t shift, int64_t len) {
-    // EXPLICIT COLLAPSE MARKERS (nesting: collapse → cancel take →
-    // re-trim → arm again is a legal second collapse):
-    // `collapsed_from_` keeps the ORIGINAL duration (set only on the
-    // first level) and `collapse_origin_shift_` ACCUMULATES what the
-    // collapses added to the origin, exactly mirroring content_base_ —
-    // so the re-opening restore (which unwinds ALL levels from the
-    // markers) stays exact.
+    // THE COLLAPSE MARKER (nesting: collapse → cancel take → re-trim →
+    // arm again is a legal second collapse): `collapsed_from_` keeps the
+    // ORIGINAL duration (set only on the first level). What the
+    // collapses added to the origin IS `content_base_` — the base
+    // starts at 0 on every commit and only collapses move it — so the
+    // re-opening restore (which unwinds ALL levels) reads the base; no
+    // second counter to keep in step.
     //
     // The origin moves by `shift` for every collapse (Q18): a window
     // anchors at origin + start whether it lives on the clip or on its
     // group, so window top → origin keeps the collapse audio-neutral in
     // both cases (a group collapse shifts the stack's origin alongside).
     if (collapsed_from_.load() == 0) collapsed_from_.store(duration_samples.load());
-    collapse_origin_shift_.fetch_add(shift);
     content_base_.store(content_base_.load() + shift);
     origin_samples.store(origin_samples.load() + shift);
     duration_samples.store(len);
     setLoopPoints(0, len);
+    take_files_dirty_ = true;  // the mirrored WAV is the committed window
   }
   /** Inverse of collapseToWindow: restore the pre-collapse buffer view
    * and the trim (window [shift, shift + current duration)). The
@@ -326,18 +330,14 @@ class ClipNode : public AudioNode {
   void uncollapseFromWindow(int64_t shift, int64_t old_duration,
                             int64_t origin_shift = -1) {
     const int64_t len = duration_samples.load();
-    const int64_t o =
-        origin_shift < 0 ? collapse_origin_shift_.load() : origin_shift;
+    const int64_t o = origin_shift < 0 ? content_base_.load() : origin_shift;
     content_base_.store(content_base_.load() - shift);
     origin_samples.store(origin_samples.load() - o);
     duration_samples.store(old_duration);
     setLoopPoints(shift, shift + len);
-    collapse_origin_shift_.fetch_sub(o);
     // Fully unwound (the content view is back at 0) → not collapsed.
-    if (content_base_.load() == 0) {
-      collapsed_from_.store(0);
-      collapse_origin_shift_.store(0);
-    }
+    if (content_base_.load() == 0) collapsed_from_.store(0);
+    take_files_dirty_ = true;
   }
   /** True when the committed content is a lock-collapsed window of a
    * longer recording (trimmed-away material still in the buffer). */
@@ -387,7 +387,11 @@ class ClipNode : public AudioNode {
     duration_samples.store(period);
     setLoopPoints(0, period);
     content_base_.store(0);
+    // The spliced buffer IS the take now: no trimmed-away material, so
+    // no collapse marker (the inverse restores it with the old buffer).
+    collapsed_from_.store(0);
     write_position.store((int)period);
+    take_files_dirty_ = true;
     std::unique_ptr<juce::AudioBuffer<float>> old = std::move(content_owned_);
     content_owned_ = std::move(spliced);
     content_.store(content_owned_.get());
@@ -400,7 +404,8 @@ class ClipNode : public AudioNode {
    * documented looseness as LoopPoints-under-override). */
   std::unique_ptr<juce::AudioBuffer<float>> unspliceFromMap(
       std::unique_ptr<juce::AudioBuffer<float>> old_buffer, int64_t old_origin,
-      int64_t old_duration, int64_t old_base, int64_t old_recorded) {
+      int64_t old_duration, int64_t old_base, int64_t old_recorded,
+      int64_t old_collapsed_from) {
     std::unique_ptr<juce::AudioBuffer<float>> displaced =
         std::move(content_owned_);
     content_owned_ = std::move(old_buffer);
@@ -409,7 +414,9 @@ class ClipNode : public AudioNode {
     duration_samples.store(old_duration);
     setLoopPoints(0, old_duration);
     content_base_.store(old_base);
+    collapsed_from_.store(old_collapsed_from);
     write_position.store((int)old_recorded);
+    take_files_dirty_ = true;
     return displaced;
   }
 
@@ -424,7 +431,7 @@ class ClipNode : public AudioNode {
     std::unique_ptr<MidiSequence> midi;
     int64_t origin = 0, duration = 0, base = 0, recorded = 0;
     int64_t context_cycle = 0, loop_start = 0, loop_end = 0;
-    int64_t collapsed_from = 0, collapse_origin_shift = 0;
+    int64_t collapsed_from = 0;
     int content_kind = 0;
     bool cap_hit = false;
   };
@@ -446,7 +453,6 @@ class ClipNode : public AudioNode {
     s.content_kind = content_kind_.load();
     s.cap_hit = cap_hit_.load();
     s.collapsed_from = collapsed_from_.load();
-    s.collapse_origin_shift = collapse_origin_shift_.load();
     // Silence first (render reads duration/is_playing before content).
     is_playing.store(false);
     duration_samples.store(0);
@@ -468,7 +474,6 @@ class ClipNode : public AudioNode {
     take_context_cycle_.store(0);
     cap_hit_.store(false);
     collapsed_from_.store(0);
-    collapse_origin_shift_.store(0);
     setLoopPoints(0, 0);
     rec_state_.store((int)RecState::Idle);
     // A strip is legal only on a single-take clip (the applier gates);
@@ -477,6 +482,7 @@ class ClipNode : public AudioNode {
     active_take_.store(0);
     setCompCells({}, 0);
     publishTakeTable();
+    take_files_dirty_ = true;
     return s;
   }
   /** Reinstall a stripped take (redo). Returns the DISPLACED empty
@@ -502,13 +508,13 @@ class ClipNode : public AudioNode {
     take_context_cycle_.store(s.context_cycle);
     cap_hit_.store(s.cap_hit);
     collapsed_from_.store(s.collapsed_from);
-    collapse_origin_shift_.store(s.collapse_origin_shift);
     origin_samples.store(s.origin);
     setLoopPoints(s.loop_start, s.loop_end);
     rec_state_.store((int)RecState::Idle);
     // Content last, then sound (the commit publication order).
     duration_samples.store(s.duration);
     is_playing.store(true);
+    take_files_dirty_ = true;
     return displaced;
   }
 
@@ -561,6 +567,12 @@ class ClipNode : public AudioNode {
    * last session write: the per-take files must be rewritten whole. */
   bool takeFilesDirty() const { return take_files_dirty_; }
   void markTakeFilesWritten() const { take_files_dirty_ = false; }
+  /** The ONE truth for the mirror (session_io): every message-thread
+   * mutation of committed content or its frame sets this; the mirror
+   * rewrites the clip's WAVs iff it is set (or a file is missing). The
+   * audio-thread commit cannot set it — reconcileTakes does, when the
+   * take settles into the log. */
+  void markTakeFilesDirty() { take_files_dirty_ = true; }
 
   /** NEW TAKE (docs/takes.md): arm a further take of a COMMITTED clip
    * without emptying it — the active content moves into its list slot,
@@ -642,6 +654,7 @@ class ClipNode : public AudioNode {
     rec_state_.store((int)RecState::Idle);
     duration_samples.store(duration);
     is_playing.store(true);
+    take_files_dirty_ = true;
     return displaced;
   }
 
@@ -793,7 +806,6 @@ class ClipNode : public AudioNode {
   // (recording clips always have base 0).
   std::atomic<int64_t> content_base_{0};
   std::atomic<int64_t> collapsed_from_{0};  // pre-collapse duration; 0 = not collapsed
-  std::atomic<int64_t> collapse_origin_shift_{0};  // what the collapse added to origin
 
   // Pre-record capture window (docs/performance.md §3). When the engine
   // provides a pre-record ring, capture does not copy "whatever input
@@ -883,7 +895,7 @@ class ClipNode : public AudioNode {
   // — no heap, no reclaimer. take_buffers_[active] is null (the active
   // buffer is content_); a cell naming the active, an out-of-range or
   // a null entry reads the active buffer.
-  std::atomic<uint32_t> take_seq_{0};
+  SeqLock take_lock_;
   std::atomic<int> take_table_count_{0};
   std::atomic<const juce::AudioBuffer<float>*> take_buffers_[kMaxTakes]{};
   std::atomic<int> comp_n_{0};
@@ -964,11 +976,12 @@ class ClipNode : public AudioNode {
 
   double sample_rate;
 
-  int preferred_input_channel = 0;
-  // Right input of a stereo pair; −1 = mono clip (the default). Like
-  // preferred_input_channel this is a message-thread wiring fact the
-  // audio thread only reads.
-  int preferred_input_channel_right = -1;
+  // Wiring facts written on the message thread and read by the audio
+  // thread (capture, monitoring): atomic so the cross-thread read is a
+  // defined one (a plain int here is a data race, however benign).
+  std::atomic<int> preferred_input_channel{0};
+  // Right input of a stereo pair; −1 = mono clip (the default).
+  std::atomic<int> preferred_input_channel_right{-1};
   // Software input monitoring (Q20): off by default. Message-thread
   // toggle, audio-thread read per block.
   std::atomic<bool> monitor_{false};

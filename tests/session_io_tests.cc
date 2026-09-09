@@ -7,6 +7,7 @@
  * a different device rate) and the buffer/contextCycle fidelity.
  */
 
+#include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_core/juce_core.h>
 
 #include <cmath>
@@ -348,6 +349,95 @@ class SessionIoTests : public juce::UnitTest {
                                 "absent rootGain reads unity");
       expectWithinAbsoluteError(old.root_pan, 0.0f, 1e-6f,
                                 "absent rootPan reads center");
+    }
+
+    beginTest("mirror: the dirty flag is the ONE truth (an equal-length "
+              "collapse rewrites the WAV); a newer bundle is refused");
+    {
+      StackNode root("SessionRoot");
+      root.setQuantum(Q, 0);
+      auto clip = std::make_unique<ClipNode>("Take", (double)Q);
+      clip->origin_samples.store(0);
+      clip->duration_samples.store(2 * Q);
+      // Bar 1 = +0.25, bar 2 = -0.5: a one-sample read tells them apart.
+      juce::AudioBuffer<float> audio(1, (int)(2 * Q));
+      for (int i = 0; i < audio.getNumSamples(); ++i)
+        audio.setSample(0, i, i < Q ? 0.25f : -0.5f);
+      clip->loadCommitted(audio, /*context_cycle=*/2 * Q);
+      ClipNode* c = clip.get();
+      const juce::String uuid = clip->getUuid();
+      root.addChild(std::move(clip));
+
+      auto dir = freshTempDir("mirror_dirty");
+      const juce::File wav = dir.getChildFile("audio").getChildFile(uuid + ".wav");
+      session_io::SaveOptions inc;
+      inc.incremental = true;
+      auto wavFacts = [&](int64_t& length, float& first) {
+        juce::WavAudioFormat fmt;
+        std::unique_ptr<juce::AudioFormatReader> r(
+            fmt.createReaderFor(wav.createInputStream().release(), true));
+        if (r == nullptr) {
+          length = -1;
+          first = 0.0f;
+          return;
+        }
+        length = r->lengthInSamples;
+        juce::AudioBuffer<float> b(1, 1);
+        r->read(&b, 0, 1, 0, true, false);
+        first = b.getSample(0, 0);
+      };
+      int64_t len = 0;
+      float first = 0.0f;
+
+      expect(session_io::save(root, (double)Q, dir, inc), "first save");
+      wavFacts(len, first);
+      expectEquals(len, (int64_t)(2 * Q), "full take mirrored");
+      expectWithinAbsoluteError(first, 0.25f, 1e-6f, "bar 1 first");
+
+      // Collapse to [0, Q): a length change — any probe would catch it.
+      c->collapseToWindow(0, Q);
+      expect(c->takeFilesDirty(), "collapse marks the mirror dirty");
+      expect(session_io::save(root, (double)Q, dir, inc), "save 2");
+      wavFacts(len, first);
+      expectEquals(len, (int64_t)Q, "collapsed length");
+      expectWithinAbsoluteError(first, 0.25f, 1e-6f, "bar 1 still");
+      expect(!c->takeFilesDirty(), "the mirror cleared the flag");
+
+      // Now the SAME length, a different bar: [Q, 2Q). A length probe
+      // would skip this rewrite and the reload would play bar 1.
+      c->uncollapseFromWindow(0, 2 * Q, 0);
+      c->collapseToWindow(Q, Q);
+      expect(c->takeFilesDirty(), "dirty again");
+      expect(session_io::save(root, (double)Q, dir, inc), "save 3");
+      wavFacts(len, first);
+      expectEquals(len, (int64_t)Q, "same length");
+      expectWithinAbsoluteError(first, -0.5f, 1e-6f,
+                                "bar 2 mirrored: the flag, not the length, "
+                                "decided");
+
+      // Not dirty and the file present: an incremental save is a no-op
+      // on the WAV (mtime-free check: the content stays bar 2).
+      expect(session_io::save(root, (double)Q, dir, inc), "save 4");
+      wavFacts(len, first);
+      expectWithinAbsoluteError(first, -0.5f, 1e-6f, "unchanged");
+
+      // VERSION GUARD: a bundle newer than this build is refused; the
+      // current and an unversioned (legacy) bundle load.
+      const juce::File jf = dir.getChildFile("session.json");
+      auto stampVersion = [&](juce::var version) {
+        juce::var v = juce::JSON::parse(jf.loadFileAsString());
+        if (version.isVoid())
+          v.getDynamicObject()->removeProperty("version");
+        else
+          v.getDynamicObject()->setProperty("version", version);
+        expect(jf.replaceWithText(juce::JSON::toString(v)), "rewrite json");
+      };
+      stampVersion(session_io::kSessionVersion + 1);
+      expect(!session_io::load(dir, (double)Q).ok, "newer bundle refused");
+      stampVersion(session_io::kSessionVersion);
+      expect(session_io::load(dir, (double)Q).ok, "current version loads");
+      stampVersion(juce::var());
+      expect(session_io::load(dir, (double)Q).ok, "unversioned bundle loads");
     }
   }
 };

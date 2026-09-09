@@ -177,6 +177,11 @@ struct Edit {
     juce::String uuid;
     bool anchored = false;
     int64_t origin = 0;
+    // Anchoring re-expresses (or clears) geometry authored while the
+    // stack was unanchored; the rider carries the map it replaced so
+    // the inverse puts it back (the WindowRider shape).
+    bool setsMap = false;
+    timing::TimeMap tmap{};
   };
   std::vector<AnchorRider> anchors;
   // S16 window domain (docs/sequencer.md §11.8), LoopPoints/Segments on
@@ -242,6 +247,9 @@ struct Edit {
   // replaces every inactive take too; the inverse owns their pre-splice
   // records by list index. Retired with the entry, never freed inline.
   std::vector<std::pair<int, ClipNode::TakeState>> other_takes;
+  // The splice inverse's pre-splice collapse marker (ClipNode::
+  // collapsedFrom): a splice clears it, the un-splice restores it.
+  int64_t collapsed_from = 0;
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

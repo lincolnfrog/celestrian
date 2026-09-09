@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "qtime.h"
+
 namespace celestrian {
 
 /**
@@ -97,7 +99,9 @@ struct Sequence {
   int64_t bounds[kMaxVisits + 1] = {0};  // bounds[k] = start of visit k
   int first_visit[kMaxSteps] = {0};      // per step: first visit, −1 = none
   uint64_t reachable = 0;                // bit i = step i is in the program
-  bool any_cue = false;                  // fast-path guard (audio thread)
+  bool any_cue = false;                  // some VISIT is cued (audio-thread
+                                         // fast-path guard; a cued step the
+                                         // program never visits is not a cue)
   bool radio = false;                    // period-less (root only, S12)
 
   /** Compute the program, total, bounds and the derived flags. Call
@@ -112,9 +116,12 @@ struct Sequence {
     for (int i = 0; i < kMaxSteps; ++i) first_visit[i] = -1;
     bounds[0] = 0;
     if (n <= 0) return;
-    for (int i = 0; i < n; ++i) {
-      if (steps[(size_t)i].cue) any_cue = true;
-    }
+    // `any_cue` is derived INSIDE the walk (per visit, below), never from
+    // the step list: a cued step the program does not reach is an orphan,
+    // and an orphan cue that still set the flag would make `runAround`
+    // walk forever on a mask that is on across every visit (no off
+    // visit, no cued visit — nothing to stop at). The fast paths in
+    // gainAt/cornerDistance and the cue re-base all key off this flag.
     // THE WALK (§14): from step 0, one visit per iteration. It stops
     // early only when it is deterministic so far AND returns to step
     // 0 — the loop closed, the program is periodic. Any draw, or a
@@ -129,6 +136,7 @@ struct Sequence {
       bounds[k] = total;
       total += steps[(size_t)step].len > 0 ? steps[(size_t)step].len : 0;
       reachable |= (1ull << step);
+      if (steps[(size_t)step].cue) any_cue = true;
       if (first_visit[step] < 0) first_visit[step] = k;
       bool branched = false;
       const int next = successorOf(step, k, branched);
@@ -302,11 +310,10 @@ struct Sequence {
     return k >= 0 && k < visit_count && on(mask, visit_step[k]);
   }
 
-  /** Fold an arbitrary position onto the program cycle. */
+  /** Fold an arbitrary position onto the program cycle (0 when there
+   * is no program). */
   int64_t fold(int64_t rel) const {
-    if (total <= 0) return 0;
-    rel %= total;
-    return rel < 0 ? rel + total : rel;
+    return total > 0 ? timing::posMod(rel, total) : 0;
   }
 
   // --- THE GATE ENVELOPE (S7: fades, never hard cuts; S13: per-step
@@ -335,14 +342,21 @@ struct Sequence {
   Run runAround(uint64_t m, int k) const {
     const int n = visit_count;
     Run r;
+    // Both walks are bounded by n − 1 steps as a defensive invariant:
+    // the callers' fast paths guarantee an off or cued visit exists, but
+    // this runs on the audio thread and must terminate regardless.
     r.first = k;
-    while (onVisit(m, (r.first + n - 1) % n) &&
-           !cutBetween((r.first + n - 1) % n, r.first))
-      r.first = (r.first + n - 1) % n;
+    for (int guard = 1; guard < n; ++guard) {
+      const int prev = (r.first + n - 1) % n;
+      if (!onVisit(m, prev) || cutBetween(prev, r.first)) break;
+      r.first = prev;
+    }
     r.last = k;
-    while (onVisit(m, (r.last + 1) % n) &&
-           !cutBetween(r.last, (r.last + 1) % n))
-      r.last = (r.last + 1) % n;
+    for (int guard = 1; guard < n; ++guard) {
+      const int next = (r.last + 1) % n;
+      if (!onVisit(m, next) || cutBetween(r.last, next)) break;
+      r.last = next;
+    }
     r.start = bounds[r.first];
     for (int v = r.first;; v = (v + 1) % n) {
       r.len += bounds[v + 1] - bounds[v];

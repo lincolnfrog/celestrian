@@ -29,6 +29,7 @@
 
 #include "dsp/fx_chain.h"
 #include "midi_input_queue.h"
+#include "seq_locked.h"
 #include "timing.h"
 
 namespace celestrian {
@@ -516,29 +517,27 @@ class AudioNode {
   /** The stored geometry, bypass ignored (message or audio thread). */
   timing::TimeMap storedMap() const {
     timing::TimeMap m;
-    for (int attempt = 0; attempt < 16; ++attempt) {
-      const uint32_t s1 = map_seq_.load(std::memory_order_acquire);
+    map_lock_.read([&] {
       m.n = map_n_.load(std::memory_order_relaxed);
       for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
         m.segs[i].start = map_start_[i].load(std::memory_order_relaxed);
         m.segs[i].end = map_end_[i].load(std::memory_order_relaxed);
       }
-      const uint32_t s2 = map_seq_.load(std::memory_order_acquire);
-      if ((s1 & 1u) == 0 && s1 == s2) break;
-    }
+    });
     if (m.n < 0 || m.n > timing::TimeMap::kMaxSegments) m.n = 0;
     return m;
   }
   /** Replace the geometry (message thread). n == 0 clears it. */
   void setMap(const timing::TimeMap& m) {
-    map_seq_.fetch_add(1, std::memory_order_release);  // odd = writing
-    map_n_.store(m.n, std::memory_order_relaxed);
-    for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
-      map_start_[i].store(i < m.n ? m.segs[i].start : 0,
+    map_lock_.write([&] {
+      map_n_.store(m.n, std::memory_order_relaxed);
+      for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
+        map_start_[i].store(i < m.n ? m.segs[i].start : 0,
+                            std::memory_order_relaxed);
+        map_end_[i].store(i < m.n ? m.segs[i].end : 0,
                           std::memory_order_relaxed);
-      map_end_[i].store(i < m.n ? m.segs[i].end : 0, std::memory_order_relaxed);
-    }
-    map_seq_.fetch_add(1, std::memory_order_release);  // even = stable
+      }
+    });
   }
   /** The single-window form: [start, end) as one segment (empty when
    * end <= start). */
@@ -726,7 +725,7 @@ class AudioNode {
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
   // THE MAP's storage (see storedMap/setMap): a seqlock over all-atomic
   // segment fields; n == 0 means no geometry.
-  std::atomic<uint32_t> map_seq_{0};
+  SeqLock map_lock_;
   std::atomic<int> map_n_{0};
   std::atomic<int64_t> map_start_[timing::TimeMap::kMaxSegments]{};
   std::atomic<int64_t> map_end_[timing::TimeMap::kMaxSegments]{};

@@ -87,7 +87,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /**
    * Returns a JSON-compatible representation of the entire audio graph.
    */
-  juce::var getGraphState() const;
+  /** The UI poll: ticks (below), then publishes the whole state. */
+  juce::var getGraphState();
+  /** Message-thread housekeeping that must not depend on the WebView's
+   * poll cadence: drain the RtLog, settle committed takes into the log
+   * (reconcileTakes), keep every live take's storage headroom
+   * (growLiveTakes). Called from every getGraphState poll AND from the
+   * MainComponent heartbeat, so a throttled poll cannot let a take
+   * reach its committed wall. */
+  void tick();
 
   /**
    * Returns peak data for the specified node.
@@ -618,6 +626,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void retireOwned(std::unique_ptr<T> owned) {
     retireOwned(owned.release());
   }
+  /** Retire a DETACHED graph node. Unlike retireOwned this PARKS the
+   * node: it enters the graveyard — stamped — only from the next
+   * publishGraph(), after the snapshot that still lists it has been
+   * exchanged. Every structural path that detaches a node without
+   * handing it to an inverse edit must use this, never retireOwned. */
+  void retireNode(std::unique_ptr<celestrian::AudioNode> node);
   /** The parent stack of `node` and its index within it (nullptr/−1 if
    * top-level unknown). */
   celestrian::StackNode* parentOf(celestrian::AudioNode* node,
@@ -903,6 +917,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::atomic<uint64_t> callback_count_{0};
   std::mutex graveyard_mutex_;
   std::vector<RetiredItem> graveyard_;
+  // Detached graph nodes awaiting the publish that makes them
+  // unreachable (retireNode → publishGraph). Message thread only.
+  std::vector<std::unique_ptr<celestrian::AudioNode>> parked_nodes_;
 
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

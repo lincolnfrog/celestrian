@@ -148,9 +148,14 @@ inline int64_t lcm(int64_t a, int64_t b) {
 
 /** Positive modulo: `a mod m` in [0, m) for any sign of `a`; identity
  * when `m <= 0` (no modulus). THE fold every cyclic phase uses —
- * never hand-roll `((a % m) + m) % m`. */
+ * never hand-roll `((a % m) + m) % m`: that form overflows once the
+ * modulus is the saturated `lcm` (INT64_MAX), because `(a % m) + m`
+ * exceeds INT64_MAX for any positive residue. Here `r ∈ (−m, 0]` when
+ * negative, so `r + m` never overflows — the fold is total. */
 inline int64_t posMod(int64_t a, int64_t m) {
-  return m > 0 ? ((a % m) + m) % m : a;
+  if (m <= 0) return a;
+  const int64_t r = a % m;
+  return r < 0 ? r + m : r;
 }
 
 namespace detail {

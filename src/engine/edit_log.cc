@@ -326,7 +326,18 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
     case K::Move: {
       auto* node = find(e.uuid);
       auto* newParent = asStack(e.parentUuid);
-      if (!node || !newParent) return {};
+      if (!node || !newParent || node == root_node.get()) return {};
+      // A hot clip (armed or capturing) is not movable: the detach/insert
+      // pair would cycle the island's take counter through zero under the
+      // live take (Remove refuses for the same reason — cancel is the verb).
+      if (node->isArmedOrRecording()) return {};
+      // The destination must not lie inside the moved subtree: inserting
+      // a stack into its own descendant makes a self-owning cycle, and the
+      // parent walks (rootNode, the origin lift) never terminate.
+      for (const celestrian::AudioNode* p = newParent; p != nullptr;
+           p = p->getParent()) {
+        if (p == node) return {};
+      }
       int oldIdx = -1;
       auto* oldParent = parentOf(node, &oldIdx);
       if (!oldParent || oldIdx < 0) return {};
@@ -342,6 +353,12 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       auto* dragged = find(e.uuid);
       auto* target = find(e.uuid2);
       if (!dragged || !target || dragged == target) return {};
+      // Hot clips are not combinable (see Move): the detach would run the
+      // island take counter through zero and register the live take on
+      // the new stack's own counter, which nothing scrubs.
+      if (dragged->isArmedOrRecording() || target->isArmedOrRecording()) {
+        return {};
+      }
       int draggedIdx = -1, targetIdx = -1;
       auto* draggedParent = parentOf(dragged, &draggedIdx);
       auto* targetParent = parentOf(target, &targetIdx);
@@ -351,7 +368,22 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       int tIdx = -1;
       auto* tParent = parentOf(target, &tIdx);
       auto targetOwned = tParent->removeChild(tIdx);
-      auto newStack = std::make_unique<StackNode>("Combined Stack");
+      // Combine/Explode are an inverse PAIR: a redo of a Combine (the
+      // inverse of an Explode) reuses the very stack the Explode emptied
+      // (carried in `e.node`, the Remove discipline) so the group keeps
+      // its uuid, name, sequence, fx, mute and window — and every later
+      // redo entry addressed to that uuid still resolves. Only a fresh
+      // user Combine builds a new stack.
+      std::unique_ptr<StackNode> newStack;
+      if (e.node) {
+        auto* raw = e.node.release();
+        if (auto* reused = dynamic_cast<StackNode*>(raw)) {
+          newStack.reset(reused);
+        } else {
+          delete raw;  // never a stack here; defensive
+        }
+      }
+      if (!newStack) newStack = std::make_unique<StackNode>("Combined Stack");
       newStack->addChild(std::move(targetOwned));   // target first (index 0)
       newStack->addChild(std::move(draggedOwned));  // dragged second (index 1)
       const juce::String newUuid = newStack->getUuid();
@@ -367,6 +399,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
     case K::Explode: {
       auto* stack = asStack(e.uuid);
       if (!stack || stack->getNumChildren() != 2) return {};
+      if (stack->isArmedOrRecording()) return {};  // a hot member (see Move)
       auto child0 = stack->removeChild(0);  // target
       auto child1 = stack->removeChild(0);  // dragged (now at 0)
       const juce::String draggedUuid = child1->getUuid();
@@ -384,16 +417,20 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         dParent->insertChildAt(std::move(child1), e.index2);
         tParent->insertChildAt(std::move(child0), e.index);
       }
-      // Remove the now-empty combined stack; retire it — an in-flight
-      // callback may still traverse it via the outgoing graph snapshot.
-      int stackIdx = -1;
-      if (auto* stackParent = parentOf(stack, &stackIdx);
-          stackParent && stackIdx >= 0) {
-        retireOwned(stackParent->removeChild(stackIdx));
-      }
+      // Detach the now-empty combined stack and hand it to the inverse
+      // (the Remove discipline): the Combine that undoes this Explode
+      // re-installs the SAME object, so the pair is a true inverse. The
+      // subtree is retired only when its log entry is dropped — never
+      // here, where an in-flight callback may still traverse it via the
+      // outgoing graph snapshot.
       Edit inv(K::Combine);
       inv.uuid = draggedUuid;
       inv.uuid2 = targetUuid;
+      int stackIdx = -1;
+      if (auto* stackParent = parentOf(stack, &stackIdx);
+          stackParent && stackIdx >= 0) {
+        inv.node = stackParent->removeChild(stackIdx);
+      }
       return inv;
     }
     case K::Rename: {
@@ -488,10 +525,15 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           inv.b1 = true;
           inv.setsMap = true;
           inv.tmap = *m;
-          inv.iq = clip->origin_samples.load();
+          // The pre-splice ORIGIN is an absolute: it rides `iorg` under
+          // `setsOrigin`, the one slot shiftHistoryAbsolutes re-frames on
+          // a seek. `iq` never holds an absolute.
+          inv.setsOrigin = true;
+          inv.iorg = clip->origin_samples.load();
           inv.iepoch = clip->getIntrinsicDuration();
           inv.d1 = (double)clip->getContentBase();
           inv.d2 = (double)clip->recordedLength();
+          inv.collapsed_from = clip->collapsedFrom();  // the splice clears it
           // Every other take of the slot splices the same way (one
           // period, one base — docs/takes.md); the inverse owns their
           // pre-splice records. BEFORE spliceToMap rewrites the base.
@@ -520,8 +562,9 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // Un-splice: reinstall the pre-splice buffer + facts, retire
         // the displaced spliced buffer, and put the map back.
         const int64_t before_origin = clip->origin_samples.load();
-        retireOwned(clip->unspliceFromMap(std::move(e.buffer), e.iq, e.iepoch,
-                                          (int64_t)e.d1, (int64_t)e.d2));
+        retireOwned(clip->unspliceFromMap(std::move(e.buffer), e.iorg,
+                                          e.iepoch, (int64_t)e.d1,
+                                          (int64_t)e.d2, e.collapsed_from));
         liftAncestorsOf(*clip, clip->origin_samples.load() - before_origin);
         if (e.midi) retireOwned(clip->unspliceMidi(std::move(e.midi)));
         for (auto& d : clip->unspliceOtherTakes(std::move(e.other_takes))) {
@@ -983,6 +1026,28 @@ bool movesIslandFacts(const celestrian::Edit& e) {
          e.kind == celestrian::Edit::Kind::CollapseGroup || e.setsIsland ||
          e.setsOrigin || !e.anchors.empty() || !e.windows.empty();
 }
+
+// A structural edit addressed at a HOT node (armed or capturing — for a
+// stack, any member) is refused by its applier (Remove, Move, Combine,
+// Explode: cancel is the verb). Refusing it here too keeps the entry in
+// the log instead of dropping it through a Nop.
+bool touchesHotNode(celestrian::AudioNode* root, const celestrian::Edit& e) {
+  using K = celestrian::Edit::Kind;
+  auto hot = [root](const juce::String& uuid) {
+    const auto* n = root != nullptr ? root->findByUuid(uuid) : nullptr;
+    return n != nullptr && n->isArmedOrRecording();
+  };
+  switch (e.kind) {
+    case K::Remove:
+    case K::Move:
+    case K::Explode:
+      return hot(e.uuid);
+    case K::Combine:
+      return hot(e.uuid) || hot(e.uuid2);
+    default:
+      return false;
+  }
+}
 }  // namespace
 
 void AudioEngine::undo() {
@@ -995,6 +1060,12 @@ void AudioEngine::undo() {
     juce::Logger::writeToLog(
         "AudioEngine::undo refused - it would move the cycle a take is "
         "recording against (finish or cancel the take first)");
+    return;
+  }
+  if (touchesHotNode(root_node.get(), undo_.back())) {
+    juce::Logger::writeToLog(
+        "AudioEngine::undo refused - it would restructure around a live "
+        "take (finish or cancel the take first)");
     return;
   }
   celestrian::Edit inv = std::move(undo_.back());
@@ -1010,6 +1081,12 @@ void AudioEngine::redo() {
     juce::Logger::writeToLog(
         "AudioEngine::redo refused - it would move the cycle a take is "
         "recording against (finish or cancel the take first)");
+    return;
+  }
+  if (touchesHotNode(root_node.get(), redo_.back())) {
+    juce::Logger::writeToLog(
+        "AudioEngine::redo refused - it would restructure around a live "
+        "take (finish or cancel the take first)");
     return;
   }
   celestrian::Edit fwd = std::move(redo_.back());

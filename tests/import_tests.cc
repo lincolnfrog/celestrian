@@ -74,25 +74,25 @@ juce::var findVar(const juce::var& node, const juce::String& id) {
   return {};
 }
 
-juce::var nodeVar(const AudioEngine& engine, const juce::String& id) {
+juce::var nodeVar(AudioEngine& engine, const juce::String& id) {
   return findVar(engine.getGraphState(), id);
 }
 
-double prop(const AudioEngine& engine, const juce::String& id,
+double prop(AudioEngine& engine, const juce::String& id,
             const char* key) {
   return (double)nodeVar(engine, id).getProperty(key, -1.0);
 }
 
-int64_t islandQ(const AudioEngine& engine) {
+int64_t islandQ(AudioEngine& engine) {
   return (int64_t)(double)engine.getGraphState().getProperty("quantum", 0.0);
 }
-int64_t islandEpoch(const AudioEngine& engine) {
+int64_t islandEpoch(AudioEngine& engine) {
   return (int64_t)(double)engine.getGraphState().getProperty("islandEpoch",
                                                              0.0);
 }
 
 /** The id of the newest top-level node. */
-juce::String lastTopId(const AudioEngine& engine) {
+juce::String lastTopId(AudioEngine& engine) {
   const juce::var s = engine.getGraphState();
   auto* n = nodesOf(s);
   return (*n)[n->size() - 1].getProperty("id", "").toString();

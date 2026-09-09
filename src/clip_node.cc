@@ -55,8 +55,8 @@ juce::var ClipNode::getMetadata() const {
   auto base = AudioNode::getMetadata();
   auto* obj = base.getDynamicObject();
   obj->setProperty("sampleRate", sample_rate);
-  obj->setProperty("inputChannel", preferred_input_channel);
-  obj->setProperty("inputChannelR", preferred_input_channel_right);
+  obj->setProperty("inputChannel", preferred_input_channel.load());
+  obj->setProperty("inputChannelR", preferred_input_channel_right.load());
   // Software input monitoring (Q20): the rail's "mon" chip.
   obj->setProperty("monitor", (bool)monitor_.load());
   // 2 when the content is stereo, or the next take will be (stereo
@@ -246,9 +246,10 @@ void ClipNode::control(const float* const* input_channels,
           for (int c = 0; c < ncap; ++c) {
             // Clamp both ways: −1 is a first-class "no assignment"
             // value in the UI/session layer and must not index ring[−1].
-            const int ch = std::clamp(c == 0 ? preferred_input_channel
-                                             : preferred_input_channel_right,
-                                      0, context.prerecord_ring_channels - 1);
+            const int ch =
+                std::clamp(c == 0 ? preferred_input_channel.load()
+                                  : preferred_input_channel_right.load(),
+                           0, context.prerecord_ring_channels - 1);
             const float* ring = context.prerecord_ring[ch];
             captureWrite(buffer, c, wp, ring + idx, first);
             if (n > first) captureWrite(buffer, c, wp + first, ring, n - first);
@@ -283,7 +284,8 @@ void ClipNode::control(const float* const* input_channels,
         float blockPeak = 0.0f;
         for (int c = 0; c < ncap; ++c) {
           const float* in = input_channels[std::clamp(
-              c == 0 ? preferred_input_channel : preferred_input_channel_right,
+              c == 0 ? preferred_input_channel.load()
+                     : preferred_input_channel_right.load(),
               0, num_input_channels - 1)];
           if (in == nullptr) continue;  // device delivered a null channel
           captureWrite(buffer, c, write_position.load(), in, samples_to_write);
@@ -601,8 +603,8 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
           }
           int i = 0;
           while (i < context.num_samples) {
-            int64_t h = (context.master_pos + i - org - a0) % cyc;
-            h = (h + cyc) % cyc;
+            const int64_t h =
+                timing::posMod(context.master_pos + i - org - a0, cyc);
             if (h >= dur) {  // one-shot rest region
               const int run =
                   (int)std::min<int64_t>(context.num_samples - i, cyc - h);
@@ -681,8 +683,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
             period_from_context_.load() && context.context_cycle > dur
                 ? context.context_cycle
                 : dur;
-        int64_t h = (context.master_pos - org - a0) % pp;
-        h = (h + pp) % pp;
+        const int64_t h = timing::posMod(context.master_pos - org - a0, pp);
         playhead_pos.store((double)h / (double)pp);
       }
     } else {
@@ -757,8 +758,8 @@ bool ClipNode::addMonitorInput(const ProcessContext& context,
   const int idx = (int)(context.input_clock % ring_len);
   const int first = std::min(n, ring_len - idx);
   const int channels = context.prerecord_ring_channels;
-  const int left = preferred_input_channel;
-  const int right = preferred_input_channel_right;
+  const int left = preferred_input_channel.load();
+  const int right = preferred_input_channel_right.load();
   const bool has_left = left >= 0 && left < channels;
   const bool has_right = right >= 0 && right < channels;
   auto add = [&](int ch, float* scratch) {
@@ -895,8 +896,8 @@ void ClipNode::renderMidi(float* const* output_channels,
               : dur;
       int i = 0;
       while (i < n) {
-        int64_t h = (context.master_pos + i - org - a0) % cyc;
-        h = (h + cyc) % cyc;
+        const int64_t h =
+            timing::posMod(context.master_pos + i - org - a0, cyc);
         if (h >= dur) {  // one-shot rest region: nothing sounds
           const int run = (int)std::min<int64_t>(n - i, cyc - h);
           if (midi_render_next_pos_ >= 0) {
@@ -924,8 +925,7 @@ void ClipNode::renderMidi(float* const* output_channels,
       }
       // Playhead (0..1): the heard phase of the pass; one-shots phase
       // over their full period (the context cycle).
-      int64_t hh = (context.master_pos - org - a0) % cyc;
-      hh = (hh + cyc) % cyc;
+      const int64_t hh = timing::posMod(context.master_pos - org - a0, cyc);
       playhead_pos.store((double)hh / (double)cyc);
     } else {
       playhead_pos.store(0.0);
@@ -1165,8 +1165,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     const int64_t heard = island->activeTakeHeardCycle();
     const int64_t intrinsic = island->activeTakeIntrinsicCycle();
     if (heard > 0 && intrinsic > heard) {
-      const int64_t rel_t =
-          ((target - epoch) % intrinsic + intrinsic) % intrinsic;
+      const int64_t rel_t = timing::posMod(target - epoch, intrinsic);
       origin = target - (rel_t / heard) * heard;
     }
   }
@@ -1196,10 +1195,16 @@ void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
   // take-marking folds by this — "which heard cycle" never matters, the
   // phase within it always does (Q14) — making the mark stable across
   // later frame growth and epoch re-bases.
+  // A SLOT fact: captured for the slot's FIRST take only. A new take of
+  // a committed slot (retake_period_ > 0) performs against the slot's
+  // existing frame, and a retake that cancels short of its period must
+  // leave the standing take's cycle exactly as it was.
   celestrian::AudioNode* island = context.island;
-  const int64_t heard = island->activeTakeHeardCycle();
-  take_context_cycle_.store(heard > 0 ? heard
-                                      : island->activeTakeIntrinsicCycle());
+  if (retake_period_.load() <= 0) {
+    const int64_t heard = island->activeTakeHeardCycle();
+    take_context_cycle_.store(heard > 0 ? heard
+                                        : island->activeTakeIntrinsicCycle());
+  }
 
   rec_state_.store((int)RecState::Capturing);
   awaiting_start_at.store(0);
@@ -1655,8 +1660,7 @@ juce::var ClipNode::audioPeaks(const juce::AudioBuffer<float>& buffer,
 // ===================================================================
 
 void ClipNode::readCompView(CompView& v) const {
-  for (int attempt = 0; attempt < 16; ++attempt) {
-    const uint32_t s1 = take_seq_.load(std::memory_order_acquire);
+  take_lock_.read([&] {
     v.n = comp_n_.load(std::memory_order_relaxed);
     v.q = comp_q_.load(std::memory_order_relaxed);
     v.count = take_table_count_.load(std::memory_order_relaxed);
@@ -1667,36 +1671,34 @@ void ClipNode::readCompView(CompView& v) const {
     for (int i = 0; i < kMaxTakes; ++i) {
       v.buffers[i] = take_buffers_[i].load(std::memory_order_relaxed);
     }
-    const uint32_t s2 = take_seq_.load(std::memory_order_acquire);
-    if ((s1 & 1u) == 0 && s1 == s2) break;
-  }
+  });
   if (v.n < 0 || v.n > kMaxCompCells) v.n = 0;
   if (v.count < 0 || v.count > kMaxTakes) v.count = 0;
 }
 
 void ClipNode::publishTakeTable() {
-  take_seq_.fetch_add(1, std::memory_order_release);  // odd = writing
-  const int n = std::min<int>(kMaxTakes, (int)takes_.size());
-  take_table_count_.store(n, std::memory_order_relaxed);
-  for (int i = 0; i < kMaxTakes; ++i) {
-    const juce::AudioBuffer<float>* b =
-        i < n ? takes_[(size_t)i].buffer.get() : nullptr;
-    take_buffers_[i].store(b, std::memory_order_relaxed);
-  }
-  take_seq_.fetch_add(1, std::memory_order_release);  // even = stable
+  take_lock_.write([&] {
+    const int n = std::min<int>(kMaxTakes, (int)takes_.size());
+    take_table_count_.store(n, std::memory_order_relaxed);
+    for (int i = 0; i < kMaxTakes; ++i) {
+      const juce::AudioBuffer<float>* b =
+          i < n ? takes_[(size_t)i].buffer.get() : nullptr;
+      take_buffers_[i].store(b, std::memory_order_relaxed);
+    }
+  });
 }
 
 void ClipNode::setCompCells(const std::vector<int>& cells, int64_t cell_len) {
   const int n = std::min<int>(kMaxCompCells, (int)cells.size());
-  take_seq_.fetch_add(1, std::memory_order_release);
-  comp_n_.store(cell_len > 0 ? n : 0, std::memory_order_relaxed);
-  comp_q_.store(cell_len, std::memory_order_relaxed);
-  for (int i = 0; i < kMaxCompCells; ++i) {
-    const int c = i < n ? cells[(size_t)i] : -1;
-    comp_cells_[i].store((int8_t)std::clamp(c, -1, kMaxTakes - 1),
-                         std::memory_order_relaxed);
-  }
-  take_seq_.fetch_add(1, std::memory_order_release);
+  take_lock_.write([&] {
+    comp_n_.store(cell_len > 0 ? n : 0, std::memory_order_relaxed);
+    comp_q_.store(cell_len, std::memory_order_relaxed);
+    for (int i = 0; i < kMaxCompCells; ++i) {
+      const int c = i < n ? cells[(size_t)i] : -1;
+      comp_cells_[i].store((int8_t)std::clamp(c, -1, kMaxTakes - 1),
+                           std::memory_order_relaxed);
+    }
+  });
 }
 
 std::vector<int> ClipNode::compCells() const {

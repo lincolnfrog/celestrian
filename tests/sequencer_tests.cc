@@ -1036,7 +1036,7 @@ class SequencerTests : public juce::UnitTest {
       }
     }
 
-    beginTest("S13: fades persist — metadata, session (QTime), template "
+    beginTest("S13: fades persist - metadata, session (QTime), template "
               "(scaled), and they retime with Q");
     {
       // The verb + metadata.
@@ -1107,7 +1107,7 @@ class SequencerTests : public juce::UnitTest {
       expect(rs != nullptr, "template sequence rebuilt");
       if (rs != nullptr) {
         expectEquals(rs->steps[1].fade_in, (int64_t)kLen,
-                     "a half-Q fade at 2×Q is a whole old Q");
+                     "a half-Q fade at 2xQ is a whole old Q");
         expectEquals(rs->steps[1].fade_out, (int64_t)(2 * kLen),
                      "fade_out scaled with Q");
       }
@@ -1263,7 +1263,7 @@ class SequencerTests : public juce::UnitTest {
       stack.setAuditionStep(1);
       const timing::TimeMap m = stack.auditionMap();
       expect(m.active(), "audition of a revisited step has a span");
-      expectEquals(m.segs[0].start, cs->bounds[1], "…its FIRST visit");
+      expectEquals(m.segs[0].start, cs->bounds[1], "...its FIRST visit");
       expectEquals(m.segs[0].end, cs->bounds[2]);
       // Orphan: no span.
       auto* os = new Sequence();
@@ -1307,7 +1307,7 @@ class SequencerTests : public juce::UnitTest {
       engine.setSequence(groupId, payloadWith({{2}, {}, {0}}, 0.0));
       const juce::var g = seqOf(findNode(engine.getGraphState(), groupId));
       expect(g.isObject(), "a periodic jump graph is legal nested");
-      expect(!(bool)g.getProperty("radio", true), "…and is not a radio");
+      expect(!(bool)g.getProperty("radio", true), "...and is not a radio");
       expectEquals(g.getProperty("program", juce::var()).getArray()->size(),
                    2, "program published: [0, 2]");
 
@@ -1398,9 +1398,9 @@ class SequencerTests : public juce::UnitTest {
         expect(engine.loadSession(dir.getFullPathName()), "load ok");
         const juce::var r = seqOf(engine.getGraphState());
         expect(r.isObject(), "the root's song came back");
-        expect((bool)r.getProperty("radio", false), "…still a radio");
+        expect((bool)r.getProperty("radio", false), "...still a radio");
         expectEquals((int)(double)r.getProperty("seed", -1.0), 99,
-                     "…with its seed (the run is reproducible)");
+                     "...with its seed (the run is reproducible)");
       }
       dir.deleteRecursively();
 
@@ -1483,7 +1483,7 @@ class SequencerTests : public juce::UnitTest {
       expect(s != nullptr && !s->radio, "a template's radio builds linear");
       if (s != nullptr) {
         expectEquals((int)s->seed, 11, "the seed still rides along");
-        expect(s->isPlainLoop(), "…as the plain loop");
+        expect(s->isPlainLoop(), "...as the plain loop");
       }
     }
   }
@@ -1827,6 +1827,55 @@ class SequencerTests : public juce::UnitTest {
         expect(!rg->sequencePtr()->steps[0].cue, "template step 1 plain");
         expect(rg->sequencePtr()->steps[1].cue, "template step 2 cued");
       }
+    }
+
+    beginTest("CUE: an ORPHAN cued step (unreachable) is not a cue and "
+              "never hangs the envelope walk");
+    {
+      // Cue step 2, then route step 1 back to step 0: the program is
+      // 0 -> 1 -> 0 and step 2 is never visited. Before the fix
+      // `any_cue` came from the step LIST, so every fast path was off
+      // while no VISIT was cued — and with the all-on mask (every
+      // row-less child) `runAround` had nothing to stop at: an infinite
+      // walk in cornerDistance/gainAt on the audio thread.
+      Sequence s;
+      s.steps.push_back({1000, "a"});
+      s.steps.push_back({1000, "b"});
+      s.steps.push_back({1000, "c", true});
+      s.steps[1].next.push_back({0, 1});
+      s.finalize();
+      expectEquals(s.visit_count, 2, "two visits: 0 -> 1 -> (0)");
+      expectEquals(s.total, (int64_t)2000, "the orphan is not in the program");
+      expect(!s.any_cue, "any_cue means 'some VISIT is cued': false");
+      expect((s.reachable & (1ull << 2)) == 0, "step 2 unreachable");
+
+      const int64_t F = 100;
+      // All-on mask over every reachable visit: constant gain, and the
+      // corner distance is the next visit boundary — both must return.
+      expectWithinAbsoluteError(s.gainAt(~0ull, 500, F), 1.0f, 1e-6f,
+                                "all-on: constant 1");
+      expectEquals(s.cornerDistance(250, F, ~0ull), (int64_t)750,
+                   "all-on: next visit boundary");
+      // A mask that is on across every reachable visit but off on the
+      // orphan is the same program to the walk.
+      expectWithinAbsoluteError(s.gainAt(0b011, 1500, F), 1.0f, 1e-6f,
+                                "reachable-on: constant 1");
+      expectEquals(s.cornerDistance(1500, F, 0b011), (int64_t)500,
+                   "reachable-on: next visit boundary");
+      // The re-base fast path keys off the same flag: an orphan cue
+      // leaves the song map the identity.
+      expectEquals(s.songToContent(1500), (int64_t)1500,
+                   "no cued visit: identity cue map");
+
+      // A REACHABLE cue still cuts (S20): re-route so step 2 is visited.
+      s.steps[1].next.clear();
+      s.finalize();
+      expect(s.any_cue, "reachable cue sets the flag");
+      expectEquals(s.visit_count, 3, "three visits");
+      // With all on, the cued visit's edges are hard cuts: gain dips
+      // at the seam into step 2.
+      expectWithinAbsoluteError(s.gainAt(~0ull, 2000 - 50, F), 0.5f, 1e-6f,
+                                "fade-out into the cued visit");
     }
   }
 };

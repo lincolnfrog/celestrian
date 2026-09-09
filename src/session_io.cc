@@ -89,27 +89,34 @@ void writeTakeWav(const juce::AudioBuffer<float>& buf, int64_t base,
       (int)std::min<int64_t>(duration, (int64_t)buf.getNumSamples() - base);
   if (n <= 0) return;
   file.getParentDirectory().createDirectory();
-  if (incremental && file.existsAsFile()) {
-    // Committed audio is immutable; a matching length means current.
-    // Duration changes (lock-collapse / uncollapse) mismatch → rewrite.
-    juce::WavAudioFormat probe;
-    std::unique_ptr<juce::AudioFormatReader> r(
-        probe.createReaderFor(file.createInputStream().release(), true));
-    if (r && r->lengthInSamples == n) return;
+  // Committed audio is immutable: an existing file is current unless
+  // the clip says otherwise (ClipNode::takeFilesDirty — the ONE truth,
+  // set by every message-thread content-frame mutation: collapse,
+  // uncollapse, splice, strip/restore, take-list changes, a settled
+  // commit). A length probe cannot tell a collapse to [Q, 2Q) from one
+  // to [0, Q).
+  if (incremental && file.existsAsFile()) return;
+  // WRITE-THEN-SWAP (docs/projects.md: at most the take in flight is
+  // ever at risk): the new WAV is written beside the target and moved
+  // over it only once complete, so a crash or a full disk mid-write
+  // leaves the COMMITTED take's file intact.
+  juce::TemporaryFile temp(file);
+  {
+    juce::WavAudioFormat fmt;
+    std::unique_ptr<juce::FileOutputStream> stream(
+        temp.getFile().createOutputStream());
+    if (!stream) return;
+    // 32-bit float: lossless round-trip of the recorded buffer. Channel
+    // count follows the content (stereo takes save as stereo WAVs).
+    std::unique_ptr<juce::AudioFormatWriter> writer(fmt.createWriterFor(
+        stream.get(), sample_rate,
+        (unsigned int)std::max(1, buf.getNumChannels()), 32, {}, 0));
+    if (!writer) return;
+    stream.release();  // the writer owns the stream now
+    if (!writer->writeFromAudioSampleBuffer(buf, (int)base, n)) return;
+    // The writer flushes and closes on destruction (end of scope).
   }
-  file.deleteFile();
-
-  juce::WavAudioFormat fmt;
-  std::unique_ptr<juce::FileOutputStream> stream(file.createOutputStream());
-  if (!stream) return;
-  // 32-bit float: lossless round-trip of the recorded buffer. Channel
-  // count follows the content (stereo takes save as stereo WAVs).
-  std::unique_ptr<juce::AudioFormatWriter> writer(fmt.createWriterFor(
-      stream.get(), sample_rate, (unsigned int)std::max(1, buf.getNumChannels()),
-      32, {}, 0));
-  if (!writer) return;
-  stream.release();  // the writer owns the stream now
-  writer->writeFromAudioSampleBuffer(buf, (int)base, n);
+  temp.overwriteTargetFileWithTemporary();
 }
 
 /** Take k's file (docs/takes.md): take 0 keeps `<uuid>.wav`, later
@@ -544,7 +551,7 @@ bool save(const StackNode& root, double device_sample_rate,
   const int64_t epoch = opts.strip_performances ? 0 : root.getEpoch();
 
   auto* top = new juce::DynamicObject();
-  top->setProperty("version", 1);
+  top->setProperty("version", kSessionVersion);
   if (opts.display_name.isNotEmpty())
     top->setProperty("name", opts.display_name);
   if (opts.created.isNotEmpty()) top->setProperty("created", opts.created);
@@ -582,6 +589,17 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   const auto root = juce::JSON::parse(jf.loadFileAsString());
   auto* o = root.getDynamicObject();
   if (!o) return out;
+  // A NEWER bundle is refused (kSessionVersion): loading it as a
+  // plausible session and mirroring over it would lose what this build
+  // does not understand. Absent = a pre-versioning bundle: loads.
+  const int version = (int)o->getProperty("version");
+  if (version > kSessionVersion) {
+    juce::Logger::writeToLog("session_io: load refused - " +
+                             jf.getFullPathName() + " is version " +
+                             juce::String(version) + ", this build reads " +
+                             juce::String(kSessionVersion));
+    return out;
+  }
 
   out.q_samples = (int64_t)(double)o->getProperty("qSamples");
   out.epoch = (int64_t)(double)o->getProperty("epoch");

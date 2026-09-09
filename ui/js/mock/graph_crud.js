@@ -129,9 +129,31 @@ export function renameNode(id, newName) {
     }
 }
 
+/** Whether `node` or any descendant is armed/capturing — engine parity
+ * with AudioNode::isArmedOrRecording (a stack is hot iff a member is). */
+function subtreeHot(node) {
+    if (!node) return false;
+    if (node.isRecording || node.isPendingStart) return true;
+    return (node.nodes || []).some(subtreeHot);
+}
+
+/** Whether `id` names `node` itself or a node inside its subtree. */
+function subtreeContains(node, id) {
+    if (!node) return false;
+    if (node.id === id) return true;
+    return (node.nodes || []).some(n => subtreeContains(n, id));
+}
+
 export function reorderNode(nodeId, newParentId, newIndex) {
     const node = findNode(nodeId);
     if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
+    // Engine parity (applyEdit Move): a hot clip is not movable (cancel
+    // is the verb), and the destination must not lie inside the moved
+    // subtree — a stack moved into its own descendant is a cycle.
+    if (subtreeHot(node) || subtreeContains(node, newParentId)) {
+        popUndoForRefusal();
+        return;
+    }
 
     // Remove from current parent
     removeNodeFromParent(nodeId);
@@ -166,6 +188,11 @@ export function combineNodes(draggedId, targetId) {
 
     if (!draggedNode || !targetNode) {
         console.warn('[MockBackend] combineNodes: Node not found');
+        return null;
+    }
+    // Engine parity (applyEdit Combine): hot clips are not combinable.
+    if (subtreeHot(draggedNode) || subtreeHot(targetNode)) {
+        popUndoForRefusal();
         return null;
     }
 

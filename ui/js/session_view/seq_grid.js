@@ -40,7 +40,7 @@
 import { ctx } from './context.js';
 import { el, setText, fmtQ } from './sv_util.js';
 import { kBlowupRatio, cycleMinutes, fmtDuration } from '../frame_health.js';
-import { lcm } from '../math_utils.js';
+import { lcm, posMod } from '../math_utils.js';
 import { programOf, randomSeed } from '../sequence_program.js';
 
 /** Build the synthetic grid row once; content renders in patch. */
@@ -172,7 +172,7 @@ export function patchSeqGrid(row, lane, vm) {
     const body = row.querySelector('.seq-body');
     if (lane.visits.length && lane.totalQ > 0 && vm.isPlaying &&
         !lane.bypassed) {
-        const rel = ((vm.playheadQ % lane.totalQ) + lane.totalQ) % lane.totalQ;
+        const rel = posMod(vm.playheadQ, lane.totalQ);
         const playing = playingColumn(lane, rel);
         body.querySelectorAll('[data-col]').forEach(cell => {
             cell.classList.toggle('playing',

@@ -427,12 +427,26 @@ class QTimeLockTests : public juce::UnitTest {
       };
       expect(segsOf(c1).isArray(), "definer carries the cell map");
       const int64_t epBefore = islandEp(engine);
+      const int64_t originPreSplice = clipOrigin(engine, c1);
       recordClip(engine, process, (int)(q0 / 2));  // take 2 arms + commits
       expectEquals(clipProp(engine, c1, "duration"), q0 / 2,
                    "splice: definer duration = the map period");
       expectEquals(clipOrigin(engine, c1), epBefore,
                    "splice: origin = the epoch (anchoring law)");
       expect(!segsOf(c1).isArray(), "splice: map consumed");
+
+      // A SEEK re-frames every absolute in the session, the log's
+      // stored origins included (shiftHistoryAbsolutes). The splice
+      // inverse's pre-splice origin must ride that shift too — it lives
+      // in `iorg` under `setsOrigin`, never in `iq`.
+      const int64_t epSeekBefore = islandEp(engine);
+      expect(engine.seekTransport((double)(q0 / 8)), "seek applied");
+      int64_t delta = islandEp(engine) - epSeekBefore;
+      if (delta == 0) {
+        expect(engine.seekTransport((double)(q0 / 8 + q0 / 4)), "seek 2");
+        delta = islandEp(engine) - epSeekBefore;
+      }
+      expect(delta != 0, "the seek moved the epoch");
 
       // TAKES ARE UNDOABLE (2026-08-20): the first undo removes take 2
       // itself (the log reads: CollapseTake, Take 2); the second
@@ -444,6 +458,9 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(clipProp(engine, c1, "duration"), q0,
                    "un-splice: full material returns");
       expect(segsOf(c1).isArray(), "un-splice: the cell map returns");
+      expectEquals(clipOrigin(engine, c1), originPreSplice + delta,
+                   "un-splice restores the pre-splice origin IN THE "
+                   "POST-SEEK FRAME (placement, not a stale absolute)");
     }
 
     // ---- Q13 FOR GROUPS (owner ruling 2026-08-21) ----

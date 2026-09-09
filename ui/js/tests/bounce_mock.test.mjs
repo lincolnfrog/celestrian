@@ -9,8 +9,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { callNative, loadScenario } from '../mock_backend.js';
-import { getLastBounce, resetLastBounce, DIALOG_PATH } from '../mock/bounce.js';
+import {
+    getLastBounce, resetLastBounce, DIALOG_PATH, kMaxTakeSamples, bounceSpanOf,
+} from '../mock/bounce.js';
+import { findNode } from '../mock/state.js';
 import { nodeById } from './helpers.mjs';
+
+test('a span past the take ceiling refuses (engine parity: bounce.cc cap)', async () => {
+    loadScenario('single-clip');
+    resetLastBounce();
+    const clip = findNode('clip-1');  // the LIVE mock node (getState publishes copies)
+    const before = clip.duration;
+    clip.duration = kMaxTakeSamples + 1;
+    assert.ok(bounceSpanOf('clip-1') > kMaxTakeSamples, 'the span passes the cap');
+    assert.equal(await callNative('bounce', 'clip-1', '/tmp/huge.wav'), false);
+    assert.equal(getLastBounce(), null, 'nothing recorded');
+    clip.duration = before;
+    assert.equal(await callNative('bounce', 'clip-1', '/tmp/ok.wav'), true,
+                 'back under the cap: accepted');
+});
 
 test('bounce records {uuid, path} and answers true', async () => {
     loadScenario('single-clip');

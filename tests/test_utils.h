@@ -139,7 +139,7 @@ inline juce::Array<juce::var>* nodesOf(const juce::var& state) {
 
 // Committed ⟺ not recording and has a duration. (getMetadata publishes
 // live_duration as "duration" while recording, so gate on isRecording.)
-inline bool isClipCommitted(const AudioEngine& engine,
+inline bool isClipCommitted(AudioEngine& engine,
                             const juce::String& uuid) {
   const juce::var state = engine.getGraphState();
   if (auto* nodes = nodesOf(state))
@@ -269,7 +269,7 @@ inline juce::File freshTempDir(const juce::String& name) {
 // --- Graph-state accessors (single top-level stack of clips) ---
 
 /** The uuid of the first top-level node. */
-inline juce::String firstNodeId(const AudioEngine& engine) {
+inline juce::String firstNodeId(AudioEngine& engine) {
   return engine.getGraphState()
       .getDynamicObject()
       ->getProperty("nodes")
@@ -280,7 +280,7 @@ inline juce::String firstNodeId(const AudioEngine& engine) {
 }
 
 /** The metadata var of child `index` inside the first top-level stack. */
-inline juce::var childVar(const AudioEngine& engine, int index) {
+inline juce::var childVar(AudioEngine& engine, int index) {
   return engine.getGraphState()
       .getDynamicObject()
       ->getProperty("nodes")
@@ -292,17 +292,17 @@ inline juce::var childVar(const AudioEngine& engine, int index) {
       ->getReference(index);
 }
 
-inline juce::String childId(const AudioEngine& engine, int index) {
+inline juce::String childId(AudioEngine& engine, int index) {
   return childVar(engine, index).getDynamicObject()->getProperty("id");
 }
 
-inline int64_t childDuration(const AudioEngine& engine, int index) {
+inline int64_t childDuration(AudioEngine& engine, int index) {
   return (int64_t)(double)childVar(engine, index)
       .getDynamicObject()
       ->getProperty("duration");
 }
 
-inline bool childIsRecording(const AudioEngine& engine, int index) {
+inline bool childIsRecording(AudioEngine& engine, int index) {
   return (bool)childVar(engine, index)
       .getDynamicObject()
       ->getProperty("isRecording");

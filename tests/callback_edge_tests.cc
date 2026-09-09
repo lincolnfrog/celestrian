@@ -34,12 +34,12 @@ class CountingLogger : public juce::Logger {
 };
 
 /** masterPos from getGraphState (the derived cycle view of the clock). */
-double masterViewPosition(const AudioEngine& engine) {
+double masterViewPosition(AudioEngine& engine) {
   return (double)engine.getGraphState().getProperty("masterPos", -1.0);
 }
 
 /** The perf.xruns counter from getGraphState. */
-int xrunCount(const AudioEngine& engine) {
+int xrunCount(AudioEngine& engine) {
   return (int)(double)engine.getGraphState()
       .getProperty("perf", juce::var())
       .getProperty("xruns", -1.0);
@@ -281,6 +281,35 @@ class CallbackEdgeTests : public juce::UnitTest {
       expect(freed,
              "a retire() call after two completed callbacks frees "
              "the item");
+    }
+
+    beginTest("reclaimer: a publish re-stamps every pending retirement "
+              "AFTER the snapshot exchange");
+    {
+      // Ordering law (AudioEngine::publishGraph): a node detached during
+      // an edit stays reachable through the OLD snapshot until the
+      // publish exchanges it, so its two-callback clock must start at
+      // the publish, not at the detach. publishGraph parks detached
+      // nodes (retireNode) and, belt and braces, bumps every pending
+      // graveyard stamp to the post-exchange count. Pinned here through
+      // the public surface: an item retired at count 0, two callbacks
+      // later a structural edit publishes (stamp -> 2), and the very
+      // next reap attempt must NOT free it.
+      AudioEngine engine;
+      bool freed = false;
+      engine.retire([&freed] { freed = true; });  // stamped at 0
+      test_utils::driveEngine(engine, kBlockSize);   // 1
+      test_utils::driveEngine(engine, kBlockSize);   // 2
+      engine.createNode("clip");  // structural edit -> publishGraph
+      engine.retire([] {});       // reap attempt at count 2
+      expect(!freed,
+             "re-stamped to the publish's count: still inside the grace");
+      test_utils::driveEngine(engine, kBlockSize);  // 3
+      engine.retire([] {});
+      expect(!freed, "one callback past the publish: still inside");
+      test_utils::driveEngine(engine, kBlockSize);  // 4
+      engine.retire([] {});
+      expect(freed, "two callbacks past the publish: freed");
     }
 
     beginTest("RtLog: bounded drain under a post storm; ring-full drop");

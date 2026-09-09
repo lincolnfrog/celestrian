@@ -1199,6 +1199,17 @@ no home outside the index pointer (D11-16).
 Each item names its finding ids and what "done" means. Suites green after
 every step (C++ Debug binary first, then `npm test`, then Playwright).
 
+> **Status 2026-09-08 — Tier 1 LANDED** (all three suites green; the
+> seven `juce_String.cpp:327` lines are gone). Notes against the "done"
+> definitions below: D5-2's hammer (tests/seq_lock_tests.cc) runs
+> without TSan until D10-4 lands; D6-4 (seek reconciles) has no
+> dedicated test — it mirrors record/undo/redo; D3-2's JS routing covers
+> production modules, the hand-rolled folds in ui/js/tests/*.mjs are
+> test-local helpers and were left. Also landed with D4-1: a refused
+> structural undo/redo (hot node) now KEEPS its log entry, like the
+> island-facts refusals. Docs: performance.md §1 carries the D5-1
+> stamp-after-publish and D5-2 protocol paragraphs.
+
 **Tier 1 — hours each, do now, no ruling needed.**
 - D8-1 orphan cue hang — done: `any_cue` derived per visit; both walks
   bounded; the orphan test passes.

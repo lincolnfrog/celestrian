@@ -31,14 +31,14 @@ namespace {
 /** Top-level node count of the engine's published graph. (Hold the
  * state var alive across the array access — getArray() points INTO the
  * var; a temporary would dangle.) */
-int topCount(const AudioEngine& engine) {
+int topCount(AudioEngine& engine) {
   const juce::var state = engine.getGraphState();
   auto* n = nodesOf(state);
   return n ? n->size() : 0;
 }
 
 /** The i-th top-level node var (void when out of range). */
-juce::var topNode(const AudioEngine& engine, int i) {
+juce::var topNode(AudioEngine& engine, int i) {
   const juce::var state = engine.getGraphState();
   auto* n = nodesOf(state);
   return (n != nullptr && i < n->size()) ? (*n)[i] : juce::var();

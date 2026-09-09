@@ -42,7 +42,7 @@ std::function<void(int)> makeProcess(AudioEngine& engine) {
 }
 
 /** Find a node's property anywhere in the tree (−1 when absent). */
-double propOf(const AudioEngine& engine, const juce::String& id,
+double propOf(AudioEngine& engine, const juce::String& id,
               const char* key) {
   const juce::var s = engine.getGraphState();  // hold the var
   std::function<double(const juce::var&)> scan =
@@ -62,22 +62,22 @@ double propOf(const AudioEngine& engine, const juce::String& id,
   return f == -1e18 ? -1.0 : f;
 }
 
-int64_t islandQ(const AudioEngine& engine) {
+int64_t islandQ(AudioEngine& engine) {
   return (int64_t)(double)engine.getGraphState().getProperty("quantum", 0.0);
 }
-int64_t islandEp(const AudioEngine& engine) {
+int64_t islandEp(AudioEngine& engine) {
   return (int64_t)(double)engine.getGraphState().getProperty("islandEpoch",
                                                              0.0);
 }
-juce::String rootId(const AudioEngine& engine) {
+juce::String rootId(AudioEngine& engine) {
   return engine.getGraphState().getProperty("id", "").toString();
 }
-juce::String lastTopId(const AudioEngine& engine) {
+juce::String lastTopId(AudioEngine& engine) {
   const juce::var s = engine.getGraphState();
   auto* n = nodesOf(s);
   return (*n)[n->size() - 1].getProperty("id", "").toString();
 }
-juce::var gatesOf(const AudioEngine& engine) {
+juce::var gatesOf(AudioEngine& engine) {
   return engine.getGraphState()
       .getProperty("sequence", juce::var())
       .getProperty("gates", juce::var());

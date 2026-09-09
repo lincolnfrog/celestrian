@@ -209,6 +209,7 @@ target_sources(CelestrianTests PRIVATE
     tests/test_runner.cc
     tests/timing_golden_tests.cc
     tests/qtime_tests.cc
+    tests/seq_lock_tests.cc
     tests/monotonic_clock_tests.cc
     tests/seek_tests.cc
     tests/latency_calibration_tests.cc

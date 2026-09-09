@@ -706,6 +706,9 @@ void AudioEngine::reconcileTakes() {
       }
     }
     if (committed.empty()) continue;  // the whole performance cancelled
+    // The settled content is new to the mirror (a stripped-then-re-
+    // recorded slot may still have a stale file under the same name).
+    for (auto* clip : committed) clip->markTakeFilesDirty();
 
     // The log entry is the INVERSE (Untake): it names the clips and
     // carries the island facts as they were BEFORE the performance, so

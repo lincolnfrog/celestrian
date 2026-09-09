@@ -212,6 +212,7 @@ bool AudioEngine::importAudio(const juce::String& uuid,
     inv.setsIsland = true;
     inv.iq = q;
     inv.iepoch = epoch;
+    reconcileTakes();  // log order: settled takes enter BEFORE this entry
     pushUndo(std::move(inv));
     clearRedo();
     juce::Logger::writeToLog("AudioEngine: imported " + file.getFileName() +
@@ -268,6 +269,7 @@ bool AudioEngine::importAudio(const juce::String& uuid,
   inv.iq = q;
   inv.iepoch = epoch;
   settleAnchors(inv);
+  reconcileTakes();  // log order: settled takes enter BEFORE this entry
   pushUndo(std::move(inv));
   clearRedo();
   if (q <= 0 && root_node->getQuantum() > 0) {

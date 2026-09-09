@@ -29,6 +29,7 @@ import {
     state, findNode, subtreeRecording, anyNodeRecording,
 } from './state.js';
 import { popUndoForRefusal } from './undo.js';
+import { posMod } from '../math_utils.js';
 import { programOf, visitBounds } from '../sequence_program.js';
 
 const MAX_STEPS = 64;
@@ -207,7 +208,7 @@ export function visitIndexAt(seq, rel) {
     const total = seqTotal(seq);
     if (!(total > 0)) return -1;
     const b = seqBounds(seq);
-    const r = ((rel % total) + total) % total;
+    const r = posMod(rel, total);
     for (let k = 0; k + 1 < b.length; k++) {
         if (r < b[k + 1]) return k;
     }

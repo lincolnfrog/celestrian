@@ -157,11 +157,11 @@ class StackNode : public AudioNode {
    * thread, or the audio-thread commit re-base (rebaseEpochOnGrowth) —
    * message-thread fact writers are refused under a live take. */
   void setIslandFacts(int64_t quantum, int64_t epoch, uint32_t generation) {
-    island_seq_.fetch_add(1, std::memory_order_release);  // odd = writing
-    quantum_samples_.store(quantum);
-    epoch_samples_.store(epoch);
-    island_generation_.store(generation);
-    island_seq_.fetch_add(1, std::memory_order_release);  // even = stable
+    island_lock_.write([&] {
+      quantum_samples_.store(quantum);
+      epoch_samples_.store(epoch);
+      island_generation_.store(generation);
+    });
   }
   int64_t getQuantum() const { return quantum_samples_.load(); }
   int64_t getEpoch() const { return epoch_samples_.load(); }
@@ -176,14 +176,11 @@ class StackNode : public AudioNode {
    * (a write storm that long does not exist on the message thread). */
   IslandFacts readIslandFacts() const {
     IslandFacts f;
-    for (int attempt = 0; attempt < 16; ++attempt) {
-      const uint32_t s1 = island_seq_.load(std::memory_order_acquire);
+    island_lock_.read([&] {
       f.quantum = quantum_samples_.load();
       f.epoch = epoch_samples_.load();
       f.generation = island_generation_.load();
-      const uint32_t s2 = island_seq_.load(std::memory_order_acquire);
-      if ((s1 & 1u) == 0 && s1 == s2) break;
-    }
+    });
     return f;
   }
 
@@ -514,7 +511,7 @@ class StackNode : public AudioNode {
   std::atomic<int64_t> quantum_samples_{0};
   std::atomic<uint32_t> stop_generation_{0};
   std::atomic<uint32_t> island_generation_{0};
-  std::atomic<uint32_t> island_seq_{0};  // seqlock for (Q, epoch)
+  SeqLock island_lock_;  // seqlock for (Q, epoch, generation)
   std::atomic<int64_t> epoch_samples_{0};
 
   // The sequence (docs/sequencer.md): immutable object behind ONE

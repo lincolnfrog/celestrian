@@ -25,11 +25,7 @@
  */
 namespace celestrian::heard {
 
-/** timing::posMod, with "no modulus" reading as 0 (a fold with no
- * period has no position). */
-inline int64_t posMod(int64_t a, int64_t m) {
-  return m > 0 ? timing::posMod(a, m) : 0;
-}
+using timing::posMod;
 
 /** A node's effective map: its active map, else its whole inner span
  * (a clip's take; a stack's inner cycle). */
@@ -89,7 +85,7 @@ inline int64_t originForHeard(const timing::TimeMap& m, int64_t t0, int64_t p,
                               int64_t fallback_h) {
   const int64_t period = m.period();
   int64_t h = m.heardOffsetOf(p);
-  if (h < 0) h = posMod(fallback_h, period);
+  if (h < 0) h = period > 0 ? posMod(fallback_h, period) : 0;
   return t0 - m.mapOffset(0) - h;
 }
 

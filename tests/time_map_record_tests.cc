@@ -1117,7 +1117,8 @@ class TimeMapRecordTests : public juce::UnitTest {
                                 "spliced: pass end unchanged");
 
       // UN-SPLICE: full material + map return; playback unchanged.
-      auto displaced = clip.unspliceFromMap(std::move(old), 100, N, 0, N);
+      auto displaced = clip.unspliceFromMap(std::move(old), 100, N, 0, N,
+                                            /*old_collapsed_from=*/0);
       clip.setMap(cells);
       expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)N,
                    "unspliced duration restored");

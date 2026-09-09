@@ -33,6 +33,39 @@ class QTimeTests : public juce::UnitTest {
     using celestrian::timing::QTime;
     using celestrian::timing::toSamples;
 
+    beginTest("posMod is total: no overflow at the saturated lcm");
+    {
+      using celestrian::timing::lcm;
+      using celestrian::timing::posMod;
+      constexpr int64_t kMax = std::numeric_limits<int64_t>::max();
+      expectEquals((juce::int64)posMod(7, 5), (juce::int64)2, "7 mod 5");
+      expectEquals((juce::int64)posMod(-7, 5), (juce::int64)3, "-7 mod 5");
+      expectEquals((juce::int64)posMod(-5, 5), (juce::int64)0, "-5 mod 5");
+      expectEquals((juce::int64)posMod(0, 5), (juce::int64)0, "0 mod 5");
+      expectEquals((juce::int64)posMod(9, 0), (juce::int64)9,
+                   "m <= 0: identity (no modulus)");
+      expectEquals((juce::int64)posMod(-9, -3), (juce::int64)-9,
+                   "m < 0: identity (no modulus)");
+      // The saturated cycle IS a modulus on the audio thread (one-shot
+      // folds, inRest, masterPos, seek): the fold must not overflow.
+      expectEquals((juce::int64)posMod(5, kMax), (juce::int64)5,
+                   "posMod(5, INT64_MAX) == 5");
+      expectEquals((juce::int64)posMod(-5, kMax), (juce::int64)(kMax - 5),
+                   "posMod(-5, INT64_MAX) == INT64_MAX - 5");
+      expectEquals((juce::int64)posMod(kMax, kMax), (juce::int64)0,
+                   "posMod(INT64_MAX, INT64_MAX) == 0");
+      expectEquals((juce::int64)posMod(kMax - 1, kMax),
+                   (juce::int64)(kMax - 1), "one below the modulus");
+      // lcm saturates rather than wrapping, so the saturated value is
+      // reachable as a modulus; pin the pair together.
+      const int64_t big = (int64_t)1 << 62;
+      expectEquals((juce::int64)lcm(big, big - 1), (juce::int64)kMax,
+                   "lcm saturates at INT64_MAX");
+      expectEquals((juce::int64)posMod(-1, lcm(big, big - 1)),
+                   (juce::int64)(kMax - 1),
+                   "a negative residue folded by the saturated lcm");
+    }
+
     beginTest("normalization invariants");
     {
       expect(qeq(qtime(2, 4), {1, 2}), "2/4 -> 1/2");

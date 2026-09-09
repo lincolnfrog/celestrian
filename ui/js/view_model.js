@@ -614,7 +614,7 @@ function fadeSegsOf(visits, stepsQ, startsQ, totalQ, bits, cued, steps,
     const segs = [];
     const push = (from, len, kind) => {
         if (!(len > 1e-9)) return;
-        const a = ((from % totalQ) + totalQ) % totalQ;
+        const a = posMod(from, totalQ);
         if (a + len <= totalQ + 1e-9) segs.push([a, a + len, kind]);
         else { segs.push([a, totalQ, kind]); segs.push([0, a + len - totalQ, kind]); }
     };
@@ -2149,7 +2149,7 @@ export function deriveViewModel(state, opts = {}) {
         const wsQ = rootWin.start / quantum;
         const lenQ = (rootWin.end - rootWin.start) / quantum;
         loopStartQ = wsQ;
-        playheadQ = wsQ + (((playheadQ % lenQ) + lenQ) % lenQ);
+        playheadQ = wsQ + posMod(playheadQ, lenQ);
     }
 
     // Q11: the arm target is always the next Q boundary in the epoch

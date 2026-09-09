@@ -34,11 +34,16 @@ export const lcm = (a, b) => (a === 0 || b === 0) ? Math.max(a, b) : Math.abs((a
 /**
  * Positive modulo: wraps `x` into [0, m) even when `x` is negative.
  *
- * The single shared home for the `((x % m) + m) % m` idiom across the
- * view model, time-map, and mock backend.
+ * The single shared home for the fold across the view model, time-map,
+ * and mock backend — never hand-roll `((x % m) + m) % m`. Mirrors
+ * `timing::posMod` in src/qtime.h (the C++ form is overflow-safe: the
+ * residue is lifted once, never re-folded).
  *
  * @param {number} x  value to wrap (may be negative)
  * @param {number} m  period, must be > 0
  * @returns {number}  x wrapped into [0, m)
  */
-export const posMod = (x, m) => ((x % m) + m) % m;
+export const posMod = (x, m) => {
+    const r = x % m;
+    return r < 0 ? r + m : r + 0;  // `+ 0` normalizes −0 to 0
+};

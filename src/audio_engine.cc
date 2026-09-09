@@ -33,6 +33,11 @@
 // never by callback edge detection (unification_audit.md §1.5).
 
 AudioEngine::AudioEngine() {
+  // The RtLog is a function-local static: its first touch constructs
+  // it under a guard. Do that here, on the message thread, so the audio
+  // thread's first post() never runs the constructor (or its lock).
+  celestrian::RtLog::instance();
+
   // Start with an empty root stack
   auto root = std::make_unique<celestrian::StackNode>("SessionRoot");
   root_node = std::move(root);
@@ -51,10 +56,32 @@ void AudioEngine::publishGraph() {
   const auto* fresh = celestrian::buildGraphSnapshot(*root_node);
   const auto* old = graph_snapshot_.exchange(fresh, std::memory_order_acq_rel);
   // Publish-then-retire: an in-flight callback may still traverse the
-  // old snapshot; the reclaimer's 2-callback grace covers it. (Nodes a
-  // structural edit removed are retired by their own paths AFTER this
-  // publish, so the old snapshot never outlives its referents.)
+  // old snapshot; the reclaimer's 2-callback grace covers it. Every
+  // retirement stamp below is taken AFTER the exchange — that is what
+  // makes the grace meaningful: a node detached earlier in this edit
+  // (parked by retireNode) was still reachable through the old snapshot
+  // until this very line, so its two-callback clock starts here, not at
+  // the detach. Belt and braces: anything already in the graveyard is
+  // re-stamped to now as well, so no item retired between an edit's
+  // detach and its publish can be reaped inside that window.
+  const uint64_t now = callback_count_.load();
+  {
+    std::lock_guard<std::mutex> lock(graveyard_mutex_);
+    for (auto& item : graveyard_) item.epoch = std::max(item.epoch, now);
+  }
+  std::vector<std::unique_ptr<celestrian::AudioNode>> parked;
+  parked.swap(parked_nodes_);
+  for (auto& node : parked) retireOwned(std::move(node));
   retireOwned(old);
+}
+
+void AudioEngine::retireNode(std::unique_ptr<celestrian::AudioNode> node) {
+  // PARK, never stamp: a detached node stays referenced by the published
+  // snapshot until publishGraph replaces it. Stamping it into the
+  // graveyard now would let a reaping retire() call — there are several
+  // between a detach and its publish on the load path — free it while a
+  // callback still walks it (the snapshot lists nodes, not owners).
+  if (node) parked_nodes_.push_back(std::move(node));
 }
 
 AudioEngine::~AudioEngine() {
@@ -125,11 +152,7 @@ bool AudioEngine::loadSession(const juce::String& path) {
   // clearChildren DETACHES; retirement is ours — the audio thread may
   // still traverse the old graph snapshot for ≤2 callbacks after the
   // publish below.
-  {
-    for (auto& node : root_node->clearChildren()) {
-      retireOwned(std::move(node));
-    }
-  }
+  for (auto& node : root_node->clearChildren()) retireNode(std::move(node));
   for (auto& child : loaded.children) root_node->addChild(std::move(child));
 
   // Force the island facts. addChild may have transiently re-established

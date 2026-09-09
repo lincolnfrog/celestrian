@@ -10,6 +10,7 @@
  * state — pinned to the `time_map_cases` golden vectors in
  * shared/timing_golden.json alongside the C++ side.
  */
+import { posMod } from './math_utils.js';
 
 export const MAX_SEGMENTS = 8;
 
@@ -65,7 +66,7 @@ export function mapPeriod(map) {
 export function mapOffset(map, heardOff) {
     const p = mapPeriod(map);
     if (p <= 0) return heardOff;
-    let h = ((heardOff % p) + p) % p;
+    let h = posMod(heardOff, p);
     for (const [s, e] of map.segs) {
         const len = e - s;
         if (h < len) return s + h;
@@ -108,7 +109,7 @@ export function nodeWindowActive(n) {
 export function seamDistance(map, heardOff) {
     const p = mapPeriod(map);
     if (p <= 0) return 0;
-    let h = ((heardOff % p) + p) % p;
+    let h = posMod(heardOff, p);
     for (const [s, e] of map.segs) {
         const len = e - s;
         if (h < len) return len - h;

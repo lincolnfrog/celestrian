@@ -159,11 +159,18 @@ class SessionNegativeTests : public juce::UnitTest {
              "unchanged wav NOT rewritten (mtime stable)");
       expectEquals(wav.getSize(), first_size, "unchanged wav same length");
 
-      // A lock-collapse CHANGES the duration; on-disk length now
-      // mismatches, which is exactly the incremental rewrite trigger
-      // (content base stays 0 here — writeClipWav saves [base, base+n)).
+      // A lock-collapse changes the committed window; the clip's dirty
+      // flag (ClipNode::takeFilesDirty, set by every content-frame
+      // mutator) is the ONE rewrite trigger — never an on-disk probe.
+      // The real mutator, not a raw duration store: a raw store is not
+      // a content-frame mutation and must NOT rewrite.
       live->duration_samples.store(Q);
+      live->duration_samples.store(2 * Q);
+      expect(!live->takeFilesDirty(), "a raw field store is not dirty");
+      live->collapseToWindow(0, Q);
+      expect(live->takeFilesDirty(), "the collapse marks the mirror dirty");
       expect(session_io::save(root, (double)Q, dir, opts), "third save");
+      expect(!live->takeFilesDirty(), "the mirror cleared the flag");
       expect(wav.getLastModificationTime() != first_mtime ||
                  wav.getSize() != first_size,
              "duration change rewrites the wav");
