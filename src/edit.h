@@ -54,18 +54,19 @@ struct Edit {
     PeriodSource,  // b1 = period from context (Q5 one-shot knob)
     Input,         // d1 = channel index (left / mono)
     InputR,        // d1 = right channel index of a stereo pair (−1 = mono)
-    CollapseTake,  // Q13 lock-collapse: the clip's window BECOMES the
-                   // take (duration = window len, origin += start,
-                   // content base shifts; window consumed). Forward
-                   // needs no payload (derived from the clip's window);
-                   // the inverse sets b1 with iq = shift, iepoch = the
-                   // old duration, restoring buffer view + trim.
-    CollapseGroup, // Q13 lock-collapse, GROUP twin: the definer STACK's
-                   // window becomes the take — every member collapses
-                   // to it, the stack window is consumed. Forward: uuid
-                   // = stack, no payload; inverse b1 with iq = shift,
-                   // iepoch = the members' old duration, d1/d2 = the
-                   // stack window.
+    Collapse,      // Q13 lock-collapse (composition.md §5, ONE row for
+                   // clip and stack): the definer node's window BECOMES
+                   // the take — the leaves under it keep the window's
+                   // material (base += shift, D := len), the node and
+                   // its subtree move by shift (window top → origin),
+                   // its ancestors follow, the window is consumed.
+                   // Forward: uuid = the node, no payload (derived from
+                   // its window). Inverse: b1 with the raw facts
+                   // `shift`, `old_duration`, `win_start`/`win_end`. A
+                   // clip with a multi-segment map SPLICES instead
+                   // (inverse: b1 + setsMap/tmap, iorg under setsOrigin,
+                   // old_duration, d1/d2 = base/recorded, collapsed_from,
+                   // buffer/midi/other_takes).
     MoveSlot,      // fx chain reorder (docs/vst3.md §6): s1 = slot
                    // uuid, index = destination. Applied by building a
                    // successor chain sharing the slot objects and
@@ -250,6 +251,14 @@ struct Edit {
   // The splice inverse's pre-splice collapse marker (ClipNode::
   // collapsedFrom): a splice clears it, the un-splice restores it.
   int64_t collapsed_from = 0;
+  // Collapse (single-window) inverse: what the collapse shifted the
+  // content view and the origins by, the leaves' pre-collapse
+  // duration, and the node's consumed window. All RELATIVE facts — a
+  // seek never touches them.
+  int64_t shift = 0;
+  int64_t old_duration = 0;
+  int64_t win_start = 0;
+  int64_t win_end = 0;
 
   // Insert (and Combine/Explode restore) own the subtree(s) to add.
   std::unique_ptr<AudioNode> node;

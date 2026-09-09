@@ -84,4 +84,17 @@ bool hasActiveGeometryOutside(celestrian::AudioNode* node,
  * null when none is committed. */
 celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node);
 
+/**
+ * THE Q13 DEFINER, stated once: the ONE node whose window re-establishes
+ * (Q, epoch) and lock-collapses at the next arm — the island's sole
+ * committed clip, or its definer STACK (above) — and only while its
+ * geometry is the island's ONLY geometry (hasActiveGeometryOutside),
+ * no take is armed or capturing (a take performs against the current
+ * grid), and no step audition overrides a stack's map (a monitoring
+ * gesture is not a trim). Null otherwise. EVERY gate lives here: the
+ * arm-time collapse, the map edits, the Remove re-open and the
+ * published `definerId` all ask this and add nothing.
+ */
+celestrian::AudioNode* definer(celestrian::StackNode& root);
+
 }  // namespace celestrian::engine_internal

@@ -27,6 +27,7 @@ import {
     lcm, calculateStackLCM, commensuratePeriod, computeEffectiveQuantum,
     nextStopBoundary, timelineLcm, stackEffectivePeriod, isAuditionWindow,
     activeSequenceSamples, sequenceProgram, sequenceTotalSamples,
+    periodContribution,
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
@@ -1030,20 +1031,15 @@ function activeSeqSamples(holder) {
  * effective periods by LCM. Raw (un-commensurate) durations on
  * purpose: the health faces reason about true ratios.
  */
+const vmPeriodProviders = {
+    mapPeriod: n => (n.windowActive ? nodeMapPeriod(n) : 0),
+    seqLen: activeSeqSamples,
+    children: n => n.nodes || [],
+};
 function effectivePeriod(node) {
-    if (node.isRecording) return 0;
-    if (node.periodSource === 'context') return 0;  // Q5 exclusion
-    const p = node.windowActive ? nodeMapPeriod(node) : 0;
-    if (p > 0) return p;
-    const seqLen = activeSeqSamples(node);
-    if (seqLen > 0) return seqLen;
-    if (node.type !== 'stack') return node.duration || 0;
-    let composite = 0;
-    (node.nodes || []).forEach(c => {
-        const cp = effectivePeriod(c);
-        if (cp > 0) composite = composite > 0 ? lcm(Math.round(composite), Math.round(cp)) : cp;
-    });
-    return composite;
+    // THE PERIOD LAW (timeline_model.periodContribution) over the
+    // published node shape.
+    return periodContribution(node, vmPeriodProviders);
 }
 
 /**

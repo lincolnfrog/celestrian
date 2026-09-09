@@ -368,7 +368,11 @@ class QTimeLockTests : public juce::UnitTest {
       // LOCK-COLLAPSE (content base): the window becomes the take —
       // playback through content_base_ is sample-identical to the
       // windowed playback above, at the same island moments.
-      clip.collapseToWindow(ws, len);
+      // The leaf half (content view) plus the applier's half (the origin
+      // moves by the window start — AudioEngine::collapseNode shifts
+      // the node's subtree; here the clip IS the subtree).
+      clip.collapseContent(ws, len);
+      clip.origin_samples.store(clip.origin_samples.load() + ws);
       expectEquals(clip.getIntrinsicDuration(), len, "duration = window len");
       expectEquals(clip.origin_samples.load(), (int64_t)100 + ws,
                    "origin = the old window top");
@@ -376,7 +380,8 @@ class QTimeLockTests : public juce::UnitTest {
                                 "collapsed take: phase 0 = old loop top");
       expectWithinAbsoluteError(sampleAt(100 + ws + 123), ramp[ws + 123], 1e-6f,
                                 "...content unchanged mid-take");
-      clip.uncollapseFromWindow(ws, N);
+      clip.uncollapseContent(ws, N);
+      clip.origin_samples.store(clip.origin_samples.load() - ws);
       expectEquals(clip.getIntrinsicDuration(), (int64_t)N,
                    "uncollapse restores");
       expectEquals(clip.getLoopStart(), ws, "...including the trim");

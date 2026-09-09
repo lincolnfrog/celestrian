@@ -34,6 +34,87 @@ constexpr int kSubdivisions[] = {2, 4, 8};
 // namespace via the include above.
 
 /**
+ * THE RENDER EQUATION (composition.md §2, kernel.md §2), stated ONCE
+ * for every node on either thread. For a node with origin O, effective
+ * map m (its active map, else the whole inner span [0, D)), shot
+ * S = m.period() (the span that sounds) and a0 = m.mapOffset(0):
+ *
+ *   h(t)     = (t − O − a0) mod F          the heard phase
+ *   inner(t) = m.mapOffset(h)   (h < S)     the inner position that sounds
+ *   rest     = h >= S                       the one-shot rest (nothing sounds)
+ *
+ * where F, the FOLD, is S for a looping node and the CONTEXT CYCLE for
+ * a one-shot (Q5: the node sounds its shot once per scope cycle and
+ * rests for the remainder). A clip reads content[base + inner(t)]; a
+ * stack hands its children the clock O + inner(t). `run` is how many
+ * samples from t the answer advances continuously (to the next map
+ * seam, the end of the shot, or the end of the rest) — the block
+ * splitter every consumer uses.
+ *
+ * Consumers: ClipNode render + renderMidi (via forEachContentRun) and
+ * their playhead writes, StackNode::childContext / inRest /
+ * forEachSeamRun / innerOf, heard::ownInner (the message-thread twin).
+ * JS twin: ui/js/time_map.js innerAt. Golden: `inner_at_cases`.
+ */
+struct InnerAt {
+  int64_t h = 0;      // heard phase in [0, fold)
+  int64_t inner = 0;  // m.mapOffset(h) while sounding; h itself in the rest
+  int64_t run = 1;    // continuity from t: seam / shot end / rest end
+  bool rest = false;  // one-shot rest region (h >= shot)
+};
+
+/** @param map   the EFFECTIVE map — must be active (period > 0).
+ *  @param fold  the phase modulus; anything below the shot reads as
+ *               the shot (a looping node, or a context no longer than
+ *               the content, is the plain loop equation). */
+inline InnerAt innerAt(int64_t t, int64_t origin, const TimeMap& map,
+                       int64_t fold) {
+  InnerAt r;
+  const int64_t shot = map.period();
+  if (shot <= 0) return r;  // no content: the caller guards; stay total
+  if (fold < shot) fold = shot;
+  r.h = posMod(t - origin - map.mapOffset(0), fold);
+  if (r.h >= shot) {
+    r.rest = true;
+    r.inner = r.h;  // nothing sounds; the child clock runs on linearly
+    r.run = fold - r.h;
+    return r;
+  }
+  r.inner = map.mapOffset(r.h);
+  r.run = map.seamDistance(r.h);  // ≤ shot − h by construction
+  if (r.run <= 0) r.run = 1;
+  return r;
+}
+
+/**
+ * THE CONTENT RUN SPLITTER: walk the block [t, t + n) as contiguous
+ * content reads under the render equation. `body(i, run, at)` is
+ * called per run with the block offset `i`, the run length and the
+ * InnerAt at the run's first sample; a run never crosses a map seam,
+ * the shot end, the rest end, or — with `cell_len > 0` (the comp,
+ * docs/takes.md) — a Q-cell boundary of the inner position, so every
+ * run reads ONE buffer. Bounded and allocation-free (the audio-thread
+ * clip loops, audio and MIDI, are the two callers).
+ */
+template <typename Body>
+inline void forEachContentRun(int64_t t, int n, int64_t origin,
+                              const TimeMap& map, int64_t fold,
+                              int64_t cell_len, Body&& body) {
+  int i = 0;
+  while (i < n) {
+    const InnerAt at = innerAt(t + i, origin, map, fold);
+    int64_t run = std::min<int64_t>(n - i, at.run);
+    if (!at.rest && cell_len > 0) {
+      const int64_t cell = at.inner / cell_len;
+      run = std::min<int64_t>(run, (cell + 1) * cell_len - at.inner);
+    }
+    if (run <= 0) run = 1;
+    body(i, (int)run, at);
+    i += (int)run;
+  }
+}
+
+/**
  * One step of the composite-period fold shared by every LCM composition
  * site (StackNode::getIntrinsicDuration / getEffectivePeriod, their
  * snapshot twins in graph_snapshot.h, and the context-cycle fold):

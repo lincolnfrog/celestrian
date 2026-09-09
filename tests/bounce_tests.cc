@@ -223,8 +223,7 @@ class BounceTests : public juce::UnitTest {
       engine.setLoopPoints(stack_id, ws, we);
       const celestrian::AudioNode* node = engine.findNodeByUuidForTest(stack_id);
       expect(node != nullptr, "the group exists");
-      const int64_t period =
-          celestrian::StackNode::effectivePeriodOf(*node, nullptr);
+      const int64_t period = celestrian::period_law::ownPeriodOf(*node);
       expectEquals(period, we - ws, "effective period = the window");
 
       const juce::File wav = dir.getChildFile("group.wav");

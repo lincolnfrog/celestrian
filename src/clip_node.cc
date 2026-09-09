@@ -31,6 +31,10 @@ namespace celestrian {
 
 ClipNode::ClipNode(juce::String node_name, double source_sample_rate)
     : AudioNode(std::move(node_name)), sample_rate(source_sample_rate) {
+  // A LEAF IS ANCHORED BY CONSTRUCTION (Q18): a clip's frame is always
+  // its own origin — there is no "received cycle top" case for a
+  // performance. One predicate (isAnchored) then serves every node.
+  setAnchor(true, 0, 0);
   // Baseline: one second. The real capacity arrives at ARM as a huge
   // virtual reservation (see the take-storage block in the header) and returns
   // to exact size at post-commit compaction — idle clips cost nothing.
@@ -544,7 +548,18 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       // punch semantics; groove-transparent when cuts are kQ (seam
       // theorem).
       const int64_t org = origin_rt_.load();
-      const int64_t a0 = map.mapOffset(0);
+      // THE PERIOD-SOURCE KNOB (Q5): a one-shot's period is the
+      // context cycle, so the phase folds on P = context_cycle and
+      // content sounds only while the phase is inside [0, dur) — the
+      // rest of the cycle renders honest SILENCE through the same
+      // scratch (so the fx rack hears it and echo/reverb tails ring
+      // out naturally after the shot). P == dur (knob off, or a
+      // degenerate context no longer than the content) reduces to the
+      // plain loop equation exactly.
+      const int64_t cyc =
+          period_from_context_.load() && context.context_cycle > dur
+              ? context.context_cycle
+              : dur;
 
       if (!isSilenced) {
         // Render into the fx scratches (channel 0 → fx_scratch_,
@@ -572,28 +587,19 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
             (int)fx_scratch2_.size() < context.num_samples) {
           fx_scratch2_.resize((size_t)context.num_samples);
         }
-        // THE PERIOD-SOURCE KNOB (Q5): a one-shot's period is the
-        // context cycle, so the phase folds on P = context_cycle and
-        // content sounds only while the phase is inside [0, dur) — the
-        // rest of the cycle renders honest SILENCE through the same
-        // scratch (so the fx rack hears it and echo/reverb tails ring
-        // out naturally after the shot). P == dur (knob off, or a
-        // degenerate context no longer than the content) reduces to the
-        // plain loop equation exactly.
-        const int64_t cyc =
-            period_from_context_.load() && context.context_cycle > dur
-                ? context.context_cycle
-                : dur;
         // THE COMP (docs/takes.md): with a comp set, each Q cell of the
         // period names the take that sounds there; the table is read
         // ONCE per render (seqlock) and cell boundaries become seams —
         // a run never crosses a cell, so every run reads one buffer.
         CompView comp;
         if (comp_n_.load(std::memory_order_relaxed) > 0) readCompView(comp);
-        // Run-split at map seams (bounded, allocation-free — the stack
-        // splitter's discipline inside the clip loop): each run is a
-        // contiguous read. A fully-closed gate skips the read and
-        // feeds the chain silence — the tail rings, the buffer rests.
+        // THE CONTENT RUN SPLITTER (timing::forEachContentRun — the one
+        // statement of the render equation, shared with renderMidi):
+        // runs never cross a map seam, the shot end, the rest, or a comp
+        // cell, so each run is one contiguous read of one buffer. A
+        // fully-closed gate skips the read and feeds the chain silence —
+        // the tail rings, the buffer rests.
+        const int64_t cell_len = comp.n > 0 ? comp.q : 0;
         for (int c = 0; c < (stereo_content ? 2 : 1); ++c) {
           const float* data = buffer.getReadPointer(c);
           float* scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
@@ -601,40 +607,32 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
             std::fill(scratch, scratch + context.num_samples, 0.0f);
             continue;
           }
-          int i = 0;
-          while (i < context.num_samples) {
-            const int64_t h =
-                timing::posMod(context.master_pos + i - org - a0, cyc);
-            if (h >= dur) {  // one-shot rest region
-              const int run =
-                  (int)std::min<int64_t>(context.num_samples - i, cyc - h);
-              std::fill(scratch + i, scratch + i + run, 0.0f);
-              i += run;
-              continue;
-            }
-            int run = (int)std::min<int64_t>(
-                std::min<int64_t>(context.num_samples - i, dur - h),
-                map.seamDistance(h));
-            const int64_t p0 = map.mapOffset(h);
-            const float* src = data;
-            int64_t src_cap = cap;
-            if (comp.n > 0 && comp.q > 0) {
-              const int64_t cell = p0 / comp.q;
-              run = (int)std::min<int64_t>(run, (cell + 1) * comp.q - p0);
-              const int pick = cell < comp.n ? comp.cells[cell] : -1;
-              if (pick >= 0 && pick < comp.count && pick != comp.active &&
-                  comp.buffers[pick] != nullptr &&
-                  comp.buffers[pick]->getNumSamples() > 0) {
-                const juce::AudioBuffer<float>& tb = *comp.buffers[pick];
-                src = tb.getReadPointer(std::min(c, tb.getNumChannels() - 1));
-                src_cap = tb.getNumSamples();
-              }
-            }
-            for (int k = 0; k < run; ++k) {
-              scratch[(size_t)(i + k)] = src[(base + p0 + k) % src_cap];
-            }
-            i += run;
-          }
+          timing::forEachContentRun(
+              context.master_pos, context.num_samples, org, map, cyc, cell_len,
+              [&](int i, int run, const timing::InnerAt& at) {
+                if (at.rest) {  // one-shot rest region: honest silence
+                  std::fill(scratch + i, scratch + i + run, 0.0f);
+                  return;
+                }
+                const int64_t p0 = at.inner;
+                const float* src = data;
+                int64_t src_cap = cap;
+                if (cell_len > 0) {
+                  const int64_t cell = p0 / cell_len;
+                  const int pick = cell < comp.n ? comp.cells[cell] : -1;
+                  if (pick >= 0 && pick < comp.count && pick != comp.active &&
+                      comp.buffers[pick] != nullptr &&
+                      comp.buffers[pick]->getNumSamples() > 0) {
+                    const juce::AudioBuffer<float>& tb = *comp.buffers[pick];
+                    src = tb.getReadPointer(
+                        std::min(c, tb.getNumChannels() - 1));
+                    src_cap = tb.getNumSamples();
+                  }
+                }
+                for (int k = 0; k < run; ++k) {
+                  scratch[(size_t)(i + k)] = src[(base + p0 + k) % src_cap];
+                }
+              });
         }
         // SOFTWARE INPUT MONITORING (Q20): this block's arrivals, read
         // from the pre-record ring, join the dry signal HERE — ahead of
@@ -678,14 +676,9 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       // map pass — identical to the launch-point form for single
       // segments. One-shots phase over their FULL period (the context
       // cycle), so the sweep is honest about the rest region.
-      {
-        const int64_t pp =
-            period_from_context_.load() && context.context_cycle > dur
-                ? context.context_cycle
-                : dur;
-        const int64_t h = timing::posMod(context.master_pos - org - a0, pp);
-        playhead_pos.store((double)h / (double)pp);
-      }
+      playhead_pos.store(
+          (double)timing::innerAt(context.master_pos, org, map, cyc).h /
+          (double)cyc);
     } else {
       playhead_pos.store(0.0);
     }
@@ -888,45 +881,41 @@ void ClipNode::renderMidi(float* const* output_channels,
     if (dur > 0) {
       content_active = true;
       const int64_t org = origin_rt_.load();
-      const int64_t a0 = map.mapOffset(0);
       const int64_t base = content_base_.load();
       const int64_t cyc =
           period_from_context_.load() && context.context_cycle > dur
               ? context.context_cycle
               : dur;
-      int i = 0;
-      while (i < n) {
-        const int64_t h =
-            timing::posMod(context.master_pos + i - org - a0, cyc);
-        if (h >= dur) {  // one-shot rest region: nothing sounds
-          const int run = (int)std::min<int64_t>(n - i, cyc - h);
-          if (midi_render_next_pos_ >= 0) {
-            render_held_.releaseInto(render_midi_, i);
-            midi_render_next_pos_ = -1;
-          }
-          i += run;
-          continue;
-        }
-        const int run = (int)std::min<int64_t>(
-            std::min<int64_t>(n - i, dur - h), map.seamDistance(h));
-        const int64_t p0 = base + map.mapOffset(h);
-        if (midi_render_next_pos_ != p0) {
-          render_held_.releaseInto(render_midi_, i);
-        }
-        for (int k = seq.lowerBound(p0);
-             k < seq.count() && seq[k].pos < p0 + run; ++k) {
-          if (events_added >= kMaxBlockEvents) break;
-          const MidiEvent& e = seq[k];
-          addEvent(e.bytes, e.size, i + (int)(e.pos - p0));
-          render_held_.track(e.bytes, e.size);
-        }
-        midi_render_next_pos_ = p0 + run;
-        i += run;
-      }
+      // The same run splitter as the audio render (timing.h): one
+      // equation, one seam discipline for notes and samples.
+      timing::forEachContentRun(
+          context.master_pos, n, org, map, cyc, /*cell_len=*/0,
+          [&](int i, int run, const timing::InnerAt& at) {
+            if (at.rest) {  // one-shot rest region: nothing sounds
+              if (midi_render_next_pos_ >= 0) {
+                render_held_.releaseInto(render_midi_, i);
+                midi_render_next_pos_ = -1;
+              }
+              return;
+            }
+            const int64_t p0 = base + at.inner;
+            if (midi_render_next_pos_ != p0) {
+              render_held_.releaseInto(render_midi_, i);
+            }
+            for (int k = seq.lowerBound(p0);
+                 k < seq.count() && seq[k].pos < p0 + run; ++k) {
+              if (events_added >= kMaxBlockEvents) break;
+              const MidiEvent& e = seq[k];
+              addEvent(e.bytes, e.size, i + (int)(e.pos - p0));
+              render_held_.track(e.bytes, e.size);
+            }
+            midi_render_next_pos_ = p0 + run;
+          });
       // Playhead (0..1): the heard phase of the pass; one-shots phase
       // over their full period (the context cycle).
-      const int64_t hh = timing::posMod(context.master_pos - org - a0, cyc);
-      playhead_pos.store((double)hh / (double)cyc);
+      playhead_pos.store(
+          (double)timing::innerAt(context.master_pos, org, map, cyc).h /
+          (double)cyc);
     } else {
       playhead_pos.store(0.0);
     }
@@ -1126,10 +1115,13 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // (cycle_epoch gets re-based by windowed stacks; this one never is).
   const int64_t epoch = context.island_epoch;
 
-  // Context loop = the loop the performer was listening to: longest
-  // committed sibling, min Q — computed by the PARENT and passed down
-  // (leaves never inspect siblings).
-  const int64_t context_loop = std::max(Q, context.context_loop);
+  // The arm grid = the loop the performer was listening to: the scope's
+  // CONTEXT CYCLE (the one scope cycle, composition.md §3 — the map
+  // pass, the song, or the fold of the looping siblings), min Q —
+  // computed by the PARENT and passed down (leaves never inspect
+  // siblings). A free-length song restarts the grid at its top at
+  // every depth (I5).
+  const int64_t context_loop = std::max(Q, context.context_cycle);
 
   int64_t rel = compensated_pos - epoch;
   if (rel < 0) rel = 0;

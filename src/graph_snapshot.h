@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "period_law.h"
 #include "stack_node.h"
 #include "timing.h"
 
@@ -105,37 +106,38 @@ inline int64_t snapIntrinsicDuration(const GraphSnapshot& s, int idx) {
   return composite;
 }
 
-/** Effective (audible, E-C) period of the subtree at `idx`: an ACTIVE
- * window wins at any level; otherwise clips contribute their duration
- * and stacks the LCM of children's effective periods. */
+/** THE PERIOD LAW's snapshot provider (period_law.h): handles are entry
+ * indices, children come from the packed spans. Audio-thread safe. */
+struct SnapProvider {
+  const GraphSnapshot& s;
+  using Handle = int;
+  const AudioNode& node(Handle h) const { return *s.entries[(size_t)h].node; }
+  template <typename F>
+  void forEachChild(Handle h, F&& f) const {
+    const auto& e = s.entries[(size_t)h];
+    for (int k = 0; k < e.childCount; ++k) f(s.childAt(h, k));
+  }
+};
+
+/** The OWN period of the subtree at `idx` (period_law::ownPeriod over
+ * the snapshot): an active map's period, else the song, else a clip's
+ * duration or a stack's LCM of its children's contributions. */
 inline int64_t snapEffectivePeriod(const GraphSnapshot& s, int idx) {
-  const auto& e = s.entries[(size_t)idx];
-  if (const timing::TimeMap map = e.node->activeTimeMap(); map.active()) {
-    return map.period();
-  }
-  // THE PERIOD LAW (docs/sequencer.md §2): an active sequence sets the
-  // stack's effective period to the sequence length (the node-side
-  // twin lives in StackNode::getEffectivePeriod — keep in lockstep).
-  if (const int64_t seq_len = e.node->activeSequenceLen(); seq_len > 0) {
-    return seq_len;
-  }
-  if (e.type == NodeType::Clip) return e.node->getIntrinsicDuration();
-  int64_t composite = 0;
-  for (int k = 0; k < e.childCount; ++k) {
-    const int child = s.childAt(idx, k);
-    if (s.entries[(size_t)child].node->periodFromContext()) continue;  // Q5
-    composite = timing::foldPeriod(composite, snapEffectivePeriod(s, child));
-  }
-  return composite;
+  return period_law::ownPeriod(SnapProvider{s}, idx);
+}
+
+/** What the subtree at `idx` hands its parent's fold (0 for a
+ * one-shot). */
+inline int64_t snapPeriodContribution(const GraphSnapshot& s, int idx) {
+  return period_law::contribution(SnapProvider{s}, idx);
 }
 
 /** The audible island cycle the transport wraps on (E-C):
- * lcm(quantum, effective period of the root). */
+ * lcm(quantum, own period of the root), `fallback` standing in for Q
+ * before it exists. */
 inline int64_t snapEffectiveCycle(const GraphSnapshot& s, int64_t quantum,
                                   int64_t fallback) {
-  if (quantum <= 0) quantum = fallback;
-  const int64_t p = snapEffectivePeriod(s, 0);
-  return p > 0 ? timing::lcm(quantum, p) : quantum;
+  return period_law::islandCycle(SnapProvider{s}, 0, quantum, fallback);
 }
 
 /** Solo audibility (Q16 canon — island-wide, additive, fractal): is

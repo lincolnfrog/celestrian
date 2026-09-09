@@ -14,8 +14,6 @@
 #include "../timing.h"
 #include "engine_internal.h"
 
-using celestrian::engine_internal::definerStack;
-using celestrian::engine_internal::firstCommittedClip;
 
 // ===================================================================
 // Edits-as-events: apply / undo / redo (unification_audit.md §2.2)
@@ -40,16 +38,14 @@ bool editsCoalesce(const Edit& top, const Edit& fresh) {
 }
 }  // namespace
 
-namespace {
-/** Ungated ancestor lift for the collapse paths (Q18): a definer's
- * collapse moves its origin by the window start; its ancestors, anchored
- * because of it, follow. */
-void liftAncestorsOf(celestrian::AudioNode& node, int64_t delta) {
+void AudioEngine::liftAncestorsGated(celestrian::AudioNode& node,
+                                     int64_t delta, uint32_t gate) {
   for (auto* p = node.getParent(); p != nullptr; p = p->getParent()) {
-    if (p->isAnchored()) p->origin_samples.store(p->origin_samples.load() + delta);
+    if (p->isAnchored()) {
+      p->setOriginGated(p->origin_samples.load() + delta, gate);
+    }
   }
 }
-}  // namespace
 
 celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   using K = celestrian::Edit::Kind;
@@ -149,61 +145,88 @@ std::vector<celestrian::ClipNode*> stackMembers(celestrian::StackNode& stack) {
   return out;
 }
 
-/** GROUP LOCK-COLLAPSE (the fractal twin of collapseToWindow): the
- * stack's single window [s, s+len) becomes the
- * take — every member collapses to it (content base + origin shift by
- * s, duration := len, whole) and the stack window is consumed.
- * Audio-neutral under the content-frame law (epoch == members' origin):
- * heard = s + ((t − origin) mod len) before, (t − (origin + s)) mod len
- * after. Returns false when there is nothing to collapse. */
-struct GroupCollapseFacts {
-  int64_t shift = 0, old_duration = 0, win_start = 0, win_end = 0;
-};
-bool collapseGroupNow(celestrian::StackNode& stack, GroupCollapseFacts& f) {
-  // RAW atomics only: activeTimeMap() is overridden by a STEP
-  // AUDITION's derived map — collapsing to that would make a monitoring
-  // gesture the take and destroy the authored window. The sole-clip
-  // path reads the raw atomics for the same reason. A multi-segment
-  // override is not a single window: nothing to collapse here.
-  if (stack.isLoopWindowBypassed() || stack.hasSegmentMap()) return false;
-  const auto members = stackMembers(stack);
-  if (members.empty()) return false;
-  const int64_t D = members[0]->getIntrinsicDuration();
-  const int64_t s = std::max((int64_t)0, stack.getLoopStart());
-  const int64_t e = std::min(stack.getLoopEnd(), D);
-  const int64_t len = e - s;
-  if (len <= 0 || (s == 0 && e >= D)) return false;
-  for (auto* m : members) {
-    if (m->getIntrinsicDuration() != D) return false;  // not one take
+/** The LEAVES a lock-collapse acts on: a clip is its own leaf; a
+ * stack's are its direct clip members (the one take they were
+ * recorded as). */
+std::vector<celestrian::ClipNode*> collapseLeaves(celestrian::AudioNode& node) {
+  if (auto* clip = dynamic_cast<celestrian::ClipNode*>(&node)) return {clip};
+  if (auto* stack = dynamic_cast<celestrian::StackNode*>(&node)) {
+    return stackMembers(*stack);
   }
-  // Q18: the stack's window anchors at the stack's own origin, so the
-  // collapse moves the ORIGIN of the whole subtree by `s` (exactly the
-  // sole-clip law: window top → origin) alongside the content bases.
-  // Audio-neutral: inner s + ((t − O − s) mod len) before ==
+  return {};
+}
+}  // namespace
+
+bool AudioEngine::collapseNode(celestrian::AudioNode& node, CollapseFacts& f) {
+  // RAW window atomics only: activeTimeMap() is overridden by a STEP
+  // AUDITION's derived map — collapsing to that would make a monitoring
+  // gesture the take and destroy the authored window. A multi-segment
+  // map is not a single window: a clip's SPLICES (the applier's other
+  // branch), a stack's is nothing to collapse.
+  if (node.isLoopWindowBypassed() || node.hasSegmentMap()) return false;
+  const auto leaves = collapseLeaves(node);
+  if (leaves.empty()) return false;
+  const int64_t D = leaves[0]->getIntrinsicDuration();
+  for (auto* leaf : leaves) {
+    if (leaf->getIntrinsicDuration() != D) return false;  // not one take
+  }
+  const int64_t s = std::max<int64_t>(0, node.getLoopStart());
+  const int64_t e = std::min(node.getLoopEnd(), D);
+  const int64_t len = e - s;
+  // Full-span (or invalid) window: nothing to collapse.
+  if (len <= 0 || (s == 0 && e >= D)) return false;
+  // THE ONE ROW (composition.md §5): leaves keep the window's material
+  // as their whole content; window top → origin for the node AND its
+  // subtree (Q18 — a window anchors at its node's origin, so the
+  // subtree moves together, no per-member riders); anchored ancestors
+  // follow. Audio-neutral: inner s + ((t − O − s) mod len) before ==
   // base s + ((t − (O + s)) mod len) after.
-  for (auto* m : members) m->collapseToWindow(s, len);
-  stack.origin_samples.store(stack.origin_samples.load() + s);
-  liftAncestorsOf(stack, s);
-  stack.setLoopPoints(0, 0);
+  for (auto* leaf : leaves) leaf->collapseContent(s, len);
+  shiftOriginsGated(node, s, 0);
+  liftAncestorsGated(node, s, 0);
+  // The window is consumed: a clip keeps the commit furniture [0, len)
+  // every committed clip carries (D4-7); a stack has no window.
+  if (node.getNodeType() == celestrian::NodeType::Clip) {
+    node.setLoopPoints(0, len);
+  } else {
+    node.setLoopPoints(0, 0);
+  }
   f.shift = s;
   f.old_duration = D;
   f.win_start = s;
   f.win_end = e;
   return true;
 }
-void uncollapseGroupNow(celestrian::StackNode& stack, const GroupCollapseFacts& f) {
-  for (auto* m : stackMembers(stack)) {
-    if (!m->isCollapsed()) continue;
-    // Unwind this level: buffer view AND origin (Q18 — the group
-    // collapse shifted both, like the sole-clip collapse).
-    m->uncollapseFromWindow(f.shift, f.old_duration, /*origin_shift=*/f.shift);
-    m->setLoopPoints(0, f.old_duration);  // members whole; the window is the stack's
+
+void AudioEngine::uncollapseNode(celestrian::AudioNode& node, int64_t shift,
+                                 int64_t old_duration, int64_t win_start,
+                                 int64_t win_end) {
+  const bool is_stack = node.getNodeType() == celestrian::NodeType::Stack;
+  for (auto* leaf : collapseLeaves(node)) {
+    if (!leaf->isCollapsed()) continue;
+    leaf->uncollapseContent(shift, old_duration);
+    // Members stay whole; the restored window is the stack's.
+    if (is_stack) leaf->setLoopPoints(0, old_duration);
   }
-  stack.origin_samples.store(stack.origin_samples.load() - f.shift);
-  liftAncestorsOf(stack, -f.shift);
-  stack.setLoopPoints(f.win_start, f.win_end);
+  shiftOriginsGated(node, -shift, 0);
+  liftAncestorsGated(node, -shift, 0);
+  node.setLoopPoints(win_start, win_end);
 }
-}  // namespace
+
+void AudioEngine::collapseDefinerAtArm(const celestrian::AudioNode* exclude) {
+  // Q13 LOCK-COLLAPSE at arm: a provisionally trimmed definer — clip or
+  // stack, one law — collapses to its window BEFORE the arm, so every
+  // boundary computation (context loop, cycle snapshots, LCMs) sees an
+  // ordinary whole-Q looper; an incommensurate buffer left alive would
+  // poison them all (the next take anchors at origin − epoch ∉ Q·Z).
+  // Undoable — ⌘Z restores the full buffer and the trim. The applier
+  // records nothing when there is nothing to collapse.
+  auto* d = celestrian::engine_internal::definer(*root_node);
+  if (d == nullptr || d == exclude) return;
+  celestrian::Edit e(celestrian::Edit::Kind::Collapse);
+  e.uuid = d->getUuid();
+  record(std::move(e));
+}
 
 celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
   using celestrian::AudioNode;
@@ -234,21 +257,13 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       reinstallSequenceRiders(e);
       // Undo of a RE-OPENING delete (uuid2 = the definer that delete
       // uncollapsed): re-collapse it so the locked island is exactly as
-      // it was. Same derivation as the forward CollapseTake; redo's
-      // Remove re-derives the uncollapse, so no payload rides back.
+      // it was. Same derivation as the forward Collapse (clip or stack,
+      // one law); redo's Remove re-derives the uncollapse, so no
+      // payload rides back.
       if (e.uuid2.isNotEmpty()) {
-        if (auto* clip = dynamic_cast<celestrian::ClipNode*>(
-                findNodeByUuid(root_node.get(), e.uuid2))) {
-          const int64_t dur = clip->getIntrinsicDuration();
-          const int64_t ls = clip->getLoopStart();
-          const int64_t le = std::min(clip->getLoopEnd(), dur);
-          if (le - ls > 0 && !(ls == 0 && le >= dur)) {
-            clip->collapseToWindow(ls, le - ls);
-            liftAncestorsOf(*clip, ls);  // Q18: ancestors follow the definer
-          }
-        } else if (auto* stack = asStack(e.uuid2)) {
-          GroupCollapseFacts f;
-          collapseGroupNow(*stack, f);  // the group twin re-derives
+        if (auto* definer_node = find(e.uuid2)) {
+          CollapseFacts f;
+          collapseNode(*definer_node, f);
         }
       }
       return inv;
@@ -296,29 +311,18 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // never the `write_position > duration` overshoot — every snapped
       // take overshoots by up to a block, so that heuristic would
       // un-collapse ORDINARY takes to an off-grid recorded length.
-      if (reopened && islandCommittedClipCount() == 1) {
-        if (auto* survivor = firstCommittedClip(root_node.get());
-            survivor && survivor->isCollapsed()) {
-          const int64_t unwound = survivor->getContentBase();
-          survivor->uncollapseFromWindow(unwound, survivor->collapsedFrom());
-          liftAncestorsOf(*survivor, -unwound);  // Q18
-          inv.uuid2 = survivor->getUuid();
-        }
-      }
-      // The GROUP twin: back down to a definer stack whose members were
-      // group-collapsed — restore the full takes with the old window on
-      // the stack (audio-neutral, trimming longer possible again).
-      if (auto* ds = reopened ? definerStack(root_node.get()) : nullptr;
-          ds != nullptr) {
-        const auto members = stackMembers(*ds);
-        if (!members.empty() && members[0]->isCollapsed()) {
-          GroupCollapseFacts f;
-          f.shift = members[0]->getContentBase();
-          f.old_duration = members[0]->collapsedFrom();
-          f.win_start = f.shift;
-          f.win_end = f.shift + members[0]->getIntrinsicDuration();
-          uncollapseGroupNow(*ds, f);
-          inv.uuid2 = ds->getUuid();
+      // One branch over THE DEFINER NODE (clip or stack — engine_internal::
+      // definer): its leaves were lock-collapsed, so unwind ALL levels
+      // from the markers — the full takes return with the old trim as
+      // the node's window (audio-neutral; trimming longer possible
+      // again).
+      if (auto* d = reopened ? celestrian::engine_internal::definer(*root_node) : nullptr) {
+        const auto leaves = collapseLeaves(*d);
+        if (!leaves.empty() && leaves[0]->isCollapsed()) {
+          const int64_t unwound = leaves[0]->getContentBase();
+          uncollapseNode(*d, unwound, leaves[0]->collapsedFrom(), unwound,
+                         unwound + leaves[0]->getIntrinsicDuration());
+          inv.uuid2 = d->getUuid();
         }
       }
       return inv;
@@ -499,25 +503,29 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       }
       return inv;
     }
-    case K::CollapseTake: {
-      // Q13 lock-collapse (design_language.md Q13): the trim is a
-      // PRE-LOCK affordance — when a take arms against a provisionally
-      // trimmed island, the trimmed region BECOMES the take, as if it
-      // had been performed exactly (duration = window len, origin =
-      // its own window top = the epoch, window consumed). (Q, epoch)
-      // do not move: the collapse lands the clip exactly on the grid
-      // the trim already established.
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(
-          findNodeByUuid(root_node.get(), e.uuid));
-      if (!clip) return {};
-      Edit inv(K::CollapseTake);
+    case K::Collapse: {
+      // Q13 LOCK-COLLAPSE (design_language.md Q13, composition.md §5 —
+      // ONE row for clip and stack): the trim is a PRE-LOCK affordance.
+      // When a take arms against a provisionally trimmed island, the
+      // trimmed region BECOMES the take, as if it had been performed
+      // exactly: the leaves under the definer node keep the window's
+      // material as their whole content, the node's subtree moves by the
+      // window start (window top → origin = the epoch), its ancestors
+      // follow, the window is consumed. (Q, epoch) do not move: the
+      // collapse lands exactly on the grid the trim established.
+      auto* node = find(e.uuid);
+      if (!node) return {};
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
+      Edit inv(K::Collapse);
       inv.uuid = e.uuid;
       if (!e.b1) {
-        // MULTI-SEGMENT definer (phase 3): the collapse is a SPLICE —
-        // the kept cells become the take; the inverse owns the
+        // MULTI-SEGMENT clip definer (phase 3): the collapse is a
+        // SPLICE — the kept cells become the take; the inverse owns the
         // pre-splice buffer + map + facts (write-once safety, the
         // owned-subtree argument).
-        if (const celestrian::timing::TimeMap mm = clip->storedMap(); mm.n >= 2) {
+        if (const celestrian::timing::TimeMap mm =
+                clip != nullptr ? clip->storedMap() : celestrian::timing::TimeMap();
+            clip != nullptr && mm.n >= 2) {
           const celestrian::timing::TimeMap* m = &mm;
           // A referring (reserved-storage) buffer must not be the one
           // the inverse comes to own: compact to the heap first.
@@ -530,7 +538,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           // a seek. `iq` never holds an absolute.
           inv.setsOrigin = true;
           inv.iorg = clip->origin_samples.load();
-          inv.iepoch = clip->getIntrinsicDuration();
+          inv.old_duration = clip->getIntrinsicDuration();
           inv.d1 = (double)clip->getContentBase();
           inv.d2 = (double)clip->recordedLength();
           inv.collapsed_from = clip->collapsedFrom();  // the splice clears it
@@ -543,29 +551,27 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           if (clip->contentKind() == celestrian::ClipNode::ContentKind::Midi)
             inv.midi = clip->spliceMidiToMap(*m);
           inv.buffer = clip->spliceToMap(*m);
-          liftAncestorsOf(*clip, m->mapOffset(0));  // Q18: origin += a0
+          liftAncestorsGated(*clip, m->mapOffset(0), 0);  // Q18: origin += a0
           // spliceToMap left the geometry at the full span of the new take.
           return inv;
         }
-        const int64_t dur = clip->getIntrinsicDuration();
-        const int64_t ls = clip->getLoopStart();
-        const int64_t le = std::min(clip->getLoopEnd(), dur);
-        const int64_t len = le - ls;
-        // Full-span (or invalid) window: nothing to collapse.
-        if (len <= 0 || (ls == 0 && le >= dur)) return {};
-        clip->collapseToWindow(ls, len);
-        liftAncestorsOf(*clip, ls);  // Q18: ancestors follow the definer
-        inv.b1 = true;  // inverse = uncollapse, carrying what it needs
-        inv.iq = ls;
-        inv.iepoch = dur;
+        CollapseFacts f;
+        if (!collapseNode(*node, f)) return {};
+        inv.b1 = true;  // inverse = uncollapse, carrying the raw facts
+        inv.shift = f.shift;
+        inv.old_duration = f.old_duration;
+        inv.win_start = f.win_start;
+        inv.win_end = f.win_end;
       } else if (e.setsMap) {
+        if (clip == nullptr) return {};
         // Un-splice: reinstall the pre-splice buffer + facts, retire
         // the displaced spliced buffer, and put the map back.
         const int64_t before_origin = clip->origin_samples.load();
         retireOwned(clip->unspliceFromMap(std::move(e.buffer), e.iorg,
-                                          e.iepoch, (int64_t)e.d1,
+                                          e.old_duration, (int64_t)e.d1,
                                           (int64_t)e.d2, e.collapsed_from));
-        liftAncestorsOf(*clip, clip->origin_samples.load() - before_origin);
+        liftAncestorsGated(*clip, clip->origin_samples.load() - before_origin,
+                           0);
         if (e.midi) retireOwned(clip->unspliceMidi(std::move(e.midi)));
         for (auto& d : clip->unspliceOtherTakes(std::move(e.other_takes))) {
           retireOwned(std::move(d.buffer));
@@ -575,34 +581,9 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // Inverse of the inverse: the parameterless forward re-derives
         // (the override is present again).
       } else {
-        // Level undo: this collapse shifted the origin by exactly its
-        // own window start (e.iq) — unwind that level only.
-        clip->uncollapseFromWindow(e.iq, e.iepoch, e.iq);
-        liftAncestorsOf(*clip, -e.iq);  // Q18
-        // inverse of the inverse: the parameterless forward re-derives.
-      }
-      return inv;
-    }
-    case K::CollapseGroup: {
-      auto* stack = asStack(e.uuid);
-      if (!stack) return {};
-      Edit inv(K::CollapseGroup);
-      inv.uuid = e.uuid;
-      if (!e.b1) {
-        GroupCollapseFacts f;
-        if (!collapseGroupNow(*stack, f)) return {};
-        inv.b1 = true;
-        inv.iq = f.shift;
-        inv.iepoch = f.old_duration;
-        inv.d1 = (double)f.win_start;
-        inv.d2 = (double)f.win_end;
-      } else {
-        GroupCollapseFacts f;
-        f.shift = e.iq;
-        f.old_duration = e.iepoch;
-        f.win_start = (int64_t)e.d1;
-        f.win_end = (int64_t)e.d2;
-        uncollapseGroupNow(*stack, f);
+        // Level undo: unwind exactly this collapse's shift.
+        uncollapseNode(*node, e.shift, e.old_duration, e.win_start,
+                       e.win_end);
         // inverse of the inverse: the parameterless forward re-derives.
       }
       return inv;
@@ -1022,8 +1003,7 @@ bool movesIslandFacts(const celestrian::Edit& e) {
          e.kind == celestrian::Edit::Kind::SelectTake ||
          e.kind == celestrian::Edit::Kind::DeleteTake ||
          e.kind == celestrian::Edit::Kind::Comp ||
-         e.kind == celestrian::Edit::Kind::CollapseTake ||
-         e.kind == celestrian::Edit::Kind::CollapseGroup || e.setsIsland ||
+         e.kind == celestrian::Edit::Kind::Collapse || e.setsIsland ||
          e.setsOrigin || !e.anchors.empty() || !e.windows.empty();
 }
 

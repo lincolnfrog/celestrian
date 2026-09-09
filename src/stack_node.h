@@ -253,13 +253,9 @@ class StackNode : public AudioNode {
    * thread uses the snapshot-space twin (snapEffectivePeriod,
    * graph_snapshot.h).
    */
-  int64_t getEffectivePeriod() const override;
-  /** THE message-thread effective-period fold (composition.md §3): the
-   * period `node` presents to its parent, with `skip` (and every
-   * one-shot) left out of the composition. getEffectivePeriod() is
-   * this with no skip; the audio thread uses snapEffectivePeriod. */
-  static int64_t effectivePeriodOf(const AudioNode& node,
-                                   const AudioNode* skip);
+  // (THE PERIOD LAW lives in period_law.h: AudioNode::getEffectivePeriod
+  // is its own-period over the ownership tree; the audio thread runs
+  // the same template over the snapshot.)
 
   // --- The SEQUENCE (docs/sequencer.md — the fractal sequencer) ---
   // One atomic pointer, the FxChain discipline: the
@@ -360,23 +356,22 @@ class StackNode : public AudioNode {
 
   /** The window-mapped context handed to children — the time-map
    * primitive, shared by BOTH phases so control and render see the
-   * same child clock. `self`/`context_loop` are set by the caller. */
+   * same child clock. `self` is set by the caller. */
   ProcessContext childContext(const ProcessContext& context) const;
 
   // --- Q18 (composition.md §2): the stack's frame ---
   /** The origin this stack's inner timeline is measured from, for the
    * block: its own rendering origin once anchored, else the RECEIVED
    * cycle top (the empty case — no member exists to disagree). */
-  int64_t frameOrigin(const ProcessContext& context) const {
-    return anchored_.load() ? origin_rt_.load() : context.cycle_epoch;
-  }
-  /** inner(t) for this block's first sample: mapOffset((t − O − a0) mod
-   * P) under an active map, else t − O. */
+  /** inner(t) for this block's first sample (timing::innerAt over the
+   * map period) under an active map, else t − O (a plain stack is
+   * transparent — nothing folds). */
   int64_t innerOf(const ProcessContext& context,
                   const timing::TimeMap& own_map) const {
     const int64_t O = frameOrigin(context);
     if (!own_map.active()) return context.master_pos - O;
-    return own_map.mapOffset(context.master_pos - O - own_map.mapOffset(0));
+    return timing::innerAt(context.master_pos, O, own_map, own_map.period())
+        .inner;
   }
   /** ONE-SHOT STACK facts (Q5 generalized by Q18): true when this stack
    * sounds once per context cycle. `shot` = the span that sounds (map
@@ -452,30 +447,32 @@ class StackNode : public AudioNode {
     }
     const int64_t period = own_map.active() ? own_map.period() : 0;
     const int64_t fade = Sequence::fadeSamples(context.sample_rate);
-    // THE ANCHOR (Q18): every fold here is measured from this stack's
-    // own origin + a0 — the same anchor childContext maps with, so the
-    // runs and the mapped child clock agree sample for sample.
+    // THE ANCHOR (Q18): every fold here is the one equation
+    // (timing::innerAt) from this stack's own origin — the same call
+    // childContext maps the child clock with, so the runs and the
+    // mapped child clock agree sample for sample.
     const int64_t O = frameOrigin(context);
-    const int64_t a0 = own_map.active() ? own_map.mapOffset(0) : 0;
+    const bool geometry = one_shot || period > 0;
+    const timing::TimeMap eff =
+        own_map.active() ? own_map : timing::TimeMap::single(0, shot);
     const int64_t fold = one_shot ? cycle : period;
-    int64_t rel = context.master_pos - O - a0;
-    rel = timing::posMod(rel, fold);
     int done = 0;
     while (done < context.num_samples) {
       int64_t dist = context.num_samples - done;
-      const bool resting = one_shot && rel >= shot;
-      if (one_shot) {
-        dist = std::min<int64_t>(dist, resting ? cycle - rel : shot - rel);
+      timing::InnerAt at;
+      if (geometry) {
+        at = timing::innerAt(context.master_pos + done, O, eff, fold);
+        dist = std::min<int64_t>(dist, at.run);
       }
-      if (period > 0 && !resting) {
-        dist = std::min<int64_t>(dist, own_map.seamDistance(rel));
-      }
+      const bool resting = at.rest;
       if (seq != nullptr && !resting) {
         // Corner distance in the CHILD clock (composition law: the map
         // selects song positions; the sequence is looked up there) —
         // per gate row (ramp corners depend on the run, S13), plus the
-        // all-on mask every row-less child inherits.
-        const int64_t crel = period > 0 ? own_map.mapOffset(rel) : rel;
+        // all-on mask every row-less child inherits. With no geometry
+        // the child clock is the received one, unfolded.
+        const int64_t crel =
+            geometry ? at.inner : context.master_pos + done - O;
         const int64_t srel = seq->fold(crel);
         dist = std::min<int64_t>(dist, seq->cornerDistance(srel, fade, ~0ull));
         for (const auto& row : seq->gates) {
@@ -501,7 +498,6 @@ class StackNode : public AudioNode {
       sub.input_clock = context.input_clock + done;
       body(run_channels, run_channel_count, sub);
       done += run;
-      rel = fold > 0 ? (rel + run) % fold : rel + run;
     }
   }
 

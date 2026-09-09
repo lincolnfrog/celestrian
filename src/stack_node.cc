@@ -141,39 +141,20 @@ int64_t StackNode::getIntrinsicDuration() const {
   return composite;
 }
 
-int64_t StackNode::getEffectivePeriod() const {
-  return effectivePeriodOf(*this, nullptr);
-}
-
-int64_t StackNode::effectivePeriodOf(const AudioNode& node,
-                                     const AudioNode* skip) {
-  // THE EFFECTIVE-PERIOD CHAIN (composition.md §3, I12): map ▸ active
-  // sequence ▸ intrinsic (clip) / LCM of the children's effective
-  // periods (stack). One-shots contribute nothing (Q5); `skip` is left
-  // out (the "everyone else" a map edit is judged against). The
-  // audio-thread twin is snapEffectivePeriod (graph_snapshot.h).
-  if (&node == skip || node.periodFromContext()) return 0;
-  const auto* stack = dynamic_cast<const StackNode*>(&node);
-  if (stack == nullptr) return node.getEffectivePeriod();
-  if (const timing::TimeMap map = stack->activeTimeMap(); map.active()) {
-    return map.period();
-  }
-  if (const int64_t seq_len = stack->activeSequenceLen(); seq_len > 0) {
-    return seq_len;
-  }
-  int64_t composite = 0;
-  for (const auto& child : stack->ownedChildren()) {
-    composite = timing::foldPeriod(composite, effectivePeriodOf(*child, skip));
-  }
-  return composite;
+int64_t AudioNode::getEffectivePeriod() const {
+  return period_law::ownPeriodOf(*this);
 }
 
 bool StackNode::oneShotFacts(const ProcessContext& context,
                              const timing::TimeMap& own_map, int64_t& shot,
                              int64_t& cycle) const {
   if (!period_from_context_.load()) return false;
+  // THE SHOT is this stack's OWN period (period_law.h: map ▸ sequence
+  // ▸ composite) — a one-shot group with a song fires its whole song
+  // (D2-5 ruling (a)); `own_map` is that law's first rung, passed in
+  // because the callers already hold it.
   shot = own_map.active() ? own_map.period()
-                          : snapIntrinsicDuration(*context.snap, context.self);
+                          : snapEffectivePeriod(*context.snap, context.self);
   cycle = context.context_cycle;
   return shot > 0 && cycle > shot;
 }
@@ -182,10 +163,10 @@ bool StackNode::inRest(const ProcessContext& context) const {
   const timing::TimeMap own_map = activeTimeMap();
   int64_t shot = 0, cycle = 0;
   if (!oneShotFacts(context, own_map, shot, cycle)) return false;
-  const int64_t a0 = own_map.active() ? own_map.mapOffset(0) : 0;
-  int64_t h = context.master_pos - frameOrigin(context) - a0;
-  h = timing::posMod(h, cycle);
-  return h >= shot;
+  const timing::TimeMap eff =
+      own_map.active() ? own_map : timing::TimeMap::single(0, shot);
+  return timing::innerAt(context.master_pos, frameOrigin(context), eff, cycle)
+      .rest;
 }
 
 int64_t StackNode::getEffectiveQuantum() const {
@@ -345,17 +326,29 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // THE ANCHOR (Q18, composition.md §2): this stack's own origin once
   // anchored, else the received cycle top (the empty case).
   const int64_t O = frameOrigin(context);
-  if (map.active()) {
-    // THE ONE EQUATION, stack form: inner(t) = mapOffset((t − O − a0)
-    // mod P) and children hear t_child = O + inner(t) — the clip law
-    // (clip_node.cc render) with the stack's origin in place of the
-    // clip's. Window content sounds at its own performed moment; a
+  int64_t shot = 0, cycle = 0;
+  const bool one_shot = oneShotFacts(context, map, shot, cycle);
+  if (map.active() || one_shot) {
+    // THE ONE EQUATION (timing::innerAt), stack form: children hear
+    // t_child = O + inner(t) — the clip law (clip_node.cc render) with
+    // the stack's origin in place of the clip's. A looping stack folds
+    // on its map period; a ONE-SHOT stack folds on the CONTEXT CYCLE
+    // (Q5) so every firing hands its members the same clock from O —
+    // folding on the map period (or not at all) phase-shifts a shot
+    // that does not divide the cycle on every firing after the first
+    // (G-2b). Window content sounds at its own performed moment; a
     // windowed group of mics recorded as one take renders identically
     // to each mic windowed alone (the content-frame law, by
-    // construction). mapOffset folds by the map period, negatives
-    // included.
+    // construction). A plain looping stack with no map is transparent:
+    // the clock passes through and each child folds on its own.
+    const timing::TimeMap eff =
+        map.active() ? map : timing::TimeMap::single(0, shot);
+    const timing::InnerAt at = timing::innerAt(
+        context.master_pos, O, eff, one_shot ? cycle : eff.period());
+    child_context.master_pos = O + at.inner;
+  }
+  if (map.active()) {
     const int64_t a0 = map.mapOffset(0);
-    child_context.master_pos = O + map.mapOffset(context.master_pos - O - a0);
     // Time-map facts for the subtree (phase 2): the map, its origin, and
     // the heard grid anchor (O + a0 — pass tops occur at island times ≡
     // it mod the period) that through-map arm math runs against.
@@ -368,36 +361,26 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
     child_context.cycle_epoch = O + a0;
   }
 
-  // === THE CONTEXT CYCLE (Q5 one-shot period) ===
-  // Under an active map the heard loop IS the map period (the
-  // context_loop rule); otherwise the scope cycle is lcm(quantum, the
-  // LOOPING children's effective periods) — one-shots are excluded from
+  // === THE CONTEXT CYCLE (the one scope cycle: the Q5 one-shot period
+  // and the arm grid) ===
+  // This stack's OWN period by THE PERIOD LAW (period_law.h over the
+  // snapshot): its map's period when mapped (children listen to one map
+  // pass); its song under an active sequence (a one-shot child fires
+  // once per pass of the whole sequence, takes recorded over it hear
+  // the song as their frame — docs/sequencer.md §4); else the LCM of
+  // its LOOPING children's contributions — one-shots are excluded from
   // the fold (they adopt this very value; including them would be
-  // circular). A scope with no looping content falls back to the
-  // RECEIVED context cycle so a one-shot inside an all-one-shot group
-  // still sounds once per the enclosing cycle.
-  if (map.active()) {
-    child_context.context_cycle = map.period();
-  } else if (const Sequence* seq = activeSequence()) {
-    // Under an active SEQUENCE the scope cycle is the song (period
-    // law): a one-shot child fires once per pass of the whole
-    // sequence, and takes recorded over it hear the song as their
-    // frame (docs/sequencer.md §4, record-over-the-song).
-    child_context.context_cycle = seq->total;
-  } else {
-    int64_t fold = 0;
-    const ChildView kids = childView(context);
-    for (int k = 0; k < kids.count(); ++k) {
-      if (kids.nodeAt(k)->periodFromContext()) continue;
-      fold = timing::foldPeriod(
-          fold, snapEffectivePeriod(*context.snap, kids.entryAt(k)));
-    }
-    if (fold > 0) {
+  // circular) — seeded with Q. A scope with no looping content falls
+  // back to the RECEIVED context cycle so a one-shot inside an all-one-
+  // shot group still sounds once per the enclosing cycle.
+  {
+    const int64_t own = snapEffectivePeriod(*context.snap, context.self);
+    if (map.active() || activeSequence() != nullptr) {
+      child_context.context_cycle = own;
+    } else if (own > 0) {
       child_context.context_cycle =
-          context.quantum > 0 ? timing::lcm(context.quantum, fold) : fold;
+          context.quantum > 0 ? timing::lcm(context.quantum, own) : own;
     } else {
-      // No looping content in this scope: inherit the enclosing cycle
-      // (an all-one-shot GROUP still fires once per the outer cycle).
       child_context.context_cycle = context.context_cycle;
     }
   }
@@ -466,33 +449,10 @@ void StackNode::controlChildren(const float* const* input_channels,
   const ChildView kids = childView(context);
   const int child_count = kids.count();
 
-  // Recording context, passed DOWN: the longest committed child
-  // duration in this scope. Recording/armed children contribute 0
-  // (duration resets at arm); a nested STACK contributes its inner
-  // cycle like any other loop the performer hears (Q18, composition.md
-  // §8). A CONTROL fact: render never needs it.
-  int64_t longest_committed = 0;
-  for (int k = 0; k < child_count; ++k) {
-    const AudioNode* child = kids.nodeAt(k);
-    const int64_t d =
-        child->getNodeType() == NodeType::Clip
-            ? child->duration_samples.load()
-            : snapIntrinsicDuration(*context.snap, kids.entryAt(k));
-    if (d > longest_committed) longest_committed = d;
-  }
-  // Under an ACTIVE map the heard loop IS the map period (time_maps.md
-  // ruling 2): children listen to one map pass, not the intrinsic
-  // sibling cycle.
-  if (const timing::TimeMap own_map = activeTimeMap(); own_map.active()) {
-    child_context.context_loop = own_map.period();
-  } else if (const Sequence* seq = activeSequence()) {
-    // Record over the song (docs/sequencer.md §4): children listen to
-    // the sequence, so it is their context loop — takes wrap/stop
-    // against the song's grid, and contextCycle snapshots the song.
-    child_context.context_loop = seq->total;
-  } else {
-    child_context.context_loop = longest_committed;
-  }
+  // The arm grid a child take wraps against is the scope's CONTEXT
+  // CYCLE (childContext — the one scope cycle, composition.md §3): the
+  // map pass under a map, the song under a sequence, else the fold of
+  // the looping siblings. No second "context loop" walk.
 
   for (int k = 0; k < child_count; ++k) {
     child_context.self = kids.entryAt(k);
@@ -534,10 +494,11 @@ void StackNode::renderChildren(float* const* output_channels,
     const timing::TimeMap map = activeTimeMap();
     const int64_t p = map.period();
     if (map.active() && p > 0) {
-      // Heard phase from this stack's own anchor (Q18).
-      int64_t rel = context.master_pos - frameOrigin(context) - map.mapOffset(0);
-      rel = timing::posMod(rel, p);
-      playhead_pos.store((double)rel / (double)p);
+      // Heard phase from this stack's own anchor (Q18) — the one
+      // equation's h over the map period.
+      const int64_t h =
+          timing::innerAt(context.master_pos, frameOrigin(context), map, p).h;
+      playhead_pos.store((double)h / (double)p);
     } else {
       playhead_pos.store(0.0);
     }

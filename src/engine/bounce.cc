@@ -88,17 +88,17 @@ bool AudioEngine::bounce(const juce::String& uuid,
     span = islandCommittedClipCount() > 0 ? calculateEffectiveCycleLength() : 0;
     top = islandEpoch();
   } else {
-    span = celestrian::StackNode::effectivePeriodOf(*target, nullptr);
-    // A one-shot presents no period to its parent (Q5); its own pass is
-    // its intrinsic length (the shot).
-    if (span <= 0 && target->periodFromContext()) {
-      span = target->getIntrinsicDuration();
-    }
+    // THE PERIOD LAW's own period (map ▸ sequence ▸ content): what the
+    // node plays — for a one-shot, its shot (a windowed one-shot bounces
+    // its window; a one-shot song bounces its song).
+    span = celestrian::period_law::ownPeriodOf(*target);
     const celestrian::timing::TimeMap map = target->activeTimeMap();
     const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
-    const bool anchored = target->getNodeType() == celestrian::NodeType::Clip ||
-                          target->isAnchored();
-    top = (anchored ? target->origin_samples.load() : islandEpoch()) + a0;
+    // A clip is anchored by construction (Q18); an empty stack's frame
+    // is the received island frame.
+    top = (target->isAnchored() ? target->origin_samples.load()
+                                : islandEpoch()) +
+          a0;
   }
   if (span <= 0) {
     juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +

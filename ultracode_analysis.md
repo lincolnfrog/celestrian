@@ -1209,6 +1209,33 @@ every step (C++ Debug binary first, then `npm test`, then Playwright).
 > structural undo/redo (hot node) now KEEPS its log entry, like the
 > island-facts refusals. Docs: performance.md §1 carries the D5-1
 > stamp-after-publish and D5-2 protocol paragraphs.
+>
+> **Status 2026-09-08 — Tier 2 LANDED except D4-7** (all three suites
+> green). D1-1/D1-3/D1-2: `timing::innerAt` + `forEachContentRun` are
+> the one equation (both clip loops, both playhead writes, `inRest`,
+> `innerOf`, `forEachSeamRun`, `childContext` — a one-shot stack now
+> folds its child clock on the context cycle, G-2b pinned in
+> one_shot_tests.cc); `heard::receivedAt` composes the ancestors
+> (maps, one-shot folds, cue re-bases) and `nodeInner` is
+> `ownInnerAt(node, receivedAt(node, t))`; `memberHeardIndex` and
+> `clipHeardIndex` are gone; the equation is golden-pinned
+> (`inner_at_cases`) on both sides. D6-1 (+D12-7, D13-9): one
+> `Edit::Kind::Collapse` (`collapseNode`/`uncollapseNode`, one arm-time
+> site, one re-open branch, one re-collapse branch), `liftAncestorsGated`
+> is the one lift, leaves are anchored by construction, `frameOrigin`
+> lives on AudioNode. D13-4: `engine_internal::definer(root)` carries
+> every gate; `definerId` publishes it. D2-1 (+D1-7, D2-4, D2-9) under
+> the D2-5 recommendation (a): `src/period_law.h` (one template, tree +
+> snapshot providers), `calculateEffectiveCycleLength` := the snapshot
+> law, `context_loop` deleted (arm grid = context_cycle), bounce and
+> `oneShotFacts` read own(target); JS twin in timeline_model.js used
+> by the VM and the mock; `period_law_cases` tree fixtures pin all
+> three. NOT done: D4-7 (commit still authors the [0, D) map — a
+> Days-sized change across engine, mock, VM and ~20 tests that pin
+> `loopEnd == duration` after commit; it needs its own round), and
+> D2-1's "one JS intrinsicDuration" (the display-side commensurate
+> laws in view_model.js are unchanged), D2-10, D2-14. The D2-5 answer
+> is a RECOMMENDATION applied, not an owner ruling — see §7 item 3.
 
 **Tier 1 — hours each, do now, no ruling needed.**
 - D8-1 orphan cue hang — done: `any_cue` derived per visit; both walks

@@ -117,3 +117,26 @@ export function seamDistance(map, heardOff) {
     }
     return 0; // unreachable
 }
+
+/**
+ * THE RENDER EQUATION (composition.md §2), the JS twin of
+ * src/timing.h innerAt — pinned to the `inner_at_cases` golden vectors.
+ * For a node with `origin`, EFFECTIVE map `map` (active, or the whole
+ * inner span as one segment), shot S = mapPeriod(map) and a0 =
+ * mapOffset(map, 0):
+ *   h = (t − origin − a0) mod fold;  inner = mapOffset(h) while h < S;
+ *   rest = h >= S (a one-shot's silent remainder of the context cycle).
+ * `fold` is S for a looping node and the context cycle for a one-shot;
+ * a fold below the shot reads as the shot. `run` is the continuity
+ * from t: to the next seam, the shot end, or the rest end.
+ * @returns {{h:number, inner:number, run:number, rest:boolean}}
+ */
+export function innerAt(t, origin, map, fold) {
+    const shot = mapPeriod(map);
+    if (shot <= 0) return { h: 0, inner: 0, run: 1, rest: false };
+    if (fold < shot) fold = shot;
+    const h = posMod(t - origin - mapOffset(map, 0), fold);
+    if (h >= shot) return { h, inner: h, run: fold - h, rest: true };
+    const run = seamDistance(map, h);
+    return { h, inner: mapOffset(map, h), run: run > 0 ? run : 1, rest: false };
+}

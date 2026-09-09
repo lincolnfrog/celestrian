@@ -131,16 +131,22 @@ test so the solvers (§5) can never restate it by hand again.
 
 ## 3. Periods and cycles
 
-Two periods per node, four cycle notions per scope. This table is the
-authority; the code's five effective-period implementations must agree
-with it (and should become one).
+Two periods per node, three cycle notions per scope. This table is the
+authority. The effective-period row is stated ONCE in code
+(`src/period_law.h`: `own` = map ▸ sequence ▸ content, `contribution` =
+0 for a one-shot, `islandCycle` = lcm(Q, own(root))) and instantiated
+over two providers — the ownership tree on the message thread and the
+graph snapshot on the audio thread; `ui/js/timeline_model.js` carries
+the JS twin and `period_law_cases` in `shared/timing_golden.json` pins
+all three on tree fixtures (audit D2-1, 2026-09-08). A one-shot stack's
+shot is its OWN period — under a sequence, its whole song (D2-5 ruling
+(a)).
 
 | Quantity | Definition | Who consumes it |
 |---|---|---|
 | **intrinsic** `D` | clip: committed length. stack: LCM of looping children's intrinsic. | inner-position domain of the map; the growth baseline for the commit epoch re-base (`lcm_before_take_`); the Q15 fold frame |
 | **effective** `P_eff` | active map ▸ active sequence length ▸ clip: `D` / stack: LCM of children's `P_eff` (one-shots excluded) | the parent's LCM; masterPos wrap; heard cycle at arm; the frame-health badge |
-| **context loop** (`context_loop`) | the loop the performer hears while recording in this scope: map period ▸ sequence length ▸ longest committed sibling duration | arm targets (`armTarget`), stop boundaries, `contextCycle` snapshot on the take |
-| **context cycle** (`context_cycle`) | the scope's cycle a one-shot adopts: map period ▸ sequence length ▸ `lcm(Q, looping children's P_eff)` ▸ inherited | one-shot playback fold (§2); one-shot echo display |
+| **context cycle** (`context_cycle`) | THE one scope cycle: the stack's own period (map period ▸ sequence length ▸ `lcm(Q, looping children's contributions)`) ▸ inherited when the scope has no looping content | one-shot playback fold (§2); one-shot echo display; arm targets (`armTarget`, min Q) and stop boundaries — the former `context_loop` (deleted, audit D2-4: a free-length song restarts the arm grid at its top at every depth, I5) |
 | **heard cycle** (`heard_cycle_at_arm_`) | `lcm(Q, P_eff(root))` at arm — E-C | the take's `contextCycle` (display fold, Q14); the Q15 audible-equivalence step |
 | **intrinsic cycle** (`lcm_before_take_`) | `lcm(Q, D(root))` at arm | the epoch re-base at commit; the Q15 fold frame |
 
@@ -283,6 +289,14 @@ ghosts, mics drawn whole beneath. Trimming the drums' window to
 ---
 
 ## 8. What Q18 deletes
+
+> Status 2026-09-08 (audit D6-1): this list is now TRUE in code. The
+> lock-collapse is `Edit::Kind::Collapse` over the definer node
+> (`AudioEngine::collapseNode` / `uncollapseNode`, the §5 row), with
+> `collapseDefinerAtArm` the one arm-time site; the definer predicate is
+> `engine_internal::definer(root)`; leaves are anchored by construction
+> and `frameOrigin` lives on `AudioNode`; the group equation is
+> `heard::nodeInner` composed through `heard::receivedAt`.
 
 - `AudioEngine::epochViewStep` and both rider branches that step by it.
 - `Edit::origins` riders on definer trims (the recursive shift is the

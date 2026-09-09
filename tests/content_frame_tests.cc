@@ -333,11 +333,12 @@ class ContentFrameTests : public juce::UnitTest {
       std::vector<std::pair<int64_t, float>> out;
       driveRamp(engine, D, clock, true, &out);
       int bad = 0;
+      const celestrian::heard::Scope scope = engine.rootScope();
       for (const auto& [t, v] : out) {
-        const int64_t idx = celestrian::heard::clipHeardIndex(*clip, t);
+        const int64_t idx = celestrian::heard::nodeInner(*clip, t, scope);
         if (std::abs(table[(size_t)idx] - v) > 1e-6f) ++bad;
       }
-      expectEquals(bad, 0, "clipHeardIndex(t) names the rendered sample");
+      expectEquals(bad, 0, "nodeInner(clip, t) names the rendered sample");
     }
     {
       AudioEngine engine;
@@ -364,13 +365,16 @@ class ContentFrameTests : public juce::UnitTest {
       expect(stack != nullptr && member != nullptr, "nodes");
       std::vector<std::pair<int64_t, float>> out;
       driveRamp(engine, D, clock, true, &out);
-      const int64_t epoch = rootProp(engine, "islandEpoch");
+      // THE DESCENT: nodeInner composes the group's map through
+      // receivedAt — no per-depth equation, the same call at any depth.
+      const celestrian::heard::Scope scope = engine.rootScope();
       int bad = 0;
       for (const auto& [t, v] : out) {
-        const int64_t idx = celestrian::heard::memberHeardIndex(*stack, *member, t, epoch);
+        const int64_t idx = celestrian::heard::nodeInner(*member, t, scope);
         if (std::abs(table[(size_t)idx] - v) > 1e-6f) ++bad;
       }
-      expectEquals(bad, 0, "memberHeardIndex(t) names the rendered sample");
+      expectEquals(bad, 0, "nodeInner(member, t) names the rendered sample");
+      juce::ignoreUnused(stack);
     }
 
     beginTest("Seek moves the AUDIO, not just the cursor (plain clip)");

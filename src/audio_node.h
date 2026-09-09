@@ -54,8 +54,8 @@ struct GraphSnapshot;
  *  - Island facts: quantum, island (the lifecycle-event target), and the
  *    island / stop generations that let the audio thread adopt multi-field
  *    edits as one fact.
- *  - Recording context: context_loop (the longest committed sibling — arm
- *    math), the latency compensation.
+ *  - Recording context: the latency compensation (arm math folds on
+ *    context_cycle — the one scope cycle, composition.md §3).
  *  - Render context: context_cycle (the Q5 one-shot period), map +
  *    map_count (the innermost active map), gate_g0/g1 (the sequencer gate
  *    ramp), any_solo.
@@ -93,13 +93,6 @@ struct ProcessContext {
   // received clock, never of view state or a private counter.
   int64_t cycle_epoch = 0;
 
-  // The recording context (passed DOWN): the longest
-  // committed sibling duration in this scope — each stack overwrites it
-  // for its children (recording children contribute 0 because their
-  // duration resets at arm). A clip's arm math uses
-  // max(Q, context_loop); leaves never inspect siblings.
-  int64_t context_loop = 0;
-
   // --- Pre-record ring (docs/performance.md §3) ---
   // The engine continuously copies device input into a ring indexed by a
   // monotonic input clock (total input samples since engine start — unlike
@@ -134,13 +127,14 @@ struct ProcessContext {
   int64_t island_epoch = 0;
   AudioNode* island = nullptr;
 
-  // The CONTEXT CYCLE for this scope (the Q5 one-shot period): each
-  // stack sets it for its children — its active map's period when
-  // mapped, else lcm(quantum, its LOOPING children's effective periods)
-  // — falling back to the received value when the scope has no looping
-  // content of its own. A one-shot node's period IS this value; it is
-  // what "sounds once per cycle" means. Like context_loop this is
-  // passed DOWN, but unlike it this is a RENDER fact.
+  // The CONTEXT CYCLE for this scope — THE one scope cycle (the Q5
+  // one-shot period AND the arm grid a take wraps against): each stack
+  // sets it for its children from its OWN period (period_law.h) — its
+  // active map's period when mapped, its song under a sequence, else
+  // lcm(quantum, its LOOPING children's contributions) — falling back
+  // to the received value when the scope has no looping content of
+  // its own. A one-shot node's period IS this value; it is what
+  // "sounds once per cycle" means. Passed DOWN.
   int64_t context_cycle = 0;
 
   // --- Time-map facts (time_maps.md phase 2) ---
@@ -641,15 +635,13 @@ class AudioNode {
    * as a window-length clip in the parent's LCM. This is exact, not an
    * approximation — window phase is island-clock derived, so island
    * times t and t+len map to identical child times: the subtree's
-   * output is periodic in exactly the window length. Without a window,
-   * the intrinsic duration. StackNode overrides the windowless case to
-   * LCM its children's effective periods (nested windows shorten it).
+   * output is periodic in exactly the window length. THE PERIOD LAW is
+   * stated once in period_law.h (own = map ▸ sequence ▸ content); this
+   * is `period_law::ownPeriodOf(*this)` — the node's OWN period, one-
+   * shot or not. Message thread only (walks the ownership tree); the
+   * audio thread uses the snapshot provider (snapEffectivePeriod).
    */
-  virtual int64_t getEffectivePeriod() const {
-    const timing::TimeMap map = activeTimeMap();
-    if (map.active()) return map.period();
-    return getIntrinsicDuration();
-  }
+  int64_t getEffectivePeriod() const;
 
   /** The node's ACTIVE sequence length (docs/sequencer.md §2, the
    * period law) — 0 everywhere except a StackNode with an active
@@ -820,6 +812,13 @@ class AudioNode {
     if (context.island_generation >= origin_gate_gen_.load()) {
       origin_rt_.store(origin_samples.load());
     }
+  }
+  /** THE FRAME ORIGIN (Q18, composition.md §2): the origin this
+   * node's geometry anchors at on the audio thread — its own rendering
+   * origin once anchored (a clip always is), else the received cycle
+   * top (an empty stack). Message-thread twin: heard::frameOriginOf. */
+  int64_t frameOrigin(const ProcessContext& context) const {
+    return anchored_.load() ? origin_rt_.load() : context.cycle_epoch;
   }
   /** The rendering origin (audio thread). */
   int64_t renderOrigin() const { return origin_rt_.load(); }

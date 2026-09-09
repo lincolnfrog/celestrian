@@ -395,7 +395,7 @@ class SessionIoTests : public juce::UnitTest {
       expectWithinAbsoluteError(first, 0.25f, 1e-6f, "bar 1 first");
 
       // Collapse to [0, Q): a length change — any probe would catch it.
-      c->collapseToWindow(0, Q);
+      c->collapseContent(0, Q);
       expect(c->takeFilesDirty(), "collapse marks the mirror dirty");
       expect(session_io::save(root, (double)Q, dir, inc), "save 2");
       wavFacts(len, first);
@@ -405,8 +405,8 @@ class SessionIoTests : public juce::UnitTest {
 
       // Now the SAME length, a different bar: [Q, 2Q). A length probe
       // would skip this rewrite and the reload would play bar 1.
-      c->uncollapseFromWindow(0, 2 * Q, 0);
-      c->collapseToWindow(Q, Q);
+      c->uncollapseContent(0, 2 * Q);
+      c->collapseContent(Q, Q);
       expect(c->takeFilesDirty(), "dirty again");
       expect(session_io::save(root, (double)Q, dir, inc), "save 3");
       wavFacts(len, first);

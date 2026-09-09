@@ -13,6 +13,7 @@
 #include "edit.h"
 #include "midi_input_queue.h"
 #include "graph_snapshot.h"
+#include "heard_index.h"
 #include "session_io.h"
 #include "stack_node.h"
 
@@ -265,6 +266,10 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                                         dir, opts);
   }
   bool hasActiveTake() const { return root_node->hasActiveTake(); }
+  /** The island frame the root receives (heard_index.h): the epoch,
+   * the audible island cycle and Q — what heard::receivedAt composes
+   * the ancestors' laws from. Message thread. */
+  celestrian::heard::Scope rootScope() const;
 
   // --- Takes and comping (docs/takes.md). Message thread only.
   /**
@@ -836,6 +841,29 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /** Move a node's origin and EVERY descendant's by `delta`, gated on
    * the island generation `gate` (0 = adopt at the next block top).
    * The one re-anchoring primitive: definer trims, continuity, seek. */
+  /** Q18 ancestor lift: every ANCHORED ancestor of `node` moves by
+   * `delta`, gated like the node's own origins (the one lift — the
+   * definer re-anchor, the collapse and the splice all use it). */
+  void liftAncestorsGated(celestrian::AudioNode& node, int64_t delta,
+                          uint32_t gate);
+  /** Q13 LOCK-COLLAPSE, the one law (composition.md §5) over any
+   * definer node — a clip or a stack. The leaves under it (the clip
+   * itself; a stack's direct clip members) keep the window's material
+   * as their whole content, the node's subtree moves by the window
+   * start, anchored ancestors follow, the window is consumed. Returns
+   * false (nothing changed) with no single window to collapse. */
+  struct CollapseFacts {
+    int64_t shift = 0, old_duration = 0, win_start = 0, win_end = 0;
+  };
+  bool collapseNode(celestrian::AudioNode& node, CollapseFacts& f);
+  /** The exact inverse of collapseNode from its raw facts. */
+  void uncollapseNode(celestrian::AudioNode& node, int64_t shift,
+                      int64_t old_duration, int64_t win_start,
+                      int64_t win_end);
+  /** Record a Collapse of the island's definer (engine_internal::
+   * definer) before an arm, unless the definer IS `exclude`. A no-op
+   * when there is no definer or nothing to collapse. */
+  void collapseDefinerAtArm(const celestrian::AudioNode* exclude);
   void shiftOriginsGated(celestrian::AudioNode& node, int64_t delta,
                          uint32_t gate);
   /** Apply an edit's setsOrigin/iorg to `node` as a subtree shift

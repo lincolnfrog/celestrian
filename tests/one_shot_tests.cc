@@ -108,6 +108,81 @@ class OneShotTests : public juce::UnitTest {
                                 "3Q of the next cycle: fires again");
     }
 
+    beginTest("G-2b: a one-shot GROUP folds its child clock on the CONTEXT "
+              "cycle - a 3Q kit over a 4Q bass fires from content[0] every "
+              "time, mapped and unmapped");
+    {
+      // The shot (3Q) does not divide the cycle (4Q): under the old law
+      // (child clock folded on the map period, or not at all) the second
+      // firing handed the mic t = 4Q and it rendered content[Q] — one Q
+      // late on every odd bar. The one equation folds the child clock
+      // on the context cycle from the group's origin.
+      auto makeStepClip = [](const char* name,
+                             const std::vector<float>& levels_per_q) {
+        auto clip = std::make_unique<ClipNode>(name, kSr);
+        const int64_t len = kQ * (int64_t)levels_per_q.size();
+        std::vector<float> in((size_t)len, 0.0f);
+        for (int64_t i = 0; i < len; ++i)
+          in[(size_t)i] = levels_per_q[(size_t)(i / kQ)];
+        float* const ins[] = {in.data()};
+        NodeContext rec = contextFor(*clip, (int)len);
+        clip->startRecording();
+        clip->process(ins, nullptr, 1, 0, rec.ctx);
+        clip->stopRecording();
+        clip->startPlayback();
+        return clip;
+      };
+      StackNode ctx("Ctx");
+      auto bass = makeClip("Bass", 0.25f, 4 * kQ);  // the 4Q cycle
+      auto kit = std::make_unique<StackNode>("Kit");
+      StackNode* kitRaw = kit.get();
+      kitRaw->period_from_context_.store(true);  // a one-shot GROUP
+      kit->addChild(makeStepClip("Mic", {0.5f, 0.1f, 0.2f}));  // 3Q
+      ctx.addChild(std::move(bass));
+      ctx.addChild(std::move(kit));
+
+      // UNMAPPED: fires at the group's frame origin (0) once per 4Q.
+      expectWithinAbsoluteError(renderAt(ctx, 0), 0.75f, 1e-6f,
+                                "firing 1, Q0: bass + mic content[0]");
+      expectWithinAbsoluteError(renderAt(ctx, kQ), 0.35f, 1e-6f,
+                                "firing 1, Q1: mic content[Q]");
+      expectWithinAbsoluteError(renderAt(ctx, 3 * kQ), 0.25f, 1e-6f,
+                                "Q3: the kit rests");
+      expectWithinAbsoluteError(renderAt(ctx, 4 * kQ), 0.75f, 1e-6f,
+                                "firing 2, Q4: mic content[0] again "
+                                "(was content[Q] under the old fold)");
+      expectWithinAbsoluteError(renderAt(ctx, 5 * kQ), 0.35f, 1e-6f,
+                                "firing 2, Q5: mic content[Q]");
+      expectWithinAbsoluteError(renderAt(ctx, 7 * kQ), 0.25f, 1e-6f,
+                                "Q7: rests again");
+
+      // MAPPED: a 3Q window [Q, 4Q) on a 5Q mic — the shot is the
+      // window, fired at O + a0 = Q; the second firing at 5Q must read
+      // inner Q (the old law's map-period fold read inner 2Q).
+      auto kit2 = std::make_unique<StackNode>("Kit2");
+      StackNode* kit2Raw = kit2.get();
+      kit2Raw->period_from_context_.store(true);
+      kit2->addChild(makeStepClip("Mic2", {0.5f, 0.1f, 0.2f, 0.3f, 0.4f}));
+      StackNode ctx2("Ctx2");
+      ctx2.addChild(makeClip("Bass2", 0.25f, 4 * kQ));
+      ctx2.addChild(std::move(kit2));
+      kit2Raw->setLoopPoints(kQ, 4 * kQ);
+      kit2Raw->setLoopWindowBypassed(false);
+      expectWithinAbsoluteError(renderAt(ctx2, 0), 0.25f, 1e-6f,
+                                "Q0: before the window's moment, rest");
+      expectWithinAbsoluteError(renderAt(ctx2, kQ), 0.35f, 1e-6f,
+                                "firing 1, Q1: inner Q");
+      expectWithinAbsoluteError(renderAt(ctx2, 3 * kQ), 0.55f, 1e-6f,
+                                "firing 1, Q3: inner 3Q");
+      expectWithinAbsoluteError(renderAt(ctx2, 4 * kQ), 0.25f, 1e-6f,
+                                "Q4: rest (h = 3Q >= the 3Q shot)");
+      expectWithinAbsoluteError(renderAt(ctx2, 5 * kQ), 0.35f, 1e-6f,
+                                "firing 2, Q5: inner Q again "
+                                "(was inner 2Q under the old fold)");
+      expectWithinAbsoluteError(renderAt(ctx2, 6 * kQ), 0.45f, 1e-6f,
+                                "firing 2, Q6: inner 2Q");
+    }
+
     beginTest("One-shots are excluded from period composition");
     {
       StackNode stack("Ctx");

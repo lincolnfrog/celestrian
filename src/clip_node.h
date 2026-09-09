@@ -301,38 +301,35 @@ class ClipNode : public AudioNode {
    * now reads as performed exactly; the cut material stays in the
    * buffer, unreachable except by uncollapse (undo). Message thread;
    * all-atomic (same exposure discipline as setLoopPoints). */
-  void collapseToWindow(int64_t shift, int64_t len) {
+  void collapseContent(int64_t shift, int64_t len) {
+    // THE LEAF HALF of a lock-collapse (composition.md §5): the content
+    // view moves by `shift`, the duration becomes `len`, the clip's
+    // own window is consumed. The ORIGIN is NOT touched here — the
+    // applier (AudioEngine::collapseNode) moves the collapsed node's
+    // whole subtree once, clip or stack alike (Q18: a window anchors at
+    // its node's origin, so window top → origin keeps the collapse
+    // audio-neutral).
+    //
     // THE COLLAPSE MARKER (nesting: collapse → cancel take → re-trim →
     // arm again is a legal second collapse): `collapsed_from_` keeps the
     // ORIGINAL duration (set only on the first level). What the
-    // collapses added to the origin IS `content_base_` — the base
-    // starts at 0 on every commit and only collapses move it — so the
-    // re-opening restore (which unwinds ALL levels) reads the base; no
-    // second counter to keep in step.
-    //
-    // The origin moves by `shift` for every collapse (Q18): a window
-    // anchors at origin + start whether it lives on the clip or on its
-    // group, so window top → origin keeps the collapse audio-neutral in
-    // both cases (a group collapse shifts the stack's origin alongside).
+    // collapses shifted by IS `content_base_` — the base starts at 0 on
+    // every commit and only collapses move it — so the re-opening
+    // restore (which unwinds ALL levels) reads the base; no second
+    // counter to keep in step.
     if (collapsed_from_.load() == 0) collapsed_from_.store(duration_samples.load());
     content_base_.store(content_base_.load() + shift);
-    origin_samples.store(origin_samples.load() + shift);
     duration_samples.store(len);
     setLoopPoints(0, len);
     take_files_dirty_ = true;  // the mirrored WAV is the committed window
   }
-  /** Inverse of collapseToWindow: restore the pre-collapse buffer view
-   * and the trim (window [shift, shift + current duration)). The
-   * origin moves back by `origin_shift` — the caller says how much this
-   * particular unwind contributed: an explicit CollapseTake undo passes
-   * its own level's shift; the marker-driven re-open passes the FULL
-   * accumulated shift (origin_shift < 0 = "all of it"). */
-  void uncollapseFromWindow(int64_t shift, int64_t old_duration,
-                            int64_t origin_shift = -1) {
+  /** Inverse of collapseContent: restore the pre-collapse buffer view
+   * and the trim (window [shift, shift + current duration)). Like the
+   * forward, the origin is the applier's (AudioEngine::uncollapseNode
+   * moves the subtree back by `shift`). */
+  void uncollapseContent(int64_t shift, int64_t old_duration) {
     const int64_t len = duration_samples.load();
-    const int64_t o = origin_shift < 0 ? content_base_.load() : origin_shift;
     content_base_.store(content_base_.load() - shift);
-    origin_samples.store(origin_samples.load() - o);
     duration_samples.store(old_duration);
     setLoopPoints(shift, shift + len);
     // Fully unwound (the content view is back at 0) → not collapsed.

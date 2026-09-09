@@ -10,6 +10,24 @@ import { lcm } from '../math_utils.js';
 import { state, activeMapOf, rootActiveMap } from './state.js';
 import { mapPeriod } from '../time_map.js';
 import { activeSeqLen } from './sequence.js';
+import { periodContribution, islandCycle } from '../timeline_model.js';
+
+/** THE PERIOD LAW's providers over the MOCK state shape: the active
+ * map is audition-aware (activeMapOf; the root's via rootActiveMap),
+ * the sequence is the holder's, children are `nodes`. The root is a
+ * synthetic stack holder ('mock-root' is not in `nodes`). */
+const rootHolder = () => ({
+    type: 'stack', isRoot: true, nodes: state.nodes,
+    sequence: state.rootSequence, sequenceBypassed: state.rootSequenceBypassed,
+});
+const providers = {
+    mapPeriod: n => {
+        const m = n.isRoot ? rootActiveMap() : activeMapOf(n);
+        return m ? Math.round(mapPeriod(m)) : 0;
+    },
+    seqLen: n => activeSeqLen(n),
+    children: n => n.nodes || [],
+};
 
 /** LCM of committed clip durations (the engine's calculateTimelineLength). */
 export function committedCycle(Q) {
@@ -34,52 +52,17 @@ export function committedCycle(Q) {
  * committedCycle (windows are view-of-time state, not material).
  */
 export function effectivePeriodOf(node) {
-    if (node.isRecording) return 0;
-    // One-shots contribute nothing to the fold (Q5 exclusion — engine
-    // parity: snapEffectivePeriod skips periodFromContext children).
-    if (node.periodSource === 'context') return 0;
-    {
-        const m = activeMapOf(node);  // audition-aware (§11.2)
-        if (m) return Math.round(mapPeriod(m));
-    }
-    // THE PERIOD LAW (docs/sequencer.md §2, engine parity
-    // snapEffectivePeriod): an active SEQUENCE sets a stack's effective
-    // period to the sequence length — steps concatenate, never LCM.
-    {
-        const seqLen = activeSeqLen(node);
-        if (seqLen > 0) return seqLen;
-    }
-    if (node.type !== 'stack') return node.duration > 0 ? Math.round(node.duration) : 0;
-    let composite = 0;
-    (node.nodes || []).forEach(c => {
-        const p = effectivePeriodOf(c);
-        if (p > 0) composite = composite > 0 ? lcm(composite, p) : p;
-    });
-    return composite;
+    // THE PERIOD LAW (timeline_model.periodContribution): what the node
+    // hands its parent's fold — 0 for a one-shot (Q5) or a live take.
+    return periodContribution(node, providers);
 }
 
 export function effectiveCycle(Q) {
-    // The ROOT's own sequence wins the whole frame (period law at the
-    // island root — engine parity: snapEffectivePeriod(0) short-
-    // circuits before consulting children).
-    // The root's STEP AUDITION (§11.2): its derived window is the
-    // heard cycle (map over sequence — the S9 composition law).
-    {
-        const m = rootActiveMap();
-        if (m) {
-            const p = Math.round(mapPeriod(m));
-            return Q > 0 ? lcm(Q, p) : p;
-        }
-    }
-    const rootLen = activeSeqLen({
-        sequence: state.rootSequence,
-        sequenceBypassed: state.rootSequenceBypassed,
-    });
-    if (rootLen > 0) return Q > 0 ? lcm(Q, rootLen) : rootLen;
-    let cycle = Q > 0 ? Q : 0;
-    state.nodes.forEach(n => {
-        const p = effectivePeriodOf(n);
-        if (p > 0) cycle = cycle > 0 ? lcm(cycle, p) : p;
-    });
-    return cycle;
+    // THE PERIOD LAW at the island root (timeline_model.islandCycle):
+    // the root's own map (a step audition, §11.2) or song wins the
+    // whole frame; else lcm(Q, the top-level contributions). Engine
+    // parity: snapEffectiveCycle. Before Q exists the mock's cycle is
+    // the content alone (no one-second fallback here — the view has
+    // no rate).
+    return islandCycle(rootHolder(), providers, Q, 0);
 }

@@ -3,29 +3,45 @@
 #include <cstdint>
 
 #include "clip_node.h"
+#include "period_law.h"
 #include "stack_node.h"
 #include "time_map.h"
+#include "timing.h"
 
 /**
- * heard_index.h — "which inner position sounds at clock t", stated ONCE
- * for every node (composition.md §2, Q18).
+ * heard_index.h — "which inner position sounds at clock t", the
+ * MESSAGE-THREAD twin of the audio thread's descent (composition.md §2,
+ * Q18), built on the one equation (timing::innerAt).
  *
- * The one equation, for a node with origin O, active map m (else the
- * full span [0, D)), period P = m.period() and a0 = m.mapOffset(0):
- *
- *   inner(t) = m.mapOffset((t − O − a0) mod P)
- *
- * A clip reads content[base + inner(t)]; a stack hands its children
- * t_child = O + inner(t). These are the equations the audio thread runs
- * (clip_node.cc render, stack_node.cc childContext), lifted to the
- * message thread so every phase-preserving solver (the Q13 definer
- * trims — clip AND stack, one path — and the continuity re-anchor)
- * reads the truth instead of a copy, and so a golden test can compare
- * them against the render (tests/content_frame_tests.cc).
+ * The audio thread answers the question in two steps: each stack
+ * ancestor hands its children a clock (StackNode::childContext — its
+ * map or one-shot fold applied at its own origin, its scope for the
+ * children, a cued step's re-base), and the node then reads its own
+ * inner position from the clock it RECEIVED. This header restates
+ * exactly that walk (receivedAt) and that read (ownInnerAt) so every
+ * phase-preserving solver (the Q13 definer trims, the continuity
+ * re-anchor) reads the truth at ANY depth instead of a depth-1 copy,
+ * and so a golden test can compare it against the render
+ * (tests/content_frame_tests.cc).
  */
 namespace celestrian::heard {
 
 using timing::posMod;
+
+/** What a node receives besides the clock: the frame it is measured
+ * from and the cycle a one-shot rests against (ProcessContext's
+ * cycle_epoch / context_cycle / quantum). */
+struct Scope {
+  int64_t cycle_epoch = 0;
+  int64_t context_cycle = 0;
+  int64_t quantum = 0;
+};
+
+/** The clock a node receives, and the scope it receives it in. */
+struct Received {
+  int64_t clock = 0;
+  Scope scope;
+};
 
 /** A node's effective map: its active map, else its whole inner span
  * (a clip's take; a stack's inner cycle). */
@@ -34,40 +50,122 @@ inline timing::TimeMap effectiveMap(const AudioNode& node) {
   return m.active() ? m : timing::TimeMap::single(0, node.getIntrinsicDuration());
 }
 
-/** THE NODE EQUATION: the inner position a node presents at monotonic
- * clock `t` — for a clip, its content index; for a stack, the offset of
- * the child clock from the stack's origin. Uses the message-thread
- * origin (`origin_samples`). An UNANCHORED stack (no content yet) is
- * measured from `fallback_origin` (its received cycle top). */
-inline int64_t nodeInner(const AudioNode& node, int64_t t,
-                         int64_t fallback_origin = 0) {
+/** The origin a node measures from (StackNode::frameOrigin's twin): its
+ * own origin once anchored — a clip always is — else the received
+ * cycle top (an empty stack). */
+inline int64_t frameOriginOf(const AudioNode& node, const Scope& scope) {
+  return node.isAnchored() ? node.origin_samples.load() : scope.cycle_epoch;
+}
+
+/** THE NODE EQUATION at the node's RECEIVED clock: for a clip, the
+ * content index that sounds; for a stack, the offset of the child clock
+ * from the stack's origin. A one-shot folds on the scope's context
+ * cycle (innerAt clamps a cycle no longer than the shot to the shot). */
+inline timing::InnerAt ownInnerAt(const AudioNode& node,
+                                  int64_t received_clock,
+                                  const Scope& scope) {
   const timing::TimeMap m = effectiveMap(node);
-  const int64_t period = m.period();
-  if (period <= 0) return 0;
-  const bool anchored =
-      node.getNodeType() == NodeType::Clip || node.isAnchored();
-  const int64_t org = anchored ? node.origin_samples.load() : fallback_origin;
-  return m.mapOffset(posMod(t - org - m.mapOffset(0), period));
+  if (m.period() <= 0) return {};
+  const int64_t fold =
+      node.periodFromContext() ? scope.context_cycle : m.period();
+  return timing::innerAt(received_clock, frameOriginOf(node, scope), m, fold);
 }
 
-/** THE CLIP EQUATION (clip_node.cc render): the content sample a clip
- * renders at `t` — nodeInner on a leaf. */
-inline int64_t clipHeardIndex(const ClipNode& clip, int64_t t) {
-  return nodeInner(clip, t);
+/** The scope a stack hands its children — StackNode::childContext's
+ * context-cycle law: an active map's period ▸ the song ▸ lcm(Q, the
+ * LOOPING children's effective periods) ▸ the received cycle. */
+inline Scope childScopeOf(const StackNode& stack, const Scope& scope,
+                          int64_t O, const timing::TimeMap& map) {
+  Scope child = scope;
+  if (map.active()) {
+    child.cycle_epoch = O + map.mapOffset(0);
+    child.context_cycle = map.period();
+    return child;
+  }
+  if (const Sequence* seq = stack.activeSequence()) {
+    child.context_cycle = seq->total;
+    return child;
+  }
+  // The stack's own period by THE PERIOD LAW (no map, no song: the LCM
+  // of its looping children's contributions).
+  if (const int64_t own = period_law::ownPeriodOf(stack); own > 0) {
+    child.context_cycle =
+        scope.quantum > 0 ? timing::lcm(scope.quantum, own) : own;
+  }
+  return child;
 }
 
-/** THE GROUP EQUATION (stack_node.cc childContext + the clip law): the
- * content sample a member of a stack renders at `t` — the stack maps
- * the clock to `O + inner(t)` and the member reads that origin-relative.
- * With no active stack map this is the clip equation. `fallback_epoch`
- * is the frame an unanchored stack measures from. */
-inline int64_t memberHeardIndex(const StackNode& stack, const ClipNode& member,
-                                int64_t t, int64_t fallback_epoch) {
-  const timing::TimeMap map = stack.activeTimeMap();
-  if (!map.active() || map.period() <= 0) return clipHeardIndex(member, t);
-  const int64_t O = stack.isAnchored() ? stack.origin_samples.load()
-                                       : fallback_epoch;
-  return clipHeardIndex(member, O + nodeInner(stack, t, fallback_epoch));
+/** THE DESCENT: what `node` receives at transport clock `t` — the
+ * root→node walk applying, per stack ancestor, exactly what
+ * StackNode::childContext does: the one equation on the clock (an
+ * active map, or a one-shot's context-cycle fold, at the stack's frame
+ * origin), the child scope, and a cued step's re-base to the step top.
+ * `root_scope` is the island frame (AudioEngine::rootScope). A plain
+ * looping stack with no geometry passes the clock through. */
+inline Received receivedAt(const AudioNode& node, int64_t t,
+                           const Scope& root_scope) {
+  constexpr int kMaxDepth = 64;
+  const AudioNode* chain[kMaxDepth];
+  int depth = 0;
+  for (const AudioNode* p = node.getParent(); p != nullptr && depth < kMaxDepth;
+       p = p->getParent()) {
+    chain[depth++] = p;
+  }
+  Received r;
+  r.clock = t;
+  r.scope = root_scope;
+  for (int i = depth - 1; i >= 0; --i) {
+    const auto* stack = dynamic_cast<const StackNode*>(chain[i]);
+    if (stack == nullptr) continue;
+    const timing::TimeMap map = stack->activeTimeMap();
+    const int64_t O = frameOriginOf(*stack, r.scope);
+    const int64_t shot =
+        map.active() ? map.period() : stack->getIntrinsicDuration();
+    const bool one_shot = stack->periodFromContext() && shot > 0 &&
+                          r.scope.context_cycle > shot;
+    Scope child = childScopeOf(*stack, r.scope, O, map);
+    int64_t clock = r.clock;
+    if (map.active() || one_shot) {
+      const timing::TimeMap eff =
+          map.active() ? map : timing::TimeMap::single(0, shot);
+      clock = O + timing::innerAt(r.clock, O, eff,
+                                  one_shot ? r.scope.context_cycle
+                                           : eff.period())
+                      .inner;
+    }
+    // CUE STEPS (docs/sequencer.md §3): a cued VISIT re-bases the
+    // subtree's frame to the step top; the child frame's cycle top is
+    // the stack's origin again.
+    if (const Sequence* seq = stack->activeSequence();
+        seq != nullptr && seq->any_cue && seq->total > 0) {
+      const int64_t srel = seq->fold(clock - O);
+      const int k = seq->visitAt(srel);
+      if (seq->cueOfVisit(k)) {
+        clock = O + (srel - seq->bounds[k]);
+        child.cycle_epoch = O;
+      }
+    }
+    r.clock = clock;
+    r.scope = child;
+  }
+  return r;
+}
+
+/** THE NODE EQUATION at transport clock `t`, composed through every
+ * ancestor: ownInnerAt(node, receivedAt(node, t)). */
+inline timing::InnerAt nodeInnerAt(const AudioNode& node, int64_t t,
+                                   const Scope& root_scope) {
+  const Received r = receivedAt(node, t, root_scope);
+  return ownInnerAt(node, r.clock, r.scope);
+}
+
+/** The inner position `node` presents at transport clock `t` (a clip:
+ * its content index; a stack: its child clock's offset from its
+ * origin). In a one-shot's rest this is the rest phase — check
+ * nodeInnerAt(...).rest when that matters. */
+inline int64_t nodeInner(const AudioNode& node, int64_t t,
+                         const Scope& root_scope) {
+  return nodeInnerAt(node, t, root_scope).inner;
 }
 
 /** Fold an inner position into a single window [start, start+len):
@@ -77,10 +175,11 @@ inline int64_t foldIntoWindow(int64_t p, int64_t start, int64_t len) {
   return len > 0 ? start + posMod(p - start, len) : start;
 }
 
-/** The origin that makes a node present inner position `p` at clock
- * `t0` under map `m`: `t0 − mapOffset(0) − heardOffsetOf(p)` — or, when
- * the new map no longer covers `p`, the old heard phase `fallback_h`
- * folded into the new period (the multi-segment rule). */
+/** The origin that makes a node present inner position `p` at its
+ * received clock `t0` under map `m`: `t0 − mapOffset(0) −
+ * heardOffsetOf(p)` — or, when the new map no longer covers `p`, the
+ * old heard phase `fallback_h` folded into the new period (the
+ * multi-segment rule). */
 inline int64_t originForHeard(const timing::TimeMap& m, int64_t t0, int64_t p,
                               int64_t fallback_h) {
   const int64_t period = m.period();

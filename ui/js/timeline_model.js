@@ -105,6 +105,49 @@ export function armTarget(rel, quantum, contextLoop) {
 }
 
 /**
+ * THE PERIOD LAW (composition.md §3, I12) — the JS twin of
+ * src/period_law.h, pinned to the `period_law_cases` tree fixtures:
+ *
+ *   own(node)          = map ▸ active sequence ▸ (clip: duration |
+ *                        stack: LCM of the children's contributions)
+ *   contribution(node) = (one-shot || skipped || recording) ? 0 : own
+ *   islandCycle        = lcm(quantum || fallback, own(root))
+ *
+ * `providers` adapt a node shape to the law — { mapPeriod(node) → the
+ * ACTIVE map's period or 0, seqLen(node) → the ACTIVE sequence length
+ * or 0, children(node) → the child list }. The view model and the
+ * mock each pass their own (published state vs. mock state); the law
+ * itself is stated here once. A recording clip contributes nothing (its
+ * duration is not a period yet — engine parity: duration resets at
+ * arm).
+ */
+export function ownPeriod(node, providers, skip = null) {
+    const m = Math.round(providers.mapPeriod(node) || 0);
+    if (m > 0) return m;
+    const s = Math.round(providers.seqLen(node) || 0);
+    if (s > 0) return s;
+    if (node.type !== 'stack') return Math.round(node.duration || 0);
+    let composite = 0;
+    for (const child of providers.children(node) || []) {
+        const k = periodContribution(child, providers, skip);
+        if (k > 0) composite = composite > 0 ? lcm(composite, k) : k;
+    }
+    return composite;
+}
+
+export function periodContribution(node, providers, skip = null) {
+    if (node === skip || node.periodSource === 'context') return 0;
+    if (node.isRecording) return 0;
+    return ownPeriod(node, providers, skip);
+}
+
+export function islandCycle(root, providers, quantum, fallback) {
+    const q = quantum > 0 ? Math.round(quantum) : Math.round(fallback || 0);
+    const own = ownPeriod(root, providers);
+    return own > 0 ? lcm(q, own) : q;
+}
+
+/**
  * LCM of a set of durations, seeded with the quantum.
  * Mirrors AudioEngine::calculateTimelineLength's core loop.
  */

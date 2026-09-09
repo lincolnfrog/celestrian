@@ -13,9 +13,6 @@
 #include "../timing.h"
 #include "engine_internal.h"
 
-using celestrian::engine_internal::definerStack;
-using celestrian::engine_internal::firstCommittedClip;
-using celestrian::engine_internal::hasActiveGeometryOutside;
 
 void AudioEngine::togglePlayback() {
   // Pause/resume: stopping freezes the clock where it is; playing
@@ -103,9 +100,10 @@ void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
           shiftSubtree(child.get());
       };
   auto shiftEdit = [&](celestrian::Edit& e) {
-    // setsIsland's iepoch is a real epoch on every kind that sets it
-    // (CollapseTake/CollapseGroup reuse iq/iepoch as shift/duration but
-    // never with setsIsland).
+    // setsIsland's iepoch is a real epoch on every kind that sets it.
+    // A Collapse inverse's facts (shift, old_duration, the window) are
+    // RELATIVE; its splice form's pre-splice origin rides `iorg` under
+    // setsOrigin and shifts below like every absolute.
     if (e.setsIsland) e.iepoch += delta;
     if (e.setsOrigin) e.iorg += delta;
     for (auto& r : e.anchors) r.origin += delta;
@@ -186,16 +184,11 @@ void AudioEngine::attachTransportState(juce::DynamicObject& state,
   // reads this instead of re-deriving it with its own (drifting)
   // definition. Empty when the island has no definer.
   {
-    juce::String definer;
-    if (islandCommittedClipCount() == 1) {
-      if (auto* c = firstCommittedClip(root_node.get());
-          c != nullptr && !hasActiveGeometryOutside(root_node.get(), c)) {
-        definer = c->getUuid();
-      }
-    } else if (auto* ds = definerStack(root_node.get())) {
-      definer = ds->getUuid();
-    }
-    state.setProperty("definerId", definer);
+    // engine_internal::definer carries EVERY gate (sole geometry, no
+    // live take, no audition) — the UI reads the answer, never re-adds
+    // a gate.
+    auto* d = celestrian::engine_internal::definer(*root_node);
+    state.setProperty("definerId", d != nullptr ? d->getUuid() : juce::String());
   }
   // Master monitor: smoothed output RMS per channel (linear 0..1) —
   // the transport VU section reads these off the state poll.
@@ -228,14 +221,16 @@ juce::var AudioEngine::getTakeWaveform(const juce::String& uuid, int index,
 // --- LCM Timeline Helpers ---
 
 int64_t AudioEngine::calculateEffectiveCycleLength() const {
+  // THE PERIOD LAW over the current snapshot (period_law.h /
+  // graph_snapshot.h) — the very computation the audio callback seeds
+  // its context with, so the message thread and the callback cannot
+  // disagree on the cycle. The snapshot is immutable once published and
+  // the message thread publishes it; node facts (durations, windows,
+  // sequences) are atomics read live.
   const int64_t one_second = (int64_t)cached_sample_rate_.load();
   if (!root_node) return one_second;
-
-  int64_t quantum = root_node->getEffectiveQuantum();
-  if (quantum <= 0) quantum = one_second;
-
-  // The root is never windowed itself; its effective period is the LCM
-  // of the children's effective periods (E-C, recursive).
-  const int64_t p = root_node->getEffectivePeriod();
-  return p > 0 ? celestrian::timing::lcm(quantum, p) : quantum;
+  const auto* snap = graph_snapshot_.load(std::memory_order_acquire);
+  if (snap == nullptr) return one_second;
+  return celestrian::snapEffectiveCycle(*snap, root_node->getEffectiveQuantum(),
+                                        one_second);
 }

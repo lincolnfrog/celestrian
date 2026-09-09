@@ -18,8 +18,6 @@
 #include "engine_internal.h"
 
 using celestrian::engine_internal::definerStack;
-using celestrian::engine_internal::firstCommittedClip;
-using celestrian::engine_internal::hasActiveGeometryOutside;
 
 void AudioEngine::compactClipToHeap(celestrian::ClipNode& clip) {
   if (clip.isArmedOrRecording()) return;
@@ -193,36 +191,11 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
     return;
   }
 
-  // Q13 LOCK-COLLAPSE: arming a take against a provisionally-trimmed
-  // island FINALIZES the trim — the sole committed clip collapses to
-  // its window BEFORE the arm, so every boundary computation (context
-  // loop, heard/intrinsic cycle snapshots, LCMs) sees an ordinary
-  // whole-Q looper. An incommensurate buffer left alive would poison
-  // them all (the next take anchors at origin − epoch ∉ Q·Z).
-  // Undoable — ⌘Z restores the full buffer and the trim. (A stack
-  // target can never BE the definer clip, so the != uuid guard stays
-  // correct for group arms.)
-  if (islandCommittedClipCount() == 1) {
-    if (auto* definer = firstCommittedClip(root_node.get());
-        definer && definer->getUuid() != uuid &&
-        definer->isLoopWindowActive() && !hasActiveGeometryOutside(root_node.get(), definer)) {
-      celestrian::Edit e(celestrian::Edit::Kind::CollapseTake);
-      e.uuid = definer->getUuid();
-      record(std::move(e));  // no-op (not recorded) if already full-span
-    }
-  }
-  // The GROUP twin: a trimmed definer STACK collapses to its window
-  // before any arm — its raw inner cycle would
-  // otherwise survive the lock incommensurate (inflating every LCM the
-  // arm math snapshots, the very poison the clip collapse removes).
-  if (auto* ds = definerStack(root_node.get());
-      ds != nullptr && !root_node->hasActiveTake() && !ds->auditionActive() &&
-      !ds->isLoopWindowBypassed() && !ds->hasSegmentMap() &&
-      ds->getLoopEnd() > ds->getLoopStart()) {
-    celestrian::Edit e(celestrian::Edit::Kind::CollapseGroup);
-    e.uuid = ds->getUuid();
-    record(std::move(e));  // no-op (not recorded) if nothing to collapse
-  }
+  // Q13 LOCK-COLLAPSE: arming a take against a provisionally trimmed
+  // island FINALIZES the trim — the definer (clip or stack, one law)
+  // collapses to its window BEFORE the arm. Arming the definer clip
+  // itself is not "a take against it": excluded.
+  collapseDefinerAtArm(node);
 
   // Q7 GROUP ARM: resolve the whole arm set — a clip records itself, a
   // stack records its EMPTY clip descendants — and arm it in THIS one
@@ -444,25 +417,9 @@ void AudioEngine::newTake(const juce::String& uuid) {
   }
 
   // Q13 LOCK-COLLAPSE, exactly as at any other arm: a provisionally
-  // trimmed definer (clip or stack) collapses to its window first, so
-  // the new take's period IS the trimmed loop.
-  if (islandCommittedClipCount() == 1) {
-    if (auto* definer = firstCommittedClip(root_node.get());
-        definer && definer->isLoopWindowActive() &&
-        !hasActiveGeometryOutside(root_node.get(), definer)) {
-      celestrian::Edit e(celestrian::Edit::Kind::CollapseTake);
-      e.uuid = definer->getUuid();
-      record(std::move(e));
-    }
-  }
-  if (auto* ds = definerStack(root_node.get());
-      ds != nullptr && !root_node->hasActiveTake() && !ds->auditionActive() &&
-      !ds->isLoopWindowBypassed() && !ds->hasSegmentMap() &&
-      ds->getLoopEnd() > ds->getLoopStart()) {
-    celestrian::Edit e(celestrian::Edit::Kind::CollapseGroup);
-    e.uuid = ds->getUuid();
-    record(std::move(e));
-  }
+  // trimmed definer (clip or stack, one law) collapses to its window
+  // first, so the new take's period IS the trimmed loop.
+  collapseDefinerAtArm(nullptr);
 
   if (!is_playing_global.load()) {
     is_playing_global.store(true);

@@ -16,8 +16,6 @@
 #include "../timing.h"
 #include "engine_internal.h"
 
-using celestrian::engine_internal::definerStack;
-using celestrian::engine_internal::hasActiveGeometryOutside;
 
 void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
                                 int64_t end) {
@@ -71,9 +69,7 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     // below clamps instead (its UI clamps to the raw extent; the two
     // agree).
     const bool stack_definer_early =
-        clip == nullptr && definerStack(root_node.get()) == target &&
-        !root_node->hasActiveTake() &&
-        !static_cast<celestrian::StackNode*>(target)->auditionActive();
+        clip == nullptr && celestrian::engine_internal::definer(*root_node) == target;
     if (clip == nullptr && !stack_definer_early &&
         target->getIntrinsicDuration() > 0 && end > target->getIntrinsicDuration()) {
       juce::Logger::writeToLog(
@@ -82,17 +78,13 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
           juce::String(target->getIntrinsicDuration()));
       return;
     }
-    const bool clip_definer = clip != nullptr &&
-                              clip->getIntrinsicDuration() > 0 &&
-                              islandCommittedClipCount() == 1 &&
-                              !hasActiveGeometryOutside(root_node.get(), clip);
-    // Q13 for groups: the definer STACK's window re-establishes Q too.
-    const bool stack_definer =
-        clip == nullptr && definerStack(root_node.get()) == target &&
-        !static_cast<celestrian::StackNode*>(target)->auditionActive();
-    const bool q13_retrim = c_end > c_start &&
-                            (clip_definer || stack_definer) &&
-                            !root_node->hasActiveTake();
+    // THE DEFINER (engine_internal::definer, every gate inside): the
+    // sole clip, or the definer STACK — its window re-establishes Q.
+    auto* definer_node = celestrian::engine_internal::definer(*root_node);
+    const bool clip_definer = clip != nullptr && definer_node == clip &&
+                              clip->getIntrinsicDuration() > 0;
+    const bool stack_definer = clip == nullptr && definer_node == target;
+    const bool q13_retrim = c_end > c_start && (clip_definer || stack_definer);
     const int64_t q = target->getEffectiveQuantum();
     const int64_t len = c_end - c_start;
     if (!q13_retrim && q > 0 && len > 0 &&
@@ -128,14 +120,9 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
     auto* stack = dynamic_cast<celestrian::StackNode*>(target);
     const int64_t D = target->getIntrinsicDuration();
-    const bool stack_definer = stack != nullptr &&
-                               definerStack(root_node.get()) == stack &&
-                               !root_node->hasActiveTake() &&
-                               !stack->auditionActive();
-    const bool clip_definer = clip != nullptr && D > 0 &&
-                              islandCommittedClipCount() == 1 &&
-                              !root_node->hasActiveTake() &&
-                              !hasActiveGeometryOutside(root_node.get(), clip);
+    auto* definer_node = celestrian::engine_internal::definer(*root_node);
+    const bool stack_definer = stack != nullptr && definer_node == stack;
+    const bool clip_definer = clip != nullptr && D > 0 && definer_node == clip;
     // A window selects material — clamp to it (a fractional-Q drag
     // rounded past the take's end would otherwise produce a window, and
     // a Q, longer than the content it loops). Non-definer stacks are
@@ -148,15 +135,18 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     const bool definer = clip_definer || stack_definer;
     const bool anchored = clip != nullptr || target->isAnchored();
     if (definer && end > start && D > 0) {
-      const int64_t t0 = global_transport_pos.load();
       const int64_t len = end - start;
       // The inner position sounding NOW by the actual playback equation
       // (heard_index.h — one statement of the render, clip or stack,
-      // active map / override included), folded into the new window.
+      // active map / override included, composed through the
+      // ancestors), folded into the new window. The origin lives in the
+      // node's RECEIVED clock frame.
+      const celestrian::heard::Received rec = celestrian::heard::receivedAt(
+          *target, global_transport_pos.load(), rootScope());
       const int64_t p0 =
-          celestrian::heard::nodeInner(*target, t0, cycleTopOf(*target));
+          celestrian::heard::ownInnerAt(*target, rec.clock, rec.scope).inner;
       const int64_t pT = celestrian::heard::foldIntoWindow(p0, start, len);
-      const int64_t origin1 = t0 - pT;
+      const int64_t origin1 = rec.clock - pT;
       if (anchored) {
         e.setsOrigin = true;
         e.iorg = origin1;
@@ -270,15 +260,10 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // the period *re-establishes* Q rather than fighting it. (The n ≤ 1
   // delegations above are guarded inside setLoopPoints.)
   {
+    // Clip or definer STACK alike (engine_internal::definer, every
+    // gate inside): the definer's map re-establishes Q.
     const bool q13_retrim =
-        (dynamic_cast<celestrian::ClipNode*>(target) != nullptr &&
-         intrinsic > 0 && islandCommittedClipCount() == 1 &&
-         !root_node->hasActiveTake() && !hasActiveGeometryOutside(root_node.get(), target)) ||
-        // Q13 FOR GROUPS, the multi-segment twin: the definer STACK's
-        // map re-establishes Q too.
-        (definerStack(root_node.get()) == target &&
-         !root_node->hasActiveTake() &&
-         !static_cast<celestrian::StackNode*>(target)->auditionActive());
+        intrinsic > 0 && celestrian::engine_internal::definer(*root_node) == target;
     const int64_t q = target->getEffectiveQuantum();
     const int64_t p = map.period();
     if (!q13_retrim && q > 0 && !isPeriodCoherentWithQuantum(p, q)) {
@@ -309,25 +294,26 @@ void AudioEngine::setSegments(const juce::String& uuid,
   {
     auto* clip = dynamic_cast<celestrian::ClipNode*>(target);
     auto* stack = dynamic_cast<celestrian::StackNode*>(target);
+    auto* definer_node = celestrian::engine_internal::definer(*root_node);
     const bool clip_definer =
-        clip != nullptr && intrinsic > 0 && islandCommittedClipCount() == 1 &&
-        !root_node->hasActiveTake() &&
-        !hasActiveGeometryOutside(root_node.get(), clip);
-    const bool stack_definer = stack != nullptr &&
-                               definerStack(root_node.get()) == stack &&
-                               !root_node->hasActiveTake() &&
-                               !stack->auditionActive() && intrinsic > 0;
+        clip != nullptr && intrinsic > 0 && definer_node == clip;
+    const bool stack_definer =
+        stack != nullptr && intrinsic > 0 && definer_node == stack;
     if (clip_definer || stack_definer) {
-      const int64_t t0 = global_transport_pos.load();
+      // The node's RECEIVED clock (heard_index.h: the ancestors' maps
+      // composed) — the frame its origin lives in.
+      const celestrian::heard::Received rec = celestrian::heard::receivedAt(
+          *target, global_transport_pos.load(), rootScope());
+      const int64_t t0 = rec.clock;
       const TimeMap old_map = target->activeTimeMap();
       const int64_t period = map.period();
       const int64_t a0 = map.mapOffset(0);
-      const int64_t fallback = cycleTopOf(*target);
       int64_t origin_new = t0 - a0;  // no old map: heard phase 0 at t0
       if (old_map.active() && old_map.period() > 0) {
         // heard_index.h: the position sounding now, re-anchored under
         // the new map (old heard phase folds in when the cut removed it).
-        const int64_t p0 = celestrian::heard::nodeInner(*target, t0, fallback);
+        const int64_t p0 =
+            celestrian::heard::ownInnerAt(*target, rec.clock, rec.scope).inner;
         origin_new = celestrian::heard::originForHeard(
             map, t0, p0, old_map.heardOffsetOf(p0));
       }

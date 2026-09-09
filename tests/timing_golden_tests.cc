@@ -232,6 +232,60 @@ class TimingGoldenTests : public juce::UnitTest {
       }
     }
 
+    beginTest("innerAt (THE RENDER EQUATION, stated once)");
+    if (auto* cases = root.getProperty("inner_at_cases", {}).getArray()) {
+      for (auto& c : *cases) {
+        const auto name = c.getProperty("name", "?").toString();
+        const TimeMap m = mapFrom(c, name);
+        const int64_t origin = asInt64(c, "origin");
+        const int64_t fold = asInt64(c, "fold");
+        if (auto* probes = c.getProperty("probes", {}).getArray()) {
+          for (auto& p : *probes) {
+            const auto t = juce::String(asInt64(p, "t"));
+            const celestrian::timing::InnerAt at =
+                celestrian::timing::innerAt(asInt64(p, "t"), origin, m, fold);
+            expectEquals((juce::int64)at.h, (juce::int64)asInt64(p, "h"),
+                         name + " h(t=" + t + ")");
+            expectEquals((juce::int64)at.inner,
+                         (juce::int64)asInt64(p, "inner"),
+                         name + " inner(t=" + t + ")");
+            expectEquals((juce::int64)at.run, (juce::int64)asInt64(p, "run"),
+                         name + " run(t=" + t + ")");
+            expect(at.rest == (bool)p.getProperty("rest", false),
+                   name + " rest(t=" + t + ")");
+          }
+        }
+      }
+    }
+    {
+      // forEachContentRun: the comp cell length is a seam input — a run
+      // never crosses a Q cell of the inner position, a map seam, or
+      // the shot end; the runs tile the block exactly.
+      TimeMap m;
+      m.n = 2;
+      m.segs[0] = {0, 300};
+      m.segs[1] = {600, 1000};  // shot 700
+      std::vector<std::pair<int, int>> runs;  // (i, run)
+      std::vector<int64_t> inners;
+      celestrian::timing::forEachContentRun(
+          0, 1000, 0, m, /*fold=*/700, /*cell_len=*/250,
+          [&](int i, int run, const celestrian::timing::InnerAt& at) {
+            runs.push_back({i, run});
+            inners.push_back(at.inner);
+          });
+      // h: 0 → cell edge 250; 250 → seam at 300 (50); 300 → inner 600,
+      // cell edge 750 (150); 450 → inner 750, seam/cell 1000 (250);
+      // 700 = a new pass, h 0 (250); 950 → 50 left in the block.
+      const std::vector<std::pair<int, int>> want = {
+          {0, 250}, {250, 50}, {300, 150}, {450, 250}, {700, 250}, {950, 50}};
+      expect(runs == want, "runs tile the block at cells, seams and passes");
+      const std::vector<int64_t> want_inner = {0, 250, 600, 750, 0, 250};
+      expect(inners == want_inner, "each run starts at its inner position");
+      int covered = 0;
+      for (const auto& r : runs) covered += r.second;
+      expectEquals(covered, 1000, "the runs cover the block exactly");
+    }
+
     beginTest("originQ (D-T3 physical/musical boundary projection)");
     if (auto* cases = root.getProperty("qtime_origin_cases", {}).getArray()) {
       for (auto& c : *cases) {

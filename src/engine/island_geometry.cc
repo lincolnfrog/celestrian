@@ -140,6 +140,19 @@ bool hasActiveGeometryOutside(celestrian::AudioNode* node,
   return false;
 }
 
+celestrian::AudioNode* definer(celestrian::StackNode& root) {
+  if (root.hasActiveTake()) return nullptr;
+  celestrian::AudioNode* node = nullptr;
+  if (countCommittedClips(&root) == 1) {
+    node = firstCommittedClip(&root);
+  } else if (auto* ds = definerStack(&root)) {
+    if (ds->auditionActive()) return nullptr;
+    node = ds;
+  }
+  if (node == nullptr || hasActiveGeometryOutside(&root, node)) return nullptr;
+  return node;
+}
+
 celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
   if (node->getNodeType() == celestrian::NodeType::Clip) {
     return node->getIntrinsicDuration() > 0
@@ -187,7 +200,7 @@ namespace {
 // stack the returned origin moves its whole subtree (applySetsOrigin).
 int64_t continuityOrigin(const celestrian::AudioNode& node,
                          const celestrian::timing::TimeMap& new_map,
-                         int64_t t0, int64_t fallback_origin) {
+                         int64_t t0, const celestrian::heard::Scope& root) {
   using TimeMap = celestrian::timing::TimeMap;
   const int64_t dur = node.getIntrinsicDuration();
   auto effective = [dur](const TimeMap& m) {
@@ -196,15 +209,35 @@ int64_t continuityOrigin(const celestrian::AudioNode& node,
   const TimeMap oldm = effective(node.activeTimeMap());
   const TimeMap newm = effective(new_map);
   const int64_t period = newm.period();
-  const bool anchored =
-      node.getNodeType() == celestrian::NodeType::Clip || node.isAnchored();
-  const int64_t old_org = anchored ? node.origin_samples.load() : fallback_origin;
+  // The node's RECEIVED clock and scope (heard_index.h: the ancestors'
+  // maps composed) — the frame its origin lives in.
+  const celestrian::heard::Received rec =
+      celestrian::heard::receivedAt(node, t0, root);
+  const int64_t old_org = celestrian::heard::frameOriginOf(node, rec.scope);
   if (period <= 0 || oldm.period() <= 0) return old_org;
-  const int64_t p0 = celestrian::heard::nodeInner(node, t0, fallback_origin);
+  const celestrian::timing::InnerAt at =
+      celestrian::heard::ownInnerAt(node, rec.clock, rec.scope);
+  if (at.rest) return old_org;  // a one-shot resting: nothing to keep
+  const int64_t p0 = at.inner;
   if (newm.heardOffsetOf(p0) < 0) return old_org;  // region removed: stay put
-  return celestrian::heard::originForHeard(newm, t0, p0, 0);
+  return celestrian::heard::originForHeard(newm, rec.clock, p0, 0);
 }
 }  // namespace
+
+celestrian::heard::Scope AudioEngine::rootScope() const {
+  // The island frame the audio callback seeds the root with
+  // (engine_internal::renderContext): the epoch, the audible island
+  // cycle and Q — read here from the CURRENT snapshot (immutable once
+  // published; the message thread publishes it).
+  celestrian::heard::Scope s;
+  s.cycle_epoch = islandEpoch();
+  s.quantum = root_node ? root_node->getQuantum() : 0;
+  if (const auto* snap = graph_snapshot_.load(std::memory_order_acquire)) {
+    s.context_cycle = celestrian::snapEffectiveCycle(
+        *snap, s.quantum, (int64_t)cached_sample_rate_.load());
+  }
+  return s;
+}
 
 bool AudioEngine::isPeriodCoherentWithQuantum(int64_t period, int64_t quantum) {
   if (period <= 0) return false;
@@ -218,15 +251,14 @@ void AudioEngine::attachMapEditRiders(
   // Q18: a stack's frame is its own origin once anchored, else its
   // received cycle top; the riders below then apply to clips and
   // stacks alike (an unanchored stack has no content — nothing moves).
-  const bool anchored =
-      node.getNodeType() == celestrian::NodeType::Clip || node.isAnchored();
+  const bool anchored = node.isAnchored();  // a clip always is (Q18)
   const int64_t fallback = cycleTopOf(node);
   const int64_t origin = anchored ? node.origin_samples.load() : fallback;
   // Audio continuity is a PLAYING concern: stopped, the origin stays.
   const int64_t origin_new =
       is_playing_global.load()
           ? continuityOrigin(node, new_map, global_transport_pos.load(),
-                             fallback)
+                             rootScope())
           : origin;
   if (origin_new != origin && anchored) {
     e.setsOrigin = true;
@@ -250,7 +282,7 @@ void AudioEngine::attachMapEditRiders(
       new_map.active() ? new_map.period() : node.getIntrinsicDuration();
   const int64_t others = celestrian::timing::foldPeriod(
       quantum > 0 ? quantum : 0,
-      celestrian::StackNode::effectivePeriodOf(*root_node, &node));
+      celestrian::period_law::ownPeriodOf(*root_node, &node));
   const bool definer =
       new_period > 0 && (others <= 0 || new_period % others == 0);
   // …and only when the top is not ALREADY at the frame top: the definer's

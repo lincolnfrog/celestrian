@@ -167,7 +167,7 @@ class SessionNegativeTests : public juce::UnitTest {
       live->duration_samples.store(Q);
       live->duration_samples.store(2 * Q);
       expect(!live->takeFilesDirty(), "a raw field store is not dirty");
-      live->collapseToWindow(0, Q);
+      live->collapseContent(0, Q);
       expect(live->takeFilesDirty(), "the collapse marks the mirror dirty");
       expect(session_io::save(root, (double)Q, dir, opts), "third save");
       expect(!live->takeFilesDirty(), "the mirror cleared the flag");

@@ -16,7 +16,9 @@ import {
     armTarget, originQ, throughMapDest
 } from '../timeline_model.js';
 import { toSamples } from '../qtime.js';
-import { mapPeriod, mapOffset, seamDistance, heardOffsetOf } from '../time_map.js';
+import {
+    mapPeriod, mapOffset, seamDistance, heardOffsetOf, innerAt,
+} from '../time_map.js';
 import { loadSharedJson, near } from './helpers.mjs';
 
 const golden = loadSharedJson('timing_golden.json');
@@ -100,6 +102,19 @@ test('golden: TimeMap inverse (heardOffsetOf)', () => {
         for (const p of c.probes) {
             check(heardOffsetOf(map, p.inner), p.heard,
                 `${c.name} heardOffsetOf(${p.inner})`);
+        }
+    }
+});
+
+test('golden: innerAt (THE RENDER EQUATION, stated once)', () => {
+    for (const c of golden.inner_at_cases) {
+        const map = { segs: c.segments };
+        for (const p of c.probes) {
+            const at = innerAt(p.t, c.origin, map, c.fold);
+            check(at.h, p.h, `${c.name} h(t=${p.t})`);
+            check(at.inner, p.inner, `${c.name} inner(t=${p.t})`);
+            check(at.run, p.run, `${c.name} run(t=${p.t})`);
+            assert.equal(at.rest, p.rest, `${c.name} rest(t=${p.t})`);
         }
     }
 });
