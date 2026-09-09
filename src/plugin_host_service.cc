@@ -1,5 +1,6 @@
 #include "plugin_host_service.h"
 
+#include <cstddef>
 #include <string>
 
 #include "plugin_scan_worker.h"
@@ -123,7 +124,7 @@ class PluginHostService::ScanThread : public juce::Thread {
     if (size <= consumed) return;
     in.setPosition(consumed);
     juce::MemoryBlock block;
-    in.readIntoMemoryBlock(block, (ssize_t)(size - consumed));
+    in.readIntoMemoryBlock(block, (std::ptrdiff_t)(size - consumed));
     bytes.append((const char*)block.getData(), block.getSize());
     consumed = size;
   }
