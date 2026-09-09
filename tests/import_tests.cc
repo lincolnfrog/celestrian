@@ -136,8 +136,8 @@ class ImportTests : public juce::UnitTest {
                    "2Q committed");
       expectEquals((int64_t)prop(engine, id, "origin"), epoch + Q,
                    "origin = epoch + 1Q");
-      expectEquals((int64_t)prop(engine, id, "loopEnd"), (int64_t)(2 * Q),
-                   "whole window");
+      expectEquals((int64_t)prop(engine, id, "loopEnd"), (int64_t)0,
+                   "whole: no window (D4-7)");
       expectEquals((int)prop(engine, id, "takes"), 1, "one take");
       expectEquals((int)prop(engine, id, "channels"), 1, "mono stays mono");
       expect(!(bool)nodeVar(engine, id).getProperty("isRecording", true),

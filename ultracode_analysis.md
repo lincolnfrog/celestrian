@@ -1230,12 +1230,27 @@ every step (C++ Debug binary first, then `npm test`, then Playwright).
 > law, `context_loop` deleted (arm grid = context_cycle), bounce and
 > `oneShotFacts` read own(target); JS twin in timeline_model.js used
 > by the VM and the mock; `period_law_cases` tree fixtures pin all
-> three. NOT done: D4-7 (commit still authors the [0, D) map — a
-> Days-sized change across engine, mock, VM and ~20 tests that pin
-> `loopEnd == duration` after commit; it needs its own round), and
-> D2-1's "one JS intrinsicDuration" (the display-side commensurate
-> laws in view_model.js are unchanged), D2-10, D2-14. The D2-5 answer
-> is a RECOMMENDATION applied, not an owner ruling — see §7 item 3.
+> three. NOT done: D2-1's "one JS intrinsicDuration" (the display-side
+> commensurate laws in view_model.js are unchanged), D2-10, D2-14. The
+> D2-5 answer was applied as the recommendation; the OWNER'S RULING
+> (2026-09-08): "a one-shot stack with a sequence" is not a
+> well-defined idea — revisit the concept later; treat the current
+> behavior as provisional, not canon.
+>
+> **Status 2026-09-08 — D4-7 LANDED (standalone round).** Commit
+> stores (origin, duration) only: no map is authored on a take
+> (recorded, imported, or loaded — a legacy bundle's [0, D) is scrubbed
+> to none at load). "Whole" now means NO window everywhere (collapse
+> consumes to none, members whole = none, the definer re-trim riders
+> whole members to none); the mock mirrors it. Deviation from the
+> recommendation: the unsnapped stop's provisional [0, L) window is
+> still written by the audio thread at commit (so the clip loops right
+> from its first pass — a message-thread settle would loop the padded
+> length for up to a poll), and `liftGroupWindow` stays as the settle
+> that lifts a group take's sub-region onto the stack; the full-span
+> carve-outs are reworded as the general "restricts nothing" fact
+> rather than deleted (an authored or legacy full-span window reads the
+> same). ~25 test pins of `loopEnd == duration` became `== 0`.
 
 **Tier 1 — hours each, do now, no ruling needed.**
 - D8-1 orphan cue hang — done: `any_cue` derived per visit; both walks

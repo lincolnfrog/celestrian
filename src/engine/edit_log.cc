@@ -184,13 +184,8 @@ bool AudioEngine::collapseNode(celestrian::AudioNode& node, CollapseFacts& f) {
   for (auto* leaf : leaves) leaf->collapseContent(s, len);
   shiftOriginsGated(node, s, 0);
   liftAncestorsGated(node, s, 0);
-  // The window is consumed: a clip keeps the commit furniture [0, len)
-  // every committed clip carries (D4-7); a stack has no window.
-  if (node.getNodeType() == celestrian::NodeType::Clip) {
-    node.setLoopPoints(0, len);
-  } else {
-    node.setLoopPoints(0, 0);
-  }
+  // The window is consumed (the take IS the window now) — clip or stack.
+  node.setLoopPoints(0, 0);
   f.shift = s;
   f.old_duration = D;
   f.win_start = s;
@@ -205,8 +200,8 @@ void AudioEngine::uncollapseNode(celestrian::AudioNode& node, int64_t shift,
   for (auto* leaf : collapseLeaves(node)) {
     if (!leaf->isCollapsed()) continue;
     leaf->uncollapseContent(shift, old_duration);
-    // Members stay whole; the restored window is the stack's.
-    if (is_stack) leaf->setLoopPoints(0, old_duration);
+    // Members stay whole (no window); the restored window is the stack's.
+    if (is_stack) leaf->setLoopPoints(0, 0);
   }
   shiftOriginsGated(node, -shift, 0);
   liftAncestorsGated(node, -shift, 0);

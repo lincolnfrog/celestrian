@@ -445,6 +445,17 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
   node->setLoopPoints(
       timing::toSamples(qread(o->getProperty("windowStartQ")), q),
       timing::toSamples(qread(o->getProperty("windowEndQ")), q));
+  // LEGACY FURNITURE (audit D4-7): bundles written before 2026-09-08
+  // carry a [0, D) window on every committed clip (commit authored it).
+  // It restricts nothing; load it as no window so the in-memory graph
+  // has one law (a take is its whole content unless trimmed).
+  if (node->getNodeType() == NodeType::Clip) {
+    const int64_t D = node->getIntrinsicDuration();
+    if (D > 0 && node->getLoopStart() <= 0 && node->getLoopEnd() >= D &&
+        !node->hasSegmentMap()) {
+      node->setLoopPoints(0, 0);
+    }
+  }
   // Multi-segment map (phase 3): ≥2 entries install an override
   // (pre-graph node: no old pointer, no retire needed); absent/short
   // lists keep the single-window fallback above.

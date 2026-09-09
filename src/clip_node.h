@@ -320,7 +320,7 @@ class ClipNode : public AudioNode {
     if (collapsed_from_.load() == 0) collapsed_from_.store(duration_samples.load());
     content_base_.store(content_base_.load() + shift);
     duration_samples.store(len);
-    setLoopPoints(0, len);
+    setLoopPoints(0, 0);  // the window is consumed: the take IS the window
     take_files_dirty_ = true;  // the mirrored WAV is the committed window
   }
   /** Inverse of collapseContent: restore the pre-collapse buffer view

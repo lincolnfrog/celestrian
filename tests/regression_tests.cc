@@ -622,8 +622,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           "LOOP BUG TEST: duration=" + juce::String(duration) +
           ", loopEnd=" + juce::String(loopEnd) + ", Q=" + juce::String(Q));
 
-      expectEquals(loopEnd, duration,
-                   "loopEnd MUST equal duration, not Q!");
+      // The regression was a Q-length window on a longer take. Since
+      // D4-7 commit writes NO window: the take loops at its whole
+      // duration by the render's fallback, and loopEnd reads 0.
+      expectEquals(loopEnd, (int64_t)0, "no window: loops at the duration");
       expect(loopEnd != Q, "loopEnd should NOT equal Q");
     }
 
@@ -670,7 +672,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       int64_t duration = clip2Ptr->duration_samples.load();
       int64_t loopEnd = clip2Ptr->getLoopEnd();
       expect(duration >= 4000, "Duration should be at least 4Q");
-      expectEquals(loopEnd, duration, "loopEnd must equal duration");
+      expectEquals(loopEnd, (int64_t)0,
+                   "no window (D4-7): the take loops at its whole duration");
 
       // === CRITICAL PLAYBACK TEST ===
       // Play at master_pos = 1500 (1.5Q)
@@ -757,7 +760,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
 
       // Duration MUST be 2Q (2000), not 1Q (1000)
       expect(duration >= 2000, "Duration should be at least 2Q (2000)");
-      expectEquals(loopEnd, duration, "loopEnd must equal duration");
+      expectEquals(loopEnd, (int64_t)0,
+                   "no window (D4-7): the take loops at its whole duration");
 
       // === THE CRITICAL TEST ===
       // Play at master=1500 (1.5Q)
@@ -838,7 +842,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           ", loopEnd=" + juce::String(loopEnd) + ", Q=" + juce::String(Q));
 
       expect(duration >= 2000, "Duration should be at least 2Q");
-      expectEquals(loopEnd, duration, "loopEnd must equal duration");
+      expectEquals(loopEnd, (int64_t)0,
+                   "no window (D4-7): the take loops at its whole duration");
       expect(loopEnd != Q, "loopEnd should NOT equal Q (1Q)!");
 
       // Key test: Play at 1.5Q - should read SECOND half (0.5), not first (0.1)
@@ -1323,8 +1328,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       engine.undo();
       engine.undo();
       expectEquals(epochNow(), origin2, "undo restores the epoch");
-      expectEquals(clipProp(1, "loopEnd") - clipProp(1, "loopStart"), 10 * Q,
-                   "undo restores the full span");
+      expectEquals(clipProp(1, "loopEnd") - clipProp(1, "loopStart"),
+                   (int64_t)0, "undo restores the whole take (no window)");
 
       // A NON-definer: clip 3 (8Q) now owns the cycle (lcm(1, 10, 8) →
       // its commit re-bases the epoch to ITS origin); trimming clip 2

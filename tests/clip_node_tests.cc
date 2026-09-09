@@ -170,8 +170,10 @@ class ClipNodeTests : public juce::UnitTest {
       // But we only recorded 50 real samples, padded to 100.
       // Actually check if rotation logic is applied correctly.
 
-      // For now, just verify duration is correct
-      expectEquals(nodePtr->getLoopEnd(), (int64_t)100);
+      // For now, just verify duration is correct (a committed take is
+      // whole — no window is written, D4-7).
+      expectEquals(nodePtr->getIntrinsicDuration(), (int64_t)100);
+      expectEquals(nodePtr->getLoopEnd(), (int64_t)0);
     }
 
     beginTest("Origin Alignment: content plays at its origin");
@@ -280,9 +282,11 @@ class ClipNodeTests : public juce::UnitTest {
       clipPtr->process(inputs, nullptr, 1, 0, recNc.ctx);
       clipPtr->stopRecording();
 
-      // Default loop points should span full clip
+      // A committed take has NO window (D4-7): it loops at its whole
+      // duration by the render's own fallback.
       expectEquals(clipPtr->getLoopStart(), (int64_t)0);
-      expectEquals(clipPtr->getLoopEnd(), (int64_t)1000);
+      expectEquals(clipPtr->getLoopEnd(), (int64_t)0);
+      expect(!clipPtr->isLoopWindowActive(), "no window after commit");
 
       // Set custom loop region (200-600)
       clipPtr->setLoopPoints(200, 600);
@@ -332,7 +336,8 @@ class ClipNodeTests : public juce::UnitTest {
       expect(masterPtr->isPlaying(), "Master should be playing after commit");
       expect(!masterPtr->isRecording(),
              "Master should not be recording after commit");
-      expectEquals(masterPtr->getLoopEnd(), (int64_t)1000);
+      expectEquals(masterPtr->getIntrinsicDuration(), (int64_t)1000);
+      expectEquals(masterPtr->getLoopEnd(), (int64_t)0);  // whole: no window
 
       // Verify waveform is not blank (the user's bug symptom)
       auto waveform = masterPtr->getWaveform(10);

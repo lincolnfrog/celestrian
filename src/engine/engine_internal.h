@@ -74,8 +74,8 @@ celestrian::StackNode* definerStack(celestrian::AudioNode* root);
  * the previous Q is stranded permanently incoherent with the new one.
  * So the definer re-establishes only while its own geometry is the
  * island's ONLY geometry. Walks the island skipping the definer's
- * subtree; a committed clip's full-span [0, D) window is commit
- * furniture, not geometry.
+ * subtree; a window spanning a clip's whole take restricts nothing and
+ * is not geometry.
  */
 bool hasActiveGeometryOutside(celestrian::AudioNode* node,
                               celestrian::AudioNode* exclude);

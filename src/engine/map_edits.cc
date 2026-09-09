@@ -183,13 +183,16 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
         auto* c = dynamic_cast<celestrian::ClipNode*>(child.get());
         if (c == nullptr || c->getIntrinsicDuration() <= 0) continue;
         const int64_t d = c->getIntrinsicDuration();
-        if (!c->hasSegmentMap() && c->getLoopStart() == 0 &&
-            c->getLoopEnd() >= d)
+        // Already whole: no window, or a full-span one (restricts
+        // nothing). Whole = NO window (D4-7).
+        if (!c->hasSegmentMap() &&
+            (c->getLoopEnd() <= c->getLoopStart() ||
+             (c->getLoopStart() == 0 && c->getLoopEnd() >= d)))
           continue;
         celestrian::Edit::WindowRider r;
         r.uuid = c->getUuid();
         r.start = 0;
-        r.end = d;
+        r.end = 0;
         e.windows.push_back(std::move(r));
       }
     }
@@ -332,12 +335,15 @@ void AudioEngine::setSegments(const juce::String& uuid,
           auto* c = dynamic_cast<celestrian::ClipNode*>(child.get());
           if (c == nullptr || c->getIntrinsicDuration() <= 0) continue;
           const int64_t d = c->getIntrinsicDuration();
-          if (c->hasSegmentMap() || c->getLoopStart() != 0 ||
-              c->getLoopEnd() < d) {
+          const bool whole =
+              !c->hasSegmentMap() &&
+              (c->getLoopEnd() <= c->getLoopStart() ||
+               (c->getLoopStart() == 0 && c->getLoopEnd() >= d));
+          if (!whole) {  // whole = NO window (D4-7)
             celestrian::Edit::WindowRider w;
             w.uuid = c->getUuid();
             w.start = 0;
-            w.end = d;
+            w.end = 0;
             e.windows.push_back(std::move(w));
           }
         }

@@ -257,7 +257,8 @@ class ContentFrameTests : public juce::UnitTest {
         expectEquals((int64_t)deepProp(engine, stack_id, "origin"),
                      (int64_t)deepProp(engine, id, "origin"),
                      "the stack carries the same origin");
-        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D, "members whole");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                     "members whole (no window)");
       }
       std::vector<std::pair<int64_t, float>> out;
       driveRamp(engine, 2 * P, clock, true, &out);

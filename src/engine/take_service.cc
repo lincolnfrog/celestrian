@@ -601,8 +601,7 @@ void AudioEngine::liftGroupWindow(
   back.start = stack->getLoopStart();
   back.end = stack->getLoopEnd();
   inv.windows.push_back(std::move(back));
-  for (auto* clip : committed)
-    clip->setLoopPoints(0, clip->getIntrinsicDuration());
+  for (auto* clip : committed) clip->setLoopPoints(0, 0);  // members whole
   stack->setLoopPoints(ls, le);
   juce::Logger::writeToLog("AudioEngine: group take window lifted onto " +
                            stack->getUuid() + " [" + juce::String(ls) + ", " +

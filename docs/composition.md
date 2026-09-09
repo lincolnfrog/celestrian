@@ -139,8 +139,9 @@ over two providers — the ownership tree on the message thread and the
 graph snapshot on the audio thread; `ui/js/timeline_model.js` carries
 the JS twin and `period_law_cases` in `shared/timing_golden.json` pins
 all three on tree fixtures (audit D2-1, 2026-09-08). A one-shot stack's
-shot is its OWN period — under a sequence, its whole song (D2-5 ruling
-(a)).
+shot is its OWN period. (A one-shot stack WITH a sequence is not a
+well-defined idea yet — owner, 2026-09-08; the law currently reads the
+song as the shot, provisionally, pending a design pass.)
 
 | Quantity | Definition | Who consumes it |
 |---|---|---|

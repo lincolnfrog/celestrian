@@ -118,8 +118,9 @@ celestrian::StackNode* definerStack(celestrian::AudioNode* root) {
  * the previous Q is stranded permanently incoherent with the new one.
  * So the definer re-establishes only while its own geometry is the
  * island's ONLY geometry. Walks the island skipping the definer's
- * subtree; a committed clip's full-span [0, D) window is commit
- * furniture, not geometry.
+ * subtree. A window spanning a clip's whole take restricts nothing and
+ * is not geometry (commit writes none — audit D4-7 — but an authored
+ * or legacy one reads the same).
  */
 bool hasActiveGeometryOutside(celestrian::AudioNode* node,
                               celestrian::AudioNode* exclude) {
@@ -561,8 +562,8 @@ void AudioEngine::scrubIncoherentGeometry(int64_t q) {
   // period is neither a whole multiple nor an exact divisor of Q —
   // pre-Q authored geometry that the just-established grid cannot
   // carry (an incoherent active map LCM-explodes the effective
-  // cycle). Committed clips' full-span windows are
-  // commit furniture and never touched.
+  // cycle). A window spanning a clip's whole take restricts nothing
+  // and is left alone (commit writes none — audit D4-7).
   const std::function<void(celestrian::AudioNode*)> visit =
       [&](celestrian::AudioNode* node) {
         const auto coherent = [q](int64_t p) {

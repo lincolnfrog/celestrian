@@ -88,8 +88,10 @@ function intrinsicPeriodQ(node, quantum) {
 
 /**
  * Loop window descriptor for a node, or null if there is no window
- * WORTH SHOWING: an invalid window, or the default full-span window
- * ([0, period)) which restricts nothing — commit sets loopEnd=duration
+ * WORTH SHOWING: an invalid window, or a full-span window
+ * ([0, period)) which restricts nothing — commit writes NO window
+ * (audit D4-7); a legacy bundle or a latent full-span drag may still
+ * present one, and it reads as none. (Historically commit set loopEnd=duration
  * on every clip, and drawing brackets on that default is pure noise
  * (and reads as a misalignment at the lane's left edge).
  */

@@ -103,7 +103,7 @@ export function deleteNode(id) {
                 if (m.type !== 'clip' || !m._precollapse) return;
                 m.duration = m._precollapse.dur;
                 m.loopStart = 0;
-                m.loopEnd = m._precollapse.dur;
+                m.loopEnd = 0;  // members whole (no window)
                 m.origin = (m.origin || 0) - shift;
                 delete m._precollapse;
             });

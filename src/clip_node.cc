@@ -1432,7 +1432,6 @@ void ClipNode::commitRecording(int64_t final_duration,
       // commit fired (stop boundary / one-period cap); C is WHAT
       // commits, so no duration snap applies.
       duration = map_C;
-      setLoopPoints(0, duration);
       RtLog::instance().post(
           "ClipNode: Through-map commit - C=%lld (heard L=%lld)",
           (long long)map_C, (long long)L);
@@ -1440,7 +1439,14 @@ void ClipNode::commitRecording(int64_t final_duration,
       // Hysteresis snapping — shared math in timing.h.
       auto snap = timing::snapCommittedDuration(L, Q);
       duration = snap.duration;
-      setLoopPoints(0, snap.loop_end);
+      // COMMIT STORES (origin, duration) ONLY (audit D4-7): no map is
+      // authored on a take — the render's own fallback IS the full
+      // span, and a full-span window would be furniture every consumer
+      // had to carve out. The ONE exception is the unsnapped stop: the
+      // take is padded to the boundary but the region that sounds is
+      // [0, L) — the island's provisional definer window, real
+      // geometry (a group take's is lifted onto the stack at settle).
+      if (snap.loop_end < snap.duration) setLoopPoints(0, snap.loop_end);
 
       if (snap.snapped) {
         RtLog::instance().post("ClipNode: Late Snap to B=%lld (L=%lld)",
@@ -1455,11 +1461,9 @@ void ClipNode::commitRecording(int64_t final_duration,
       duration = final_duration;
       RtLog::instance().post("ClipNode: Anticipatory Snap to B=%lld",
                              (long long)duration);
-      setLoopPoints(0, duration);
-    } else {
-      // No quantum or fallback (first clip case)
-      setLoopPoints(0, duration);
     }
+    // (No quantum, or a snapped/anticipated boundary: the take is its
+    // whole content — no window is written; see the D4-7 note above.)
 
     // THE END SEAM (docs/vst3.md §11): a note still down when the take
     // ends is closed at its last sample, so the content owns every

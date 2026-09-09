@@ -571,7 +571,10 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   map in the island, stranding it permanently incoherent, so BOTH
   definer paths engage only while the definer's geometry is the
   island's only geometry (`hasActiveGeometryOutside`; a committed
-  clip's full-span [0, D) is commit furniture, not geometry). Clear
+  clip's full-span [0, D) restricts nothing and is not geometry; since
+  audit D4-7, 2026-09-08, commit writes NO window — a take is its whole
+  content unless trimmed, the only commit-time window being the
+  unsnapped stop's provisional [0, L)). Clear
   the other window and the definer power returns. (2) **the
   Q-ESTABLISHMENT SCRUB** — authoring windows/maps pre-Q is legal
   (parts can be authored before the first take), but a free length

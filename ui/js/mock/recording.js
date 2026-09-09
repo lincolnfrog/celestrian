@@ -149,7 +149,7 @@ function lockCollapseAtArm(excludeIds) {
                 definer.origin = (definer.origin || 0) + ls;
                 definer.duration = len;
                 definer.loopStart = 0;
-                definer.loopEnd = len;
+                definer.loopEnd = 0;  // consumed: the take IS the window
                 console.log('[MockBackend] Q13 lock-collapse:', definer.id,
                     '→ duration =', len);
             }
@@ -181,10 +181,10 @@ function lockCollapseAtArm(excludeIds) {
                 members.every(m => m.duration === D)) {
                 pushUndo();
                 members.forEach(m => {
-                    m._precollapse = { dur: D, ls: 0, le: D, group: true };
+                    m._precollapse = { dur: D, ls: 0, le: 0, group: true };
                     m.duration = len;
                     m.loopStart = 0;
-                    m.loopEnd = len;
+                    m.loopEnd = 0;  // members whole (no window)
                 });
                 shiftOrigins(ds, ls);
                 ds._precollapse = { ls, le, shift: ls };
@@ -695,15 +695,16 @@ export function commitClip(node, duration) {
 
     node.isRecording = false;
     node.isAwaitingStop = false;
-    const loopEnd = duration;
 
     // Commit resets geometry whole: no stale multi-segment map may
-    // outlive the material it selected.
+    // outlive the material it selected. COMMIT STORES (origin, duration)
+    // ONLY (engine parity, audit D4-7): no window is authored on a take
+    // — a take is its whole content unless trimmed.
     delete node.segments;
     node.duration = duration;
     node.isPlaying = true;
     node.loopStart = 0;
-    node.loopEnd = loopEnd;
+    node.loopEnd = 0;
 
     // First committed take ESTABLISHES Q (design_language.md Q1: the DNA
     // of the scratch track) — STORED island state, plus the per-node

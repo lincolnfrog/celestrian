@@ -163,7 +163,7 @@ class QuantumPropagationTests : public juce::UnitTest {
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       expectEquals((int)slavePtr->getIntrinsicDuration(), 2000);
-      expectEquals((int)slavePtr->getLoopEnd(), 2000);
+      expectEquals((int)slavePtr->getLoopEnd(), 0);  // no window (D4-7)
     }
 
     beginTest("Hysteresis Snapping (Anticipatory Stop)");
@@ -199,7 +199,7 @@ class QuantumPropagationTests : public juce::UnitTest {
 
       expect(!slavePtr->isRecording());
       expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
-      expectEquals((int)slavePtr->getLoopEnd(), 1000);
+      expectEquals((int)slavePtr->getLoopEnd(), 0);  // no window (D4-7)
     }
 
     beginTest("Hysteresis Snapping (Raw Stop + Loop Snap)");
@@ -235,8 +235,40 @@ class QuantumPropagationTests : public juce::UnitTest {
       expect(!slavePtr->isRecording());  // Should be stopped now
       expectEquals((int)slavePtr->getIntrinsicDuration(), 3000);
 
-      // Loop Region should be snapped to 3000
+      // A snapped take is whole: no window is written (D4-7).
+      expectEquals((int)slavePtr->getLoopEnd(), 0);
+    }
+
+    beginTest("Unsnapped commit: the ONE window commit writes is the "
+              "provisional [0, previous clean multiple) region (D4-7)");
+    {
+      StackNode root("Root");
+      auto masterClip = std::make_unique<ClipNode>("Master", 44100.0);
+      auto masterPtr = masterClip.get();
+      root.addChild(std::move(masterClip));
+      masterPtr->startRecording();
+      NodeContext nc = contextFor(root, 1000, 0);
+      nc.driveFrom(*masterPtr);
+      ProcessContext& ctx = nc.ctx;
+      masterPtr->process(inputs, nullptr, 1, 0, ctx);
+      masterPtr->stopRecording();  // Q = 1000
+
+      auto slaveClip = std::make_unique<ClipNode>("Slave", 44100.0);
+      auto slavePtr = slaveClip.get();
+      root.addChild(std::move(slaveClip));
+      nc.rebuild();
+      nc.driveFrom(*slavePtr);
+      slavePtr->startRecording();
+      ctx.num_samples = 3400;  // 400 past 3Q: outside the 15% tolerance
+      slavePtr->process(inputs, nullptr, 1, 0, ctx);
+      // An immediate (unpadded) commit: the raw length stands and the
+      // region that sounds is the previous clean multiple.
+      slavePtr->commitRecording();
+      expect(!slavePtr->isRecording());
+      expectEquals((int)slavePtr->getIntrinsicDuration(), 3400);
+      expectEquals((int)slavePtr->getLoopStart(), 0);
       expectEquals((int)slavePtr->getLoopEnd(), 3000);
+      expect(slavePtr->isLoopWindowActive(), "the provisional window is real");
     }
 
     beginTest("Hysteresis Snapping (Raw Stop + Short Q)");
@@ -270,8 +302,8 @@ class QuantumPropagationTests : public juce::UnitTest {
       slavePtr->process(inputs, nullptr, 1, 0, ctx);
 
       expectEquals((int)slavePtr->getIntrinsicDuration(), 1000);
-      // Should snap to Q = 1000
-      expectEquals((int)slavePtr->getLoopEnd(), 1000);
+      // Snapped to Q = 1000, whole: no window is written (D4-7).
+      expectEquals((int)slavePtr->getLoopEnd(), 0);
     }
   }
 };

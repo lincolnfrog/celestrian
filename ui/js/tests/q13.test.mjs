@@ -103,7 +103,7 @@ test('mock: arming take 2 LOCK-COLLAPSES the trimmed definer', async () => {
     const c1 = getState().nodes.find(n => n.id === 'clip-1');
     assert.equal(c1.duration, q, 'the window IS the take now');
     assert.equal(c1.loopStart, 0, 'window consumed');
-    assert.equal(c1.loopEnd, q, '…full span');
+    assert.equal(c1.loopEnd, 0, '...no window: the take IS the window (D4-7)');
     assert.equal(getState().quantum, q, 'Q unchanged by the collapse');
 
     await callNative('stopRecordingInNode', id2);
@@ -370,7 +370,7 @@ test('GROUPS: a second take LOCKS Q and COLLAPSES the group to its window (fract
     assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'stack window consumed');
     for (const id of ids) {
         assert.equal(find(id).duration, D / 2, 'member collapsed to the window');
-        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D / 2], 'member whole');
+        assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, 0], 'member whole (no window)');
     }
     const vm = deriveViewModel(getState());
     assert.equal(vm.soleQDefinerId, null, 'no definer once Q is locked');

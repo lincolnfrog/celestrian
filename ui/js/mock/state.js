@@ -126,8 +126,8 @@ export function findSoleCommittedClip(nodes = state.nodes) {
  * subtree carries an active window or map override. A Q13
  * re-establishment under such geometry would strand it permanently
  * incoherent with the new grid; ancestor warps are covered too (they
- * are outside the subtree). A committed clip's full-span [0, D)
- * window is commit furniture, not geometry.
+ * are outside the subtree). A window spanning a clip's whole take
+ * restricts nothing and is not geometry (commit writes none — D4-7).
  */
 export function activeGeometryOutside(exclude, nodes = state.nodes) {
     for (const n of nodes || []) {

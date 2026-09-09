@@ -227,12 +227,15 @@ bool AudioEngine::importAudio(const juce::String& uuid,
   // and the file's length as Q, exactly as a first recorded take.
   const int64_t length = audio->getNumSamples();
   int64_t duration = length;
-  int64_t loop_end = length;
+  // Like a recorded commit (audit D4-7) no map is authored on the take;
+  // only an unsnapped length leaves the provisional [0, L) window
+  // (0 = none).
+  int64_t loop_end = 0;
   if (q > 0) {
     const celestrian::timing::SnapResult snap =
         celestrian::timing::snapCommittedDuration(length, q);
     duration = snap.duration;
-    loop_end = snap.loop_end;
+    if (snap.loop_end < snap.duration) loop_end = snap.loop_end;
   }
   // A snap UP plays past the file's end: the buffer covers the whole
   // committed duration, zero where the file had nothing.

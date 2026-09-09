@@ -210,8 +210,8 @@ class QTimeLockTests : public juce::UnitTest {
                    "epoch stays on the trimmed grid");
       expectEquals(islandQ(engine), len, "Q unmoved");
       expectEquals(clipProp(engine, c1, "loopStart"), (int64_t)0,
-                   "window consumed (full span)");
-      expectEquals(clipProp(engine, c1, "loopEnd"), len, "...");
+                   "window consumed (none)");
+      expectEquals(clipProp(engine, c1, "loopEnd"), (int64_t)0, "...");
 
       // THE regression: take 2 lands ON the grid.
       const int64_t rel = clipOrigin(engine, c2) - islandEp(engine);
@@ -285,7 +285,7 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(clipProp(engine, c1, "duration"), dur0,
                    "the ordinary take keeps its snapped duration");
       expectEquals(clipProp(engine, c1, "loopStart"), (int64_t)0, "no phantom window");
-      expectEquals(clipProp(engine, c1, "loopEnd"), dur0, "whole");
+      expectEquals(clipProp(engine, c1, "loopEnd"), (int64_t)0, "whole (no window)");
       expectEquals(islandQ(engine), dur0, "Q untouched");
     }
 
@@ -518,8 +518,8 @@ class QTimeLockTests : public juce::UnitTest {
       for (const auto& id : ids) {
         expectEquals((int64_t)deepProp(engine, id, "duration"), D,
                      "children stay whole");
-        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D,
-                     "children windows untouched (full span)");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                     "children windows untouched (whole: no window, D4-7)");
       }
       // PHASE CONTINUITY: the position sounding now folds into the new
       // window and does not move — heard = ws + masterPos' (wrapped on
@@ -554,7 +554,8 @@ class QTimeLockTests : public juce::UnitTest {
       for (const auto& id : ids) {
         expectEquals((int64_t)deepProp(engine, id, "duration"), len,
                      "member collapsed to the window");
-        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), len, "member whole");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                     "member whole (no window)");
       }
       expect(!(deepProp(engine, stack_id, "loopEnd") > deepProp(engine, stack_id, "loopStart")),
              "stack window consumed by the collapse");
@@ -683,8 +684,8 @@ class QTimeLockTests : public juce::UnitTest {
       for (const auto& id : ids) {
         expectEquals((int64_t)deepProp(engine, id, "loopStart"), (int64_t)0,
                      "member window start");
-        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), L,
-                     "member whole (no Q_stale/2 region)");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                     "member whole (no window, no Q_stale/2 region)");
       }
     }
 
@@ -739,8 +740,8 @@ class QTimeLockTests : public juce::UnitTest {
       for (const auto& id : ids) {
         expectEquals((int64_t)deepProp(engine, id, "loopStart"), (int64_t)0,
                      "member start whole");
-        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D,
-                     "member made whole by the rider");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                     "member made whole (no window) by the rider");
       }
       engine.undo();
       expectEquals(islandQ(engine), (int64_t)Q, "undo restores Q");
@@ -752,8 +753,8 @@ class QTimeLockTests : public juce::UnitTest {
       engine.redo();
       expectEquals(islandQ(engine), len, "redo re-trims");
       for (const auto& id : ids)
-        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D,
-                     "redo makes members whole again");
+        expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                     "redo makes members whole (no window) again");
     }
 
     // ---- FIVE MICS, REPEATED LEFT-EDGE TRIMS (field 2026-08-29/30) ----
@@ -807,7 +808,8 @@ class QTimeLockTests : public juce::UnitTest {
           expectEquals((int64_t)deepProp(engine, id, "origin"),
                        (int64_t)deepProp(engine, ids[0], "origin"),
                        "members re-anchored together");
-          expectEquals((int64_t)deepProp(engine, id, "loopEnd"), D, "members whole");
+          expectEquals((int64_t)deepProp(engine, id, "loopEnd"), (int64_t)0,
+                       "members whole (no window)");
         }
         // Q18: the window anchors at the STACK's origin (== the members',
         // one take) and the cycle top is the window top: epoch == origin
@@ -915,7 +917,8 @@ class QTimeLockTests : public juce::UnitTest {
         const juce::var n0 = findVar(st, ids[0]);
         expect(n0.getProperty("segments", juce::var()).getArray() == nullptr,
                "rider cleared the member's segment map");
-        expectEquals((int64_t)(double)n0.getProperty("loopEnd", 0.0), D, "member whole");
+        expectEquals((int64_t)(double)n0.getProperty("loopEnd", 0.0),
+                     (int64_t)0, "member whole (no window)");
       }
       engine.undo();
       {
