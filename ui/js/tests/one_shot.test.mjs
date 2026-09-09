@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 
 import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
-import { findByName } from './helpers.mjs';
+import { findByName, recordTake } from './helpers.mjs';
 
 test('setPeriodSource round-trips, clips AND stacks, undoable', async () => {
     loadScenario('stack-with-clips');
@@ -36,6 +36,15 @@ test('setPeriodSource round-trips, clips AND stacks, undoable', async () => {
     // nothing — it pops its pre-pushed undo snapshot (engine parity:
     // setPeriodSource returns before recording when unchanged).
     const stack = getState().nodes.find(n => n.type === 'stack');
+    // THE ISLAND'S CONTENT CANNOT BE A ONE-SHOT (owner ruling
+    // 2026-09-09): this stack holds every committed take, so the knob
+    // is refused — and records nothing — until a loop exists beside it.
+    const undoBeforeRefusal = getState().canUndo;
+    await callNative('setPeriodSource', stack.id, 'context');
+    assert.notEqual(getState().nodes.find(n => n.type === 'stack').periodSource,
+        'context', 'a group holding all the content cannot be a one-shot');
+    assert.equal(getState().canUndo, undoBeforeRefusal, 'refusal records nothing');
+    await recordTake('', getState().quantum * 2);  // a loop beside it
     await callNative('setPeriodSource', stack.id, 'context');
     assert.equal(getState().nodes.find(n => n.type === 'stack').periodSource,
         'context', 'stacks accept the knob');

@@ -198,7 +198,7 @@ No render-path consumer selects content by the epoch. Therefore:
 
 | Event | Effect on origins |
 |---|---|
-| First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root (rides the take's undo entry; Untake un-anchors) |
+| First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root — **the root itself excluded**: it is never anchored, its inner timeline is the island timeline and its zero is the epoch (ruling 2026-09-09, design_language §5) (rides the take's undo entry; Untake un-anchors) |
 | Combine (post-hoc group) | `new.origin := min(member origins)`, anchored |
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
 | Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `epoch := O' + start`; `Q := len`. **One implementation** for clips and stacks. |

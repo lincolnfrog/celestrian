@@ -641,6 +641,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * top-level unknown). */
   celestrian::StackNode* parentOf(celestrian::AudioNode* node,
                                   int* index_out) const;
+  /** THE LIVE-TAKE GATE (owner ruling 2026-09-09, design_language.md
+   * §5): while any take is armed or capturing, every edit that changes
+   * what sounds when — structure, geometry, sequences, takes, period
+   * source, undo/redo, pause, a second arm — is refused and logged;
+   * only the mixer/wiring knobs (rename, mute, input, fx slots) stay
+   * live. Returns true (and logs `verb`) when refusing. */
+  bool refusedUnderLiveTake(const char* verb) const;
   /** Frees any subtree an about-to-be-dropped edit owns via the reclaimer
    * (never inline — an in-flight callback may still read a just-detached
    * node). */

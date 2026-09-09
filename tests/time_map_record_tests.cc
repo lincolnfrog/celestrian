@@ -609,12 +609,15 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(bypassedOf(outerId), 0,
                    "gate: bypass toggle refused while a take is live");
 
-      // A SIBLING stack (no take in its subtree) stays editable.
+      // A SIBLING stack (no take in its subtree): since the live-take
+      // gate (owner ruling 2026-09-09) geometry edits are refused
+      // island-wide while a take is live — creating the (empty) node
+      // is still allowed.
       engine.createNode("stack", outerId);
       const juce::String sibId = findChildId(outerId);
       engine.setLoopPoints(sibId, 0, 300);
-      expectEquals((juce::int64)windowOf(sibId).second, (juce::int64)300,
-                   "gate: sibling window stays editable");
+      expectEquals((juce::int64)windowOf(sibId).second, (juce::int64)0,
+                   "gate: sibling window refused under the live take");
 
       // Cancel the take → the gate lifts.
       engine.stopRecordingInNode(clipId);  // armed, no capture → cancel

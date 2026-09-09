@@ -211,6 +211,8 @@ target_sources(CelestrianTests PRIVATE
     tests/qtime_tests.cc
     tests/seq_lock_tests.cc
     tests/period_law_tests.cc
+    tests/scenario_tests.cc
+    tests/display_contract_tests.cc
     tests/monotonic_clock_tests.cc
     tests/seek_tests.cc
     tests/latency_calibration_tests.cc

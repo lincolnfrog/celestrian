@@ -190,6 +190,10 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
     juce::Logger::writeToLog("AudioEngine: NODE NOT FOUND for " + uuid);
     return;
   }
+  // ONE TAKE AT A TIME (owner ruling 2026-09-09, audit D2-6): a second
+  // arm while a take is armed or capturing is refused — the island's
+  // cycle snapshots belong to the one live performance.
+  if (refusedUnderLiveTake("record (a second arm)")) return;
 
   // Q13 LOCK-COLLAPSE: arming a take against a provisionally trimmed
   // island FINALIZES the trim — the definer (clip or stack, one law)
@@ -373,6 +377,7 @@ void AudioEngine::newTake(const juce::String& uuid) {
     juce::Logger::writeToLog("AudioEngine: NODE NOT FOUND for " + uuid);
     return;
   }
+  if (refusedUnderLiveTake("new take (a second arm)")) return;
   std::vector<celestrian::ClipNode*> targets;
   collectRetakeTargets(node, targets);
   if (targets.empty()) {

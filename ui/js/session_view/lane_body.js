@@ -758,9 +758,13 @@ function patchSeqDims(body, lane, cycleQ) {
     layers.forEach((dims, li) => {
         const P = dims.periodQ;
         if (!(P > 0)) return;
-        for (let base = 0; base < cycleQ; base += P) {
+        // The layer's song is anchored at `phaseQ` in the lane frame
+        // (its owner's origin — a group's Q18 origin; 0 for the root):
+        // tile from the first pass that touches the frame, clipped.
+        const ph = (((dims.phaseQ || 0) % P) + P) % P;
+        for (let base = ph - P; base < cycleQ; base += P) {
             for (const [s, e] of dims.offSegsQ) {
-                const from = base + s;
+                const from = Math.max(base + s, 0);
                 const to = Math.min(base + e, cycleQ);
                 if (to - from <= 1e-9) continue;
                 const d = el('div', 'seq-dim');
@@ -772,7 +776,7 @@ function patchSeqDims(body, lane, cycleQ) {
             // PER-STEP FADES (S13, sequencer.md §15): the ramp at a
             // run's edge reads as a gradient into / out of the dim.
             for (const [s, e, kind] of dims.fadeSegsQ || []) {
-                const from = base + s;
+                const from = Math.max(base + s, 0);
                 const to = Math.min(base + e, cycleQ);
                 if (to - from <= 1e-9) continue;
                 const f = el('div', 'seq-fade ' + kind);
@@ -787,7 +791,7 @@ function patchSeqDims(body, lane, cycleQ) {
             // the SONG TOP here - marked, not dimmed (it still sounds;
             // it just re-bases). The pip echoes the grid header's.
             for (const [s, e] of dims.cueSegsQ || []) {
-                const from = base + s;
+                const from = Math.max(base + s, 0);
                 const to = Math.min(base + e, cycleQ);
                 if (to - from <= 1e-9) continue;
                 const c = el('div', 'seq-cue-span mono');

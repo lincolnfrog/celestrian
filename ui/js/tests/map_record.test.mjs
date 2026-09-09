@@ -62,10 +62,12 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     assert.equal(nodeById(groupId).loopStart, 1000, 'edit refused (start)');
     assert.equal(nodeById(groupId).loopEnd, 3000, 'edit refused (end)');
     assert.ok(!nodeById(groupId).loopBypassed, 'bypass toggle refused');
+    // Since the live-take gate (owner ruling 2026-09-09) a sibling's
+    // window is refused too — geometry waits for the take; creating
+    // the empty node is still allowed.
     const sibId = await callNative('createNode', 'stack');
     await callNative('setLoopPoints', sibId, 0, 500);
-    assert.equal(nodeById(sibId).loopEnd, 500, 'sibling stays editable');
-    await callNative('setLoopPoints', sibId, 0, 0); // tidy: no stray map
+    assert.equal(nodeById(sibId).loopEnd || 0, 0, 'sibling window refused under the live take');
 
     // Trigger, then run one full map pass — the cap auto-commits.
     advanceBy(500);   // reaches the heard target

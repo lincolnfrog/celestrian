@@ -245,9 +245,9 @@ class UndoTests : public juce::UnitTest {
 
       // Explode (the undo of a Combine) with a hot member is refused
       // and the undo entry is KEPT: cancel, then the same undo works.
-      // (`peer`, armed in the OTHER stack, does not make this Explode
-      // hot — the guard is per addressed node, not island-wide.)
-      engine.startRecordingInNode(peer);
+      // (Since the live-take gate — owner ruling 2026-09-09 — ANY live
+      // take refuses undo island-wide; the entry is kept either way.)
+      juce::ignoreUnused(peer);
       const juce::String member = [&] {
         auto st = engine.getGraphState();
         for (int i = 0; i < childCount(st); ++i) {
@@ -265,8 +265,7 @@ class UndoTests : public juce::UnitTest {
       }
       expect(present, "combined stack survives the refused explode");
       engine.stopRecordingInNode(member);  // cancel
-      engine.undo();  // the KEPT entry applies now (peer still armed)
-      engine.stopRecordingInNode(peer);
+      engine.undo();  // the KEPT entry applies now
       present = false;
       s = engine.getGraphState();
       for (int i = 0; i < childCount(s); ++i) {

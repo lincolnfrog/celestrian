@@ -492,12 +492,9 @@ void AudioEngine::auditionStep(const juce::String& uuid, int step) {
         "AudioEngine::auditionStep refused - target is not a stack");
     return;
   }
-  if (stack->isArmedOrRecording()) {
-    juce::Logger::writeToLog(
-        "AudioEngine::auditionStep refused - a take is armed/recording "
-        "in this subtree (finish or cancel it first)");
-    return;
-  }
+  // Island-wide since the live-take gate (owner ruling 2026-09-09): an
+  // audition changes what the performer hears mid-take.
+  if (refusedUnderLiveTake("auditionStep")) return;
   if (step >= 0) {
     const celestrian::Sequence* s = stack->activeSequence();
     if (s == nullptr || !s->reachableStep(step)) {

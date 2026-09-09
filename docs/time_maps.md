@@ -268,11 +268,10 @@ island LCM, so the playhead loops with what is heard and never sails
 past a top-level window (field report). Commit/epoch-re-base logic
 keeps the intrinsic length. The window-not-at-0 sole-lane case leaves
 the island playhead sweeping [0, len) outside the brackets (amber
-cursor carries heard time) — revisit in phase 2. *(Partially addressed
-2026-07-16, Q15: takes recorded while the heard cycle is shortened now
-anchor INSIDE the swept [0, heard) region via the heard-frame origin
-fold, so the cursor, the new take, and the heard loop read as one
-coherent frame; the sweep-vs-bracket mismatch itself was resolved in
+cursor carries heard time) — revisit in phase 2. *(The 2026-07-16 Q15
+origin fold that once anchored such takes inside the swept [0, heard)
+region was REVERSED 2026-09-09 — the origin is the capture boundary;
+the sweep-vs-bracket mismatch itself was resolved in
 phase 2, 2026-07-21: a sole top-level stack window maps the ONE
 playhead into its brackets, mirroring the Q13 resolution.)* *(Resolved for the Q13 provisional trim view, 2026-07-19: the
 VM maps the ONE playhead into the selection — `playheadQ = selStartQ +
@@ -331,8 +330,8 @@ Recording through an active map works end to end:
   in `childContext` and sets `context_loop = period` (ruling 2).
 - **Arm** (`ClipNode::armEvaluate` through-map branch): heard-time
   `armTarget` on the map-period grid; the anchor maps to an inner
-  origin through `m`. The Q15 origin fold is SUBSUMED (an inner-time
-  origin has no equivalent slots). Fixing the goldens exposed a latent
+  origin through `m` (an inner-time origin; the plain path's origin is
+  the capture boundary too since 2026-09-09). Fixing the goldens exposed a latent
   `armTarget` bug: a next-Q mark overshooting an unsnapped context top
   folded into the PAST — it now arms at the top itself (both mirrors).
 - **Capture** (`timing::throughMapDest`): destinations fold through the

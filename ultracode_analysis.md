@@ -1329,12 +1329,19 @@ Each was flagged by the principle lens as uncovered by any ruling.
 1. **Pause while a take is live (D14-15).** Refuse pause under
    `hasActiveTake()` like seek, with stop-at-boundary-then-pause as the
    UI gesture — or freeze capture with the clock? Recommend refuse.
+   **RULED 2026-09-09: refuse** — part of the live-take gate
+   (`AudioEngine::refusedUnderLiveTake`; design_language.md §5), which
+   refuses EVERY time/content edit while a take is armed or capturing.
 2. **A second arm under a live take (D2-6).** Refuse, or make the arm
    cycles per-take facts? Recommend refuse for 1.0.
+   **RULED 2026-09-09: refuse** (one take at a time; scenario S27).
 3. **A one-shot stack with an active sequence (D2-5).** Shot = whole song
    (map ▸ sequence ▸ D), intrinsic LCM, or refused? Recommend the song.
 4. **Deleting the Q-definer while another take is live (D5-15).**
    Refuse (recommended), or defer the revert to settle?
+   **RULED 2026-09-09: refuse** — no edits at all under a live take
+   (the gate); a one-shot can never be the island's only content
+   either (scenario S28).
 5. **The cue's target (D15-2, D8-4).** Song-top replay (S9, today) or
    child-top replay (§3's letter)? A per-step flag is additive if both.
    And: should the cue become a real `TimeMap` layered under the

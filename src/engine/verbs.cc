@@ -382,6 +382,29 @@ void AudioEngine::setPeriodSource(const juce::String& uuid,
   auto* node = findNodeByUuid(root_node.get(), uuid);
   if (!node) return;
   if (node->period_from_context_.load() == from_context) return;
+  // THE ISLAND'S CONTENT CANNOT BE A ONE-SHOT (owner ruling 2026-09-09):
+  // a one-shot adopts the scope's cycle, so a node holding ALL of the
+  // island's committed content would leave nothing to define one.
+  if (from_context) {
+    std::function<int(const celestrian::AudioNode*)> committedUnder =
+        [&](const celestrian::AudioNode* n) -> int {
+      if (n->getNodeType() == celestrian::NodeType::Clip)
+        return n->getIntrinsicDuration() > 0 ? 1 : 0;
+      int c = 0;
+      for (const auto& child :
+           static_cast<const celestrian::StackNode*>(n)->ownedChildren())
+        c += committedUnder(child.get());
+      return c;
+    };
+    const int inside = committedUnder(node);
+    if (inside > 0 && inside == islandCommittedClipCount()) {
+      juce::Logger::writeToLog(
+          "AudioEngine::setPeriodSource refused - " + uuid +
+          " holds all of the island's committed content; something must "
+          "define the cycle a one-shot fires in");
+      return;
+    }
+  }
   celestrian::Edit e(celestrian::Edit::Kind::PeriodSource);
   e.uuid = uuid;
   e.b1 = from_context;

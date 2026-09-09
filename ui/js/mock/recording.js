@@ -717,20 +717,13 @@ export function commitClip(node, duration) {
         console.log('[MockBackend] First take establishes Q =', duration);
     }
 
-    // HEARD-FRAME ORIGIN FOLD (Q15, mirrors ClipNode::armEvaluate):
-    // when active windows made the audible cycle shorter than the
-    // intrinsic one at arm, every heard boundary is audibly identical —
-    // store the representative in the FIRST heard window of the frame.
+    // THE ORIGIN IS THE CAPTURE BOUNDARY (engine parity, owner ruling
+    // 2026-09-09 reversing Q15): no heard-frame fold — a take anchors
+    // where its capture began. A through-map take's origin is the
+    // anchor's INNER position (already an inner-time fact).
     let foldedOrigin = node.recordingStartPos || 0;
     const heardAtArm = recView.heardAtArm || 0;
-    if (mapArm) {
-        // Through-map origin: the anchor's INNER position (Q15 fold
-        // subsumed — the origin is already an inner-time fact).
-        foldedOrigin = mapArm.innerOrigin;
-    } else if (heardAtArm > 0 && recView.lcmBefore > heardAtArm) {
-        const relT = posMod(foldedOrigin - state.islandEpoch, recView.lcmBefore);
-        foldedOrigin -= Math.floor(relT / heardAtArm) * heardAtArm;
-    }
+    if (mapArm) foldedOrigin = mapArm.innerOrigin;
 
     // The take's HEARD FRAME (Q14/Q15): the EFFECTIVE cycle it was
     // performed against — display take-marking folds by this.

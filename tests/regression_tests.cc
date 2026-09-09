@@ -83,13 +83,26 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expect(engine.isPlaying(),
              "Transport should auto-start when recording begins.");
 
+      // A pause under the LIVE take is refused (owner ruling 2026-09-09):
+      // the take performs against the running clock.
+      engine.togglePlayback();
+      expect(engine.isPlaying(), "pause refused while the take is live");
+      engine.stopRecordingInNode(uuid);  // first take: commits at once
       engine.togglePlayback();  // Stop
       expect(!engine.isPlaying());
 
-      // Starting recording again should restart transport
-      engine.startRecordingInNode(uuid);
+      // Starting recording again (a fresh, empty clip — the committed
+      // one is not re-armable) should restart transport
+      engine.createNode("clip");
+      const juce::String uuid2 =
+          celestrian::test_utils::nodesOf(engine.getGraphState())
+              ->getReference(1)
+              .getProperty("id", "")
+              .toString();
+      engine.startRecordingInNode(uuid2);
       expect(engine.isPlaying(),
              "Transport should auto-restart when recording begins again.");
+      engine.stopRecordingInNode(uuid2);
     }
 
     // BUG: "clip 2 loops to 1Q instead of 0Q"
@@ -1166,17 +1179,18 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
           "clip 3's heard 2Q anchor survives the re-base");
     }
 
-    // FIELD REPRO 2026-07-16e (Q15): recording while a WINDOW shortens
-    // the audible cycle. 1Q clip + 4Q clip windowed to [2Q,3Q): the
-    // heard cycle collapses to 1Q (E-C) and the cursor loops 1Q. Arming
-    // then hits "the next Q boundary" — whose intrinsic-frame slot
-    // (0/1/2/3Q) is neither hearable nor visible: the take anchored at
-    // a die-roll slot ("started recording at 1Q instead of 0Q"). The
-    // heard-frame ORIGIN FOLD stores the audibly-identical
-    // representative in the FIRST heard window: the take anchors where
-    // the cursor sweeps. Capture still starts at the real boundary;
-    // nothing else moves.
-    beginTest("FIELD: take under a shortened heard cycle anchors at the top");
+    // FIELD REPRO 2026-07-16e (Q15) — RE-PINNED 2026-09-09 (owner
+    // ruling "NO ORIGIN FOLD", design_language §5): recording while a
+    // WINDOW shortens the audible cycle. 1Q clip + 4Q clip windowed to
+    // [2Q,3Q): the heard cycle collapses to 1Q (E-C) and the cursor
+    // loops 1Q. Arming hits the next Q boundary, whose intrinsic-frame
+    // slot (0/1/2/3Q) is neither hearable nor visible. The 2026-07-16
+    // answer FOLDED the stored origin into the first heard window; that
+    // is audibly wrong whenever the heard cycle does not divide the
+    // take (scenario S32), so the origin is now the capture boundary
+    // itself — the display's take marking folds by contextCycle (Q14)
+    // and shows the take at the heard top regardless.
+    beginTest("FIELD: take under a shortened heard cycle anchors at its boundary");
     {
       AudioEngine engine;
       const int64_t Q = 44100;
@@ -1234,11 +1248,13 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expectEquals(clipProp(2, "contextCycle"), Q,
                    "the take's heard frame is the SHORTENED 1Q cycle");
 
-      // THE FOLD: origin stored ≡ 0 (mod 4Q) — the audibly-identical
-      // representative at the frame top (unfolded it was ≡ 1Q).
+      // NO FOLD: the origin is the boundary the capture started at —
+      // rel 5Q ≡ 1Q (mod 4Q). (The heard 1Q cycle divides this 4Q take,
+      // so folding would have been silent HERE; S32 is the case where
+      // it was not.) The heard frame is the take's contextCycle above.
       const int64_t origin3 = clipProp(2, "origin");
-      expectEquals(((origin3 - epoch) % (4 * Q) + 4 * Q) % (4 * Q), (int64_t)0,
-                   "take anchors at the heard/frame top, not a die-roll slot");
+      expectEquals(((origin3 - epoch) % (4 * Q) + 4 * Q) % (4 * Q), Q,
+                   "take anchors at its capture boundary (rel 5Q)");
 
       // Nothing else moved: the window edit above REMOVED the sounding
       // region (cursor at rel ~200, window [2Q,3Q)), so under

@@ -507,6 +507,22 @@ export function serializeGraph() {
 /** Restore a serializeGraph() string into the live state singleton. */
 export function restoreGraph(snap) {
     const o = JSON.parse(snap);
+    // A restored graph never holds a LIVE take (engine parity: undo
+    // entries own committed subtrees, and a take is only ever logged
+    // once settled — nothing can undo INTO an armed or capturing clip).
+    // A snapshot taken while a take was live carries its flags; the
+    // clip comes back EMPTY, as the engine's would.
+    const settle = ns => (ns || []).forEach(n => {
+        if (n.isRecording || n.isPendingStart || n.isAwaitingStop) {
+            n.isRecording = false;
+            n.isPendingStart = false;
+            n.isAwaitingStop = false;
+            n.duration = 0;
+            n.isPlaying = false;
+        }
+        settle(n.nodes);
+    });
+    settle(o.nodes);
     state.nodes = o.nodes;
     state.islandEpoch = o.islandEpoch;
     state.islandQ = o.islandQ || 0;

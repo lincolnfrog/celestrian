@@ -423,7 +423,7 @@ function fxRow(node, depth) {
  * the stack's direct children, columns = steps, pads = gates.
  */
 function buildSeqRow({ holder, ownerId, children, depth, quantum,
-                       qEstablished, innerCycleQ, editable }) {
+                       qEstablished, innerCycleQ, editable, anchorQ = 0 }) {
     const s = seqOf(holder);
     const steps = s ? s.steps.map(st => ({
         name: st.name || '',
@@ -459,6 +459,10 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
         steps,
         visits,
         totalQ,
+        // The song's anchor in the lane frame (the owner's origin — a
+        // group's Q18 origin; 0 for the root): the playing column is
+        // the playhead folded FROM here (engine parity; seq_grid.js).
+        phaseQ: totalQ > 0 ? (((anchorQ % totalQ) + totalQ) % totalQ) || 0 : 0,
         // The radio (§6): period-less — the seed is its performance.
         radio: !!prog.radio,
         seed: s ? ((s.seed || 0) >>> 0) : 0,
@@ -485,7 +489,7 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
     };
 }
 
-function seqRow(node, depth, quantum, qEstablished) {
+function seqRow(node, depth, quantum, qEstablished, anchorQ = 0) {
     return buildSeqRow({
         holder: node,
         ownerId: node.id,
@@ -495,6 +499,7 @@ function seqRow(node, depth, quantum, qEstablished) {
         qEstablished,
         innerCycleQ: intrinsicPeriodQ(node, quantum),
         editable: !subtreeRec(node),
+        anchorQ,
     });
 }
 
@@ -505,13 +510,20 @@ function seqRow(node, depth, quantum, qEstablished) {
  * overlays (`seqDims`), applied to the child's whole subtree span
  * (gates are fractal). Lanes tile the spans every seq period.
  */
-function attachSeqDims(lanes, from, to, children, seq, quantum) {
+function attachSeqDims(lanes, from, to, children, seq, quantum, anchorQ = 0) {
     const stepsQ = seq.steps.map(
         st => (st.len > 0 ? Math.round(st.len) : 0) / quantum);
     // THE PROGRAM is the timeline (§14): spans tile over the visits.
     const visits = sequenceProgram(seq).visits;
     const totalQ = visits.reduce((t, k) => t + stepsQ[k], 0);
     if (!(totalQ > 0)) return;
+    // THE SONG'S ANCHOR (engine parity, StackNode::renderChildren —
+    // owner ruling 2026-09-09 "the grid you see is the grid you hear"):
+    // the step lookup folds from the OWNER's frame origin — a group's
+    // Q18 origin (`anchorQ`, its offset from the epoch in Q), the epoch
+    // itself for the root — so the layer carries that phase and the
+    // lane tiles the spans from it, never from the lane's frame zero.
+    const phaseQ = (((anchorQ % totalQ) + totalQ) % totalQ) || 0;
     // CUED spans (ss3): every child under the scope replays the song
     // top during a cued step - the lanes mark those spans so the
     // display stays honest about what is heard (pure projection).
@@ -564,7 +576,8 @@ function attachSeqDims(lanes, from, to, children, seq, quantum) {
             // enclosing sequence silences it (the fractal gate).
             lane.seqDims = [{ periodQ: totalQ, offSegsQ: offSegs || [],
                               cueSegsQ: cueSegsQ.length ? cueSegsQ : null,
-                              ...(fadeSegs ? { fadeSegsQ: fadeSegs } : {}) },
+                              ...(fadeSegs ? { fadeSegsQ: fadeSegs } : {}),
+                              ...(phaseQ ? { phaseQ } : {}) },
                             ...(lane.seqDims || [])];
         }
     }
@@ -1445,7 +1458,7 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
     }
     lanes.push(lane);
     if (ctx.seqOpen && ctx.seqOpen.has(node.id)) {
-        lanes.push(seqRow(node, depth + 1, quantum, qEstablished));
+        lanes.push(seqRow(node, depth + 1, quantum, qEstablished, relQ));
     }
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
     // The nearest enclosing active map wins (engine parity).
@@ -1490,8 +1503,10 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
         {
             const s = seqOf(node);
             if (s && !s.bypassed) {
+                // Anchored at the group's origin (Q18) — `relQ` is that
+                // origin in the lane frame (0 while unanchored).
                 attachSeqDims(lanes, childFrom, lanes.length,
-                    node.nodes, s, quantum);
+                    node.nodes, s, quantum, relQ);
             }
         }
         // Synthetic affordance row: "+ add track" at the bottom of

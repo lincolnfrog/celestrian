@@ -973,8 +973,30 @@ void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
   clearRedo();
 }
 
+bool AudioEngine::refusedUnderLiveTake(const char* verb) const {
+  if (root_node == nullptr || !root_node->hasActiveTake()) return false;
+  juce::Logger::writeToLog(
+      juce::String("AudioEngine: ") + verb +
+      " refused - a take is armed or capturing (edits wait for the take)");
+  return true;
+}
+
+namespace {
+/** The kinds that stay live under a take: wiring and mixer facts that
+ * change nothing about what sounds WHEN (rename, mute, the input
+ * channels for the NEXT arm, fx slot structure) and inserting EMPTY
+ * nodes (a new track) — every other kind moves time or content. */
+bool liveUnderTake(celestrian::Edit::Kind k) {
+  using K = celestrian::Edit::Kind;
+  return k == K::Rename || k == K::Mute || k == K::Input || k == K::InputR ||
+         k == K::MoveSlot || k == K::AddSlot || k == K::RemoveSlot ||
+         k == K::Insert;
+}
+}  // namespace
+
 void AudioEngine::record(celestrian::Edit forward) {
   reconcileTakes();  // a settled take logs BEFORE any later edit
+  if (!liveUnderTake(forward.kind) && refusedUnderLiveTake("edit")) return;
   celestrian::Edit inv = applyEdit(std::move(forward));
   if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
   if (!undo_.empty() && editsCoalesce(undo_.back(), inv)) {
@@ -1002,47 +1024,16 @@ bool movesIslandFacts(const celestrian::Edit& e) {
          e.setsOrigin || !e.anchors.empty() || !e.windows.empty();
 }
 
-// A structural edit addressed at a HOT node (armed or capturing — for a
-// stack, any member) is refused by its applier (Remove, Move, Combine,
-// Explode: cancel is the verb). Refusing it here too keeps the entry in
-// the log instead of dropping it through a Nop.
-bool touchesHotNode(celestrian::AudioNode* root, const celestrian::Edit& e) {
-  using K = celestrian::Edit::Kind;
-  auto hot = [root](const juce::String& uuid) {
-    const auto* n = root != nullptr ? root->findByUuid(uuid) : nullptr;
-    return n != nullptr && n->isArmedOrRecording();
-  };
-  switch (e.kind) {
-    case K::Remove:
-    case K::Move:
-    case K::Explode:
-      return hot(e.uuid);
-    case K::Combine:
-      return hot(e.uuid) || hot(e.uuid2);
-    default:
-      return false;
-  }
-}
 }  // namespace
 
 void AudioEngine::undo() {
   reconcileTakes();
   if (undo_.empty()) return;
-  // A take edit moves island facts (Q, epoch, the committed cycle):
-  // never under a live take. Refuse and KEEP the entry (a Nop would
-  // drop it from the log).
-  if (movesIslandFacts(undo_.back()) && root_node->hasActiveTake()) {
-    juce::Logger::writeToLog(
-        "AudioEngine::undo refused - it would move the cycle a take is "
-        "recording against (finish or cancel the take first)");
-    return;
-  }
-  if (touchesHotNode(root_node.get(), undo_.back())) {
-    juce::Logger::writeToLog(
-        "AudioEngine::undo refused - it would restructure around a live "
-        "take (finish or cancel the take first)");
-    return;
-  }
+  // THE LIVE-TAKE GATE: no undo under a take (it could move the grid
+  // the performer records against, or restructure around the take).
+  // Refuse and KEEP the entry (a Nop would drop it from the log).
+  if (refusedUnderLiveTake("undo")) return;
+  juce::ignoreUnused(&movesIslandFacts);
   celestrian::Edit inv = std::move(undo_.back());
   undo_.pop_back();
   celestrian::Edit fwd = applyEdit(std::move(inv));
@@ -1052,18 +1043,7 @@ void AudioEngine::undo() {
 void AudioEngine::redo() {
   reconcileTakes();
   if (redo_.empty()) return;
-  if (movesIslandFacts(redo_.back()) && root_node->hasActiveTake()) {
-    juce::Logger::writeToLog(
-        "AudioEngine::redo refused - it would move the cycle a take is "
-        "recording against (finish or cancel the take first)");
-    return;
-  }
-  if (touchesHotNode(root_node.get(), redo_.back())) {
-    juce::Logger::writeToLog(
-        "AudioEngine::redo refused - it would restructure around a live "
-        "take (finish or cancel the take first)");
-    return;
-  }
+  if (refusedUnderLiveTake("redo")) return;
   celestrian::Edit fwd = std::move(redo_.back());
   redo_.pop_back();
   celestrian::Edit inv = applyEdit(std::move(fwd));

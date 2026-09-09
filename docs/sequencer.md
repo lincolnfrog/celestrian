@@ -857,10 +857,12 @@ an 8Q root song that gates Drums off in the intro:
 Unchanged by design (S15: one control, every depth): the group's
 rail chip opens the same grid one row down; "+ step" = one inner
 cycle, which for an all-one-shot kit is 1Q (the drum-machine scale);
-the playing column is `playheadQ mod totalQ` because a nested
-sequence is anchored at the same cycle top as its parent (the S9
-composition passes mapped time down; under a root audition the
-playhead is already mapped into the song).
+the playing column is `(playheadQ − phaseQ) mod totalQ`, where
+`phaseQ` is the group's Q18 origin in the lane frame — a nested song
+folds from its GROUP's origin, the root's from the epoch (ruling
+2026-09-09 "the grid you see is the grid you hear", design_language
+§5; the pre-Q18 text here said "the same cycle top as its parent",
+which is what the display drew while the engine gated elsewhere).
 
 ### 12.4 Record
 

@@ -259,6 +259,50 @@ Q3, Q5, Q6, Q10 not yet reviewed).
 §5 is the ruling INDEX (docs/README.md ground rules): a ruling may live
 in the doc that owns its feature, but each has a pointer here.
 
+- **THE LIVE-TAKE GATE (owner, 2026-09-09; docs/scenarios.md S26–S28):**
+  *"can we just refuse edits while recording for simplicity?"* — yes.
+  While any take is armed or capturing, every verb that changes what
+  sounds when is refused and logged (`AudioEngine::refusedUnderLiveTake`;
+  mock `REFUSED_UNDER_LIVE_TAKE`): structural edits, windows and maps,
+  sequences and auditions, take-list verbs, period source, undo/redo
+  (entries kept), pause, seek, import, load, bounce, and **a second arm
+  or new take — one take at a time** (audit D2-6). Mixer and wiring
+  knobs stay live (mute, solo, gain, pan, rename, input channels, fx
+  slots, monitoring) and so does creating an empty node. This
+  supersedes the per-node "hot node" refusals and the "ordinary window
+  edit under a live take" branch, and answers audit §7 items 1, 2 and 4
+  (pause, second arm, delete-the-definer under a take — all refused).
+- **THE GRID YOU SEE IS THE GRID YOU HEAR (owner, 2026-09-09; field
+  bug: a 4-section root song sounded the full band over the guitar-only
+  section, the guilty section wandering with every take):** a song's
+  step grid folds from its OWNER'S frame origin, and the display draws
+  it from the same place. The ROOT IS NEVER ANCHORED — its inner
+  timeline is the island timeline, whose zero is the EPOCH, the ruler
+  every root song, window and tile is drawn on (`settleAnchors` skips
+  the root; `frameOrigin` falls through to the epoch). Anchoring the
+  root at its first take's origin had parted the two on every growth
+  re-base (the epoch moves by whole old cycles, the origin stayed) —
+  the gates landed whole cycles off the grid on screen. A GROUP's song
+  folds from the group's Q18 origin, where its window brackets and take
+  tile already sit; the lanes now carry that phase (`seqDims[].phaseQ`,
+  the grid row's `phaseQ`). Pinned end to end: scenarios S30/S31 (what
+  sounds) + the display-contract capture (what the lanes draw of it).
+- **NO ORIGIN FOLD (owner, 2026-09-09, reversing Q15):** a take's
+  origin is its capture boundary, always. Under a window the heard
+  cycle IS the universe; anchoring "an audibly identical slot" whole
+  heard cycles earlier is only silent when the heard cycle divides the
+  take, and otherwise the phrase restarts mid-phrase the moment the
+  take ends (S32: a 3Q take under a 2Q window came back at
+  content[2Q]). Take marking already folds by contextCycle (Q14), so
+  nothing needed the folded value. Engine + mock; S3 re-pinned.
+- **THE ISLAND'S CONTENT CANNOT BE A ONE-SHOT (owner, 2026-09-09):**
+  *"Clip 1 establishes the Q and cannot be one shot."* `setPeriodSource
+  → context` is refused on a node whose subtree holds ALL of the
+  island's committed content (the sole take, or a group of every take);
+  once a loop exists beside it, the first take may fire once per cycle.
+  If deletes leave only a one-shot, the cycle is Q (the period law:
+  nothing contributes). Scenario S28.
+
 - **Q18 — every node has an origin** (2026-09-01): composition.md §0.
   Stacks store an origin (the moment their inner time 0 belongs to);
   one anchoring law for every node (`inner(t) = mapOffset((t − origin −
@@ -737,6 +781,13 @@ snapshots BOTH cycles at arm: intrinsic (`lcm_before_take_` — re-base
 baseline and fold frame; windows must not leak into epoch permanence)
 and heard (`heard_cycle_at_arm_` — the fold step, and now the true
 source of each take's `contextCycle`).
+**REVERSED (2026-09-09, owner — see §5 "NO ORIGIN FOLD").** The
+"audibly identical" premise was wrong whenever the heard cycle does
+not divide the take: the folded take restarts mid-phrase right after
+it ends. The origin is the capture boundary; the 2026-07-16 field
+complaint ("started recording at 1Q instead of 0Q") is a DISPLAY fact
+that Q14's contextCycle marking already handles. Both cycle snapshots
+stay: heard for `contextCycle`, intrinsic for the epoch re-base.
 
 ### Fourth review round (2026-08-13)
 

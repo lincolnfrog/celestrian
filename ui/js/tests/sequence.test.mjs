@@ -232,6 +232,41 @@ test('STEP 3 (§12): nested sequences — period law on the group lane, layered 
         'only the root layer remains');
 });
 
+/* ---------- THE FIELD BUG (owner, 2026-09-09): "the grid you see is the
+ * grid you hear". The engine folds a group's song from the GROUP's
+ * origin (Q18 — StackNode::renderChildren); the lanes used to tile the
+ * gate dims from the lane frame's zero, and the grid's playing column
+ * folded the raw playhead. A group anchored mid-cycle then dimmed the
+ * wrong sections. The layer now carries the owner's phase; the root
+ * (never anchored — its frame IS the epoch) carries none. The engine
+ * side is tests/scenario_tests.cc S30/S31; the cross-layer seam is
+ * tests/display_contract_tests.cc + display_contract.test.mjs. */
+test('a group song\'s dims and playing column fold from the GROUP origin (2026-09-09)', () => {
+    loadScenario('fractal-drums');
+    const st = getState();
+    const Q = st.quantum;
+    const drums = st.nodes.find(n => n.id === 'drums');
+    drums.anchored = true;
+    drums.origin = 2 * Q;  // anchored 2Q past the epoch
+    const vm = deriveViewModel(st, { ...opts, seqOpen: new Set(['drums']) });
+    const kick = vm.lanes.find(l => l.id === 'kick');
+    assert.deepEqual(kick.seqDims, [
+        { periodQ: 8, offSegsQ: [[0, 4]], cueSegsQ: null },
+        { periodQ: 4, offSegsQ: [[1, 2], [3, 4]], cueSegsQ: null, phaseQ: 2 },
+    ], 'the root layer sits at the epoch; the kit layer carries the group phase');
+    const grid = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === 'drums');
+    assert.equal(grid.phaseQ, 2, 'the grid row folds the playhead from the group origin');
+    const rootGrid = deriveViewModel(st, { ...opts, seqOpen: new Set([st.id]) })
+        .lanes.find(l => l.kind === 'seq' && l.ownerId === st.id);
+    assert.equal(rootGrid.phaseQ, 0, 'the root song is anchored at the epoch');
+    // A phase of a whole song is no phase (the layer stays bare).
+    drums.origin = 4 * Q;
+    const vm2 = deriveViewModel(st, { ...opts, seqOpen: new Set(['drums']) });
+    assert.deepEqual(vm2.lanes.find(l => l.id === 'kick').seqDims[1],
+        { periodQ: 4, offSegsQ: [[1, 2], [3, 4]], cueSegsQ: null },
+        'whole-song offsets fold away');
+});
+
 /* ---------- THE FIELD BUG (owner, 2026-08-21): a 52Q group windowed to
  * a few Q kept a 52Q chip and a 52Q "+ step" — the root seeded 52Q steps
  * and the song ran 104Q around a 4Q groove. §11.7 says the append unit

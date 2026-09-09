@@ -1140,29 +1140,18 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // compensation is small, overshooting the take to the NEXT one.
   const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
 
-  // HEARD-FRAME ORIGIN FOLD (Q15): when active
-  // windows make the audible cycle SHORTER than the intrinsic one, the
-  // heard world is exactly heard-cycle-periodic — so every boundary in
-  // {target − k·heard} is AUDIBLY IDENTICAL as an anchor, differing
-  // only by intrinsic phase the performer can neither hear nor see
-  // (the cursor wraps on the heard cycle). Store the representative
-  // that lands in the FIRST heard window of the intrinsic frame: the
-  // take anchors where the cursor actually sweeps, instead of a
-  // die-roll among equivalent slots. Capture still starts at the REAL boundary
-  // (`target`); I1 holds exactly (playback shifts by whole heard
-  // cycles); nothing else moves (no epoch change — I4). No-op in the
-  // mainline (heard == intrinsic when no window is active).
-  int64_t origin = target;
-  {
-    const int64_t heard = island->activeTakeHeardCycle();
-    const int64_t intrinsic = island->activeTakeIntrinsicCycle();
-    if (heard > 0 && intrinsic > heard) {
-      const int64_t rel_t = timing::posMod(target - epoch, intrinsic);
-      origin = target - (rel_t / heard) * heard;
-    }
-  }
-  origin_samples.store(origin);
-  origin_rt_.store(origin);
+  // THE ORIGIN IS THE CAPTURE BOUNDARY — no fold (owner ruling
+  // 2026-09-09, reversing Q15). The heard-frame fold stored `target −
+  // k·heard` when active windows shortened the audible cycle, arguing
+  // the slots were audibly identical. They are not: shifting a take by
+  // whole heard cycles is only silent when the heard cycle divides the
+  // take's period, and otherwise the phrase restarts mid-phrase the
+  // moment the take ends (a 3Q take under a 2Q window came back at
+  // content[2Q]). Display take-marking already folds by contextCycle
+  // (Q14), so nothing needed the folded value. Under a window the
+  // heard cycle IS the universe; the take anchors where it began.
+  origin_samples.store(target);
+  origin_rt_.store(target);
   awaiting_start_at.store(target);
 
   // Start when the compensated clock is at/near the target, or when the

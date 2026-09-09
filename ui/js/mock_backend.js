@@ -43,6 +43,7 @@ import {
     saveTrackTemplate, listTrackTemplates, createFromTrackTemplate,
 } from './mock/track_templates.js';
 import { setLoopPoints, setSegments, toggleLoopWindow } from './mock/maps.js';
+import { someNode, state } from './mock/state.js';
 import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
 import { startRecordingInNode, stopRecordingInNode, newTake } from './mock/recording.js';
 import { selectTake, deleteTake, setComp, getTakeWaveform } from './mock/takes.js';
@@ -208,6 +209,22 @@ export const handlers = {
 // Event-shaped methods all trace.
 const QUIET_POLLS = new Set(['getGraphState', 'getProjectInfo']);
 
+// THE LIVE-TAKE GATE (engine parity AudioEngine::refusedUnderLiveTake,
+// owner ruling 2026-09-09): while any take is armed or capturing, every
+// verb that changes what sounds when is refused — structure, geometry,
+// sequences, takes, period source, undo/redo, pause, a second arm.
+// Mixer/wiring knobs (mute, rename, input, fx slots, solo, gain, pan,
+// monitor) and creating an empty node stay live.
+const REFUSED_UNDER_LIVE_TAKE = new Set([
+    'deleteNode', 'reorderNode', 'combineNodes', 'setLoopPoints',
+    'toggleLoopWindow', 'setSegments', 'setPeriodSource',
+    'createFromTrackTemplate', 'setSequence', 'toggleSequence',
+    'auditionStep', 'selectTake', 'deleteTake', 'setComp', 'importAudio',
+    'undo', 'redo', 'togglePlayback', 'seekTransport',
+    'startRecordingInNode', 'newTake',
+]);
+const takeIsLive = () => someNode(n => n.isRecording || n.isPendingStart);
+
 export async function callNative(method, ...args) {
     if (!QUIET_POLLS.has(method)) {
         console.log(`[MockBackend] callNative: ${method}`, args);
@@ -217,6 +234,16 @@ export async function callNative(method, ...args) {
     if (!handler) {
         console.warn(`[MockBackend] Unknown method: ${method}`);
         return null;
+    }
+    // (Stopping is the verb for a live take — never gated; and a
+    // togglePlayback while PAUSED is a resume, which the engine allows:
+    // only a PAUSE under a take is refused.)
+    const isResume = method === 'togglePlayback' && !state.isPlaying;
+    if (REFUSED_UNDER_LIVE_TAKE.has(method) && !isResume && takeIsLive()) {
+        console.log(`[MockBackend] ${method} refused - a take is armed or capturing`);
+        // Refusals answer like the engine's boolean verbs (seek, undo,
+        // redo, import: false); combine answers no uuid.
+        return method === 'combineNodes' ? null : false;
     }
     // Snapshot BEFORE any undoable mutation so undo restores the pre-edit
     // graph (see interceptUndoableCall for the coalescing rules).

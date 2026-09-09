@@ -380,6 +380,16 @@ int64_t AudioEngine::cycleTopOf(const celestrian::AudioNode& node) const {
 
 void AudioEngine::settleAnchors(celestrian::Edit& inv) {
   forEachStack(root_node.get(), [&](celestrian::StackNode& stack) {
+    // THE ROOT IS NEVER ANCHORED (owner ruling 2026-09-09, "the grid
+    // you see is the grid you hear"): the island root's inner timeline
+    // IS the island timeline, whose zero is the EPOCH — the ruler the
+    // UI draws every root song, window and tile from. Anchoring the
+    // root at its first take's origin parted the two on every growth
+    // re-base (the epoch moves by whole old cycles; the origin stayed),
+    // and the root song's gates then landed whole cycles off the grid
+    // on screen. frameOrigin/frameOriginOf fall through to the received
+    // cycle top — the epoch — for an unanchored stack.
+    if (&stack == root_node.get()) return;
     const bool has = hasCommittedContent(stack);
     if (has == stack.isAnchored()) return;  // nothing to settle
     celestrian::Edit::AnchorRider back;

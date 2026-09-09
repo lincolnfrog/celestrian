@@ -172,7 +172,11 @@ export function patchSeqGrid(row, lane, vm) {
     const body = row.querySelector('.seq-body');
     if (lane.visits.length && lane.totalQ > 0 && vm.isPlaying &&
         !lane.bypassed) {
-        const rel = posMod(vm.playheadQ, lane.totalQ);
+        // The song is anchored at its owner's frame origin (Q18: a
+        // group's origin; the epoch for the root) — `phaseQ` is that
+        // origin in the lane frame, so the column follows what the
+        // engine actually gates (the grid you see is the grid you hear).
+        const rel = posMod(vm.playheadQ - (lane.phaseQ || 0), lane.totalQ);
         const playing = playingColumn(lane, rel);
         body.querySelectorAll('[data-col]').forEach(cell => {
             cell.classList.toggle('playing',

@@ -323,5 +323,20 @@ export function setPeriodSource(id, source) {
         popUndoForRefusal();
         return;
     }
+    // THE ISLAND'S CONTENT CANNOT BE A ONE-SHOT (engine parity, owner
+    // ruling 2026-09-09): a node holding ALL the committed content
+    // would leave nothing to define the cycle a one-shot fires in.
+    if (next === 'context') {
+        const under = n => (n.type === 'clip')
+            ? ((n.duration || 0) > 0 && !n.isRecording ? 1 : 0)
+            : (n.nodes || []).reduce((acc, c) => acc + under(c), 0);
+        const inside = under(node);
+        if (inside > 0 && inside === committedClipCount()) {
+            console.log('[MockBackend] setPeriodSource refused:', id,
+                'holds all of the island\'s committed content');
+            popUndoForRefusal();
+            return;
+        }
+    }
     node.periodSource = next;
 }

@@ -107,6 +107,14 @@ test('mock: arming take 2 LOCK-COLLAPSES the trimmed definer', async () => {
     assert.equal(getState().quantum, q, 'Q unchanged by the collapse');
 
     await callNative('stopRecordingInNode', id2);
+    // The stop pads take 2 forward to its boundary; while it finishes
+    // the island is LIVE and undo is refused (the live-take gate, owner
+    // ruling 2026-09-09). Let it commit, then undo the take and the
+    // collapse: the pre-collapse state returns.
+    assert.equal(await callNative('undo'), false, 'undo refused while the take finishes');
+    advanceBy(q + 1024);  // past the stop boundary: take 2 commits
+    assert.ok(!getState().nodes.find(n => n.id === id2).isRecording, 'take 2 committed');
+    await callNative('undo');   // strips take 2
     await callNative('undo');   // snapshot restores the pre-collapse state
     const c1b = getState().nodes.find(n => n.id === 'clip-1');
     assert.equal(c1b.duration, dur0, 'undo restores the full buffer');

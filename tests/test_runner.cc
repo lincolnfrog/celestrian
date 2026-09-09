@@ -39,8 +39,15 @@ int main(int argc, char* argv[]) {
 
   ConsoleRunner runner;
   runner.setAssertOnFailure(false);
-  runner.runAllTests();
-  // runner.runTestsInCategory("Audio Engine");
+  // `--category=<name>` runs one juce::UnitTest category (e.g.
+  // --category=Scenarios); no flag runs everything.
+  juce::String category;
+  for (const auto& a : args)
+    if (a.startsWith("--category=")) category = a.fromFirstOccurrenceOf("=", false, false);
+  if (category.isNotEmpty())
+    runner.runTestsInCategory(category);
+  else
+    runner.runAllTests();
 
   int numFailures = 0;
   for (int i = 0; i < runner.getNumResults(); ++i) {
