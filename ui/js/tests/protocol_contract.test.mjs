@@ -34,25 +34,33 @@ test('mock backend implements exactly the protocol surface', () => {
 });
 
 test('C++ bridge binds exactly the protocol surface', () => {
-    const cppSourcePath = path.join(repoRoot, 'src', 'main_component.cc');
-    const cppSource = readFileSync(cppSourcePath, 'utf8');
-
+    // The C++ side is ONE table plus the window-bound verbs: every
+    // GUI-free method is registered in src/bridge_dispatch.cc
+    // (voidMethod / valueMethod — shared by the app shell AND the
+    // headless engine server), and main_component.cc binds only what
+    // needs a window (bindWindowVerb, overriding same-named table
+    // entries). The union must be the protocol, exactly.
+    const sources = [
+        ['src/bridge_dispatch.cc', /(?:voidMethod|valueMethod)\(\s*"(\w+)"/g],
+        ['src/main_component.cc', /(?:withNativeFunction|bindWindowVerb)\(\s*"(\w+)"/g],
+    ];
     const cppMethods = new Set();
-    const bindingRegex = /withNativeFunction\(\s*"(\w+)"/g;
-    let match;
-    while ((match = bindingRegex.exec(cppSource)) !== null) {
-        cppMethods.add(match[1]);
+    for (const [rel, regex] of sources) {
+        const src = readFileSync(path.join(repoRoot, rel), 'utf8');
+        let match, found = 0;
+        while ((match = regex.exec(src)) !== null) {
+            cppMethods.add(match[1]);
+            found++;
+        }
+        assert.ok(found > 0, `no bridge bindings found in ${rel} — parser broken?`);
     }
-
-    assert.ok(cppMethods.size > 0,
-        `no withNativeFunction bindings found in ${cppSourcePath} — parser broken?`);
 
     for (const name of protocol) {
         assert.ok(cppMethods.has(name),
-            `main_component.cc is missing protocol method '${name}'`);
+            `the C++ bridge (bridge_dispatch.cc + main_component.cc) is missing protocol method '${name}'`);
     }
     for (const name of cppMethods) {
         assert.ok(protocol.has(name),
-            `main_component.cc binds '${name}' which is not in protocol.js`);
+            `the C++ bridge binds '${name}' which is not in protocol.js`);
     }
 });

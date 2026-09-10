@@ -15,7 +15,12 @@
 //      namespace window.__celestrianTest (loadScenario / setMasterPos /
 //      setIsPlaying / callNative / startTransport / pauseTransport /
 //      advanceBy) — e2e drives the mock through that surface only.
-//   3. NATIVE   — neither: the JUCE bridge (bridge.js). `getState` is
+//   3. ENGINE   — ?engine=true: the REAL engine behind the headless
+//      server's HTTP twin of the bridge (bridge_http.js; docs/
+//      test_harness.md "Engine e2e"). `getState` is null like NATIVE;
+//      window.__celestrianTest exposes callNative + the server's
+//      `engine` control surface (clock, input, the truth probe).
+//   4. NATIVE   — neither: the JUCE bridge (bridge.js). `getState` is
 //      null in this mode; the polling loop detects that and calls
 //      callNative('getGraphState') instead of a synchronous getter.
 
@@ -25,8 +30,19 @@ const useMock = typeof window !== 'undefined' && (
     (window.celestrian) ||
     (new URLSearchParams(window.location.search).get('mock') === 'true')
 );
+const useEngine = typeof window !== 'undefined' && !useMock &&
+    new URLSearchParams(window.location.search).get('engine') === 'true';
 
-if (useMock) {
+if (useEngine) {
+    const http = await import('./bridge_http.js');
+    ({ callNative, log } = http);
+    getState = null;
+    window.__celestrianTest = {
+        callNative: http.callNative,
+        engine: http.control,
+    };
+    console.log('[Backend] Using HTTP engine bridge (headless engine server)');
+} else if (useMock) {
     if (window.celestrian) {
         // Test harness environment (index_test.html) - use provided backend
         ({ callNative, log, getState } = window.celestrian);

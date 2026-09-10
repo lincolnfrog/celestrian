@@ -11,6 +11,7 @@
 | C++ unit/engine tests | Nodes, timing math, engine workflows, calibration, pre-record capture | `cmake --build build --parallel 8 --target CelestrianTests && ./build/CelestrianTests_artefacts/Debug/CelestrianTests` |
 | JS unit tests | Timeline model, protocol contract, stack logic, ghost math, composite waveform cache | `cd ui && npm test` |
 | Playwright e2e | UI behavior against the mock backend | `cd ui && npm run test:playwright` |
+| **Engine e2e** | The REAL UI in Chromium against the REAL C++ engine (the headless engine server) — see below | `cmake --build build --target CelestrianHeadless && cd ui && npm run test:engine` |
 | Golden vectors | Pin C++ `src/timing.h` and JS `timeline_model.js` to the SAME numbers | `shared/timing_golden.json`, consumed by both suites above |
 | Protocol contract | The bridge method list in `protocol.js` ⇔ `main_component.cc` ⇔ `mock_backend.js` | part of `npm test` (`protocol_contract.test.mjs`) |
 
@@ -113,6 +114,64 @@ Put the pure function in BOTH `src/timing.h` and
 `ui/js/timeline_model.js`, then pin them with a case in
 `shared/timing_golden.json` — the golden tests on each side keep the two
 implementations from drifting.
+
+## Engine e2e — the real UI on the real engine (2026-09-09)
+
+The WebView cannot be driven headless and the mock has no audio, so
+"what I see is not what I hear" bugs (the 2026-09-09 sequencer field
+report) had no test layer. This is that layer.
+
+**The headless engine server** (`src/headless/headless_main.cc`, target
+`CelestrianHeadless`) is AudioEngine + ProjectManager + PluginHostService
+with no window and no device: a thread paces device-sized blocks of a
+GENERATED input (sine by default; `--input ramp|silence`) through the
+one callback the real device would call, the bridge table
+(`src/bridge_dispatch.cc` — the very entries the app registers on the
+WebView) is served as `POST /call {name, args}`, and `ui/` is served
+as static files from the same origin. Open
+`http://localhost:8091/index.html?engine=true` in any browser and the
+real UI runs on the real engine (`backend.js` mode ENGINE →
+`bridge_http.js`). By hand:
+
+```bash
+./build/CelestrianHeadless_artefacts/Debug/CelestrianHeadless --port 8091 --ui-dir ui
+```
+
+**The control surface** (`POST /control {op}`; in the page,
+`window.__celestrianTest.engine(op, params)`) makes runs deterministic:
+`pause` / `resume` the clock, `advance {samples}` by an exact count,
+`input {kind, freq, gain}`, `status` (quantum, epoch, islandPos,
+cycle by the period law, paused, clock), `reset` (an empty project),
+`truth` — THE AUDIBLE TRUTH: the engine solos each clip and listens
+one island cycle, answering per Q cell whether it sounds. The
+see-vs-hear spec (`ui/e2e_engine/see_vs_hear.spec.js`) builds a root
+song with real clicks on the grid and asserts every lane's `.seq-dim`
+sits exactly where the engine is silent.
+
+**Writing a spec** (`ui/e2e_engine/*.spec.js`, helpers in
+`engine_helpers.mjs`): `openEngine(page)` (loads `?engine=true`,
+resets), `rec(page, len, {atPhase})` records a take by the scenario
+harness's recipe with the clock paused (arm, advance to the capture,
+`len − live` more, stop, settle), `dimmedCells(page, laneId, cells)`
+reads the DOM the way a performer does. Playwright starts the server
+itself (`playwright.engine.config.js`, `--paused`); ONE engine process
+serves the run, so specs are serial and start with `reset`.
+
+Gotchas:
+
+13. **`islandPos` is published EPOCH-RELATIVE and unwrapped**
+   (`AudioEngine::getGraphState`): the island phase is
+   `islandPos mod cycle`, never `islandPos − epoch`. The first
+   see-vs-hear run subtracted the epoch twice and armed a Q late.
+14. **The server pumps the message loop by hand.** A console tool has
+   no NSApplication, and on macOS `runDispatchLoop()` is `[NSApp run]`
+   — it returns at once. The loop is `runDispatchLoopUntil(50)` (needs
+   `JUCE_MODAL_LOOPS_PERMITTED=1`, set on the target); bridge verbs are
+   marshalled there from the HTTP thread (`onMessageThread`), exactly
+   the app's threading.
+15. **Projects land in a temp folder** (`--projects-dir` defaults under
+   the user cache) — the server must never birth projects into the
+   real library.
 
 ## Browser harness (mock backend)
 

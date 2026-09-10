@@ -28,7 +28,6 @@ class MainComponent : public juce::Component, public juce::Timer {
   void timerCallback() override;
 
  private:
-  juce::WebBrowserComponent web_browser;
   AudioEngine audio_engine;
   // The project model (docs/projects.md): birth at first take +
   // continuous mirror, driven by the component timer (message thread).
@@ -43,11 +42,16 @@ class MainComponent : public juce::Component, public juce::Timer {
   // §5). Declared after the engine: windows close before the engine
   // (and its plugin instances) tears down.
   celestrian::PluginEditorWindows plugin_editor_windows_;
+  // Declared LAST: its options capture references to the members above
+  // (the shared bridge table, src/bridge_dispatch.h), which must exist
+  // before browserOptions() runs in the initializer list.
+  juce::WebBrowserComponent web_browser;
 
-  /** Async VST3 instantiation → engine AddSlot edit (docs/vst3.md §4).
-   * index < 0 appends. */
-  void addPluginToChain(const juce::String& node_uuid,
-                        const juce::String& plugin_uid, int index);
+  /** The WebView options: the resource provider, the window-bound
+   * bridge verbs (file choosers, plugin editors, the pointer warp), and
+   * every GUI-free protocol method from the shared bridge table. */
+  juce::WebBrowserComponent::Options browserOptions();
+
   /** Load-time revival sweep: instantiate every placeholder slot whose
    * plugin is installed here (docs/vst3.md §6). */
   void revivePlaceholderPlugins();

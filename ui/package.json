@@ -6,7 +6,8 @@
   "scripts": {
     "test": "for f in js/tests/*.test.mjs; do echo \"--- $f\"; node \"$f\" || exit 1; done",
     "test:playwright": "npx playwright test",
-    "test:all": "npm run test && npm run test:playwright"
+    "test:engine": "npx playwright test -c playwright.engine.config.js",
+    "test:all": "npm run test && npm run test:playwright && npm run test:engine"
   },
   "devDependencies": {
     "@playwright/test": "^1.40.0",

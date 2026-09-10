@@ -109,6 +109,8 @@ target_sources(Celestrian PRIVATE
     src/main.cc
     src/main_component.h
     src/main_component.cc
+    src/bridge_dispatch.h
+    src/bridge_dispatch.cc
     src/audio_engine.h
     src/audio_engine.cc
     src/engine/engine_internal.h
@@ -199,6 +201,63 @@ else()
         $<TARGET_FILE_DIR:Celestrian>/ui
     )
 endif()
+
+# --- Headless engine server (docs/test_harness.md "Engine e2e") ---------
+# The REAL engine behind an HTTP twin of the WebView bridge, plus a
+# synthetic audio clock and a static server for ui/. Playwright drives the
+# REAL UI in a real browser against it (ui/playwright.engine.config.js):
+#   ./build/CelestrianHeadless_artefacts/Debug/CelestrianHeadless --port 8091 --ui-dir ui
+juce_add_console_app(CelestrianHeadless
+    PRODUCT_NAME "CelestrianHeadless"
+)
+
+target_sources(CelestrianHeadless PRIVATE
+    src/headless/headless_main.cc
+    src/bridge_dispatch.cc
+    src/clip_node.cc
+    src/take_storage.cc
+    src/stack_node.cc
+    src/audio_engine.cc
+    src/engine/island_geometry.cc
+    src/engine/edit_log.cc
+    src/engine/take_service.cc
+    src/engine/transport.cc
+    src/engine/verbs.cc
+    src/engine/map_edits.cc
+    src/engine/audio_callback.cc
+    src/engine/device_service.cc
+    src/engine/bounce.cc
+    src/engine/import.cc
+    src/session_io.cc
+    src/project_manager.cc
+    src/plugin_host_service.cc
+    src/plugin_scan_worker.cc
+    src/dsp/effects.cc
+    src/dsp/fx_chain.cc
+    src/dsp/vst3_slot.cc
+)
+
+target_link_libraries(CelestrianHeadless PRIVATE
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_audio_utils
+    juce::juce_gui_basics
+    juce::juce_core
+)
+
+target_compile_definitions(CelestrianHeadless PRIVATE
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    # The server pumps the message loop by hand (runDispatchLoopUntil):
+    # a console tool has no NSApplication for runDispatchLoop to run.
+    JUCE_MODAL_LOOPS_PERMITTED=1
+)
+
+celestrian_enable_asio(CelestrianHeadless)
+celestrian_enable_au_hosting(CelestrianHeadless)
 
 # --- Unit Tests ---
 juce_add_console_app(CelestrianTests
