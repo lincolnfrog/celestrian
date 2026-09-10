@@ -12,7 +12,8 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { openEngine, engine, state, rec, dimmedCells } from './engine_helpers.mjs';
+import { openEngine, engine, state, rec, dimmedCells, verifyHeard, listen, findNode, mod }
+    from './engine_helpers.mjs';
 
 test('root song after a growth re-base: lane dims == engine silence', async ({ page }) => {
     await openEngine(page);
@@ -61,4 +62,55 @@ test('root song after a growth re-base: lane dims == engine silence', async ({ p
         expect(dimmed, `lane ${id}`).toEqual(truth.truth[id].map(on => !on));
     }
     await page.screenshot({ path: 'test-results/engine_see_vs_hear.png' });
+
+    // The listener says the same, with content: c1 sounds its loop law
+    // in step 1 and nothing in step 2 (frames near the 10 ms seams
+    // skipped); c2 and c3 sound throughout.
+    const fade = 0.010 * 44100 / Q;
+    await verifyHeard(page, {
+        silent: (id, phaseQ) => {
+            if (id !== c1) return false;
+            const d = Math.min(mod(phaseQ, 8), 8 - mod(phaseQ, 8));
+            if (d < fade + 0.1) return 'skip';
+            return phaseQ >= 8;
+        },
+    });
+});
+
+test('a CUED step replays the song top (S18): in step 2 the clips sound what they sound in step 1', async ({ page }) => {
+    await openEngine(page);
+    const Q = 44100;
+    const c1 = await rec(page, Q);
+    const c2 = await rec(page, 4 * Q);
+    await page.locator('#root-seq-btn').click();
+    const grid = page.locator('.lane-seq');
+    await grid.locator('.seq-start').click();
+    await grid.locator('.seq-addstep').click();
+    // The second header's cue pip: step 2 re-bases to the song top.
+    await grid.locator('.seq-hcell').nth(1).hover();
+    await grid.locator('.seq-hcell').nth(1).locator('.seq-cue').click();
+    await expect.poll(async () => {
+        const s = (await state(page)).sequence;
+        return s && s.steps.length === 2 ? !!s.steps[1].cue : null;
+    }).toBe(true);
+    const L = await listen(page);
+    expect(L.cycle).toBe(8 * Q);
+    const st = await state(page);
+    const cueMap = f => f.pos - (f.phase >= 4 * Q ? 4 * Q : 0);  // song top re-base
+    for (const f of L.frames) {
+        const d = Math.min(f.phase % (4 * Q), 4 * Q - (f.phase % (4 * Q)));
+        if (d < 3 * L.frame) continue;  // seams: the cue cut and the loop wraps
+        for (const id of [c1, c2]) {
+            const n = findNode(st, id);
+            const t = st.islandEpoch + cueMap(f);
+            const expected = mod(t - n.origin, n.duration);
+            // The clip's own loop wrap inside the window: skip.
+            if (expected < L.frame / 2 || n.duration - expected < L.frame / 2) continue;
+            const hs = f.heard.filter(x => x.id === id);
+            expect(hs.length, `${id} sounds @ ${(f.phase / Q).toFixed(2)}Q`).toBeGreaterThan(0);
+            const h = hs.reduce((a, b) => Math.abs(b.inner - expected) < Math.abs(a.inner - expected) ? b : a);
+            const diff = Math.abs(mod(h.inner - expected + n.duration / 2, n.duration) - n.duration / 2);
+            expect(diff / Q, `${id} @ ${(f.phase / Q).toFixed(2)}Q: heard ${(h.inner / Q).toFixed(2)}Q, cue law ${(expected / Q).toFixed(2)}Q`).toBeLessThan(0.05);
+        }
+    }
 });

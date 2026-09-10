@@ -37,7 +37,9 @@ export default defineConfig({
     webServer: {
         // The clock starts PAUSED: specs advance it by exact sample
         // counts (a real-time clock would make every assertion a race).
-        command: `${BIN} --port ${PORT} --ui-dir . --paused`,
+        // CHIRP input: every recorded sample carries its capture clock as
+        // a frequency, so `listen` can decode the mix (see engine_helpers).
+        command: `${BIN} --port ${PORT} --ui-dir . --paused --input chirp`,
         url: `http://localhost:${PORT}/index.html`,
         reuseExistingServer: false,
         timeout: 60000,

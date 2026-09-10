@@ -9,8 +9,135 @@
 
 import { expect } from '@playwright/test';
 
+import { innerAt, singleSegment } from '../js/time_map.js';
+import { deriveViewModel } from '../js/view_model.js';
+
 const BLOCK = 512;
 export const mod = (x, p) => ((x % p) + p) % p;
+
+/* ---------- THE SPECTRAL LISTENER ----------
+ * The server records the CHIRP input (every sample carries its capture
+ * clock as a frequency) and `listen` decodes the island's OUTPUT frame
+ * by frame: which clip, which take, which content index sounds at each
+ * moment — the mix itself, level-blind, no soloing. The two checks
+ * below are the whole point of the harness:
+ *   verifyHeard  — what sounds == the render law (the JS twin of
+ *                  timing::innerAt, golden-pinned against the engine)
+ *                  AND == what the lanes DRAW at that moment.
+ */
+
+/** Listen to `samples` of output (default one island cycle). */
+export function listen(page, { samples = 0, hop = 4096 } = {}) {
+    return engine(page, 'listen', { samples, hop });
+}
+
+/** A clip's active single-segment map from its published state. */
+export function mapOfNode(n) {
+    const win = n.windowActive && (n.loopEnd || 0) > (n.loopStart || 0);
+    if (n.segments && n.segments.length >= 4 && !n.loopBypassed) {
+        const segs = [];
+        for (let i = 0; i + 1 < n.segments.length; i += 2)
+            segs.push([n.segments[i], n.segments[i + 1]]);
+        return { segs };
+    }
+    return win ? singleSegment(n.loopStart, n.loopEnd) : singleSegment(0, n.duration);
+}
+
+/** What the lanes DRAW for clip `id` at lane-frame position `q` (Q):
+ * the content index (Q) the tile grid puts there, and whether a tile
+ * is there at all (one-shots rest between firings). */
+export function displayInnerQ(vm, id, q, durationQ) {
+    const lane = vm.lanes.find(l => l.id === id);
+    if (!lane || !(lane.periodQ > 0)) return null;
+    const tile = (lane.reps || []).find(r => q >= r.startQ && q < r.endQ);
+    if (!tile) return { rest: true };
+    // A HEARD lane (a window: srcSegs) tiles on the FRAME grid and bakes
+    // the loop's phase in as content ROTATION (srcTopFrac, display law
+    // 2026-07-23d): the tile shows slice[(q − tile.start + rot) mod P].
+    // Single-segment maps only (the specs' scope).
+    if (tile.srcSegs) {
+        if (tile.srcSegs.length !== 1) return null;
+        const rel = mod(q - tile.startQ + (tile.srcTopFrac || 0) * lane.periodQ, lane.periodQ);
+        return { rest: false, innerQ: tile.srcSegs[0][0] * durationQ + rel };
+    }
+    // A plain lane tiles on the TAKE grid (takeStartQ mod periodQ; a
+    // wrapped first tile is clamped, so the grid — not the tile — is
+    // the reference) and draws the take from its top.
+    return { rest: false, innerQ: mod(q - (lane.takeStartQ || 0), lane.periodQ) };
+}
+
+/**
+ * The see-vs-hear check over one listen: for every frame and every
+ * committed clip, what the engine SOUNDS must match the render law and
+ * the display. `silent(id, phaseQ)` may answer true (expect silence),
+ * false, or 'skip' (near a gate seam); `foldOf(id)` gives a one-shot's
+ * context cycle in samples. Frames whose centre sits within half a
+ * frame of a loop seam are skipped for that clip (two capture moments
+ * share the window). Returns the listen result for further asserts.
+ */
+export async function verifyHeard(page, {
+    silent = () => false, foldOf = () => 0, tolQ = 0.03, opts = {}, only = null,
+} = {}) {
+    const st = await state(page);
+    const L = await listen(page);
+    const Q = L.quantum;
+    const vm = deriveViewModel(st, { fxOpen: new Set(), windowEdit: new Set(), ...opts });
+    const clips = [];
+    (function walk(n) {
+        for (const c of n.nodes || []) {
+            if (c.type === 'clip' && c.duration > 0 && (!only || only.includes(c.id))) clips.push(c);
+            walk(c);
+        }
+    })(st);
+    expect(clips.length, 'committed clips').toBeGreaterThan(0);
+    const half = L.frame / 2;
+    let checked = 0;
+    for (const f of L.frames) {
+        const t = L.epoch + f.pos;          // absolute clock of the frame centre
+        const phaseQ = f.phase / Q;
+        for (const c of clips) {
+            const gate = silent(c.id, phaseQ);
+            if (gate === 'skip') continue;
+            const heard = f.heard.filter(h => h.id === c.id);
+            const law = innerAt(t, c.origin, mapOfNode(c), foldOf(c.id));
+            const label = `${c.name || ''}[${c.id.slice(0, 6)} ${c.duration / Q}Q] @ ${phaseQ.toFixed(2)}Q (frame pos ${f.pos})`;
+            if (gate === true || law.rest) {
+                expect(heard, `${label}: expected silence`).toEqual([]);
+                continue;
+            }
+            // Near a seam the window holds two capture moments: skip.
+            if (law.run < half || law.inner < half) continue;
+            expect(heard.length, `${label}: expected the clip to sound (law content[${(law.inner / Q).toFixed(3)}Q]); frame heard ${JSON.stringify(f.heard.map(h => [h.id.slice(0, 6), +(h.inner / Q).toFixed(3), +h.level.toFixed(2)]))} unknown ${JSON.stringify(f.unknown.map(u => +(u / Q).toFixed(3)))}`).toBeGreaterThan(0);
+            const nearest = heard.reduce((a, b) =>
+                Math.abs(b.inner - law.inner) < Math.abs(a.inner - law.inner) ? b : a);
+            expect(Math.abs(nearest.inner - law.inner) / Q,
+                `${label}: heard content[${(nearest.inner / Q).toFixed(3)}Q], law says content[${(law.inner / Q).toFixed(3)}Q]`)
+                .toBeLessThan(tolQ);
+            // …and the lane draws that very content there.
+            const d = displayInnerQ(vm, c.id, phaseQ, c.duration / Q);
+            if (d && !d.rest) {
+                const diff = Math.abs(mod(d.innerQ - nearest.inner / Q + c.duration / Q / 2, c.duration / Q) - c.duration / Q / 2);
+                expect(diff, `${label}: lane draws content[${d.innerQ.toFixed(3)}Q], engine sounds content[${(nearest.inner / Q).toFixed(3)}Q]`)
+                    .toBeLessThan(tolQ);
+            }
+            checked++;
+        }
+    }
+    expect(checked, 'frames checked').toBeGreaterThan(0);
+    return L;
+}
+
+/** The capture-clock offset (input clock − origin) of every take: with
+ * an uninterrupted transport it is ONE number for the whole island, so
+ * a take whose origin was folded or moved would stand out. */
+export function captureOffsets(L, st) {
+    const out = {};
+    for (const [id, takes] of Object.entries(L.clips)) {
+        const n = findNode(st, id);
+        for (const t of takes) out[`${id}/${t.take}`] = t.captureClock - (n ? n.origin : 0);
+    }
+    return out;
+}
 
 /** Open the real UI in engine mode and start from an empty project. */
 export async function openEngine(page) {

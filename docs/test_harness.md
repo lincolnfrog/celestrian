@@ -148,6 +148,38 @@ see-vs-hear spec (`ui/e2e_engine/see_vs_hear.spec.js`) builds a root
 song with real clicks on the grid and asserts every lane's `.seq-dim`
 sits exactly where the engine is silent.
 
+**The spectral listener** (`--input chirp`, `listen {samples, hop}`)
+is the harness's instrument. The input is a slow linear frequency
+sweep (300 → 15 000 Hz over 240 s, restarted by `reset`), so every
+recorded sample CARRIES ITS OWN CAPTURE CLOCK as a frequency. `listen`
+renders one island cycle and decodes the OUTPUT frame by frame (4096
+samples, Hann, FFT, interpolated peaks): each peak's frequency is a
+capture moment, each capture moment belongs to exactly one take
+(their buffers are decoded the same way), so the answer per frame is
+"clip X, take k, content index i is sounding" — the mix itself,
+level-blind, no soloing. `verifyHeard(page)` in the helpers then
+asserts, for every frame and clip, heard == the render law (the JS
+twin of `timing::innerAt`, golden-pinned) == what the lane DRAWS at
+that x (tile grid, window slice, rotation). Resolution ≈ 0.01 Q.
+Frames whose window straddles a loop seam or a gate ramp are skipped
+for that clip (two capture moments share the window). Gotcha: takes
+recorded back to back have ADJACENT capture ranges, so attribution
+prefers an exact range hit before the half-frame tolerance.
+
+**When to run it.** The layers are complementary, not duplicates: the
+C++ scenarios are the LAWS, sample-exact and fast (they run every
+time); the engine e2e is the whole SYSTEM — a browser, the bridge, the
+poll loop, the view model, the DOM, the engine and its threads at once.
+It is slower and has more moving parts, so it is the deep-verification
+pass: before a field session, after a change to the display laws, the
+bridge, the recording lifecycle or the render equation, and whenever a
+field report needs reproducing (script the flow, `listen`, compare the
+DOM). `npm test` and `npm run test:playwright` stay the every-change
+gates; `npm run test:all` is the deep pass and includes it. The specs
+are JOURNEYS through the catalog's families (the owner's chain,
+growth and the epoch, one-shots, takes and comps, the sequencer's
+gates and cues), not one-for-one mirrors of the 32 scenarios.
+
 **Writing a spec** (`ui/e2e_engine/*.spec.js`, helpers in
 `engine_helpers.mjs`): `openEngine(page)` (loads `?engine=true`,
 resets), `rec(page, len, {atPhase})` records a take by the scenario

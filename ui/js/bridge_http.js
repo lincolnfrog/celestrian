@@ -13,14 +13,23 @@
  * failure resolves to `null`.
  */
 
-async function post(path, body) {
-    const r = await fetch(path, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-    });
-    if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
-    return r.json();
+async function post(path, body, retries = 2) {
+    for (let attempt = 0; ; attempt++) {
+        try {
+            const r = await fetch(path, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+            return r.json();
+        } catch (e) {
+            // A dropped connection (the server busy with a long render)
+            // is retried; the verbs are idempotent enough for a poll.
+            if (attempt >= retries) throw e;
+            await new Promise(res => setTimeout(res, 50 * (attempt + 1)));
+        }
+    }
 }
 
 export async function callNative(name, ...args) {

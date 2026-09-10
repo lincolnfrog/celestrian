@@ -24,7 +24,14 @@
  *   GET  /<path>                    → ui/<path>       (index.html default)
  *
  * Control ops: status · pause · resume · advance{samples} · input{kind,
- * freq, gain} · truth · reset · quit.
+ * freq, gain} · truth · listen{samples, hop} · reset · quit.
+ *
+ * `listen` is the spectral listener: with the CHIRP input (`--input
+ * chirp`) every recorded sample carries its capture clock as a
+ * frequency, so a spectrum of the island's OUTPUT says which clip, at
+ * which content index, is sounding at every frame — the mix decoded,
+ * level-blind, no soloing. The specs compare that against the render
+ * law (the JS twin of timing::innerAt) AND against what the lanes draw.
  *
  * Threads, exactly as in the app: bridge handlers run on the MESSAGE
  * thread (the HTTP thread marshals each call there and waits); the
@@ -44,6 +51,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <csignal>
 #include <iostream>
 #include <map>
@@ -53,6 +61,7 @@
 
 #include "../audio_engine.h"
 #include "../bridge_dispatch.h"
+#include "../clip_node.h"
 #include "../period_law.h"
 #include "../plugin_host_service.h"
 #include "../plugin_scan_worker.h"
@@ -263,6 +272,212 @@ class Host {
     return juce::var(doc);
   }
 
+  // --- THE SPECTRAL LISTENER (chirp input) ---
+
+  /** In-place iterative radix-2 FFT (N a power of two). */
+  static void fft(std::vector<std::complex<double>>& a) {
+    const size_t n = a.size();
+    for (size_t i = 1, j = 0; i < n; ++i) {
+      size_t bit = n >> 1;
+      for (; j & bit; bit >>= 1) j ^= bit;
+      j ^= bit;
+      if (i < j) std::swap(a[i], a[j]);
+    }
+    for (size_t len = 2; len <= n; len <<= 1) {
+      const double ang = -2.0 * juce::MathConstants<double>::pi / (double)len;
+      const std::complex<double> wl(std::cos(ang), std::sin(ang));
+      for (size_t i = 0; i < n; i += len) {
+        std::complex<double> w(1.0, 0.0);
+        for (size_t k = 0; k < len / 2; ++k) {
+          const std::complex<double> u = a[i + k], v = a[i + k + len / 2] * w;
+          a[i + k] = u + v;
+          a[i + k + len / 2] = u - v;
+          w *= wl;
+        }
+      }
+    }
+  }
+
+  struct Peak {
+    double capture_clock;  // samples into the sweep, at the FRAME CENTRE
+    double level;          // ≈ the sine's amplitude
+  };
+
+  /** The capture clocks sounding in one kFrame window: Hann, FFT, local
+   * maxima above an absolute floor, parabolic interpolation, then the
+   * chirp inverted. */
+  std::vector<Peak> decode(const float* x) const {
+    const int N = kFrame;
+    std::vector<std::complex<double>> a((size_t)N);
+    for (int i = 0; i < N; ++i) {
+      const double w = 0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * i / N);
+      a[(size_t)i] = std::complex<double>((double)x[i] * w, 0.0);
+    }
+    fft(a);
+    std::vector<double> mag((size_t)N / 2);
+    for (int i = 0; i < N / 2; ++i) mag[(size_t)i] = std::abs(a[(size_t)i]);
+    // A Hann-windowed sine of amplitude A peaks at ≈ A·N/4. Two floors:
+    // an absolute one (silence), and a relative one — leakage around a
+    // loop seam inside the window throws sidelobes a decade down that
+    // would otherwise read as phantom capture moments.
+    double top = 0.0;
+    for (int i = 2; i < N / 2 - 2; ++i) top = std::max(top, mag[(size_t)i]);
+    const double floor_mag = std::max(0.01 * N / 4.0, 0.15 * top);
+    std::vector<Peak> peaks;
+    for (int i = 2; i < N / 2 - 2; ++i) {
+      const double m = mag[(size_t)i];
+      if (m < floor_mag || m < mag[(size_t)i - 1] || m <= mag[(size_t)i + 1]) continue;
+      // Parabolic interpolation on log magnitude.
+      const double l0 = std::log(mag[(size_t)i - 1] + 1e-12),
+                   l1 = std::log(m + 1e-12), l2 = std::log(mag[(size_t)i + 1] + 1e-12);
+      const double den = l0 - 2.0 * l1 + l2;
+      const double d = std::abs(den) > 1e-12 ? 0.5 * (l0 - l2) / den : 0.0;
+      const double bin = i + d;
+      const double f = bin * rate_ / N;
+      const double tau = (f - kF0) / kSweepHzPerSec;  // seconds into the sweep
+      if (tau < 0) continue;
+      peaks.push_back({tau * rate_, m / (N / 4.0)});
+    }
+    return peaks;
+  }
+
+  struct TakeMap {
+    juce::String id;
+    int take = 0;
+    double capture_clock = 0;  // sweep clock of content[0]
+    int64_t duration = 0;
+  };
+
+  /** Where every take of every clip was captured, decoded from the
+   * take buffers themselves (message thread). */
+  std::vector<TakeMap> clipMap(const juce::var& st) {
+    std::vector<TakeMap> out;
+    std::vector<juce::String> ids;
+    collectClips(st, ids);
+    for (const auto& id : ids) {
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(engine_.findNodeByUuidForTest(id));
+      if (clip == nullptr) continue;
+      const juce::var node = findVar(st, id);
+      const int active = (int)node.getProperty("activeTake", 0);
+      for (int k = 0; k < clip->takeCount(); ++k) {
+        const juce::AudioBuffer<float>* buf = clip->takeBuffer(k);
+        if (buf == nullptr && k == active) buf = &clip->getAudioBuffer();
+        if (buf == nullptr || buf->getNumSamples() < kFrame) continue;
+        const auto peaks = decode(buf->getReadPointer(0));
+        if (peaks.empty()) continue;
+        // The strongest peak at the first frame's centre → content[0].
+        const Peak* best = &peaks[0];
+        for (const auto& p : peaks)
+          if (p.level > best->level) best = &p;
+        out.push_back({id, k, best->capture_clock - kFrame / 2.0,
+                       (int64_t)buf->getNumSamples()});
+      }
+    }
+    return out;
+  }
+
+  static juce::var findVar(const juce::var& node, const juce::String& id) {
+    if (node.getProperty("id", "").toString() == id) return node;
+    if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
+      for (const auto& k : *kids) {
+        const juce::var hit = findVar(k, id);
+        if (!hit.isVoid()) return hit;
+      }
+    return {};
+  }
+
+  /** LISTEN: render `samples` (default one island cycle) and report, per
+   * frame, which clip/take sounds at which content index — the mix
+   * decoded, no soloing. Frames are `hop` apart; `pos` is the frame
+   * centre, epoch-relative (islandPos), `phase` its fold on the cycle. */
+  juce::var listen(int64_t samples, int64_t hop) {
+    const bool was_paused = paused_.exchange(true);
+    juce::var st;
+    int64_t pos0 = 0;
+    onMessageThread([&] {
+      if (!engine_.isPlaying()) engine_.togglePlayback();
+      st = engine_.getGraphState();
+      pos0 = (int64_t)(double)st.getProperty("islandPos", 0);
+    });
+    const int64_t cycle = islandCycleOnMessageThread(st);
+    if (samples <= 0) samples = cycle > 0 ? cycle : (int64_t)rate_;
+    if (hop <= 0) hop = kFrame;
+    std::vector<TakeMap> map;
+    onMessageThread([&] { map = clipMap(st); });
+
+    std::vector<float> out;
+    render(samples + kFrame, &out);
+
+    auto* doc = new juce::DynamicObject();
+    doc->setProperty("rate", rate_);
+    doc->setProperty("quantum", (double)(int64_t)(double)st.getProperty("quantum", 0));
+    doc->setProperty("cycle", (double)cycle);
+    doc->setProperty("epoch", (double)(int64_t)(double)st.getProperty("islandEpoch", 0));
+    doc->setProperty("frame", kFrame);
+    doc->setProperty("hop", (double)hop);
+    juce::Array<juce::var> frames;
+    for (int64_t s = 0; s + kFrame <= (int64_t)out.size() && s < samples; s += hop) {
+      auto* f = new juce::DynamicObject();
+      const int64_t centre = pos0 + s + kFrame / 2;
+      f->setProperty("pos", (double)centre);
+      f->setProperty("phase", (double)posmod(centre, cycle > 0 ? cycle : 1));
+      juce::Array<juce::var> heard, unknown;
+      for (const auto& p : decode(out.data() + s)) {
+        // Attribution: the take whose capture range holds the clock.
+        // Takes recorded back to back have ADJACENT ranges, so an exact
+        // hit wins; only when nothing holds it exactly does a half-frame
+        // tolerance (the decode's own blur at a range edge) apply.
+        const TakeMap* hit = nullptr;
+        for (const auto& m : map) {
+          const double inner = p.capture_clock - m.capture_clock;
+          if (inner >= 0 && inner < (double)m.duration) {
+            hit = &m;
+            break;
+          }
+        }
+        if (hit == nullptr) {
+          for (const auto& m : map) {
+            const double inner = p.capture_clock - m.capture_clock;
+            if (inner >= -kFrame / 2.0 && inner < (double)m.duration + kFrame / 2.0) {
+              hit = &m;
+              break;
+            }
+          }
+        }
+        if (hit != nullptr) {
+          const double inner = p.capture_clock - hit->capture_clock;
+          auto* h = new juce::DynamicObject();
+          h->setProperty("id", hit->id);
+          h->setProperty("take", hit->take);
+          h->setProperty("inner", std::max(0.0, std::min((double)hit->duration - 1, inner)));
+          h->setProperty("level", p.level);
+          heard.add(juce::var(h));
+        } else {
+          unknown.add(p.capture_clock);
+        }
+      }
+      f->setProperty("heard", heard);
+      f->setProperty("unknown", unknown);
+      frames.add(juce::var(f));
+    }
+    doc->setProperty("frames", frames);
+    auto* clips = new juce::DynamicObject();
+    for (const auto& m : map) {
+      juce::var existing = clips->getProperty(m.id);
+      juce::Array<juce::var> takes;
+      if (auto* arr = existing.getArray()) takes = *arr;
+      auto* t = new juce::DynamicObject();
+      t->setProperty("take", m.take);
+      t->setProperty("captureClock", m.capture_clock);
+      t->setProperty("duration", (double)m.duration);
+      takes.add(juce::var(t));
+      clips->setProperty(m.id, takes);
+    }
+    doc->setProperty("clips", juce::var(clips));
+    paused_.store(was_paused);
+    return juce::var(doc);
+  }
+
   /** Back to an empty project: every top-level node deleted, the root
    * song cleared, the history dropped. */
   void reset() {
@@ -277,9 +492,37 @@ class Host {
       if (!engine_.isPlaying()) engine_.togglePlayback();
       engine_.tick();
     });
+    // A fresh sweep for the next spec (see kSweepSeconds).
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    input_clock_ = 0;
   }
 
  private:
+  // THE TIME-CODED INPUT ("chirp"): a slow linear frequency sweep,
+  // kF0 + kSweepHzPerSec × (seconds into the sweep), wrapping every
+  // kSweepSeconds. Every recorded sample then CARRIES ITS OWN CAPTURE
+  // CLOCK as a frequency, so a spectrum of the island's output at any
+  // moment says which capture moments are sounding — and hence which
+  // clip, at which content index — with no soloing and no dependence
+  // on level (gain, pan, fades). The amplitude harness (ramp) is the
+  // scenario suite's; this is the mix's. 4096-sample frames resolve
+  // ~10 Hz ≈ 0.09 s of capture clock, far finer than a Q.
+  // The sweep must not wrap while a spec records (a take straddling
+  // the wrap reads as two capture moments): 240 s at 61.25 Hz/s, and
+  // `reset` restarts the input clock, so every spec has four minutes.
+  static constexpr double kF0 = 300.0;
+  static constexpr double kSweepHzPerSec = 61.25;
+  static constexpr double kSweepSeconds = 240.0;  // 300 → 15000 Hz
+  static constexpr int kFrame = 4096;
+
+  double chirpAt(int64_t t) const {
+    const int64_t P = (int64_t)(kSweepSeconds * rate_);
+    const double tau = (double)posmod(t, P) / rate_;
+    const double phase = 2.0 * juce::MathConstants<double>::pi *
+                         (kF0 * tau + 0.5 * kSweepHzPerSec * tau * tau);
+    return gain_ * std::sin(phase);
+  }
+
   void fillInput(int n) {
     for (int i = 0; i < n; ++i) {
       const int64_t t = input_clock_ + i;
@@ -287,6 +530,8 @@ class Host {
       if (input_kind_ == "sine") {
         v = (float)(gain_ * std::sin(2.0 * juce::MathConstants<double>::pi *
                                      freq_ * (double)t / rate_));
+      } else if (input_kind_ == "chirp") {
+        v = (float)chirpAt(t);
       } else if (input_kind_ == "ramp") {
         // The scenario harness's sawtooth (tests/scenario_utils.h):
         // every sample encodes its own clock.
@@ -399,8 +644,16 @@ class HttpThread : public juce::Thread {
     while (!threadShouldExit()) {
       std::unique_ptr<juce::StreamingSocket> conn(listener_.waitForNextConnection());
       if (conn == nullptr) continue;
-      handle(*conn);
-      conn->close();
+      // ONE THREAD PER CONNECTION: the UI polls every 50 ms while a
+      // spec's `listen` renders whole cycles, and Chromium opens
+      // speculative connections it never writes to — a serial server
+      // stalled behind either. Host methods are internally serialised
+      // (message-thread marshalling; the render mutex).
+      std::shared_ptr<juce::StreamingSocket> shared(std::move(conn));
+      juce::Thread::launch([this, shared] {
+        handle(*shared);
+        shared->close();
+      });
     }
   }
 
@@ -470,8 +723,23 @@ class HttpThread : public juce::Thread {
          << "Access-Control-Allow-Headers: Content-Type\r\n"
          << "Connection: close\r\n\r\n";
     const auto h = head.toStdString();
-    s.write(h.data(), (int)h.size());
-    if (body.getSize() > 0) s.write(body.getData(), (int)body.getSize());
+    writeAll(s, h.data(), h.size());
+    if (body.getSize() > 0) writeAll(s, body.getData(), body.getSize());
+  }
+
+  /** send() is partial for large bodies (a 60Q listen is ~350 KB): loop
+   * until every byte is out — a truncated body reads as "Failed to
+   * fetch" in the browser. */
+  static bool writeAll(juce::StreamingSocket& s, const void* data, size_t size) {
+    const char* p = static_cast<const char*>(data);
+    size_t done = 0;
+    while (done < size) {
+      if (s.waitUntilReady(false, 5000) <= 0) return false;
+      const int n = s.write(p + done, (int)std::min<size_t>(size - done, 1 << 16));
+      if (n < 0) return false;
+      done += (size_t)n;
+    }
+    return true;
   }
 
   void respondJson(juce::StreamingSocket& s, const juce::var& v) {
@@ -571,6 +839,10 @@ class HttpThread : public juce::Thread {
       return ok();
     }
     if (op == "truth") return host_.truth();
+    if (op == "listen") {
+      return host_.listen((int64_t)(double)body.getProperty("samples", 0),
+                          (int64_t)(double)body.getProperty("hop", 0));
+    }
     if (op == "reset") {
       host_.reset();
       return ok();
