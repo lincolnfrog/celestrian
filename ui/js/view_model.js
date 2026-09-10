@@ -31,7 +31,7 @@ import {
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
-import { flatSegPeriod, nodeWindowActive } from './time_map.js';
+import { flatSegPeriod, nodeWindowActive, mapOffset, seamDistance } from './time_map.js';
 
 // Q-space float tolerance for exact-position comparisons (tile identity,
 // boundary snaps). Q values are small integers/rationals, so 1e-9 sits
@@ -1468,6 +1468,12 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
     const ownMap = gwin && gwin.active
         ? { periodQ: gwin.periodQ, startQ: gwin.segs[0][0],
             segs: gwin.segs,
+            // THE MAP'S FRAME ORIGIN (Q18): the segments are inner
+            // positions from THIS group's origin, not from the epoch.
+            // A member's slice is measured from here (found by the
+            // engine e2e harness, 2026-09-09: a group anchored 1Q past
+            // the epoch drew its members' tiles one Q off).
+            originQ: relQ,
             // The map's coordinates: the group's SONG when sequenced
             // (S9 — the map selects song positions), else its inner
             // cycle (never the window itself — the map selects OVER
@@ -1670,7 +1676,7 @@ function windowEditLane(node, win, intrinsicQ, ctx) {
  * @param {number} intrinsicQ the child's raw extent (Q) the srcs index
  * @returns {?Array<[number,number]>} src fractions of intrinsicQ
  */
-function childSrcSegsUnderMap(segsQ, offsetQ, periodQ, intrinsicQ) {
+function childSrcSegsUnderMap(segsQ, offsetQ, periodQ, intrinsicQ, childMap = null) {
     if (!(periodQ > 0) || !(intrinsicQ > 0) || !segsQ || !segsQ.length) {
         return null;
     }
@@ -1679,13 +1685,25 @@ function childSrcSegsUnderMap(segsQ, offsetQ, periodQ, intrinsicQ) {
     for (const [s0, e0] of segsQ) {
         let t = s0;
         while (t < e0 - EPS) {
-            const rel = posMod(t - offsetQ, periodQ);
-            const step = Math.min(e0 - t, periodQ - rel);
+            // The child's HEARD offset at this inner position; with a
+            // map of its own (nested maps — a windowed member inside a
+            // windowed group) the heard offset selects through it:
+            // content = mapOffset(childMap, rel), continuous until the
+            // child's next seam (engine parity: the member folds the
+            // clock the group hands it on its own map). THE ANCHORING
+            // LAW: a clip's map plays from origin + mapOffset(0) — the
+            // first segment's start — so the heard offset subtracts it
+            // (timing::innerAt; the JS twin in time_map.js).
+            const a0 = childMap ? mapOffset(childMap, 0) : 0;
+            const rel = posMod(t - offsetQ - a0, periodQ);
+            const run = childMap ? seamDistance(childMap, rel) : periodQ - rel;
+            const step = Math.min(e0 - t, run);
             if (step <= EPS) break;
+            const inner = childMap ? mapOffset(childMap, rel) : rel;
             // The child's content is its raw extent (intrinsicQ); the
             // period may be the commensurate whole-Q — clamp inside.
-            const a = Math.min(rel, intrinsicQ);
-            const b = Math.min(rel + step, intrinsicQ);
+            const a = Math.min(inner, intrinsicQ);
+            const b = Math.min(inner + step, intrinsicQ);
             if (b > a + EPS) out.push([a / intrinsicQ, b / intrinsicQ]);
             t += step;
             if (++pieces > MAX_TILES) return null;
@@ -1825,22 +1843,45 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
     // unroll (childSrcSegsUnderMap). One-shots keep their own firing
     // display; the parent owns the chrome (no chip/grips here).
     let underMap = false;
-    if (!heard && mapCtx && mapCtx.segs && qEstablished &&
-        node.periodSource !== 'context' && lanePeriodQ > 0) {
-        const src = childSrcSegsUnderMap(mapCtx.segs, laneOffsetQ,
-            lanePeriodQ, intrinsicQ);
+    if (mapCtx && mapCtx.segs && qEstablished &&
+        node.periodSource !== 'context' &&
+        (heard ? win.periodQ : lanePeriodQ) > 0) {
+        // The member's offset INSIDE the map's frame: its origin
+        // relative to the mapping group's origin (mapCtx.originQ, Q18),
+        // not to the epoch — the map's segments are group-inner
+        // positions. (Engine parity: StackNode::childContext hands the
+        // member t' = O + inner; its content index is t' − origin.) A
+        // member with a window of ITS OWN folds that clock through it
+        // (nested maps): the slice composes both. Both found by the
+        // engine e2e harness, 2026-09-09.
+        const childMap = heard ? { segs: win.segs } : null;
+        const src = childSrcSegsUnderMap(mapCtx.segs,
+            (heard ? offsetQ : laneOffsetQ) - (mapCtx.originQ || 0),
+            heard ? win.periodQ : lanePeriodQ, intrinsicQ, childMap);
         if (src) {
             const mapPeriodQ = mapCtx.periodQ;
+            // THE GROUP'S ROTATION: the parent's map content sounds
+            // from its heard top — origin + a0 within the map period —
+            // and the group lane bakes that in as srcTopFrac
+            // (heardViewFields). Its members tile the SAME frame, so
+            // they carry the same rotation; without it a group whose
+            // heard top is off the frame top drew every member a
+            // whole (heardTop) early.
+            const heardTopQ = posMod((mapCtx.originQ || 0) + (mapCtx.startQ || 0),
+                                     mapPeriodQ);
             let reps = unrollReps({ periodQ: mapPeriodQ, offsetQ: 0, cycleQ,
                                     takeQ: 0 });
             reps = reps.map(r => Object.assign({}, r,
-                { srcSegs: src, srcTopFrac: 0 }));
+                { srcSegs: src, srcTopFrac: mapPeriodQ > 0 ? heardTopQ / mapPeriodQ : 0 }));
             if (mapPeriodQ >= cycleQ - EPS) {
                 reps = reps.map(r => Object.assign({}, r, { ghost: false }));
             }
             heardFields = {
                 periodQ: mapPeriodQ, intrinsicQ: mapPeriodQ, reps,
-                takeStartQ: 0, window: null, windowChipQ: 0, mapMulti: false,
+                takeStartQ: heardTopQ, window: null,
+                // A member's OWN window keeps its chip (the raw editor
+                // is frame-independent); the parent owns the rest.
+                windowChipQ: heard ? win.periodQ : 0, mapMulti: false,
                 bandSegs: null, bandTotalQ: mapPeriodQ, bandHeard: false,
                 bandPeriodQ: 0, bandEditable: false, windowPhase: 0,
                 underMap: true,

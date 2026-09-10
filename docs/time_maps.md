@@ -259,7 +259,14 @@ edit removed the sounding region" half of 2026-08-09 for the definer
 top moves). `AudioEngine::attachMapEditRiders` / mock
 `applyMapEditRiders`; pinned in regression_tests.cc ("CYCLE-TOP
 RULE"), time_map_record_tests.cc (two-anchor, updated),
-tests/trim_drag.test.mjs, e2e "trim a long take".
+tests/trim_drag.test.mjs, e2e "trim a long take". **Amended
+2026-09-09 (engine e2e finding):** the rule fires only for an edit
+that ACTIVATES a map. Clearing a window back to the whole take shapes
+nothing, and a plain loop whose period merely TIES another loop's
+qualified as "definer" — the epoch re-based to its top and every
+other lane rotated a Q on screen for an edit that changed nothing
+audible. Pinned by `ui/e2e_engine/loop_edits.spec.js` ("editing one
+lane's loop region never moves the OTHER lanes' tiles").
 **Phase 1 extension 2 (2026-07-11, E-C in the transport):** the
 engine's published masterPos wraps on the EFFECTIVE island cycle
 (`calculateEffectiveCycleLength` / `AudioNode::getEffectivePeriod`,

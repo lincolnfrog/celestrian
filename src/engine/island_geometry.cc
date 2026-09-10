@@ -290,8 +290,16 @@ void AudioEngine::attachMapEditRiders(
   // period is the cycle, so a top ≡ epoch (mod period) draws identically
   // and a re-base would be pure churn (a 1Q loop under a 1Q Q: every
   // whole-Q epoch is the same frame).
+  // …and only for an edit that SHAPES a loop (an active map). Clearing
+  // a window back to the whole take shapes nothing: a plain loop that
+  // merely ties another loop's period is not "the loop you just
+  // shaped", and re-basing to its top rotated every other lane on
+  // screen for an edit that changed nothing audible (found by the
+  // engine e2e harness, 2026-09-09: clear a window on lane B, lane A's
+  // tile jumps a Q). Two-anchor continuity below still applies.
   const bool top_off_frame =
-      definer && celestrian::timing::posMod(top - epoch, new_period) != 0;
+      definer && new_map.active() &&
+      celestrian::timing::posMod(top - epoch, new_period) != 0;
   // The epoch moves in whole Qs. (Q18: a stack's map anchors at the
   // stack's OWN origin, so an epoch move never re-selects content
   // anywhere — no windowed-group guard is needed.)

@@ -9,7 +9,7 @@
 
 import { expect } from '@playwright/test';
 
-import { innerAt, singleSegment } from '../js/time_map.js';
+import { innerAt, singleSegment, mapPeriod, mapOffset } from '../js/time_map.js';
 import { deriveViewModel } from '../js/view_model.js';
 
 const BLOCK = 512;
@@ -31,16 +31,136 @@ export function listen(page, { samples = 0, hop = 4096 } = {}) {
     return engine(page, 'listen', { samples, hop });
 }
 
-/** A clip's active single-segment map from its published state. */
-export function mapOfNode(n) {
-    const win = n.windowActive && (n.loopEnd || 0) > (n.loopStart || 0);
-    if (n.segments && n.segments.length >= 4 && !n.loopBypassed) {
+/** A node's ACTIVE map from its published state (null = none): a
+ * multi-segment override, else a window, for clips and stacks alike. */
+export function activeMapOf(n) {
+    if (n.loopBypassed) return null;
+    if (n.segments && n.segments.length >= 4) {
         const segs = [];
         for (let i = 0; i + 1 < n.segments.length; i += 2)
             segs.push([n.segments[i], n.segments[i + 1]]);
         return { segs };
     }
-    return win ? singleSegment(n.loopStart, n.loopEnd) : singleSegment(0, n.duration);
+    if (n.windowActive && (n.loopEnd || 0) > (n.loopStart || 0))
+        return singleSegment(n.loopStart, n.loopEnd);
+    return null;
+}
+
+/** Whether heard offset `h` lies within `half` of a map seam (the
+ * boundaries between segments, and the period top). */
+export function nearSeam(map, h, half) {
+    const P = mapPeriod(map);
+    let acc = 0;
+    const seams = [0, P];
+    for (const [s, e] of map.segs) { acc += e - s; seams.push(acc); }
+    return seams.some(x => Math.abs(h - x) < half || Math.abs(h - x + P) < half || Math.abs(h - x - P) < half);
+}
+
+/** A clip's map for the render law: its active map, else its whole take. */
+export function mapOfNode(n) {
+    return activeMapOf(n) || singleSegment(0, n.duration);
+}
+
+/** The path of stacks (root excluded) above `id`, top-down; [] at top level. */
+export function ancestorsOf(st, id) {
+    const walk = (node, chain) => {
+        for (const c of node.nodes || []) {
+            if (c.id === id) return chain;
+            if (c.nodes) {
+                const hit = walk(c, [...chain, c]);
+                if (hit) return hit;
+            }
+        }
+        return null;
+    };
+    return walk(st, []) || [];
+}
+
+/** A stack's intrinsic period: the lcm of its looping members' parts
+ * (a window is a part length), 0 when empty. */
+export function stackPeriod(stack) {
+    const gcd = (a, b) => (b ? gcd(b, a % b) : a);
+    const lcm = (a, b) => (a && b ? a / gcd(a, b) * b : a || b);
+    let p = 0;
+    for (const c of stack.nodes || []) {
+        if (c.periodSource === 'context') continue;
+        const m = activeMapOf(c);
+        let part;
+        if (c.type === 'clip') part = m ? mapPeriod(m) : c.duration;
+        else part = m ? mapPeriod(m) : stackPeriod(c);
+        if (part > 0) p = lcm(p, part);
+    }
+    return p;
+}
+
+/**
+ * THE RECEIVED CLOCK of a clip at absolute time `t`: each windowed or
+ * one-shot ancestor maps the clock on the way down (StackNode::childContext
+ * — the JS twin of the stack form of innerAt). `contextCycle` is the
+ * island cycle (one-shot stacks at the top level fold on it). Returns
+ * { t, rest } — rest when an ancestor one-shot is between firings.
+ */
+export function receivedClock(st, id, t, contextCycle) {
+    let epoch = st.islandEpoch;
+    for (const s of ancestorsOf(st, id)) {
+        const map = activeMapOf(s);
+        const oneShot = s.periodSource === 'context';
+        if (!map && !oneShot) continue;
+        const O = s.anchored ? s.origin : epoch;
+        const shot = map ? mapPeriod(map) : stackPeriod(s);
+        const eff = map || singleSegment(0, shot);
+        const at = innerAt(t, O, eff, oneShot ? contextCycle : mapPeriod(eff));
+        if (at.rest) return { t, rest: true, run: at.run };
+        t = O + at.inner;
+        if (map) epoch = O + mapOffset(map, 0);
+    }
+    return { t, rest: false };
+}
+
+/** The capture moments sounding per frame, keyed by island phase (Q,
+ * rounded to the hop) — a model-free fingerprint of what sounds, for
+ * before/after comparisons of an edit that must be audio-neutral. */
+export function fingerprint(L, ids = null) {
+    const byTake = {};
+    for (const [id, takes] of Object.entries(L.clips))
+        for (const t of takes) byTake[`${id}/${t.take}`] = t.captureClock;
+    const out = new Map();
+    for (const f of L.frames) {
+        const clocks = f.heard
+            .filter(h => !ids || ids.includes(h.id))
+            .map(h => byTake[`${h.id}/${h.take}`] + h.inner)
+            .sort((a, b) => a - b);
+        out.set(Math.round(f.phase), clocks);
+    }
+    return out;
+}
+
+/** Listen from the island's cycle TOP so two listens share their frame
+ * phases exactly (the fingerprint comparison needs it). */
+export async function listenAtTop(page, opts = {}) {
+    const s = await engine(page, 'status');
+    const need = mod(-s.islandPos, s.cycle);
+    if (need > 0) await engine(page, 'advance', { samples: need });
+    return listen(page, opts);
+}
+
+/** Two listens from the top must sound the same capture moments at
+ * every phase (within `tol` samples), frames near seams excepted. */
+export function expectSameSound(before, after, { ids = null, tol = 900, label = '' } = {}) {
+    const a = fingerprint(before, ids), b = fingerprint(after, ids);
+    let compared = 0;
+    for (const [phase, clocks] of a) {
+        const other = b.get(phase);
+        if (!other) continue;
+        // A seam inside either window shows as a differing count: skip.
+        if (clocks.length !== other.length) continue;
+        clocks.forEach((c, i) => {
+            expect(Math.abs(c - other[i]), `${label} @ ${(phase / before.quantum).toFixed(2)}Q: capture ${(c / before.quantum).toFixed(3)}Q became ${(other[i] / before.quantum).toFixed(3)}Q`)
+                .toBeLessThan(tol);
+        });
+        compared++;
+    }
+    expect(compared, `${label}: frames compared`).toBeGreaterThan(before.frames.length / 2);
 }
 
 /** What the lanes DRAW for clip `id` at lane-frame position `q` (Q):
@@ -91,6 +211,11 @@ export async function verifyHeard(page, {
     })(st);
     expect(clips.length, 'committed clips').toBeGreaterThan(0);
     const half = L.frame / 2;
+    // Members of a ONE-SHOT group: the lane geometry is not judged
+    // (their tiles sit under the dashed group tile). Members of a
+    // WINDOWED group draw the parent's slice of their own take
+    // (childSrcSegsUnderMap) — judged like any heard lane.
+    const underMap = id => ancestorsOf(st, id).some(s => s.periodSource === 'context');
     let checked = 0;
     for (const f of L.frames) {
         const t = L.epoch + f.pos;          // absolute clock of the frame centre
@@ -99,14 +224,19 @@ export async function verifyHeard(page, {
             const gate = silent(c.id, phaseQ);
             if (gate === 'skip') continue;
             const heard = f.heard.filter(h => h.id === c.id);
-            const law = innerAt(t, c.origin, mapOfNode(c), foldOf(c.id));
+            const rc = receivedClock(st, c.id, t, L.cycle);
+            const law = rc.rest ? { rest: true, run: rc.run }
+                : innerAt(rc.t, c.origin, mapOfNode(c), foldOf(c.id));
             const label = `${c.name || ''}[${c.id.slice(0, 6)} ${c.duration / Q}Q] @ ${phaseQ.toFixed(2)}Q (frame pos ${f.pos})`;
             if (gate === true || law.rest) {
+                // A rest that ends inside the window (a firing edge): skip.
+                if (law.rest && law.run !== undefined && law.run < half) continue;
                 expect(heard, `${label}: expected silence`).toEqual([]);
                 continue;
             }
-            // Near a seam the window holds two capture moments: skip.
-            if (law.run < half || law.inner < half) continue;
+            // Near a seam the window holds two capture moments: skip —
+            // the next seam (run), the loop top, or any map seam behind.
+            if (law.run < half || law.inner < half || nearSeam(mapOfNode(c), law.h, half)) continue;
             expect(heard.length, `${label}: expected the clip to sound (law content[${(law.inner / Q).toFixed(3)}Q]); frame heard ${JSON.stringify(f.heard.map(h => [h.id.slice(0, 6), +(h.inner / Q).toFixed(3), +h.level.toFixed(2)]))} unknown ${JSON.stringify(f.unknown.map(u => +(u / Q).toFixed(3)))}`).toBeGreaterThan(0);
             const nearest = heard.reduce((a, b) =>
                 Math.abs(b.inner - law.inner) < Math.abs(a.inner - law.inner) ? b : a);
@@ -114,9 +244,18 @@ export async function verifyHeard(page, {
                 `${label}: heard content[${(nearest.inner / Q).toFixed(3)}Q], law says content[${(law.inner / Q).toFixed(3)}Q]`)
                 .toBeLessThan(tolQ);
             // …and the lane draws that very content there.
-            const d = displayInnerQ(vm, c.id, phaseQ, c.duration / Q);
+            // The lane-frame x of this island phase: the frame top is
+            // the phase's zero — except the sole definer's RAW frame,
+            // where the cursor is mapped into the trim brackets.
+            const laneQ = phaseQ + (vm.provisionalDefiner ? (vm.loopStartQ || 0) : 0);
+            const d = underMap(c.id) ? null : displayInnerQ(vm, c.id, laneQ, c.duration / Q);
             if (d && !d.rest) {
                 const diff = Math.abs(mod(d.innerQ - nearest.inner / Q + c.duration / Q / 2, c.duration / Q) - c.duration / Q / 2);
+                if (diff >= tolQ) {
+                    const lane = vm.lanes.find(l => l.id === c.id);
+                    const tile = (lane.reps || []).find(r => laneQ >= r.startQ && laneQ < r.endQ) || lane.reps?.[0];
+                    console.log(`DISPLAY MISMATCH ${label}\n  node: origin−epoch ${(c.origin - st.islandEpoch) / Q}Q loop [${c.loopStart / Q}, ${c.loopEnd / Q}) active ${c.windowActive} ancestors ${JSON.stringify(ancestorsOf(st, c.id).map(a => ({ id: a.id.slice(0, 6), anchored: a.anchored, originQ: (a.origin - st.islandEpoch) / Q, loop: [a.loopStart / Q, a.loopEnd / Q], active: a.windowActive })))}\n  lane: periodQ ${lane.periodQ} takeStartQ ${lane.takeStartQ} underMap ${!!lane.underMap} tile ${JSON.stringify(tile)}\n  vm: cycleQ ${vm.cycleQ} epochQ ${vm.epochSamples / Q}`);
+                }
                 expect(diff, `${label}: lane draws content[${d.innerQ.toFixed(3)}Q], engine sounds content[${(nearest.inner / Q).toFixed(3)}Q]`)
                     .toBeLessThan(tolQ);
             }
@@ -192,20 +331,28 @@ export async function advanceUntil(page, pred, maxSamples = 30 * 44100) {
  * island to just before that phase of the current cycle, so the arm
  * targets it exactly. Returns the clip id.
  */
-export async function rec(page, len, { atPhase = null } = {}) {
+export async function driveToPhase(page, atPhase) {
+    const s = await engine(page, 'status');
+    // islandPos is published EPOCH-RELATIVE (unwrapped): the phase
+    // is its fold on the cycle.
+    const ph = mod(s.islandPos, s.cycle);
+    const need = mod(atPhase - 100 - ph, s.cycle);
+    if (need > 0) await engine(page, 'advance', { samples: need });
+}
+
+/** A fresh empty clip under `parent` ('' = top level); returns its id. */
+export async function newClip(page, parent = '') {
+    await call(page, 'createNode', 'clip', parent);
+    const st = await state(page);
+    const holder = parent ? findNode(st, parent) : st;
+    return holder.nodes[holder.nodes.length - 1].id;
+}
+
+export async function rec(page, len, { atPhase = null, parent = '' } = {}) {
     const before = await state(page);
     const first = !(before.quantum > 0);
-    if (atPhase !== null) {
-        const s = await engine(page, 'status');
-        // islandPos is published EPOCH-RELATIVE (unwrapped): the phase
-        // is its fold on the cycle.
-        const ph = mod(s.islandPos, s.cycle);
-        const need = mod(atPhase - 100 - ph, s.cycle);
-        if (need > 0) await engine(page, 'advance', { samples: need });
-    }
-    await call(page, 'createNode', 'clip', '');
-    const st = await state(page);
-    const id = st.nodes[st.nodes.length - 1].id;
+    if (atPhase !== null) await driveToPhase(page, atPhase);
+    const id = await newClip(page, parent);
     await call(page, 'startRecordingInNode', id);
     const rs = await advanceUntil(page, s => {
         const n = findNode(s, id);
@@ -215,6 +362,16 @@ export async function rec(page, len, { atPhase = null } = {}) {
     const more = len - live - (first ? 0 : BLOCK);
     if (more > 0) await engine(page, 'advance', { samples: more });
     await call(page, 'stopRecordingInNode', id);
+    await advanceUntil(page, s => !hot(findNode(s, id)));
+    return id;
+}
+
+/** Arm an empty member under a WINDOWED group: the take records
+ * through the map and auto-finishes after one pass (no stop). */
+export async function recThrough(page, parent) {
+    const id = await newClip(page, parent);
+    await call(page, 'startRecordingInNode', id);
+    await advanceUntil(page, s => { const n = findNode(s, id); return n && n.isRecording; });
     await advanceUntil(page, s => !hot(findNode(s, id)));
     return id;
 }

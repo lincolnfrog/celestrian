@@ -100,7 +100,11 @@ function applyMapEditRiders(node, oldMap, newMap) {
     let others = periodExcluding({ type: 'stack', nodes: state.nodes }, node);
     if (q > 0) others = others > 0 ? lcm(others, q) : q;
     const definer = newPeriod > 0 && (others <= 0 || newPeriod % others === 0);
-    const topOffFrame = definer && posMod(top - epoch, newPeriod) !== 0;
+    // …and only for an edit that ACTIVATES a map (engine parity,
+    // island_geometry.cc, 2026-09-09): clearing a window shapes
+    // nothing, and a plain loop that merely ties another's period must
+    // not re-base the frame to its top.
+    const topOffFrame = definer && active && posMod(top - epoch, newPeriod) !== 0;
     // The epoch moves in whole Qs. (Q18: no windowed-group guard is
     // needed — a stack's map anchors at the stack's OWN origin, so an
     // epoch move never re-selects content anywhere; composition.md §8.)

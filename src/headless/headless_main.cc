@@ -360,17 +360,27 @@ class Host {
       const juce::var node = findVar(st, id);
       const int active = (int)node.getProperty("activeTake", 0);
       for (int k = 0; k < clip->takeCount(); ++k) {
-        const juce::AudioBuffer<float>* buf = clip->takeBuffer(k);
-        if (buf == nullptr && k == active) buf = &clip->getAudioBuffer();
+        // The ACTIVE take is what renders: its live content buffer (a
+        // Q13 lock-collapse splices it; the take store may still hold
+        // the pre-splice copy). Other takes come from the store.
+        const juce::AudioBuffer<float>* buf =
+            k == active ? &clip->getAudioBuffer() : clip->takeBuffer(k);
         if (buf == nullptr || buf->getNumSamples() < kFrame) continue;
         const auto peaks = decode(buf->getReadPointer(0));
         if (peaks.empty()) continue;
-        // The strongest peak at the first frame's centre → content[0].
+        // The strongest peak at the first frame's centre → buffer[0].
         const Peak* best = &peaks[0];
         for (const auto& p : peaks)
           if (p.level > best->level) best = &p;
-        out.push_back({id, k, best->capture_clock - kFrame / 2.0,
-                       (int64_t)buf->getNumSamples()});
+        // CONTENT vs BUFFER (Q13 lock-collapse, ClipNode::content_base_):
+        // a collapsed definer keeps its whole buffer and reads from a
+        // base offset with a shorter published duration. Report in the
+        // CONTENT frame the render law speaks: content[0] = buffer[base].
+        const int64_t base = k == active ? clip->getContentBase() : 0;
+        const int64_t duration = k == active ? clip->getIntrinsicDuration()
+                                             : (int64_t)buf->getNumSamples();
+        out.push_back({id, k, best->capture_clock - kFrame / 2.0 + (double)base,
+                       duration > 0 ? duration : (int64_t)buf->getNumSamples()});
       }
     }
     return out;

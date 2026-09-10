@@ -176,9 +176,28 @@ bridge, the recording lifecycle or the render equation, and whenever a
 field report needs reproducing (script the flow, `listen`, compare the
 DOM). `npm test` and `npm run test:playwright` stay the every-change
 gates; `npm run test:all` is the deep pass and includes it. The specs
-are JOURNEYS through the catalog's families (the owner's chain,
-growth and the epoch, one-shots, takes and comps, the sequencer's
-gates and cues), not one-for-one mirrors of the 32 scenarios.
+are JOURNEYS through the catalog's families, not one-for-one mirrors
+of the 32 scenarios: the owner's chain, growth and the epoch,
+one-shots, takes and comps, the sequencer's gates and cues, loop-region
+edits (moved, bypassed, cleared, while playing and stopped; the definer
+trim and lock-collapse by fingerprint; undo/redo chains; "editing lane
+B never moves lane A"), groups (combine, group windows, recording
+through a map, one-shot groups, delete/undo), cut bands, cursors, and
+the edge journeys (nested maps, a window authored on an empty group,
+seek, save/load).
+
+**What it has found** (2026-09-09, its first day): three see-vs-hear
+bugs in the members of a windowed group — the slice was measured from
+the epoch instead of the group's origin (Q18), the members lacked the
+group's heard-top rotation, and a member's own window inside a group
+window was drawn ignoring the group's map — plus one engine-side rule
+misfire: clearing a window (an edit that changes nothing audible)
+re-based the epoch to that loop's top when its period merely tied
+another loop's, rotating every other lane on screen (the cycle-top
+rule now fires only for an edit that activates a map). All four are
+pinned by `under_map_slice.test.mjs` and the journeys above. Not yet
+covered: MIDI lanes (the listener is audio; a note-clock twin would
+be the same idea), plugin racks, and the WebView itself.
 
 **Writing a spec** (`ui/e2e_engine/*.spec.js`, helpers in
 `engine_helpers.mjs`): `openEngine(page)` (loads `?engine=true`,
