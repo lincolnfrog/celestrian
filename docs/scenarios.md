@@ -1,8 +1,9 @@
 # Scenarios — the canonical examples, fleshed out
 
 > Status: **shipped 2026-09-08**, field repros S30–S32 + the display
-> contract added 2026-09-09 — tests/scenario_tests.cc (32 scenarios, all
-> green) over the harness in tests/scenario_utils.h. Run alone with
+> contract added 2026-09-09, gap-fill S33–S38 added 2026-09-10 —
+> tests/scenario_tests.cc (38 scenarios, all green) over the harness in
+> tests/scenario_utils.h. Run alone with
 > `CelestrianTests --category=Scenarios` (the display-contract capture
 > runs in the same category and writes shared/display_contract_capture.json
 > for ui/js/tests/display_contract.test.mjs). Companions: recording.md
@@ -81,6 +82,12 @@ island's Q, not the group's.
 | S31 | **field repro**: a group song's grid | 1Q, 4Q; a group anchored at 2Q with a 4Q member; group song 4Q+4Q gating it off in step 2 | the group song folds from the GROUP's origin (2Q past the epoch), not the epoch; the lanes carry that phase (view_model `phaseQ`) |
 | S32 | **field repro**: no origin fold | 1Q, 4Q windowed [1Q,3Q) (heard 2Q); a 3Q take armed at intrinsic phase 3Q | origin = the capture boundary; after the take the phrase continues from content[0], never mid-phrase |
 | display contract | tests/display_contract_tests.cc → ui/js/tests/display_contract.test.mjs | S30 + S31 in one island; each gated clip SOLOED and listened to per Q cell | the audible truth table is dumped with the published state; the real deriveViewModel must dim every lane exactly where the engine is silent |
+| S33 | cut bands | 1Q, 4Q; keep [0,1Q)+[2Q,3Q); slide; bypass; undo; a live stream | the map law seam-exact; separate gestures are separate undo steps, a live drag is one (ruling 2026-09-10) |
+| S34 | edits on B never move A | 1Q, 4Q@2Q, 4Q@1Q; window, cut, bypass, clear B while playing, from three phases; undo all | A's and c1's phases against the epoch never change; the Q grid never moves; clearing re-bases nothing (rulings 2026-09-09/10) |
+| S35 | nested maps | group with a 4Q member windowed [1Q,3Q) and a 2Q member; group window [0,1Q); move the inner; bypass the outer | members read the group's mapped clock folded again on their own map |
+| S36 | seek over maps and groups | cut bands + a windowed clip + a windowed group; seek 5Q | the same phase renders the same samples after the seek |
+| S37 | rich round trip | cut bands, a windowed clip, an anchored windowed group, a one-shot, a gated root song; save; load in a fresh engine | every fact (segments, windows, anchors, period source, song) and the render survive |
+| S38 | multi-mic group take | 1Q, 4Q; a 3-mic 4Q kit at 2Q; window the kit; delete a mic; undo | one origin per performance; every mic reads the mapped clock; the rest hold their phase |
 
 ## 2. Open questions (expectations the owner must confirm)
 

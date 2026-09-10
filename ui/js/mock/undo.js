@@ -66,15 +66,20 @@ export function pushUndoSnapshot(snap) {
  * handler runs). Snapshot BEFORE any undoable mutation so undo restores
  * the pre-edit graph (single interception point, mirrors
  * AudioEngine::record).
- * LIVE map-edit drags stream setSegments (audible splice preview):
- * consecutive commits on the same node COALESCE to one undo step
- * (mirrors editsCoalesce; the oldest snapshot restores furthest).
+ * LIVE map-edit drags stream commits (audible splice preview): a commit
+ * carrying the trailing `live` flag COALESCES into the previous map
+ * commit on the same node (mirrors editsCoalesce; the oldest snapshot
+ * restores furthest). Owner ruling 2026-09-10: only live commits merge
+ * — separate gestures are separate undo steps.
  */
-export function interceptUndoableCall(method, arg0) {
+const MAP_METHODS = new Set(['setSegments', 'setLoopPoints']);
+export function interceptUndoableCall(method, arg0, args = []) {
     undoPushedForCall = false;
     if (UNDOABLE.has(method)) {
-        const coalesce = method === 'setSegments' &&
-            lastUndoable.method === 'setSegments' &&
+        const live = method === 'setSegments' ? args[2] === true
+            : method === 'setLoopPoints' ? args[3] === true : false;
+        const coalesce = live && MAP_METHODS.has(method) &&
+            MAP_METHODS.has(lastUndoable.method) &&
             lastUndoable.arg0 === arg0;
         if (!coalesce) {
             // Save the redo branch BEFORE the push clears it: a

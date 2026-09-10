@@ -114,7 +114,14 @@ function applyMapEditRiders(node, oldMap, newMap) {
         return;
     }
     if (delta !== 0 && step > 0 && delta % step === 0) {
-        state.islandEpoch = epoch + delta;
+        // OWNER RULING 2026-09-10 (engine parity): the epoch moves only
+        // by whole cycles of EVERYONE ELSE (the multiple of `others`
+        // nearest the delta) — phase-neutral for every other lane; the
+        // edited tile takes the residual jump.
+        const unit = others > 0 ? others : step;
+        const move = Math.round(delta / unit) * unit;
+        if (move === 0) return;
+        state.islandEpoch = epoch + move;
     }
 }
 /** Alias under the name the tests import. */
@@ -240,6 +247,10 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     const oldLe = Math.min(node.loopEnd || 0, node.duration || 0);
     node.loopStart = loopStart;
     node.loopEnd = loopEnd;
+    // "WHOLE" DROPS A STALE BYPASS (engine parity, edit_log.cc LoopPoints,
+    // 2026-09-10): nothing is left to bypass, and a window drawn later
+    // must sound.
+    if (!(loopEnd > loopStart)) node.loopBypassed = false;
     stampWindowDomain(node);
     // Clamp to the recorded material (engine parity): a fractional-Q
     // drag rounded past the take's end must not window silence. Even

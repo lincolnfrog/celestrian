@@ -1039,6 +1039,344 @@ class ScenarioTests : public juce::UnitTest {
                is.val(c3, posmod(t - T, 3 * Q));
       }, "after the take the phrase continues from content[0], never mid-phrase");
     }
+
+    // ==================================================================
+    // GAP-FILL (2026-09-10): the families the catalog lacked once the
+    // engine e2e journeys existed — cut bands, edits while playing,
+    // nested maps, seek and save/load over maps and groups, multi-mic
+    // groups.
+    // ==================================================================
+
+    // ------------------------------------------------------------------
+    beginTest("S33: cut bands — a 4Q take keeps [0,1Q)+[2Q,3Q): the map "
+              "law through the seam; the cut slides; bypass; separate "
+              "gestures are separate undo steps, live commits one");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String c2 = is.record(4 * Q);
+      is.drive(Q + 333);  // mid-cycle, playing
+      timing::TimeMap m1;
+      m1.n = 2;
+      m1.segs[0] = {0, Q};
+      m1.segs[1] = {2 * Q, 3 * Q};
+      is.engine.setSegments(c2, m1);
+      expectEquals(is.cycle(), 2 * Q, "the kept 2Q is the part");
+      auto lawB = [&](const timing::TimeMap& m) {
+        return [&, m](int64_t t) {
+          const auto at = timing::innerAt(t, is.o(c2), m, m.period());
+          return is.loopVal(c1, t) + is.val(c2, at.inner);
+        };
+      };
+      expectOutput(is, 6 * Q, lawB(m1), "the map law, seam-exact");
+      is.drive(2 * Q + 100);
+      timing::TimeMap m2;
+      m2.n = 2;
+      m2.segs[0] = {Q, 2 * Q};
+      m2.segs[1] = {3 * Q, 4 * Q};
+      is.engine.setSegments(c2, m2);  // a second GESTURE
+      expectOutput(is, 6 * Q, lawB(m2), "the slid cut");
+      is.engine.toggleLoopWindow(c2);
+      expectEquals(is.cycle(), 4 * Q, "bypassed: the whole take");
+      expectOutput(is, 4 * Q, is.sumOfLoops({c1, c2}), "whole");
+      is.engine.toggleLoopWindow(c2);
+      expectOutput(is, 6 * Q, lawB(m2), "re-activated");
+      // ONE GESTURE, ONE UNDO — AND NO MORE (owner ruling 2026-09-10):
+      // undo the re-activate, the bypass, then the SLIDE alone.
+      is.engine.undo();
+      is.engine.undo();
+      is.engine.undo();
+      expectEquals(is.cycle(), 2 * Q, "the first cut stands after three undos");
+      expectOutput(is, 6 * Q, lawB(m1), "back to the first cut, not the whole take");
+      // A live stream (a drag): the first commit opens the entry, the
+      // live ones fold into it — one undo restores the pre-drag map.
+      is.engine.setSegments(c2, m2);
+      timing::TimeMap m3 = m2;
+      m3.segs[0] = {Q, 2 * Q};
+      m3.segs[1] = {2 * Q + Q / 2, 3 * Q + Q / 2};
+      is.engine.setSegments(c2, m3, /*live=*/true);
+      timing::TimeMap m4 = m2;
+      m4.segs[1] = {2 * Q, 3 * Q};
+      is.engine.setSegments(c2, m4, /*live=*/true);
+      expectOutput(is, 4 * Q, lawB(m4), "the drag's last commit sounds");
+      is.engine.undo();
+      expectOutput(is, 4 * Q, lawB(m1), "one undo takes back the whole drag");
+    }
+
+    // ------------------------------------------------------------------
+    beginTest("S34: editing one lane's map while playing never moves the "
+              "OTHER lanes' phase (owner ruling 2026-09-10) — the epoch "
+              "follows by whole cycles of everyone else, the edited tile "
+              "takes the residual; clearing a window re-bases nothing");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      is.driveToPhase(2 * Q);
+      const juce::String a = is.record(4 * Q);
+      is.driveToPhase(Q);
+      const juce::String b = is.record(4 * Q);
+      expectEquals(is.cycle(), 4 * Q, "4Q");
+      // Before any edit: the plain island.
+      expectOutput(is, 4 * Q, is.sumOfLoops({c1, a, b}), "the plain island before edits");
+      const int64_t pa = posmod(is.origin(a) - is.epoch(), 4 * Q);
+      auto invariant = [&](const char* after) {
+        expectEquals(posmod(is.origin(a) - is.epoch(), 4 * Q), pa,
+                     juce::String("A keeps its phase after ") + after);
+        expectEquals(posmod(is.origin(c1) - is.epoch(), Q), (int64_t)0,
+                     juce::String("c1 keeps its phase after ") + after);
+        expectEquals(posmod(is.epoch(), Q), posmod(is.origin(c1), Q),
+                     juce::String("the Q grid is untouched after ") + after);
+      };
+      // B's law under whatever map it has: the stored origin + its map.
+      auto lawAll = [&](const timing::TimeMap* mb) {
+        return [&, mb](int64_t t) {
+          float s = is.loopVal(c1, t) + is.loopVal(a, t);
+          if (mb == nullptr) return s + is.loopVal(b, t);
+          return s + is.val(b, timing::innerAt(t, is.o(b), *mb, mb->period()).inner);
+        };
+      };
+      for (int64_t phase : {Q / 2 + 333, 3 * Q + 777, 2 * Q + 51}) {
+        is.driveToPhase(posmod(phase, 4 * Q));
+        is.drive(100);
+        is.window(b, Q, 3 * Q);
+        invariant("window [1Q,3Q)");
+        // The window drawn after an earlier clear-from-bypassed must be
+        // ACTIVE (S34 found the stale bypass: "whole" drops it).
+        expect(is.bprop(b, "windowActive"), "the new window is active");
+        expect(!is.bprop(b, "loopBypassed"), "no stale bypass survives a clear");
+        timing::TimeMap w = timing::TimeMap::single(Q, 3 * Q);
+        // Each lane alone (solo is a gain, not a clock) — the sum's
+        // verdict is hard to attribute otherwise. The solo lands at the
+        // next block top: skip one.
+        auto alone = [&](const juce::String& id, std::function<float(int64_t)> law,
+                         const juce::String& label) {
+          is.engine.toggleSolo(id);
+          expectOutput(is, 4 * Q, law, label, /*skip=*/BLOCK);
+          is.engine.toggleSolo(id);
+          is.drive(BLOCK);
+        };
+        alone(c1, [&](int64_t t) { return is.loopVal(c1, t); }, "c1 alone after the window");
+        alone(a, [&](int64_t t) { return is.loopVal(a, t); }, "A alone after the window");
+        alone(b, [&](int64_t t) {
+          return is.val(b, timing::innerAt(t, is.o(b), w, w.period()).inner);
+        }, "B alone after the window");
+        expectOutput(is, 4 * Q, lawAll(&w), "law after the window");
+        is.driveToPhase(posmod(phase + Q, 4 * Q));
+        is.drive(100);
+        timing::TimeMap m;
+        m.n = 2;
+        m.segs[0] = {0, Q};
+        m.segs[1] = {2 * Q, 3 * Q};
+        is.engine.setSegments(b, m);
+        invariant("cut bands");
+        expectOutput(is, 4 * Q, lawAll(&m), "law after the cut");
+        is.engine.toggleLoopWindow(b);
+        invariant("bypass");
+        is.engine.setLoopPoints(b, 0, 0);  // clear: shapes nothing, re-bases nothing
+        invariant("clear");
+        expectEquals(is.cycle(), 4 * Q, "whole again");
+        expectOutput(is, 4 * Q, lawAll(nullptr), "law after the clear");
+      }
+      // Undo the whole chain: every step keeps the invariant.
+      int n = 0;
+      while (is.engine.canUndo() && n++ < 20) {
+        is.engine.undo();
+        invariant("undo");
+      }
+    }
+
+    // ------------------------------------------------------------------
+    beginTest("S35: nested maps — a member's own window inside a windowed "
+              "group composes (the group folds the clock, the member folds "
+              "it again on its own map); move the inner, bypass the outer");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String g = is.createStack();
+      const juce::String a = is.record(4 * Q, g);
+      is.driveToPhase(Q);
+      const juce::String b = is.record(2 * Q, g);
+      is.window(a, Q, 3 * Q);  // the member's own window (2Q)
+      expectEquals(is.cycle(), 2 * Q, "lcm(1Q, 2Q, 2Q)");
+      is.window(g, 0, Q);      // the group's window over its 2Q composite
+      expectEquals(is.cycle(), Q, "the group presents 1Q");
+      auto law = [&](int64_t ws_a, int64_t we_a, bool outer) {
+        return [&, ws_a, we_a, outer](int64_t t) {
+          const int64_t Og = is.origin(g);
+          int64_t tc = t;
+          if (outer) {
+            const auto at = timing::innerAt(t, Og, timing::TimeMap::single(0, Q), Q);
+            tc = Og + at.inner;
+          }
+          const timing::TimeMap ma = timing::TimeMap::single(ws_a, we_a);
+          const int64_t ia = timing::innerAt(tc, is.o(a), ma, ma.period()).inner;
+          return is.loopVal(c1, t) + is.val(a, ia) + is.val(b, posmod(tc - is.o(b), 2 * Q));
+        };
+      };
+      expectOutput(is, 4 * Q, law(Q, 3 * Q, true), "composed: group map, then the member's");
+      is.drive(Q + 321);
+      is.window(a, 2 * Q, 4 * Q);  // move the INNER window under the outer
+      expectOutput(is, 4 * Q, law(2 * Q, 4 * Q, true), "inner moved");
+      is.engine.toggleLoopWindow(g);  // bypass the OUTER
+      expectEquals(is.cycle(), 2 * Q, "the member's window alone");
+      expectOutput(is, 4 * Q, law(2 * Q, 4 * Q, false), "outer bypassed: the inner alone");
+    }
+
+    // ------------------------------------------------------------------
+    beginTest("S36: seek over maps and groups — cut bands, a windowed "
+              "clip, a windowed group: the render is invariant, sample for "
+              "sample at equal phase");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String c2 = is.record(4 * Q);
+      timing::TimeMap m;
+      m.n = 2;
+      m.segs[0] = {0, Q};
+      m.segs[1] = {2 * Q, 3 * Q};
+      is.engine.setSegments(c2, m);
+      const juce::String c3 = is.record(3 * Q);
+      is.window(c3, Q, 2 * Q);
+      const juce::String g = is.createStack();
+      is.driveToPhase(3 * Q);
+      const juce::String a = is.record(4 * Q, g);
+      is.window(g, Q, 3 * Q);
+      const int64_t C = is.cycle();
+      expect(C > 0, "an island cycle");
+      // Land EXACTLY on the cycle top (a block past it would leave the
+      // two runs misaligned by whatever the block overshot).
+      auto toTop = [](Island& i) {
+        const int64_t Ci = i.cycle();
+        i.drive(posmod(-(i.clock - i.epoch()), Ci));
+      };
+      toTop(is);
+      std::vector<std::pair<int64_t, float>> before, after;
+      is.drive(C, &before);
+      expect(is.engine.seekTransport((double)(5 * Q % C)), "seek accepted");
+      toTop(is);
+      is.drive(C, &after);
+      int bad = 0;
+      for (size_t i = 0; i < before.size() && i < after.size(); ++i)
+        if (std::abs(before[i].second - after[i].second) > 2.0e-7f) ++bad;
+      expectEquals(bad, 0, "the same island phase renders the same samples after the seek");
+      juce::ignoreUnused(c1, c2, c3, a);
+    }
+
+    // ------------------------------------------------------------------
+    beginTest("S37: a rich session round trip — cut bands, a windowed clip, "
+              "an anchored windowed group, a one-shot, a gated root song: "
+              "every fact and the render survive a fresh engine's load");
+    {
+      Island a;
+      const juce::String c1 = a.record(Q);
+      const juce::String c2 = a.record(5 * Q);
+      timing::TimeMap m;
+      m.n = 3;
+      m.segs[0] = {0, Q};
+      m.segs[1] = {2 * Q, 3 * Q};
+      m.segs[2] = {4 * Q, 5 * Q};
+      a.engine.setSegments(c2, m);
+      const juce::String c3 = a.record(3 * Q);
+      a.window(c3, Q, 2 * Q);
+      const juce::String g = a.createStack();
+      a.driveToPhase(2 * Q);
+      const juce::String ga = a.record(4 * Q, g);
+      a.window(g, Q, 3 * Q);
+      a.driveToPhase(2 * Q);
+      const juce::String c5 = a.record(Q);
+      a.engine.setPeriodSource(c5, PeriodSource::CONTEXT_CYCLE);
+      const int64_t C = a.cycle();
+      a.engine.setSequence(a.rootId(), seqPayload({{C}, {C}}, {{c1, {true, false}}}));
+      expectEquals(a.cycle(), 2 * C, "the song is the cycle");
+      auto dir = test_utils::freshTempDir("scenario_s37");
+      expect(a.engine.saveSession(dir.getFullPathName()), "saved");
+      Island b;
+      expect(b.engine.loadSession(dir.getFullPathName()), "loaded");
+      b.captured = a.captured;
+      expectEquals(b.Q(), a.Q(), "Q");
+      expectEquals(b.cycle(), a.cycle(), "cycle");
+      for (const auto& id : {c1, c2, c3, ga, c5}) {
+        expectEquals(b.dur(id), a.dur(id), "duration " + id);
+        expectEquals(b.origin(id) - b.epoch(), a.origin(id) - a.epoch(), "frame place " + id);
+        expectEquals(b.iprop(id, "loopStart"), a.iprop(id, "loopStart"), "loopStart " + id);
+        expectEquals(b.iprop(id, "loopEnd"), a.iprop(id, "loopEnd"), "loopEnd " + id);
+        expectEquals(b.sprop(id, "periodSource"), a.sprop(id, "periodSource"), "periodSource " + id);
+      }
+      auto segsOf = [](Island& is, const juce::String& id) {
+        const juce::var s = is.state();
+        std::function<juce::var(const juce::var&)> find = [&](const juce::var& n) -> juce::var {
+          if (n.getProperty("id", "").toString() == id) return n.getProperty("segments", juce::var());
+          if (auto* kids = n.getProperty("nodes", juce::var()).getArray())
+            for (const auto& k : *kids) {
+              const juce::var hit = find(k);
+              if (!hit.isVoid()) return hit;
+            }
+          return {};
+        };
+        return juce::JSON::toString(find(s), true);
+      };
+      expectEquals(segsOf(b, c2), segsOf(a, c2), "the cut bands persist");
+      expect(b.bprop(g, "anchored"), "the group is anchored after load");
+      expectEquals(b.origin(g) - b.epoch(), a.origin(g) - a.epoch(), "the group's frame place");
+      expectEquals(b.iprop(g, "loopStart"), Q, "the group's window persists");
+      expect(b.state().getProperty("sequence", juce::var()).isObject(), "the root song persists");
+      if (!b.engine.isPlaying()) b.engine.togglePlayback();
+      // The render: both islands from EXACTLY their cycle top, sample
+      // for sample.
+      auto toTop = [](Island& i) {
+        const int64_t Ci = i.cycle();
+        i.drive(posmod(-(i.clock - i.epoch()), Ci));
+      };
+      std::vector<std::pair<int64_t, float>> ra, rb;
+      toTop(a);
+      a.drive(2 * C, &ra);
+      toTop(b);
+      b.drive(2 * C, &rb);
+      int bad = 0;
+      for (size_t i = 0; i < ra.size() && i < rb.size(); ++i)
+        if (std::abs(ra[i].second - rb[i].second) > 2.0e-7f) ++bad;
+      expectEquals(bad, 0, "the loaded island renders the same song");
+    }
+
+    // ------------------------------------------------------------------
+    beginTest("S38: a multi-mic group take at a mid-cycle phase — one "
+              "origin for every mic; the group's window maps them all; a "
+              "mic deleted and restored leaves the rest in place");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String c2 = is.record(4 * Q);
+      is.driveToPhase(2 * Q);
+      const juce::String kit = is.recordGroup(3, 4 * Q);
+      const juce::StringArray mics = is.childIds(kit);
+      expectEquals(mics.size(), 3, "three mics");
+      for (const auto& mic : mics) {
+        expectEquals(is.origin(mic), is.origin(mics[0]), "one origin for the performance");
+        expectEquals(is.dur(mic), 4 * Q, "4Q each");
+      }
+      expectEquals(posmod(is.origin(kit) - is.epoch(), 4 * Q), 2 * Q, "the kit sits at 2Q");
+      is.window(kit, Q, 3 * Q);
+      expectEquals(is.cycle(), 4 * Q, "lcm(1Q, 4Q, 2Q)");
+      auto law = [&](const juce::StringArray& live) {
+        return [&, live](int64_t t) {
+          const int64_t Ok = is.origin(kit);
+          const int64_t tc = Ok + timing::innerAt(t, Ok, timing::TimeMap::single(Q, 3 * Q), 2 * Q).inner;
+          float s = is.loopVal(c1, t) + is.loopVal(c2, t);
+          for (const auto& mic : live) s += is.val(mic, posmod(tc - is.o(mic), 4 * Q));
+          return s;
+        };
+      };
+      expectOutput(is, 8 * Q, law(mics), "every mic reads the group's mapped clock");
+      const int64_t kitRel = is.origin(kit) - is.epoch();
+      is.engine.deleteNode(mics[1]);
+      juce::StringArray two;
+      two.add(mics[0]);
+      two.add(mics[2]);
+      expectEquals(is.origin(kit) - is.epoch(), kitRel, "the kit stays anchored where it was");
+      expectOutput(is, 8 * Q, law(two), "the remaining mics keep their phase");
+      is.engine.undo();
+      expectOutput(is, 8 * Q, law(mics), "the mic returns in phase");
+    }
   }
 };
 

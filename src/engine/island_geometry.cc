@@ -311,12 +311,23 @@ void AudioEngine::attachMapEditRiders(
     return;
   }
   // Otherwise: TWO-ANCHOR CONTINUITY (time_maps.md §6) — the epoch
-  // rides the origin's whole-Q delta so the edited clip's frame
-  // position is unchanged (the fold, not the clip, absorbs it).
+  // rides the origin's delta so the edited clip's frame position holds.
+  // OWNER RULING 2026-09-10: the epoch moves only by WHOLE CYCLES OF
+  // EVERYONE ELSE (`others` — the fold of every other loop's period
+  // with Q), the multiple nearest the delta. That is phase-neutral for
+  // every other lane; the EDITED tile takes the residual jump instead
+  // of the whole timeline rotating under the performer (the engine e2e
+  // journey "editing one lane's loop region never moves the OTHER
+  // lanes' tiles" caught the rotation). With nothing else on the
+  // island `others` is Q and the epoch rides the whole delta as before.
   if (delta != 0 && step > 0 && delta % step == 0) {
-    e.setsIsland = true;
-    e.iq = quantum;
-    e.iepoch = epoch + delta;
+    const int64_t unit = others > 0 ? others : step;
+    const int64_t move = (int64_t)std::llround((double)delta / (double)unit) * unit;
+    if (move != 0) {
+      e.setsIsland = true;
+      e.iq = quantum;
+      e.iepoch = epoch + move;
+    }
   }
 }
 

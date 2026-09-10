@@ -266,7 +266,16 @@ nothing, and a plain loop whose period merely TIES another loop's
 qualified as "definer" — the epoch re-based to its top and every
 other lane rotated a Q on screen for an edit that changed nothing
 audible. Pinned by `ui/e2e_engine/loop_edits.spec.js` ("editing one
-lane's loop region never moves the OTHER lanes' tiles").
+lane's loop region never moves the OTHER lanes' tiles"). **Amended
+again 2026-09-10 (owner ruling, same journey):** two-anchor continuity
+had the same shape — riding the epoch by the edited clip's whole-Q
+delta kept THAT tile put and rotated every other lane by the delta
+(mod its period) unless the delta was a whole cycle of theirs; which
+edits triggered it depended on the playhead's phase at the edit. Now
+the epoch moves only by whole cycles of EVERYONE ELSE (the multiple of
+the other loops' fold with Q nearest the delta) — phase-neutral for
+every other lane — and the edited tile takes the residual jump. With
+nothing else on the island the epoch still rides the whole delta.
 **Phase 1 extension 2 (2026-07-11, E-C in the transport):** the
 engine's published masterPos wraps on the EFFECTIVE island cycle
 (`calculateEffectiveCycleLength` / `AudioNode::getEffectivePeriod`,

@@ -40,8 +40,8 @@
  * serialises every callback).
  *
  *   CelestrianHeadless [--port 8091] [--ui-dir DIR] [--projects-dir DIR]
- *                      [--input sine|ramp|silence] [--freq 220]
- *                      [--block 512] [--paused]
+ *                      [--input sine|ramp|chirp|silence] [--freq 220]
+ *                      [--inputs N] [--block 512] [--paused]
  */
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -77,6 +77,7 @@ struct Options {
   double freq = 220.0;
   double gain = 0.5;
   int block = 512;
+  int inputs = 1;  // input channels; with the chirp each carries its own sweep
   bool paused = false;
 };
 
@@ -132,7 +133,7 @@ class Host {
     handlers_["warpPointer"] = refuse(false);
     handlers_["openPluginEditor"] = refuse(true);
     paused_.store(o.paused);
-    in_.resize((size_t)o.block);
+    in_.resize((size_t)std::max(1, o.inputs), std::vector<float>((size_t)o.block));
     out_l_.resize((size_t)o.block);
     out_r_.resize((size_t)o.block);
   }
@@ -165,16 +166,28 @@ class Host {
   void render(int64_t total, std::vector<float>* capture = nullptr) {
     std::lock_guard<std::mutex> lock(callback_mutex_);
     const int block = opts_.block;
-    const float* ins[] = {in_.data()};
+    std::vector<const float*> ins;
+    for (auto& ch : in_) ins.push_back(ch.data());
     float* outs[] = {out_l_.data(), out_r_.data()};
     int64_t remaining = total;
     while (remaining > 0) {
       const int n = (int)std::min<int64_t>(remaining, block);
+      // The sweep is spent only while a take is live (armed or
+      // capturing — the island's take counter): see the sweep notes.
+      // A GUARD second at every arm keeps consecutive takes' capture
+      // ranges apart on the sweep — abutting ranges let a frame that
+      // straddles one take's loop seam decode its tail a hair into
+      // the next take's range (a phantom "sounds" for a gated clip).
+      const bool live = engine_.hasActiveTake();
+      if (live && !sweep_live_) sweep_clock_ += (int64_t)rate_;
+      sweep_live_ = live;
       fillInput(n);
-      engine_.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+      engine_.audioDeviceIOCallbackWithContext(ins.data(), (int)ins.size(), outs, 2,
+                                               n, {});
       if (capture != nullptr)
         capture->insert(capture->end(), out_l_.begin(), out_l_.begin() + n);
       input_clock_ += n;
+      if (live) sweep_clock_ += n;
       remaining -= n;
     }
   }
@@ -206,6 +219,7 @@ class Host {
     });
     o->setProperty("paused", paused_.load());
     o->setProperty("clock", (double)input_clock_);
+    o->setProperty("sweepClock", (double)sweep_clock_);
     o->setProperty("rate", rate_);
     o->setProperty("block", opts_.block);
     o->setProperty("input", input_kind_);
@@ -303,15 +317,22 @@ class Host {
     double level;          // ≈ the sine's amplitude
   };
 
-  /** The capture clocks sounding in one kFrame window: Hann, FFT, local
-   * maxima above an absolute floor, parabolic interpolation, then the
-   * chirp inverted. */
+  /** The capture clocks sounding in one kFrame window: DECHIRP (the
+   * frame times a reference chirp of the sweep's rate, anchored at the
+   * frame centre — a clip captured at sweep clock c becomes a pure tone
+   * at kF0 + kSweepHzPerSec·c), Hann, FFT, local maxima above the
+   * floors, parabolic interpolation, then the tone read back as a
+   * clock. The sum-frequency image lands at negative frequencies, so
+   * the positive half of the complex spectrum is clean. */
   std::vector<Peak> decode(const float* x) const {
     const int N = kFrame;
     std::vector<std::complex<double>> a((size_t)N);
     for (int i = 0; i < N; ++i) {
       const double w = 0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * i / N);
-      a[(size_t)i] = std::complex<double>((double)x[i] * w, 0.0);
+      const double tl = (double)(i - N / 2) / rate_;  // frame-local seconds
+      const double ref = -juce::MathConstants<double>::pi * kSweepHzPerSec * tl * tl;
+      a[(size_t)i] = std::complex<double>((double)x[i] * w, 0.0) *
+                     std::complex<double>(std::cos(ref), std::sin(ref));
     }
     fft(a);
     std::vector<double> mag((size_t)N / 2);
@@ -505,6 +526,8 @@ class Host {
     // A fresh sweep for the next spec (see kSweepSeconds).
     std::lock_guard<std::mutex> lock(callback_mutex_);
     input_clock_ = 0;
+    sweep_clock_ = 0;
+    sweep_live_ = false;
   }
 
  private:
@@ -517,9 +540,21 @@ class Host {
   // on level (gain, pan, fades). The amplitude harness (ramp) is the
   // scenario suite's; this is the mix's. 4096-sample frames resolve
   // ~10 Hz ≈ 0.09 s of capture clock, far finer than a Q.
-  // The sweep must not wrap while a spec records (a take straddling
-  // the wrap reads as two capture moments): 240 s at 61.25 Hz/s, and
-  // `reset` restarts the input clock, so every spec has four minutes.
+  // THE SWEEP CLOCK advances only while a take is LIVE (armed or
+  // capturing): the sweep is spent on recordings alone, never on
+  // playback or listens, so a spec's whole session fits one 240 s
+  // sweep however long it plays. Channels are spread evenly over the
+  // sweep (kSweepSeconds / inputs apart) — every mic of a group take
+  // records its own clock range, and a session may record up to that
+  // many seconds per channel before a channel-0 take shares
+  // frequencies with a channel-1 one (the workflow journey found that
+  // collision at 30 s offsets with the clock running through
+  // listens). The fast rate keeps takes recorded one second apart
+  // 61 Hz = 5.7 bins apart in a 4096 frame. Frames are DECHIRPED
+  // (decode below): multiplied by a reference chirp of the known
+  // rate, every clip becomes a pure tone whose frequency is its
+  // capture clock, and a stationary tone interpolates to ~0.01 bin.
+  // `reset` restarts the sweep per spec.
   static constexpr double kF0 = 300.0;
   static constexpr double kSweepHzPerSec = 61.25;
   static constexpr double kSweepSeconds = 240.0;  // 300 → 15000 Hz
@@ -533,22 +568,35 @@ class Host {
     return gain_ * std::sin(phase);
   }
 
+  // MULTI-CHANNEL: every input channel carries its OWN sweep, offset by
+  // kSweepSeconds / channels, so a group take of N mics (one
+  // performance, N inputs) records N distinguishable signals — the
+  // listener tells the mics apart by their sweep clocks. Sine and ramp
+  // are identical across channels.
+  int64_t channelShift(size_t ch) const {
+    return (int64_t)(kSweepSeconds * rate_ / (double)in_.size()) * (int64_t)ch;
+  }
+
   void fillInput(int n) {
-    for (int i = 0; i < n; ++i) {
-      const int64_t t = input_clock_ + i;
-      float v = 0.0f;
-      if (input_kind_ == "sine") {
-        v = (float)(gain_ * std::sin(2.0 * juce::MathConstants<double>::pi *
-                                     freq_ * (double)t / rate_));
-      } else if (input_kind_ == "chirp") {
-        v = (float)chirpAt(t);
-      } else if (input_kind_ == "ramp") {
-        // The scenario harness's sawtooth (tests/scenario_utils.h):
-        // every sample encodes its own clock.
-        const int64_t P = int64_t{1} << 20;
-        v = 0.5f * (float)((double)posmod(t, P) / (double)P);
+    for (size_t ch = 0; ch < in_.size(); ++ch) {
+      const int64_t shift = channelShift(ch);
+      float* dst = in_[ch].data();
+      for (int i = 0; i < n; ++i) {
+        const int64_t t = input_clock_ + i;
+        float v = 0.0f;
+        if (input_kind_ == "sine") {
+          v = (float)(gain_ * std::sin(2.0 * juce::MathConstants<double>::pi *
+                                       freq_ * (double)t / rate_));
+        } else if (input_kind_ == "chirp") {
+          v = (float)chirpAt(sweep_clock_ + i + shift);
+        } else if (input_kind_ == "ramp") {
+          // The scenario harness's sawtooth (tests/scenario_utils.h):
+          // every sample encodes its own clock.
+          const int64_t P = int64_t{1} << 20;
+          v = 0.5f * (float)((double)posmod(t, P) / (double)P);
+        }
+        dst[i] = v;
       }
-      in_[(size_t)i] = v;
     }
   }
 
@@ -585,8 +633,11 @@ class Host {
   double rate_;
   std::atomic<bool> paused_{false};
   std::mutex callback_mutex_;
-  std::vector<float> in_, out_l_, out_r_;
+  std::vector<std::vector<float>> in_;  // one buffer per input channel
+  std::vector<float> out_l_, out_r_;
   int64_t input_clock_ = 0;
+  int64_t sweep_clock_ = 0;  // advances only while a take is live
+  bool sweep_live_ = false;  // the previous block's live state (arm edge)
   juce::String input_kind_ = "sine";
   double freq_ = 220.0, gain_ = 0.5;
 };
@@ -882,6 +933,7 @@ Options parseArgs(const juce::StringArray& args) {
     else if (a == "--freq") o.freq = next().getDoubleValue();
     else if (a == "--gain") o.gain = next().getDoubleValue();
     else if (a == "--block") o.block = next().getIntValue();
+    else if (a == "--inputs") o.inputs = next().getIntValue();
     else if (a == "--paused") o.paused = true;
   }
   if (o.ui_dir == juce::File()) {

@@ -100,8 +100,9 @@ export function stackPeriod(stack) {
  * island cycle (one-shot stacks at the top level fold on it). Returns
  * { t, rest } — rest when an ancestor one-shot is between firings.
  */
-export function receivedClock(st, id, t, contextCycle) {
+export function receivedClock(st, id, t, contextCycle, half = 0) {
     let epoch = st.islandEpoch;
+    let near = false;
     for (const s of ancestorsOf(st, id)) {
         const map = activeMapOf(s);
         const oneShot = s.periodSource === 'context';
@@ -111,10 +112,13 @@ export function receivedClock(st, id, t, contextCycle) {
         const eff = map || singleSegment(0, shot);
         const at = innerAt(t, O, eff, oneShot ? contextCycle : mapPeriod(eff));
         if (at.rest) return { t, rest: true, run: at.run };
+        // An ANCESTOR's seam inside the analysis window: the frame holds
+        // two capture moments of every member — skip it for them.
+        if (half > 0 && (at.run < half || nearSeam(eff, at.h, half))) near = true;
         t = O + at.inner;
         if (map) epoch = O + mapOffset(map, 0);
     }
-    return { t, rest: false };
+    return { t, rest: false, near };
 }
 
 /** The capture moments sounding per frame, keyed by island phase (Q,
@@ -173,11 +177,16 @@ export function displayInnerQ(vm, id, q, durationQ) {
     if (!tile) return { rest: true };
     // A HEARD lane (a window: srcSegs) tiles on the FRAME grid and bakes
     // the loop's phase in as content ROTATION (srcTopFrac, display law
-    // 2026-07-23d): the tile shows slice[(q − tile.start + rot) mod P].
-    // Single-segment maps only (the specs' scope).
+    // 2026-07-23d): the loop's TOP is drawn at srcTopFrac of the tile
+    // (lane_body.js drawRepCanvas rotates the slice so its index 0 lands
+    // there), so position x of the tile shows slice[(x − rot·P) mod P].
+    // (The sign matters only when 2·rot ≢ 0 mod P — every earlier
+    // journey happened to be symmetric; the chain's 12Q take windowed to
+    // 6Q with its top at 5Q was the first to tell.) Single-segment maps
+    // only (the specs' scope).
     if (tile.srcSegs) {
         if (tile.srcSegs.length !== 1) return null;
-        const rel = mod(q - tile.startQ + (tile.srcTopFrac || 0) * lane.periodQ, lane.periodQ);
+        const rel = mod(q - tile.startQ - (tile.srcTopFrac || 0) * lane.periodQ, lane.periodQ);
         return { rest: false, innerQ: tile.srcSegs[0][0] * durationQ + rel };
     }
     // A plain lane tiles on the TAKE grid (takeStartQ mod periodQ; a
@@ -224,14 +233,21 @@ export async function verifyHeard(page, {
             const gate = silent(c.id, phaseQ);
             if (gate === 'skip') continue;
             const heard = f.heard.filter(h => h.id === c.id);
-            const rc = receivedClock(st, c.id, t, L.cycle);
+            const rc = receivedClock(st, c.id, t, L.cycle, half);
+            if (rc.near) continue;  // an ancestor map seam inside the frame
             const law = rc.rest ? { rest: true, run: rc.run }
                 : innerAt(rc.t, c.origin, mapOfNode(c), foldOf(c.id));
             const label = `${c.name || ''}[${c.id.slice(0, 6)} ${c.duration / Q}Q] @ ${phaseQ.toFixed(2)}Q (frame pos ${f.pos})`;
             if (gate === true || law.rest) {
                 // A rest that ends inside the window (a firing edge): skip.
                 if (law.rest && law.run !== undefined && law.run < half) continue;
-                expect(heard, `${label}: expected silence`).toEqual([]);
+                // Evidence of SOUND is a real peak: a clip gated off
+                // that still played would show at its full level
+                // (~0.45); leakage from another clip's seam inside the
+                // window shows an order of magnitude lower.
+                expect(heard.filter(h => h.level > 0.15).map(h => +(h.inner / Q).toFixed(3)),
+                    `${label}: expected silence; clip map ${JSON.stringify(L.clips[c.id])}; frame heard ${JSON.stringify(f.heard.map(h => [h.id.slice(0, 6), +(h.inner / Q).toFixed(3), +h.level.toFixed(2)]))}`)
+                    .toEqual([]);
                 continue;
             }
             // Near a seam the window holds two capture moments: skip —
@@ -266,16 +282,20 @@ export async function verifyHeard(page, {
     return L;
 }
 
-/** The capture-clock offset (input clock − origin) of every take: with
- * an uninterrupted transport it is ONE number for the whole island, so
- * a take whose origin was folded or moved would stand out. */
-export function captureOffsets(L, st) {
-    const out = {};
+/** Every take's DECODED capture clock lies inside the sweep span its
+ * recording consumed (recSweep) — the listener's clip map read the
+ * buffer right. */
+export function expectCaptureClocksSane(L) {
     for (const [id, takes] of Object.entries(L.clips)) {
-        const n = findNode(st, id);
-        for (const t of takes) out[`${id}/${t.take}`] = t.captureClock - (n ? n.origin : 0);
+        const span = recSweep.get(id);
+        if (!span) continue;
+        for (const t of takes) {
+            expect(t.captureClock, `${id.slice(0, 6)} take ${t.take}: capture clock ≥ arm`)
+                .toBeGreaterThan(span.from - 600);
+            expect(t.captureClock, `${id.slice(0, 6)} take ${t.take}: capture clock ≤ settle`)
+                .toBeLessThan(span.to + 600);
+        }
     }
-    return out;
 }
 
 /** Open the real UI in engine mode and start from an empty project. */
@@ -348,11 +368,16 @@ export async function newClip(page, parent = '') {
     return holder.nodes[holder.nodes.length - 1].id;
 }
 
+/** The sweep-clock span each recorded take consumed (arm → settle):
+ * its decoded capture clock must fall inside it. */
+export const recSweep = new Map();
+
 export async function rec(page, len, { atPhase = null, parent = '' } = {}) {
     const before = await state(page);
     const first = !(before.quantum > 0);
     if (atPhase !== null) await driveToPhase(page, atPhase);
     const id = await newClip(page, parent);
+    const sweepFrom = (await engine(page, 'status')).sweepClock;
     await call(page, 'startRecordingInNode', id);
     const rs = await advanceUntil(page, s => {
         const n = findNode(s, id);
@@ -363,7 +388,40 @@ export async function rec(page, len, { atPhase = null, parent = '' } = {}) {
     if (more > 0) await engine(page, 'advance', { samples: more });
     await call(page, 'stopRecordingInNode', id);
     await advanceUntil(page, s => !hot(findNode(s, id)));
+    recSweep.set(id, { from: sweepFrom, to: (await engine(page, 'status')).sweepClock });
     return id;
+}
+
+/** A fresh empty group at the top level; returns its id. */
+export async function newGroup(page) {
+    await call(page, 'createNode', 'stack', '');
+    const st = await state(page);
+    return st.nodes[st.nodes.length - 1].id;
+}
+
+/**
+ * A GROUP TAKE (Q7): arm the stack — every empty member records as one
+ * performance, each from its own input channel — `len` samples, the
+ * clock paused and advanced exactly (the `rec` recipe). Returns the
+ * member ids in tree order.
+ */
+export async function recGroup(page, stackId, len, { atPhase = null } = {}) {
+    const before = await state(page);
+    const first = !(before.quantum > 0);
+    if (atPhase !== null) await driveToPhase(page, atPhase);
+    const members = (findNode(before, stackId).nodes || []).map(n => n.id);
+    expect(members.length, 'group has members to arm').toBeGreaterThan(0);
+    await call(page, 'startRecordingInNode', stackId);
+    const rs = await advanceUntil(page, s => {
+        const n = findNode(s, members[0]);
+        return n && n.isRecording;
+    });
+    const live = findNode(rs, members[0]).duration;
+    const more = len - live - (first ? 0 : BLOCK);
+    if (more > 0) await engine(page, 'advance', { samples: more });
+    await call(page, 'stopRecordingInNode', stackId);
+    await advanceUntil(page, s => members.every(id => !hot(findNode(s, id))));
+    return members;
 }
 
 /** Arm an empty member under a WINDOWED group: the take records

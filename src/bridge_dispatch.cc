@@ -385,10 +385,13 @@ std::vector<Method> engineMethods(Services s) {
       valueMethod("getPluginScanStatus", 0,
                   [h](const auto&) { return h->getScanStatusVar(); }),
       // Time maps and the sequencer
+      // Both map verbs take an optional trailing `live` (a mid-gesture
+      // update that coalesces into the gesture's undo entry).
       voidMethod("setLoopPoints", 3,
                  [e](const auto& args) {
                    e->setLoopPoints(args[0].toString(), (juce::int64)args[1],
-                                    (juce::int64)args[2]);
+                                    (juce::int64)args[2],
+                                    args.size() > 3 && (bool)args[3]);
                  }),
       voidMethod("setSegments", 2,
                  [e](const auto& args) {
@@ -403,7 +406,8 @@ std::vector<Method> engineMethods(Services s) {
                                         (int64_t)(double)(*flat)[i + 1]};
                      }
                    }
-                   e->setSegments(args[0].toString(), m);
+                   e->setSegments(args[0].toString(), m,
+                                  args.size() > 2 && (bool)args[2]);
                  }),
       voidMethod("toggleLoopWindow", 1,
                  [e](const auto& args) { e->toggleLoopWindow(args[0].toString()); }),

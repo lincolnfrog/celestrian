@@ -149,11 +149,16 @@ song with real clicks on the grid and asserts every lane's `.seq-dim`
 sits exactly where the engine is silent.
 
 **The spectral listener** (`--input chirp`, `listen {samples, hop}`)
-is the harness's instrument. The input is a slow linear frequency
-sweep (300 → 15 000 Hz over 240 s, restarted by `reset`), so every
-recorded sample CARRIES ITS OWN CAPTURE CLOCK as a frequency. `listen`
-renders one island cycle and decodes the OUTPUT frame by frame (4096
-samples, Hann, FFT, interpolated peaks): each peak's frequency is a
+is the harness's instrument. The input is a linear frequency sweep
+(300 → 15 000 Hz over 240 s) whose clock advances ONLY while a take
+is live, so the sweep is spent on recordings alone (a session may play
+and listen for as long as it likes); `reset` restarts it. With
+`--inputs N` every channel carries the sweep 240/N s apart, so a
+group take of several mics records distinguishable signals. Every
+recorded sample thus CARRIES ITS OWN CAPTURE CLOCK as a frequency.
+`listen` renders one island cycle and decodes the OUTPUT frame by
+frame (4096 samples, DECHIRPED by a reference chirp so each clip is a
+pure tone, Hann, FFT, interpolated peaks): each peak's frequency is a
 capture moment, each capture moment belongs to exactly one take
 (their buffers are decoded the same way), so the answer per frame is
 "clip X, take k, content index i is sounding" — the mix itself,
@@ -182,9 +187,15 @@ one-shots, takes and comps, the sequencer's gates and cues, loop-region
 edits (moved, bypassed, cleared, while playing and stopped; the definer
 trim and lock-collapse by fingerprint; undo/redo chains; "editing lane
 B never moves lane A"), groups (combine, group windows, recording
-through a map, one-shot groups, delete/undo), cut bands, cursors, and
-the edge journeys (nested maps, a window authored on an empty group,
-seek, save/load).
+through a map, one-shot groups, delete/undo), cut bands, cursors, the
+edge journeys (nested maps, a window authored on an empty group, seek,
+save/load), and THE OWNER'S WORKFLOW (`workflow.spec.js`): a five-mic
+drum kit from a track template recorded as one take, the loop region
+pulled in from both sides on the first clip, bass/guitar/keys, a long
+replacement drum take cut and trimmed while playing (an ⌥-free seam,
+whole-Q total), the scratch kit deleted, then three gate combinations
+of a four-section song, a cued step and a bypass. The server runs
+`--inputs 8` so each mic records its own sweep.
 
 **What it has found** (2026-09-09, its first day): three see-vs-hear
 bugs in the members of a windowed group — the slice was measured from
@@ -195,9 +206,21 @@ misfire: clearing a window (an edit that changes nothing audible)
 re-based the epoch to that loop's top when its period merely tied
 another loop's, rotating every other lane on screen (the cycle-top
 rule now fires only for an edit that activates a map). All four are
-pinned by `under_map_slice.test.mjs` and the journeys above. Not yet
-covered: MIDI lanes (the listener is audio; a note-clock twin would
-be the same idea), plugin racks, and the WebView itself.
+pinned by `under_map_slice.test.mjs` and the journeys above. Day two
+(2026-09-10) added a fifth, RULED AND FIXED the same day: two-anchor
+continuity (time_maps.md §6) rode the epoch by the edited clip's
+whole-Q origin delta so that clip's tile held — and every OTHER lane
+rotated by the delta whenever it was not a whole cycle of theirs;
+now the epoch moves only by whole cycles of everyone else and the
+edited tile takes the residual (loop_edits.spec.js "editing one
+lane's loop region never moves the OTHER lanes' tiles", from four
+start phases). The gap-fill C++ scenarios (S33–S38, docs/scenarios.md)
+found a sixth on arrival: clearing a window to "whole" left a stale
+BYPASS, so the next window drawn on that lane was silently inert
+(S34; fixed — a clear drops the bypass, undo restores it; mock twin
+`bypass_clear.test.mjs`). Not yet covered: MIDI lanes
+(the listener is audio; a note-clock twin would be the same idea),
+plugin racks, and the WebView itself.
 
 **Writing a spec** (`ui/e2e_engine/*.spec.js`, helpers in
 `engine_helpers.mjs`): `openEngine(page)` (loads `?engine=true`,

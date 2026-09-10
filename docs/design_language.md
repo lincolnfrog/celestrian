@@ -272,6 +272,29 @@ in the doc that owns its feature, but each has a pointer here.
   supersedes the per-node "hot node" refusals and the "ordinary window
   edit under a live take" branch, and answers audit §7 items 1, 2 and 4
   (pause, second arm, delete-the-definer under a take — all refused).
+- **"WHOLE" DROPS A STALE BYPASS (2026-09-10, scenario S34):** clearing
+  a node's loop region (loop points (0, 0), D4-7's "whole") also clears
+  its bypass flag — nothing is left to bypass, and a window drawn later
+  on a still-bypassed node was silently inert (the lane showed the
+  region, the engine played the whole take). The inverse restores the
+  flag with the geometry (`Edit::restoresBypass`); the mock mirrors it.
+- **EDITING ONE LANE NEVER MOVES THE OTHERS (owner, 2026-09-10):**
+  a live map edit keeps the edited lane's audio continuous (origin
+  re-anchor), and the epoch follows only by whole cycles of everyone
+  else — never by a delta that would rotate the other lanes on screen.
+  The edited tile absorbs the residual jump. time_maps.md §6 carries
+  the mechanism; the engine e2e journey "editing one lane's loop region
+  never moves the OTHER lanes' tiles" pins it from four start phases.
+- **ONE GESTURE, ONE UNDO — AND NO MORE (owner, 2026-09-10):** a
+  drag streams live map commits so the splice is audible while
+  dragging, and those fold into ONE undo entry; but two separate cut
+  gestures on the same lane, however close in time, are two undo
+  steps. Mechanism: `setSegments` / `setLoopPoints` take an optional
+  trailing `live`; the UI sends it on every commit after a gesture's
+  first (map_bands.js `gestureLive`), the engine coalesces only live
+  commits (`Edit::live`, edit_log.cc `editsCoalesce`), the mock
+  mirrors it (mock/undo.js). Before this, consecutive segment edits
+  on one node merged unconditionally.
 - **THE GRID YOU SEE IS THE GRID YOU HEAR (owner, 2026-09-09; field
   bug: a 4-section root song sounded the full band over the guitar-only
   section, the guilty section wandering with every take):** a song's

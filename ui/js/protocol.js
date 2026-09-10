@@ -139,8 +139,11 @@ export const BRIDGE_METHODS = [
     // Solo is per-node, additive, fractal.
     { name: 'toggleSolo', params: ['uuid'] },
     { name: 'toggleMute', params: ['uuid'] },
-    { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples'] },
-    { name: 'setSegments', params: ['uuid', 'flatSegments'] },
+    // `live?` (owner ruling 2026-09-10): true for every commit AFTER a
+    // drag gesture's first — it coalesces into that gesture's undo
+    // entry. Omitted = a new undo step (separate gestures never merge).
+    { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples', 'live?'] },
+    { name: 'setSegments', params: ['uuid', 'flatSegments', 'live?'] },
     { name: 'warpPointer', params: ['x', 'y', 'viewportW', 'viewportH'] },
     // Loop window activation is data, not view state (docs/time_maps.md):
     // toggles a stack's window between active and bypassed.

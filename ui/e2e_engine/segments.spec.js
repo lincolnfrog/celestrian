@@ -38,19 +38,31 @@ test('cut bands: [0,1Q)+[2Q,3Q), slide, bypass, undo', async ({ page }) => {
     const slid = await listenAtTop(page);
     await call(page, 'undo');   // un-bypass
     await call(page, 'undo');   // bypass
-    // Consecutive setSegments on one node COALESCE into one undo entry
-    // (the live-drag precedent, 2026-07-23d) — even minutes apart: the
-    // third undo removes BOTH segment edits, back to the whole take.
+    // OWNER RULING 2026-09-10: two separate cut gestures are two undo
+    // steps (only LIVE mid-gesture commits coalesce): the third undo
+    // removes the slide alone, back to the first cut.
     await call(page, 'undo');
     st = await state(page);
-    expect(findNode(st, c2).segments).toBeUndefined();
-    expect((await engine(page, 'status')).cycle).toBe(4 * Q);
+    expect(findNode(st, c2).segments).toEqual([0, Q, 2 * Q, 3 * Q]);
+    expect((await engine(page, 'status')).cycle).toBe(2 * Q);
     await verifyHeard(page);
-    await call(page, 'redo');   // the coalesced entry: the SLID map
+    await call(page, 'undo');   // the first cut: the whole take
+    expect(findNode(await state(page), c2).segments).toBeUndefined();
+    expect((await engine(page, 'status')).cycle).toBe(4 * Q);
+    await call(page, 'redo');
+    await call(page, 'redo');   // the slide again
     st = await state(page);
     expect(findNode(st, c2).segments).toEqual([Q, 2 * Q, 3 * Q, 4 * Q]);
     const again = await listenAtTop(page);
     expectSameSound(slid, again, { label: 'redo the slide' });
+    // A LIVE stream (a drag): the first commit opens the gesture's
+    // entry, the live ones fold into it — one undo restores the slide.
+    await call(page, 'setSegments', c2, [0, Q, 2 * Q, 3 * Q]);
+    await call(page, 'setSegments', c2, [0, Q, 2.5 * Q, 3.5 * Q], true);
+    await call(page, 'setSegments', c2, [0, Q, 3 * Q, 4 * Q], true);
+    expect(findNode(await state(page), c2).segments).toEqual([0, Q, 3 * Q, 4 * Q]);
+    await call(page, 'undo');
+    expect(findNode(await state(page), c2).segments).toEqual([Q, 2 * Q, 3 * Q, 4 * Q]);
 });
 
 test('a single segment delegates to loop points; three segments; an incoherent set is refused', async ({ page }) => {

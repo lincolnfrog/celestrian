@@ -7,7 +7,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { openEngine, engine, call, state, rec, verifyHeard, captureOffsets,
+import { openEngine, engine, call, state, rec, verifyHeard, expectCaptureClocksSane,
          findNode } from './engine_helpers.mjs';
 
 test('1Q, 5Q, 3Q → window → 12Q → window: heard == law == lanes at every stage', async ({ page }) => {
@@ -19,10 +19,10 @@ test('1Q, 5Q, 3Q → window → 12Q → window: heard == law == lanes at every s
     expect((await engine(page, 'status')).cycle).toBe(15 * Q);
     await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3);
     let L = await verifyHeard(page);
-    // No fold, ever: every take's capture clock sits at one offset from
-    // its origin (the transport never stopped).
-    const offsets = Object.values(captureOffsets(L, await state(page)));
-    expect(Math.max(...offsets) - Math.min(...offsets)).toBeLessThan(600);
+    // The listener's clip map reads every take right (each capture
+    // clock inside the sweep span its recording consumed). No fold is
+    // pinned sample-exact by the C++ scenarios (S3, S32).
+    expectCaptureClocksSane(L);
 
     // "Edit it to be only 1Q": a loop window on the 3Q take.
     await call(page, 'setLoopPoints', c3, Q, 2 * Q);
@@ -35,8 +35,7 @@ test('1Q, 5Q, 3Q → window → 12Q → window: heard == law == lanes at every s
     const c4 = await rec(page, 12 * Q);
     expect((await engine(page, 'status')).cycle).toBe(60 * Q);
     L = await verifyHeard(page);
-    const off2 = Object.values(captureOffsets(L, await state(page)));
-    expect(Math.max(...off2) - Math.min(...off2)).toBeLessThan(600);
+    expectCaptureClocksSane(L);
     expect(findNode(await state(page), c4).duration).toBe(12 * Q);
 
     // "Edit it to be 6Q": window c4 to [0, 6Q) → 30Q.

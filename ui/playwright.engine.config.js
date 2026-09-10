@@ -39,7 +39,10 @@ export default defineConfig({
         // counts (a real-time clock would make every assertion a race).
         // CHIRP input: every recorded sample carries its capture clock as
         // a frequency, so `listen` can decode the mix (see engine_helpers).
-        command: `${BIN} --port ${PORT} --ui-dir . --paused --input chirp`,
+        // 5 inputs (the drum kit's mics): a group take records one sweep
+        // per channel, so the listener can tell the mics apart; the
+        // 240 s sweep gives each channel 48 s of recording per spec.
+        command: `${BIN} --port ${PORT} --ui-dir . --paused --input chirp --inputs 5`,
         url: `http://localhost:${PORT}/index.html`,
         reuseExistingServer: false,
         timeout: 60000,

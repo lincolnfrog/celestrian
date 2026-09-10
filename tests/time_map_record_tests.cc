@@ -1014,7 +1014,10 @@ class TimeMapRecordTests : public juce::UnitTest {
       m2.n = 2;
       m2.segs[0] = {dA, 2 * dA};
       m2.segs[1] = {2 * dA, 3 * dA};
-      engine.setSegments(bId, m2);
+      // `live`: the same GESTURE as m1 (a drag streaming commits) — it
+      // coalesces into m1's undo entry (owner ruling 2026-09-10: only
+      // live commits merge; the separate-gesture case is pinned below).
+      engine.setSegments(bId, m2, /*live=*/true);
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
                    "removed sounding region: origin stays put");
       expectEquals((juce::int64)islandEpoch(), (juce::int64)(orgB1 + dA),
@@ -1030,6 +1033,24 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "undo restores the pre-edit origin");
       expectEquals((juce::int64)islandEpoch(), (juce::int64)ep0,
                    "undo restores the pre-edit epoch");
+
+      // SEPARATE GESTURES ARE SEPARATE UNDO STEPS (owner ruling
+      // 2026-09-10): the same two maps as two gestures (no `live`) —
+      // one undo takes back m2 alone, leaving m1's anchors standing.
+      engine.setSegments(bId, m1);
+      const int64_t orgG1 = nodeProp(bId, "origin");
+      const int64_t epG1 = islandEpoch();
+      engine.setSegments(bId, m2);
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)(orgG1 + dA),
+                   "gesture 2: the cycle-top rule again");
+      engine.undo();
+      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgG1,
+                   "one undo: back to gesture 1's origin, not before it");
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)epG1,
+                   "one undo: back to gesture 1's epoch");
+      engine.undo();
+      expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
+                   "the second undo takes back gesture 1");
     }
 
     // === Phase 3, Stage 2: the fully-fractal clip kernel ===

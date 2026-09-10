@@ -247,7 +247,7 @@ export async function callNative(method, ...args) {
     }
     // Snapshot BEFORE any undoable mutation so undo restores the pre-edit
     // graph (see interceptUndoableCall for the coalescing rules).
-    interceptUndoableCall(method, args[0]);
+    interceptUndoableCall(method, args[0], args);
     return handler(...args);
 }
 

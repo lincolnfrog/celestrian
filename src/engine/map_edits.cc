@@ -18,7 +18,7 @@
 
 
 void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
-                                int64_t end) {
+                                int64_t end, bool live) {
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
                            " start=" + juce::String(start) +
                            " end=" + juce::String(end));
@@ -197,11 +197,13 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       }
     }
   }
+  e.live = live;  // a mid-gesture update coalesces (edit_log.cc)
   record(std::move(e));
 }
 
 void AudioEngine::setSegments(const juce::String& uuid,
-                              const celestrian::timing::TimeMap& map) {
+                              const celestrian::timing::TimeMap& map,
+                              bool live) {
   using TimeMap = celestrian::timing::TimeMap;
   auto* target = findNodeByUuid(root_node.get(), uuid);
   if (target == nullptr) return;
@@ -247,11 +249,11 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // n ≤ 1 is the single-window form: ONE code path — setLoopPoints
   // owns the Q13 machinery and clears any override.
   if (map.n == 0) {
-    setLoopPoints(uuid, 0, 0);
+    setLoopPoints(uuid, 0, 0, live);
     return;
   }
   if (map.n == 1) {
-    setLoopPoints(uuid, map.segs[0].start, map.segs[0].end);
+    setLoopPoints(uuid, map.segs[0].start, map.segs[0].end, live);
     return;
   }
 
@@ -354,6 +356,7 @@ void AudioEngine::setSegments(const juce::String& uuid,
     }
   }
 
+  e.live = live;  // a mid-gesture update coalesces (edit_log.cc)
   record(std::move(e));
 }
 

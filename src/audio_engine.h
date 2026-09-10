@@ -492,18 +492,22 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setEffectScope(const juce::String& uuid, bool active);
 
   /**
-   * Sets the non-destructive loop points for a specific node.
+   * Sets the non-destructive loop points for a specific node. `live`
+   * marks a mid-gesture update (a drag streaming commits): it coalesces
+   * into the gesture's undo entry (Edit::live).
    */
-  void setLoopPoints(const juce::String& uuid, int64_t start, int64_t end);
+  void setLoopPoints(const juce::String& uuid, int64_t start, int64_t end,
+                     bool live = false);
 
   /**
    * Installs a multi-segment time-map on a node (time_maps.md phase 3).
    * Validates well-formedness only (the editor owns coherence);
    * n ≤ 1 delegates to setLoopPoints (the single-window path, which
-   * owns Q13); undoable (Edit::Segments). Message thread.
+   * owns Q13); undoable (Edit::Segments). `live` as for setLoopPoints.
+   * Message thread.
    */
   void setSegments(const juce::String& uuid,
-                   const celestrian::timing::TimeMap& map);
+                   const celestrian::timing::TimeMap& map, bool live = false);
 
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(

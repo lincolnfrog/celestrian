@@ -136,6 +136,17 @@ struct Edit {
   // the clip/window. applyEdit is a pure applier: it sets `iq/iepoch` when
   // `setsIsland` is true and captures the old values into the inverse. The
   // *decision* to touch Q is made where the forward edit is built.
+  // A LIVE mid-gesture update (owner ruling 2026-09-10): a drag streams
+  // map commits so the splice is audible while dragging; every commit
+  // after a gesture's first carries `live` and COALESCES into that
+  // gesture's undo entry. Separate gestures — however close in time —
+  // are separate undo steps.
+  bool live = false;
+  // LoopPoints rider: clearing a node's geometry (whole) also drops a
+  // stale BYPASS (nothing is left to bypass, and a later window would
+  // otherwise be silently inert — found by scenario S34, 2026-09-10);
+  // the inverse restores the flag with the geometry.
+  bool restoresBypass = false;
   bool setsIsland = false;
   int64_t iq = 0;      // island quantum to set
   int64_t iepoch = 0;  // island epoch to set

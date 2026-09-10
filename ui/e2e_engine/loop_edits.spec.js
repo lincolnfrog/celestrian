@@ -14,7 +14,7 @@
 
 import { test, expect } from '@playwright/test';
 import { openEngine, engine, call, state, rec, verifyHeard, findNode,
-         listenAtTop, expectSameSound, mod } from './engine_helpers.mjs';
+         listenAtTop, expectSameSound, mod, driveToPhase } from './engine_helpers.mjs';
 import { deriveViewModel } from '../js/view_model.js';
 
 const Q = 44100;
@@ -53,6 +53,18 @@ test('window set, moved, bypassed, re-activated, cleared — playing', async ({ 
     await call(page, 'setLoopPoints', c2, 0, 0);
     expect(findNode(await state(page), c2).windowActive).toBe(false);
     expect((await engine(page, 'status')).cycle).toBe(4 * Q);
+    await verifyHeard(page);
+    // The trap S34 found: bypass, clear, then draw a NEW region — it
+    // must sound (a clear drops the stale bypass).
+    await call(page, 'setLoopPoints', c2, Q, 3 * Q);
+    await call(page, 'toggleLoopWindow', c2);            // bypass
+    await call(page, 'setLoopPoints', c2, 0, 0);          // whole
+    expect(findNode(await state(page), c2).loopBypassed).toBe(false);
+    await call(page, 'setLoopPoints', c2, 2 * Q, 4 * Q);  // a new region
+    const n = findNode(await state(page), c2);
+    expect(n.windowActive).toBe(true);
+    expect(n.loopBypassed).toBe(false);
+    expect((await engine(page, 'status')).cycle).toBe(2 * Q);
     await verifyHeard(page);
     void c1;
 });
@@ -125,7 +137,16 @@ test('editing one lane\'s loop region never moves the OTHER lanes\' tiles', asyn
     // FRAME may re-base by whole Qs (the cycle-top rule, two-anchor
     // continuity) — and any re-base that is not a whole island cycle
     // shows as every other lane jumping. Pinned here from the user's
-    // seat: A's bright tile stays where it was, at every edit.
+    // seat: A's bright tile stays where it was, at every edit, whatever
+    // phase the edit lands at.
+    //
+    // FOUND 2026-09-10, RULED the same day: two-anchor continuity used
+    // to ride the epoch by B's whole-Q origin delta so B's own tile
+    // held — and every other lane rotated by that delta whenever it was
+    // not a whole cycle of theirs. Now the epoch moves only by whole
+    // cycles of everyone else and B's tile takes the residual. Which
+    // phases used to trigger it depended on where the playhead sat
+    // when the edit landed; this test tries several.
     await openEngine(page);
     await rec(page, Q);
     const a = await rec(page, 4 * Q, { atPhase: 2 * Q });
@@ -139,21 +160,23 @@ test('editing one lane\'s loop region never moves the OTHER lanes\' tiles', asyn
     };
     const a0 = await tileOf(a);
     const edits = [
-        () => call(page, 'setLoopPoints', b, Q, 3 * Q),
-        () => engine(page, 'advance', { samples: Q + 700 }),
-        () => call(page, 'setLoopPoints', b, 2 * Q, 4 * Q),
-        () => call(page, 'setSegments', b, [0, Q, 2 * Q, 3 * Q]),
-        () => engine(page, 'advance', { samples: 2 * Q + 100 }),
-        () => call(page, 'setSegments', b, [Q, 2 * Q, 3 * Q, 4 * Q]),
-        () => call(page, 'toggleLoopWindow', b),
-        () => call(page, 'setLoopPoints', b, 0, 0),
+        [Q + 700, () => call(page, 'setLoopPoints', b, Q, 3 * Q)],
+        [2 * Q + 100, () => call(page, 'setLoopPoints', b, 2 * Q, 4 * Q)],
+        [3 * Q + 300, () => call(page, 'setSegments', b, [0, Q, 2 * Q, 3 * Q])],
+        [500, () => call(page, 'setSegments', b, [Q, 2 * Q, 3 * Q, 4 * Q])],
+        [Q + 900, () => call(page, 'toggleLoopWindow', b)],
+        [2 * Q + 200, () => call(page, 'setLoopPoints', b, 0, 0)],
     ];
-    for (const [i, edit] of edits.entries()) {
-        await edit();
-        const a1 = await tileOf(a);
-        expect(a1.takeStartQ, `after edit ${i}: lane A's tile moved`).toBe(a0.takeStartQ);
-        expect(a1.firstBright, `after edit ${i}: lane A's bright tile moved`).toBe(a0.firstBright);
-        await verifyHeard(page);
+    for (const startPhase of [0, Q + 100, 2 * Q + 100, 3 * Q + 100]) {
+        for (const [i, [phase, edit]] of edits.entries()) {
+            await driveToPhase(page, mod(startPhase + phase, 4 * Q));
+            await engine(page, 'advance', { samples: 100 });
+            await edit();
+            const a1 = await tileOf(a);
+            expect(a1.takeStartQ, `start ${startPhase / Q}Q, edit ${i}: lane A's tile moved`).toBe(a0.takeStartQ);
+            expect(a1.firstBright, `start ${startPhase / Q}Q, edit ${i}: lane A's bright tile moved`).toBe(a0.firstBright);
+            await verifyHeard(page);
+        }
     }
 });
 

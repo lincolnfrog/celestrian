@@ -1143,9 +1143,9 @@ function initApp() {
             call('renameNode', [id, name], `Renamed to "${name}"`),
         // Loop windows (time_maps.md): the region is data (setLoopPoints),
         // activation is a toggle between active and bypassed
-        onSetWindow: async (id, startSamples, endSamples) => {
+        onSetWindow: async (id, startSamples, endSamples, live = false) => {
             const r = await callNative('setLoopPoints', id, startSamples,
-                                       endSamples);
+                                       endSamples, live);
             scheduleVerify(id, n => windowLanded(n, startSamples, endSamples),
                 'Loop window set — ⌘Z to undo',
                 'Loop window refused by the engine — geometry unchanged');
@@ -1154,8 +1154,10 @@ function initApp() {
         onToggleWindow: id => callNative('toggleLoopWindow', id),
         // Multi-segment maps (phase 3, the sequencer): one commit per
         // editor gesture — flat [s0,e0,...] in samples.
-        onSetSegments: async (id, flatSegments) => {
-            const r = await callNative('setSegments', id, flatSegments);
+        // `live`: a mid-gesture commit (coalesces into the gesture's
+        // undo entry, owner ruling 2026-09-10).
+        onSetSegments: async (id, flatSegments, live = false) => {
+            const r = await callNative('setSegments', id, flatSegments, live);
             scheduleVerify(id, n => {
                 if (flatSegments.length >= 4) {
                     const got = n.segments || [];

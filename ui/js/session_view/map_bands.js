@@ -142,7 +142,14 @@ export function bandState(lane, vm, cycleQ) {
 /** Flatten a segment edit to samples and hand it to the engine — after
  * the categorical coherence guard. `segsQ === null` is a refusal from
  * the interval algebra: keep the previous map, commit nothing. */
-function commitBandSegs(st, segsQ) {
+// GESTURE-SCOPED UNDO (owner ruling 2026-09-10): a drag streams live
+// commits; every commit after the gesture's FIRST carries `live` so the
+// engine coalesces it into that gesture's undo entry. Each gesture
+// starts fresh (beginGesture sites reset this), so two cuts made one
+// after the other are two undo steps.
+let gestureLive = false;
+
+function commitBandSegs(st, segsQ, inGesture = false) {
     if (segsQ === null) return;  // refusal: keep the previous map
     // CATEGORICAL COHERENCE: no gesture may commit a fractional-period
     // map — the engine refuses them too (both sides, defense in depth).
@@ -157,7 +164,9 @@ function commitBandSegs(st, segsQ) {
     const flat = [];
     segsQ.forEach(([s, e]) =>
         flat.push(Math.round(s * st.quantum), Math.round(e * st.quantum)));
-    return ctx.cb.onSetSegments(st.laneId, flat);
+    const live = inGesture && gestureLive;
+    if (inGesture) gestureLive = true;
+    return ctx.cb.onSetSegments(st.laneId, flat, live);
 }
 
 /** Pointer x → CONTENT Q (raw-take coordinates). On a heard lane the
@@ -379,7 +388,7 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
         const now = performance.now();
         if (res.segs && now - lastLive > LIVE_COMMIT_THROTTLE_MS) {
             lastLive = now;
-            commitBandSegs(st, res.segs);  // LIVE: audible while dragging
+            commitBandSegs(st, res.segs, true);  // LIVE: audible while dragging
         }
     };
     // Warp the OS cursor onto the grabbed handle, once the raw view
@@ -465,6 +474,7 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
     };
     // The runner owns capture, the lost-capture/blur net, the freeze +
     // pin (released automatically), and the exactly-once end.
+    gestureLive = false;  // a new gesture: its first commit is a new undo step
     const g = beginGesture(ev, {
         stop: true,
         onMove: move,
@@ -481,12 +491,12 @@ function runExpandedDrag(ev, o, lane, st, body, anchorQ, onMove) {
             // keep the last preview as if it had been committed.
             if (committed) {
                 if (last && last.segs) {
-                    holdUntilSettled(body, commitBandSegs(st, last.segs));
+                    holdUntilSettled(body, commitBandSegs(st, last.segs, true));
                 }
             } else if (last && last.segs) {
                 holdUntilSettled(body, commitBandSegs(st,
                     st.segs ? st.segs.map(sg => sg.slice())
-                            : [[0, st.totalQ]]));
+                            : [[0, st.totalQ]], true));
             }
             ctx.cb.onWindowEdit(lane.id, false);  // relax back to the heard view
         },
@@ -601,6 +611,7 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
         // release commits ONE setSegments.
         const startDrag = (kind, edge) => ev => {
             let target = null;
+            gestureLive = false;  // a new gesture: its first commit is a new undo step
             const g = beginGesture(ev, {
                 stop: true,
                 claim: lane.id, // grabbing a handle claims the track
@@ -612,11 +623,11 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                     if (committed && target) {
                         let next = healCut(st.segs, cut[0], cut[1], st.totalQ);
                         next = applyCut(next, target.inQ, target.outQ, st.totalQ);
-                        holdUntilSettled(body, commitBandSegs(st, next));
+                        holdUntilSettled(body, commitBandSegs(st, next, true));
                     } else if (!committed && band._lastLive) {
                         holdUntilSettled(body, commitBandSegs(st,
                             st.segs ? st.segs.map(sg => sg.slice())
-                                    : [[0, st.totalQ]]));
+                                    : [[0, st.totalQ]], true));
                     }
                 },
             });
@@ -653,7 +664,7 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                     let liveNext = healCut(st.segs, cut[0], cut[1], st.totalQ);
                     liveNext = applyCut(liveNext, target.inQ, target.outQ,
                                         st.totalQ);
-                    commitBandSegs(st, liveNext);
+                    commitBandSegs(st, liveNext, true);
                 }
             };
         };

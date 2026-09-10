@@ -26,15 +26,22 @@
 
 namespace {
 using celestrian::Edit;
-// Continuous drags collapse into ONE undo step: when the new inverse
-// targets the same node/kind as the top of the stack, the older inverse
-// already restores further back, so the new one is dropped.
-bool editsCoalesce(const Edit& top, const Edit& fresh) {
-  if (top.kind != fresh.kind || top.uuid != fresh.uuid) return false;
-  // LIVE map-edit drags (seam slides stream throttled setSegments
-  // commits so the splice is AUDIBLE while dragging — time_maps.md)
-  // flood; keep the oldest inverse so one gesture is one undo step.
-  return top.kind == Edit::Kind::Segments;
+// A LIVE drag collapses into ONE undo step: seam/grip drags stream
+// throttled map commits so the splice is AUDIBLE while dragging
+// (time_maps.md), and every commit after the gesture's first arrives
+// with Edit::live. When such a commit targets the same node as the top
+// of the stack, the older inverse already restores further back, so
+// the new one is dropped. OWNER RULING 2026-09-10: only live commits
+// coalesce — two separate cut gestures on one lane, however close in
+// time, are two undo steps (they used to merge unconditionally). A
+// gesture's commits may change kind midway (a window becoming a
+// segment override), so both map kinds pair.
+bool isMapKind(Edit::Kind k) {
+  return k == Edit::Kind::Segments || k == Edit::Kind::LoopPoints;
+}
+bool editsCoalesce(const Edit& top, const Edit& fresh, bool live) {
+  if (!live || top.uuid != fresh.uuid) return false;
+  return isMapKind(top.kind) && isMapKind(fresh.kind);
 }
 }  // namespace
 
@@ -471,11 +478,20 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // removed map back (setsMap) so undo restores it.
       inv.setsMap = true;
       inv.tmap = node->storedMap();  // the RAW old geometry, any shape
+      const bool clearing = !(e.setsMap && e.tmap.n >= 2) && (int64_t)e.d2 <= (int64_t)e.d1;
       if (e.setsMap && e.tmap.n >= 2) {
         node->setMap(e.tmap);  // undo path: the cell map comes back
       } else {
         node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
       }
+      // A CLEAR drops a stale bypass with the geometry (Edit::restoresBypass):
+      // "whole" is no window, so nothing remains to bypass, and the next
+      // window drawn must sound. The inverse puts the flag back.
+      if (clearing && node->isLoopWindowBypassed()) {
+        node->setLoopWindowBypassed(false);
+        inv.restoresBypass = true;
+      }
+      if (e.restoresBypass) node->setLoopWindowBypassed(true);
       stampWindowDomain(node, e, inv);
       applyWindowRiders(find, e, inv);
       // Origins and epoch land in the SAME block (island generation) —
@@ -997,9 +1013,10 @@ bool liveUnderTake(celestrian::Edit::Kind k) {
 void AudioEngine::record(celestrian::Edit forward) {
   reconcileTakes();  // a settled take logs BEFORE any later edit
   if (!liveUnderTake(forward.kind) && refusedUnderLiveTake("edit")) return;
+  const bool live = forward.live;
   celestrian::Edit inv = applyEdit(std::move(forward));
   if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
-  if (!undo_.empty() && editsCoalesce(undo_.back(), inv)) {
+  if (!undo_.empty() && editsCoalesce(undo_.back(), inv, live)) {
     clearRedo();  // a fresh user action still invalidates the redo branch
     return;       // keep the older inverse (restores further back)
   }
