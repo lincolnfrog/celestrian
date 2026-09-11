@@ -268,7 +268,7 @@ Small, concrete, each a half-day or less unless marked. None blocks
 | 2 | Quantum mismatches between connected islands? | Tier D islands |
 | 3 | "Breaking out" a stack from an island — UX + implementation? | Tier D islands |
 | 4 | Connecting stacks after Q is established — polyrhythmic interaction? | recording.md |
-| 5 | Stop/play policy: pause/resume is the default; ruler seek now gives "restart from the top" as a gesture. Re-ask whether a restart button is wanted. | seekTransport, law 14 |
+| 5 | ~~Stop/play policy~~ **RULED 2026-09-10:** Space / ▶ play FROM the play start and stop returns the playhead TO it; the play start is the top by default, the last ruler seek moves it, a click at the top restores it (ui/js/play_start.js — UI policy over the engine's pause/resume + seek; per project, not persisted). | seekTransport, law 14 |
 | 6 | Grid honesty when auto-quantize is disabled — deferred with that feature | design_language Q3 |
 | 7 | The true heard-frame unroll of a mapped group's children (today: excluded regions drawn as dims) — needs a ruling | time_maps.md phase 3 |
 | 8 | Islands are specified in triplicate (recording.md, archive/implementation.md §8, design.md §8) — recording.md should be canonical | design_language §4 item 5 |

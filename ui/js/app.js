@@ -25,6 +25,8 @@ import { updateMasterVU, initMasterMeters, initMasterFader,
 import { registerKey, SCOPE, ANY_MODIFIERS } from './keys.js';
 import { foldedStacks, toggleFolded, migrateFolds } from './view_prefs.js';
 import { DEBUG } from './debug_flags.js';
+import { notePlayStart, notePlayStartTransport, togglePlayFromStart }
+    from './play_start.js';
 
 const dbg = m => { if (DEBUG) log(m); };
 
@@ -726,6 +728,7 @@ async function startPolling() {
                     [l.id, Object.assign({ quantum: vm.quantum }, l)]));
                 refreshPeaks(state.nodes,
                     (state.perf && state.perf.sampleRate) || 44100, lanesById);
+                notePlayStartTransport(state.isPlaying, vm.qEstablished);
                 settlePendingPause(state);
                 // Committed clips whose real waveform hasn't landed yet:
                 // composites must not blend their live meter peaks
@@ -1043,7 +1046,8 @@ function initProjectUI() {
  * that never comes). An armed-not-yet-capturing take is cancelled and
  * the pause follows on the next poll. A second Space before the take
  * lands pauses at once (the user insists; the take resumes with play).
- * Without a hot take, Space is the plain pause/resume toggle. */
+ * Without a hot take, Space is the transport toggle: play from the
+ * play start, stop back to it (play_start.js). */
 let pauseWhenTakeLands = false;
 
 async function onSpace() {
@@ -1055,7 +1059,7 @@ async function onSpace() {
         return;
     }
     pauseWhenTakeLands = false;
-    callNative('togglePlayback');
+    togglePlayFromStart(callNative, projectInfo.id);
 }
 
 /** Poll hook: the deferred pause from onSpace, once nothing is hot. */
@@ -1065,7 +1069,7 @@ function settlePendingPause(state) {
     if (anyHot) return;
     pauseWhenTakeLands = false;
     if (state.isPlaying) {
-        callNative('togglePlayback');
+        togglePlayFromStart(callNative, projectInfo.id);
         setLogLine('Recording stopped — paused');
     }
 }
@@ -1101,13 +1105,17 @@ function wireKeyboard() {
 
 function initApp() {
     initSessionView({
-        onTogglePlay: () => callNative('togglePlayback'),
+        onTogglePlay: () => togglePlayFromStart(callNative, projectInfo.id),
         // Ruler scrub: target in the published-masterPos domain,
         // samples. Streams while dragging
         // (cheap epoch re-base engine-side); NOT undoable — a
         // monitoring gesture, like auditionStep. The engine refuses
-        // mid-take (the UI locks the gesture too).
-        onSeek: samples => callNative('seekTransport', samples),
+        // mid-take (the UI locks the gesture too). A landed seek is
+        // also the new play start (play_start.js).
+        onSeek: async samples => {
+            if (await callNative('seekTransport', samples))
+                notePlayStart(projectInfo.id, samples);
+        },
         // Fold is UI-local (I6b): never a bridge call. The next poll
         // re-derives the view from the folded set.
         onFold: id => toggleFolded(projectInfo.id, id),

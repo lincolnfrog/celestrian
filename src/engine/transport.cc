@@ -18,9 +18,11 @@ void AudioEngine::togglePlayback() {
   // Pause/resume: stopping freezes the clock where it is; playing
   // resumes from the same phase. The clock is never reset (kernel.md).
   // (Restart-from-top as a real feature is a root time-map — tasks.md
-  // open question 8.) No pause under a live take (owner ruling
-  // 2026-09-09): the take performs against the running clock — finish
-  // or cancel it first.
+  // open question 8.) The user-facing play start (tasks.md open
+  // question 5) is UI policy composed from this toggle and
+  // seekTransport — ui/js/play_start.js. No pause under a live take
+  // (owner ruling 2026-09-09): the take performs against the running
+  // clock — finish or cancel it first.
   if (is_playing_global.load() && refusedUnderLiveTake("pause")) return;
   is_playing_global = !is_playing_global.load();
 }
