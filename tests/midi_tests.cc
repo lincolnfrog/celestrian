@@ -140,6 +140,40 @@ class MidiTests : public juce::UnitTest {
           r[128], test_utils::StubSynthInstance::kLevel * 0.5f, 1e-6f, "R");
     }
 
+    beginTest("instrument appended after built-ins: heads the chain, fx apply");
+    {
+      // The UI's add path appends (index -1) behind the four built-ins;
+      // were the synth left there, every built-in would process the
+      // silence ahead of it and the synth would overwrite the result —
+      // a MIDI track's rack inert. makeFromSlots holds it at the head.
+      ClipNode clip("SynthTrack", sr);
+      installStubSynth(clip, sr);  // push_back, like the UI's append
+      const auto& slots = clip.fxChain()->slots();
+      expect(slots.front()->isInstrument(), "instrument heads the chain");
+      expectEquals(juce::String(slots[1]->typeId()), juce::String("eq"),
+                   "built-ins follow in canonical order");
+
+      // A built-in after the synth now shapes it: compressor at unity
+      // ratio with -6.02 dB makeup halves the stub's level.
+      dsp::FxSlot* comp = nullptr;
+      for (const auto& s : slots)
+        if (juce::String(s->typeId()) == "compressor") comp = s.get();
+      expect(comp != nullptr);
+      comp->setParam("threshold", 0.0);
+      comp->setParam("ratio", 1.0);
+      comp->setParam("makeup", 20.0 * std::log10(0.5));
+      comp->enabled.store(true);
+
+      const juce::MidiBuffer midi = noteOnBuffer();
+      std::vector<float> l(256, 0.0f), r(256, 0.0f);
+      clip.fxChain()->run(l.data(), r.data(), 256, false, &midi);
+      expectWithinAbsoluteError(
+          l[128], test_utils::StubSynthInstance::kLevel * 0.5f, 1e-5f,
+          "built-in compressor applied to the synth, L");
+      expectWithinAbsoluteError(
+          r[128], test_utils::StubSynthInstance::kLevel * 0.5f, 1e-5f, "R");
+    }
+
     beginTest("clip play-through: armed sounds, disarmed/muted silent");
     {
       ClipNode clip("SynthTrack", sr);

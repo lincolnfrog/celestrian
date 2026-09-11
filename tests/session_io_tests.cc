@@ -127,23 +127,25 @@ class SessionIoTests : public juce::UnitTest {
       expect(maxErr < 1.0e-4f,
              "buffer samples round-trip (err=" + juce::String(maxErr) + ")");
 
-      // fx chain restored: order, enable, params, and slot identity.
+      // fx chain restored: order, enable, params, and slot identity. The
+      // ghost is an INSTRUMENT, so it heads the chain (makeFromSlots);
+      // the effects follow in their saved order, echo first.
       const auto& loaded_slots = c->fxChain()->slots();
       expectEquals((int)loaded_slots.size(), 5,
                    juce::String("4 built-ins + the ghost vst3 slot"));
-      expectEquals(juce::String(loaded_slots[0]->typeId()),
+      expectEquals(juce::String(loaded_slots[1]->typeId()),
                    juce::String("echo"), juce::String("saved order restored"));
-      expect(loaded_slots[0]->enabled.load(), "echo enabled restored");
+      expect(loaded_slots[1]->enabled.load(), "echo enabled restored");
       auto fxMeta = c->fxChain()->getMetadata();
-      expect(std::abs((double)fxMeta[0].getProperty("mix", 0.0) - 0.42) < 1e-6,
+      expect(std::abs((double)fxMeta[1].getProperty("mix", 0.0) - 0.42) < 1e-6,
              "echo mix restored");
-      expect(fxMeta[0].getProperty("slot", "").toString().isNotEmpty(),
+      expect(fxMeta[1].getProperty("slot", "").toString().isNotEmpty(),
              "slot uuid persisted");
 
       // The ghost vst3 slot: placeholder with identity + state intact.
       expectEquals((int)c->fxChain()->slots().size(), 5,
                    juce::String("vst3 slot survived the round trip"));
-      auto* ghost = dynamic_cast<dsp::Vst3Slot*>(c->fxChain()->slots()[4].get());
+      auto* ghost = dynamic_cast<dsp::Vst3Slot*>(c->fxChain()->slots()[0].get());
       expect(ghost != nullptr && ghost->isMissing(), "loaded as placeholder");
       expectEquals(ghost->pluginUid(), juce::String("VST3-ghost-uid"));
       expect(ghost->enabled.load(), "enable flag persisted");

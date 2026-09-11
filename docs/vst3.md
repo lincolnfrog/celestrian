@@ -301,7 +301,12 @@ new is capture, storage, and rendering.
   finer recording timestamps are phase 5's). Instrument slots:
   `Vst3Slot(is_instrument)` prepares 0-in/2-out, consumes MIDI via the
   new `FxSlot::processStereoMidi` hook, and OVERWRITES the buffer (the
-  chain-head generate semantic); the flag rides add/save/revive. The
+  chain-head generate semantic); the flag rides add/save/revive.
+  *(2026-09-10: the head is ENFORCED — `FxChain::makeFromSlots`
+  stable-partitions instruments first on every build, so the UI's
+  append (index -1) and older saves both land the synth ahead of the
+  rack. Before this, a MIDI track's built-ins ran on the silence
+  upstream of the synth and were overwritten: the rack did nothing.)* The
   armed node (`AudioNode::midi_armed`, single-armed via
   `setMidiArmed`, a monitoring gesture like solo — not undoable, not
   persisted) hands the block's events to its fx pass; a clip with no

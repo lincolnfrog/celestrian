@@ -186,7 +186,9 @@ class FxChain {
    * disabled (audibly transparent). */
   static std::unique_ptr<FxChain> makeDefault();
 
-  /** A chain over existing slots (successor build / loader). */
+  /** A chain over existing slots (successor build / loader). Instrument
+   * slots are moved to the HEAD (stable): they overwrite the buffer, so
+   * nothing may sit upstream of them (docs/vst3.md §8). */
   static std::unique_ptr<FxChain> makeFromSlots(
       std::vector<std::shared_ptr<FxSlot>> slots);
 

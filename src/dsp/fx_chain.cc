@@ -112,6 +112,14 @@ std::unique_ptr<FxChain> FxChain::makeDefault() {
 
 std::unique_ptr<FxChain> FxChain::makeFromSlots(
     std::vector<std::shared_ptr<FxSlot>> slots) {
+  // Instruments GENERATE (processBlock overwrites the buffer), so any
+  // slot upstream of one processes silence and is then discarded — a
+  // MIDI track's whole rack would be inert. Every chain is built here
+  // (add, move, undo, load, revive), so this is where the chain-head
+  // rule holds: instruments first, everything else after, each group
+  // in its given order.
+  std::stable_partition(slots.begin(), slots.end(),
+                        [](const auto& s) { return s->isInstrument(); });
   return std::unique_ptr<FxChain>(new FxChain(std::move(slots)));
 }
 

@@ -48,6 +48,15 @@ function rackHolder(id) {
     return id === 'mock-root' ? state.root : findNode(id);
 }
 
+/** Instruments head the chain, each group keeping its order (engine
+ * parity: FxChain::makeFromSlots — an instrument overwrites the buffer,
+ * so nothing may sit upstream of it). */
+function instrumentsFirst(chain) {
+    const ordered = [...chain.filter(s => s.isInstrument),
+        ...chain.filter(s => !s.isInstrument)];
+    chain.splice(0, chain.length, ...ordered);
+}
+
 function findSlotEntry(node, slotUuid) {
     return node && ensureEffects(node).chain.find(s => s.slot === slotUuid);
 }
@@ -81,6 +90,7 @@ export function moveChainSlot(id, slotUuid, newIndex) {
     if (from < 0 || from === to) return;
     const [moved] = chain.splice(from, 1);
     chain.splice(to, 0, moved);
+    instrumentsFirst(chain);
     console.log('[MockBackend] Slot', slotUuid, 'on', id, 'moved →', to);
 }
 
@@ -111,7 +121,9 @@ export function addPluginToChain(id, pluginUid, index) {
     const at = (typeof index === 'number' && index >= 0)
         ? Math.min(chain.length, index) : chain.length;
     chain.splice(at, 0, entry);
-    console.log('[MockBackend] Plugin', known.name, 'added to', id, 'at', at);
+    instrumentsFirst(chain);
+    console.log('[MockBackend] Plugin', known.name, 'added to', id, 'at',
+        chain.indexOf(entry));
 }
 
 /** VST3-only removal (engine parity: built-ins are the fixed cards). */
