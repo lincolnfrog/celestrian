@@ -13,6 +13,7 @@
 
 #include "../clip_node.h"
 #include "../dsp/vst3_slot.h"
+#include "../heard_index.h"
 #include "../stack_node.h"
 #include "../timing.h"
 #include "engine_internal.h"
@@ -237,8 +238,15 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
       const celestrian::Sequence* sq = s->activeSequence();
       if (sq == nullptr) continue;  // not sequenced: keep walking up
       if (sq->any_cue && sq->total > 0) {
-        const int64_t rel =
-            sq->fold(global_transport_pos.load() - root_node->getEpoch());
+        // The song position THIS stack reads (audit D15-1): its received
+        // clock — through every ancestor's map, fold and cue — measured
+        // from its own frame origin (a group's Q18 origin; the epoch for
+        // the never-anchored root), exactly as the audio thread's
+        // childContext looks the step up. The raw clock from the island
+        // epoch is that position only for a plain root song.
+        const int64_t rel = celestrian::heard::songPositionAt(
+            *s, celestrian::heard::receivedAt(*s, global_transport_pos.load(),
+                                              rootScope()));
         const int step = sq->stepAt(rel);
         if (sq->cueAt(step)) {
           s->setAuditionStep(step);

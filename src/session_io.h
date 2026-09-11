@@ -31,7 +31,9 @@ namespace celestrian::session_io {
  *
  * CANONICAL (serialized): node type, uuid, name, child order,
  * inputChannel, mute, loop points + bypass, fx params, originQ/periodQ/
- * windowQ, contextCycle, island quantum + epoch.
+ * windowQ, contextCycle, island quantum + epoch. The ROOT is one node
+ * record like every stack (`root`, audit D7-3): the bundle level holds
+ * only the island facts and the project identity.
  * DERIVED (never): launchPoint, anchors, cycle projections, clip x/y px.
  * TRANSIENT (never): island take-lifecycle counters, rec-state,
  * view-freeze bookkeeping.
@@ -40,25 +42,29 @@ namespace celestrian::session_io {
 /** The bundle format version this build writes. A bundle whose
  * `version` is NEWER is refused on load (it may carry facts this build
  * cannot honor, and the 3 s mirror would then overwrite it with a
- * lossy re-serialization); older and unversioned bundles load. */
-constexpr int kSessionVersion = 1;
+ * lossy re-serialization); older and unversioned bundles load.
+ *   1  the root's facts at bundle level (`rootMuted`/`rootGain`/
+ *      `rootPan`/`rootEffects`/`rootSequence`) beside `nodes`
+ *   2  the root is ONE node record, `root` (audit D7-3): every fact a
+ *      nested stack persists — window, map, bypass, period source,
+ *      window domain, rack, sequence, output stage — persists on the
+ *      root the same way. Version-1 bundles load (their bundle-level
+ *      keys are read as the root's record). */
+constexpr int kSessionVersion = 2;
 
-/** Result of a load: the island facts + the reconstructed top-level
- * children (owned by the caller until swapped into the root). */
+/** Result of a load: the island facts, the root's own record, and the
+ * reconstructed top-level children (owned by the caller until swapped
+ * into the root). */
 struct LoadedSession {
   bool ok = false;
   int64_t q_samples = 0;
   int64_t epoch = 0;
   double sample_rate = 44100.0;
-  bool root_muted = false;
-  // The root's output stage — the MASTER fader and balance (B5). Absent
-  // in the bundle reads as unity / center.
-  float root_gain = 1.0f;
-  float root_pan = 0.0f;
-  juce::var root_effects;  // fx blob for the root stack (may be void)
-  // The root's own sequence block (may be void) — applied by the
-  // engine once Q is set on the root (applySequenceVar, ROOT scope).
-  juce::var root_sequence;
+  // The root's serialized record (the `root` block; synthesized from a
+  // version-1 bundle's bundle-level keys). The engine applies it to
+  // its LIVE root with applyNodeFacts — the root's identity never
+  // changes across a load.
+  juce::var root;
   std::vector<std::unique_ptr<AudioNode>> children;
   juce::String display_name;  // project display name (docs/projects.md)
   juce::String created;       // creation stamp, echoed verbatim
@@ -105,14 +111,28 @@ LoadedSession load(const juce::File& dir, double device_sample_rate);
 enum class SequenceScope { ROOT, NESTED };
 
 /**
- * Install a sequence block (the `sequence` / `rootSequence` shape
- * sequenceVar writes) on `stack`, materialized against `q`. The old
- * sequence pointer, if any, goes to `retire` — the engine hands the
- * reclaimer for a live root; a pre-graph node deletes inline.
+ * Install a sequence block (the `sequence` shape sequenceVar writes) on
+ * `stack`, materialized against `q`. The old sequence pointer, if any,
+ * goes to `retire` — the engine hands the reclaimer for a live root; a
+ * pre-graph node deletes inline.
  */
 void applySequenceVar(StackNode& stack, const juce::var& block, int64_t q,
                       SequenceScope scope,
                       const std::function<void(const Sequence*)>& retire);
+
+/**
+ * Apply a node record's FACTS to `node` — the tail every deserialized
+ * node gets and the ONE path the live root takes on load: uuid, mute,
+ * output stage, period source, window, map, bypass, window domain, the
+ * rack, and (stacks) the sequence at `scope`. Content (takes, children,
+ * a stack's anchored origin) is the caller's. `retire_fx` /
+ * `retire_seq` take the displaced objects — the engine reclaimer for a
+ * LIVE node, null for a pre-graph one (deleted inline). Message thread.
+ */
+void applyNodeFacts(AudioNode& node, const juce::var& record, int64_t q,
+                    double sample_rate, SequenceScope scope,
+                    const std::function<void(dsp::FxChain*)>& retire_fx,
+                    const std::function<void(const Sequence*)>& retire_seq);
 
 /** Rebuild a node's fx chain from a saved chain array (docs/vst3.md
  * §6; fillParams() keys match setParam() keys, so replay is generic).

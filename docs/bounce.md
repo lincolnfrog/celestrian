@@ -13,12 +13,18 @@ bounced the same way. No N-cycles dialog, no selection-dependent scope.
 
 ## The span
 
-- **Root:** one effective cycle (`calculateEffectiveCycleLength`) from
-  the island epoch.
-- **Any other node:** one effective period (`effectivePeriodOf`) from
-  its frame top, `origin + a0` (a0 = the active map's first segment
+- **The top — one law for every node (audit D15-1, 2026-09-10):** the
+  node's frame top, `origin + a0` (a0 = the active map's first segment
   start; an unanchored stack's frame is the island frame, so its top is
-  the epoch). A one-shot bounces its intrinsic length.
+  the epoch — and the root is never anchored, so a root bounce starts
+  at `epoch + a0`: the moment its window starts, not the moment the
+  island cycle wraps).
+- **The span — root:** one effective cycle
+  (`calculateEffectiveCycleLength`; Q19 — the cycle the transport wraps
+  on, so a root window shorter than Q repeats within it).
+- **The span — any other node:** its own period by THE PERIOD LAW
+  (`period_law::ownPeriodOf`: map ▸ sequence ▸ content). A one-shot
+  bounces its shot.
 
 The render clock starts at the frame top and advances in 512-sample
 blocks; the monotonic transport is untouched, so musical time never

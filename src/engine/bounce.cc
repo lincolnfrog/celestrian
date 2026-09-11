@@ -76,30 +76,27 @@ bool AudioEngine::bounce(const juce::String& uuid,
     return false;
   }
 
-  // THE SPAN (docs/bounce.md): the root renders one EFFECTIVE island
-  // cycle from the island epoch; any other node one pass of its
-  // effective period from its frame top, origin + a0 (a0 = its active
-  // map's first segment start; an unanchored stack's frame is the
-  // received island frame).
+  // THE SPAN (docs/bounce.md): one pass from the node's FRAME TOP,
+  // origin + a0 (a0 = its active map's first segment start) — ONE law
+  // for every node (audit D15-1). A clip is anchored by construction
+  // (Q18); an unanchored stack's frame is the received island frame,
+  // and the root is never anchored, so the root's top is the epoch
+  // (+ a0 under a root map: the moment its window starts, not the
+  // moment the island cycle wraps). The root spans one EFFECTIVE
+  // island cycle (Q19 — the cycle the transport wraps on; a root window
+  // shorter than Q repeats within it); any other node spans its own
+  // period by THE PERIOD LAW (map ▸ sequence ▸ content: a windowed
+  // one-shot bounces its window, a one-shot song its song).
   const bool is_root = target == root_node.get();
-  int64_t span = 0;
-  int64_t top = 0;
-  if (is_root) {
-    span = islandCommittedClipCount() > 0 ? calculateEffectiveCycleLength() : 0;
-    top = islandEpoch();
-  } else {
-    // THE PERIOD LAW's own period (map ▸ sequence ▸ content): what the
-    // node plays — for a one-shot, its shot (a windowed one-shot bounces
-    // its window; a one-shot song bounces its song).
-    span = celestrian::period_law::ownPeriodOf(*target);
-    const celestrian::timing::TimeMap map = target->activeTimeMap();
-    const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
-    // A clip is anchored by construction (Q18); an empty stack's frame
-    // is the received island frame.
-    top = (target->isAnchored() ? target->origin_samples.load()
-                                : islandEpoch()) +
-          a0;
-  }
+  const int64_t span =
+      is_root ? (islandCommittedClipCount() > 0 ? calculateEffectiveCycleLength()
+                                                : 0)
+              : celestrian::period_law::ownPeriodOf(*target);
+  const celestrian::timing::TimeMap map = target->activeTimeMap();
+  const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
+  const int64_t top =
+      (target->isAnchored() ? target->origin_samples.load() : islandEpoch()) +
+      a0;
   if (span <= 0) {
     juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +
                              " has no committed content");

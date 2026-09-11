@@ -7,8 +7,31 @@
 
 #include "clip_node.h"
 #include "stack_node.h"
+#include "timing.h"
 
 namespace celestrian::track_templates {
+
+/** A step length in Q as the session format's EXACT rational ({num,
+ * den} through the one QTime serializer — audit D7-4; templates once
+ * stored a lossy double Q count). */
+inline juce::var qcountVar(int64_t samples, int64_t q_samples) {
+  return AudioNode::qtimeVar(timing::fromSamples(samples, q_samples));
+}
+
+/** The inverse, materialized against `q_samples`. Accepts both shapes:
+ * a {num, den} object (current) and a bare double Q count (templates
+ * written before 2026-09-10). */
+inline int64_t qcountSamples(const juce::var& v, int64_t q_samples) {
+  if (auto* o = v.getDynamicObject()) {
+    return timing::toSamples(
+        timing::qtime((int64_t)(double)o->getProperty("num"),
+                      (int64_t)(double)o->getProperty("den")),
+        q_samples);
+  }
+  if (v.isDouble() || v.isInt() || v.isInt64())
+    return (int64_t)std::llround((double)v * (double)q_samples);
+  return 0;
+}
 
 /**
  * Subtree templates (design_language.md Q17 — the Q7 companion).
@@ -71,14 +94,14 @@ inline juce::var capture(const AudioNode& node, int64_t q_samples = 0) {
       for (const auto& st : s->steps) {
         auto* stepo = new juce::DynamicObject();
         stepo->setProperty("name", st.name);
-        stepo->setProperty("lenQ", (double)st.len / (double)q_samples);
+        stepo->setProperty("lenQ", qcountVar(st.len, q_samples));
         if (st.cue) stepo->setProperty("cue", true);  // additive
         if (!st.next.empty())
           stepo->setProperty("next", Sequence::successorsVar(st));
         if (st.fade_in > 0)
-          stepo->setProperty("fadeInQ", (double)st.fade_in / (double)q_samples);
+          stepo->setProperty("fadeInQ", qcountVar(st.fade_in, q_samples));
         if (st.fade_out > 0)
-          stepo->setProperty("fadeOutQ", (double)st.fade_out / (double)q_samples);
+          stepo->setProperty("fadeOutQ", qcountVar(st.fade_out, q_samples));
         steps.add(juce::var(stepo));
       }
       so->setProperty("steps", steps);
@@ -146,15 +169,15 @@ inline std::unique_ptr<AudioNode> build(const juce::var& v,
           for (const auto& sv : *steps) {
             if ((int)seq->steps.size() >= Sequence::kMaxSteps) break;
             Sequence::Step st;
-            st.len = (int64_t)std::llround(
-                (double)sv.getProperty("lenQ", 0.0) * (double)q_samples);
+            st.len = qcountSamples(sv.getProperty("lenQ", juce::var()),
+                                   q_samples);
             st.name = sv.getProperty("name", juce::var()).toString();
             st.cue = (bool)sv.getProperty("cue", false);
             Sequence::readSuccessors(sv, st);
-            st.fade_in = (int64_t)std::llround(
-                (double)sv.getProperty("fadeInQ", 0.0) * (double)q_samples);
-            st.fade_out = (int64_t)std::llround(
-                (double)sv.getProperty("fadeOutQ", 0.0) * (double)q_samples);
+            st.fade_in = qcountSamples(sv.getProperty("fadeInQ", juce::var()),
+                                       q_samples);
+            st.fade_out = qcountSamples(
+                sv.getProperty("fadeOutQ", juce::var()), q_samples);
             if (st.len > 0) seq->steps.push_back(std::move(st));
           }
         }

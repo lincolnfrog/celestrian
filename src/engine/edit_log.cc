@@ -77,7 +77,6 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   if (inv.kind != K::Nop &&
       (kind == K::Insert || kind == K::Remove || kind == K::Move ||
        kind == K::Combine || kind == K::Explode)) {
-    scrubNestedIslandFacts();
     publishGraph();
   }
   return inv;

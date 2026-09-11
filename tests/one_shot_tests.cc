@@ -277,7 +277,9 @@ class OneShotTests : public juce::UnitTest {
       // Legacy session (no periodSource key) loads as a LOOP.
       auto jf = dir.getChildFile("session.json");
       auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      auto* shotObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
+      auto* shotObj = parsed.getProperty("root", {})
+                          .getProperty("nodes", {})[0]
+                          .getDynamicObject();
       expect(shotObj != nullptr && shotObj->hasProperty("periodSource"),
              "key was present to strip");
       shotObj->removeProperty("periodSource");

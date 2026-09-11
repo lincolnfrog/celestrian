@@ -307,48 +307,168 @@ class SessionIoTests : public juce::UnitTest {
     }
 
     beginTest(
-        "root output stage (master fader / balance) round-trips; absent "
-        "reads unity");
+        "the root is ONE node record (audit D7-3): window, map, bypass, "
+        "period source, window domain, stage, rack and song round-trip");
     {
-      // The root is not in `nodes`: its fader and balance ride the
-      // bundle top level like its mute and rack (B5).
+      // Every fact a nested stack has always persisted, set on a hand
+      // root — the root used to write only its stage, rack and song
+      // through a second, bundle-level path, and lost the rest.
       StackNode root("MasterRoot");
       root.setQuantum(Q, epoch);
       root.gain.store(0.5f);
       root.pan.store(-0.25f);
+      root.is_muted.store(true);
+      root.period_from_context_.store(true);
+      root.setLoopPoints(Q, 3 * Q);
+      root.setLoopWindowBypassed(true);
+      root.setWindowDomain(StackNode::WindowDomain::Sequence);
+      for (const auto& slot : root.fxChain()->slots()) {
+        if (juce::String(slot->typeId()) == "echo") {
+          slot->prepare((double)Q);
+          slot->setParam("mix", 0.42);
+          slot->enabled.store(true);
+        }
+      }
+      {
+        auto* seq = new Sequence();
+        Sequence::Step verse;
+        verse.len = 2 * Q;
+        verse.name = "verse";
+        seq->steps.push_back(verse);
+        Sequence::Step chorus;
+        chorus.len = 2 * Q;
+        chorus.name = "chorus";
+        chorus.cue = true;
+        seq->steps.push_back(chorus);
+        seq->finalize();
+        delete root.exchangeSequence(seq);
+      }
+      const juce::String root_uuid = root.getUuid();
 
-      auto dir = freshTempDir("master");
+      auto dir = freshTempDir("root_record");
       expect(session_io::save(root, (double)Q, dir), "save");
       auto loaded = session_io::load(dir, (double)Q);
       expect(loaded.ok, "load ok");
-      expectWithinAbsoluteError(loaded.root_gain, 0.5f, 1e-6f,
-                                "root gain restored");
-      expectWithinAbsoluteError(loaded.root_pan, -0.25f, 1e-6f,
-                                "root pan restored");
+      expect(loaded.root.isObject(), "the root's record is in the bundle");
+      expectEquals(loaded.root.getProperty("id", "").toString(), root_uuid,
+                   "the record carries the root's uuid");
+      // The island facts stay bundle-level (I14); nothing else does.
+      {
+        const juce::var top = juce::JSON::parse(
+            dir.getChildFile("session.json").loadFileAsString());
+        expect(top.hasProperty("qSamples") && top.hasProperty("epoch"),
+               "island facts at bundle level");
+        expect(!top.hasProperty("nodes") && !top.hasProperty("rootGain") &&
+                   !top.hasProperty("rootSequence"),
+               "no second root path in a version-2 bundle");
+        expectEquals((int)top.getProperty("version", 0),
+                     session_io::kSessionVersion, "version 2");
+      }
 
-      // Through the engine: the published root carries the loaded stage.
+      // Through the engine: the LIVE root takes the record's facts.
       AudioEngine engine;
       expect(engine.loadSession(dir.getFullPathName()), "engine loadSession");
       auto state = engine.getGraphState();
+      expectEquals(state.getProperty("id", "").toString(), root_uuid,
+                   "the root's uuid is the session's");
       expectWithinAbsoluteError((double)state.getProperty("gain", 1.0), 0.5,
-                                1e-6, "engine root gain");
+                                1e-6, "root gain");
       expectWithinAbsoluteError((double)state.getProperty("pan", 0.0), -0.25,
-                                1e-6, "engine root pan");
+                                1e-6, "root pan");
+      expect((bool)state.getProperty("isMuted", false), "root mute");
+      expectEquals(state.getProperty("periodSource", "").toString(),
+                   juce::String("context"), "root period source");
+      expectEquals((juce::int64)(double)state.getProperty("loopStart", 0),
+                   (juce::int64)Q, "root window start");
+      expectEquals((juce::int64)(double)state.getProperty("loopEnd", 0),
+                   (juce::int64)(3 * Q), "root window end");
+      expect((bool)state.getProperty("loopBypassed", false),
+             "root window bypass");
+      expectEquals(state.getProperty("windowDomain", "").toString(),
+                   juce::String("sequence"), "root window domain (S16)");
+      {
+        const juce::var seq = state.getProperty("sequence", juce::var());
+        auto* steps = seq.getProperty("steps", juce::var()).getArray();
+        expect(steps != nullptr && steps->size() == 2, "root song: two steps");
+        if (steps != nullptr && steps->size() == 2)
+          expect((bool)(*steps)[1].getProperty("cue", false),
+                 "root song: the chorus is cued");
+      }
+      {
+        const juce::var chain = state.getProperty("effects", juce::var())
+                                    .getProperty("chain", juce::var());
+        bool echo_ok = false;
+        if (auto* entries = chain.getArray())
+          for (const auto& e : *entries)
+            if (e.getProperty("type", "").toString() == "echo")
+              echo_ok = (bool)e.getProperty("enabled", false) &&
+                        std::abs((double)e.getProperty("mix", 0.0) - 0.42) <
+                            1e-6;
+        expect(echo_ok, "root rack: echo enabled at mix 0.42");
+      }
+      // And the engine re-saves the same record: stable.
+      auto dir2 = freshTempDir("root_record2");
+      expect(engine.saveSession(dir2.getFullPathName()), "engine saveSession");
+      auto again = session_io::load(dir2, (double)Q);
+      expect(again.ok && again.root.isObject(), "reload ok");
+      expectEquals((juce::int64)timing::toSamples(
+                       timing::qtime((int64_t)(double)again.root
+                                         .getProperty("windowStartQ", juce::var())
+                                         .getProperty("num", 0.0),
+                                     (int64_t)(double)again.root
+                                         .getProperty("windowStartQ", juce::var())
+                                         .getProperty("den", 1.0)),
+                       Q),
+                   (juce::int64)Q, "the root window survives a re-save");
+    }
 
-      // A bundle written before the master strip carries neither key:
-      // unity / center, never silent.
-      auto legacy = freshTempDir("master_legacy");
+    beginTest("a version-1 bundle's bundle-level root keys load as the root's "
+              "record; absent keys read unity / center");
+    {
+      // The shape every build before 2026-09-10 wrote: rootMuted /
+      // rootGain / rootPan / rootSequence beside `nodes`.
+      auto legacy = freshTempDir("root_v1");
       legacy.createDirectory();
-      expect(legacy.getChildFile("session.json")
+      const juce::String v1 =
+          "{\"version\":1,\"qSamples\":" + juce::String(Q) +
+          ",\"epoch\":0,\"rootMuted\":true,\"rootGain\":0.5,\"rootPan\":-0.25,"
+          "\"rootSequence\":{\"steps\":[{\"name\":\"a\",\"lenQ\":{\"num\":2,"
+          "\"den\":1}},{\"name\":\"b\",\"lenQ\":{\"num\":2,\"den\":1},"
+          "\"cue\":true}],\"gates\":{}},\"nodes\":[]}";
+      expect(legacy.getChildFile("session.json").replaceWithText(v1),
+             "write v1 bundle");
+      AudioEngine engine;
+      expect(engine.loadSession(legacy.getFullPathName()), "v1 loads");
+      auto state = engine.getGraphState();
+      expectWithinAbsoluteError((double)state.getProperty("gain", 1.0), 0.5,
+                                1e-6, "v1 rootGain");
+      expectWithinAbsoluteError((double)state.getProperty("pan", 0.0), -0.25,
+                                1e-6, "v1 rootPan");
+      expect((bool)state.getProperty("isMuted", false), "v1 rootMuted");
+      {
+        const juce::var seq = state.getProperty("sequence", juce::var());
+        auto* steps = seq.getProperty("steps", juce::var()).getArray();
+        expect(steps != nullptr && steps->size() == 2, "v1 rootSequence");
+        if (steps != nullptr && steps->size() == 2)
+          expect((bool)(*steps)[1].getProperty("cue", false), "v1 cue kept");
+      }
+
+      // A bundle written before the master strip carries no root keys
+      // at all: unity / center, never silent.
+      auto bare = freshTempDir("root_v1_bare");
+      bare.createDirectory();
+      expect(bare.getChildFile("session.json")
                  .replaceWithText("{\"version\":1,\"qSamples\":0,"
                                   "\"epoch\":0,\"nodes\":[]}"),
-             "write legacy bundle");
-      auto old = session_io::load(legacy, (double)Q);
-      expect(old.ok, "legacy load ok");
-      expectWithinAbsoluteError(old.root_gain, 1.0f, 1e-6f,
+             "write bare bundle");
+      AudioEngine engine2;
+      expect(engine2.loadSession(bare.getFullPathName()), "bare loads");
+      auto s2 = engine2.getGraphState();
+      expectWithinAbsoluteError((double)s2.getProperty("gain", 0.0), 1.0, 1e-6,
                                 "absent rootGain reads unity");
-      expectWithinAbsoluteError(old.root_pan, 0.0f, 1e-6f,
+      expectWithinAbsoluteError((double)s2.getProperty("pan", 1.0), 0.0, 1e-6,
                                 "absent rootPan reads center");
+      expect(!(bool)s2.getProperty("isMuted", true), "absent rootMuted = off");
     }
 
     beginTest("mirror: the dirty flag is the ONE truth (an equal-length "

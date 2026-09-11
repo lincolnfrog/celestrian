@@ -5,8 +5,10 @@
 // sample rate. This file owns serializeNode / deserializeNode (the node
 // tree: takes, windows, maps, sequences, fx chains, MIDI content),
 // readBundleInfo (the project picker's summary), applyEffects (rack
-// restore from the metadata blob) and save / load (the bundle level:
-// root rack, island (Q, epoch), sample rate). Message thread only.
+// restore from the metadata blob), applyNodeFacts (a record's facts on
+// a node — the live root's load path) and save / load (the bundle
+// level: island (Q, epoch), sample rate, the root's record). Message
+// thread only.
 
 #include "session_io.h"
 
@@ -41,8 +43,8 @@ QTime qread(const juce::var& v) {
 // (Scope telemetry lives outside the chain and never appears here.)
 // A stack's SEQUENCE block (docs/sequencer.md): steps as QTime lengths
 // with cue + successors, the seed, gates keyed by child uuid, the
-// bypass flag. Void when the stack has none. ONE writer for nested
-// stacks and the root (the root's block is bundle-level).
+// bypass flag. Void when the stack has none. ONE writer for every
+// stack, the root included (its record carries the block like any).
 juce::var sequenceVar(const StackNode& stack, int64_t q) {
   const Sequence* s = stack.sequencePtr();
   if (s == nullptr) return juce::var();
@@ -353,17 +355,6 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
         if (auto ch = deserializeNode(c, q, epoch, sr, audioDir))
           stack->addChild(std::move(ch));
     }
-    // Only the island ROOT owns (Q, epoch); clear any quantum that
-    // addChild transiently established on this detached subtree — the
-    // engine forces the island values on the real root after attaching.
-    stack->setQuantum(0, 0);
-    // The SEQUENCE (docs/sequencer.md): rebuild from the additive
-    // block. Pre-graph node — no old pointer, no retire needed. Every
-    // stack built here is NESTED (the root is the engine's own), so a
-    // radio in the block is demoted (root only, S12).
-    applySequenceVar(*stack, o->getProperty("sequence"), q,
-                     SequenceScope::NESTED,
-                     [](const Sequence* old) { delete old; });
     // Q18: an anchored stack's origin is a stored fact; absent key =
     // unanchored (settleAnchors derives one from content after load).
     if ((bool)stack->isAnchored() == false && (bool)o->getProperty("anchored")) {
@@ -433,32 +424,67 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     node = std::move(clip);
   }
 
-  node->setUuid(uuid);
-  node->is_muted.store((bool)o->getProperty("muted"));
-  node->pan.store((float)(double)o->getProperty("pan"));
+  // Pre-graph node: nothing can be reading its rack or sequence, so the
+  // displaced objects (none, on a fresh node) delete inline. Every
+  // stack built here is NESTED — the root is the engine's own and takes
+  // the same facts through applyNodeFacts at ROOT scope.
+  applyNodeFacts(*node, v, q, sr, SequenceScope::NESTED, nullptr,
+                 [](const Sequence* old) { delete old; });
+  return node;
+}
+
+/** A version-1 bundle's root, as the record `serializeNode` would have
+ * written: the bundle-level `root*` keys and `nodes` under the node
+ * keys. Absent keys stay absent so applyNodeFacts' defaults (unity
+ * gain, no window) apply exactly as they did at bundle level. */
+juce::var legacyRootRecord(const juce::DynamicObject& o) {
+  auto* r = new juce::DynamicObject();
+  r->setProperty("type", "stack");
+  r->setProperty("muted", o.getProperty("rootMuted"));
+  if (o.hasProperty("rootGain")) r->setProperty("gain", o.getProperty("rootGain"));
+  if (o.hasProperty("rootPan")) r->setProperty("pan", o.getProperty("rootPan"));
+  r->setProperty("effects", o.getProperty("rootEffects"));
+  r->setProperty("sequence", o.getProperty("rootSequence"));
+  r->setProperty("nodes", o.getProperty("nodes"));
+  return juce::var(r);
+}
+
+}  // namespace
+
+void applyNodeFacts(AudioNode& node, const juce::var& record, int64_t q,
+                    double sr, SequenceScope scope,
+                    const std::function<void(dsp::FxChain*)>& retire_fx,
+                    const std::function<void(const Sequence*)>& retire_seq) {
+  auto* o = record.getDynamicObject();
+  if (o == nullptr) return;
+  if (const juce::String uuid = o->getProperty("id").toString();
+      uuid.isNotEmpty()) {
+    node.setUuid(uuid);
+  }
+  node.is_muted.store((bool)o->getProperty("muted"));
+  node.pan.store((float)(double)o->getProperty("pan"));
   // Absent key MUST default to unity — the missing-property var reads
   // as 0.0, which would load the node silent.
-  node->gain.store(
+  node.gain.store(
       o->hasProperty("gain") ? (float)(double)o->getProperty("gain") : 1.0f);
-  node->period_from_context_.store(o->getProperty("periodSource").toString() ==
-                                   "context");
-  node->setLoopPoints(
+  node.period_from_context_.store(o->getProperty("periodSource").toString() ==
+                                  "context");
+  node.setLoopPoints(
       timing::toSamples(qread(o->getProperty("windowStartQ")), q),
       timing::toSamples(qread(o->getProperty("windowEndQ")), q));
   // LEGACY FURNITURE (audit D4-7): bundles written before 2026-09-08
   // carry a [0, D) window on every committed clip (commit authored it).
   // It restricts nothing; load it as no window so the in-memory graph
   // has one law (a take is its whole content unless trimmed).
-  if (node->getNodeType() == NodeType::Clip) {
-    const int64_t D = node->getIntrinsicDuration();
-    if (D > 0 && node->getLoopStart() <= 0 && node->getLoopEnd() >= D &&
-        !node->hasSegmentMap()) {
-      node->setLoopPoints(0, 0);
+  if (node.getNodeType() == NodeType::Clip) {
+    const int64_t D = node.getIntrinsicDuration();
+    if (D > 0 && node.getLoopStart() <= 0 && node.getLoopEnd() >= D &&
+        !node.hasSegmentMap()) {
+      node.setLoopPoints(0, 0);
     }
   }
-  // Multi-segment map (phase 3): ≥2 entries install an override
-  // (pre-graph node: no old pointer, no retire needed); absent/short
-  // lists keep the single-window fallback above.
+  // Multi-segment map (phase 3): ≥2 entries install an override;
+  // absent/short lists keep the single-window fallback above.
   if (auto* segs = o->getProperty("segmentsQ").getArray();
       segs != nullptr && segs->size() >= 2) {
     timing::TimeMap m;
@@ -468,19 +494,31 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
           timing::toSamples(qread(sv.getProperty("startQ", {})), q),
           timing::toSamples(qread(sv.getProperty("endQ", {})), q)};
     }
-    node->setMap(m);
+    node.setMap(m);
   }
-  node->setLoopWindowBypassed((bool)o->getProperty("loopBypassed"));
-  if (auto* stack = dynamic_cast<StackNode*>(node.get());
-      stack != nullptr &&
-      o->getProperty("windowDomain").toString() == "sequence") {
-    stack->setWindowDomain(StackNode::WindowDomain::Sequence);  // S16
+  node.setLoopWindowBypassed((bool)o->getProperty("loopBypassed"));
+  if (auto* stack = dynamic_cast<StackNode*>(&node)) {
+    stack->setWindowDomain(
+        o->getProperty("windowDomain").toString() == "sequence"
+            ? StackNode::WindowDomain::Sequence  // S16
+            : StackNode::WindowDomain::Intrinsic);
+    // The SEQUENCE (docs/sequencer.md): rebuild from the additive block
+    // — the root's song is where a radio may live (S12); a nested
+    // block's radio is demoted. A record with no block clears any song
+    // the live node carried (a loaded bundle has no root song).
+    stack->setAuditionStep(-1);
+    const juce::var block = o->getProperty("sequence");
+    if (block.isObject()) {
+      applySequenceVar(*stack, block, q, scope, retire_seq);
+    } else if (const Sequence* old = stack->exchangeSequence(nullptr)) {
+      if (retire_seq)
+        retire_seq(old);
+      else
+        delete old;
+    }
   }
-  applyEffects(*node, o->getProperty("effects"), sr, nullptr);
-  return node;
+  applyEffects(node, o->getProperty("effects"), sr, retire_fx);
 }
-
-}  // namespace
 
 BundleInfo readBundleInfo(const juce::File& dir) {
   BundleInfo out;
@@ -567,26 +605,14 @@ bool save(const StackNode& root, double device_sample_rate,
     top->setProperty("name", opts.display_name);
   if (opts.created.isNotEmpty()) top->setProperty("created", opts.created);
   top->setProperty("sampleRate", device_sample_rate);
+  // The island facts are the ONLY bundle-level state (I14): the root is
+  // one node record like every stack beneath it (audit D7-3) — its
+  // window, map, bypass, period source, window domain, rack, song and
+  // output stage persist through the one serializer. (The root is never
+  // anchored, so it writes no origin; its `nodes` are the session.)
   top->setProperty("qSamples", (double)q);
   top->setProperty("epoch", (double)epoch);
-  top->setProperty("rootMuted", (bool)root.is_muted.load());
-  // The root's output stage (the master fader / balance) is bundle-level
-  // like its mute and rack: the root is not in `nodes`.
-  top->setProperty("rootGain", (double)root.gain.load());
-  top->setProperty("rootPan", (double)root.pan.load());
-  top->setProperty("rootEffects", effectsBlob(root));
-  // The root's own SEQUENCE (the session's song — sequencer.md §10:
-  // fractal, root included) is bundle-level like its mute and rack.
-  // Pre-Q it has no exchange rate: skipped with the rest of the grid.
-  if (!opts.strip_performances && q > 0) {
-    const juce::var so = sequenceVar(root, q);
-    if (!so.isVoid()) top->setProperty("rootSequence", so);
-  }
-
-  juce::Array<juce::var> nodes;
-  for (const auto& child : root.ownedChildren())
-    nodes.add(serializeNode(*child, q, epoch, audioDir, opts));
-  top->setProperty("nodes", nodes);
+  top->setProperty("root", serializeNode(root, q, epoch, audioDir, opts));
 
   const auto json = juce::JSON::toString(juce::var(top), true);
   return dir.getChildFile("session.json").replaceWithText(json);
@@ -617,23 +643,15 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   out.sample_rate = o->hasProperty("sampleRate")
                         ? (double)o->getProperty("sampleRate")
                         : device_sample_rate;
-  out.root_muted = (bool)o->getProperty("rootMuted");
-  // Absent = unity / center (bundles written before the master strip).
-  out.root_gain = o->hasProperty("rootGain")
-                      ? (float)juce::jlimit(0.0, 1.0,
-                                            (double)o->getProperty("rootGain"))
-                      : 1.0f;
-  out.root_pan = o->hasProperty("rootPan")
-                     ? (float)juce::jlimit(-1.0, 1.0,
-                                           (double)o->getProperty("rootPan"))
-                     : 0.0f;
-  out.root_effects = o->getProperty("rootEffects");
-  out.root_sequence = o->getProperty("rootSequence");
   out.display_name = o->getProperty("name").toString();
   out.created = o->getProperty("created").toString();
+  // The root's record (version 2), or the version-1 shape read AS that
+  // record; the session's nodes are its children either way.
+  out.root = o->getProperty("root").isObject() ? o->getProperty("root")
+                                                : legacyRootRecord(*o);
 
   const auto audioDir = dir.getChildFile("audio");
-  if (auto* nodes = o->getProperty("nodes").getArray()) {
+  if (auto* nodes = out.root.getProperty("nodes", {}).getArray()) {
     for (const auto& n : *nodes)
       if (auto ch = deserializeNode(n, out.q_samples, out.epoch,
                                     out.sample_rate, audioDir))

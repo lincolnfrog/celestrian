@@ -155,28 +155,20 @@ bool AudioEngine::loadSession(const juce::String& path) {
   for (auto& node : root_node->clearChildren()) retireNode(std::move(node));
   for (auto& child : loaded.children) root_node->addChild(std::move(child));
 
-  // Force the island facts. addChild may have transiently re-established
-  // (Q, epoch) from the first committed clip using the CLIP's origin as
-  // the epoch (wrong); this overrides it with the persisted values.
+  // The island facts are the persisted ones (attaching content never
+  // establishes any — audit D14-1).
   root_node->setQuantum(loaded.q_samples, loaded.epoch);
-  root_node->is_muted.store(loaded.root_muted);
-  // The master strip's output stage (B5): fader and balance on the root.
-  root_node->gain.store(loaded.root_gain);
-  root_node->pan.store(loaded.root_pan);
-  celestrian::session_io::applyEffects(
-      *root_node, loaded.root_effects, loaded.sample_rate,
-      [this](celestrian::dsp::FxChain* old) { retireOwned(old); });
-  // The root's own song (sequencer.md §10) — after Q, which its step
-  // lengths are measured in. The root is where a radio may live.
-  root_node->setAuditionStep(-1);
-  if (loaded.root_sequence.isObject()) {
-    celestrian::session_io::applySequenceVar(
-        *root_node, loaded.root_sequence, loaded.q_samples,
-        celestrian::session_io::SequenceScope::ROOT,
-        [this](const celestrian::Sequence* old) { retireOwned(old); });
-  } else if (const auto* old = root_node->exchangeSequence(nullptr)) {
-    retireOwned(old);  // the loaded bundle has no root song
-  }
+  // The root's own record (audit D7-3) on the LIVE root: mute, the
+  // master stage (B5), window, map, bypass, period source, window
+  // domain, rack and song — the same facts a nested stack loads, at
+  // ROOT scope (a radio may live here, S12). After Q, which the song's
+  // step lengths are measured in. Displaced objects go to the reclaimer:
+  // the audio thread may still read the old rack or sequence.
+  celestrian::session_io::applyNodeFacts(
+      *root_node, loaded.root, loaded.q_samples, loaded.sample_rate,
+      celestrian::session_io::SequenceScope::ROOT,
+      [this](celestrian::dsp::FxChain* old) { retireOwned(old); },
+      [this](const celestrian::Sequence* old) { retireOwned(old); });
   // Q18: pre-Q18 sessions carry no stack origins — anchor from content
   // (the same rule the first content applied live).
   {

@@ -937,10 +937,6 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * ownership tree; retires the predecessor. Message thread, after any
    * structural change (applyEdit does this for structural kinds). */
   void publishGraph();
-  /** Only the session root holds (Q, epoch): clear any island facts a
-   * DETACHED assembly (Combine, undo-held subtrees) stamped onto a
-   * nested stack. Re-asserted after every structural edit. */
-  void scrubNestedIslandFacts();
   /** A seek re-frames every absolute time in the session; the undo and
    * redo logs (which store absolute origins/epochs) ride the same
    * delta so undo restores PLACEMENT, not stale absolutes. */

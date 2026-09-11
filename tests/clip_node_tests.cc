@@ -124,7 +124,9 @@ class ClipNodeTests : public juce::UnitTest {
       auto* nodePtr = node.get();
 
       StackNode parent("Parent");
-      // Set parent quantum by adding a dummy clip that defines it
+      // A committed dummy take is the island's content; the island
+      // facts are set explicitly (attaching content establishes
+      // nothing — audit D14-1).
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[100] = {0.0f};
       float* const dummyIns[] = {dummyIn};
@@ -133,6 +135,7 @@ class ClipNodeTests : public juce::UnitTest {
       dummy->process(dummyIns, nullptr, 1, 0, dummyNc.ctx);
       dummy->stopRecording();
       parent.addChild(std::move(dummy));
+      parent.setQuantum(100, 0);
 
       expectEquals(parent.getEffectiveQuantum(), (int64_t)100);
 
@@ -199,6 +202,7 @@ class ClipNodeTests : public juce::UnitTest {
       };
       parent.addChild(makeCommittedClip("QClip", 100));
       parent.addChild(makeCommittedClip("ContextClip", 200));
+      parent.setQuantum(100, 0);  // explicit: attaching establishes nothing
       expectEquals(parent.getEffectiveQuantum(), (int64_t)100);
 
       // Record clip C starting at master_pos=100: origin = 100 within
@@ -620,7 +624,9 @@ class ClipNodeTests : public juce::UnitTest {
       const double SR = 1000.0;
       auto node = std::make_unique<ClipNode>("TestAwaitStop", SR);
 
-      // Create parent with quantum established
+      // Create parent with quantum established. A committed dummy take
+      // is the island's content; the island facts are set explicitly —
+      // attaching content establishes nothing (audit D14-1).
       StackNode parent("Parent");
       auto dummy = std::make_unique<ClipNode>("Dummy", SR);
       float dummyIn[1000] = {0.0f};
@@ -630,6 +636,7 @@ class ClipNodeTests : public juce::UnitTest {
       dummy->process(dummyIns, nullptr, 1, 0, dummyNc.ctx);
       dummy->stopRecording();
       parent.addChild(std::move(dummy));
+      parent.setQuantum(1000, 0);
 
       parent.addChild(std::move(node));
       auto* nodePtr = dynamic_cast<ClipNode*>(parent.getChild(1));

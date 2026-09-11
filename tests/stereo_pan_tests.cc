@@ -228,7 +228,10 @@ class StereoPanTests : public juce::UnitTest {
       // A pre-stereo session (no inputChannelR key) loads as MONO.
       auto jf = dir.getChildFile("session.json");
       auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      auto* clipObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
+      // The session's nodes are the root record's children (audit D7-3).
+      auto* clipObj = parsed.getProperty("root", {})
+                          .getProperty("nodes", {})[0]
+                          .getDynamicObject();
       expect(clipObj != nullptr && clipObj->hasProperty("inputChannelR"),
              "key was present to strip");
       clipObj->removeProperty("inputChannelR");

@@ -245,8 +245,10 @@ class MonitorTests : public juce::UnitTest {
 
       const juce::File dir = freshTempDir("monitor");
       expect(engine.saveSession(dir.getFullPathName()), "save");
+      // The bundle's tree hangs off the root record (audit D7-3).
       const juce::var json =
-          juce::JSON::parse(dir.getChildFile("session.json"));
+          juce::JSON::parse(dir.getChildFile("session.json"))
+              .getProperty("root", juce::var());
       expect((bool)findVar(json, on_id).getProperty("monitor", false),
              "the on clip saves monitor: true");
       expect(!findVar(json, off_id).hasProperty("monitor"),

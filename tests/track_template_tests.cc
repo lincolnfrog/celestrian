@@ -106,6 +106,72 @@ class TrackTemplateTests : public juce::UnitTest {
                    "empty => armable (Q7: arm targets emptiness)");
     }
 
+    // Audit D7-4: a template's step lengths are the session's EXACT
+    // rational ({num, den}), not a lossy double — and the double a
+    // pre-2026-09-10 template stored still builds.
+    beginTest("sequence lengths capture as exact QTime; a legacy double Q "
+              "count still builds");
+    {
+      const int64_t q_src = 44100, q_dst = 48000;
+      StackNode src("Song");
+      src.addChild(std::make_unique<ClipNode>("A", 44100.0));
+      {
+        auto* seq = new Sequence();
+        Sequence::Step st;
+        st.len = (3 * q_src) / 2;       // 1.5Q
+        st.fade_in = q_src / 4;         // 0.25Q
+        st.name = "verse";
+        seq->steps.push_back(st);
+        seq->finalize();
+        delete src.exchangeSequence(seq);
+      }
+      const juce::var v = track_templates::capture(src, q_src);
+      const juce::var step0 = (*v.getProperty("sequence", juce::var())
+                                    .getProperty("steps", juce::var())
+                                    .getArray())[0];
+      const juce::var lenQ = step0.getProperty("lenQ", juce::var());
+      expect(lenQ.isObject(), "lenQ is a QTime object");
+      expectEquals((int)(double)lenQ.getProperty("num", 0.0), 3, "3/2 Q: num");
+      expectEquals((int)(double)lenQ.getProperty("den", 0.0), 2, "3/2 Q: den");
+
+      // Materialized against a DIFFERENT island's Q: exact.
+      auto built = track_templates::build(v, 48000.0, q_dst);
+      auto* stack = dynamic_cast<StackNode*>(built.get());
+      expect(stack != nullptr && stack->sequencePtr() != nullptr,
+             "sequence rebuilt");
+      if (stack != nullptr && stack->sequencePtr() != nullptr) {
+        expectEquals(stack->sequencePtr()->steps[0].len, (3 * q_dst) / 2,
+                     "1.5Q lands exactly on the destination Q");
+        expectEquals(stack->sequencePtr()->steps[0].fade_in, q_dst / 4,
+                     "0.25Q fade lands exactly");
+      }
+
+      // The legacy shape: a bare double Q count.
+      auto* lo = new juce::DynamicObject();
+      lo->setProperty("type", "stack");
+      lo->setProperty("name", "Old");
+      lo->setProperty("children", juce::Array<juce::var>());
+      auto* lso = new juce::DynamicObject();
+      juce::Array<juce::var> lsteps;
+      auto* lst = new juce::DynamicObject();
+      lst->setProperty("name", "v");
+      lst->setProperty("lenQ", 1.5);
+      lst->setProperty("fadeInQ", 0.25);
+      lsteps.add(juce::var(lst));
+      lso->setProperty("steps", lsteps);
+      lo->setProperty("sequence", juce::var(lso));
+      auto old = track_templates::build(juce::var(lo), 48000.0, q_dst);
+      auto* old_stack = dynamic_cast<StackNode*>(old.get());
+      expect(old_stack != nullptr && old_stack->sequencePtr() != nullptr,
+             "legacy sequence rebuilt");
+      if (old_stack != nullptr && old_stack->sequencePtr() != nullptr) {
+        expectEquals(old_stack->sequencePtr()->steps[0].len, (3 * q_dst) / 2,
+                     "legacy 1.5 builds as before");
+        expectEquals(old_stack->sequencePtr()->steps[0].fade_in, q_dst / 4,
+                     "legacy 0.25 fade builds as before");
+      }
+    }
+
     beginTest("insertTrackTemplate: ONE undoable edit for a whole group");
     {
       AudioEngine engine;

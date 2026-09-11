@@ -1433,7 +1433,9 @@ class SequencerTests : public juce::UnitTest {
       // Hand-edit the bundle: make the group a radio (2 -> 1).
       const auto jf = dir.getChildFile("session.json");
       auto json = juce::JSON::parse(jf.loadFileAsString());
-      auto* nodes = json.getProperty("nodes", juce::var()).getArray();
+      auto* nodes = json.getProperty("root", juce::var())
+                        .getProperty("nodes", juce::var())
+                        .getArray();
       auto seqVar = (*nodes)[0].getProperty("sequence", juce::var());
       auto* steps = seqVar.getProperty("steps", juce::var()).getArray();
       {
@@ -1783,6 +1785,158 @@ class SequencerTests : public juce::UnitTest {
                    "refused: authored window over cued steps");
       expectEquals(prop(eId, "isPendingStart"), (int64_t)0,
                    "not pending either - the whole arm was refused");
+    }
+
+    // Audit D15-1: the S21 lookup reads the SONG POSITION the sequenced
+    // stack itself reads — from its own frame origin (Q18: a group's
+    // origin), not the raw clock from the island epoch. A group whose
+    // origin sits 2Q past the epoch has its verse where the epoch frame
+    // has its chorus.
+    beginTest("S21 at depth: a GROUP song's cued step is looked up from the "
+              "group's origin, not the island epoch");
+    {
+      AudioEngine engine;
+      const int BLOCK = 512;
+      std::vector<float> inBuf((size_t)BLOCK, 0.1f);
+      auto process = [&](int total) {
+        float* ins[] = {inBuf.data()};
+        float outL[512], outR[512];
+        float* outs[] = {outL, outR};
+        int remaining = total;
+        while (remaining > 0) {
+          const int n = std::min(remaining, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          remaining -= n;
+        }
+      };
+      std::function<juce::var(const juce::var&, const juce::String&)> findVar =
+          [&](const juce::var& node, const juce::String& id) -> juce::var {
+        if (node.getProperty("id", "").toString() == id) return node;
+        if (auto* kids = node.getProperty("nodes", juce::var()).getArray())
+          for (auto& k : *kids) {
+            const juce::var hit = findVar(k, id);
+            if (!hit.isVoid()) return hit;
+          }
+        return {};
+      };
+      auto prop = [&](const juce::String& id, const char* key) {
+        return (int64_t)(double)findVar(engine.getGraphState(), id)
+            .getProperty(key, 0.0);
+      };
+      auto lastIdUnder = [&](const juce::var& parent) {
+        auto* kids = parent.getProperty("nodes", juce::var()).getArray();
+        return kids->getLast().getProperty("id", "").toString();
+      };
+      // The island phase (t − epoch) folded on the 4Q song grid.
+      auto phase4 = [&](int64_t Q) {
+        const int64_t pos = (int64_t)(double)engine.getGraphState().getProperty(
+            "islandPos", 0.0);
+        return ((pos % (4 * Q)) + 4 * Q) % (4 * Q);
+      };
+      auto auditionOf = [&](const juce::String& id) {
+        return (int)findVar(engine.getGraphState(), id)
+            .getProperty("sequence", juce::var())
+            .getProperty("auditionStep", -1);
+      };
+
+      // Take A establishes Q (~1 s) at the top level.
+      engine.createNode("clip");
+      const juce::String aId = lastIdUnder(engine.getGraphState());
+      engine.startRecordingInNode(aId);
+      process(100);
+      process(44100);
+      engine.stopRecordingInNode(aId);
+      for (int i = 0; i < 200 && prop(aId, "isRecording") != 0; ++i) process(512);
+      const int64_t Q = prop(aId, "duration");
+      expect(Q > 0, "Q established");
+
+      // A group whose first take lands at island phase 2Q: arm inside
+      // [1Q, 2Q) so the take starts at the 2Q boundary. One Q long, so
+      // the cycle does not grow and the epoch stays put.
+      engine.createNode("stack");
+      const juce::String gId = lastIdUnder(engine.getGraphState());
+      engine.createNode("clip", gId);
+      const juce::String mId = lastIdUnder(findVar(engine.getGraphState(), gId));
+      for (int i = 0; i < 4000; ++i) {
+        const int64_t ph = phase4(Q);
+        if (ph > Q + Q / 4 && ph < Q + (3 * Q) / 4) break;
+        process(512);
+      }
+      engine.startRecordingInNode(mId);
+      // The arm pends to the 2Q boundary; capture just under 1Q from
+      // there so the stop pads up to exactly 1Q (a shorter capture would
+      // pad to a Q/k subdivision, a longer one to 2Q and grow the cycle).
+      for (int i = 0; i < 400 && prop(mId, "isRecording") == 0; ++i) process(512);
+      process((int)(Q - 2048));
+      engine.stopRecordingInNode(mId);
+      for (int i = 0; i < 400 && (prop(mId, "isRecording") != 0 ||
+                                  prop(mId, "isPendingStart") != 0);
+           ++i) {
+        process(512);
+      }
+      expectEquals(prop(mId, "duration"), Q, "the group's take is 1Q");
+      const int64_t epoch = (int64_t)(double)engine.getGraphState().getProperty(
+          "islandEpoch", 0.0);
+      expectEquals(((prop(gId, "origin") - epoch) % (4 * Q) + 4 * Q) % (4 * Q),
+                   (int64_t)(2 * Q),
+                   "the group's origin sits 2Q past the epoch (Q18 anchoring)");
+
+      // The GROUP's song: verse 2Q | chorus 2Q (CUED) = 4Q, measured
+      // from the group's origin.
+      {
+        auto* payload = new juce::DynamicObject();
+        juce::Array<juce::var> steps;
+        auto* s1 = new juce::DynamicObject();
+        s1->setProperty("name", "verse");
+        s1->setProperty("len", 2.0 * Q);
+        steps.add(juce::var(s1));
+        auto* s2 = new juce::DynamicObject();
+        s2->setProperty("name", "chorus");
+        s2->setProperty("len", 2.0 * Q);
+        s2->setProperty("cue", true);
+        steps.add(juce::var(s2));
+        payload->setProperty("steps", steps);
+        engine.setSequence(gId, juce::var(payload));
+      }
+      expectEquals((int)findVar(engine.getGraphState(), gId)
+                       .getProperty("sequence", juce::var())
+                       .getProperty("steps", juce::var())
+                       .getArray()
+                       ->size(),
+                   2, "the group carries the song");
+
+      // Island phase [2Q + Q/4, 2Q + 3Q/4): the EPOCH frame's chorus,
+      // the GROUP frame's verse (phase − 2Q). An arm in the group is
+      // Mode 1 — no auto-target.
+      for (int i = 0; i < 4000; ++i) {
+        const int64_t ph = phase4(Q);
+        if (ph > 2 * Q + Q / 4 && ph < 2 * Q + (3 * Q) / 4) break;
+        process(512);
+      }
+      engine.createNode("clip", gId);
+      const juce::String nId = lastIdUnder(findVar(engine.getGraphState(), gId));
+      engine.startRecordingInNode(nId);
+      expectEquals(auditionOf(gId), -1,
+                   "island-phase chorus is the group's VERSE: no auto-target");
+      engine.stopRecordingInNode(nId);  // cancel before capture
+      for (int i = 0; i < 400 && (prop(nId, "isRecording") != 0 ||
+                                  prop(nId, "isPendingStart") != 0);
+           ++i) {
+        process(512);
+      }
+      expectEquals(prop(nId, "duration"), (int64_t)0, "nothing recorded");
+
+      // Island phase [Q/4, 3Q/4): the epoch frame's verse, the group's
+      // CHORUS (phase + 2Q) — the arm auto-targets the cued step.
+      for (int i = 0; i < 4000; ++i) {
+        const int64_t ph = phase4(Q);
+        if (ph > Q / 4 && ph < (3 * Q) / 4) break;
+        process(512);
+      }
+      engine.startRecordingInNode(nId);
+      expectEquals(auditionOf(gId), 1,
+                   "island-phase verse is the group's CHORUS: auto-targeted");
+      engine.stopRecordingInNode(nId);
     }
 
     beginTest("CUE: the flag survives session save/load and templates");

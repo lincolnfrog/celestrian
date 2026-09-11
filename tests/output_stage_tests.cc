@@ -208,7 +208,9 @@ class OutputStageTests : public juce::UnitTest {
       // absent-property var reads as 0.0, which would load it silent.
       auto jf = dir.getChildFile("session.json");
       auto parsed = juce::JSON::parse(jf.loadFileAsString());
-      auto* clipObj = parsed.getProperty("nodes", {})[0].getDynamicObject();
+      auto* clipObj = parsed.getProperty("root", {})
+                          .getProperty("nodes", {})[0]
+                          .getDynamicObject();
       expect(clipObj != nullptr && clipObj->hasProperty("gain"),
              "key was present to strip");
       clipObj->removeProperty("gain");

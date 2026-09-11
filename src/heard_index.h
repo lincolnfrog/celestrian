@@ -95,6 +95,37 @@ inline Scope childScopeOf(const StackNode& stack, const Scope& scope,
   return child;
 }
 
+/** A stack's clock after its OWN fold (StackNode::childContext's first
+ * step): the received clock itself for a plain looping stack, else
+ * O + inner(t) under its active map or its one-shot's context-cycle
+ * fold. This is the clock its song is read at and its children hear
+ * before any cue re-base. */
+inline int64_t foldedClockAt(const StackNode& stack, const Received& r,
+                             int64_t O, const timing::TimeMap& map) {
+  const int64_t shot =
+      map.active() ? map.period() : stack.getIntrinsicDuration();
+  const bool one_shot = stack.periodFromContext() && shot > 0 &&
+                        r.scope.context_cycle > shot;
+  if (!map.active() && !one_shot) return r.clock;
+  const timing::TimeMap eff =
+      map.active() ? map : timing::TimeMap::single(0, shot);
+  return O + timing::innerAt(r.clock, O, eff,
+                             one_shot ? r.scope.context_cycle : eff.period())
+                 .inner;
+}
+
+/** THE SONG POSITION a sequenced stack reads at its received clock —
+ * the message-thread twin of StackNode::childContext's cue lookup: the
+ * folded clock measured from the stack's OWN frame origin (Q18: a
+ * group's origin; the epoch for the root, which is never anchored),
+ * wrapped on the song. −1 when the stack has no active sequence. */
+inline int64_t songPositionAt(const StackNode& stack, const Received& r) {
+  const Sequence* seq = stack.activeSequence();
+  if (seq == nullptr || seq->total <= 0) return -1;
+  const int64_t O = frameOriginOf(stack, r.scope);
+  return seq->fold(foldedClockAt(stack, r, O, stack.activeTimeMap()) - O);
+}
+
 /** THE DESCENT: what `node` receives at transport clock `t` — the
  * root→node walk applying, per stack ancestor, exactly what
  * StackNode::childContext does: the one equation on the clock (an
@@ -119,20 +150,8 @@ inline Received receivedAt(const AudioNode& node, int64_t t,
     if (stack == nullptr) continue;
     const timing::TimeMap map = stack->activeTimeMap();
     const int64_t O = frameOriginOf(*stack, r.scope);
-    const int64_t shot =
-        map.active() ? map.period() : stack->getIntrinsicDuration();
-    const bool one_shot = stack->periodFromContext() && shot > 0 &&
-                          r.scope.context_cycle > shot;
     Scope child = childScopeOf(*stack, r.scope, O, map);
-    int64_t clock = r.clock;
-    if (map.active() || one_shot) {
-      const timing::TimeMap eff =
-          map.active() ? map : timing::TimeMap::single(0, shot);
-      clock = O + timing::innerAt(r.clock, O, eff,
-                                  one_shot ? r.scope.context_cycle
-                                           : eff.period())
-                      .inner;
-    }
+    int64_t clock = foldedClockAt(*stack, r, O, map);
     // CUE STEPS (docs/sequencer.md §3): a cued VISIT re-bases the
     // subtree's frame to the step top; the child frame's cycle top is
     // the stack's origin again.

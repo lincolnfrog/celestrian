@@ -530,13 +530,6 @@ class StackNode : public AudioNode {
   std::atomic<int64_t> lcm_before_take_{0};
   std::atomic<int64_t> heard_cycle_at_arm_{0};
 
-  /**
-   * If this child's island has no quantum yet and the child carries
-   * committed content, its duration establishes Q (covers pre-recorded
-   * clips being added to a fresh island).
-   */
-  void maybeEstablishQuantumFrom(const AudioNode& child);
-
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(StackNode)
 };
 

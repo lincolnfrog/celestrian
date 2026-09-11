@@ -1251,6 +1251,38 @@ every step (C++ Debug binary first, then `npm test`, then Playwright).
 > carve-outs are reworded as the general "restricts nothing" fact
 > rather than deleted (an authored or legacy full-span window reads the
 > same). ~25 test pins of `loopEnd == duration` became `== 0`.
+>
+> **Status 2026-09-10 — Tier 3 LANDED** (C++ and JS suites green).
+> D14-1 stage 1: `StackNode::maybeEstablishQuantumFrom` and its two
+> calls, `AudioEngine::scrubNestedIslandFacts` and its call, and the
+> load-time `setQuantum(0, 0)` are deleted — (Q, epoch) are written by a
+> commit or an import on the island root and by nothing else; the
+> NESTED FACTS test stands as the pin, plus a StackNode unit for the
+> attached and detached cases. Three hand-built ClipNode tests that
+> leaned on attach-time establishment now set the island facts
+> explicitly. D15-1: the root's two frame tops were already ONE by the
+> owner's 2026-09-09 ruling (the root is never anchored, so
+> `frameOrigin` falls through to the epoch — every epoch writer moves
+> the root's frame top by construction); what remained was the two
+> readers that still hard-coded `t − epoch`: the bounce's `is_root`
+> branch is collapsed into the node branch (top = frame origin + a0 for
+> every node — a root window now bounces from its window top; golden
+> pinned), and the S21 auto-target reads the owning stack's song
+> position through `heard::songPositionAt(receivedAt(...))`, the
+> childContext lookup's message-thread twin (a group song anchored 2Q
+> past the epoch is pinned in sequencer_tests.cc). The UI's seqDims
+> already read the group's origin (2026-09-09). D7-3 + D15-8: the root
+> is ONE node record — `top["root"] = serializeNode(root, …)`; the
+> bundle level keeps version/name/created/sampleRate/qSamples/epoch
+> only; `applyNodeFacts` is the factored tail of `deserializeNode` and
+> the live root's load path (uuid, mute, stage, period source, window,
+> map, bypass, window domain, rack, sequence at ROOT scope, displaced
+> objects to the reclaimer). `kSessionVersion` is 2 (an older build
+> refuses the new shape instead of loading an empty session and
+> mirroring over it); version-1 bundles load through a synthesized root
+> record. D7-4: templates write step lengths as `{num, den}` and read
+> both shapes. D7-5 was already done. NOT in this round: D14-1 stage 2
+> (the `Island` record — Tier D), the UI projection of a root window.
 
 **Tier 1 — hours each, do now, no ruling needed.**
 - D8-1 orphan cue hang — done: `any_cue` derived per visit; both walks

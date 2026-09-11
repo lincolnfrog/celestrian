@@ -235,6 +235,52 @@ class BounceTests : public juce::UnitTest {
       expect(peakOf(file, 0, (int)period) > 0.05f, "the window's content");
     }
 
+    // Audit D15-1: ONE frame-top law for every node. The root is never
+    // anchored, so its frame top is the epoch — plus a0 under a root
+    // window: the bounce starts where the window starts, not where the
+    // island cycle wraps (from the epoch a [D/4, 3D/4) window would have
+    // started 3D/4 in — inside the rest, silent).
+    beginTest("GOLDEN: a windowed ROOT bounces from its window top (epoch + a0)");
+    {
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("clip");
+      const juce::String clip_id = lastTopLevelId(engine);
+      recordTake(engine, clip_id, D, clock);
+      expectEquals(rootProp(engine, "quantum"), D, "Q := D");
+      // A root window [D/4, 3D/4): period D/2 divides Q (coherent),
+      // a0 = D/4; the island cycle stays lcm(Q, D/2) = D.
+      engine.setLoopPoints(rootId(engine), D / 4, (3 * D) / 4);
+      expectEquals(rootProp(engine, "loopStart"), D / 4, "the root window holds");
+
+      const juce::File wav = dir.getChildFile("root_window.wav");
+      expect(engine.bounce(rootId(engine), wav.getFullPathName()),
+             "bounce of the windowed root succeeds");
+      const juce::AudioBuffer<float> file = readWav(wav, nullptr);
+      const int64_t span = D;  // one effective island cycle
+      expect(file.getNumSamples() >= span, "the file covers the cycle");
+
+      // The live twin from a clock ≡ epoch + a0 (the window top).
+      const int64_t top = rootProp(engine, "islandEpoch") + D / 4;
+      driveLive(engine, mod(top - clock, span), clock, false);
+      expectEquals(mod(clock - top, span), (int64_t)0, "at the window top");
+      std::vector<float> live_l, live_r;
+      driveLive(engine, span, clock, false, &live_l, &live_r);
+
+      int bad = 0;
+      float loud_head = 0.0f;
+      for (int64_t i = 0; i < span; ++i) {
+        const float l = file.getSample(0, (int)i);
+        const float r = file.getSample(1, (int)i);
+        if (std::abs(l - live_l[(size_t)i]) > 1e-6f) ++bad;
+        if (std::abs(r - live_r[(size_t)i]) > 1e-6f) ++bad;
+        if (i < D / 8) loud_head = std::max(loud_head, std::abs(l));
+      }
+      expectEquals(bad, 0, "bounce == live render from the window top");
+      expect(loud_head > 0.05f,
+             "the file OPENS with the window's content (not the rest)");
+    }
+
     beginTest("Refused with no committed content");
     {
       AudioEngine engine;

@@ -674,8 +674,12 @@ Once you start recording new tracks, Q becomes locked."* Canon:
     private grid — after a delete-all reverted the root's Q, the next
     group take in that stack committed against the stale one (the
     2026-08-29 dump: children `[0, Q_stale/2)`, root Q = 0, UI and
-    engine disagreeing on Q from then on). Every structural edit now
-    scrubs nested facts (`AudioEngine::scrubNestedIslandFacts`).
+    engine disagreeing on Q from then on). Since 2026-09-10 (audit
+    D14-1 stage 1) attaching a child writes no island facts at all —
+    only a commit or an import establishes (Q, epoch), on the island
+    root — so the invariant holds by construction and the structural
+    scrub is gone. Pinned by the NESTED FACTS test
+    (tests/qtime_lock_tests.cc).
 - **LOCK-COLLAPSE (owner ruling 2026-07-19b — the unifying
   simplification):** the trim is a PRE-LOCK affordance, nothing more.
   The moment a second take ARMS, the definer's window **becomes the

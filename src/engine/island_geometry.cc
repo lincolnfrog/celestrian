@@ -2,8 +2,10 @@
 // definer stack) and its re-establishment riders, two-anchor continuity
 // and the cycle-top rule (attachMapEditRiders), Q18 origins and
 // anchoring (settleAnchors, applySetsOrigin), island (Q, epoch) writes
-// (setIslandQuantum) and the scrubs that keep nested stacks and pre-Q
-// geometry coherent. Message thread only.
+// (setIslandQuantum) and the scrub that keeps pre-Q geometry coherent.
+// Only the island root ever holds (Q, epoch): nothing writes them on a
+// nested stack (audit D14-1), so there is nothing to scrub there.
+// Message thread only.
 
 #include "../audio_engine.h"
 
@@ -559,31 +561,6 @@ void AudioEngine::reinstallSequenceRiders(celestrian::Edit& e) {
     if (const auto* old = stack->exchangeSequence(fresh)) retireOwned(old);
   }
   e.seq_riders.clear();
-}
-
-/**
- * ONE ISLAND, ONE OWNER OF (Q, epoch): only the session root holds
- * island facts. A stack assembled while DETACHED (Combine builds the
- * new stack before inserting it; a subtree held by the undo log is
- * detached) is its own rootNode(), so addChild's establishment stamps
- * the CHILD's duration/origin onto that stack as if it were an island.
- * Attached, getEffectiveQuantum()/getIslandEpoch() stop at the first
- * stored value, so such a subtree would run on a private grid: a group
- * take inside it commits against a stale Q, and the UI (which reads the
- * nested Q when the root's is 0) and the engine disagree on Q from
- * then on. Every structural edit re-asserts the invariant.
- */
-void AudioEngine::scrubNestedIslandFacts() {
-  forEachStack(root_node.get(), [&](celestrian::StackNode& stack) {
-    if (&stack == root_node.get()) return;
-    if (stack.getQuantum() != 0 || stack.getEpoch() != 0) {
-      juce::Logger::writeToLog(
-          "AudioEngine: scrubbed island facts from nested stack " +
-          stack.getUuid() + " (Q=" + juce::String(stack.getQuantum()) +
-          " epoch=" + juce::String(stack.getEpoch()) + ")");
-      stack.setQuantum(0, 0);
-    }
-  });
 }
 
 void AudioEngine::scrubIncoherentGeometry(int64_t q) {

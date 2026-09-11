@@ -181,13 +181,6 @@ int64_t StackNode::getEffectiveQuantum() const {
   return 0;
 }
 
-void StackNode::maybeEstablishQuantumFrom(const AudioNode& child) {
-  const int64_t d = child.getIntrinsicDuration();
-  if (d > 0) {
-    rootNode()->establishIsland(d, child.origin_samples.load());
-  }
-}
-
 // --- Take lifecycle (commit as an EVENT — unification_audit.md §1.5) ---
 
 void StackNode::takeArmed() {
@@ -262,14 +255,18 @@ void StackNode::addChild(std::unique_ptr<AudioNode> child) {
   // A live take arriving via a move re-registers with this island
   // (removeChild balanced it out on the way).
   if (child->isArmedOrRecording()) rootNode()->takeArmed();
-  maybeEstablishQuantumFrom(*child);
+  // Attaching content never writes island facts (audit D14-1): (Q,
+  // epoch) are established by a commit or an import on the island
+  // root, and by nothing else. A DETACHED assembly (Combine builds its
+  // stack before inserting it; a subtree held by the undo log) is its
+  // own rootNode(), so an establishment here would stamp a private
+  // grid onto a nested stack.
   children.push_back(std::move(child));
 }
 
 void StackNode::insertChildAt(std::unique_ptr<AudioNode> child, int index) {
   child->setParent(this);
   if (child->isArmedOrRecording()) rootNode()->takeArmed();
-  maybeEstablishQuantumFrom(*child);
   if (index < 0) index = 0;
   if (index >= (int)children.size()) {
     children.push_back(std::move(child));

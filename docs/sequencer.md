@@ -1003,8 +1003,9 @@ under the playhead. The frame-health faces read the program total.
 **Persistence.** Additive: `next` per step and `seed` on the block in
 metadata, session and templates (the template's index-keyed gates are
 untouched — successors name STEP indices, which the template keeps).
-Same pass: the ROOT's own sequence is now persisted (`rootSequence`,
-bundle-level like the master rack; `LoadedSession.root_sequence`,
+Same pass: the ROOT's own sequence is now persisted (since 2026-09-10 as
+the `sequence` block of the root's own node record, `root` — audit
+D7-3; version-1 bundles' bundle-level `rootSequence` still loads;
 applied after Q) — before this the session's song was lost on reopen,
 and a radio lives on the root by rule.
 

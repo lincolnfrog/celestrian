@@ -105,6 +105,20 @@ Nothing in Tier D is required for 1.0.
   ui/js + ui/css (comment-only, verified by stripping comments and
   diffing).
 
+- [x] **A10 — Kernel audit Tier 3 (the island and the root)** ✅
+  2026-09-10 (ultracode_analysis.md §6 status note): D14-1 stage 1 —
+  attaching content writes no island facts (`maybeEstablishQuantumFrom`,
+  `scrubNestedIslandFacts` and the load-time scrub are gone; the NESTED
+  FACTS test pins it); D15-1 — one frame-top law for every node (the
+  root's frame top IS the epoch by the 2026-09-09 never-anchored ruling;
+  the bounce's root branch collapsed into the node branch, `epoch + a0`
+  under a root window; the S21 lookup reads the owning stack's song
+  position through `heard::songPositionAt`); D7-3 + D15-8 — the root
+  is ONE node record (`root`) in a version-2 bundle, loaded onto the
+  live root through `session_io::applyNodeFacts` (version-1 bundles
+  load); template step lengths are exact QTime (D7-4; legacy doubles
+  build). Stage 2 (the `Island` record) waits for Tier D islands.
+
 ## Tier B: Product to 1.0
 
 - [x] **B1 — Software input monitoring** ✅ 2026-09-02 (ruled Q20):

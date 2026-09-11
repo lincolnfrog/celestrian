@@ -29,6 +29,38 @@ class StackNodeTests : public juce::UnitTest {
       expectEquals(root.getNumChildren(), 0);
     }
 
+    // Audit D14-1 stage 1: (Q, epoch) are written by a commit or an
+    // import on the island root and by NOTHING else — attaching
+    // committed content, attached or detached, establishes no facts.
+    beginTest("Attaching committed content establishes no island facts");
+    {
+      auto committed = [](const char* name, int64_t origin, int64_t len) {
+        auto clip = std::make_unique<ClipNode>(name, 44100.0);
+        clip->origin_samples.store(origin);
+        juce::AudioBuffer<float> audio(1, (int)len);
+        audio.clear();
+        clip->loadCommitted(audio, 0);
+        return clip;
+      };
+      StackNode root("Root");
+      root.addChild(committed("A", 500, 1000));
+      expectEquals(root.getQuantum(), (int64_t)0, "addChild writes no Q");
+      expectEquals(root.getEpoch(), (int64_t)0, "nor an epoch");
+
+      // A DETACHED assembly (Combine builds its stack before inserting
+      // it; the undo log holds subtrees) is its own rootNode(): it must
+      // hold no private grid when it is attached.
+      auto group = std::make_unique<StackNode>("Group");
+      group->addChild(committed("B", 700, 2000));
+      expectEquals(group->getQuantum(), (int64_t)0,
+                   "a detached assembly holds no island facts");
+      root.insertChildAt(std::move(group), 0);
+      expectEquals(root.getQuantum(), (int64_t)0,
+                   "insertChildAt writes no Q either");
+      expectEquals(root.getEffectiveQuantum(), (int64_t)0,
+                   "the island has no Q until a take commits");
+    }
+
     beginTest("Audio Summing (Stereo)");
     {
       StackNode root("Root");
