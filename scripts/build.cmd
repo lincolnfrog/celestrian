@@ -60,6 +60,9 @@ if not defined VSINSTALL (
 echo Found MSVC at: %VSINSTALL%
 
 REM Load the MSVC command-line environment (compiler, Windows SDK, etc.)
+REM vcvars shells out to a bare "vswhere.exe", so its folder must be on
+REM PATH or it prints a spurious "'vswhere.exe' is not recognized".
+if exist "%VSWHERE%" for %%d in ("%VSWHERE%") do set "PATH=%%~dpd;%PATH%"
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul
 if errorlevel 1 (
     echo ERROR: failed to initialize the MSVC environment.
