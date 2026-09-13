@@ -36,7 +36,7 @@
 
 /* Z-INDEX LAYERING SCALE (whole app):
      1–8   lane internals — snap-ghost 1, dragging bracket 2, drag-live
-           win-cursor 3, cut-band / .lane-nav 4, sticky group headers 5,
+           win-cursor 3, cut-band / .lane-region 4, sticky group headers 5,
            playhead / cut- & seam-handles 6, inspecting body / cut-chip /
            loop-top-chip 7, cut-ghost 8
      20    in-rail popups (rename editor layer, .input-menu)
@@ -556,92 +556,133 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     display: none;
 }
 
-/* ===== 9. Lane rows & handle nav dock ===== */
+/* ===== 9. Lane rows & the region panel ===== */
 #lanes { display: flex; flex-direction: column; gap: 10px; }
 .lane {
     display: grid;
     grid-template-columns: var(--rail-w) 1fr;
-    /* Small row gap: a mapped lane grows a nav footer row (option C) */
+    /* Small row gap: the selected lane grows a region-panel row */
     gap: 6px 12px;
 }
 
-/* Handle nav dock — footer bar (owner pick C). The mouse face of
-   [ / ]: a slim always-visible bar in its own grid row UNDER a mapped
-   lane's body, right-aligned to the VIEWPORT by updateNavDock in JS
-   (no horizontal sticky — the webview's horizontal sticky lands a
-   gutter inside the lane). Unmapped
-   lanes have no footer and pay no space. ⇤ ‹ › ⇥ jump/walk handles;
-   the strip is a per-track minimap: one clickable tick per handle,
-   the cyan box marking the current viewport. */
-.lane-nav {
+/* THE REGION PANEL (region_panel.js, 2026-09-11): the loop region's
+   overview + coarse editor, in its own grid row UNDER the SELECTED
+   clip/group. The whole raw take across the viewport's width: excluded
+   material dimmed, the kept region a bright box (drag = slide) with
+   bracket handles (drag = trim), inner cuts as bands, the amber sound
+   cursor in raw coordinates. Pinned to the VIEWPORT by JS (no
+   horizontal sticky — the webview lands a gutter inside the lane).
+   Unselected lanes have no panel and pay no space. */
+.lane-region {
     grid-column: 2;
     position: relative;
-    height: 26px;
-    pointer-events: none;   /* only the dock itself is interactive */
+    height: 52px;
+    pointer-events: none;   /* only the panel itself is interactive */
     z-index: 4;
 }
-.nav-dock {
+.region-panel {
     pointer-events: auto;
     position: absolute;
     top: 0;
-    left: 0;                /* JS pins the right edge to the viewport */
+    left: 0;                /* JS pins it to the viewport */
+    height: 100%;
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    padding: 4px 8px;
+    box-sizing: border-box;
+    background: var(--lane);
+    border-radius: 8px;
+    box-shadow: inset 0 0 0 1px var(--map-amber-35);
+    user-select: none;
+    -webkit-user-select: none;
+}
+.region-label {
+    flex: 0 0 auto;
+    align-self: center;
+    width: 96px;
+    font-size: 10px;
+    line-height: 1.25;
+    color: var(--map-amber);
+    /* Two lines ("loop 4Q" / "24Q take · cuts"), never an ellipsis. */
+    white-space: normal;
+    overflow: hidden;
+}
+.region-strip {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    border-radius: 5px;
+    background: var(--lane-line);
+    overflow: hidden;
+    touch-action: none;
+}
+.region-wave {
+    position: absolute;
+    inset: 0;
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 8px;
-    background: var(--lane);
-    border-radius: 6px;
+    pointer-events: none;
 }
-/* all:unset strips the global button chassis (bevel, gradient, border) —
-   dock buttons are flat glyphs on the dock's own plate, and unsetting is
-   cheaper than nulling each chassis property. Cost: it also killed the
-   global focus ring, so :focus-visible is restored explicitly below. */
-.nav-btn {
-    all: unset;
-    cursor: pointer;
-    width: 20px;
-    height: 20px;
-    line-height: 20px;
-    text-align: center;
-    border-radius: 5px;
-    color: var(--amber-bright);
-    font-size: 12px;
-}
-.nav-btn:hover { background: rgba(255, 255, 255, 0.1); }
-/* Restore the keyboard focus ring that `all: unset` destroyed — same
-   voice as the global button:focus-visible rule. */
-.nav-btn:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
-.nav-strip {
-    position: relative;
-    width: 88px;
-    height: 20px;
-    background: var(--lane-line);
-    border-radius: 4px;
-}
-.nav-tick {
+.region-wave canvas { display: block; }
+.region-overlay {
     position: absolute;
-    top: 3px;
-    bottom: 3px;
-    width: 3px;
-    margin-left: -1.5px;
-    border-radius: 2px;
-    background: var(--tape);
-    cursor: pointer;
+    inset: 0;
+    pointer-events: none;   /* children opt in (the win-bracket rule) */
 }
-.nav-tick.seam { background: var(--amber-dim); }
-.nav-tick:hover {
-    background: var(--amber-bright);
-    box-shadow: 0 0 0 2px rgba(243, 200, 119, 0.27);
-}
-.nav-view {
+/* The kept box: the region you can grab and slide. Bands/handles sit
+   above it (z 4/6); the dims beneath it read as "not this". */
+.region-kept {
     position: absolute;
     top: 0;
     bottom: 0;
-    background: rgba(95, 201, 216, 0.12);
-    border: 1px solid rgba(95, 201, 216, 0.33);
-    border-radius: 3px;
-    pointer-events: none;
+    box-sizing: border-box;
+    border-top: 2px solid var(--map-amber);
+    border-bottom: 2px solid var(--map-amber);
+    background: rgba(243, 200, 119, 0.06);
+    pointer-events: auto;
+    cursor: grab;
+    z-index: 2;
 }
+.region-kept.whole { border-color: var(--map-amber-40); }
+.region-kept:active { cursor: grabbing; }
+/* The panel's brackets: the lane bracket's shape and hit zone, under
+   their own class (region-*) so lane-scoped queries never find them. */
+.region-bracket {
+    position: absolute; top: 2px; bottom: 2px;
+    width: 8px;
+    border: 2px solid var(--tape);
+    opacity: 0.85;
+    pointer-events: auto;
+    cursor: ew-resize;
+    touch-action: none;
+    z-index: 6;
+}
+.region-bracket::after { content: ""; position: absolute; inset: -6px -9px; }
+.region-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
+.region-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
+.region-bracket.latent { opacity: 0.35; }
+.region-strip:hover .region-bracket.latent { opacity: 0.7; }
+.region-dim {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(23, 19, 16, 0.62);
+}
+/* The raw-time sound cursor (amber, like every lane's heard cursor). */
+.region-cursor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--map-amber);
+    opacity: 0.85;
+    pointer-events: none;
+    z-index: 3;
+    transition: left 140ms linear;
+}
+/* The strip is a band host: the cut chip's pill is too tall for a 40px
+   strip at its lane size — shrink it there. */
+.region-overlay .cut-chip { font-size: 9px; padding: 0 6px; }
 
 /* ===== 10. Selection & drag-to-group ===== */
 /* Selection: quiet identity on the rail; the bar carries the verb */
@@ -1216,16 +1257,53 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    splice, so you see where it is sounding. Above the preview layer's
    dims. */
 .overlay-layer.drag-live > .win-cursor { opacity: 1; z-index: 3; }
-/* The preview draws RAW-frame geometry; until the lane has actually
-   swapped to its raw view (.inspecting lands on the next poll) those
-   dims would sit over HEARD content — a wrong-space flash at every
-   grab. Hidden until the expansion is real; reveals with the lane-open
-   ease. */
-.lane-body:not(.inspecting) .drag-preview-layer { opacity: 0; }
+/* The preview draws RAW-frame geometry; on a lane it is only right
+   once the lane shows raw material — its inspector view, or the
+   same-scale REVEAL a drag opens (.revealing). Elsewhere (a heard lane
+   before engage) it would sit over HEARD content: hidden. The region
+   panel's strip is raw by construction. */
+.lane-body:not(.inspecting):not(.revealing) .drag-preview-layer { opacity: 0; }
 .drag-preview-layer {
     position: absolute;
     inset: 0;
     pointer-events: none;
+}
+
+/* THE SAME-SCALE REVEAL (map_bands.js, 2026-09-11): while a heard-lane
+   handle is dragged, the lane keeps its px-per-Q and UNROLLS the raw
+   take around the grabbed thing — the reveal layer draws the visible
+   raw slice (waveform + raw-Q gridlines) where the heard tiles were;
+   the preview layer's dims/brackets/bands sit over it. The heard
+   layers hide (opacity — the grabbed handle keeps its capture). The
+   body stacks above the white playhead like an inspector (raw
+   coordinates; the amber reveal cursor is the honest one). */
+.lane-body.revealing { z-index: 7; box-shadow: inset 0 0 0 1px var(--map-amber-35); }
+.lane-body.revealing .reps-layer,
+.lane-body.revealing .grid-layer,
+.lane-body.revealing > .seq-dims { opacity: 0; }
+.reveal-layer { position: absolute; inset: 0; pointer-events: none; }
+.reveal-grid { position: absolute; inset: 0; }
+.reveal-grid .gridline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.reveal-grid .gridline.major { background: var(--grid-q4); }
+.reveal-tile {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    overflow: hidden;
+}
+.reveal-tile canvas { display: block; }
+.reveal-cursor {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--map-amber);
+    opacity: 0.9;
+    z-index: 3;
+    transition: left 140ms linear;
 }
 
 /* The loop-top mark: where a mid-phase loop's end wraps to its start —

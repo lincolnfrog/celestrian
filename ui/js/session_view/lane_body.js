@@ -25,7 +25,7 @@ import { mapOffset } from '../time_map.js';
 import { correctPosition } from '../playhead_clock.js';
 import { isAnimRunning } from './animator.js';
 import { buildWindowDims, dimComplementInto } from './dims.js';
-import { wireBandCreate, appendCutBands, appendTrimGrips }
+import { wireBandCreate, appendCutBands, appendTrimGrips, patchRevealCursor }
     from './map_bands.js';
 import { wireWindow } from './window_edit.js';
 import { isOverlayFrozen } from './gesture.js';
@@ -246,6 +246,10 @@ export function patchLaneBody(row, lane, vm, aux) {
     const bodyW = body.clientWidth;
     const peaks = lanePeaks(lane, aux, bodyW);
     const bodyH = body.clientHeight - BODY_V_INSET_PX || BODY_H_FALLBACK_PX;
+    // The raw take's peaks, for the surfaces that draw the WHOLE take
+    // (the same-scale reveal, map_bands.js; the region panel, patch.js).
+    body._peaks = peaks;
+    body._isGroup = lane.kind === 'group';
 
     // State classes (idempotent via classList.toggle)
     body.classList.toggle('win-bypassed', !!(lane.window && lane.window.bypassed));
@@ -404,8 +408,9 @@ export function patchLaneBody(row, lane, vm, aux) {
     // views never leaves a stale (wrong-frame) editor behind.
     wireBandCreate(body, lane, vm, cycleQ);
     // HEARD-VIEW chrome (law 13 amendment): a quiet chip + edge grips
-    // that EXPAND the lane into its edit view (full raw take with the
-    // selection brackets — the seed track's trim view, per lane).
+    // + seam handles, edited IN PLACE at the lane's own scale (the
+    // same-scale reveal, map_bands.js); the whole raw take lives on
+    // the region panel under the selected lane (region_panel.js).
     if (lane.windowChipQ && !lane.windowEditing) {
         // HEARD-VIEW chrome, MODELESS: the edge grips ARE trim handles
         // (drag adjusts the outer bounds directly, whole-Q snap, commit
@@ -417,6 +422,9 @@ export function patchLaneBody(row, lane, vm, aux) {
             ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
              lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
              lane.reps.map(r => [r.startQ, r.endQ])]);
+        // A revealing lane's amber cursor moves through the gesture
+        // (the reconcile below is frozen; the ear isn't).
+        patchRevealCursor(body, lane, vm, aux.nodesById.get(lane.id));
         if (isOverlayFrozen(body)) return;
         reconcileMarkers(overlay, heardKey, o => {
             const chip = el('div', 'win-chip win-open-chip toggle', {

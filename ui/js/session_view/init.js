@@ -11,7 +11,8 @@ import { parseDropIds } from './sv_util.js';
 import { registerKey, SCOPE, ANY_MODIFIERS } from '../keys.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
-import { teleportToHandle, wireNavScroll } from './teleport.js';
+import { teleportToHandle } from './teleport.js';
+import { wireRegionScroll, nudgeRegion } from './region_panel.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
 import { closeTakeMenus, wireTakeMenuDismiss } from './take_menu.js';
 import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
@@ -35,6 +36,18 @@ export function initSessionView(callbacks) {
         if (e.target.id === 'session' || e.target.id === 'grid-area' ||
             e.target.id === 'lanes') clearSelection();
     });
+    // DESELECT ALL from the top bar (owner request 2026-09-11): a click
+    // on the transport's empty space clears the selection — and with it
+    // the region panel — without needing a clear patch of canvas.
+    // Controls keep their own verbs.
+    const transport = document.getElementById('transport');
+    if (transport) {
+        transport.addEventListener('click', e => {
+            if (e.target.closest('button, input, select, a, #odometer, ' +
+                                 '#master-monitor, .brand')) return;
+            clearSelection();
+        });
+    }
     const selBar = document.getElementById('selection-bar');
     if (selBar) {
         selBar.querySelector('.sel-group').addEventListener('click', () => {
@@ -84,7 +97,7 @@ export function initSessionView(callbacks) {
     // Ruler scrub: click/drag the ruler to seek — the callback is
     // onSeek (app.js → seekTransport).
     wireRulerSeek();
-    wireNavScroll();
+    wireRegionScroll();
     wireMenuDismiss();
     wireCreationMenuDismiss();
     wireTakeMenuDismiss();
@@ -124,6 +137,19 @@ function wireKeyboard() {
     hotkey(']', () => teleportToHandle(1, false));
     hotkey('{', () => teleportToHandle(-1, true));
     hotkey('}', () => teleportToHandle(1, true));
+    // ← / → NUDGE the selected track's loop region by 1Q (length held —
+    // the region panel's slide as a keystroke); ⇧ = 4Q, ⌥ = ⅛Q. Long
+    // takes get a deterministic, drag-free way to walk the region.
+    const nudge = (dir, step, mods) => view({
+        key: dir < 0 ? 'ArrowLeft' : 'ArrowRight',
+        modifiers: mods,
+        handler: e => {
+            if (!nudgeRegion(dir * step)) return false;
+            e.preventDefault();
+        } });
+    nudge(-1, 1, []);          nudge(1, 1, []);
+    nudge(-1, 4, ['shift']);   nudge(1, 4, ['shift']);
+    nudge(-1, 0.125, ['alt']); nudge(1, 0.125, ['alt']);
     // R = the record key: press the selected track's (or group's) ●
     // — a group cascades per Q7 (arm every empty member). While
     // anything records, R stops it regardless of selection (the

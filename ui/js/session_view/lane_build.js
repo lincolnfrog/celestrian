@@ -1,5 +1,5 @@
 /**
- * Lane construction: the per-lane row (rail + body + nav dock) built
+ * Lane construction: the per-lane row (rail + body + region panel) built
  * once per lane id; patchRail/patchLaneBody keep it current in place.
  * Also the inline rename editor (the one piece of rail chrome that
  * must survive the 50ms patch tick).
@@ -10,7 +10,7 @@ import { el, setText, parseDropIds } from './sv_util.js';
 import { dragHasFiles, dropFrameQ } from '../import_drop.js';
 import { selection, clearSelection, toggleSelect } from './selection.js';
 import { buildGainDial, buildPanDial } from './dials.js';
-import { buildNavDock } from './teleport.js';
+import { buildRegionPanel } from './region_panel.js';
 import { toggleInputMenu } from './input_menu.js';
 import { toggleTakeMenu } from './take_menu.js';
 import { openCreationMenu } from './creation_menu.js';
@@ -21,7 +21,7 @@ import { buildSeqGrid } from './seq_grid.js';
  * Build one lane row for the vm lane: synthetic fx/add rows get their
  * own shapes; clips and groups get the two-line rail (name row on top;
  * controls + status below — nothing ever competes with the name for
- * width), the body, and the nav dock. Wired once; all state patches in
+ * width), the body, and the region panel. Wired once; all state patches in
  * patchRail / patchLaneBody.
  */
 export function buildLane(lane) {
@@ -280,7 +280,7 @@ export function buildLane(lane) {
         ctx.cb.onImportDrop(l.id, q, Array.from(e.dataTransfer.files || []));
     });
 
-    row.append(rail, body, buildNavDock(row));
+    row.append(rail, body, buildRegionPanel(row));
     return row;
 }
 

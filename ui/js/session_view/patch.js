@@ -1,7 +1,7 @@
 /**
  * Top-level patch: patchSessionView renders the Q-unit view model into
  * the DOM every poll — transport chrome, ruler, keyed lane
- * reconciliation, nav docks, and the one playhead (I8).
+ * reconciliation, region panels, and the one playhead (I8).
  */
 
 import { ctx } from './context.js';
@@ -11,7 +11,7 @@ import { patchRuler } from './ruler.js';
 import { buildLane } from './lane_build.js';
 import { patchRail } from './rail.js';
 import { patchLaneBody } from './lane_body.js';
-import { updateNavDock } from './teleport.js';
+import { patchRegionPanel } from './region_panel.js';
 import { animatorPoll, stopAnimator } from './animator.js';
 import { ensureDefaultSelection } from './selection.js';
 import { noteSeekVm } from './ruler_seek.js';
@@ -128,9 +128,15 @@ export function patchSessionView(vm, aux) {
         vm.lanes.filter(l => l.kind === 'clip' || l.kind === 'group')
             .map(l => l.id));
 
-    // Handle nav docks mirror the overlays just patched above (ticks
-    // parse the handles' own left styles — same pct() truth, no drift).
-    ctx.laneEls.forEach(row => updateNavDock(row));
+    // The region panel under the SELECTED lane (after the selection
+    // settled above): the whole raw take + the kept region, from the
+    // peaks the body patch just resolved.
+    vm.lanes.forEach(lane => {
+        const row = ctx.laneEls.get(lane.id);
+        if (!row || (lane.kind !== 'clip' && lane.kind !== 'group')) return;
+        const body = row.querySelector(':scope > .lane-body');
+        patchRegionPanel(row, lane, vm, aux, body ? body._peaks : null);
+    });
 
     ctx.els.emptyState.style.display = vm.lanes.length ? 'none' : 'block';
     // The ruler row measures LANES — with zero lanes it would be a
@@ -214,7 +220,10 @@ export function patchSessionView(vm, aux) {
  * compositor, no bleed. */
 function maskPlayheadOverInspectors() {
     const ph = ctx.els.playhead;
-    const bodies = document.querySelectorAll('.lane-body.inspecting');
+    // Revealing lanes (the same-scale reveal, map_bands.js) run raw
+    // coordinates for the gesture's duration — masked the same way.
+    const bodies = document.querySelectorAll(
+        '.lane-body.inspecting, .lane-body.revealing');
     if (!bodies.length) {
         if (ph._masked) {
             ph._masked = false;

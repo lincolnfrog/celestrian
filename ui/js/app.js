@@ -556,18 +556,9 @@ function onCompMode(id, open) {
         : 'Comp closed — the comp stays');
 }
 
-// Move the OS cursor (viewport CSS px). True when the backend
-// actually warped; the mock returns false and the drag falls back
-// to absolute capture (map_bands.js runExpandedDrag).
-async function onWarpPointer(x, y) {
-    // The viewport size rides along so the native side can map CSS px
-    // to its own points exactly under any zoom / DPI scale.
-    try {
-        return (await callNative('warpPointer', x, y,
-            window.innerWidth, window.innerHeight)) === true;
-    }
-    catch (_) { return false; }
-}
+// (The `warpPointer` bridge verb — the expanded map drag's cursor
+// teleport — has no JS caller since the same-scale reveal, 2026-09-11.
+// The native verb stays registered for protocol parity.)
 
 // Recording input (clips only — Q7: each child records from its
 // own input). The list is fetched per menu-open: hot-plugged
@@ -1183,7 +1174,6 @@ function initApp() {
                'Map refused by the engine — unchanged');
             return r;
         },
-        onWarpPointer,
         getInputs,
         onSetInput: (id, channelIndex) =>
             call('setNodeInput', [id, channelIndex],

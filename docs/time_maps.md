@@ -417,6 +417,72 @@ indirection were both considered and rejected):**
   multi-segment definer is a SPLICE COPY (kept cells → exact-size
   buffer; the edit inverse OWNS the pre-splice buffer + map, so undo
   un-splices — the owned-subtree precedent).
+### The same-scale reveal + the region panel (owner-ruled 2026-09-11)
+
+**Field report (owner):** with a 1Q definer and a 52Q drum take
+windowed to 4Q, "when I grab a handle and the track blows up to its
+full 52Q length, all sorts of issues happen — I am very confused about
+where the current selection is." Diagnosis: the expanded map drag
+(below, 2026-07-23e) squeezed the whole raw take into the lane at grab
+time — a 13× scale change under the pointer (300 → 23 px/Q at 1200 px):
+snap targets smaller than a fingertip, the kept region a 92 px sliver
+in a field of dims, the cursor teleported onto it (the warp), and the
+other lanes still on the old grid. Every symptom traced to that one
+rescale; the pointer warp was a patch over it, not a design.
+
+**The ruling — two surfaces, one law (`session_view/map_core.js`):**
+
+1. **THE SAME-SCALE REVEAL (`map_bands.js runRevealDrag`).** A heard
+   lane's trim grip or seam handle drags in RAW coordinates at the
+   lane's OWN px-per-Q. On a real drag (the engage gate stays: > 4 px
+   or a 160 ms hold — a click never edits) the lane UNROLLS the raw
+   take around the grabbed thing: a reveal layer draws the visible raw
+   slice (waveform + raw-Q gridlines) where the heard tiles were, the
+   preview layer's dims/brackets/bands sit over it, and the view is
+   placed so the grab pixel IS the handle's raw position — the handle
+   never leaves the pointer, nothing rescales, no warp (the
+   `warpPointer` bridge verb has no JS caller; kept for protocol
+   parity). Dragging into a visible edge (36 px, clipped by the
+   viewport) PANS the raw take under the hand (`PAN_MAX_PX_PER_S`),
+   the bound following. The shared frame stays pinned, live commits
+   stream (audible), release commits and the lane relaxes; the white
+   playhead is masked over a `.revealing` body like an inspector and
+   the amber `.reveal-cursor` maps the engine's map phase through the
+   committed segments (`rawCursorQ`). The dblclick flash-expand is
+   gone (the cut lands in raw context on the panel).
+2. **THE REGION PANEL (`region_panel.js`).** The SELECTED clip/group
+   grows a 52 px row under its lane (`.lane-region`, grid column 2),
+   with a viewport-pinned panel (JS positioning, like the dock it
+   replaces): label ("loop 4Q · 52Q take"), then a strip drawing the
+   WHOLE raw take (clip peaks; a group's map mixdown, the same array
+   the heard tiles slice), excluded material dimmed, the kept region a
+   bright box (`.region-kept`: drag = SLIDE by whole Qs, ⌥ any amount
+   — `slideMoveFn`, the third move law), bracket handles (drag = TRIM,
+   `trimMoveFn`; ⌥ slides), inner cuts as bands (the lane's raw-frame
+   band code verbatim — the strip is a band host with cycleQ = totalQ,
+   anchor 0), dblclick = a 1Q cell cut, and the amber raw-time cursor.
+   Shown for the most recently selected lane with a ≥ 2Q take; not
+   for the Q-definer (its trim law SETS Q), a pinned inspector (the
+   lane is its own overview), a child under a parent's map, or a
+   recording lane. Overview and detail are both live: a panel drag
+   re-tiles the heard lane per commit; a lane drag re-draws the panel.
+3. **SELECTION IS THE AFFORDANCE.** The panel appears with selection
+   and leaves with it. New deselect gesture: a click on the top bar's
+   empty space (`#transport`, controls excluded) clears the selection
+   — with Escape and the empty-canvas click. **Keyboard nudges:** ← /
+   → slide the selected region by 1Q (⇧ 4Q, ⌥ ⅛Q), length held, one
+   undo step per press (`nudgeRegion`).
+4. **Retired:** the handle nav dock (its ticks/viewport box), the
+   expanded map drag, the pointer warp + echo filter, the flash-expand.
+   Kept: [ ] / { } teleport keys, the chip-click inspector, cut/heal
+   gestures, ⌥ semantics, live splices, gesture-scoped undo.
+
+Pinned by `ui/js/tests/map_core.test.mjs` (the three move laws),
+`ui/e2e/region_panel.spec.js` (panel on select / off on top-bar click
+and Escape; panel trim, slide, cut; nudges; the reveal keeps the grip
+under the pointer and pans at the edge), and the rewritten step 2 of
+"trim a long take" in `ui/e2e/session_view.spec.js`.
+
 ### Gesture-UX journal (2026-07-22 → 07-25)
 
 *(history — the iteration record of the cut-band / expanded-drag

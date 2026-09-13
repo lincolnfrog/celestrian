@@ -1452,21 +1452,30 @@ test.describe('Creation menu (Q17)', () => {
         expect(sb.x - box.x).toBeLessThan(box.width * 0.03);            // start at the left edge
         expect(box.x + box.width - (eb.x + eb.width)).toBeLessThan(box.width * 0.03); // end at the right
 
-        // STEP 2 — the right (END) grip to 9Q. The grab expands the
-        // lane to the raw take; without pointer warp (mock) the handle
-        // glues to the pointer, so a slow drag to the raw 9Q lands
-        // the bound there (period 3Q). Same top → the epoch stays.
+        // STEP 2 — the right (END) grip to 9Q. THE SAME-SCALE REVEAL
+        // (2026-09-11): the grab does NOT rescale the lane — it unrolls
+        // the raw take at the lane's own px-per-Q with the grip glued
+        // to the pointer, so dragging LEFT by 1.2 frame-Q proposes the
+        // raw bound 8.8Q → period 2.8Q → snaps to 3Q → bound 9Q. Same
+        // top → the epoch stays.
         await body.hover();
         const ebox = await end.boundingBox();
-        await page.mouse.move(ebox.x + ebox.width / 2, ebox.y + ebox.height / 2);
+        const gx = ebox.x + ebox.width / 2;
+        const gy = ebox.y + ebox.height / 2;
+        await page.mouse.move(gx, gy);
         await page.mouse.down();
         await page.waitForTimeout(220);                    // engage (hold)
-        await page.mouse.move(ebox.x + ebox.width / 2 + 6, ebox.y + ebox.height / 2);
-        await expect(body).toHaveClass(/inspecting/);      // raw take open
-        const raw = await body.boundingBox();
-        await page.mouse.move(raw.x + raw.width * (9.2 / 10), raw.y + raw.height / 2,
-            { steps: 12 });
+        await page.mouse.move(gx - 6, gy);
+        await expect(body).toHaveClass(/revealing/);       // raw take unrolled
+        await expect(body).not.toHaveClass(/inspecting/);  // …not rescaled
+        // The follow bracket rides the pointer (one visible bracket
+        // under the hand — no teleport, no warp).
+        const fb = await body.locator('.drag-preview-layer .win-bracket.dragging')
+            .boundingBox();
+        expect(Math.abs((fb.x + fb.width) - (gx - 6))).toBeLessThan(12);
+        await page.mouse.move(gx - box.width * (1.2 / 4), gy, { steps: 12 });
         await page.mouse.up();
+        await expect(body).not.toHaveClass(/revealing/);
         await expect.poll(async () => {
             const n = await clip2();
             return [n.loopStart / Q, n.loopEnd / Q].join(',');

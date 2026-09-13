@@ -413,9 +413,10 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
     EFFECTIVE period, the engine's `getEffectivePeriod` mirrored
     (`timeline_model.stackEffectivePeriod`: window, else sequence, else
     the children's effective LCM, nested windows shortening it all the
-    way up). The raw extent is one grab away: dragging a grip expands
-    the lane into the edit view and collapses on release; clicking the
-    chip pins it open with a "done" chip (`windowEditLane`, shared too).
+    way up). The raw extent lives on the REGION PANEL under the
+    selected lane (time_maps.md, 2026-09-11) and, mid-gesture, in the
+    lane's same-scale reveal; clicking the chip still pins the raw
+    inspector open with a "done" chip (`windowEditLane`, shared too).
     Children under an active group map show the slice the map selects
     of them (`childSrcSegsUnderMap`) — no projection dims, no chrome;
     the parent owns the edit. Bypass restores the raw-framed lane with
