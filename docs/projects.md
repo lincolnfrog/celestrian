@@ -10,7 +10,7 @@ build → save-as-date) into three rules.
 
 ## Rule 1 — A project is a folder; the folder name is its ID, not its name
 
-```
+```text
 ~/Music/Celestrian/Projects/20260719-01/
     session.json      the graph (QTime, device-independent)
                       + "name" (display) + "created"

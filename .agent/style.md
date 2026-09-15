@@ -5,47 +5,53 @@ trigger: always_on
 # Code Style Guide
 
 ## General
-* Avoid truncated words like "pos" for "position" and "num" for number. Example: instead of "read_pos", just use "read_position". Also consider more legible alternatives, for example "num_peaks" should be "peak_count" instead.
+
+- Avoid truncated words like "pos" for "position" and "num" for number. Example: instead of "read_pos", just use "read_position". Also consider more legible alternatives, for example "num_peaks" should be "peak_count" instead.
 
 ## C++ Style
-* **Classes**: PascalCase (e.g., `AudioBuffer`)
-* **Functions**: camelCase (e.g., `processAudio`)
-* **Variables**: snake_case (e.g., `write_pos`, `buffer_size_` for privates)
-* **Enums**: Values use UPPER_SNAKE_CASE
-* **Pointers**: `Foo*` not `Foo *` (type-aligned)
-* Prefer `std::unique_ptr`/`std::shared_ptr` over raw pointers
-* No `using namespace` aliases
-* Avoid boolean params—use enums; avoid magic numbers—use constants
-* Classes should not have public member variables—use getters
-* Maximum const-correctness
+
+- **Classes**: PascalCase (e.g., `AudioBuffer`)
+- **Functions**: camelCase (e.g., `processAudio`)
+- **Variables**: snake_case (e.g., `write_pos`, `buffer_size_` for privates)
+- **Enums**: Values use UPPER_SNAKE_CASE
+- **Pointers**: `Foo*` not `Foo *` (type-aligned)
+- Prefer `std::unique_ptr`/`std::shared_ptr` over raw pointers
+- No `using namespace` aliases
+- Avoid boolean params—use enums; avoid magic numbers—use constants
+- Classes should not have public member variables—use getters
+- Maximum const-correctness
 
 ## JS Style
-* Class names: PascalCase, functions/variables: camelCase
-* Modern ES6+ with `async/await` for Bridge calls
-* Vanilla JS/CSS preferred (no frameworks)
-* Avoid embedding JS in HTML
+
+- Class names: PascalCase, functions/variables: camelCase
+- Modern ES6+ with `async/await` for Bridge calls
+- Vanilla JS/CSS preferred (no frameworks)
+- Avoid embedding JS in HTML
 
 ## Code Structure
-* Small, single-responsibility files and classes
-* Each function does one thing; detailed public API comments
-* Aim for 90%+ test coverage
+
+- Small, single-responsibility files and classes
+- Each function does one thing; detailed public API comments
+- Aim for 90%+ test coverage
 
 ## Comments describe what IS (owner rule, 2026-09-01)
-* A comment states the present law: what the code does and the standing
+
+- A comment states the present law: what the code does and the standing
   constraint that makes it necessary. Never the history of how it got
   there.
-* No dates, audit item numbers, "field video", "previously / used to /
+- No dates, audit item numbers, "field video", "previously / used to /
   the old X", "supersedes", "round N". History lives in docs/ (and
   docs/archive/), which already carry it.
-* Cite rulings and docs by NAME and section — `(Q18, composition.md §2)`,
+- Cite rulings and docs by NAME and section — `(Q18, composition.md §2)`,
   `(S7, sequencer.md §5)`, `(I5)` — never by date.
-* Keep a hazard, drop the story: "X must …, otherwise Y" stays; "Y broke
+- Keep a hazard, drop the story: "X must …, otherwise Y" stays; "Y broke
   on 2026-08-29 when …" goes.
-* Test references are present-tense facts and stay ("pinned by
+- Test references are present-tense facts and stay ("pinned by
   tests/content_frame_tests.cc").
-* Length follows subtlety: a one-line fact gets one line.
+- Length follows subtlety: a one-line fact gets one line.
 
 ## JUCE WebView Bridge
+
 > [!IMPORTANT]
 > **Three-Layer Handshake**: New UI-triggered features require:
 > 1. **C++ Logic** (implementation)
@@ -54,4 +60,4 @@ trigger: always_on
 >
 > Missing step #2 causes JS promises to hang forever.
 
-* Bridge invocations are traced automatically by the `voidCall`/`valueCall` adapters in `MainComponent.cc`, in DEBUG builds only — do not add per-call release logging (log spam; owner ruling). Functional logging (e.g. `nativeLog` relaying the JS payload, `dumpStateToFile` recording its target path) is separate and stays in all builds. New registrations should use the adapters; hand-written handlers (async/multi-branch) call `logBridgeCall` themselves.
+- Bridge invocations are traced automatically by the `voidCall`/`valueCall` adapters in `MainComponent.cc`, in DEBUG builds only — do not add per-call release logging (log spam; owner ruling). Functional logging (e.g. `nativeLog` relaying the JS payload, `dumpStateToFile` recording its target path) is separate and stays in all builds. New registrations should use the adapters; hand-written handlers (async/multi-branch) call `logBridgeCall` themselves.

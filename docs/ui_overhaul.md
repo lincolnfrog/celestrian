@@ -219,7 +219,7 @@ record. Sized to be read from six feet with an instrument in hand.
 *(As built — trued 2026-09-01; the original 2026-07-09 sketch named
 `patch_dom.js`, "timeline_model.js only" and "23 protocol methods".)*
 
-```
+```text
 backend state ──▶ deriveViewModel(state)   pure, unit-testable:
                     view_model.js (display) over timeline_model.js
                     (kernel math, golden-pinned to src/timing.h)

@@ -85,7 +85,7 @@ view*: `phase(t, period, epoch) = (t − epoch) mod period`.
 
 **Playback** is one equation applied recursively:
 
-```
+```text
 out(node, t) = content[(t − origin) mod period]            — leaf
 out(node, t) = Σ out(child, m(t))                          — composite
 ```
@@ -95,7 +95,7 @@ active map, and for a node with an ACTIVE map (Q18, 2026-09-01,
 composition.md §2 — one law for clips and stacks, anchored at the
 node's OWN origin):
 
-```
+```text
 inner(t) = mapOffset((t − origin − a0) mod period)     a0 = mapOffset(0)
 m(t)     = origin + inner(t)
 ```
@@ -108,7 +108,7 @@ mechanism that ever transforms time, and they compose by nesting.
 
 **Recording** is the same equation run backwards:
 
-```
+```text
 content[i] ← input(origin + i + C)        (C = calibrated round trip)
 ```
 

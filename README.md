@@ -34,7 +34,7 @@ An open-source Digital Audio Workstation (DAW) built with JUCE and modern web te
    ```
 
    On Windows, from cmd.exe (no Git Bash needed):
-   ```
+   ```bat
    scripts\full_build.cmd
    ```
 

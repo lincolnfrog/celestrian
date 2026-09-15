@@ -286,6 +286,7 @@ rendering (Q14c → law 13 amended), the stack/clip anchoring asymmetry
 ## Archive: completed work (one line each)
 
 ### 2026-09-01 — foundation audit + Q18
+
 - [x] Foundation audit (docs, engine, UI, tests); report in the artifact
   linked from composition.md §0's ruling record.
 - [x] Repo hygiene: `ui/node_modules`, the state dump and a stray
@@ -322,6 +323,7 @@ rendering (Q14c → law 13 amended), the stack/clip anchoring asymmetry
   G-2; Combine; session round trip) and re-pinned old-law tests.
 
 ### 2026-08 — sequencer, loop regions, group definers
+
 - [x] Sequencer steps 1–4 (core, step record + audition, nested
   sequences, cue steps) — sequencer.md §10–§13; frame-health badge.
 - [x] Loop-region audit 2026-08-30/31: content-frame law, group
@@ -333,6 +335,7 @@ rendering (Q14c → law 13 amended), the stack/clip anchoring asymmetry
   one-shots (Q5); heard-frame windows (law 13); map coherence ruling.
 
 ### 2026-07 — kernel migration & unification
+
 - [x] Tier 0 rational time (Q12, QTime); Tier 1 finish-the-kernel
   (clock never mutated, one origin per clip, state machine, commit as
   event, cast-free traversal, context passed down); Tier 2 defects
@@ -341,5 +344,6 @@ rendering (Q14c → law 13 amended), the stack/clip anchoring asymmetry
   and lock-collapse; latency calibration; time_maps phase 1.
 
 ### 2026-03 — hygiene round
+
 - [x] BoxNode removal, debug-log cleanup, API cleanup, app.js
   modularization, LCM/GCD consolidation, ghost bug suite.

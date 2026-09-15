@@ -8,7 +8,7 @@
 
 Stacks can contain other stacks to unlimited depth. A nested stack ("sub-stack") behaves identically to a top-level stack:
 - Can contain clips and other stacks
-- Shows composite waveform when collapsed  
+- Shows composite waveform when collapsed
 - Supports recording, solo, mute
 - Duration = LCM of its children
 
@@ -40,14 +40,14 @@ Users can modify the **loop region** of a composite (stack) to control which por
 
 ### Visual Example
 
-```
-┌─ Stack Composite ──────────────────────────────────────────────────────────┐
-│ ┌────────────────────────────────────────────────────────────────────────┐ │
+```text
+┌─ Stack Composite ─────────────────────────────────────────────────────────┐
+│ ┌───────────────────────────────────────────────────────────────────────┐ │
 │ │▒▒▒│░░░░░░░░░░░░░░░░░░░░|░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░│▒▒▒▒▒▒▒▒▒│ │
-│ │   ↑ loopStart          ↑ playhead                loopEnd ↑           │ │
-│ └────────────────────────────────────────────────────────────────────────┘ │
-│  ▒▒▒ = dimmed (outside loop)   ░░░ = active loop region                   │
-└────────────────────────────────────────────────────────────────────────────┘
+│ │   ↑ loopStart          ↑ playhead                   loopEnd ↑         │ │
+│ └───────────────────────────────────────────────────────────────────────┘ │
+│ ▒▒▒ = dimmed (outside loop)   ░░░ = active loop region                    │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Implementation Notes
@@ -62,7 +62,6 @@ Users can modify the **loop region** of a composite (stack) to control which por
 2. Loop handles are draggable (same interaction as clip loop handles)
 3. Default loop region = full duration (loopStart=0, loopEnd=LCM)
 
-
 ---
 
 > **SUPERSEDED 2026-07-09 by ui_overhaul.md ("Tape Room").** The
@@ -75,7 +74,6 @@ Users can modify the **loop region** of a composite (stack) to control which por
 > structural).
 
 ## Visual Design: Always-Visible Stack Waveform
-
 
 Every stack displays a composite waveform header that shows the combined audio of all its children. This waveform is **always visible** - both when collapsed and expanded - providing a canonical playhead reference at that nesting level.
 
@@ -92,7 +90,7 @@ The stack's composite waveform acts as a "sync reference" for the entire group. 
 
 When a child stack is collapsed, it appears as a single waveform - perfectly aligned with sibling clips:
 
-```
+```text
 ┌─ Parent Stack ─────────────────────────────────────────────────────────┐
 │ ┌───────────────────────────────────────────────────────────────────┐  │
 │ │ ░░░░░░░░░░░░░░░░░░░░░░|░░░░░░░░░░░░░░░░░░░░░░░░░░░░  (composite)  │  │
@@ -119,7 +117,7 @@ When a child stack is collapsed, it appears as a single waveform - perfectly ali
 
 When the child stack is expanded, its **header waveform** stays aligned with sibling clips (same left edge) for vertical playhead alignment. The child clips are indented below, creating a "flag" shape:
 
-```
+```text
 ┌─ Parent Stack ─────────────────────────────────────────────────────────┐
 │ ┌───────────────────────────────────────────────────────────────────┐  │
 │ │ ░░░░░░░░░░░░░░░░░░░░░░|░░░░░░░░░░░░░░░░░░░░░░░░░░░░  (composite)  │  │
@@ -159,7 +157,6 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 
 **Future Enhancement**: Make stack waveform height configurable or collapsible to "thin" mode for power users who want minimal chrome.
 
-
 ---
 
 ## Visual Distinction
@@ -174,12 +171,14 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 ## Key CUJs
 
 ### CUJ 1: Create Empty Sub-Stack
+
 1. User clicks "+" in parent stack
 2. Menu shows: "New Clip" / "New Stack" *(superseded by Q17, 2026-08-13: every + is a template picker — "Track" default row + the user's subtree templates; groups arrive post-hoc by drag or whole via a group template, never as a "New Stack" item)*
 3. User picks "New Stack"
 4. Empty sub-stack appears, user can drag clips into it
 
 ### CUJ 2: Combine Clips into Stack
+
 1. User multi-selects clips (Shift+click or Cmd+click)
 2. Right-click → "Combine into Stack"
 3. Selected clips move into new sub-stack
@@ -187,7 +186,7 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 ### CUJ 3: Drag Clip into Sub-Stack
 
 **Zone-Based Drop Targeting** (avoids hidden hotkeys):
-```
+```text
 ┌──────────────────┐
 │   TOP THIRD      │ → Drop ABOVE this node
 ├──────────────────┤
@@ -205,15 +204,18 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 5. If target is a clip, center zone = "create new stack containing both"
 
 ### CUJ 4: Drag Clip Out of Sub-Stack
+
 1. User expands sub-stack inline
 2. Drags clip from sub-stack to parent
 3. Clip moves to parent level
 
 ### CUJ 5: Promote Sub-Stack to Top Level
+
 1. User drags sub-stack out of parent
 2. Stack becomes top-level stack
 
 ### CUJ 6: Record into Sub-Stack
+
 1. User clicks record on clip inside sub-stack
 2. Recording respects Q from root stack (Q island)
 3. Commit works normally
@@ -245,7 +247,7 @@ When the child stack is expanded, its **header waveform** stays aligned with sib
 > (multiple solos sum), and fractal (solo on a group solos its
 > subtree). Mute cascades as below.
 
-```
+```text
 if (stack.isMuted) → all children muted
 if (stack.isSoloed) → all children play (unless individually muted)
 if (child.isMuted) → that child muted regardless of parent
@@ -318,13 +320,13 @@ The LCM that determines a stack's timeline width is calculated
 - **Ghosts render per-stack**: each stack tiles its clips' ghosts to its
   own LCM width, in its own coordinate space.
 
-```
-┌─────────────────────────────────────────────────────────────┐
+```text
+┌──────────────────────────────────────────────────────────────┐
 │ Outer Stack (LCM = 12Q)                                      │
 │   [Clip 1 (4Q)]━━━━━━━━━━━━━[ghost]━━━━━━━━━━━━━[ghost]      │
 │   [Inner Stack ═══ 6Q composite ═══]━━━━[ghost]━━━━━         │
 │   (expanded: shows 2Q + 3Q clips internally)                 │
-└─────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -338,11 +340,11 @@ The LCM that determines a stack's timeline width is calculated
 class StackNode : public AudioNode {
     std::vector<std::unique_ptr<AudioNode>> children;  // Can be Clip or Stack
     bool isExpanded = false;
-    
+
     // Composite waveform cache
     juce::AudioBuffer<float> compositeWaveform;
     bool compositeInvalid = true;
-    
+
     int64_t getIntrinsicDuration() override {
         return calculateLCM(children);  // Recursive for nested stacks
     }
@@ -380,12 +382,14 @@ function renderNode(node, parentStack) {
 ## Implementation Phases
 
 ### Phase 1: Core Data Model ✓
+
 - [x] Update `StackNode` to accept child stacks
 - [x] Recursive LCM calculation
 - [x] Recursive solo/mute logic
 - [x] Loop logic shared via `AudioNode` base class (loopStart, loopEnd; ~~anchorPhase, launchPoint~~ — deleted 2026-07-16, derived from `origin`)
 
 ### Phase 2: UI Rendering (Partial ✓)
+
 - [x] Collapsed sub-stack appearance (colored border)
 - [x] Inline expansion with indent
 - [x] Composite waveform header (always visible when expanded)
@@ -394,6 +398,7 @@ function renderNode(node, parentStack) {
 - [ ] Drill-in mode (double-click) - *Future*
 
 ### Phase 3: Drag-Drop Refactor ✓
+
 - [x] Switch to "drop indicator line" UX (no live reorder)
 - [x] Implement zone-based targeting (top/center/bottom thirds)
 - [x] Center zone on stack = drop INTO stack
@@ -402,6 +407,7 @@ function renderNode(node, parentStack) {
 - [x] Drag sub-stack to promote to top-level
 
 ### Phase 4: Composite Waveform ✓
+
 - [x] Generate mixed waveform from children (with position alignment)
 - [x] Waveform accounts for clip anchor offsets
 - [x] Looping clips repeat waveform at correct positions
@@ -410,6 +416,7 @@ function renderNode(node, parentStack) {
 - [ ] Render in collapsed view - *Future*
 
 ### Phase 5: Creation Flows ✓
+
 - [x] "+button → New Stack" in parent
 - [x] "+button → New Clip" in parent
 - [ ] Multi-select → "Combine into Stack" - *Future*
@@ -465,24 +472,24 @@ function renderNode(node, parentStack) {
 
 **Mental model:** "Opening a container" disables its outer constraint. Expand to work inside, collapse to hear the looped output.
 
-```
+```text
 ┌─ Stack (COLLAPSED) ─────────────────────────────────────────────────┐
-│ ████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓████████████████████████  ← Loop region ACTIVE │
+│ ████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓████████████████████████  ← Loop region ACTIVE  │
 │     [loopStart]     [loopEnd]                                       │
 │     Playhead constrained to looped region                           │
 │     Composite waveform: OPAQUE (normal)                             │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─ Stack (EXPANDED) ──────────────────────────────────────────────────┐
-│ ▒▒▒▒░░░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ← Loop region BYPASSED │
+│ ▒▒▒▒░░░░░░░░░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ← Loop region BYPASSED  │
 │     (handles visible but faded like a ghost)                        │
 │     Composite waveform: FADED (ghost-like, ~50% opacity)            │
 │                                                                     │
 │ ┌─ Clip 1 ────────────────────────────────────────────────────────┐ │
-│ │  Full playback, normal recording - no loop constraint          │ │
+│ │  Full playback, normal recording — no loop constraint           │ │
 │ └─────────────────────────────────────────────────────────────────┘ │
 │ ┌─ Clip 2 ────────────────────────────────────────────────────────┐ │
-│ │  Can record freely inside expanded stack                       │ │
+│ │  Can record freely inside expanded stack                        │ │
 │ └─────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -493,28 +500,28 @@ function renderNode(node, parentStack) {
 
 Each stack level applies its loop independently based on its own collapse state:
 
-```
+```text
 ┌─ Outer Stack (COLLAPSED) ────────────────────────────────────────────┐
-│ ████▓▓▓▓▓▓▓▓████████████  ← Outer loop ACTIVE (constrained 2Q-4Q)   │
+│ ████▓▓▓▓▓▓▓▓████████████  ← Outer loop ACTIVE (constrained 2Q–4Q)    │
 │     [2Q]    [4Q]                                                     │
-│     Global playhead loops within bars 2-4 of LCM                     │
+│     Global playhead loops within bars 2–4 of LCM                     │
 └──────────────────────────────────────────────────────────────────────┘
 
 ┌─ Outer Stack (EXPANDED) ─────────────────────────────────────────────┐
-│ ▒▒▒▒░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒  ← Outer loop BYPASSED (faded)             │
+│ ▒▒▒▒░░░░░░░░▒▒▒▒▒▒▒▒▒▒▒▒  ← Outer loop BYPASSED (faded)              │
 │                                                                      │
-│   ┌─ Inner Stack (COLLAPSED) ──────────────────────────────────┐    │
-│   │ ██▓▓▓▓██████████████  ← Inner loop ACTIVE (constrained)    │    │
-│   │   [1Q][2Q]             Applies to THIS stack's children     │    │
-│   └────────────────────────────────────────────────────────────┘    │
+│   ┌─ Inner Stack (COLLAPSED) ────────────────────────────────────┐   │
+│   │ ██▓▓▓▓██████████████  ← Inner loop ACTIVE (constrained)      │   │
+│   │   [1Q][2Q]            Applies to THIS stack's children       │   │
+│   └──────────────────────────────────────────────────────────────┘   │
 │                                                                      │
-│   ┌─ Inner Stack (EXPANDED) ───────────────────────────────────┐    │
-│   │ ▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ← Inner loop BYPASSED (faded)        │    │
-│   │                                                             │    │
-│   │   ┌─ Clip A ─────────────────────────────────────────────┐ │    │
-│   │   │  Plays full duration - both outer AND inner bypassed │ │    │
-│   │   └──────────────────────────────────────────────────────┘ │    │
-│   └─────────────────────────────────────────────────────────────┘   │
+│   ┌─ Inner Stack (EXPANDED) ─────────────────────────────────────┐   │
+│   │ ▒▒░░░░▒▒▒▒▒▒▒▒▒▒▒▒▒▒  ← Inner loop BYPASSED (faded)          │   │
+│   │                                                              │   │
+│   │   ┌─ Clip A ─────────────────────────────────────────────┐   │   │
+│   │   │  Plays full duration — both outer AND inner bypassed │   │   │
+│   │   └──────────────────────────────────────────────────────┘   │   │
+│   └──────────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -538,25 +545,25 @@ The ghost-like fade when expanded signals "this loop is not currently active."
 ```cpp
 void StackNode::process(/* ... */, const ProcessContext &context) {
     int64_t effective_master_pos = context.master_pos;
-    
+
     // === LOOP-ON-COLLAPSE MODEL ===
     // Only apply loop windowing when COLLAPSED
     if (!is_expanded.load()) {
         int64_t stack_loop_start = loop_start_samples.load();
         int64_t stack_loop_end = loop_end_samples.load();
-        
+
         // Only apply if valid loop region is set
         if (stack_loop_end > stack_loop_start) {
             int64_t loop_duration = stack_loop_end - stack_loop_start;
-            effective_master_pos = stack_loop_start + 
+            effective_master_pos = stack_loop_start +
                                    (context.master_pos % loop_duration);
         }
     }
     // When expanded: pass through master_pos unchanged
-    
+
     ProcessContext child_context = context;
     child_context.master_pos = effective_master_pos;
-    
+
     for (const auto &child : children) {
         child->process(/* ... */, child_context);
         // Sum into output...
@@ -597,4 +604,3 @@ Child anchor phases are **independent** of stack loop processing:
 > epoch-derived phase, nested window re-basing, invalid-window
 > passthrough, high-transport wrap consistency. E2E expectations key off
 > the **bypass state** (`.loop-bypassed` class), not expansion.
-

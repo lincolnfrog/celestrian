@@ -53,7 +53,7 @@ Canon:
 
 ## 1. The node record
 
-```
+```text
 node = {
   content   : samples (leaf)  |  children (stack)
   origin    : int64 samples on the monotonic clock — the moment
@@ -89,7 +89,7 @@ For a node with origin `O`, active map `m` (or the full span `[0, D)`
 when no map is active), map period `P = m.period()`, and
 `a0 = m.mapOffset(0)` (the first segment's start):
 
-```
+```text
 inner(t)  = m.mapOffset((t − O − a0) mod P)          // an inner position in [0, D)
 ```
 

@@ -148,7 +148,7 @@ against: they play in time with what they **hear** (playback delayed by
 output latency), and their sound reaches us delayed by input latency.
 That is exactly the model behind the compensation in `ClipNode::process`:
 
-```
+```text
 compensated_pos = master_pos - (input_latency + output_latency)
 ```
 
@@ -157,7 +157,7 @@ loopback calibration — consumer devices routinely under-report).
 
 ### 2.2 Record-start chain (button press → first captured sample)
 
-```
+```text
 click in webview
   → JS event + bridge hop (callNative)            ~1–10 ms
   → JUCE message thread sets is_pending_start      <1 ms
@@ -224,7 +224,7 @@ Implemented as two pieces:
 2. **Arrival-time capture window** (`ClipNode`): when recording starts, the
    clip computes the input-clock position of its first sample:
 
-   ```
+   ```text
    window_start = input_clock + (trigger − compensated_now)
    ```
 

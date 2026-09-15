@@ -4,6 +4,7 @@
 > (shared/timing_golden.json pins them in both C++ and JS).
 
 ## Core Philosophy: Audio Memory Principle
+
 > Recorded audio must always play back aligned with the audio the performer heard during recording. The performer's timing is relative to what they heard—this relationship is sacred.
 
 > [!IMPORTANT]
@@ -21,6 +22,7 @@
 ## Visual Feedback During Recording
 
 ### Quantum Grid Marks ✨
+
 While recording Clip 2+, faint vertical lines appear at each Q boundary:
 - Shows exactly where quantum boundaries are relative to your recording
 - Helps you see if you're approaching a clean stop point
@@ -44,6 +46,7 @@ While recording Clip 2+, faint vertical lines appear at each Q boundary:
 ## Quantum Fundamentals
 
 ### Establishing Quantum (Q)
+
 The **first recorded clip** establishes the quantum:
 - `Q = first_clip.duration` (in samples)
 - All subsequent clips are measured/aligned relative to Q
@@ -63,12 +66,13 @@ The **first recorded clip** establishes the quantum:
 ## Islands (Songs) and Quantum Inheritance
 
 ### The Islands Model
+
 An **Island** is a group of connected stacks that share a common quantum (Q). Think of each island as a separate "song" that can coexist on the same canvas.
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Island A (Q = 44100 samples ≈ 1 second @ 44.1kHz)                   │
-│                                                                      │
+│                                                                     │
 │   ┌─────────────┐     ┌─────────────┐                               │
 │   │   Stack 1   │────▶│   Stack 2   │   (connected = same Q)        │
 │   └─────────────┘     └─────────────┘                               │
@@ -76,10 +80,10 @@ An **Island** is a group of connected stacks that share a common quantum (Q). Th
 
 ┌─────────────────────────────────────────────────────────────────────┐
 │ Island B (Q = 88200 samples ≈ 2 seconds @ 44.1kHz)                  │
-│                                                                      │
-│   ┌─────────────┐                                                    │
+│                                                                     │
+│   ┌─────────────┐                                                   │
 │   │   Stack 3   │   (independent = own Q)                           │
-│   └─────────────┘                                                    │
+│   └─────────────┘                                                   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -108,7 +112,7 @@ stack.timelineLength = LCM(clip1.duration, clip2.duration, ..., clipN.duration)
 This LCM is calculated **per-stack**, not globally. Different stacks in the same island share Q but may have different LCMs based on their clip compositions.
 
 **Example:**
-```
+```text
 Island A (Q = 1 second):
 ├── Stack 1: clips of 1Q, 4Q     → LCM = 4Q
 ├── Stack 2: clips of 2Q, 3Q     → LCM = 6Q
@@ -119,7 +123,7 @@ Island A (Q = 1 second):
 
 When a stack is nested inside another stack, its **internal LCM becomes its composite duration** for the parent's LCM calculation:
 
-```
+```text
 Outer Stack:
 ├── Clip 1 (4Q)
 ├── Inner Stack (internal LCM = 6Q) ← contributes 6Q to outer LCM
@@ -129,6 +133,7 @@ Outer Stack:
 ```
 
 ### Clip Types
+
 1. **Looping Clips**: period = own duration → clip loops continuously
 2. **One-Shot Clips**: period = **context cycle** → plays once when the
    LCM playhead crosses its anchored location, then rests until the next
@@ -184,14 +189,17 @@ origin        = island_epoch + next_q_rel   // stored ABSOLUTE
 ## X-Offset Calculation
 
 ### Goal
+
 Position clip so its **left edge** is at the horizontal position where the user started recording, **relative to the existing context**.
 
 ### Core Concept: Context Loop
+
 When a clip starts recording, the **context loop** = longest existing clip's duration.
 - If no clips exist → context_loop = Q (quantum, defined by first clip)
 - If Clip 1 = 1Q, Clip 2 = 4Q exist → context_loop = 4Q
 
 ### Formula (calculated in C++ at recording start — epoch frame)
+
 ```cpp
 context_loop   = max(longest_sibling_duration, Q)
 rel            = compensated_pos - island_epoch
@@ -206,11 +214,13 @@ sibling plays phase `rel mod duration`, so "what the user perceived" is
 just `rel % context_loop`.
 
 ### Key Insight
+
 The **context_loop determines wrapping behavior**:
 - Recording at end of 1Q loop (0.97Q) → anchor = 0.97Q in context 1Q
 - Recording at 2Q in 4Q context → anchor = 2Q
 
 ### Architecture: C++ Owns the Data
+
 - **C++** calculates `x_pos` at recording start and stores it
 - **JS** displays `node.x` directly with NO transformation
 
@@ -219,14 +229,16 @@ The **context_loop determines wrapping behavior**:
 ## Slot Positioning (Visual X-Offset)
 
 ### Concept: Quantum Slots
+
 When a clip starts recording, it is placed at a **slot** in the visual timeline. Each slot represents one quantum (Q) width.
 
-```
+```text
 Slot:      |  0  |  1  |  2  |  3  |  4  | ...
 Position:  0Q   1Q   2Q   3Q   4Q   5Q
 ```
 
 ### Formula
+
 ```cpp
 next_q_boundary = ceil(current_master_pos / Q) * Q  // Next Q boundary after record pressed
 slot = next_q_boundary / Q
@@ -263,8 +275,9 @@ of how long the transport has been running.
 ## Examples
 
 ### Example 1: Basic Looping Stack
+
 Two clips recorded at 0Q, both looping:
-```
+```text
 Timeline:  |----Q----|----Q----|----Q----|----Q----|
 Clip 1:    [████████][░░░░░░░░][░░░░░░░░][░░░░░░░░]  (1Q @ 0, loops)
 Clip 2:    [████████████████████████████████████████]  (4Q @ 0, defines timeline)
@@ -276,12 +289,14 @@ Clip 2:    [██████████████████████�
 ---
 
 ### Invariants
+
 1. **Perceptual Alignment**: Clips must ALWAYS play back such that they align with what the performer heard while recording. If I record starting at "Phrase A", playback must start with "Phrase A" aligned to that same musical moment.
 2. **Visual Stability**: Clips should not "jump" visually when recording ends. If a clip is recorded starting at the beginning of the context (0Q), it should remain anchored at 0Q, even if its internal phase differs from the global transport.
 
 ### Example 2: Mid-Loop Recording (Core Example)
+
 The canonical example demonstrating phase alignment:
-```
+```text
 Timeline:  |--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|--Q--|
 Clip 1:    [████][░░░░][░░░░][░░░░][░░░░][░░░░][░░░░][░░░░][░░░░][░░░░]  (1Q @ 0)
 Clip 2:    [████████████████][░░░░░░░░░░░░░░░░][░░░░░░░░░░░░░░░░][░░░░░]  (4Q @ 0)
@@ -291,7 +306,7 @@ Clip 3:          [████████████████████�
 **Key points:**
 - Clip 3 recorded when playhead was at 2Q position in the 4Q context
 - X-offset = 2 quantums × 200px = 400px (Matches alignment relative to context)
-- **launch_point = (8Q - 2Q) % 8Q = 6Q** 
+- **launch_point = (8Q - 2Q) % 8Q = 6Q**
 - When master=0, Clip 3 plays from 6Q position
 - When master=2Q, Clip 3 is at position 0 (**aligned with recording!**)
 
@@ -309,8 +324,9 @@ equation produces directly).
 ---
 
 ### Example 3: One-Shot (doesn't fill context)
+
 Short clip recorded mid-timeline, doesn't fill context:
-```
+```text
 Timeline:  |----Q----|----Q----|----Q----|----Q----|
 Clip 1:    [████████][░░░░░░░░][░░░░░░░░][░░░░░░░░]  (1Q @ 0, loops)
 Clip 2:    [██████████████████████████████████████]  (4Q @ 0, loops)
@@ -324,8 +340,9 @@ Clip 3:                        [┄┄┄1Q┄┄┄]             (1Q @ 3Q, ONE-
 ---
 
 ### Example 4: Auto-Quantize Start
+
 Recording always starts at the next quantum boundary:
-```
+```text
 Timeline:  |----Q----|----Q----|----Q----|----Q----|
            0      0.62Q    1Q                      4Q
 Clip 1:    [████████]  (1Q @ 0)
@@ -346,8 +363,9 @@ Clip 2:    [██████████████████████�
 ---
 
 ### Example 5: Context Wrapping
+
 Recording at 10Q with 4Q context:
-```
+```text
 Context at record time: 4Q (from Clip 2)
 anchor = 10Q → 10Q % 4Q = 2Q → X-offset = 400px
 
@@ -365,12 +383,14 @@ Clip 3:          [████████████████████�
 The "Ghost" system visualizes the cyclical nature of loops on a linear timeline.
 
 ### 1. The "Unrolled" Timeline
+
 Imagine unrolling the loop infinitely. "Ghosts" are simply the repetitions of the clip that appear before and after the "primary" instance.
 - **Primary Instance**: The visual block representing the actual recorded buffer.
 - **Right Ghosts**: Future repetitions (Loop 2, Loop 3...).
 - **Left Ghosts (Wrapping)**: Past repetitions (Loop -1, Loop 0...).
 
 ### 2. Wrapping Logic (The "Left Ghost")
+
 If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 in a 4Q loop):
 - The Primary Instance appears at Q=2.
 - The timeline from Q=0 to Q=2 is empty *unless* we wrap.
@@ -378,6 +398,7 @@ If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 
 - A **Ghost** is drawn at `x = start_x - timeline_width` to visualize this wrap.
 
 ### 3. The "First Clip" Case
+
 - **Ideal State**: The first clip defines the timeline origin (Q=0). It should have **Anchor Offset = 0**.
 - **Result**: Primary Instance at 0. No gap at the start. **No Left Ghost**.
 - ~~**Edge Case**: If the transport is running *before* the first recording, the first clip might capture a non-zero anchor… bug/artifact of an un-reset transport.~~ **Superseded (2026-07-16):** the transport is never reset at all (kernel.md §2 holds without exceptions); the first clip's arm moment is captured as the ISLAND EPOCH instead, so anchor 0 holds **by construction** no matter how long the transport ran first — the edge case cannot occur. Pinned by `tests/monotonic_clock_tests.cc`.
@@ -387,6 +408,7 @@ If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 
 ## LCM-Based Timeline Model
 
 ### The Problem with Global Time
+
 A naive implementation uses a "global clock" that counts up forever (0, 1, 2, 3...). Each clip calculates its playhead as `(global_time + offset) % clip_duration`. This creates synchronization problems:
 
 - A 1Q clip and 4Q clip have different loop periods
@@ -403,7 +425,7 @@ The timeline wraps at the **Least Common Multiple (LCM)** of all clip durations.
 
 ### Mathematical Foundation
 
-```
+```text
 timeline_length = LCM(duration_1, duration_2, ..., duration_n)
 current_position = global_transport % timeline_length
 clip_i_phase = (current_position + launch_point_i) % duration_i
@@ -412,7 +434,7 @@ clip_i_playhead = clip_i_phase / duration_i
 
 ### Example: 1Q + 4Q Clips
 
-```
+```text
 Durations: 1Q, 4Q
 LCM = 4Q (timeline loops every 4Q)
 
@@ -429,7 +451,7 @@ At position 4Q → 0Q: Both reset to 0%
 
 ### Example: 1Q + 4Q + 8Q Clips (Example 2 Extended)
 
-```
+```text
 Durations: 1Q, 4Q, 8Q
 LCM = 8Q
 
@@ -447,7 +469,7 @@ Clip 3 has launch_point = 6Q (from Example 2):
 
 This example demonstrates the **LCM Ghost Principle**: when a shorter clip finishes recording, ghosts automatically extend it to fill the LCM cycle.
 
-```
+```text
 Scenario:
 1. Record Clip 1 (1Q) - establishes Q
 2. Record Clip 2 (8Q) - establishes 8Q context
@@ -492,7 +514,7 @@ When Clip 3 commits at 4Q:
 
 When clip durations have no common factors, the LCM can be very large.
 
-```
+```text
 Scenario:
 1. Record Clip 1 (1Q)
 2. Record Clip 2 (8Q)
@@ -522,7 +544,7 @@ Individual clips don't loop at their own duration. ALL clips loop together at th
 
 This demonstrates that when a **shorter** clip finishes recording, it must NOT cause early looping.
 
-```
+```text
 Scenario:
 1. Record Clip 1 (1Q) - establishes Q
 2. Record Clip 2 (4Q) - LCM = 4Q
@@ -548,7 +570,7 @@ When Clip 3 commits at 2Q:
 
 When a clip's duration doesn't divide the existing LCM, the LCM expands.
 
-```
+```text
 Scenario:
 1. Record Clip 1 (1Q) - establishes Q
 2. Record Clip 2 (4Q) - LCM = 4Q
@@ -570,7 +592,7 @@ When Clip 3 commits at 3Q (transport at ~7Q):
 
 ### The User's Bug Case (Fixed!)
 
-```
+```text
 Durations: 1Q (Clip 1), 4Q (Clip 2)
 LCM = 4Q
 
@@ -639,6 +661,7 @@ Ghosts are the visual repetitions of clips that show how they tile across the LC
 ### Ghost Creation Rules
 
 #### During Recording
+
 When clip N is recording, ghosts for committed clips expand ONLY when recording crosses the **committed LCM boundary**:
 
 - **Committed LCM** = LCM of all non-recording clips
@@ -649,7 +672,7 @@ When clip N is recording, ghosts for committed clips expand ONLY when recording 
 - Committed LCM = 4Q
 - Timeline extent = 4Q initially (800px)
 
-```
+```text
 Recording clip 3 at 0Q-3Q (before LCM boundary):
 Timeline:  |--Q--|--Q--|--Q--|--Q--|
 Clip 1:    [████][░░░░][░░░░][░░░░]  (1Q + 3 ghosts = 4Q total)
@@ -666,6 +689,7 @@ Clip 3:            [░░░░░░░░░░░░░░░░░░░░
 ```
 
 #### After Recording (Commit)
+
 When a clip commits:
 - LCM is recalculated immediately to include the new clip
 - All ghosts for all clips are updated to fill the new LCM
@@ -681,6 +705,7 @@ When a clip commits:
 The playback cursor shows the current position in the **LCM timeline**. All clips share one logical cursor.
 
 #### Key Formula
+
 ```javascript
 cursorPosPx = (masterPos % longestDuration) / effectiveQ * baseWidth
 ```
@@ -692,6 +717,7 @@ Where:
 - `baseWidth` = 200px (width of 1Q in pixels)
 
 #### Cursor Behavior
+
 | Mode | Cursor Behavior |
 |------|-----------------|
 | **Playback** | derived view = `t % LCM`, wraps at LCM boundary |
@@ -699,6 +725,7 @@ Where:
 | **Commit** | view switches back to `t % LCM` of the *new* cycle — no clock mutation; clip alignment comes from stored origins |
 
 #### Visual Alignment Invariant
+
 > **All clip cursors must appear at the same horizontal position at all times.**
 
 This means:
@@ -709,7 +736,7 @@ This means:
 
 This is the canonical test case for ghost behavior:
 
-```
+```text
 Step 1: Record Clip 1 (1Q)
 - Clip 1: [████] (main clip only, no ghosts)
 - Timeline = 1Q
@@ -759,6 +786,7 @@ ui_overhaul.md §4.)*
 ## Future Features
 
 ### Disable Auto-Quantize (for fiddly overdubs)
+
 - Add a setting to disable the auto-snap-to-next-Q behavior
 - Use case: user needs precise control for overdubs or non-loop-aligned recordings
 - Could be a per-clip toggle or global setting

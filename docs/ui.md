@@ -9,8 +9,9 @@ This document defines the abstraction boundary between the Celestrian frontend (
 ## Principles
 
 ### Backend Responsibilities (C++)
+
 - Audio processing and playback
-- Recording and buffer management  
+- Recording and buffer management
 - Transport state (samples, not pixels)
 - Node graph structure (ordered lists, not positions)
 - Loop points (in samples)
@@ -30,6 +31,7 @@ bug (2026-07-09). The mock mirrors this contract exactly
 while pending start.
 
 ### Frontend Responsibilities (JavaScript)
+
 - Visual layout and rendering
 - Pixel positions and dimensions
 - Drag & drop interactions

@@ -118,7 +118,7 @@ no special window delivers this — the arm target is simply the next
 boundary in the heard, latency-compensated frame, which any click
 before a boundary already resolves to. The values below are unchanged.)*
 
-```
+```text
 Timeline:   |--Q--|--Q--|--Q--|--Q--|
 Context:    [████████████████████████]   (4Q)
             record pressed ↑ 3.9Q
@@ -136,7 +136,7 @@ rationale, previously prose-only).
 
 ### E-B. Nested Polyrhythm (composite duration)
 
-```
+```text
 Outer stack (cycle = LCM(4Q, 6Q) = 12Q):
 Clip A:      [████ 4Q ████][░░░ ghost ░░░][░░░ ghost ░░░]        ×3 = 12Q
 Inner stack: [██████ 6Q composite ██████][░░░░░ ghost ░░░░░]      ×2 = 12Q
@@ -157,7 +157,7 @@ gets wrong — refactoring_proposal.md P0-3).
 
 Same stack as E-B, collapsed, window `[2Q, 4Q)`:
 
-```
+```text
 Windowed:   ▒▒▒▒[░░ active 2Q ░░]▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
                  ↑2Q        ↑4Q       (dim = outside window)
 Playhead cycles 2Q → 4Q → 2Q ...
@@ -178,7 +178,7 @@ by data, never by view.
 
 Recording from 3Q in a 4Q context:
 
-```
+```text
 t=3.0Q..3.8Q:  [┄┄ dashed: one-shot ┄┄]      period = context cycle (4Q)
 t=4.2Q:        [████ solid: loop ████...]    period = own length
 ```
@@ -192,7 +192,7 @@ loop" a togglable property rather than emergent behavior.
 
 The example the docs lacked until this week's latency work:
 
-```
+```text
 performance:  ──────B──────────────────       B = heard downbeat
 arrival:      ────────────B+C────────────     clap reaches input C later
 capture:      clip[0] ← input(B + C)          (arrival-time window)
@@ -211,7 +211,7 @@ immediately" — pre-dating the arrival-time model.
 
 ### E-F. Two Islands
 
-```
+```text
 Island 1 (Q=1000):   Stack A  [████][░░░░]...     cursor α
 Island 2 (Q=1700):   Stack B  [██████][░░░░░░]... cursor β  (unrelated)
 ```

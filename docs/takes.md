@@ -54,6 +54,7 @@ committed clip; `newTake` is the sanctioned path.
   MIDI clips take and select; comping them is refused.
 
 ## 4. Undo shapes (all refused, entries kept, while any take is live)
+
 | Verb | Edit | Inverse |
 |---|---|---|
 | new take (settled) | `Untake` + `take_index`, `prev_active` | `Take` re-appends it as active |

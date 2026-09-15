@@ -6,48 +6,72 @@
 > (recording math), time_maps.md (loop windows), performance.md
 > (audio-thread contract + latency). Index: docs/README.md.
 
+**Contents**
+
+- [Project overview](#project-overview) · [Core technologies](#core-technologies) · [Project structure](#project-structure) · [Build system](#build-system-details)
+- [Audio strategy](#audio-strategy) · [UI strategy](#ui-strategy) · [Performance](#performance)
+- [Core design philosophy](#core-design-philosophy) · [Roadmap](#roadmap--future-considerations)
+- [Features](#features) (§1–§10) · [Challenges](#challenges)
+
+---
+
 ## Project Overview
+
 Celestrian is an open-source Digital Audio Workstation (DAW) built with JUCE and a WebView-based UI.
 
 ## Core Technologies
+
 - **Framework**: [JUCE](https://juce.com/)
 - **Build System**: CMake with [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake)
 - **UI Architecture**: WebView (HTML/CSS/JS) for the frontend, C++ for the engine.
 - **Target Platforms**: macOS, Windows, Linux.
 
 ## Project Structure
-- `src/`: C++ Source code
-- `ui/`: Frontend code (HTML, CSS, JS)
-- `external/`: External dependencies (if not managed by CPM)
-- `.agent/`: Agent-specific documentation and workflows
+
+| Path | Contents |
+|---|---|
+| `src/` | C++ source code |
+| `ui/` | Frontend code (HTML, CSS, JS) |
+| `external/` | External dependencies (if not managed by CPM) |
+| `.agent/` | Agent-specific documentation and workflows |
 
 ## Build System Details
+
 We use CMake as the primary build system. CPM.cmake is used for dependency management to keep the project setup simple and reproducible.
 
 ## Audio Strategy
+
 The audio engine handles low-latency recording and playback.
+
 - **Recording**: Uses `juce::AudioDeviceManager` to capture input into a memory buffer.
 - **Playback**: Uses `juce::AudioSourcePlayer` to play back the recorded buffer.
 - **Waveform Visualization**: C++ calculates min/max peaks from the audio buffer and exposes them to the WebView as a JSON array for rendering.
 
 ## UI Strategy
+
 The UI will be hosted in a native WebView component provided by JUCE (WebBrowserComponent).
+
 - Communication between C++ and JS is handled via JUCE 8's `withNativeFunction` and `evaluateJavascript`.
 - JS triggers recording and playback, while C++ feeds waveform data back to JS.
 
 ## Performance
+
 It is critical that audio can be recorded in parallel with existing audio clips being played back and at the lowest possible latency. That said, the actual requirement is alignment between what the user hears and what the user records.
-* ✅ **Latency compensation — implemented (2026-07-07)** essentially as envisioned here: the 🎯 calibration feature plays a click and listens for it (the "record the playback" idea), the measured round-trip persists per device, and the pre-record ring's arrival-time capture applies it so recordings land where the performer *heard* them. Field-verified to ~1-sample repeatability. See performance.md §3/§7.
-* The audio thread is real-time-safe (lock-free, allocation-free — performance.md §1 is project law). A multi-threaded root mixer remains a future option if the perf meters ever show pressure; they currently read <1% DSP load.
+
+- ✅ **Latency compensation — implemented (2026-07-07)** essentially as envisioned here: the 🎯 calibration feature plays a click and listens for it (the "record the playback" idea), the measured round-trip persists per device, and the pre-record ring's arrival-time capture applies it so recordings land where the performer *heard* them. Field-verified to ~1-sample repeatability. See performance.md §3/§7.
+- The audio thread is real-time-safe (lock-free, allocation-free — performance.md §1 is project law). A multi-threaded root mixer remains a future option if the perf meters ever show pressure; they currently read <1% DSP load.
 
 ## Core Design Philosophy
+
 Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single-song, "session"-view experience. It is designed for the following key UX flows:
-* Building a song from live loops - the user should be able to record without first choosing a tempo. The user can then select a range of the clip to act as the loop. That loop length should be used as the core quantum & bpm for the rest of the clips in that group.
-* There is no such thing as an isolated song, only nested grooves or "boxes". An audio clip is the lowest possible "leaf" element. Audio clips can be stacked in parallel to create music. Those stacks can then be bundled into a node (think the user "stepping outside" or "wrapping the current groove into a box"). Bundled boxes can also be stacked in parallel with new audio clips or other boxed grooves. The user can "step inside" a box to edit its contents. It should be very easy to navigate the nested structure of boxes.
-* **Layout**: Nodes are arranged in vertical stacks. New clips are appended to the bottom of the stack where the user clicks (+).
+
+- Building a song from live loops — the user should be able to record without first choosing a tempo. The user can then select a range of the clip to act as the loop. That loop length should be used as the core quantum & bpm for the rest of the clips in that group.
+- There is no such thing as an isolated song, only nested grooves or "boxes". An audio clip is the lowest possible "leaf" element. Audio clips can be stacked in parallel to create music. Those stacks can then be bundled into a node (think the user "stepping outside" or "wrapping the current groove into a box"). Bundled boxes can also be stacked in parallel with new audio clips or other boxed grooves. The user can "step inside" a box to edit its contents. It should be very easy to navigate the nested structure of boxes.
+- **Layout**: Nodes are arranged in vertical stacks. New clips are appended to the bottom of the stack where the user clicks (+).
 
 > [!IMPORTANT]
 > **Audio Memory Principle**: Recorded audio must always play back aligned with the audio the performer heard during recording. The performer's timing is relative to what they heard—this relationship is sacred and must be preserved by default. Only explicit user action (editing launch point or loop regions) should break this invariant.
+>
 > *(Owner ruling 2026-07-07: this is THE prime invariant — all other timing machinery, including the LCM timeline, is downstream of it. The full invariant set lives in `design_language.md`.)*
 
 > [!IMPORTANT]
@@ -63,14 +87,20 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
     - **Idea: Multi-Region Selection**: Allow the user to define multiple `loopStart/End` pairs. The engine would cycle through these regions in order.
     - **Idea: Masking/Muting**: Instead of choosing what plays, allow the user to select regions of the clip to "mute" or "skip" while the rest plays normally.
 - [ ] **Multiple Stacks in Boxes**: Support side-by-side stacks within a single box container.
-* Boxes can be arranged in a graph of connections. The user can place boxes and connect them using various primitives, ex: loop, branch-with-chance, etc.
-* Library of loops & clips - the user should be able to slowly build up a library of loops and clips that can be used in boxes. Loops, clips, and boxes should have associated metadata about their bpm, length, and music key. It should be possible to start building some automation features that can generate new music by combining existing clips and boxes in new ways.
-* Thus there are sort of three modes of operation: 1) recording & creating new stacks of clips & boxes, 2) editing and designing flows of music through connections between boxes w/ transitions etc. and 3) runnning a large corpus of structure in a sort of "infinite playlist". The user should be able to bounce between (1) and (2) to create live music. (3) shoudl be able to create an infinite offline "radio station" of the user's clip & box catalog.
+
+Longer-horizon direction (not yet tracked as tasks):
+
+- Boxes can be arranged in a graph of connections. The user can place boxes and connect them using various primitives, ex: loop, branch-with-chance, etc.
+- Library of loops & clips — the user should be able to slowly build up a library of loops and clips that can be used in boxes. Loops, clips, and boxes should have associated metadata about their bpm, length, and music key. It should be possible to start building some automation features that can generate new music by combining existing clips and boxes in new ways.
+- Thus there are sort of three modes of operation: 1) recording & creating new stacks of clips & boxes, 2) editing and designing flows of music through connections between boxes w/ transitions etc. and 3) runnning a large corpus of structure in a sort of "infinite playlist". The user should be able to bounce between (1) and (2) to create live music. (3) shoudl be able to create an infinite offline "radio station" of the user's clip & box catalog.
+
+---
 
 ## Features
 
 ### 1. Recording & Live Creation
-* **Phase-Locked Loop (PLL) Recording**:
+
+- **Phase-Locked Loop (PLL) Recording**:
     - **Instant Capture**: New recordings begin immediately on user request to capture the creative spark. *(superseded: arm target = next Q boundary in the heard frame, Q11)*
     - **Anchor Phase**: Each clip remembers where in the quantum grid it was recorded (its "anchor phase"). This determines its visual X-offset position.
     - **Cyclic Alignment**: The system anchors the recording to the master quantum phase via the clip's **origin** — the cycle moment its first sample belongs to. Playback reads `content[(t − origin) mod duration]`; no buffer rotation exists (see docs/kernel.md).
@@ -78,68 +108,72 @@ Celestrian is a nested, "boxes-and-lines" DAW experience. It is a typical single
         - **Anticipatory Stop (Early)**: If the user stops within the tolerance *before* a clean boundary, recording continues until that boundary is reached to avoid cutting off audio.
         - **Late Snap (Late)**: If the user stops within the tolerance *after* a clean boundary, recording ends immediately and the clip is truncated to that boundary. *(superseded 2026-07-10: stops always run forward to the next boundary)*
         - **Instant Stop (Future: Loop Region)**: If stopped outside the tolerance, recording ends immediately. The **Loop Region** is automatically set to the previous clean multiple, preserving the "tail" for later editing. *(superseded 2026-07-10: stops always run forward to the next boundary; the snap-back-with-auto-window idea is deferred — design_language.md §1 "Hysteresis snap")*
-* **Launch Point**: Each clip has a draggable "launch point" marker (like Ableton's clip start arrow). When global transport starts:
+- **Launch Point**: Each clip has a draggable "launch point" marker (like Ableton's clip start arrow). When global transport starts:
     - Playback begins from the launch point, not position 0
     - This ensures clips recorded mid-quantum stay aligned with their recording context
     - For clips longer than the quantum grid, the launch point is auto-calculated so wrapping maintains alignment
-* **Multi-threaded Parallel Processing**: High-performance audio engine that leverages multi-core CPUs for simultaneous recording, playback, and effect processing.
+- **Multi-threaded Parallel Processing**: High-performance audio engine that leverages multi-core CPUs for simultaneous recording, playback, and effect processing.
 
 ### 2. Nesting & Arrangement
-* **Nested "Groove Boxes"**: A recursive structural model where audio clips are "leaf" nodes that can be bundled into "Boxes." Boxes can contain clips or other boxes, allowing for infinite nesting.
-* **Graph-based Logic**: Connect boxes using a "lines-and-boxes" interface. Primitives include:
+
+- **Nested "Groove Boxes"**: A recursive structural model where audio clips are "leaf" nodes that can be bundled into "Boxes." Boxes can contain clips or other boxes, allowing for infinite nesting.
+- **Graph-based Logic**: Connect boxes using a "lines-and-boxes" interface. Primitives include:
     - **Looping**: Standard repetition logic.
     - **Branch-with-Chance**: Non-deterministic flow for procedural music.
     - **Smoothing Transitions**: Automated crossfades between boxes and ranges.
-* **Stacking Logic**: Boxes and clips can be stacked in parallel, creating vertical "stacks" that can then be collapsed into a single box.
-* **Editing**: When a user zooms out of the inside of a box to see the box as a single unit, that box displays an **Aggregate Waveform** (a recursive mixdown of all child nodes). 
+- **Stacking Logic**: Boxes and clips can be stacked in parallel, creating vertical "stacks" that can then be collapsed into a single box.
+- **Editing**: When a user zooms out of the inside of a box to see the box as a single unit, that box displays an **Aggregate Waveform** (a recursive mixdown of all child nodes).
     - **Unitized Editing**: Loop ranges and cuts applied to a Box affect the timing of all internal clips simultaneously as a single logical block.
     - **Hierarchical Automation**: Automation envelopes applied to a Box act as a global "VCA" or offset for all internal child automation/parameters.
 
 ### 3. Interaction & UI Design
-* **The Plus (+) Button** *(amended per Q17 ruling, 2026-08-13 — every + is a template picker)*:
+
+- **The Plus (+) Button** *(amended per Q17 ruling, 2026-08-13 — every + is a template picker)*:
     - **Contextual Spawning**: Clips and Boxes should spawn near the originating interaction point.
     - **Stack-Specific (+)**: Every vertical stack has its own `(+)` button anchored to its base. It opens the creation menu; picks insert into that stack.
     - **One menu everywhere**: every + affordance (top-level, group rail, add-row) opens the SAME template-picker menu — a fixed "Track" default row sits directly under the cursor (click-click = bare empty track), the user's subtree templates listed below. See design_language.md Q17.
-* **Track Controls** *(amended per Q16 ruling, 2026-08-13)*: Every node (Clip or Box) has immediate controls on its rail:
+- **Track Controls** *(amended per Q16 ruling, 2026-08-13)*: Every node (Clip or Box) has immediate controls on its rail:
     - **Record**: the track's ● — arm/record/stop; fractal per Q7 group arm (`R` key rides it).
     - **Mute / Solo**: these ARE the per-node play controls. Per-node Play/Stop is **superseded** — with one transport and the island looping as a whole (Q10), "play just this node" is solo + transport, and "stop this node" is mute. No third audibility state exists.
     - **Solo canon**: island-wide (a solo anywhere mutes every non-solo-ancestry leaf in the island), additive (multiple solos sum), fractal (solo on a group solos its subtree).
-* **Grid-Based Arrangement**: New elements snap to a dynamic grid layout, keeping the workspace organized automatically.
-
-* **Automatic Spatiotemporal Scaling (Growing Clips)**: 
+- **Grid-Based Arrangement**: New elements snap to a dynamic grid layout, keeping the workspace organized automatically.
+- **Automatic Spatiotemporal Scaling (Growing Clips)**:
     - **Visual Growth**: During recording, if the performance exceeds the initial quantum length (e.g., 3x quantum), the clip's horizontal representation in the UI grows proportionally to reflect its actual content.
     - **Stepped Stepping Zoom**: If a growing clip starts to exceed the bounds of the current viewport, the system automatically "zooms out" in discrete steps (rather than a jarring continuous zoom) to ensure the entire active recording remains visible.
 
 ### 4. Navigation & Viewport (ZUI)
-* **Contextual Zoom**: The screen represents the "Current Active Box."
-* **Dive/Exit Mechanics**: 
+
+- **Contextual Zoom**: The screen represents the "Current Active Box."
+- **Dive/Exit Mechanics**:
     - **Double-Click**: Zooms "inside" a child box, making it the new context.
     - **Escape/Exit Button**: Zooms "out" to the parent container.
-* **Navigation Controls**:
+- **Navigation Controls**:
     - **Pan**: Click-and-drag empty space or use **[W, A, S, D]** keys.
     - **Zoom**: Mouse wheel or **[+, −]** keys (`=`/`-` unshifted).
     - **Handle teleport**: **[** / **]** walk the viewport left/right through the selected track's handles in order (loop start, each cut edge/seam, loop end); **Shift+[** / **Shift+]** jump straight to the outer loop bounds. Grabbing any handle selects its track. No-op when nothing is selected.
     - **Region panel** (2026-09-11, replacing the handle nav dock): the SELECTED clip/group grows a viewport-wide panel under its lane showing the WHOLE raw take — excluded material dimmed, the kept region a bright box, inner cuts as bands, the amber sound cursor in raw time. Drag the box to slide the region (whole Qs; ⌥ any amount), its brackets to trim (period snaps to whole Qs), double-click to cut; cut chips slide and their handles resize. Selection IS the affordance: Escape, a click on empty canvas, or a click on the top bar's empty space deselects and the panel goes away. ← / → nudge the selected region by 1Q (⇧ 4Q, ⌥ ⅛Q).
     - **Same-scale reveal**: grabbing a heard lane's trim grip or seam handle never rescales the lane — it unrolls the raw take at the lane's own px-per-Q with the grabbed thing glued to the pointer; dragging toward a visible edge pans the take under the hand. (Supersedes the 2026-07 expanded map drag and its pointer warp — time_maps.md.)
-* **Slick Transitions**: Modern CSS/JS animations to maintain spatial orientation during zooms.
+- **Slick Transitions**: Modern CSS/JS animations to maintain spatial orientation during zooms.
 
 ### 5. The "Stack" Architecture
+
 Within a Box, all clips and sub-boxes are displayed in a vertical **Stack**.
-* **Visual Grouping**: The UI automatically groups nodes that are vertically aligned (similar X coordinates) into visual stacks.
-* **Stack Creation**: Each stack gets a dedicated `(+)` button at the bottom, allowing users to extend that specific rhythmic/instrumental idea.
-* **Primary Quantum**: The first clip recorded in an empty structure defines the **Quantum Length** (in samples).
-* **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
+
+- **Visual Grouping**: The UI automatically groups nodes that are vertically aligned (similar X coordinates) into visual stacks.
+- **Stack Creation**: Each stack gets a dedicated `(+)` button at the bottom, allowing users to extend that specific rhythmic/instrumental idea.
+- **Primary Quantum**: The first clip recorded in an empty structure defines the **Quantum Length** (in samples).
+- **Phase-Locked Arrangement**: All subsequent recordings in that structure are anchored to the Primary Quantum's phase.
     - **Origin Anchoring**: Recordings capture their origin (the cycle moment recording began) and playback aligns by it — no post-processing or buffer rotation (docs/kernel.md).
 
 ### 6. Virtual Timeline & Clip Types
+
 The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in a traditional DAW:
 
-* **Looping Clips** (period = own duration):
+- **Looping Clips** (period = own duration):
     - Standard behavior: clip repeats continuously at its own length
     - Visual: Ghost/faded repetitions extend to the edge of the longest sibling clip
     - These ghosts show where the loop "would be" if you unrolled the timeline
-
-* **One-Shot Clips** (period = context cycle):
+- **One-Shot Clips** (period = context cycle):
     - A one-shot's **period is the context cycle rather than its own
       length**: it plays once when the LCM playhead crosses its anchored
       location, then rests until the next cycle. *(Owner-ratified
@@ -147,68 +181,88 @@ The UI visualizes a "virtual timeline" that unrolls all clips as if arranged in 
       design_language.md Q5.)*
     - No ghost repetitions—just the single instance with dashed border
     - **Progressive Disclosure**: During recording, a clip behaves as a one-shot (dashed) until it exceeds the context loop length, at which point it "snaps" into being a loop.
-
-* **Dynamic Timeline Building**:
+- **Dynamic Timeline Building**:
     - The longest clip in a stack determines the visual "timeline width"
     - Shorter looping clips show ghosts extending to match
     - Recording new clips dynamically extends the timeline as needed
-
-* **Stack Alignment**:
+- **Stack Alignment**:
     - All clips in a stack share the same X position
     - `anchor_phase` is for audio timing (when the clip triggers during playback), not visual positioning
-
-* **Stack Interaction** *(amended per Q17 ruling, 2026-08-13)*:
+- **Stack Interaction** *(amended per Q17 ruling, 2026-08-13)*:
     - **Creation Menu**: the stack's **[+]** opens the template-picker menu — fixed "Track" default row under the cursor, the user's subtree templates below. "New Box" is NOT a menu item: groups stay post-hoc (drag-to-group, 2026-07-19h ruling) or arrive whole via a group template.
     - **Interaction**: click-click in place = bare empty track; one short travel = a named, input-routed template. Two clicks either way — the template click replaces the rename + input-pick it saves.
-* **Stack Templates** *(ruled 2026-08-13, Q17 — the Q7 companion)*: "Save as template" on any selected track or group writes it to a **global user-level subtree library** (structure + names + input assignments; format additive for fx/gain/pan later). Example: the 5-mic drum kit is saved once; afterwards [+] → "Drums" inserts the whole named, routed 5-track group as one undoable edit, and the group's ● records all five (Q7).
-    
+- **Stack Templates** *(ruled 2026-08-13, Q17 — the Q7 companion)*: "Save as template" on any selected track or group writes it to a **global user-level subtree library** (structure + names + input assignments; format additive for fx/gain/pan later). Example: the 5-mic drum kit is saved once; afterwards [+] → "Drums" inserts the whole named, routed 5-track group as one undoable edit, and the group's ● records all five (Q7).
 
 ### 7. Playback & Focus Logic
+
 <!-- (numbering fixed 2026-07-07; sections now sequential) -->
-* **The Global Super-Structure**: Play/stop behaves as a single unit by default. 
-* **Focus Playhead**: Selected nodes show a **Playhead Cursor** looping at `master_time % node_duration`.
-* **Contextual Solo**: Users can solo the current box context while editing to hear it in isolation.
+
+- **The Global Super-Structure**: Play/stop behaves as a single unit by default.
+- **Focus Playhead**: Selected nodes show a **Playhead Cursor** looping at `master_time % node_duration`.
+- **Contextual Solo**: Users can solo the current box context while editing to hear it in isolation.
 
 ### 8. Loop Region Selection
-* **Decoupled Playback**: Every `ClipNode` maintains a distinct **Loop Start** and **Loop End** (in samples).
-* **Automatic Provisioning**: Upon capture, these are set based on the Hysteresis Snap logic (see Section 1).
-* **Manual Manipulation**: The UI provides handles to resize or slide the loop region within the larger recorded buffer.
-* **Multi-range Selection**: Define a complex loop by selecting multiple non-contiguous ranges from a single audio clip.
-* **Intelligent Edge Analysis**: Automatic waveform analysis to find optimal zero-crossing or low-transient points at selection boundaries to prevent pops/clicks.
-* **Crossfade Synthesis**: Automatic smoothing and phase alignment between non-contiguous loop ranges.
+
+- **Decoupled Playback**: Every `ClipNode` maintains a distinct **Loop Start** and **Loop End** (in samples).
+- **Automatic Provisioning**: Upon capture, these are set based on the Hysteresis Snap logic (see Section 1).
+- **Manual Manipulation**: The UI provides handles to resize or slide the loop region within the larger recorded buffer.
+- **Multi-range Selection**: Define a complex loop by selecting multiple non-contiguous ranges from a single audio clip.
+- **Intelligent Edge Analysis**: Automatic waveform analysis to find optimal zero-crossing or low-transient points at selection boundaries to prevent pops/clicks.
+- **Crossfade Synthesis**: Automatic smoothing and phase alignment between non-contiguous loop ranges.
 
 ### 9. Corpus & Automation
-* **Global Settings**: A centralized store for user-tunable engine parameters.
+
+- **Global Settings**: A centralized store for user-tunable engine parameters.
     - **Hysteresis Tolerance**: Percentage (default 15%) determining if a recording stop should snap to the nearest quantum boundary. *(mechanism deleted 2026-07-16, Q14 — any click before a boundary means that boundary; stops run forward)*
-* **Loop/Box Library**: A metadata-rich catalog storing BPM, length, and music key for every asset.
-* **Procedural Automation**: Features to automatically combine existing library elements into new structures.
-* **Infinite Radio Mode**: An offline operation mode that generates an infinite stream of music from the user’s clip and box catalog.
+- **Loop/Box Library**: A metadata-rich catalog storing BPM, length, and music key for every asset.
+- **Procedural Automation**: Features to automatically combine existing library elements into new structures.
+- **Infinite Radio Mode**: An offline operation mode that generates an infinite stream of music from the user's clip and box catalog.
 
-## Challenges
+### 10. Multi-Stack & Meta-Management
 
-1. **The Recursive Clock Problem**: Since users can record without a pre-set BPM, each "Box" may have its own natural tempo. Nesting a Box with one BPM inside another with a different BPM requires sophisticated real-time time-stretching or sample-rate conversion to maintain musical alignment.
-
-#### Proposed Solutions:
-* **Seed BPM Retention**: Every clip and box retains its "Seed BPM" (original recorded tempo).
-* **Primary-Relative Warping**: When a Box is placed into a "Parent Box" or connected to a "Groove Master," it calculates a **Warp Ratio** (`Target BPM / Seed BPM`).
-* **Elastic Audio Engine**: The playback engine uses real-time resampling or phase-vocoding (WSOLA) to warp the buffers to the Primary clock while preserving original metadata for future portability.
-
-2. **Dynamic Phase Alignment**: Maintaining phase coherence when switching between non-contiguous loop ranges or branching between boxes is critical. Without interpolation or phase-alignment, "splices" will cause audible thumps or timbre shifts.
-
-#### Proposed Solutions:
-* **Grid-Aware Selection**: Clips utilize a musical grid based on their Seed BPM and meter (i.e. 4/4). 
-* **Conservation of Loop Length**: When editing non-contiguous ranges, shifting the "End" of Range A automatically shifts the "Start" of Range B by the inverse amount, ensuring the total musical duration remains a constant quantum.
-* **Zero-Crossing Synchronization**: Automatic micro-snapping to waveform zero-crossings or low-transient points at selection boundaries to eliminate DC-offset thumps.
-
-3. **Recursive Audio Mixers**: Efficiently rendering nested structures requires an audio graph where each Box is a sub-mixer. We must manage signal summation and effect processing across deep nests with minimal overhead.
-4. **WebView Scheduling Jitter**: Web browsers lack sample-accurate timing. We must implement a "Lookahead Wrapper" where the JS UI schedules events in advance, and the C++ engine executes them with 100% sample precision.
-5. **Data Model Scalability & Persistence**: Representing a nested, non-deterministic graph of audio states requires a robust data model that can handle large corpora of structures without performance degradation.
-6. **UI Information Density**: Navigating "boxes-within-boxes" requires a high-fidelity navigation system (e.g., zoomable interface or deep breadcrumbs) to prevent user disorientation in complex projects.
-
-## 10. Multi-Stack & Meta-Management
 <!-- (was a second "8."; renumbered 2026-09-01) -->
+
 - **Stack Independence**: Future versions will support multiple "Stacks". Each stack should be able to define its own Quantum/Time origin.
 - **Quantum Inheritance**: When creating a new stack, the user should be able to choose between:
     - **Inherit**: Inherit the quantum/grid from an existing stack (sync).
     - **New Song**: Start fresh with a new quantum and time origin (polyrhythm/independent).
-- **Transport Reset**: For the *First Clip* in a "New Song" stack, the Transport should reset to 0 to ensure the recording defines the origin (No start offset). *(superseded: the clock never resets; the first arm captures the island epoch — kernel.md)*
+
+---
+
+## Challenges
+
+### 1. The Recursive Clock Problem
+
+Since users can record without a pre-set BPM, each "Box" may have its own natural tempo. Nesting a Box with one BPM inside another with a different BPM requires sophisticated real-time time-stretching or sample-rate conversion to maintain musical alignment.
+
+**Proposed solutions:**
+
+- **Seed BPM Retention**: Every clip and box retains its "Seed BPM" (original recorded tempo).
+- **Primary-Relative Warping**: When a Box is placed into a "Parent Box" or connected to a "Groove Master," it calculates a **Warp Ratio** (`Target BPM / Seed BPM`).
+- **Elastic Audio Engine**: The playback engine uses real-time resampling or phase-vocoding (WSOLA) to warp the buffers to the Primary clock while preserving original metadata for future portability.
+
+### 2. Dynamic Phase Alignment
+
+Maintaining phase coherence when switching between non-contiguous loop ranges or branching between boxes is critical. Without interpolation or phase-alignment, "splices" will cause audible thumps or timbre shifts.
+
+**Proposed solutions:**
+
+- **Grid-Aware Selection**: Clips utilize a musical grid based on their Seed BPM and meter (i.e. 4/4).
+- **Conservation of Loop Length**: When editing non-contiguous ranges, shifting the "End" of Range A automatically shifts the "Start" of Range B by the inverse amount, ensuring the total musical duration remains a constant quantum.
+- **Zero-Crossing Synchronization**: Automatic micro-snapping to waveform zero-crossings or low-transient points at selection boundaries to eliminate DC-offset thumps.
+
+### 3. Recursive Audio Mixers
+
+Efficiently rendering nested structures requires an audio graph where each Box is a sub-mixer. We must manage signal summation and effect processing across deep nests with minimal overhead.
+
+### 4. WebView Scheduling Jitter
+
+Web browsers lack sample-accurate timing. We must implement a "Lookahead Wrapper" where the JS UI schedules events in advance, and the C++ engine executes them with 100% sample precision.
+
+### 5. Data Model Scalability & Persistence
+
+Representing a nested, non-deterministic graph of audio states requires a robust data model that can handle large corpora of structures without performance degradation.
+
+### 6. UI Information Density
+
+Navigating "boxes-within-boxes" requires a high-fidelity navigation system (e.g., zoomable interface or deep breadcrumbs) to prevent user disorientation in complex projects.

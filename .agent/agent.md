@@ -5,38 +5,42 @@ trigger: always_on
 # Agent Context
 
 ## Workflow
-* **Living Documents**:
-    * `docs/` contains project context — the index is `docs/README.md`;
+
+- **Living Documents**:
+    - `docs/` contains project context — the index is `docs/README.md`;
       **start with `docs/design_language.md`** (vocabulary, invariants
       I1–I9, the ruling index Q1–Q17). Canon: kernel.md, recording.md,
       time_maps.md, sequencer.md, engine_lcm_guard.md, performance.md.
       `docs/tasks.md` is the tracker. `docs/archive/` is history.
-    * `.agent/` contains agent context:
-        * `agent.md`: Agent context
-        * `glossary.md`: Terminology (a copy of design_language.md §1)
-        * `tech.md`: Technical learnings and debugging tips
-        * `style.md`: Code style rules (C++, JS, JUCE patterns)
-* **Update First**: Check these docs before complex tasks; update them after.
+    - `.agent/` contains agent context:
+        - `agent.md`: Agent context
+        - `glossary.md`: Terminology (a copy of design_language.md §1)
+        - `tech.md`: Technical learnings and debugging tips
+        - `style.md`: Code style rules (C++, JS, JUCE patterns)
+- **Update First**: Check these docs before complex tasks; update them after.
 
 ## Architecture
-* **C++ engine is source of truth** - JS UI polls state via bridge
-* **Thread Safety**: Audio on the realtime thread, UI on the Message
+
+- **C++ engine is source of truth** - JS UI polls state via bridge
+- **Thread Safety**: Audio on the realtime thread, UI on the Message
   Thread. `docs/performance.md §1` is the audio-thread contract and
   project law: the audio thread is **lock-free and allocation-free**
   (no mutexes, no heap, no logging on it). Shared state crosses via
   atomics and message-thread-swapped atomic pointers with deferred
   reclamation (the D4 discipline).
-* The C++ test binary is under `build/CelestrianTests_artefacts/Debug/`
+- The C++ test binary is under `build/CelestrianTests_artefacts/Debug/`
   — the non-Debug path is stale.
 
 ## Debugging
-* **Bridge Logging**: Use `log()` from `bridge.js` to tunnel to C++ stdout
-* **Canvas Issues**: Check CSS layout; JUCE WebViews need explicit dimensions
-* **Log File**: Check `celestrian_debug.log` in **project root** (not build dir)
+
+- **Bridge Logging**: Use `log()` from `bridge.js` to tunnel to C++ stdout
+- **Canvas Issues**: Check CSS layout; JUCE WebViews need explicit dimensions
+- **Log File**: Check `celestrian_debug.log` in **project root** (not build dir)
 
 ## Frontend Development & UI Testing
 
 ### Mock Backend Test Harness
+
 **When to use**: For ANY frontend/UI work (drag-drop, rendering, layout, styling, etc.)
 
 **Why**:
@@ -76,6 +80,7 @@ npx serve . -p 8080
 **See**: [`docs/test_harness.md`](file:///Users/lincolnfrog/code/celestrian/docs/test_harness.md) for full documentation
 
 ### ES Module Cache Busting
+
 When testing JS changes, the browser may cache ES modules aggressively. If changes don't appear:
 1. **Restart the HTTP server** - kills any server-side caching
 2. **Add cache-bust query params** won't work for ES module imports (only works for the HTML page)
@@ -83,6 +88,7 @@ When testing JS changes, the browser may cache ES modules aggressively. If chang
 4. **Hard refresh** (Cmd+Shift+R on Mac) after restarting server
 
 ### Browser Subagent for Visual Debugging
+
 **CRITICAL TOOL**: When debugging UI issues (especially rendering, DOM structure, CSS, or visual layout problems), use the browser subagent to:
 - Navigate to the test harness URL
 - Inspect DOM elements visually
@@ -104,7 +110,7 @@ When testing JS changes, the browser may cache ES modules aggressively. If chang
 4. **Request screenshots**: Always ask for a screenshot at key points
 
 **Example Task (GOOD)**:
-```
+```text
 Navigate to http://localhost:8080/index_test.html. Wait for the page to fully load.
 Click the 'Stack with 3 Clips' button in the scenario sidebar.
 Wait 1 second for rendering. Take a screenshot.
@@ -114,20 +120,22 @@ Report: (1) how many ghost elements exist, (2) their visibility/opacity styles,
 ```
 
 **Example Task (BAD - causes about:blank)**:
-```
+```text
 Debug the ghost clip rendering issue.
 ```
 
 **Common mistake**: Trying to debug visual/rendering issues purely from code inspection. Always use the browser subagent first to understand what's actually happening visually. Synthetic-event tests bypass hit-testing — real-input verification is the law for interactive elements (time_maps.md journal).
 
 ## Coding Principles
-* **No Duplication**: Never duplicate logic in multiple places. Extract shared functionality into helper functions. This prevents regressions when one copy is updated but another is forgotten.
-* **Unit Tests (REQUIRED)**: Every code change MUST include corresponding unit tests.
+
+- **No Duplication**: Never duplicate logic in multiple places. Extract shared functionality into helper functions. This prevents regressions when one copy is updated but another is forgotten.
+- **Unit Tests (REQUIRED)**: Every code change MUST include corresponding unit tests.
   Do not wait for user to request tests. Tests should verify:
   - The fix works as intended
   - Edge cases are covered
   - The bug cannot regress
-* **Timing math lives in two mirrors** (`src/timing.h` ↔ `ui/js/timeline_model.js`), pinned by `shared/timing_golden.json`. A bridge method lives in three places (`protocol.js` ↔ `main_component.cc` ↔ `mock_backend.js`), pinned by the contract test.
+- **Timing math lives in two mirrors** (`src/timing.h` ↔ `ui/js/timeline_model.js`), pinned by `shared/timing_golden.json`. A bridge method lives in three places (`protocol.js` ↔ `main_component.cc` ↔ `mock_backend.js`), pinned by the contract test.
 
 ## Reference
-* **Glossary**: `.agent/glossary.md` (copy of `docs/design_language.md §1`)
+
+- **Glossary**: `.agent/glossary.md` (copy of `docs/design_language.md §1`)

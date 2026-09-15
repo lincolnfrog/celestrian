@@ -65,7 +65,7 @@ one primitive.
 **The Sequence** is a per-stack object, stored beside the stack's
 time-map (the atomic-pointer discipline of the effect chain, `chain_`):
 
-```
+```text
 sequence = {
     state: none | active | bypassed,
     steps: [ { name?, lenQ, gates: { childId → on } }, ... ],
