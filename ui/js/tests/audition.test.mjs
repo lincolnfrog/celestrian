@@ -23,7 +23,7 @@ import { callNative, getState, loadScenario, advanceBy }
 import { deriveViewModel } from '../view_model.js';
 import { recordTake, nodeById } from './helpers.mjs';
 
-const opts = { fxOpen: new Set(), windowEdit: new Set(),
+const opts = { fxOpen: new Set(),
                pinFrameQ: null, pinFoldQ: null };
 
 async function seedSong() {

@@ -258,10 +258,10 @@ test('view model: cut-band fields (design A, 2026-07-22)', () => {
     assert.equal(c.bandHeard, true, 'flagged as heard-framed (seams)');
     assert.equal(c.bandPeriodQ, 2, 'heard period for the pointer hop');
     assert.equal(c.bandEditable, true, 'editable in place — no mode');
-    // …but its edit view carries them over the raw take.
-    const vmEdit = deriveViewModel(state3, { windowEdit: new Set(['c']) });
+    // …but its raw lane (comp mode's view) carries them over the take.
+    const vmEdit = deriveViewModel(state3, { compMode: new Set(['c']) });
     const ce = vmEdit.lanes.find(l => l.id === 'c');
-    assert.equal(ce.windowEditing, true, 'edit view open');
+    assert.equal(ce.windowEditing, true, 'raw view open');
     assert.deepEqual(ce.bandSegs, [[0, 1], [2, 3]], 'bands over the raw take');
     assert.equal(ce.bandTotalQ, 4, 'raw-take frame');
 });

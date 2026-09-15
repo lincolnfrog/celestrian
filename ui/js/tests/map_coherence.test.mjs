@@ -171,14 +171,6 @@ test('PARITY: a windowed group IS a windowed clip to the view-model', async () =
     assert.equal(vm.cycleQ, 2, 'the frame is the audible cycle (2Q parts over 1Q)');
     assert.equal(vm.loopCycleQ, vm.cycleQ, 'frame == audible loop');
 
-    // The EDIT view: the same inspector for both.
-    const vmE = deriveViewModel(getState(), { windowEdit: new Set([c, g]) });
-    const clipE = vmE.lanes.find(l => l.id === c);
-    const groupE = vmE.lanes.find(l => l.id === g);
-    assert.equal(groupE.windowEditing, true);
-    assert.deepEqual(laneShape(groupE), laneShape(clipE),
-        'edit view: identical lane shape');
-    assert.equal(groupE.frameQ, 4, 'the inspector frames the raw extent');
 
     // Bypass both: both fall back to the raw-framed lane with brackets.
     await callNative('toggleLoopWindow', c);

@@ -202,15 +202,6 @@ function reconcileMarkers(container, key, build) {
     build(container);
 }
 
-/** The "done" chip that closes an edit view (built in two overlay
- * branches — window editor and take view). */
-function makeDoneChip(laneId, title) {
-    const done = el('div', 'win-chip win-done-chip toggle',
-        { textContent: 'done', title });
-    done.addEventListener('click', () => ctx.cb.onWindowEdit(laneId, false));
-    return done;
-}
-
 /**
  * Patch one lane's body: state classes, grid layer, reps layer, then
  * ONE of three overlay branches, checked in this order:
@@ -415,9 +406,10 @@ export function patchLaneBody(row, lane, vm, aux) {
         // HEARD-VIEW chrome, MODELESS: the edge grips ARE trim handles
         // (drag adjusts the outer bounds directly, whole-Q snap, commit
         // on release); cuts render as SEAM HANDLES (drag slides the cut
-        // freely, ⌥-drag resizes, double-click heals); the chip opens
-        // the raw-take inspector for INSPECTION only — never required
-        // for editing, and it never eats a drag.
+        // freely, ⌥-drag resizes, double-click heals); the chip is the
+        // readout + bypass toggle, as on every other lane (the raw take
+        // lives on the region panel — the chip-click inspector retired
+        // 2026-09-13).
         const heardKey = JSON.stringify(
             ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
              lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
@@ -427,12 +419,15 @@ export function patchLaneBody(row, lane, vm, aux) {
         patchRevealCursor(body, lane, vm, aux.nodesById.get(lane.id));
         if (isOverlayFrozen(body)) return;
         reconcileMarkers(overlay, heardKey, o => {
-            const chip = el('div', 'win-chip win-open-chip toggle', {
-                title: 'Inspect the whole take (editing works right here)',
+            const chip = el('div', 'win-chip win-heard-chip toggle', {
+                title: 'Toggle the ' + (lane.mapMulti ? 'map' : 'window') +
+                    ': active ↔ bypassed (the whole take sounds while ' +
+                    'bypassed; the region panel below the selected track ' +
+                    'edits it)',
                 textContent: (lane.mapSuspended ? 'map · suspended (sequence off) · ' : '') +
                     (lane.mapMulti ? 'map ' : 'window ') +
                     fmtQ(lane.windowChipQ) + 'Q' });
-            chip.addEventListener('click', () => ctx.cb.onWindowEdit(lane.id, true));
+            chip.addEventListener('click', () => ctx.cb.onToggleWindow(lane.id));
             o.appendChild(chip);
             appendTrimGrips(o, lane, vm, body, cycleQ);
             appendCutBands(o, lane, vm, body, cycleQ);  // heard → seams
@@ -581,12 +576,6 @@ export function patchLaneBody(row, lane, vm, aux) {
                     }
                 }
                 o.appendChild(chip);
-                if (lane.windowEditing) {
-                    const done = makeDoneChip(lane.id,
-                        'Close the window editor (Esc)');
-                    done.style.left = pct(anchorQ + startQ, cycleQ);
-                    o.appendChild(done);
-                }
                 if (active && !bypassed && !qDef) {
                     // Heard-time cursor: positioned per poll below. NOT
                     // on the Q-definer — there the MAIN playhead is
@@ -602,10 +591,6 @@ export function patchLaneBody(row, lane, vm, aux) {
         // frames its raw material (groups, clip edit views, windowless
         // resting clips).
         appendCutBands(o, lane, vm, body, cycleQ);
-        if (lane.windowEditing && !o.querySelector('.win-done-chip')) {
-            o.appendChild(makeDoneChip(lane.id,
-                'Close the take view (Esc)'));
-        }
         // The comp (docs/takes.md): cells over the take tile — the
         // tinted ones at rest, every one in comp mode.
         appendCompCells(o, lane, vm, body, cycleQ);

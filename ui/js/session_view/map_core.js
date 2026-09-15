@@ -325,7 +325,14 @@ export function clearRawPreview(o) {
 /** TRIM one outer bound (`edge`) from `bound0`. Snaps the PERIOD to
  * whole Qs and lands the bound where that period lives; ⌥ SLIDES the
  * whole region by any fractional amount instead (length held). */
-export function trimMoveFn(st, segs, edge, bound0) {
+export function trimMoveFn(st, segs0, edge, bound00) {
+    // The trim's base: the grabbed geometry — or, after an ⌥ slide,
+    // the slid geometry re-landed on whole Qs (see below).
+    let segs = segs0;
+    let bound0 = bound00;
+    let slidDelta = 0;
+    let wasAlt = false;
+    const edgeOf = s => edge === 'start' ? s[0][0] : s[s.length - 1][1];
     return (rawQ, alt) => {
         if (alt && rawQ !== null) {
             // ⌥ FREE SLIDE: the grabbed edge follows the pointer by ANY
@@ -333,11 +340,13 @@ export function trimMoveFn(st, segs, edge, bound0) {
             // delta — the period is held, so Q coherence survives (the
             // anchoring law keeps content in place; only which stretch
             // is heard changes). Clamped to the take's extent; a slide
-            // never trims.
+            // never trims. Always from the GRAB geometry (a slide is a
+            // displacement, not a series of them).
             const { segs: next, deltaQ: delta } =
-                slideSegs(segs, rawQ - bound0, st.totalQ);
-            const edgeQ = edge === 'start'
-                ? next[0][0] : next[next.length - 1][1];
+                slideSegs(segs0, rawQ - bound00, st.totalQ);
+            slidDelta = delta;
+            wasAlt = true;
+            const edgeQ = edgeOf(next);
             const p = segsPeriod(next, st.totalQ);
             return { segs: next,
                 follow: { kind: 'bracket', edge, q: edgeQ },
@@ -348,6 +357,16 @@ export function trimMoveFn(st, segs, edge, bound0) {
                     incoherent: false,
                     ghost: false,
                 } };
+        }
+        if (wasAlt && rawQ !== null) {
+            // ⌥ RELEASED MID-DRAG (audit 2026-08-31 U2, the bracket law
+            // carried over): the slide left the region on a fractional
+            // grid, and the plain trim would otherwise forget it and
+            // trim from the grab. Re-land the slide on whole Qs first
+            // (length held), then trim from THERE.
+            wasAlt = false;
+            segs = slideSegs(segs0, Math.round(slidDelta), st.totalQ).segs;
+            bound0 = edgeOf(segs);
         }
         const rawBound = rawQ === null
             ? bound0                       // at-rest render

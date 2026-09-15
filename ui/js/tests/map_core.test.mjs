@@ -58,6 +58,25 @@ test('trim + ⌥: the whole region slides by any amount, length held', () => {
     assert.deepEqual(r.segs, [[8, 12]]);
 });
 
+test('trim: ⌥ released mid-drag re-lands the slide on whole Qs, then trims from there (U2)', () => {
+    // A 1Q window [1, 2) on a 3Q take (the alt_mix_drag recipe): ⌥
+    // slide +0.6Q, release ⌥, nudge to +0.65Q in plain mode.
+    const s3 = { ...st, segs: [[1, 2]], totalQ: 3, periodQ: 1 };
+    const move = trimMoveFn(s3, [[1, 2]], 'start', 1);
+    let r = move(1.6, true);
+    assert.deepEqual(r.segs, [[1.6, 2.6]]);
+    // Plain: the slide lands at +1Q ([2, 3)) FIRST; 1.65Q then proposes
+    // a 1.35Q period → 1Q → the bound stays at 2. The gesture LANDS
+    // whole-Q on both length and position — never a silent no-op.
+    r = move(1.65, false);
+    assert.deepEqual(r.segs, [[2, 3]]);
+    assert.equal(r.follow.q, 1.65);
+    assert.equal(r.active.q, 2);
+    // Trimming on from the re-landed base: 2.4 → period 0.6 → 1Q → 2.
+    r = move(2.4, false);
+    assert.deepEqual(r.segs, [[2, 3]]);
+});
+
 test('slide: whole-Q steps from the grab point; ⌥ frees the grid', () => {
     const move = slideMoveFn(st, [[6, 10]], 8);
     let r = move(null, false);

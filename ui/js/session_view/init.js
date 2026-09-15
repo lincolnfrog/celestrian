@@ -105,7 +105,7 @@ export function initSessionView(callbacks) {
 }
 
 /** The view-scope bindings (keys.js). Escape fires under any modifier
- * and while typing (clear selection, close the window editor, drop the
+ * and while typing (clear selection, leave comp mode, drop the
  * audition, dismiss menus) unless a higher scope — an open status-strip
  * panel — consumes it first; the hotkeys are no-modifier (Shift
  * ignored: '+' and '{' carry it) and not-typing. */
@@ -117,7 +117,6 @@ function wireKeyboard() {
         // belt to that suspender).
         if (isGestureLive()) return;
         clearSelection();
-        if (ctx.cb.onWindowEdit) ctx.cb.onWindowEdit(null, false);
         // Esc leaves comp mode on every lane (the comp itself stays).
         if (ctx.cb.onCompMode) ctx.cb.onCompMode(null, false);
         // Esc drops any step audition (§11.3: "esc exits the loop").

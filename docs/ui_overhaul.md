@@ -415,8 +415,9 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
     the children's effective LCM, nested windows shortening it all the
     way up). The raw extent lives on the REGION PANEL under the
     selected lane (time_maps.md, 2026-09-11) and, mid-gesture, in the
-    lane's same-scale reveal; clicking the chip still pins the raw
-    inspector open with a "done" chip (`windowEditLane`, shared too).
+    lane's same-scale reveal; the chip toggles bypass (the chip-click
+    inspector retired 2026-09-13 — `windowEditLane` is comp mode's raw
+    lane only).
     Children under an active group map show the slice the map selects
     of them (`childSrcSegsUnderMap`) — no projection dims, no chrome;
     the parent owns the edit. Bypass restores the raw-framed lane with

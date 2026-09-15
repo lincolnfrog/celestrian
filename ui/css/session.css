@@ -1491,8 +1491,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 
 /* ===== 16. Loop window brackets & chips ===== */
 /* CASCADE NOTE: rule order in this section is load-bearing — .win-chip's
-   base block intentionally sits AFTER .win-open-chip / .win-done-chip
-   (equal specificity; chips carry both classes). Do not reorder. */
+   base block intentionally sits AFTER .win-heard-chip (equal
+   specificity; chips carry both classes). Do not reorder. */
 .win-dim {
     position: absolute; top: 0; bottom: 0;
     background: rgba(23, 19, 16, 0.62);
@@ -1569,15 +1569,14 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     cursor: default;
     letter-spacing: 0.02em;
 }
-/* The open-view chip pins to the lane's RIGHT edge; session_view.js
-   positions every win-chip with an inline `left`, so left:auto
-   !important is required to beat that inline style. */
-.win-open-chip {
+/* The heard-lane chip (readout + bypass toggle) pins to the lane's
+   RIGHT edge; lane_body positions every win-chip with an inline
+   `left`, so left:auto !important is required to beat that style. */
+.win-heard-chip {
     right: 4px;
     left: auto !important;
     cursor: pointer;
 }
-.win-done-chip { cursor: pointer; color: var(--tape); border-color: var(--tape); }
 .win-chip {
     position: absolute;
     top: 4px;

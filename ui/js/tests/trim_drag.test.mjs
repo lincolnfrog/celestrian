@@ -30,7 +30,7 @@ import { nodeById as findNodeById, recordTake } from './helpers.mjs';
 
 const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
 const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
-const opts = { fxOpen: new Set(), windowEdit: new Set(),
+const opts = { fxOpen: new Set(),
                pinFrameQ: null, pinFoldQ: null };
 
 test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', async () => {

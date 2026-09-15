@@ -473,9 +473,13 @@ rescale; the pointer warp was a patch over it, not a design.
    → slide the selected region by 1Q (⇧ 4Q, ⌥ ⅛Q), length held, one
    undo step per press (`nudgeRegion`).
 4. **Retired:** the handle nav dock (its ticks/viewport box), the
-   expanded map drag, the pointer warp + echo filter, the flash-expand.
-   Kept: [ ] / { } teleport keys, the chip-click inspector, cut/heal
-   gestures, ⌥ semantics, live splices, gesture-scoped undo.
+   expanded map drag, the pointer warp + echo filter, the flash-expand
+   — and (2026-09-13, owner: "I have never used it") the CHIP-CLICK
+   INSPECTOR with its "done" chip and the `windowEdit` view state: the
+   heard lane's chip is now the readout + bypass toggle like every
+   other chip. `windowEditLane` survives only as comp mode's raw lane
+   (takes.md §6). Kept: [ ] / { } teleport keys, cut/heal gestures, ⌥
+   semantics, live splices, gesture-scoped undo.
 
 Pinned by `ui/js/tests/map_core.test.mjs` (the three move laws),
 `ui/e2e/region_panel.spec.js` (panel on select / off on top-bar click

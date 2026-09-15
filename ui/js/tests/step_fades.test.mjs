@@ -18,7 +18,7 @@ import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { deriveViewModel } from '../view_model.js';
 import { recordTake } from './helpers.mjs';
 
-const opts = { fxOpen: new Set(), windowEdit: new Set(),
+const opts = { fxOpen: new Set(),
                pinFrameQ: null, pinFoldQ: null };
 
 async function seedTwoTracks() {

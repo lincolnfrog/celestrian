@@ -120,16 +120,21 @@ export function patchRegionPanel(row, lane, vm, aux, peaks) {
     const segs = coveredSegs(st);
     const periodQ = segs.reduce((n, [a, b]) => n + (b - a), 0);
     const active = laneMapActive(lane);
+    const bypassed = !!(lane.window && lane.window.bypassed);
     // The label names the region: what is kept of what exists.
     setText(row._regionLabel,
-        (active ? 'loop ' + fmtQ(periodQ) + 'Q' : 'whole take') +
+        (active ? 'loop ' + fmtQ(periodQ) + 'Q'
+            : bypassed ? 'bypassed ' + fmtQ(periodQ) + 'Q' : 'whole take') +
         ' · ' + fmtQ(totalQ) + 'Q take' +
         (lane.mapMulti || innerCuts(st.segs, totalQ).length ? ' · cuts' : ''));
     row._regionLabel.title = active
         ? 'The kept region of this track\'s take: drag the box to slide ' +
           'it, its brackets to trim, double-click to cut'
-        : 'This track loops its whole take: drag a bracket in to make a ' +
-          'loop region, double-click to cut';
+        : bypassed
+            ? 'The loop region is bypassed — the whole take sounds. The ' +
+              'lane\'s chip re-activates it; the box still edits it'
+            : 'This track loops its whole take: drag a bracket in to make a ' +
+              'loop region, double-click to cut';
 
     // The raw waveform: the whole take across the strip.
     drawStripWave(row._regionStrip, peaks, lane.kind === 'group');

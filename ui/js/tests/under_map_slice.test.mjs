@@ -47,7 +47,7 @@ function island(groupOrigin, { loop = [Q, 3 * Q], member = {} } = {}) {
     };
 }
 
-const opts = { fxOpen: new Set(), windowEdit: new Set() };
+const opts = { fxOpen: new Set() };
 const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
 
 test('1. the slice is measured from the GROUP origin', () => {

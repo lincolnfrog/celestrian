@@ -384,7 +384,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // active [0, 2Q): the stack IS 2Q (E-C)
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
         // No selection brackets on the lane — only the edge TRIM GRIPS
         // (the same `.win-bracket.latent.trim-grip` a heard clip grows).
         await expect(group.locator('.win-bracket:not(.trim-grip)')).toHaveCount(0);
@@ -401,7 +401,7 @@ test.describe('Loop window brackets (phase 3)', () => {
 
         // That chip IS the bypass toggle: click → active → heard again.
         await chip.click();
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
         expect((await stackState(page)).loopBypassed).toBe(false);
     });
 
@@ -442,7 +442,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
         const id = await setWindow(page); // ACTIVE [0, 2Q)
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
 
         // The frame IS the audible cycle: lcm(1Q, 2Q) = 2Q. No dims —
         // the lane shows only what sounds.
@@ -454,7 +454,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         await expect(group.locator('.win-chip')).toHaveText(/bypassed/);
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('3Q ↺');
         await group.locator('.win-chip').click();
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
         await expect(page.locator('#ruler .tick-label').last()).toHaveText('2Q ↺');
     });
 
@@ -519,7 +519,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         // bands 2026-07-23): the chip names the audible loop and opens
         // the inspector — "window · active" text lives on raw-framed
         // lanes only.
-        await expect(clip3Q.locator('.win-open-chip'))
+        await expect(clip3Q.locator('.win-heard-chip'))
             .toHaveText(/window 2Q/);
 
         // Bypass through the SAME engine verb groups use (fractal —
@@ -534,45 +534,46 @@ test.describe('Loop window brackets (phase 3)', () => {
         // And that chip IS the bypass toggle, exactly like a group's:
         // clicking it re-activates and the lane rests heard again.
         await chip.click();
-        await expect(clip3Q.locator('.win-open-chip'))
+        await expect(clip3Q.locator('.win-heard-chip'))
             .toHaveText(/window 2Q/);
         expect((await clip3qState()).loopBypassed).toBe(false);
     });
 
-    test('window cursor: the heard lane has ONE cursor; the inspector carries the amber one', async ({ page }) => {
+    test('window cursor: the heard lane has ONE cursor; the region panel carries the amber one', async ({ page }) => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // stack window [0, 2Q), ACTIVE
         const group = page.locator('.lane[data-kind="group"]').first();
         // Heard view: the white playhead is honest on the lane — no
         // amber cursor (the "two cursors" the field saw on 2026-08-21).
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
         await expect(group.locator('.win-cursor')).toHaveCount(0);
 
-        // Open the inspector: the raw 3Q on its own scale, brackets at
-        // [0, 2Q), and the amber cursor carrying heard time.
-        await group.locator('.win-open-chip').click();
-        await expect(group.locator('.win-done-chip')).toHaveCount(1);
-        await expect(group.locator('.win-cursor')).toBeVisible();
+        // Select the group: the region panel shows the raw 3Q with the
+        // kept region at [0, 2Q) and the amber cursor carrying heard
+        // time in raw coordinates.
+        await group.locator('.rail-name').click();
+        await expect(group.locator('.lane-region')).toBeVisible();
+        const cursorPct = () => page.evaluate(() =>
+            parseFloat(document.querySelector('.region-cursor').style.left));
+        await expect(group.locator('.region-cursor')).toBeVisible();
 
         // masterPos 1.5Q → window phase (1.5 mod 2)/2 = 0.75 → heard
-        // position 1.5Q of the 3Q inspector = 50%
+        // position 1.5Q of the 3Q take = 50%
         await page.evaluate(Q => window.celestrian.setMasterPos(1.5 * Q),
             await mockQ(page));
-        await expect.poll(() => page.evaluate(() =>
-            parseFloat(document.querySelector('.win-cursor').style.left))).toBeGreaterThan(49);
-        expect(await page.evaluate(() =>
-            parseFloat(document.querySelector('.win-cursor').style.left))).toBeLessThan(51);
+        await expect.poll(cursorPct).toBeGreaterThan(49);
+        expect(await cursorPct()).toBeLessThan(51);
 
         // Raw transport past the window: the VIEW wraps at the audible
-        // cycle (E-C) — 0.5Q of the 3Q inspector (16.7%)
+        // cycle (E-C) — 0.5Q of the 3Q take (16.7%)
         await page.evaluate(Q => window.celestrian.setMasterPos(2.5 * Q),
             await mockQ(page));
-        await expect.poll(() => page.evaluate(() =>
-            parseFloat(document.querySelector('.win-cursor').style.left))).toBeLessThan(18);
+        await expect.poll(cursorPct).toBeLessThan(18);
 
-        // Not playing → no cursor; bypassed → no cursor element at all
+        // Not playing → no cursor. Bypassed → the lane frames its raw
+        // take again with brackets, still no lane cursor element.
         await page.evaluate(() => window.celestrian.setIsPlaying(false));
-        await expect(group.locator('.win-cursor')).toBeHidden();
+        await expect(group.locator('.region-cursor')).toBeHidden();
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         await expect(group.locator('.win-cursor')).toHaveCount(0);
     });
@@ -581,7 +582,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         await loadHarness(page, '1Q + 3Q (Loop)');
         const id = await setWindow(page); // [0, 2Q) of the sole 3Q stack
         const group = page.locator('.lane[data-kind="group"]').first();
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
 
         // Raw transport at 2.5Q: the published view wraps at the AUDIBLE
         // cycle (2Q) → 0.5Q — and since 2026-08-21 the frame IS that
@@ -666,7 +667,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         expect((await stackState(page)).windowActive).toBe(true);
         // The settled lane rests HEARD (2026-08-21): the chip names the
         // part length; the brackets live in the inspector now.
-        await expect(group.locator('.win-open-chip')).toHaveText(/window 2Q/);
+        await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
         await expect(group.locator('.win-bracket:not(.trim-grip)')).toHaveCount(0);
     });
 });

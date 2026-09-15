@@ -41,7 +41,6 @@ const CALIBRATION_POLL_MS = 250;    // …every this many ms (10 s ceiling)
 const livePeaks = new Map();        // clip id → peak array
 const peakKeys = new Map();         // clip id → peakKey the peaks were fetched at (LIVE while recording)
 const fxOpen = new Set();           // lane ids with the effects panel expanded (view state)
-const windowEdit = new Set();       // lanes expanded into the window editor
 const seqOpen = new Set();          // stacks with the sequencer grid expanded (view state)
 const compMode = new Set();         // clips in COMP MODE (view state, docs/takes.md)
 // Clips whose live take is a NEW TAKE of a committed slot. Published
@@ -540,14 +539,8 @@ async function onUngroup(groupId) {
 
 /* ---------- session-view callbacks (per-lane state) ---------- */
 
-// Law 13 amendment: expand/collapse a lane's window editor.
-function onWindowEdit(id, open) {
-    if (id === null) { windowEdit.clear(); return; }
-    if (open) windowEdit.add(id); else windowEdit.delete(id);
-}
-
-// Comp mode (docs/takes.md): pure view state, the windowEdit shape —
-// null closes every lane's (Escape).
+// Comp mode (docs/takes.md): pure view state — null closes every
+// lane's (Escape).
 function onCompMode(id, open) {
     if (id === null) { compMode.clear(); return; }
     if (open) compMode.add(id); else compMode.delete(id);
@@ -712,7 +705,7 @@ async function startPolling() {
                 refreshMidiNotes(lastNodesById);
                 const vm = deriveViewModel(state,
                     { folded: foldedStacks(projectInfo.id),
-                      fxOpen, windowEdit, seqOpen, compMode, retakes,
+                      fxOpen, seqOpen, compMode, retakes,
                       pinFrameQ: mapDragPinQ(),
                       pinFoldQ: mapDragPinFoldQ() });
                 const lanesById = new Map(vm.lanes.map(l =>
@@ -1113,7 +1106,6 @@ function initApp() {
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
         onAddTrack: () => callNative('createNode', 'clip', ''),
-        onWindowEdit,
         onDropLane,
         onGroupSelection,
         onMoveToTop,

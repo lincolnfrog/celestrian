@@ -16,7 +16,7 @@ import { callNative, getState, loadScenario } from '../mock_backend.js';
 import { loadSharedJson, recordTake } from './helpers.mjs';
 
 const golden = loadSharedJson('timing_golden.json').frame_health_cases;
-const opts = { fxOpen: new Set(), windowEdit: new Set(),
+const opts = { fxOpen: new Set(),
                pinFrameQ: null, pinFoldQ: null };
 
 test('golden: blowup face (attribution + offers)', () => {

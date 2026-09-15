@@ -155,9 +155,11 @@ test('HEARD VIEW (law 13 amended): a windowed lane shows what sounds', () => {
         }),
     ]);
     const editId = editState.nodes[1].id;
-    const vmE = deriveViewModel(editState, { windowEdit: new Set([editId]) });
+    // Comp mode is the one remaining raw-lane view (the chip-click
+    // inspector retired 2026-09-13 — the region panel shows the take).
+    const vmE = deriveViewModel(editState, { compMode: new Set([editId]) });
     const editing = vmE.lanes[1];
-    assert.equal(editing.windowEditing, true, 'lane enters the edit view');
+    assert.equal(editing.windowEditing, true, 'lane enters the raw view');
     assert.equal(editing.frameQ, 2, 'per-lane scale = the full take');
     assert.deepEqual([editing.window.startQ, editing.window.endQ], [1, 2],
         'brackets select over the raw material');
@@ -296,13 +298,6 @@ test('a window reframes the timeline honestly (reverses field bug 2026-07-11)', 
     const vmA = deriveViewModel(state([active]));
     assert.equal(vmA.cycleQ, 1);
     assert.equal(vmA.lanes.find(l => l.kind === 'group').periodQ, 1);
-    // The edit view frames the raw inner cycle on its own scale.
-    const vmE = deriveViewModel(state([active]),
-        { windowEdit: new Set([active.id]) });
-    const gE = vmE.lanes.find(l => l.kind === 'group');
-    assert.equal(gE.windowEditing, true);
-    assert.equal(gE.frameQ, 2);
-    assert.deepEqual([gE.window.startQ, gE.window.endQ], [0, 1]);
 
     const bypassed = stack([clip(2), clip(1)], {
         loopStart: 0, loopEnd: 1 * Q, windowActive: false, loopBypassed: true,
@@ -395,9 +390,6 @@ test('windowPhase: heard view has no second cursor; the edit view carries it', (
     // honest on the lane — no amber cursor.
     const vmA = deriveViewModel(state([grp]));
     assert.equal(vmA.lanes.find(l => l.kind === 'group').windowPhase, 0);
-    // The edit view shows the raw extent, so the amber cursor returns.
-    const vmE = deriveViewModel(state([grp]), { windowEdit: new Set([grp.id]) });
-    assert.equal(vmE.lanes.find(l => l.kind === 'group').windowPhase, 0.75);
 
     const bypassed = stack([clip(2)], {
         loopStart: 0, loopEnd: 1 * Q, windowActive: false,

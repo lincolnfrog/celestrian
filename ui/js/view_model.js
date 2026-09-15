@@ -1369,14 +1369,8 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
         anchored,
     };
     let lane;
-    if (ctx.windowEdit && ctx.windowEdit.has(node.id) &&
-        (gwin || intrinsicQ >= 2)) {
-        // THE EDIT VIEW — the same inspector a clip opens (I5): the
-        // full inner cycle on its own scale, brackets over it.
-        lane = Object.assign(windowEditLane(node, gwin, intrinsicQ, ctx),
-            groupFields);
-    } else if (gwin && gwin.active && !gwin.suspended &&
-               !isAuditionWindow(node)) {
+    if (gwin && gwin.active && !gwin.suspended &&
+        !isAuditionWindow(node)) {
         // THE HEARD VIEW — the same default a windowed clip has (I5):
         // the lane's material IS the window's
         // content, tiled at the window length where it audibly
@@ -1625,13 +1619,14 @@ function pushRecordingLane(node, depth, mapCtx, ctx, offsetQ) {
 }
 
 /**
- * THE WINDOW EDIT VIEW — ONE function for clips and groups (I5): the
- * lane expands to its FULL raw extent (a clip's take, a group's inner
- * cycle) on its OWN horizontal scale — the seed track's trim view, per
- * lane. Brackets select over the whole extent; the amber cursor
- * carries heard time; the rest of the timeline (and the white cursor)
- * stay in the audible frame. Returns the lane's view fields; the
- * caller adds kind/depth.
+ * THE RAW LANE — comp mode's view (docs/takes.md §6): the lane expands
+ * to its FULL raw take on its OWN horizontal scale so the comp cells
+ * cover the slot's period. Brackets select over the whole extent; the
+ * amber cursor carries heard time; the rest of the timeline (and the
+ * white cursor) stay in the audible frame. Returns the lane's view
+ * fields; the caller adds kind/depth. (Until 2026-09-13 this was also
+ * the chip-click "window edit" inspector for clips and groups; the
+ * region panel replaced that — time_maps.md.)
  */
 function windowEditLane(node, win, intrinsicQ, ctx) {
     return Object.assign(laneCommon(node, ctx.state), {
@@ -1963,7 +1958,7 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
  * the engine caps the take at one map period).
  *
  * ctx: the per-derivation context: { state, lanes, maxDepth, fxOpen,
- * windowEdit, quantum,
+ * quantum,
  * epochSamples, shiftQ, qEstablished, cycleQ, lcmQ, provisionalDefiner,
  * soleQDefinerId, defSelStartQ, defSelEndQ }.
  */
@@ -1991,11 +1986,12 @@ function pushLane(node, depth, mapCtx, ctx) {
     const periodQ = displayPeriodQ(node, ctx.quantum);
     const intrinsicQ = intrinsicPeriodQ(node, ctx.quantum);
     const win = mapOf(node, ctx.quantum);
-    // COMP MODE on a windowed lane opens its raw inspector: the comp's
-    // cells live on the slot's period, which the heard view folds away.
+    // COMP MODE on a windowed lane opens the raw lane (windowEditLane):
+    // the comp's cells live on the slot's period, which the heard view
+    // folds away. (The only remaining raw-lane view — the chip-click
+    // inspector retired 2026-09-13 in favour of the region panel.)
     const compOpen = !!(ctx.compMode && ctx.compMode.has(node.id) && win);
-    if (((ctx.windowEdit && ctx.windowEdit.has(node.id)) || compOpen) &&
-        (win || intrinsicQ >= 2)) {
+    if (compOpen) {
         ctx.lanes.push(Object.assign(windowEditLane(node, win, intrinsicQ, ctx),
             { kind: 'clip', depth }));
         if (ctx.fxOpen && ctx.fxOpen.has(node.id)) {
@@ -2023,10 +2019,9 @@ function pushLane(node, depth, mapCtx, ctx) {
  *                  state, view_prefs.js).
  * opts.fxOpen:     Set of lane ids whose effects row is expanded.
  * opts.seqOpen:    Set of stack ids whose sequencer grid is expanded.
- * opts.windowEdit: Set of lane ids in the window EDIT view.
- * opts.compMode:   Set of clip ids in COMP MODE (docs/takes.md; the
- *                  windowEdit pattern — a windowed lane opens its raw
- *                  inspector for it).
+ * opts.compMode:   Set of clip ids in COMP MODE (docs/takes.md; a
+ *                  windowed lane opens its raw lane for it —
+ *                  windowEditLane).
  * opts.retakes:    Set of clip ids whose live take is a NEW TAKE of a
  *                  committed slot. Published state does not say so (a
  *                  retake keeps the slot's `duration`); app.js infers
@@ -2079,10 +2074,6 @@ export function deriveViewModel(state, opts = {}) {
     // Lanes whose effects panel is expanded (pure view state, owned by
     // the app shell — like fold, but client-side only)
     const fxOpen = opts.fxOpen || null;
-    // Lanes whose window is being EDITED (view state, app shell): they
-    // expand to their full raw duration on their own scale (law 13
-    // amendment).
-    const windowEdit = opts.windowEdit || null;
     const nodes = state.nodes || [];
     const quantum = resolveQuantum(state, nodes);
 
@@ -2219,7 +2210,7 @@ export function deriveViewModel(state, opts = {}) {
 
     const lanes = [];
     const ctx = {
-        state, lanes, maxDepth, fxOpen, windowEdit, quantum,
+        state, lanes, maxDepth, fxOpen, quantum,
         epochSamples, shiftQ, qEstablished, cycleQ, lcmQ,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
         // Stacks whose sequencer grid is expanded (view state, the

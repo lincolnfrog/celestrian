@@ -122,8 +122,9 @@ test.describe('Region panel', () => {
         // The panel rebuilds once the commit settles: wait for the box
         // to show [7, 10) before grabbing it.
         await expect.poll(async () => {
+            // (null for a tick while the overlay rebuilds — keep polling)
             const k = await lane.locator('.region-kept').boundingBox();
-            return (k.x - strip.x) / strip.width;
+            return k ? (k.x - strip.x) / strip.width : -1;
         }).toBeCloseTo(7 / 12, 2);
         // SLIDE: grab the box and move it +1.3Q → whole-Q step +1.
         const kept = await lane.locator('.region-kept').boundingBox();
@@ -136,8 +137,9 @@ test.describe('Region panel', () => {
         // The lane above re-tiled to the slid loop (overview → detail).
         await expect(lane.locator('.lane-body .win-chip')).toHaveText(/3Q/);
         await expect.poll(async () => {
+            // (null for a tick while the overlay rebuilds — keep polling)
             const k = await lane.locator('.region-kept').boundingBox();
-            return (k.x - strip.x) / strip.width;
+            return k ? (k.x - strip.x) / strip.width : -1;
         }).toBeCloseTo(8 / 12, 2);
         // CUT: double-click the kept material at 9.5Q → a 1Q cell cut
         // at [9, 10): the map is [8, 9) ∪ [10, 11).
@@ -227,15 +229,17 @@ test.describe('Same-scale reveal', () => {
         await expect(body).toHaveClass(/revealing/);
         await expect(body).not.toHaveClass(/inspecting/);  // never rescaled
         await expect(body.locator('.reveal-layer canvas')).toHaveCount(1);
-        // The follow bracket rides the pointer.
-        let fb = await body.locator('.drag-preview-layer .win-bracket.dragging')
-            .boundingBox();
-        expect(Math.abs((fb.x + fb.width) - (gx - 6))).toBeLessThan(12);
+        // The follow bracket rides the pointer. (Polled: the preview
+        // re-renders on every pointermove, and a single box read can
+        // land between the page's event and the runner's query.)
+        const followNear = x => expect.poll(async () => {
+            const fb = await body.locator('.drag-preview-layer .win-bracket.dragging')
+                .boundingBox();
+            return fb ? Math.abs((fb.x + fb.width) - x) < 12 : false;
+        }).toBe(true);
+        await followNear(gx - 6);
         await page.mouse.move(gx - box.width * (1.2 / 4), gy, { steps: 10 });
-        fb = await body.locator('.drag-preview-layer .win-bracket.dragging')
-            .boundingBox();
-        expect(Math.abs((fb.x + fb.width) - (gx - box.width * (1.2 / 4))))
-            .toBeLessThan(12);
+        await followNear(gx - box.width * (1.2 / 4));
         await page.screenshot({ path: test.info().outputPath('reveal-mid-drag.png') });
         await page.mouse.up();
         await expect.poll(() => loopOf(page, id2, Q)).toBe('6,9');
@@ -258,9 +262,10 @@ test.describe('Same-scale reveal', () => {
         await page.waitForTimeout(220);
         await page.mouse.move(box.x + 12, gy, { steps: 4 });
         await expect(body).toHaveClass(/revealing/);
-        await page.waitForTimeout(700);                    // panning…
-        const q0 = await body.evaluate(b => b._reveal && b._reveal.view.q0);
-        expect(q0).toBeLessThan(5.5);                      // started at 6
+        // Panning (rAF-paced — poll rather than sleep, so a loaded
+        // runner cannot starve the pan under a fixed wait).
+        await expect.poll(() => body.evaluate(b => b._reveal ? b._reveal.view.q0 : 99),
+            { timeout: 4000 }).toBeLessThan(5.5);          // started at 6
         await page.mouse.up();
         await expect.poll(async () => {
             const n = await node(page, id2);

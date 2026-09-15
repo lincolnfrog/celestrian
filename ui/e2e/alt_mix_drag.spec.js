@@ -30,18 +30,21 @@ test('⌥→plain mixed bracket drag lands a whole-Q window', async ({ page }) =
     // Create a real 1Q window [1Q, 2Q) so ⌥-slide has room both ways.
     await page.evaluate(q => window.celestrian.callNative(
         'setLoopPoints', 'clip-3q', q, 2 * q), Q);
-    // Open the inspector so the editable brackets exist.
-    await clip3Q.locator('.win-open-chip').click();
-    const start = clip3Q.locator('.win-bracket.start:not(.latent)');
+    // Select the clip: the region panel's brackets edit the raw take
+    // (the chip-click inspector retired 2026-09-13).
+    await clip3Q.locator('.rail-name').click();
+    const start = clip3Q.locator('.region-bracket.start');
     await expect(start).toBeVisible();
 
     const st0 = await page.evaluate(() =>
         window.celestrian.getState().nodes.find(n => n.type === 'stack')
             .nodes.find(c => c.id === 'clip-3q'));
 
-    const bb = await body.boundingBox();
+    // The strip spans the whole 3Q take, like the old inspector.
+    const bb = await clip3Q.locator('.region-strip').boundingBox();
     const sb = await start.boundingBox();
     const y = bb.y + bb.height / 2;
+    void body;
     await page.mouse.move(sb.x + sb.width / 2, y);
     await page.mouse.down();
     // ⌥ free slide: +0.6Q (both ends move fractionally in `cur`).
