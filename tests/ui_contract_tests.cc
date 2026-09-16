@@ -1,5 +1,5 @@
 /**
- * UI Contract Capture Harness (docs/ui_overhaul.md §7)
+ * UI Contract Capture Harness (docs/session_view.md §7)
  *
  * The UI cannot be driven headless (native WKWebView + live audio
  * input), so this is the testable seam: drive a scripted record→commit

@@ -1,5 +1,5 @@
 /**
- * Playhead dead-reckoning clock (docs/ui_overhaul.md law 10 coda).
+ * Playhead dead-reckoning clock (docs/session_view.md law 10 coda).
  *
  * The published masterPos arrives every ~50ms; drawing it with a CSS
  * glide lags the target by the transition time, so the sweep would

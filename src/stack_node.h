@@ -54,7 +54,7 @@ class StackNode : public AudioNode {
   // children renders through the same map + the group fx rack. Both
   // iterate the whole-graph snapshot (ProcessContext.snap). When this
   // stack's map is ACTIVE, both split the block into runs at map seams
-  // (time_maps.md §5) — the *Children helpers hold the pre-split
+  // (time_maps.md §4) — the *Children helpers hold the pre-split
   // bodies.
   void control(const float* const* input_channels, int num_input_channels,
                const ProcessContext& context) override;
@@ -415,7 +415,7 @@ class StackNode : public AudioNode {
   static constexpr int kMaxSplitChannels = 64;
 
   /**
-   * SUB-BLOCK SEAM-SPLIT driver (time_maps.md §5), shared verbatim by
+   * SUB-BLOCK SEAM-SPLIT driver (time_maps.md §4), shared verbatim by
    * BOTH §2.3 phases: an active map's seam mid-block would hand children
    * a linearly-advancing clock across a mapped-time JUMP — up to a block
    * of wrong positions per seam. Splits the block into runs at seam

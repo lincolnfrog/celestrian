@@ -1,6 +1,6 @@
 /**
- * PLAY START (play_start.js; docs/tasks.md open question 5, owner
- * ruling 2026-09-10) — Space / ▶ plays FROM the play start and stop
+ * PLAY START (play_start.js; session_view.md display law 15)
+ * — Space / ▶ plays FROM the play start and stop
  * returns the playhead TO it. Pins, over the mock backend:
  *
  *  - by default the play start is the top: play from mid-cycle starts

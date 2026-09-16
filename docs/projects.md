@@ -55,28 +55,15 @@ whichever instrument wants to start, Q is born, build.
 - ⌘S remains as "checkpoint now" — and an explicit ⌘S before the
   first take is intent enough to birth the project early.
 
-## The launch ritual (owner-refined 2026-07-19g)
+## The launch ritual
 
-> **SUPERSEDED 2026-08-13 by Q17 "Boot empty" (design_language.md):**
-> the first bullet below — boot into the last/Default template, "never
-> boots into an empty screen" — is retired along with
-> `ensureLaunchSession`'s seeded "Track 1". The app boots EMPTY; `R`
-> creates + arms the default track; every + is a template picker.
-> Whole-session templates remain an explicit save-as / new-from choice
-> in the Project menu. The remaining bullets (per-track record, tempo
-> chip, post-hoc groups, selection) stand.
-
-- ~~Boot = the last template used or saved. On the very first run, the
-  app BUILDS the minimal **Default** template (one ready track,
-  "Track 1"), saves it, and boots into it — the user edits their setup
-  and saves over Default (the Ableton default-set ritual). **The app
-  never boots into an empty screen, and recording is always one
-  click.**~~
-- **PER-TRACK RECORD, no global button** (owner ruling 2026-07-19h,
-  supersedes the same-day staging model): the track's ● is THE record
+- **Boot EMPTY** (Q17). There is no seeded "Track 1" and no default
+  template loaded at startup. `R` creates and arms the default track;
+  every `+` is a template picker. Whole-session templates stay an
+  explicit save-as / new-from choice in the Project menu.
+- **PER-TRACK RECORD, no global button**: the track's ● is THE record
   verb — the core journey is "song looping → ＋ Track → hit its ● →
-  recording at the next boundary", and a global button optimized the
-  first-run demo at that journey's expense. A group's ● records all
+  recording at the next boundary". A group's ● records all
   its empty tracks (the drum-mic case); a recording track's ● stops
   it; full tracks disable it (no overdub).
 - **The tempo track is explicit**: while Q is provisional, the
@@ -84,13 +71,13 @@ whichever instrument wants to start, Q is born, build.
   second take locks the island (Q belongs to the island, not a track).
 - **Creation lives in the canvas**: a persistent ＋ Track row under
   the lanes. **Groups are a post-hoc GESTURE, not an upfront
-  decision** (owner ruling): drag one track's rail onto another's —
+  decision**: drag one track's rail onto another's —
   clip target → the two combine into a new group (undoable Combine
   edit); group target → the dragged track moves inside; nesting falls
   out (drop onto a track inside a group combines in place). Groups
   keep their internal add-track rows. The transport carries no
   creation or record buttons — it is transport + project identity.
-- **Selection + the grouping verbs' inverses** (2026-07-19j): click a
+- **Selection + the grouping verbs' inverses**: click a
   rail to select (⌘-click adds, Escape/canvas-click clears); ≥2
   selected raises a floating "Group N tracks" bar (combine at the
   first-selected's slot); dragging a selected rail carries the whole
@@ -121,9 +108,31 @@ whichever instrument wants to start, Q is born, build.
   channel indices load as-is).
 - Cross-rate load (the QTime storage makes it possible without a
   re-cut; not yet implemented).
-- **Export (WAV/MP3 mixdown)** — deferred until the sequencer / song
-  structure module exists (owner ruling 2026-08-19): the session loops,
-  so "how long is the piece" has no answer yet. When it lands, the
-  cheap pre-sequencer form is a master-bus bounce of exactly N island
-  cycles (the master cycle is well-defined today); full arrangements
-  and MP3 wait for song structure.
+- **MP3 / compressed export.** WAV bounce shipped once the sequencer
+  answered "how long is the piece" — a bounce renders one EFFECTIVE
+  cycle of the island root, which is the whole song when a sequence is
+  active (bounce.md, Q19). Compressed formats are still open.
+
+---
+
+## Appendix — alternatives considered and rejected
+
+**Boot into the last-used or Default template.** On first run the app
+would BUILD a minimal Default template (one ready track, "Track 1"),
+save it, and boot into it — the Ableton default-set ritual — so that
+"the app never boots into an empty screen, and recording is always one
+click." **Rejected 2026-08-13 by Q17 "boot empty."** The seeded track
+was a stranger in the user's session; `R` creating and arming a track on
+demand gives the same one-gesture start without pre-populating anything.
+`ensureLaunchSession`'s seeded track went with it.
+
+**A global record button**, with a staging model where the transport
+owned the record verb. **Rejected 2026-07-19h:** it optimized the
+first-run demo at the expense of the core journey, which is "song
+looping → ＋ Track → hit its ● → recording at the next boundary." The
+transport now carries no creation or record buttons — it is transport
+plus project identity.
+
+**Groups as an upfront decision** — choosing to make a group before
+filling it. **Rejected:** groups are a post-hoc gesture (drag one rail
+onto another), so structure follows the music rather than preceding it.

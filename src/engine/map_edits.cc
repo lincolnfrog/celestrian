@@ -37,7 +37,7 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
         "here (finish or cancel it first)");
     return;
   }
-  // COHERENCE GUARD (time_maps.md §6): a window length off the Q grid
+  // COHERENCE GUARD (time_maps.md §4): a window length off the Q grid
   // is refused — categorical, both sides (the UI snaps; the engine
   // enforces). One incoherent map period LCM-explodes the effective
   // cycle and blanks the timeline.
@@ -257,7 +257,7 @@ void AudioEngine::setSegments(const juce::String& uuid,
     return;
   }
 
-  // COHERENCE GUARD (time_maps.md §6): the map's PERIOD must be a whole
+  // COHERENCE GUARD (time_maps.md §4): the map's PERIOD must be a whole
   // multiple of Q — categorical, both sides (the UI snaps; the engine
   // enforces). One incoherent period LCM-explodes the effective cycle
   // and blanks the timeline.

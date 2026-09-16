@@ -1,5 +1,5 @@
 /**
- * Session view patch layer (docs/ui_overhaul.md §2, §4 — P2-10).
+ * Session view patch layer (docs/session_view.md §2, §4 — P2-10).
  *
  * patchSessionView(vm, aux) renders the Q-unit view model from
  * view_model.js into the DOM. THE ONLY Q→geometry conversion in the app

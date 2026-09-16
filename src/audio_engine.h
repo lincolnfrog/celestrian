@@ -827,22 +827,23 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   /** TWO-ANCHOR CONTINUITY riders (see the continuityOrigin note in
    * engine/island_geometry.cc), shared by setLoopPoints and setSegments: re-anchor
    * the clip's origin so the sounding sample keeps sounding (while
-   * playing), then place the island epoch by the CYCLE-TOP RULE: if the
-   * clip DEFINES the island's cycle after the edit (its new period is a
-   * multiple of Q and of every other loop's period) and the loop's
-   * heard top (origin' + mapOffset(0)) sits a whole number of Qs from
-   * the current epoch, the epoch moves TO that top — the loop you just
-   * shaped fills the frame from its own top, exactly as a
-   * cycle-extending commit and the Q13 sole-definer re-trim do.
-   * Otherwise (a sub-loop under someone else's cycle, or an off-grid
-   * ⌥-slid top) the two-anchor delta ride keeps the edited clip's frame
+   * playing), then place the island epoch by the CYCLE-TOP RULE: the
+   * frame belongs to the loops on screen, so when the edit shapes a
+   * loop (leaves an active map) the epoch moves TO that loop's heard
+   * top (origin' + mapOffset(0)) whenever the move is FREE — a whole
+   * number of cycles of every other loop (their fold with Q), which no
+   * untouched lane can see. Otherwise (no free move reaches the top, an
+   * off-grid ⌥-slid top, a cleared window) the untouched lanes hold
+   * still and the two-anchor delta ride keeps the edited clip's frame
    * position. Nothing audible moves in either case: origins are
    * absolute; the epoch is the visual cycle top and the arm grid, which
    * whole-Q moves preserve.
    * `quantum` is supplied by the caller because the two paths judge the
    * delta against different scopes (setLoopPoints against the root's Q,
    * setSegments against the TARGET's effective Q). Attaches
-   * setsOrigin/setsIsland to `e`; no-op when the origin doesn't move. */
+   * setsOrigin/setsIsland to `e`; attaches nothing when neither anchor
+   * moves (the cycle-top rule can move the epoch with the origin
+   * fixed — a stopped edit, or one that removed the sounding region). */
   void attachMapEditRiders(celestrian::Edit& e,
                            const celestrian::AudioNode& node,
                            const celestrian::timing::TimeMap& new_map,

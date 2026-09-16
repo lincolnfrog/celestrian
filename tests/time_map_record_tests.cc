@@ -1003,13 +1003,12 @@ class TimeMapRecordTests : public juce::UnitTest {
       // A map that REMOVES p0's region: {[1Q, 2Q), [2Q, 3Q)} — the
       // ORIGIN stays put (2026-07-25i: you deleted what you were
       // hearing; the jump is expected), but the EPOCH moves to the
-      // loop's heard top: CYCLE-TOP RULE (owner question 2026-08-18,
-      // superseding the 2026-08-09 "epoch stays put" half — a loop
-      // that defines the cycle fills the frame from its own top; a
-      // mid-lane loop top only ever meant "someone else owns the
-      // frame"). B's 2Q loop [1Q, 3Q) IS the cycle (A is 1Q), and its
-      // top sits 1Q into the old frame → epoch := origin + 1Q. Whole-Q:
-      // the grid is untouched; audio never moved (origins are absolute).
+      // loop's heard top: CYCLE-TOP RULE (time_maps.md §5 — a shaped
+      // loop fills the frame from its own top whenever the move is
+      // invisible to every untouched lane). B's 2Q loop [1Q, 3Q) sits
+      // 1Q into the old frame, and 1Q is a whole cycle of A (1Q) →
+      // epoch := origin + 1Q. Whole-Q: the grid is untouched; audio
+      // never moved (origins are absolute).
       timing::TimeMap m2;
       m2.n = 2;
       m2.segs[0] = {dA, 2 * dA};

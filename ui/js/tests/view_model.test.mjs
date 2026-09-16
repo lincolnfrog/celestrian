@@ -1,5 +1,5 @@
 /**
- * View Model tests (docs/ui_overhaul.md §5 phase 1).
+ * View Model tests (docs/session_view.md §5 phase 1).
  *
  * Everything asserts in Q units — the model's contract is that no pixel
  * exists below the patch layer. Includes the first executable I2/I8

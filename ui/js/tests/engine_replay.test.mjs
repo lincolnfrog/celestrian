@@ -1,5 +1,5 @@
 /**
- * Engine replay (docs/ui_overhaul.md §7 — the UI contract harness).
+ * Engine replay (docs/session_view.md §7 — the UI contract harness).
  *
  * tests/ui_contract_tests.cc drives a real record→commit through the
  * ENGINE and captures every getGraphState() poll into

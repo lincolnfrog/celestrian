@@ -134,19 +134,13 @@ test('the definer trim (Q13): Q := the window; lock-collapse is audio-neutral; d
 test('editing one lane\'s loop region never moves the OTHER lanes\' tiles', async ({ page }) => {
     // The subtle one: a window or cut on lane B must not rotate lane A's
     // material on screen. Audio never moves (origins are absolute); the
-    // FRAME may re-base by whole Qs (the cycle-top rule, two-anchor
-    // continuity) — and any re-base that is not a whole island cycle
-    // shows as every other lane jumping. Pinned here from the user's
-    // seat: A's bright tile stays where it was, at every edit, whatever
-    // phase the edit lands at.
-    //
-    // FOUND 2026-09-10, RULED the same day: two-anchor continuity used
-    // to ride the epoch by B's whole-Q origin delta so B's own tile
-    // held — and every other lane rotated by that delta whenever it was
-    // not a whole cycle of theirs. Now the epoch moves only by whole
-    // cycles of everyone else and B's tile takes the residual. Which
-    // phases used to trigger it depended on where the playhead sat
-    // when the edit landed; this test tries several.
+    // FRAME may re-base only by a FREE move — a whole number of every
+    // untouched lane's cycles (the cycle-top rule and two-anchor
+    // continuity both, time_maps.md §5) — and any other re-base shows
+    // as every other lane jumping. Pinned here from the user's seat:
+    // A's bright tile stays where it was, at every edit, whatever phase
+    // the edit lands at (which phases trigger a move depends on where
+    // the playhead sits when the edit lands; this test tries several).
     await openEngine(page);
     await rec(page, Q);
     const a = await rec(page, 4 * Q, { atPhase: 2 * Q });
@@ -209,4 +203,55 @@ test('undo / redo through a chain of window edits', async ({ page }) => {
     expect(await cycleAt()).toBe(3 * Q);
     await verifyHeard(page);
     void mod;
+});
+
+test('a shaped loop never moves an untouched lane, even when it owns the cycle', async ({ page }) => {
+    // THE FRAME BELONGS TO THE LOOPS ON SCREEN (time_maps.md §5): shaping
+    // B moves the frame to B's start only when the move is FREE — a
+    // whole number of every untouched lane's cycles. A is a 2Q loop; B
+    // is an 8Q take recorded 1Q into A's cycle, shaped into a 4Q loop
+    // that owns the cycle. B's commit re-bases the frame by whole
+    // pre-take cycles only (the same principle at commit), so B's
+    // origin lands an ODD number of Qs into the frame. A window whose
+    // start is an odd number of Qs off the frame cannot be reached for
+    // free: A holds still and B's tile starts mid-frame. A start 2Q off
+    // is a whole cycle of A: the frame moves there, B starts at the
+    // frame's left edge, and A reads exactly as before.
+    await openEngine(page);
+    await rec(page, Q);
+    const a = await rec(page, 4 * Q, { atPhase: 0 });
+    await call(page, 'setLoopPoints', a, 0, 2 * Q);  // A: a 2Q loop
+    const b = await rec(page, 8 * Q, { atPhase: 1 * Q });
+    await call(page, 'togglePlayback');  // stopped: no continuity re-anchor
+    expect((await state(page)).isPlaying).toBe(false);
+    const laneOf = async id => {
+        const st = await state(page);
+        const vm = deriveViewModel(st, { fxOpen: new Set(), windowEdit: new Set() });
+        const lane = vm.lanes.find(l => l.id === id);
+        return { takeStartQ: lane.takeStartQ,
+                 firstBright: (lane.reps.find(r => !r.ghost) || {}).startQ,
+                 epoch: st.islandEpoch };
+    };
+    const a0 = await laneOf(a);
+    const epoch0 = a0.epoch;
+    const originB = findNode(await state(page), b).origin;
+    const inQ = mod(originB - epoch0, 4 * Q) / Q;  // B's origin, Qs into the frame
+    expect(inQ % 2, 'setup: B lands an odd number of Qs in').toBe(1);
+    const stuck = 2 * Q;                  // start (inQ + 2) Qs off: odd, not free
+    const free = inQ === 1 ? Q : 3 * Q;   // start (inQ + 1 or 3) Qs off: 2Q or 6Q, free
+
+    await call(page, 'setLoopPoints', b, stuck, stuck + 4 * Q);
+    const a1 = await laneOf(a);
+    expect(a1.epoch, 'no free move: the frame stays').toBe(epoch0);
+    expect([a1.takeStartQ, a1.firstBright], 'A holds still').toEqual([a0.takeStartQ, a0.firstBright]);
+    expect((await laneOf(b)).takeStartQ, 'B\'s loop starts mid-frame').toBe((inQ + stuck / Q) % 4);
+
+    await call(page, 'setLoopPoints', b, free, free + 4 * Q);
+    const a2 = await laneOf(a);
+    expect(a2.epoch, 'free move: the frame moves to B\'s start').toBe(originB + free);
+    expect([a2.takeStartQ, a2.firstBright], 'A reads as before').toEqual([a0.takeStartQ, a0.firstBright]);
+    expect((await laneOf(b)).takeStartQ, 'B starts at the frame edge').toBe(0);
+
+    await call(page, 'togglePlayback');
+    await verifyHeard(page);
 });

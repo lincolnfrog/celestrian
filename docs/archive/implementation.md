@@ -1,7 +1,7 @@
 # Celestrian Architecture & Implementation Status
 
 > **ARCHIVED 2026-09-01 — history; canon is kernel.md, performance.md,
-> time_maps.md (engine) and ui_overhaul.md (the UI — §7 below described the retired canvas renderer).**
+> time_maps.md (engine) and session_view.md (the UI — §7 below described the retired canvas renderer).**
 
 > Status: **journal** — periodic snapshots. For current architecture see
 > kernel.md (timing model), performance.md (audio-thread contract,

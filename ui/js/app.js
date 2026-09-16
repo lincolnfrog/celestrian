@@ -1,4 +1,4 @@
-// Celestrian app shell (docs/ui_overhaul.md): backend poll → pure view
+// Celestrian app shell (docs/session_view.md): backend poll → pure view
 // model → thin DOM patch. Backend selection lives in backend.js (P2-9);
 // all timeline math lives in view_model.js / timeline_model.js; the
 // session grid's DOM lives in session_view.js (the preferences panel

@@ -1,5 +1,5 @@
 /**
- * View Model (docs/ui_overhaul.md §4 — P2-10)
+ * View Model (docs/session_view.md §4 — P2-10)
  *
  * deriveViewModel(state) : backend graph state → pure view model.
  *
@@ -228,7 +228,7 @@ export function unrollReps({ periodQ, offsetQ, cycleQ, takeQ, maxTiles = MAX_TIL
 }
 
 /**
- * Bracket-drag edit math (docs/ui_overhaul.md §2 "loop windows live on
+ * Bracket-drag edit math (docs/session_view.md §2 "loop windows live on
  * the lane"): pure Q-space snap/clamp for one window edge. The pointer's
  * raw Q snaps to the NEAREST whole Q (grid honesty: windows are Q-snapped
  * by the editor, per the time_maps.md cell-mode UX ruling), then clamps
@@ -968,7 +968,7 @@ function nodeMapPeriod(n) {
 /**
  * A top-level clip's contribution (samples) to the island cycle.
  *
- * LAW 13 AMENDED (ui_overhaul.md): a clip's ACTIVE map IS its
+ * LAW 13 AMENDED (session_view.md): a clip's ACTIVE map IS its
  * displayed material (heard view), so it contributes the map period —
  * the display frame equals the audible loop and the one cursor is
  * honest everywhere. (Law 13's hidden-content concern is answered by

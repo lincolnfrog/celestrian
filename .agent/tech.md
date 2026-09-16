@@ -87,7 +87,7 @@ the contract test fails — see `style.md`.
     replaced before mouseup, and the 50 ms poll tick makes unconditional
     writes hit most human clicks. Never write a DOM value that has not
     changed (`setText`/`setHtml`/`setTitle` in `session_view/sv_util.js`;
-    display law 2, `docs/ui_overhaul.md §6`).
+    display law 2, `docs/session_view.md §6`).
 
 ### Canvas sizing
 

@@ -9,7 +9,7 @@
 namespace celestrian::dsp {
 
 /**
- * Built-in effect DSP (docs/ui_overhaul.md effects bar).
+ * Built-in effect DSP (docs/session_view.md effects bar).
  *
  * These four classes are the DSP truth for the built-in effects. Slot
  * identity, ordering, param clamps, and the scope live in the dynamic

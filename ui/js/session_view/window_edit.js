@@ -1,5 +1,5 @@
 /**
- * Loop-window interactions (docs/ui_overhaul.md law 13 — the window
+ * Loop-window interactions (docs/session_view.md law 13 — the window
  * sets the part; docs/time_maps.md).
  *
  * Drag a bracket to edit; click the chip to toggle active/bypassed.

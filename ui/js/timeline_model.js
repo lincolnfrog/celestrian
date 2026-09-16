@@ -176,7 +176,7 @@ export function commensuratePeriod(node, effectiveQ) {
     const d = Math.round(node.duration || 0);
     const q = Math.round(effectiveQ || 0);
     if (!(d > 0) || !(q > 1)) return d;
-    // LAW 13 AMENDED (ui_overhaul.md): an ACTIVE map IS the displayed
+    // LAW 13 AMENDED (session_view.md): an ACTIVE map IS the displayed
     // material, so the clip contributes the map period — the summed
     // segment lengths, or the loop window as the map's single-segment
     // form — whenever it is a real whole-Q shortening. Incommensurate

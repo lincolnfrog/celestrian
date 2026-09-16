@@ -1,5 +1,5 @@
 /**
- * Session view e2e (docs/ui_overhaul.md phase 2).
+ * Session view e2e (docs/session_view.md phase 2).
  *
  * Drives the Tape Room shell through the backend facade (P2-9): the
  * harness page (index_test.html) for scenario-based rendering, and

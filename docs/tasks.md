@@ -251,9 +251,11 @@ Small, concrete, each a half-day or less unless marked. None blocks
   differences the field keeps finding.
 - [ ] **Docs:** `design.md` is the 2025 vision and reads stale next to
   the specs — rewrite it post-1.0 as a one-page manifesto that points
-  at composition.md; move kernel.md §1/§3/§5/§6 (migration history) to
-  the archive; recording.md's islands section becomes the one home for
-  islands (open question 8).
+  at composition.md; recording.md's islands section becomes the one
+  home for islands (open question 8). Done 2026-09-15: kernel.md's
+  migration history lives in its §6 appendix, stacks.md is folded into
+  composition.md §10 and session_view.md, and every spec carries a
+  final "alternatives considered and rejected" appendix (README.md).
 - [ ] **Process:** agent tasks stall when they span several features;
   one feature per task with the suites run after each step is the
   cadence that worked (memory note).
@@ -264,11 +266,11 @@ Small, concrete, each a half-day or less unless marked. None blocks
 
 | # | Question | Source |
 |---|---|---|
-| 1 | Max practical nesting depth before the UI gets unwieldy? | stacks.md |
+| 1 | Max practical nesting depth before the UI gets unwieldy? Plus the rest of the retired stacks.md's open list: a depth indicator beyond the indent, keyboard navigation into/out of stacks, whether copying a stack deep-copies its contents, and drawing the composite waveform in the collapsed view. | composition.md §10 |
 | 2 | Quantum mismatches between connected islands? | Tier D islands |
 | 3 | "Breaking out" a stack from an island — UX + implementation? | Tier D islands |
 | 4 | Connecting stacks after Q is established — polyrhythmic interaction? | recording.md |
-| 5 | ~~Stop/play policy~~ **RULED 2026-09-10:** Space / ▶ play FROM the play start and stop returns the playhead TO it; the play start is the top by default, the last ruler seek moves it, a click at the top restores it (ui/js/play_start.js — UI policy over the engine's pause/resume + seek; per project, not persisted). | seekTransport, law 14 |
+| 5 | ~~Stop/play policy~~ **RULED 2026-09-10** — the law now lives in session_view.md display law 15 (play starts from the play start; stop returns to it). | session_view.md law 15 |
 | 6 | Grid honesty when auto-quantize is disabled — deferred with that feature | design_language Q3 |
 | 7 | The true heard-frame unroll of a mapped group's children (today: excluded regions drawn as dims) — needs a ruling | time_maps.md phase 3 |
 | 8 | Islands are specified in triplicate (recording.md, archive/implementation.md §8, design.md §8) — recording.md should be canonical | design_language §4 item 5 |
@@ -293,8 +295,8 @@ rendering (Q14c → law 13 amended), the stack/clip anchoring asymmetry
   Playwright result untracked; three merged branches deleted; README
   test path and doc pointer fixed; `.claude/settings.json` tool names.
 - [x] Docs consolidation: index rewritten; six journal docs archived
-  under docs/archive/; superseded banners (design.md, stacks.md,
-  time_maps.md, projects.md, ui_overhaul.md, recording.md); `.agent/`
+  under docs/archive/; superseded banners (design.md,
+  time_maps.md, projects.md, session_view.md, recording.md); `.agent/`
   files rewritten to current canon; composition.md written.
 - [x] Engine sweep: 0 JUCE assertion lines in the test run (em-dash
   literals; a ScopedJuceInitialiser in the runner); dead members

@@ -1,5 +1,5 @@
 /**
- * Waveform renderer — Tape Room (docs/ui_overhaul.md §3).
+ * Waveform renderer — Tape Room (docs/session_view.md §3).
  *
  * Draws a filled, vertically symmetric envelope (not per-peak bars):
  * peaks are MAX-POOLED into one value per device pixel column, so the

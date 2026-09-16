@@ -1,7 +1,13 @@
 # Recording: Design & Math
 
 > Status: **spec** — the worked examples here are executable
-> (shared/timing_golden.json pins them in both C++ and JS).
+> (`shared/timing_golden.json` pins them in both C++ and JS). The state
+> tables are the point: schematics drift during refactors, tables
+> convert into golden vectors.
+>
+> The final **Appendix** records the models that were tried and
+> rejected. It is the only backward-looking section; everything before
+> it states present law.
 
 ## Core Philosophy: Audio Memory Principle
 
@@ -28,18 +34,12 @@ While recording Clip 2+, faint vertical lines appear at each Q boundary:
 - Helps you see if you're approaching a clean stop point
 - Only visible when `effectiveQuantum` is established (Clip 1 defines Q)
 
-### Orange Launch Marker
+### Where playback starts, visually
 
-> **SUPERSEDED (session view, 2026-07-09; `anchorPhase` deleted
-> 2026-07-16).** There is no launch marker in the session view: a
-> clip's tiles sit at their origin phase on the shared time axis, which
-> IS the information the marker carried. Launch point derives at read
-> time (`(−origin) mod period`).
-
-~~Shows where playback will start for clips recorded mid-loop:~~
-- ~~Only appears when `anchorPhase > 0`~~
-- ~~Position = `(launchPoint / duration) * 100%`~~
-- ~~Hidden for clips recorded at 0Q (anchor=0)~~
+A clip's tiles sit at their **origin phase** on the shared time axis —
+that placement IS the information a launch marker would carry, so there
+is no separate marker. Launch point derives at read time as
+`(−origin) mod period`. (The retired marker is in the Appendix.)
 
 ---
 
@@ -245,19 +245,7 @@ slot = next_q_boundary / Q
 x_pos = base_x + slot * base_width
 ```
 
-### Slots Are Cycle-Relative (superseded "No Modulo" rule)
-
-> **Superseded (2026-07-07).** An earlier version of this section
-> prescribed the raw absolute slot (`next_q / Q`, no modulo) to make a
-> single-clip context "extend the timeline." Two things killed it:
-> (1) it contradicted this document's own Example 4 (mid-loop record in
-> a 1Q context → boundary ≡ 0 mod context → anchor 0, x 0) and
-> invariant I2 (audio anchored at cycle 0 must draw at x 0 — the old
-> commit-time x converged to 0 anyway, so the absolute arm-time slot was
-> a transient visual/audio mismatch); and (2) under the monotonic
-> transport (kernel.md step 3) the absolute master grows without bound,
-> so the raw slot pushed recording clips thousands of pixels off-screen
-> (field bug: "no waveform while recording clip 2").
+### Slots are cycle-relative
 
 The visual slot is always computed in the cycle frame:
 
@@ -612,27 +600,17 @@ When you stop recording at timeline=6Q:
 
 ### Implementation Requirements
 
-> **SUPERSEDED (kernel.md, 2026-07-07/16):** the clock is monotonic and
-> never wraps; `global_transport_pos % timeline_length` below is the
-> old model. The published `masterPos` is a DERIVED view — `t mod
-> effective cycle` while idle/playing, growing linearly while recording
-> (ui.md "masterPos contract"). The LCM is recomputed as described but
-> over EFFECTIVE periods (window ▸ sequence ▸ children).
+1. **Calculate timeline length** as the LCM of every child's
+   **effective** period — window ▸ sequence ▸ children's effective LCM
+   (kernel.md §2), not the raw durations.
 
-1. **Calculate Timeline Length**:
-   ```cpp
-   int64_t timeline_length = LCM(all_clip_durations);
-   ```
+2. **Never wrap the clock.** The transport is monotonic. The published
+   `masterPos` is a DERIVED view: `t mod effective cycle` while idle or
+   playing, growing linearly while recording (ui.md, the masterPos
+   contract). Consumers never re-wrap it.
 
-2. **Wrap Global Transport**:
-   ```cpp
-   global_transport_pos = global_transport_pos % timeline_length;
-   ```
-
-3. **Recalculate LCM When Clips Change**:
-   - When a new clip is added
-   - When a clip's duration changes
-   - When a clip is deleted
+3. **Recalculate the LCM when clips change** — a clip added, a duration
+   changed, a clip deleted.
 
 ### Edge Cases
 
@@ -779,7 +757,7 @@ Step 5: Stop Clip 3 at 3Q
 
 *(historical; all items closed by the 2026-07 kernel migration — one
 `deriveViewModel` derives ghost extent and cursor from the same state,
-ui_overhaul.md §4.)*
+session_view.md §4.)*
 
 ---
 
@@ -791,3 +769,43 @@ ui_overhaul.md §4.)*
 - Use case: user needs precise control for overdubs or non-loop-aligned recordings
 - Could be a per-clip toggle or global setting
 
+
+---
+
+## Appendix — models considered and rejected
+
+Kept so they are not re-proposed.
+
+**The orange launch marker.** A marker drawn inside a clip showing where
+playback would start for clips recorded mid-loop — visible only when
+`anchorPhase > 0`, positioned at `(launchPoint / duration) · 100%`,
+hidden for clips recorded at 0Q. **Superseded by the session view**
+(2026-07-09; `anchorPhase` deleted 2026-07-16): a clip's tiles sit at
+their origin phase on the shared time axis, which carries the same
+information structurally. Launch point derives at read time.
+
+**The "no modulo" absolute slot.** An earlier form of the slot rule
+prescribed the raw absolute slot (`next_q / Q`, no modulo) so that a
+single-clip context would "extend the timeline". **Rejected 2026-07-07**
+for two independent reasons: (1) it contradicted this document's own
+Example 4 — a mid-loop record in a 1Q context has boundary ≡ 0 mod
+context, so anchor 0 and x 0 — and invariant I2, since audio anchored at
+cycle 0 must draw at x 0; the commit-time x converged to 0 anyway, so
+the absolute arm-time slot was a transient visual/audio mismatch. And
+(2) under the monotonic transport the absolute master grows without
+bound, so the raw slot pushed recording clips thousands of pixels
+off-screen (field bug: "no waveform while recording clip 2").
+
+**Wrapping the global transport at the LCM.** The original
+implementation requirement was
+`global_transport_pos = global_transport_pos % timeline_length`, with
+the clock itself resetting on first clip and snapping on LCM growth.
+**Replaced by the monotonic clock** (kernel.md §3): the clock never
+wraps, resets, or snaps, and every cyclic quantity is a derived view.
+kernel.md §6 lists the branch pile that went with it.
+
+**One-shot as a duration rule.** "Clip duration < remaining context ⇒
+treat as a one-shot." **Superseded by Q5:** one-shot is a period-source
+knob (`periodSource: context`), not something inferred from length. The
+worked-example values are unchanged — only the reason a clip is a
+one-shot moved from inference to data.

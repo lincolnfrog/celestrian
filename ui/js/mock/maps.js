@@ -71,15 +71,13 @@ function periodExcluding(node, skip) {
 
 /** The map-edit riders (engine parity: AudioEngine::attachMapEditRiders).
  * While playing, continuity re-anchors the origin so the sounding sample
- * keeps sounding. Then the CYCLE-TOP RULE:
- * if `node` DEFINES the cycle after the edit (its new period is a
- * multiple of Q and of every other loop's period) and the loop's heard
- * top (origin' + mapOffset(0)) is off the frame top by a whole number of
- * Qs, the epoch moves TO that top — the loop you just shaped fills the
- * frame from its own top (the visual successor of the commit re-base
- * and the Q13 sole-definer re-trim). Otherwise two-anchor continuity
- * rides the epoch by the origin's whole-Q delta. Nothing audible moves
- * either way. */
+ * keeps sounding. Then the CYCLE-TOP RULE (time_maps.md §5): the frame
+ * belongs to the loops on screen — when the edit shapes a loop, the
+ * epoch moves TO that loop's heard top (origin' + mapOffset(0)) whenever
+ * the move is FREE, a whole number of every untouched lane's cycles.
+ * Otherwise the untouched lanes hold still and two-anchor continuity
+ * moves the epoch only by the nearest free multiple of the origin's
+ * delta. Nothing audible moves either way. */
 function applyMapEditRiders(node, oldMap, newMap) {
     // Q18 (engine parity attachMapEditRiders): a stack's frame is its
     // own origin once anchored, else its received cycle top; the riders
@@ -96,20 +94,23 @@ function applyMapEditRiders(node, oldMap, newMap) {
     const active = newMap && mapActive(newMap) && mapPeriod(newMap) > 0;
     const a0 = active ? mapOffset(newMap, 0) : 0;
     const top = org2 + a0;
-    const newPeriod = Math.round(active ? mapPeriod(newMap) : intrinsicOfNode(node));
+    const newPeriod = active ? Math.round(mapPeriod(newMap)) : 0;
     let others = periodExcluding({ type: 'stack', nodes: state.nodes }, node);
     if (q > 0) others = others > 0 ? lcm(others, q) : q;
-    const definer = newPeriod > 0 && (others <= 0 || newPeriod % others === 0);
-    // …and only for an edit that ACTIVATES a map (engine parity,
-    // island_geometry.cc, 2026-09-09): clearing a window shapes
-    // nothing, and a plain loop that merely ties another's period must
-    // not re-base the frame to its top.
-    const topOffFrame = definer && active && posMod(top - epoch, newPeriod) !== 0;
-    // The epoch moves in whole Qs. (Q18: no windowed-group guard is
-    // needed — a stack's map anchors at the stack's OWN origin, so an
-    // epoch move never re-selects content anywhere; composition.md §8.)
+    // CYCLE-TOP RULE (engine parity, island_geometry.cc; time_maps.md
+    // §5): an edit that SHAPES a loop (an active map) moves the frame
+    // to the loop's top only when the move is FREE — a whole number of
+    // every untouched lane's cycles (`others`), so no other lane moves
+    // on screen. Clearing a window shapes nothing and never fires; a
+    // top already at the frame top (mod the new period) draws
+    // identically and never fires. Whether the loop defines the cycle
+    // does not enter.
+    const topOffFrame = active && newPeriod > 0 && posMod(top - epoch, newPeriod) !== 0;
+    // (Q18: no windowed-group guard is needed — a stack's map anchors at
+    // the stack's OWN origin, so an epoch move never re-selects content
+    // anywhere; composition.md §8.)
     const step = q > 0 ? q : 0;
-    if (step > 0 && topOffFrame && posMod(top - epoch, step) === 0) {
+    if (step > 0 && others > 0 && topOffFrame && posMod(top - epoch, others) === 0) {
         state.islandEpoch = top;
         return;
     }

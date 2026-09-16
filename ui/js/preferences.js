@@ -1,5 +1,5 @@
 /**
- * The PREFERENCES panel (tasks.md B8): the ONE surface for the
+ * The PREFERENCES panel (session_view.md §2): the ONE surface for the
  * persisted, per-machine choices —
  *   - the audio device (audio_settings.js renders its dependency-
  *     chained pickers into #audio-device-host);

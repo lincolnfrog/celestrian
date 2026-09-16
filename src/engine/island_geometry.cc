@@ -172,7 +172,7 @@ celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
 }  // namespace celestrian::engine_internal
 
 namespace {
-// TWO-ANCHOR CONTINUITY (time_maps.md §6): "there is no such thing as
+// TWO-ANCHOR CONTINUITY (time_maps.md §5): "there is no such thing as
 // island 3.5 — that is 0.5Q. The master transport is an implementation
 // detail and should never bleed into the design." Requirements: (1)
 // trims/cuts on a playing clip must not jump unless the edit removes
@@ -270,49 +270,49 @@ void AudioEngine::attachMapEditRiders(
   const int64_t delta = anchored ? origin_new - origin : 0;
   const int64_t epoch = root_node->getIslandEpoch();
 
-  // CYCLE-TOP RULE (time_maps.md §6): the loop that DEFINES the cycle
-  // after this edit puts its heard top at the frame top — the same law
-  // as the commit re-base (epoch := the newest cycle-defining origin)
-  // and the Q13 sole-definer re-trim (epoch := origin + window start),
-  // on a LOCKED island too. Definer = its period is a multiple of Q and
-  // of every other loop's period. Whole-Q from the current epoch only:
-  // the Q grid never moves (an off-grid ⌥-slid top stays mid-phase —
-  // honestly). Nothing audible changes: origins are absolute; the epoch
-  // is the visual top + the arm grid.
+  // CYCLE-TOP RULE (time_maps.md §5): the frame belongs to the loops on
+  // screen — an edit that SHAPES a loop (leaves an active map) moves
+  // the epoch to that loop's heard top (origin' + mapOffset(0)) whenever
+  // the move is FREE: a whole number of cycles of everyone else
+  // (`others`, the fold of every other loop's period with Q). Moving
+  // the epoch by Δ rotates a lane of period P by Δ mod P on screen, so
+  // a multiple of the others' fold rotates nobody but the edited lane
+  // — which is the point. When no free move reaches the top (two loops
+  // longer than 1Q whose starts disagree), the untouched lanes hold
+  // still and the shaped loop's start shows under its ↺ marker. A free
+  // move is whole-Q by construction: the Q grid never moves (an
+  // off-grid ⌥-slid top stays mid-phase — honestly). Whether the shaped
+  // loop defines the cycle does not enter. Nothing audible changes:
+  // origins are absolute; the epoch is the visual top + the arm grid.
   const int64_t a0 = new_map.active() ? new_map.mapOffset(0) : 0;
   const int64_t top = origin_new + a0;
-  const int64_t new_period =
-      new_map.active() ? new_map.period() : node.getIntrinsicDuration();
+  const int64_t new_period = new_map.active() ? new_map.period() : 0;
   const int64_t others = celestrian::timing::foldPeriod(
       quantum > 0 ? quantum : 0,
       celestrian::period_law::ownPeriodOf(*root_node, &node));
-  const bool definer =
-      new_period > 0 && (others <= 0 || new_period % others == 0);
-  // …and only when the top is not ALREADY at the frame top: the definer's
-  // period is the cycle, so a top ≡ epoch (mod period) draws identically
-  // and a re-base would be pure churn (a 1Q loop under a 1Q Q: every
-  // whole-Q epoch is the same frame).
+  // …and only when the top is not ALREADY at the frame top: a top ≡
+  // epoch (mod the new period) draws identically, so a re-base would be
+  // pure churn (a 1Q loop under a 1Q Q: every whole-Q epoch is the same
+  // frame).
   // …and only for an edit that SHAPES a loop (an active map). Clearing
-  // a window back to the whole take shapes nothing: a plain loop that
-  // merely ties another loop's period is not "the loop you just
-  // shaped", and re-basing to its top rotated every other lane on
-  // screen for an edit that changed nothing audible (found by the
-  // engine e2e harness, 2026-09-09: clear a window on lane B, lane A's
-  // tile jumps a Q). Two-anchor continuity below still applies.
+  // a window back to the whole take shapes nothing, and re-basing to a
+  // whole take's origin rotated other lanes for an edit that changed
+  // nothing audible. Two-anchor continuity below still applies.
   const bool top_off_frame =
-      definer && new_map.active() &&
+      new_map.active() && new_period > 0 &&
       celestrian::timing::posMod(top - epoch, new_period) != 0;
-  // The epoch moves in whole Qs. (Q18: a stack's map anchors at the
-  // stack's OWN origin, so an epoch move never re-selects content
-  // anywhere — no windowed-group guard is needed.)
+  // (Q18: a stack's map anchors at the stack's OWN origin, so an epoch
+  // move never re-selects content anywhere — no windowed-group guard is
+  // needed.)
   const int64_t step = quantum > 0 ? quantum : 0;
-  if (step > 0 && top_off_frame && (top - epoch) % step == 0) {
+  if (step > 0 && others > 0 && top_off_frame &&
+      (top - epoch) % others == 0) {
     e.setsIsland = true;
     e.iq = quantum;  // Q unchanged — only the frame top moves
     e.iepoch = top;
     return;
   }
-  // Otherwise: TWO-ANCHOR CONTINUITY (time_maps.md §6) — the epoch
+  // Otherwise: TWO-ANCHOR CONTINUITY (time_maps.md §5) — the epoch
   // rides the origin's delta so the edited clip's frame position holds.
   // OWNER RULING 2026-09-10: the epoch moves only by WHOLE CYCLES OF
   // EVERYONE ELSE (`others` — the fold of every other loop's period

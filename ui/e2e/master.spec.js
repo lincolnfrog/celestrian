@@ -1,5 +1,5 @@
 /**
- * The master strip e2e (docs/ui_overhaul.md §2, B5): the transport's
+ * The master strip e2e (docs/session_view.md §2, B5): the transport's
  * master fader drives the root stack's gain through the mock backend
  * (setNodeGain on rootId), double-click restores unity, and the master
  * fx chip opens the root's rack as the first row — the same fx row a

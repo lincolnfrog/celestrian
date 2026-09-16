@@ -241,7 +241,7 @@ Found during the 2026-07-07 pass; statuses updated 2026-07-09:
    pointers. Low urgency until multi-island work starts (Q10: one active
    island for now).
 6. ~~nesting.md is a fossilized status journal~~ — ✅ fixed 2026-07-09:
-   surviving content (per-stack LCM) folded into stacks.md; file deleted.
+   surviving content (per-stack LCM) folded into composition.md §10.
 7. ~~test_harness.md stale references~~ — ✅ fixed 2026-07-09: rewritten
    with the current harness and the stale-binary gotcha.
 8. ~~Doc-type headers~~ — ✅ adopted 2026-07-09: statuses in each doc and
@@ -258,6 +258,12 @@ Q3, Q5, Q6, Q10 not yet reviewed).
 
 §5 is the ruling INDEX (docs/README.md ground rules): a ruling may live
 in the doc that owns its feature, but each has a pointer here.
+
+- **PLAY START (owner, 2026-09-10):** Space / ▶ play FROM the play
+  start; stop returns the playhead TO it. The play start is the top by
+  default, a ruler seek moves it, a click at the top restores it. UI
+  policy composed over the engine's pause/resume + seek — the engine has
+  no restart-from-top concept. **session_view.md display law 15.**
 
 - **THE LIVE-TAKE GATE (owner, 2026-09-09; docs/scenarios.md S26–S28):**
   *"can we just refuse edits while recording for simplicity?"* — yes.
@@ -282,9 +288,23 @@ in the doc that owns its feature, but each has a pointer here.
   a live map edit keeps the edited lane's audio continuous (origin
   re-anchor), and the epoch follows only by whole cycles of everyone
   else — never by a delta that would rotate the other lanes on screen.
-  The edited tile absorbs the residual jump. time_maps.md §6 carries
+  The edited tile absorbs the residual jump. time_maps.md §5 carries
   the mechanism; the engine e2e journey "editing one lane's loop region
   never moves the OTHER lanes' tiles" pins it from four start phases.
+- **THE FRAME BELONGS TO THE LOOPS ON SCREEN (owner, 2026-09-15):**
+  when you shape a loop, the frame starts where that loop starts —
+  unless that would move a loop you didn't touch. The cycle-top rule
+  fires only on a FREE move (a multiple of every untouched lane's
+  fold); the definer test and the "ties don't qualify" clause are gone
+  with it. When no free move reaches the shaped loop's top, the
+  untouched lanes hold still and the ↺ marker shows where the loop
+  starts. Owner: "things shouldn't move randomly around when I am
+  changing loop regions as much as possible" — balanced against never
+  sitting in the confusing state where the loop you just shaped starts
+  mid-frame for no visible reason. time_maps.md §5 carries the sequence and
+  the cost table; pinned by `tests/regression_tests.cc` ("no free
+  move") and the engine e2e journey "a shaped loop never moves an
+  untouched lane".
 - **ONE GESTURE, ONE UNDO — AND NO MORE (owner, 2026-09-10):** a
   drag streams live map commits so the splice is audible while
   dragging, and those fold into ONE undo entry; but two separate cut
@@ -369,7 +389,7 @@ in the doc that owns its feature, but each has a pointer here.
 - **Projects model** (2026-07-19f–j): projects.md — birth at first
   committed take, continuous mirror, per-track record (2026-07-19h),
   post-hoc groups by drag; the launch ritual is superseded by Q17.
-- **Display laws 13 / 14** (2026-08-21 / 2026-08-27): ui_overhaul.md
+- **Display laws 13 / 14** (2026-08-21 / 2026-08-27): session_view.md
   §6 — a window sets the part's length for groups exactly as for
   clips; the ruler is the seek surface.
 
@@ -415,7 +435,7 @@ the *visual* cycle ×20 (tasks.md open question 5, warning UX).
 implementation.** Owner: "Collapsing just displays the full LCM of the
 stack; the sound shouldn't change." That is now invariant **I6b (View
 Purity)**. ⚠️ But the implemented and unit-tested Loop-on-Collapse model
-(stacks.md §Stack Loop Processing; `stack_loop_tests.cc`) does the
+(the retired loop-on-collapse model — kernel.md §6; `stack_loop_tests.cc`) does the
 opposite: the loop window and an internal transport activate on
 collapse, audibly changing playback. **The implementation contradicts
 the owner's intent and needs redesign** — most likely: the loop window
@@ -610,14 +630,17 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   as a sole clip's does (`AudioEngine definerStack`; mock
   `definerStackNode`; VM `definerStackOf`). Differences forced by the
   structure, not the law: the window lives on the STACK (it IS the
-  part under the window law, ui_overhaul.md law 13) and the children
+  part under the window law, session_view.md law 13) and the children
   stay whole. The members' ORIGINS re-anchor together with the epoch
   (`origin' := t0 − (pT − start)` for every member, `epoch := origin'`
-  — the sole-clip math made fractal; CONTENT-FRAME LAW 2026-08-30,
-  docs/archive/loop_region_audit.md §0: a stack window selects epoch-relative
-  view positions while members read origin-relative, so solving the
-  epoch alone — the 2026-08-21 form — made the trimmed loop jump by
-  `start` on every release). **Lock-collapse (audit 2026-08-30 §3.5,
+  — the sole-clip math made fractal. Solving the epoch alone — the
+  2026-08-21 form — made the trimmed loop jump by `start` on every
+  release, because a stack window then selected EPOCH-relative view
+  positions while its members read origin-relative. **That two-frame
+  split is gone since Q18** (composition.md §0/§8): every node has its
+  own origin, maps select buffer coordinates, and nothing selects
+  content by the epoch — so `epochViewStep` and the `Edit::origins`
+  riders are deleted. time_maps.md §8 keeps the superseded frame). **Lock-collapse (audit 2026-08-30 §3.5,
   reversing the 2026-08-21 "no collapse" line; ONE law since audit
   D6-1, 2026-09-08):** at the second arm the definer — clip or stack —
   collapses to its window exactly as composition.md §5's row says

@@ -1,5 +1,5 @@
 /**
- * The preferences panel (tasks.md B8): the pure helpers preferences.js
+ * The preferences panel (session_view.md §2): the pure helpers preferences.js
  * and audio_settings.js export, and the mock's projects-root verbs —
  * getProjectInfo publishes the root, setProjectsRoot moves it (an
  * empty path is refused), chooseProjectsRoot picks the mock's fixed

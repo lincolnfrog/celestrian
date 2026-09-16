@@ -3,7 +3,7 @@
 > Written 2026-09-01 from the foundation audit. This is the recursive
 > theory the canon docs stated in seven places (kernel.md §2,
 > time_maps.md §2, sequencer.md §2/§9/§13, engine_lcm_guard.md,
-> loop_region_audit.md §0, ui_overhaul.md law 13, design_language.md
+> loop_region_audit.md §0, session_view.md law 13, design_language.md
 > Q5/Q13/Q15) stated once, plus the ruling that makes it hold at every
 > depth: **every node has an origin** (Q18, §0).
 >
@@ -176,8 +176,9 @@ After Q18 its consumers are exactly:
    (Q11), so `epoch ≡ origin (mod Q)` for every committed take is what
    keeps arm targets and content on one grid;
 3. take marks (`(origin − epoch) mod contextCycle`, Q14);
-4. the cycle-top rule and two-anchor continuity, which MOVE the epoch so
-   the loop that defines the cycle sits at the frame top.
+4. the cycle-top rule and two-anchor continuity, which MOVE the epoch to
+   a shaped loop's top when the move is invisible to every untouched
+   lane (time_maps.md §5).
 
 No render-path consumer selects content by the epoch. Therefore:
 
@@ -309,7 +310,7 @@ ghosts, mics drawn whole beneath. Trimming the drums' window to
   equation composed).
 - "CLIPS ONLY" in `setPeriodSource`; "a stack has no origin to anchor a
   firing to" (tasks.md); "groups tile from frame 0 — a composite is not
-  a performance" (ui_overhaul law 9); "no origin re-anchor" (Q13 for
+  a performance" (session_view law 9); "no origin re-anchor" (Q13 for
   groups).
 - The `context_loop` carve-out "nested stacks contribute 0": a stack
   contributes its intrinsic duration like a clip.
@@ -328,3 +329,78 @@ ghosts, mics drawn whole beneath. Trimming the drums' window to
 - **Mock parity**: `mock/maps.js` and `mock/recording.js` carry the
   same anchoring events; `view_model.js` reads `origin` on stacks and
   never derives it.
+
+---
+
+## 10. Nesting in practice
+
+*(Folded in from the retired stacks.md, 2026-09-15.)*
+
+**Every level of the hierarchy behaves identically.** A stack is not
+just a container — it is a **composite** that acts like a clip at its
+nesting level. Stacks nest to unlimited depth; a sub-stack holds clips
+and stacks, shows a composite waveform, supports recording, solo and
+mute, and its duration is the LCM of its children.
+
+| Feature | Clip | Stack (composite) |
+|---|---|---|
+| Waveform display | ✓ own audio | ✓ mixed child audio |
+| Playhead | ✓ shows position | ✓ shows position |
+| Loop region handles | ✓ adjustable | ✓ adjustable |
+| Dim layers | ✓ outside loop region | ✓ outside loop region |
+| Origin / take mark | ✓ recording start point | ✓ its own origin (§0) |
+| Looping behavior | ✓ loops at duration | ✓ loops at effective period |
+
+**Q islands.** All stacks in one hierarchy share Q from the first
+recorded clip. **The root is a stack**, so "the session" is not a
+special object — depth 0 is the fractal identity. Its output stage is
+the master bus (session_view.md §2) and its sequence is the song
+(sequencer.md §1).
+
+### Per-stack LCM
+
+The LCM that determines a stack's timeline width is **per-stack**, not
+global:
+
+- **Independent timelines.** Multiple top-level stacks can have
+  different LCMs and widths.
+- **Nested composites.** An inner stack contributes its composite
+  duration (`StackNode::getIntrinsicDuration`) as a single duration to
+  the parent's LCM — and with an active window or sequence it
+  contributes its **effective** period instead, in the precedence §3
+  and kernel.md §2 name: map period ▸ sequence length ▸ children's
+  effective LCM.
+- **Isolation.** Adding a clip to Stack A never affects Stack B.
+- **Ghosts render per-stack.** Each stack tiles its clips' ghosts to its
+  own LCM width, in its own coordinate space.
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Outer Stack (LCM = 12Q)                                      │
+│   [Clip 1 (4Q)]━━━━━━━━━━━━━[ghost]━━━━━━━━━━━━━[ghost]      │
+│   [Inner Stack ═══ 6Q composite ═══]━━━━[ghost]━━━━━         │
+│   (expanded: shows 2Q + 3Q clips internally)                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Recursive LCM and recursive solo/mute both live on `StackNode`; loop
+geometry is shared through the `AudioNode` base (`loopStart`,
+`loopEnd`), with launch and anchor phase derived from `origin` rather
+than stored.
+
+### Composites in the display
+
+A stack displays a **composite waveform** — the summed audio of its
+children — as the primary representation of its content.
+
+- **Generation:** mix all child waveforms at their relative positions,
+  accounting for each clip's origin offset, looping clips repeated at
+  their correct positions.
+- **Caching:** keyed by peak count, window geometry, and the children's
+  durations, with segments folded in for mapped nodes; invalidated when
+  children change. Lives in `ui/js/session_view/lane_body.js` and
+  `context.js`.
+- **Settled material only** — never recording takes, never live meter
+  peaks (session_view.md display law 8).
+- **Echoes** tile across the cycle in the echo tone, exactly as a clip's
+  do (Q14c).

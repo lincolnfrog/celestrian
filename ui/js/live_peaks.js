@@ -1,5 +1,5 @@
 /**
- * Live recording peaks, TIME-INDEXED (docs/ui_overhaul.md).
+ * Live recording peaks, TIME-INDEXED (docs/session_view.md).
  *
  * The naive approach — push one peak per poll tick — couples waveform
  * geometry to poll cadence: the bar's width tracks the engine's

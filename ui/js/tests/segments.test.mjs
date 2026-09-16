@@ -65,7 +65,7 @@ test('cell map shortens the audible cycle; record-through-cells parity', async (
     // Q18 (engine parity attachMapEditRiders — "clips and stacks alike"):
     // the group's map anchors at the group's OWN origin (take A's, 0),
     // so its heard top is 0 and the CYCLE-TOP RULE moves the epoch
-    // there (the 2Q map defines the cycle; 1000 → 0 is a whole Q).
+    // there (1000 → 0 is a whole Q, free for the 1Q definer).
     // Pre-Q18 the stack map anchored at the epoch and a stack edit
     // rode no riders.
     assert.equal(getState().islandEpoch, 0, 'cycle-top rule: epoch → the map\'s heard top');

@@ -205,10 +205,11 @@ window was drawn ignoring the group's map — plus one engine-side rule
 misfire: clearing a window (an edit that changes nothing audible)
 re-based the epoch to that loop's top when its period merely tied
 another loop's, rotating every other lane on screen (the cycle-top
-rule now fires only for an edit that activates a map). All four are
+rule now fires only on a move invisible to every untouched lane,
+time_maps.md §5). All four are
 pinned by `under_map_slice.test.mjs` and the journeys above. Day two
 (2026-09-10) added a fifth, RULED AND FIXED the same day: two-anchor
-continuity (time_maps.md §6) rode the epoch by the edited clip's
+continuity (time_maps.md §5) rode the epoch by the edited clip's
 whole-Q origin delta so that clip's tile held — and every OTHER lane
 rotated by the delta whenever it was not a whole cycle of theirs;
 now the epoch moves only by whole cycles of everyone else and the

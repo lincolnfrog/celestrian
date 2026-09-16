@@ -3,8 +3,8 @@
 > Status: **shipped** — engine, bridge and mock (tests/takes_tests.cc,
 > ui/js/tests/takes_mock.test.mjs) and the UI (§6; ui/js/tests/
 > takes_ui.test.mjs, ui/e2e/takes.spec.js). Companions:
-> design_language.md Q7/Q13, composition.md §1–§2, sequencer.md §11.10,
-> time_maps.md §3 (the one-period cap).
+> design_language.md Q7/Q13, composition.md §1–§2, sequencer.md §11
+> (S19 — takes are undoable), time_maps.md §3 (the one-period cap).
 
 ## 1. The model
 

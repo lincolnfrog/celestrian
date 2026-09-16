@@ -1273,11 +1273,11 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     {
       // Owner question 2026-08-18: "if my first track is 1Q, why the
       // mid-lane split?" — a 10Q take from 1Q windowed to [6Q, 10Q)
-      // loops 4Q; the 1Q definer is indifferent to where the 4Q cycle
-      // tops, so the loop you just shaped fills the frame from its own
-      // top: epoch := origin + 6Q. Whole-Q (grid untouched), audio
-      // untouched (origins are absolute), and a NON-definer edit
-      // (someone else owns the cycle) leaves the epoch alone.
+      // loops 4Q; the 1Q definer reads the same in every Q, so the move
+      // is FREE and the loop you just shaped fills the frame from its
+      // own top: epoch := origin + 6Q. Whole-Q (grid untouched), audio
+      // untouched (origins are absolute), and an edit whose top has no
+      // free move leaves the epoch alone (time_maps.md §5).
       AudioEngine engine;
       const int64_t Q = 44100;
       const int BLOCK = 512;
@@ -1347,11 +1347,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       expectEquals(clipProp(1, "loopEnd") - clipProp(1, "loopStart"),
                    (int64_t)0, "undo restores the whole take (no window)");
 
-      // A NON-definer: clip 3 (8Q) now owns the cycle (lcm(1, 10, 8) →
-      // its commit re-bases the epoch to ITS origin); trimming clip 2
-      // to [6Q, 8Q) (2Q ∤ 8Q's cycle... 8 % 2 == 0 but 2 % 8 != 0) is
-      // a sub-loop under clip 3's cycle → the epoch stays where clip 3
-      // put it.
+      // No free move: clip 3 (8Q) now owns the cycle (lcm(1, 10, 8));
+      // trimming clip 2 to [6Q, 8Q) is a sub-loop whose top is not a
+      // whole 8Q cycle of clip 3 away from the epoch → clip 3 holds
+      // still, the epoch stays where its commit put it.
       engine.togglePlayback();
       engine.createNode("clip");
       engine.startRecordingInNode(nthClipId(2));
@@ -1363,7 +1362,106 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       const int64_t epochBefore = epochNow();
       engine.setLoopPoints(nthClipId(1), 6 * Q, 8 * Q);
       expectEquals(epochNow(), epochBefore,
-                   "non-definer trim: the frame belongs to the definer");
+                   "sub-loop trim, no free move: the frame stays");
+    }
+
+    beginTest("CYCLE-TOP RULE, no free move: the untouched lane holds still");
+    {
+      // THE FRAME BELONGS TO THE LOOPS ON SCREEN (time_maps.md §5): the
+      // rule moves the frame to the shaped loop's top only when the move
+      // is FREE — a whole number of every untouched lane's cycles. A is
+      // 1Q (Q); C is a 2Q loop; B is an 8Q take whose origin sits 1Q
+      // after C's (mod 2Q). B's commit re-bases the frame by whole
+      // pre-take cycles only (StackNode::rebaseEpochOnGrowth — the same
+      // principle at commit), so B's origin lands 1Q into the frame and
+      // C holds still. Shaping B into [2Q, 6Q) — a 4Q loop that owns the
+      // cycle — asks for a 3Q move, which would flip C: refused, the
+      // frame stays. The same B at [1Q, 5Q) asks for 2Q, a whole cycle
+      // of C: free, the frame moves there and C reads exactly as before.
+      // (A 4Q neighbour instead of 2Q — the tie — never has a free move
+      // at an odd offset either.)
+      AudioEngine engine;
+      const int64_t Q = 44100;
+      const int BLOCK = 512;
+      std::vector<float> buf((size_t)BLOCK, 0.1f);
+      float* ins[] = {buf.data()};
+      float* outs[] = {buf.data(), buf.data()};
+      auto process = [&](int64_t total) {
+        while (total > 0) {
+          int n = (int)std::min<int64_t>(total, BLOCK);
+          engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
+          total -= n;
+        }
+      };
+      auto nthClipId = [&](int n) -> juce::String {
+        auto state = engine.getGraphState();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (*nodes)[n].getDynamicObject()->getProperty("id");
+      };
+      auto clipProp = [&](int n, const char* prop) -> int64_t {
+        auto state = engine.getGraphState();
+        auto* nodes = state.getDynamicObject()->getProperty("nodes").getArray();
+        return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
+            prop);
+      };
+      auto rootProp = [&](const char* prop) {
+        return (int64_t)(double)engine.getGraphState()
+            .getDynamicObject()
+            ->getProperty(prop);
+      };
+      auto mod2Q = [&](int64_t v) { return ((v % (2 * Q)) + 2 * Q) % (2 * Q); };
+
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(0));
+      process(Q);
+      engine.stopRecordingInNode(nthClipId(0));
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(1));
+      process(2 * Q - 200);
+      engine.stopRecordingInNode(nthClipId(1));
+      process(400);
+      expectEquals(clipProp(1, "duration"), 2 * Q, "C: a 2Q take");
+      const int64_t originC = clipProp(1, "origin");
+      expectEquals(rootProp("islandEpoch"), originC, "epoch at C's origin");
+
+      // Park mid-Q inside an EVEN Q of C's cycle, so B's capture starts
+      // at the next Q boundary: 1Q after C's origin (mod 2Q).
+      for (int guard = 0; guard < 400; ++guard) {
+        const int64_t phase = mod2Q(rootProp("islandPos"));
+        if (phase >= 200 && phase < Q - 2 * BLOCK) break;
+        process(BLOCK);
+      }
+      engine.createNode("clip");
+      engine.startRecordingInNode(nthClipId(2));
+      process(8 * Q + 100);
+      engine.stopRecordingInNode(nthClipId(2));
+      process(2 * Q);
+      expectEquals(clipProp(2, "duration"), 8 * Q, "B: an 8Q take");
+      const int64_t originB = clipProp(2, "origin");
+      expectEquals(mod2Q(originB - originC), Q,
+                   "B's origin sits 1Q after C's (mod 2Q)");
+      const int64_t epoch0 = rootProp("islandEpoch");
+      expectEquals(epoch0, originB - Q,
+                   "commit re-base: whole old cycles only, B lands 1Q in");
+      engine.togglePlayback();  // stopped: no continuity re-anchor
+
+      // [2Q, 6Q): the top is 3Q off the epoch — not a whole cycle of C.
+      engine.setLoopPoints(nthClipId(2), 2 * Q, 6 * Q);
+      expectEquals(rootProp("islandEpoch"), epoch0,
+                   "no free move: the frame stays, C holds still");
+      expectEquals(clipProp(2, "origin"), originB, "audio: origin untouched");
+
+      // [1Q, 5Q): 2Q off — a whole cycle of C, free.
+      engine.setLoopPoints(nthClipId(2), Q, 5 * Q);
+      expectEquals(rootProp("islandEpoch"), originB + Q,
+                   "free move: epoch := B's top");
+      expectEquals(mod2Q(originC - rootProp("islandEpoch")),
+                   mod2Q(originC - epoch0),
+                   "C's frame phase is unchanged by the move");
+      expectEquals(clipProp(2, "origin"), originB, "audio: origin untouched");
+
+      engine.undo();
+      expectEquals(rootProp("islandEpoch"), epoch0, "undo restores the epoch");
     }
   }
 };

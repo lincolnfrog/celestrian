@@ -1,5 +1,5 @@
 /**
- * Effects panel (docs/ui_overhaul.md effects bar; docs/vst3.md phase 2).
+ * Effects panel (docs/session_view.md effects bar; docs/vst3.md phase 2).
  *
  * A synthetic row under the lane: one card per built-in CHAIN SLOT
  * (EFFECT_SCHEMA), each a power switch + sliders, plus a "+" chip

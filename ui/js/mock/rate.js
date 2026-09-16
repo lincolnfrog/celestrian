@@ -1,8 +1,9 @@
 /**
  * mock/rate.js — the mock's SAMPLE RATE, as one systemic variable.
  *
- * TEST-ONLY. The engine threads the device rate everywhere (tasks.md
- * P0-5); every rate-dependent mock value derives from here, so there
+ * TEST-ONLY. The engine threads the device rate everywhere
+ * (performance.md §4); every rate-dependent mock value derives from
+ * here, so there
  * is exactly one number to change and nothing can drift from it (the
  * published `perf.sampleRate` and the device panel must agree).
  *

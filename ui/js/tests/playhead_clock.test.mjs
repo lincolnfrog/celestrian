@@ -1,5 +1,5 @@
 /**
- * Playhead dead-reckoning clock (docs/ui_overhaul.md law 10 coda).
+ * Playhead dead-reckoning clock (docs/session_view.md law 10 coda).
  *
  * The property that motivated the module (field 2026-07-11): the drawn
  * sweep must TOUCH the loop end and restart near zero — the CSS-glide

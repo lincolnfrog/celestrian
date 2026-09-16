@@ -1,5 +1,5 @@
 /**
- * Effect card visualizations (docs/ui_overhaul.md effects bar).
+ * Effect card visualizations (docs/session_view.md effects bar).
  *
  * Geometry is PURE and unit-tested (fx_viz.test.mjs); the draw
  * functions are thin canvas painters called from the 20 Hz patch tick.
@@ -7,7 +7,9 @@
  * (src/dsp/effects.cc) so what you see is what the biquads do.
  *
  * Live data comes from the engine's published `effects.scope`
- * (spectrum, pre-rack peak, compressor GR) — see EffectRack::getMetadata.
+ * (spectrum, pre-rack peak, compressor GR): FxScope::metadataVar
+ * (src/dsp/fx_chain.h), attached by AudioNode::getMetadata only while
+ * a panel is watching.
  *
  * Painters draw in CSS-pixel space via theme.fitCanvas: absolute values
  * (line widths, dash patterns, tap widths, margins) mean CSS pixels, so

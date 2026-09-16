@@ -1,6 +1,6 @@
 /**
- * play_start.js — the PLAY START (docs/tasks.md open question 5, owner
- * ruling 2026-09-10): Space / ▶ always plays FROM the play start, and
+ * play_start.js — the PLAY START (session_view.md display law 15):
+ * Space / ▶ always plays FROM the play start, and
  * stopping returns the playhead TO it. The play start is the top (0)
  * by default; a ruler seek moves it to the seek's target, and a click
  * back at the top restores the default.

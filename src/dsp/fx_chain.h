@@ -269,7 +269,7 @@ class FxChain {
 };
 
 /**
- * Pre-chain signal telemetry (the scope, docs/ui_overhaul.md effects
+ * Pre-chain signal telemetry (the scope, docs/session_view.md effects
  * bar): a STABLE per-node object, so chain swaps never disturb it.
  * The audio thread only COPIES the chain's input into a
  * small ring (single writer, atomic index); all analysis (the 24-bin

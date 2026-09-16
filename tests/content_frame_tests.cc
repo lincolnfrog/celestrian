@@ -1,20 +1,20 @@
 /**
- * CONTENT-FRAME tests — "which buffer sample is heard" (2026-08-30).
+ * CONTENT-FRAME tests — "which buffer sample is heard".
  *
- * The engine keeps two time frames: clips read their buffers anchored
- * on the MONOTONIC clock (`(t − origin) mod dur`, kernel.md §2) while a
- * stack's window selects EPOCH-relative view positions of its cycle
- * (`t_child = epoch + mapOffset(t − epoch)`, time_maps.md §2). They
- * agree only while epoch ≡ origin (mod dur). Every gesture that moves
- * the epoch on its own therefore re-selects a windowed group's content
- * — the Q13 definer-stack re-trim solved the epoch alone (the trimmed
- * loop audibly jumped by `start` on every release — the 2026-08-29
- * "loop region shifts to a different part of the take" report), and a
- * transport seek re-based the epoch alone (plain clips did not move at
- * all; windowed groups moved). These tests pin the law that closes the
- * class: CONTENT-SELECTING FRAMES MOVE TOGETHER — a definer re-trim
- * re-anchors the members' origins with the epoch (the sole-clip path's
- * math, fractal), and a seek carries every origin by the epoch delta.
+ * Every node owns its origin and a map selects BUFFER coordinates
+ * (Q18, composition.md §0/§8; the anchoring law, time_maps.md §5): a
+ * window or segment map on a clip or a stack picks material by buffer
+ * position, anchored at the node's own origin, so nothing selects
+ * content through the island epoch and an epoch move on its own never
+ * changes what sounds. These tests pin that at the audio output:
+ *   - a definer stack's re-trim selects buffer samples [start, end)
+ *     (multi-segment: the buffer segments), moving the definer's
+ *     origin — and its members' — together with the epoch;
+ *   - the group lock-collapse is audio-neutral;
+ *   - heard_index.h, the message-thread solver every phase-preserving
+ *     edit reads, equals the render;
+ *   - a seek moves the audio, not just the cursor, and keeps a
+ *     windowed group's content selection.
  *
  * Method: the input is a slow ramp, so every recorded sample encodes
  * its own index; one full pass BEFORE the gesture builds a table

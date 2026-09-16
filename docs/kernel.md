@@ -1,86 +1,61 @@
 # The Cyclic Kernel
 
-> Written 2026-07-07, companion to `design_language.md`. This is the
-> answer to "is there a simplified kernel that would make everything
-> sing?" — and I believe the answer is yes, it's small, and the codebase
-> has been converging on it all week without naming it.
+> Status: **spec — implemented.** One monotonic clock, one playback
+> equation, one stored `origin` per clip. Companion to
+> `design_language.md`; the recursive composition of nested nodes is
+> composition.md.
 >
-> Status: **spec — implemented** (migration steps 1–4 complete; time-maps
-> phases 1–3 landed 2026-07-09/21/22). The underlying principles were
-> ratified by the owner on 2026-07-07 (see design_language.md §5):
+> **Section numbers are API.** `src/`, `tests/` and `ui/js/` cite
+> `kernel.md §2` and `§3` from code comments, as `.agent/style.md`
+> requires. Renumber nothing without fixing the callers
+> (`grep -rn 'kernel.md §' src tests ui/js docs`).
 >
-> - **Q2 ruling** — Audio Memory is the *sole* timing principle; the LCM
->   is display machinery. The kernel's playback equation is a direct
->   transcription of that ruling, and the LCM correctly appears only in
->   UI derivations (§2 table), never in engine state.
-> - **Q1 ruling** — "the DNA of the original scratch track remains": Q
->   and the island epoch survive their creating clip, which is exactly
->   why they live at the island root (§2, §4) instead of being derived
->   from surviving children.
-> - **Q4 ruling** — collapse is display-only (I6b). §2's collapse
->   time-map therefore must be re-keyed from "is the stack collapsed" to
->   an explicit window active/bypassed state when the loop-window
->   redesign lands; the map math is unchanged.
-> - **Q8** — resolved by principle: the transport simplification in §3
->   is an internal mechanism choice, valid iff I1 holds (it does, by
->   construction).
-> - ~~**Q9 (origin units under warp)** — deferred by owner until "warp"
->   is a real concept; §6's first risk stays open and gates step 2 of
->   the migration.~~ Superseded by **Q12** (2026-07-16): rational
->   `QTime` adopted now; nothing gates the (completed) migration.
+> §6 records what the kernel replaced and the designs rejected on the
+> way. It is the only backward-looking section.
+
+**Contents**
+
+1. [The problem it solves](#1-the-problem-it-solves)
+2. [The kernel](#2-the-kernel)
+3. [The transport and the recording lifecycle](#3-the-transport-and-the-recording-lifecycle)
+4. [What it buys the roadmap](#4-what-it-buys-the-roadmap)
+5. [Migration record](#5-migration-record)
+6. [Appendix — what the kernel replaced](#6-appendix--what-the-kernel-replaced)
 
 ---
 
-## 1. The problem, stated as a state inventory
+## 1. The problem it solves
 
-*(history — the migration is complete; the six fields below are gone,
-one `origin` per clip remains.)*
+One musical fact — *where does this content belong in time?* — used to
+be stored six ways per clip, computed at different moments, from
+different inputs, in different frames (performance, master, pixels).
+Every documented bug class of that era — cursor jumps, ghost
+misalignment, waveform vibration, the first-clip reset, visual/audio
+mismatch — was a pair of those encodings disagreeing.
 
-What the engine currently stores *per clip* to answer one question —
-"where does this content belong in time?":
+The kernel stores the fact **once**. There is nothing to drift because
+there is nothing derived-but-stored. §6 lists what went.
 
-| Field | Set when | Consumed by |
-|---|---|---|
-| `trigger_master_position` | record start | commit anchor math |
-| `recording_start_phase` | record arm | launch-point calculation |
-| `anchor_phase_samples` | arm + commit | UI marker, one-shot logic |
-| `launch_point_samples` | commit | playback offset, playhead |
-| `rotation_offset_` / `rotation_span_` | commit | playback + waveform reads |
-| `x_pos` | arm + commit (in pixels!) | UI lane position |
-
-Six encodings of **one musical fact**. They are computed at different
-moments (arm vs commit), from different inputs (`compensated_pos` vs
-`trigger % context_loop`), in different frames (performance, master,
-pixels). Every documented bug class — cursor jumps, ghost misalignment,
-waveform vibration, the first-clip reset, this week's visual/audio
-mismatch — is a pair of these encodings disagreeing. The refactoring
-proposal treats the symptoms (P0-3 stores Q, P0-4 tames the transport);
-the kernel removes the disease.
-
-On top of that, the engine stores *global* mutable time: a transport
-that wraps at LCM, resets on first clip, snaps on LCM growth, and
-deliberately doesn't snap on polyrhythmic growth — ~120 lines of the
-highest-churn code in the callback (P0-4's motivation).
+---
 
 ## 2. The kernel
 
 Three definitions and two equations.
 
-**Time.** One monotonic clock `t` per engine (the input clock built for
-the pre-record ring is exactly this). It never wraps, never resets, and
-is never mutated by musical events. Everything cyclic is a *derived
-view*: `phase(t, period, epoch) = (t − epoch) mod period`.
+**Time.** One monotonic clock `t` per engine — the same clock the
+pre-record ring is built on. It never wraps, never resets, and is never
+mutated by musical events. Everything cyclic is a *derived view*:
+`phase(t, period, epoch) = (t − epoch) mod period`.
 
 **Node.** Every node is `(content, period, origin)`:
 
 - `origin` — the moment on the master clock its content belongs to
-  (design_language.md: the performance-time of `content[0]`).
-- `period` — how often it recurs. A looping clip: its own length. A
-  one-shot: its context's cycle. A composite: ~~LCM of children
-  periods; a windowed composite: its window length~~ — its EFFECTIVE
-  period, in precedence: active map period ▸ active sequence length ▸
-  LCM of the children's effective periods (sequencer.md §2;
-  `AudioNode::getEffectivePeriod`).
+  (design_language.md: the performance-time of `content[0]`). Stored
+  **absolute**, never mod the context loop.
+- `period` — how often it recurs, in precedence: **active map period ▸
+  active sequence length ▸ LCM of the children's effective periods**
+  (sequencer.md §2; `AudioNode::getEffectivePeriod`). A looping clip:
+  its own length. A one-shot: its context's cycle.
 - `content` — samples (leaf) or children (composite).
 
 **Playback** is one equation applied recursively:
@@ -91,20 +66,18 @@ out(node, t) = Σ out(child, m(t))                          — composite
 ```
 
 where `m` is the node's **time-map** — identity for a node with no
-active map, and for a node with an ACTIVE map (Q18, 2026-09-01,
-composition.md §2 — one law for clips and stacks, anchored at the
-node's OWN origin):
+active map, and for a node with an ACTIVE map, one law for clips and
+stacks alike, anchored at the node's OWN origin (Q18,
+composition.md §2):
 
 ```text
 inner(t) = mapOffset((t − origin − a0) mod period)     a0 = mapOffset(0)
 m(t)     = origin + inner(t)
 ```
 
-Activation is data, independent of collapse — the loop-on-collapse form
-this sentence originally carried was convicted by I6b (2026-07-09), and
-the epoch-anchored stack form that replaced it was retired by Q18 (a
-stack now stores an origin like a clip). Time-maps are the only
-mechanism that ever transforms time, and they compose by nesting.
+Activation is data, independent of collapse (I6b). **Time-maps are the
+only mechanism that ever transforms time, and they compose by
+nesting.**
 
 **Recording** is the same equation run backwards:
 
@@ -112,218 +85,200 @@ mechanism that ever transforms time, and they compose by nesting.
 content[i] ← input(origin + i + C)        (C = calibrated round trip)
 ```
 
-which is precisely the arrival-time capture window implemented this week
-(performance.md §3) — the pre-record ring gives `input()` as a random-
-access function of the recent past. Commit does exactly two things: snap
-`length`, choose `period`.
+which is the arrival-time capture window (performance.md §3) — the
+pre-record ring gives `input()` as a random-access function of the
+recent past. Commit does exactly two things: snap `length`, choose
+`period`.
 
-That's the whole kernel. Everything else in the current model is a
-projection of it:
+That is the whole kernel. Everything else is a projection of it:
 
-| Today's concept | Kernel derivation |
+| Concept | Kernel derivation |
 |---|---|
 | launch point | `(−origin) mod period` |
 | anchor phase | `origin mod Q` (or mod context cycle) |
-| virtual rotation | gone — content is stored in origin frame; reads need no remap |
 | `x_pos` | `f(origin)` in the UI (I6), e.g. `(origin mod cycle)/Q · 200px` |
 | playhead % | `phase(t, period, origin) / period` |
 | ghost tiles | occurrences of `[origin + k·period, +length)` within the cycle |
-| one-shot vs loop | `period := context cycle` vs `period := length` (a knob, not a formula) |
+| one-shot vs loop | `period := context cycle` vs `period := length` — a knob, not a formula |
 | loop window | `period := window_len`, content offset by `window_start` |
-| internal transport | `t − collapse_epoch` (derived; the stored counter disappears) |
-| stored Q (P0-3) | `island.Q`, one field at the island root |
+| stored Q | `island.Q`, one field at the island root |
 | "island" | the scope sharing `(Q, epoch)` |
 
-One stored `origin` per clip replaces six fields, and every alignment
-invariant (I1–I4, I6) becomes true *by construction*: there is nothing
-to drift because there is nothing derived-but-stored.
+Every alignment invariant (I1–I4, I6) is true **by construction**.
 
-## 3. The transport dissolves
+### The one-frame rule (field-hardened)
 
-*(history — the migration is complete; every branch below is deleted.)*
+Every cycle-relative projection — the UI view AND the clip arm/commit
+math (anchors, slots, effective positions) — is computed relative to
+`getIslandEpoch()`. Mixing absolute-frame math with the epoch-rebased
+view re-splits audio from visuals.
 
-The P0-4 state machine was going to tame the transport branch-pile.
-Under the kernel, each branch is examined and found to be compensating
-for mutable global time:
+A bonus of the epoch frame: every committed sibling's phase is simply
+`rel mod duration`, because committed origins are ≡ epoch mod their
+durations. That deleted the arm-path sibling launch-point scans and the
+playback offsets entirely.
 
-| Current branch | Why it exists | Kernel replacement |
-|---|---|---|
-| Wrap `master_pos` at LCM | bounded counter for UI % math | UI derives `t mod LCM`; engine never wraps |
-| Reset to 0 on first clip | so clip 1's math sees zero | clip 1 gets `origin := t_start`; nothing global moves |
-| Snap to 0 when LCM grows | new longer clip would start mid-phase | new clip's `origin` IS its start; `(t − origin)` is continuous through commit by definition |
-| Don't snap on polyrhythmic growth | snap would jump the cursor | nothing snaps, so nothing to suppress |
-| `last_recording_duration_` guess | reconstruct "where were we" after mutation | `t` never mutated; nothing to reconstruct |
+---
 
-The recording lifecycle still deserves an explicit little state machine
-(`Idle → Armed(origin) → Capturing → PendingStop(boundary) →
-Committed`) — that part of P0-4 survives — but it becomes a *per-clip*
-machine over an immutable clock, trivially unit-testable, with the
-commit event carrying `origin` + `length` and nothing else. The
-docs' scenario tables in recording.md map 1:1 onto golden vectors for it.
-**✅ Built 2026-07-16:** `ClipNode::RecState` (Committed =
-Idle-with-content), with the arm-target math pure in timing.h
-(`armTarget`, `inAnticipatoryWindow` — both golden-vectored, both now
-epoch-frame) and stop boundaries chosen by the audio thread from its
-own write position (deleting the D2 race).
+## 3. The transport and the recording lifecycle
 
-Sanity checks against the canonical examples (recording.md):
+**The transport only moves forward.** `masterPos` in `getGraphState` is
+a derived view: `t mod LCM` normally, frozen-base + linear growth while
+recording, so the cursor extends past the committed LCM. The clock
+itself is never wrapped, reset, or snapped — pinned by
+`tests/monotonic_clock_tests.cc`.
+
+**The island epoch is data, not the clock.** The first arm stores its
+moment as the island epoch; stop freezes the view and play resumes the
+phase. At commit, **every cycle growth re-bases the epoch to the take's
+HEARD top** — its origin floored to whole pre-take cycles
+(`StackNode::takeCommitted`). Whole-old-cycle moves are phase-neutral
+for every committed clip, so this is strictly a *frame* choice: it
+makes the take-anchored view the user watched while recording persist
+at commit. Each take stores its heard frame (`contextCycle`) so display
+take-marking survives later re-bases.
+
+**The recording lifecycle is an explicit per-clip state machine** over
+that immutable clock — `ClipNode::RecState`, where Committed is
+Idle-with-content:
+
+```text
+Idle → Armed(origin) → Capturing → PendingStop(boundary) → Committed
+```
+
+The arm-target math is pure in `timing.h` (`armTarget`,
+`inAnticipatoryWindow` — both golden-vectored, both epoch-frame), and
+stop boundaries are chosen by the audio thread from its own write
+position. The commit event carries `origin` + `length` and nothing
+else. recording.md's scenario tables map 1:1 onto golden vectors for
+it.
+
+### Sanity checks against the canonical examples
 
 - **Example 2** (8Q recorded at 2Q in a 4Q context): `origin = 2Q`.
   Launch derives to `(−2Q) mod 8Q = 6Q` ✓ matches the documented value.
-  x derives to `2 slots` ✓. No rotation ever computed.
+  x derives to 2 slots ✓. No rotation is ever computed.
 - **LCM ghost extension** (4Q take in an 8Q context): commit changes no
-  other node's `(origin, period)` → I4 holds with zero code.
-- **Polyrhythmic 3Q into 4Q**: cycle view lengthens to 12Q; `t` sails on
-  monotonically; the cursor "continues from 7Q" because nothing happened.
-  *(Refined 2026-07-16, Q14b: the island EPOCH — data, not the clock —
-  re-bases to the take's heard top at commit, so it is the WATCHED,
-  whole-cycle-shifted cursor that continues; see step 3's correction
-  note below.)*
+  other node's `(origin, period)`, so I4 holds with zero code.
+- **Polyrhythmic 3Q into 4Q**: the cycle view lengthens to 12Q and `t`
+  sails on monotonically. The cursor continues because nothing
+  happened to the clock — and it is the *watched*, whole-cycle-shifted
+  cursor that continues, since the epoch re-bases to the take's heard
+  top (Q14b).
+
+---
 
 ## 4. What it buys the roadmap
 
-- **Save/Load (Segment 6):** the persistent state per clip is
+- **Save/Load:** the persistent state per clip is
   `{origin, length, period-source, window, buffer}` plus island
   `{Q, epoch}`. The serialization format writes itself.
-- **Warp (Segment 8):** a rate-changing time-map
-  `m(t) = origin + r·(t − origin)` — the same primitive as collapse,
-  not a new subsystem. (Precondition: Q9 in design_language.md — store
-  origins in Q-rationals, or warp breaks sample-anchors.)
-- **Connections (Segment 9):** serial composition = a time-map that
-  re-bases epochs per traversal (`branch-with-chance` = choosing which
-  child's map is active this cycle). Parallel and serial finally share
+- **Warp:** a rate-changing time-map `m(t) = origin + r·(t − origin)` —
+  the same primitive, not a new subsystem. Q12's rational `QTime`
+  removed its blocker.
+- **Connections:** serial composition is a time-map that re-bases
+  epochs per traversal, and branch-with-chance is choosing which
+  child's map is active this cycle. Both shipped as cue steps and
+  successor graphs (sequencer.md §13, §14). Parallel and serial share
   one algebra.
-- **Multi-range loops (Segment 7):** a piecewise time-map over the
-  window list. Conservation-of-loop-length (design.md) is a constraint
-  on the pieces, checked in one place.
-- **Islands:** an island is literally `(Q, epoch)` at a subtree root —
-  the object P0-3 was looking for a home for.
-- **View-model refactor (P2-10):** `deriveViewModel` becomes a direct
-  transcription of §2's table — the UI never invents timing again.
+- **Multi-range loops:** a piecewise time-map over the window list
+  (time_maps.md). Conservation-of-loop-length is a constraint on the
+  pieces, checked in one place.
+- **Islands:** an island is literally `(Q, epoch)` at a subtree root.
+- **The view model:** `deriveViewModel` is a direct transcription of
+  §2's table — the UI never invents timing.
 
-## 5. Migration path (incremental, each step shippable)
+---
 
-*(history — the migration is complete; all four steps are ✅.)*
+## 5. Migration record
 
-The kernel is adoptable without a rewrite; most steps are deletions.
+All four steps complete; the estimated end-state deletions all landed.
 
-1. ✅ **Done (2026-07-07): Q + epoch stored at the island root** (= P0-3).
-   `StackNode::quantum_samples_`/`epoch_samples_`, set once at first
-   commit (or when committed content enters an empty island), never
-   derived again. Q survives its creator (owner ruling): a shorter
-   Q/2-snapped overdub no longer halves Q, and deleting the
-   establishing clip leaves Q intact — both now pinned by unit tests.
-   `getIntrinsicDuration()` on stacks is now composite duration
-   (LCM of children, per recording.md) instead of the min.
-2. ✅ **Done (2026-07-07): `origin` introduced** — `recording_start_phase`
-   renamed to `origin_samples` (it already held the right value at arm
-   time); playback derives launch per block via
-   `timing::launchPointFor(origin, dur)`; `launch_point_samples` kept as
-   a derived stored field for UI/metadata compat; **rotation deleted
-   entirely** (it double-shifted playback on top of the launch point,
-   contradicting recording.md Example 2 — the origin equation produces
-   the documented behavior directly); waveforms read the raw buffer;
-   `origin` exposed in metadata (C++ and mock). Remaining consolidation:
-   `trigger_master_position` (feeds the x/slot math until P1-7) and
-   `commit_master_pos` (transport bookkeeping until step 3).
-   *(Guarded by the "Origin Alignment" unit test + full suite.)*
-   **Correction (same day):** the origin must be stored **absolute**, not
-   mod the context loop. The mod truncated which-cycle-of-the-context a
-   take began in, which is invisible while a transport snap rebases the
-   clock — and broke clips longer than their context once the transport
-   went monotonic (field: 4Q take over a 1Q groove looped at 3Q).
-   `launchPointFor` mods by the final duration, so the absolute value is
-   always safe to store.
-   **Consolidation completed 2026-07-16 (unification_audit.md §1.2):**
-   `launch_point_samples`, `anchor_phase_samples`, and
-   `trigger_master_position` are deleted; metadata `launchPoint` derives
-   at read time, `anchorPhase`/`recordingStartPhase` are gone (no
-   consumers), the pixel x/slot math left C++ entirely (P1-7 — the UI
-   projects lane x from origin), and the commit-path sibling scan went
-   with it (a piece of P1-6). One stored `origin` per clip — as §2
-   specifies.
-3. ✅ **Done (2026-07-07): monotonic master.** The transport only moves
-   forward; the LCM wrap, LCM-growth snap, polyrhythm suppression
-   branch, first-clip-snap early return, and the
-   `lcm_before_recording_`/`last_recording_duration_` bookkeeping are
-   all deleted (~90 lines from the callback). `masterPos` in
-   `getGraphState` is a derived view: `t mod LCM` normally, frozen-base
-   + linear growth while recording (so the cursor extends past the
-   committed LCM per recording.md). ~~The once-per-island first-clip
-   reset is retained — it IS the epoch capture, occurring before any
-   content exists.~~ **Completed 2026-07-16 (unification_audit.md
-   §1.1): the last two clock mutations are gone.** The first-clip
-   reset was replaced by actual epoch capture — the first arm stores
-   its moment as the island epoch (data), the clock untouched — and
-   the stop-reset in `togglePlayback` by pause/resume (stop freezes
-   the view, play resumes the phase; restart-from-top, if ever wanted,
-   is a root time-map — tasks.md open question 8). §2's "never wraps,
-   never resets, never mutated" now holds without exceptions; pinned
-   by `tests/monotonic_clock_tests.cc`. The old "LCM Expansion Snap" survives as an **island
-   epoch re-base**: at commit, if the cycle grew as a simple extension,
-   the island epoch (root stack) moves to the newest committed origin so
-   the cycle top is the new phrase's top — clock and audio untouched;
-   ~~polyrhythmic expansions keep the old epoch (cursor sails on, per
-   recording.md)~~. **Refined 2026-07-16 (field: the 5Q take teleported
-   to 12Q of the exploded 20Q frame):** EVERY cycle growth re-bases the
-   epoch to the take's HEARD top — its origin floored to whole
-   pre-take cycles (`StackNode::takeCommitted`). Whole-old-cycle moves
-   are phase-neutral for all committed clips, so this is strictly a
-   frame choice; it makes the take-anchored view the user WATCHED while
-   recording (view_model's whole-cycle shift) persist at commit. The
-   "cursor sails on" intent survives — it is the watched (shifted)
-   cursor that sails on. Each take also stores its heard frame
-   (`contextCycle`) so display take-marking survives later re-bases.
-   **One-frame rule (field-hardened):** every cycle-relative projection
-   — the UI view AND the clip arm/commit math (anchors, slots, effective
-   positions) — must be computed relative to `getIslandEpoch()`. Mixing
-   absolute-frame math with the epoch-rebased view re-split audio from
-   visuals (field: "clip 3 anchored at 3Q instead of 0Q"). Bonus of the
-   epoch frame: every committed sibling's phase is simply
-   `rel mod duration` (committed origins are ≡ epoch mod their
-   durations), which deleted the arm-path sibling launch-point scans and
-   playback offsets — a piece of P1-6 landed early. Also landed with step 1: island Q + epoch
-   stored at the root (`StackNode::setQuantum`), established at first
-   commit or when committed content enters an empty island; composite
-   duration corrected from min-of-children to LCM-of-children.
-4. ✅ **Time-maps — done** (time_maps.md): **phase 1 (2026-07-09)** —
-   loop windows are the first named time-map
-   (`(t − cycle_epoch) mod len` via `ProcessContext.cycle_epoch`;
-   `internal_transport_` deleted; activation is data, collapse purely
-   visual); **phase 2 (2026-07-21)** — recording through an active map
-   on the reified `TimeMap` type; **phase 3 (2026-07-22)** —
-   multi-segment maps, fully fractal, with the cut-band editor. Warp
-   and serial connections (cue steps, sequencer.md §13) reuse the same
-   primitive.
+| Step | What it did |
+|---|---|
+| 1 ✅ 2026-07-07 | **Q + epoch stored at the island root** (`StackNode::quantum_samples_` / `epoch_samples_`), set once at first commit and never derived again. Q survives its creator: a Q/2-snapped overdub no longer halves Q, and deleting the establishing clip leaves Q intact. Composite duration corrected from min-of-children to LCM-of-children. |
+| 2 ✅ 2026-07-07 | **`origin` introduced**, playback deriving launch per block via `timing::launchPointFor(origin, dur)`; rotation deleted entirely. Consolidation completed 2026-07-16: `launch_point_samples`, `anchor_phase_samples` and `trigger_master_position` deleted, `launchPoint` derived at read time, the pixel x/slot math out of C++ entirely. **One stored `origin` per clip**, as §2 specifies. |
+| 3 ✅ 2026-07-07 | **Monotonic master** — the LCM wrap, LCM-growth snap, polyrhythm suppression, first-clip-snap and the `lcm_before_recording_` / `last_recording_duration_` bookkeeping all deleted (~90 lines from the callback). Completed 2026-07-16: the last two clock mutations went, so §2's "never wraps, never resets, never mutated" holds without exception. |
+| 4 ✅ 2026-07-09/21/22 | **Time-maps** — phase 1 (loop windows, `internal_transport_` deleted), phase 2 (recording through an active map on the reified `TimeMap`), phase 3 (multi-segment maps, fully fractal). See time_maps.md. |
 
-Estimated end-state deletions: the six-field clip timing block, the
-rotation machinery, the transport branch-pile, `internal_transport_`,
-and most of `clip_node.cc`'s arm-time context scanning (P1-6 falls out —
-the parent computes the context once and passes it down).
-**✅ All achieved as of 2026-07-16** (see tasks.md Tier 1): the clip's
-timing state is exactly `origin`; the clock is never mutated; the
-recording lifecycle is an explicit state machine; commits are events
-handled by the island root; traversal is cast-free; context flows down
-through `ProcessContext`. Migration step 4 (time-maps phases 2–3)
-landed 2026-07-21/22 on QTime (Q12, in place since 2026-07-16).
+As of 2026-07-16 the clip's timing state is exactly `origin`; the clock
+is never mutated; the recording lifecycle is an explicit state machine;
+commits are events handled by the island root; traversal is cast-free;
+and context flows down through `ProcessContext`.
 
-## 6. Risks and open questions
+---
 
-*(history — the migration is complete; the first two risks were
-resolved by Q12 and Q1/Q13, the last by the field arc of 2026-07.)*
+## 6. Appendix — what the kernel replaced
 
-- **Q-rational vs sample origins** (design_language.md Q9): decide
-  before step 2; retrofitting units is the expensive path.
-- **Origin of the first clip** defines the island epoch; deleting that
-  clip must not orphan the epoch (same policy question as Q1's stored-Q
-  orphan).
-- **int64 monotonic time** at 48 kHz overflows after ~6 million years;
-  no action required, but wrap-view math must use the epoch-relative
-  form to keep intermediates small.
-- **Behavioral diffs during migration**: the current LCM-snap produces a
-  *user-visible* cursor jump-to-zero in the simple-extension case; the
-  kernel produces continuous motion instead. recording.md's examples
-  actually specify the continuous behavior ("the playhead does NOT loop
-  back"), so this is a doc-compliant change — but it will *feel*
-  different from today's app and should be field-tested (clap test +
-  dump, as usual).
+Kept so it is not re-proposed, and so the shape of the old code is
+legible to anyone reading history.
+
+**The six-field clip timing block.** Per clip, the engine stored
+`trigger_master_position` (record start → commit anchor math),
+`recording_start_phase` (arm → launch-point calculation),
+`anchor_phase_samples` (arm + commit → UI marker, one-shot logic),
+`launch_point_samples` (commit → playback offset, playhead),
+`rotation_offset_` / `rotation_span_` (commit → playback and waveform
+reads), and `x_pos` — *in pixels* — (arm + commit → UI lane position).
+Six encodings of one fact. **Replaced** by one stored `origin`; every
+consumer became a derivation (§2's table).
+
+**Virtual rotation.** Content was stored rotated and un-rotated on
+read. **Deleted:** it double-shifted playback on top of the launch
+point, contradicting recording.md Example 2. Content is stored in the
+origin frame, and reads need no remap.
+
+**Origin stored mod the context loop.** Tried on the day origin was
+introduced. **Corrected the same day:** the mod truncated which cycle
+of the context a take began in — invisible while a transport snap
+rebased the clock, and broken once the transport went monotonic (field:
+a 4Q take over a 1Q groove looped at 3Q). `launchPointFor` mods by the
+final duration, so the absolute value is always safe to store.
+
+**The mutable-transport branch pile.** ~120 lines of the
+highest-churn code in the callback, each branch compensating for
+mutable global time:
+
+| Branch | Why it existed | What replaced it |
+|---|---|---|
+| Wrap `master_pos` at LCM | a bounded counter for UI % math | the UI derives `t mod LCM`; the engine never wraps |
+| Reset to 0 on first clip | so clip 1's math saw zero | clip 1 gets `origin := t_start`; nothing global moves |
+| Snap to 0 when LCM grows | a new longer clip would start mid-phase | the new clip's `origin` IS its start, so `(t − origin)` is continuous through commit by definition |
+| Don't snap on polyrhythmic growth | the snap would jump the cursor | nothing snaps, so there is nothing to suppress |
+| `last_recording_duration_` guess | reconstruct "where were we" after mutation | `t` is never mutated; there is nothing to reconstruct |
+
+**The once-per-island first-clip clock reset.** Retained through step 3
+as "it IS the epoch capture". **Replaced 2026-07-16** by actual epoch
+capture — the first arm stores its moment as data, the clock untouched
+— and the stop-reset in `togglePlayback` by pause/resume.
+
+**Restart-from-top is not an engine concept.** `togglePlayback` is a
+pure pause/resume and the clock is never reset; what a user experiences
+as "play from the top" is UI policy composed over `togglePlayback` +
+`seekTransport` (session_view.md display law 15). If restart-from-top
+were ever wanted *in the engine*, it would be a root time-map — the
+same primitive as everything else that transforms time — not a second
+clock mutation.
+
+**Polyrhythmic expansions keeping the old epoch** ("the cursor sails
+on"). **Refined 2026-07-16** after the field report that a 5Q take
+teleported to 12Q of an exploded 20Q frame: EVERY cycle growth re-bases
+the epoch to the take's heard top. The "cursor sails on" intent
+survives — it is the watched, shifted cursor that sails on.
+
+**Loop-on-collapse as the playback equation's map.** The original §2
+keyed `m` to whether a stack was collapsed. **Convicted by I6b**
+(2026-07-09): a view action must not change the sound. Activation
+became data. The epoch-anchored stack form that replaced it was itself
+**retired by Q18** (2026-09-01) — a stack now stores an origin like a
+clip, so there is one anchoring law (time_maps.md §8 carries that
+entry).
+
+**Risks that resolved.** Q9, "store origins in Q-rationals or warp
+breaks sample-anchors", gated step 2 until **Q12** adopted rational
+`QTime` (2026-07-16) and nothing gated the migration. "Deleting the
+first clip orphans the epoch" resolved under Q1/Q13 — Q and epoch
+survive their creating clip, and re-open when the island falls back to
+one committed clip. int64 monotonic time at 48 kHz overflows after ~6
+million years; no action required, though wrap-view math uses the
+epoch-relative form to keep intermediates small.

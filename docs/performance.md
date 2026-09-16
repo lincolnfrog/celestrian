@@ -2,16 +2,27 @@
 
 > Status: **spec** — §1 (the audio-thread contract) is project law.
 >
-> Written 2026-07-07, immediately after the real-time-safety refactor
-> (refactoring_proposal.md §P0-2). This doc has three jobs:
+> This doc has three jobs:
 >
 > 1. Define the **audio-thread contract** so we never regress into glitch
 >    territory.
-> 2. Model **end-to-end latency** and analyze the suspected **record latency
->    issue** (spoiler: we back-date timestamps but throw away the audio the
->    user played before capture began).
-> 3. Keep a ranked backlog of **throughput and latency work**, with
->    measurement techniques so we fix what's real, not what's imagined.
+> 2. Model **end-to-end latency**, and specify the arrival-time capture
+>    and calibration that keep a recording aligned with what the
+>    performer heard.
+> 3. Keep a ranked backlog of **throughput work**, with the measurement
+>    techniques that tell us what is real rather than imagined.
+>
+> **Section numbers are API.** `src/`, `tests/` and `ui/js/` cite
+> `performance.md §1`, `§2.3`, `§3`, `§6.3` and `§7` from code comments.
+> Renumber nothing without fixing the callers
+> (`grep -rn 'performance.md §' src tests ui/js docs`).
+>
+> §8 records the designs that were tried and rejected.
+
+**Contents**
+
+1. [The audio-thread contract](#1-the-audio-thread-contract) · 2. [Latency model](#2-latency-model) · 3. [Arrival-time capture](#3-arrival-time-capture) · 4. [Device configuration](#4-device-configuration)
+5. [Throughput backlog](#5-throughput-backlog-ranked) · 6. [Instrumentation & verification](#6-instrumentation--verification) · 7. [Latency calibration](#7-latency-calibration) · 8. [Appendix](#8-appendix--alternatives-considered-and-rejected)
 
 ---
 
@@ -189,31 +200,27 @@ feedback. Cheap wins, in order:
 
 ---
 
-## 3. The record latency issue — ✅ fixed (2026-07-07): arrival-time capture
+## 3. Arrival-time capture
 
-> **Correction.** The first draft of this section framed the fix as
-> "back-fill the first C samples from a ring" — that had the *sign of the
-> error backwards* for the play-along case. The analysis below is the
-> corrected model that the implementation follows; the measured 139 ms
-> round trip on real hardware made the error direction unambiguous.
+Recording is aligned to what the performer **heard**, not to when the
+record state flipped. This section is the law that makes I1 true on real
+hardware; §8 records the framing that got it wrong first.
 
-### The model
+### The model (why arrival time is the right frame)
 
 The user plays in time with what they **hear** (delayed by output latency);
 their audio reaches the input delayed by input latency. So a note played on
 the heard beat at musical time `B` **arrives at the input at `B + C`**,
 where `C` is the full round trip (empirically measured by calibration, §7).
 
-The old capture copied the live input block starting when the recording
-state flipped (≈ the boundary `B`). Clip position 0 therefore held the
-audio that *arrived* at `B` — which the musician played `C` earlier. The
-note meant for the beat landed at clip position `C`, and every recording
-played back **late by the round trip** (139 ms on the measured setup —
-exactly the reported symptom).
+Capturing the live input block from the moment the record state flips
+would therefore put the note meant for the beat at clip position `C`,
+and every recording would play back **late by the round trip** — 139 ms
+on the reference setup (§8).
 
-### The fix: capture by arrival time, fed from a pre-record ring
+### The mechanism: capture by arrival time, fed from a pre-record ring
 
-Implemented as two pieces:
+Two pieces:
 
 1. **Pre-record ring** (`AudioEngine::prerecord_ring_`): every input block
    is copied unconditionally into a preallocated ring (8 ch × 2 s), indexed
@@ -255,19 +262,18 @@ loopback, records a grid clip, then records a second clip where an impulse
 the heard beat. The impulse must land at clip position 0 (pre-fix behavior
 put it ~137 late), and nowhere else.
 
-### Confirmation checklist (now mostly automated)
+### Confirmation
 
-1. ~~Log the reported latencies~~ ✅ logged at every device start.
-2. ~~Loopback measurement~~ ✅ the 🎯 calibration feature (§7); measured
-   139.1 ms on the reference setup.
-3. **Human test (do this after pulling):** record a sharp transient against
-   an existing clip's beat and confirm it plays back on the beat. This is
-   the end-to-end validation of calibration + arrival-time capture on real
-   hardware.
+Reported latencies are logged at every device start, and loopback
+measurement is the 🎯 calibration feature (§7). The one step that stays
+human: **record a sharp transient against an existing clip's beat and
+confirm it plays back on the beat.** That is the end-to-end validation
+of calibration + arrival-time capture on real hardware, and no test
+replaces it.
 
 ---
 
-## 4. Device configuration — ✅ selectable + persisted (2026-07-25)
+## 4. Device configuration
 
 `AudioEngine::init` restores the last chosen device before falling back to
 the OS default:
@@ -352,36 +358,56 @@ Remaining:
 ## 5. Throughput backlog (ranked)
 
 None of these currently cause audible trouble at small graph sizes; they're
-ordered by (impact × likelihood we hit them as graphs grow).
+ordered by (impact × likelihood we hit them as graphs grow). Ranked
+against the kernel-era engine (re-ranked 2026-09-15; the retired items
+are in §8). Nothing here moves before the callback meter (§6.1) shows
+pressure or a session is large enough to feel the message-thread items
+— and with plugins in the chain, the VST3 slots dominate the callback
+regardless.
 
-1. **Per-sample playback loop** (`ClipNode::process`): per sample it does
-   int64 modulo, rotation remap, and a per-channel store. Replace with
-   segmented `FloatVectorOperations::add` runs between wrap points (loop
-   boundary, rotation seam, block end) — typically 1–3 memcpy-speed segments
-   per block instead of `num_samples × channels` scalar ops. Biggest CPU win
-   available in the engine, and mechanical to test against the current
-   implementation (golden output comparison).
-2. **Quantum/LCM re-derivation per block** (`calculateTimelineLength`,
-   `getEffectiveQuantum`): O(graph) walks with `dynamic_cast`s, per block,
-   plus again per node in `getMetadata` per UI poll. P0-3 (stored quantum)
-   plus caching the LCM (invalidate on commit/graph change — both are
-   message-thread events) reduces this to atomic reads.
-3. **`dynamic_cast` per block** (~22 sites): P1-8 — virtual
-   `forEachChild`/`getNodeType` dispatch. Cheap individually; they add up
-   and they're a code smell that hides layering problems.
-4. **`getGraphState` cost per poll**: builds a full `juce::var` tree and
-   JSON-serializes it across the bridge every 50 ms, O(nodes) allocations on
-   the message thread. Fine below ~100 nodes. The endgame (per
-   refactoring_proposal.md P0-2/P2-10) is a POD state snapshot + delta
+1. **The per-sample copy inside a content run** (`ClipNode::render`, the
+   lambda under `timing::forEachContentRun`). The run splitter already
+   cuts a block at every map seam, comp cell, shot end and rest, so each
+   run is one contiguous read of one buffer — but the read itself is
+   still `scratch[i + k] = src[(base + p0 + k) % cap]` per sample: an
+   int64 modulo (the slowest integer op on either CPU) and a scalar store,
+   `num_samples × channels` times per playing clip per block. Split the
+   run once more at the source buffer's end — the same two-piece read the
+   pre-record ring already does in `addMonitorInput` — and each piece is a
+   `FloatVectorOperations::copy`. The only per-sample audio-thread work
+   left in the engine, and it scales with clip count; mechanical to
+   golden-test against the current loop (the ramp method of
+   `tests/content_frame_tests.cc` needs no constants). `renderMidi` has
+   no equivalent: it reads events by `lowerBound`, not per sample.
+2. **`getGraphState` cost per poll**: `tick()`, then a full `juce::var`
+   tree — every node's `getMetadata`, its fx chain's slot metadata and,
+   per open effects panel, a 24-bin Goertzel over a 2048-sample ring —
+   JSON-serialized across the bridge every `POLL_MS` (50 ms), O(nodes)
+   allocations on the message thread. Fine below ~100 nodes; the first
+   item a large session feels, as UI jank rather than audio. The endgame
+   (refactoring_proposal.md P0-2/P2-10) is a POD state snapshot + delta
    updates; don't invest in intermediate optimizations here.
-5. **Waveform fetches** (`getWaveform`): O(clip samples) scan per call on
-   the message thread. The UI fetches on-demand (guarded in
-   `fetchWaveform`), so this is bounded today. If live waveform-while-
-   recording is wanted, maintain incremental peak buckets during capture
-   (audio thread appends one max per N samples into a preallocated array)
-   instead of rescanning.
-6. **Stack summing** clears and adds `mix_buffer` per child; a single-child
-   stack could pass through. Micro; only bother if profiling says so.
+3. **Per-block period walks over the snapshot** (`snapEffectivePeriod`
+   from `StackNode::process`, once per stack per block — twice for a
+   one-shot stack; `snapEffectiveCycle` once per callback):
+   `period_law` recursion over the packed child spans, allocation- and
+   cast-free, O(subtree) per stack so O(depth × nodes) per block of
+   integer lcm. Q is stored and the snapshot is immutable, so the
+   remaining move is caching `ownPeriod` / `contribution` per entry at
+   `buildGraphSnapshot` time (message thread; nothing to invalidate).
+   Worth it only for deep, wide graphs; the meter will say.
+4. **Waveform peaks on commit** (`ClipNode::getWaveform` → `audioPeaks`):
+   an O(take samples) scan on the message thread, once per commit or
+   take switch (`fetchWaveform` guards it). The in-progress picture no
+   longer needs it — `ui/js/live_peaks.js` builds it from the polled
+   `currentPeak`, time-indexed — so what remains is the commit scan of a
+   long take stalling the message thread (a UI hitch, never audio).
+   Incremental peak buckets during capture (the audio thread appends one
+   max per N samples into a preallocated array) would remove it; only
+   when takes get long enough to notice.
+5. **Stack summing** clears `mix_buffer` and adds it per child (plus
+   `fx_accum_` when the stack's own chain is live); a single-child stack
+   could pass through. Micro; only bother if profiling says so.
 
 JS-side rendering cost (per-frame ghost rebuild, `getBoundingClientRect`
 per clip, per-frame logging) is covered by refactoring_proposal.md P2-10 and
@@ -391,38 +417,52 @@ not duplicated here.
 
 ## 6. Instrumentation & verification
 
-What we can't measure we will regress. Cheap, permanent instrumentation:
+What we can't measure we will regress. Cheap, permanent instrumentation —
+numbered because code comments cite these subsections.
 
-1. **Callback duration meter** — ✅ *implemented (2026-07-07)*. The callback
-   samples `getHighResolutionTicks()` at entry/exit
-   (`AudioEngine::updatePerfMeters`); max duration and a decaying load
-   average live in atomics and ship in every `getGraphState()` result as
-   `perf.maxBlockUs` / `perf.avgLoadPct`.
-2. **Overrun (xrun) detector** — ✅ *implemented*. Entry-to-entry gaps
-   beyond 2 × block period (and < 0.5 s, to exclude stop/start idle) bump
-   `perf.xruns`.
-3. **Latency self-report** — ✅ *implemented*. `audioDeviceAboutToStart`
-   logs device name, sample rate, block size, and reported input/output
-   latencies, and caches sample rate/block size for the meters. If that log
-   line shows zero latencies, driver-based compensation is a no-op —
-   calibrate (§7).
-4. **Loopback calibration** — ✅ *implemented as an in-app feature*, see §7.
-5. **Perf regression harness:** a test target that builds a deep/wide graph
-   (e.g. 4 stacks × 16 clips × 30 s) and times 1000 callback invocations —
-   fails if the p99 block cost exceeds a budget (say 20 % of block duration).
-   This is the same manual-callback pattern the unit tests already use, so
-   it's deterministic and CI-safe. *(Not built yet.)*
-6. **Static guardrails:** CI grep over `src/` for `Logger::writeToLog`,
-   `makeCopyOf`, `setSize`, `std::function` construction, and `44100`
-   literals inside the known audio-thread files; the list of allowed
-   exceptions lives next to the check. Crude but catches the common
-   regressions at review speed. *(Not built yet.)*
+### 6.1 Callback duration meter
+
+The callback samples `getHighResolutionTicks()` at entry and exit
+(`AudioEngine::updatePerfMeters`); max duration and a decaying load
+average live in atomics and ship in every `getGraphState()` result as
+`perf.maxBlockUs` / `perf.avgLoadPct`.
+
+### 6.2 Overrun (xrun) detector
+
+Entry-to-entry gaps beyond 2 × the block period — and under 0.5 s, to
+exclude stop/start idle — bump `perf.xruns`.
+
+### 6.3 Latency self-report
+
+`audioDeviceAboutToStart` logs device name, sample rate, block size, and
+the reported input/output latencies, and caches sample rate and block
+size for the meters. **If that log line shows zero latencies,
+driver-based compensation is a no-op — calibrate (§7).**
+
+### 6.4 Loopback calibration
+
+An in-app feature; see §7.
+
+### 6.5 Perf regression harness — *not built*
+
+A test target that builds a deep/wide graph (e.g. 4 stacks × 16 clips ×
+30 s) and times 1000 callback invocations, failing if the p99 block cost
+exceeds a budget (say 20% of block duration). The same manual-callback
+pattern the unit tests already use, so it would be deterministic and
+CI-safe.
+
+### 6.6 Static guardrails — *not built*
+
+A CI grep over `src/` for `Logger::writeToLog`, `makeCopyOf`, `setSize`,
+`std::function` construction, and `44100` literals inside the known
+audio-thread files, with the allowed-exception list living next to the
+check. Crude, but it catches the common regressions at review speed.
 
 `juce::ScopedNoDenormals` now guards the callback (§4.4 done).
 
 ---
 
-## 7. Empirical latency calibration (implemented 2026-07-07)
+## 7. Latency calibration
 
 **The idea** (credit: user request): don't trust what the driver reports —
 *measure* the machine. Record the playback of something we ourselves
@@ -496,16 +536,64 @@ plus clean-failure (silent input) and perf-meter coverage.
 
 ---
 
-## 8. Suggested order of attack
+## 8. Appendix — alternatives considered and rejected
 
-1. ~~Instrumentation~~ ✅ done (§6.1–6.3).
-2. ~~Loopback measurement~~ ✅ done — 139.1 ms measured on the reference
-   setup via the 🎯 button.
-3. ~~Pre-record ring + arrival-time capture~~ ✅ done (§3).
-4. Device config: explicit buffer size + sane channel request (§4.1–4.2).
-   With calibration + arrival-time capture in place this no longer affects
-   recording *alignment* — only monitoring feel and visual responsiveness.
-5. ~~Sample-rate capture, P0-5~~ ✅ done (§4.3).
-6. ~~Persist the calibrated latency per device config~~ ✅ done (§7).
-7. Segmented playback loop (§5.1) when/if the callback meter shows pressure,
-   or before shipping larger sessions.
+Kept so they are not re-proposed.
+
+**"Back-fill the first C samples from a ring."** The first framing of the
+record-latency fix: keep capturing from the state flip, then patch the
+head of the clip with `C` samples of history. **Rejected — the sign of
+the error was backwards** for the play-along case. A note played on the
+heard beat *arrives late*, so the clip does not need earlier audio
+prepended; it needs its whole capture window shifted into arrival time.
+The measured 139 ms round trip on real hardware made the direction
+unambiguous. §3 is the corrected model, and the implementation follows
+it.
+
+**Capturing the live input block from the record-state flip.** The
+original behaviour. Clip position 0 held the audio that *arrived* at the
+boundary — which the musician played `C` earlier — so every recording
+played back late by the full round trip. That was the reported symptom,
+not a tuning problem. **Replaced** by the pre-record ring plus the
+arrival-time capture window (§3).
+
+**Guessing the round trip from driver-reported latencies alone.**
+Reported figures are a starting point and are logged at every device
+start, but they do not account for the whole chain. **Replaced** by
+empirical loopback measurement (§7); the driver numbers survive only as
+the fallback when calibration has not run.
+
+**Live-block metering during record.** Peak meters read the captured
+(windowed) region, so the record meter lags by `C`. This is a
+consequence of §3, accepted deliberately rather than worked around; live
+input metering would be a separate signal path if the lag ever feels
+wrong.
+
+**Plugin delay compensation by delaying everyone else.** Out of scope
+here and ruled on in vst3.md (Q-V2): in a cyclic kernel, plugin latency
+delays a loop's content *within its cycle*, so classic PDC fights the
+island clock. Latency *reporting* stays because it is near-free.
+
+**Retired throughput items (the pre-kernel §5 list).** *Quantum/LCM
+re-derivation per block* — `calculateTimelineLength` and the per-block
+`getEffectiveQuantum` walks are gone: Q is stored on the island root
+and the audio thread reads periods off the immutable snapshot
+(`graph_snapshot.h`); what is left is §5 item 3. *`dynamic_cast` per
+block* — none remain on the audio thread: children are packed index
+spans and dispatch is `forEachChild` / `getNodeType`; every remaining
+cast is message-thread code (edit log, take service, map edits, verbs,
+island geometry, import, session I/O). *The segmented playback loop* —
+landed as `timing::forEachContentRun`; only the per-run copy survives,
+as §5 item 1.
+
+### What landed when
+
+Instrumentation (§6), loopback measurement (§7 — 139.1 ms on the
+reference setup), the pre-record ring and arrival-time capture (§3),
+sample-rate capture, and per-device-config persistence of the calibrated
+latency are all in code. What remains from the original plan: explicit
+buffer-size and channel-request configuration (§4), which no longer
+affects recording *alignment* — only monitoring feel and visual
+responsiveness — and the per-run copy (§5 item 1), to be picked up
+when the callback meter shows pressure or before shipping larger
+sessions.
