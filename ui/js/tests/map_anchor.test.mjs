@@ -1,11 +1,10 @@
 /**
- * TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09): a map edit on a
+ * THE CONTINUITY RE-ANCHOR (owner ruling 2026-08-09): a map edit on a
  * playing clip keeps the sounding sample sounding (origin re-anchor,
- * unless the edit REMOVED that region), while the island epoch rides
- * the SAME whole-Q delta — so the edited clip's frame position (the
- * timeline the user drew) never changes. "There is no such thing as
- * island 3.5 — that is 0.5Q. The master transport is an
- * implementation detail": the fold, not the clip, absorbs the delta.
+ * unless the edit REMOVED that region). The island zero never moves;
+ * where the clip then sits on screen is the view's seating from the
+ * lanes (docs/frame.md). "There is no such thing as island 3.5 — that
+ * is 0.5Q. The master transport is an implementation detail."
  *
  * The field repro this pins: record a 3Q clip over a 1Q definer,
  * dblclick the middle Q while the transport plays. Under the old
@@ -27,7 +26,7 @@ import { nodeById as findNodeById, recordTake } from './helpers.mjs';
 const nodeById = (id, nodes = getState().nodes) => findNodeById(id, nodes);
 
 test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
-     'the seam renders mid-lane (two-anchor continuity)', async () => {
+     'the seam renders mid-lane (the continuity re-anchor)', async () => {
     loadScenario('empty');
 
     // Track 1 establishes Q (first take: raw commit, no boundary wait).
@@ -91,11 +90,12 @@ test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
         `seam renders at 1Q of a 2Q frame (mid-lane), got ${seamLaneQ}` +
         `Q of ${vm.cycleQ}Q`);
 
-    // Healing is a map edit too: both anchors move together (or not at
-    // all) — frame position stays invariant either way.
+    // Healing is a map edit too: the origin may re-anchor by whole Qs
+    // (continuity); the island zero never moves (docs/frame.md).
     const org2 = nodeById(c2).origin || 0;
     const epoch2 = getState().islandEpoch || 0;
     await callNative('setSegments', c2, []);
-    assert.equal((nodeById(c2).origin || 0) - (getState().islandEpoch || 0),
-        org2 - epoch2, 'heal: frame position invariant too');
+    assert.equal(getState().islandEpoch || 0, epoch2, 'heal: the zero stays');
+    assert.equal((((nodeById(c2).origin || 0) - org2) % 1000 + 1000) % 1000, 0,
+        'heal: the origin moves by whole Qs or not at all');
 });

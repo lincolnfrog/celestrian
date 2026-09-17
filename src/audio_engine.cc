@@ -4,8 +4,8 @@
 // and session save / load. The rest of the class lives under
 // src/engine/, one file per responsibility:
 //   island_geometry.cc  the island geometry law: definers, Q13 riders,
-//                       two-anchor continuity, Q18 origins / anchoring,
-//                       island (Q, epoch) writes and the scrubs
+//                       the continuity rider, Q18 origins / anchoring,
+//                       island (Q, zero) writes and the scrubs
 //   edit_log.cc         applyEdit and its inverses, the undo / redo log
 //   take_service.cc     take lifecycle: arm, stop, settle, storage upkeep
 //   transport.cc        play / pause, seek, getGraphState — the ONE UI
@@ -29,8 +29,10 @@
 #include "rt_log.h"
 #include "stack_node.h"
 
-// The epoch re-base is driven by the commit EVENT (StackNode::takeCommitted),
-// never by callback edge detection (unification_audit.md §1.5).
+// Take lifecycle bookkeeping is driven by the commit EVENT
+// (StackNode::takeCommitted), never by callback edge detection
+// (unification_audit.md §1.5); no island fact moves at a commit
+// (docs/frame.md).
 
 AudioEngine::AudioEngine() {
   // The RtLog is a function-local static: its first touch constructs

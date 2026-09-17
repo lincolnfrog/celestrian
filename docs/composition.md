@@ -145,11 +145,11 @@ song as the shot, provisionally, pending a design pass.)
 
 | Quantity | Definition | Who consumes it |
 |---|---|---|
-| **intrinsic** `D` | clip: committed length. stack: LCM of looping children's intrinsic. | inner-position domain of the map; the growth baseline for the commit epoch re-base (`lcm_before_take_`); the Q15 fold frame |
+| **intrinsic** `D` | clip: committed length. stack: LCM of looping children's intrinsic. | inner-position domain of the map; the pre-take intrinsic cycle (`lcm_before_take_`); the Q15 fold frame |
 | **effective** `P_eff` | active map ▸ active sequence length ▸ clip: `D` / stack: LCM of children's `P_eff` (one-shots excluded) | the parent's LCM; masterPos wrap; heard cycle at arm; the frame-health badge |
 | **context cycle** (`context_cycle`) | THE one scope cycle: the stack's own period (map period ▸ sequence length ▸ `lcm(Q, looping children's contributions)`) ▸ inherited when the scope has no looping content | one-shot playback fold (§2); one-shot echo display; arm targets (`armTarget`, min Q) and stop boundaries — the former `context_loop` (deleted, audit D2-4: a free-length song restarts the arm grid at its top at every depth, I5) |
 | **heard cycle** (`heard_cycle_at_arm_`) | `lcm(Q, P_eff(root))` at arm — E-C | the take's `contextCycle` (display fold, Q14); the Q15 audible-equivalence step |
-| **intrinsic cycle** (`lcm_before_take_`) | `lcm(Q, D(root))` at arm | the epoch re-base at commit; the Q15 fold frame |
+| **intrinsic cycle** (`lcm_before_take_`) | `lcm(Q, D(root))` at arm | the take's intrinsic pre-take cycle (`activeTakeIntrinsicCycle`); the Q15 fold frame |
 
 Rules:
 
@@ -164,34 +164,31 @@ Rules:
 
 ---
 
-## 4. The epoch
+## 4. The island zero
 
-The island epoch is a **display and grid fact**, not a content fact
-(Q2: the LCM and everything derived from it is legibility machinery).
-After Q18 its consumers are exactly:
+The island keeps one fact besides Q: its **zero**, the first take's
+origin (in code still `islandEpoch`). It is a grid fact, not a content
+fact (Q2: the LCM and everything derived from it is legibility
+machinery), and its consumers are exactly:
 
-1. the fold of the monotonic clock into the published `masterPos`
-   (`(t − epoch) mod cycle`) and the ruler;
-2. the arm grid: targets are the next Q boundary in the epoch frame
-   (Q11), so `epoch ≡ origin (mod Q)` for every committed take is what
-   keeps arm targets and content on one grid;
-3. take marks (`(origin − epoch) mod contextCycle`, Q14);
-4. the cycle-top rule and two-anchor continuity, which MOVE the epoch to
-   a shaped loop's top when the move is invisible to every untouched
-   lane (time_maps.md §5).
+1. the arm grid: targets are the next Q boundary from the zero (Q11);
+   every plain-armed origin is ≡ the zero (mod Q), so arm targets and
+   content share one grid;
+2. the root's own frame: a root song's steps and a root window fold
+   from it, as a group's fold from the group's origin;
+3. the published `islandPos` (`t − zero`), from which the view recovers
+   the raw clock.
 
-No render-path consumer selects content by the epoch. Therefore:
+Where the frame's left edge sits on screen is **not** stored anywhere:
+the view seats it from the lanes (frame.md). No commit and no map edit
+moves the zero; a Q13 re-trim re-sets it to the definer's new top with
+Q, and a seek shifts it with every origin (`shiftOrigins(root, delta)`
+plus `zero += delta`, so every placement `origin − zero` is invariant
+and the phase jumps, §5).
 
-- A whole-old-cycle epoch re-base at commit is phase-neutral for every
-  node (their periods divide the old cycle) — as before, and now also
-  for windowed stacks without any `epochViewStep` guard.
-- A seek is `shiftOrigins(root, delta)` plus `epoch += delta`: the
-  placement `origin − epoch` of every node is invariant and the phase
-  jumps (§5).
-- The agreement condition `epoch ≡ origin (mod D)` is no longer load-
-  bearing. It is still true for every committed take on a locked
-  island, and the trim view relies on it only for where to draw the
-  brackets, not for what sounds.
+No render-path consumer selects content by the zero. The agreement
+condition `zero ≡ origin (mod D)` is not load-bearing: the trim view
+relies on it only for where to draw the brackets, not for what sounds.
 
 ---
 
@@ -204,9 +201,9 @@ No render-path consumer selects content by the epoch. Therefore:
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
 | Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `epoch := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
 | Lock-collapse at the second arm (clip or stack definer) | leaves under the node: `base += s`, `D := len`; `shiftOrigins(node, s)`; node window consumed. Audio-neutral (§2). Re-open reverses it. |
-| Map edit while playing (two-anchor continuity) | `shiftOrigins(node, O' − O)` with `O'` from `originForHeard`; epoch rides the whole-Q delta |
-| Seek | `shiftOrigins(root, delta)`, `epoch += delta`, history absolutes shifted |
-| Cycle growth at commit | epoch only, by whole old cycles — no origin moves |
+| Map edit while playing (the continuity rider) | `shiftOrigins(node, O' − O)` with `O'` from `originForHeard`; the island zero stays (the view re-seats the frame, frame.md) |
+| Seek | `shiftOrigins(root, delta)`, `zero += delta`, history absolutes shifted |
+| Cycle growth at commit | nothing moves — the view seats the new take in the cycle it started in (frame.md) |
 
 `shiftOrigins(node, delta)` is recursive: it moves the node's origin and
 every descendant's. For a clip it is `origin += delta`. Every origin

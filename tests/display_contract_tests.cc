@@ -18,8 +18,8 @@
  * every lane is DIMMED exactly where the engine is silent.
  *
  * Scenario: 1Q, 4Q, then an 8Q take armed at phase 2Q after a full
- * cycle (the epoch re-bases by whole old cycles — the case that used
- * to part the root's origin from the epoch); a root song 4Q + 4Q
+ * cycle (the case that once parted the root's origin from the island
+ * zero); a root song 4Q + 4Q
  * gating the 1Q clip off in step 2; a group anchored at phase 2Q with
  * a 4Q member and its own 4Q + 4Q song gating that member off in step
  * 2 (a nested song folds from the GROUP's origin — Q18).

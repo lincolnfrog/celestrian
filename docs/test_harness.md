@@ -203,19 +203,17 @@ the epoch instead of the group's origin (Q18), the members lacked the
 group's heard-top rotation, and a member's own window inside a group
 window was drawn ignoring the group's map — plus one engine-side rule
 misfire: clearing a window (an edit that changes nothing audible)
-re-based the epoch to that loop's top when its period merely tied
-another loop's, rotating every other lane on screen (the cycle-top
-rule now fires only on a move invisible to every untouched lane,
-time_maps.md §5). All four are
+moved the frame's zero to that loop's top when its period merely tied
+another loop's, rotating every other lane on screen. All four are
 pinned by `under_map_slice.test.mjs` and the journeys above. Day two
-(2026-09-10) added a fifth, RULED AND FIXED the same day: two-anchor
-continuity (time_maps.md §5) rode the epoch by the edited clip's
+(2026-09-10) added a fifth: the frame's zero rode the edited clip's
 whole-Q origin delta so that clip's tile held — and every OTHER lane
-rotated by the delta whenever it was not a whole cycle of theirs;
-now the epoch moves only by whole cycles of everyone else and the
-edited tile takes the residual (loop_edits.spec.js "editing one
-lane's loop region never moves the OTHER lanes' tiles", from four
-start phases). The gap-fill C++ scenarios (S33–S38, docs/scenarios.md)
+rotated by the delta whenever it was not a whole cycle of theirs
+(loop_edits.spec.js "editing one lane's loop region never moves the
+OTHER lanes' tiles", from four start phases). Both misfires were rules
+that moved a stored zero; since 2026-09-16 the zero is not stored —
+the view seats it from the lanes (frame.md) and the engine moves no
+island fact for an edit. The gap-fill C++ scenarios (S33–S38, docs/scenarios.md)
 found a sixth on arrival: clearing a window to "whole" left a stale
 BYPASS, so the next window drawn on that lane was silently inert
 (S34; fixed — a clear drops the bypass, undo restores it; mock twin
@@ -320,7 +318,8 @@ exercises; a dump (📦) after each take is the evidence.
 5. Toggle the drums to a one-shot (↺/1×): they fire once per cycle from
    their take mark and rest silent (Q18, Q5). Toggle back.
 6. Window the bass to [1Q, 2Q) while playing: audio continuous at the
-   edit, the window top at the frame top (cycle-top rule); ⌘Z restores.
+   edit, the loop drawn from the frame top when a whole cycle of the
+   drums reaches it (frame.md), else wrap-ghosted; ⌘Z restores.
 7. Open the sequencer on the root; make three steps (intro / verse /
    chorus) with gates; cue the chorus. Playback follows the song; the
    frame-health badge stays quiet (S-series, sequencer.md).

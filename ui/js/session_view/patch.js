@@ -22,7 +22,8 @@ const REC_SNAP_BACK_PX = 40;
 
 export function patchSessionView(vm, aux) {
     // Pin source for map gestures (see drag_pin.js)
-    noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ);
+    noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ,
+              vm.epochSamples);
     // Transport (all writes idempotent — see the setText note)
     setText(ctx.els.playBtn, vm.isPlaying ? '⏸' : '▶');
     ctx.els.playBtn.classList.toggle('playing', vm.isPlaying);

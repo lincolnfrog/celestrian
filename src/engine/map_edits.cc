@@ -165,13 +165,12 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       e.iq = D;
       e.iepoch = anchored ? target->origin_samples.load() : root_node->getEpoch();
     } else if (D > 0 && !root_node->hasActiveTake()) {
-      // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (see attachMapEditRiders)
-      // — clips and stacks alike since Q18.
+      // THE CONTINUITY rider (see attachMapEditRiders) — clips and
+      // stacks alike since Q18.
       attachMapEditRiders(e, *target,
                           end > start
                               ? celestrian::timing::TimeMap::single(start, end)
-                              : celestrian::timing::TimeMap::none(),
-                          root_node->getEffectiveQuantum());
+                              : celestrian::timing::TimeMap::none());
     }
     // MEMBERS WHOLE (the window law for the definer stack): a member
     // still carrying its own single window — a group take committed
@@ -351,8 +350,8 @@ void AudioEngine::setSegments(const juce::String& uuid,
         }
       }
     } else if (intrinsic > 0 && !root_node->hasActiveTake()) {
-      // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (see attachMapEditRiders).
-      attachMapEditRiders(e, *target, map, target->getEffectiveQuantum());
+      // THE CONTINUITY rider (see attachMapEditRiders).
+      attachMapEditRiders(e, *target, map);
     }
   }
 

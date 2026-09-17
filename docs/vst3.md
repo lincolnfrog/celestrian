@@ -503,8 +503,8 @@ replacement for it.
 **A separate `MidiClipNode` class** — the literal form of the Q-V3 ruling.
 **Superseded at build time** by a content KIND on `ClipNode`: the take
 lifecycle is content-agnostic, so a second class would have duplicated
-arm/capture/stop/commit, quantum snapping, through-map fold, epoch re-base
-and undo rather than reusing them. The affordances still key on the kind
+arm/capture/stop/commit, quantum snapping, through-map fold and undo
+rather than reusing them. The affordances still key on the kind
 (`contentKind`), which was the ruling's actual intent.
 
 **The ♪ rail toggle** — an explicit per-track MIDI monitoring arm.

@@ -261,7 +261,7 @@ class StackOriginTests : public juce::UnitTest {
                    "redo re-applies the re-expressed map (end)");
     }
 
-    beginTest("A windowed group anchors at ITS origin: epoch re-bases and seeks never re-select content");
+    beginTest("A windowed group anchors at ITS origin: growth and seeks never re-select content");
     {
       AudioEngine engine;
       int64_t clock = 0;

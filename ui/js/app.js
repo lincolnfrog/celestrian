@@ -12,7 +12,7 @@ import { callNative, log, getState } from './backend.js';
 import { deriveViewModel, findNodeInTree, armMode, hasInstrument }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
-         activeSelectedId, selection }
+         mapDragPinZero, activeSelectedId, selection }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initPreferences } from './preferences.js';
@@ -707,7 +707,8 @@ async function startPolling() {
                     { folded: foldedStacks(projectInfo.id),
                       fxOpen, seqOpen, compMode, retakes,
                       pinFrameQ: mapDragPinQ(),
-                      pinFoldQ: mapDragPinFoldQ() });
+                      pinFoldQ: mapDragPinFoldQ(),
+                      pinZero: mapDragPinZero() });
                 const lanesById = new Map(vm.lanes.map(l =>
                     [l.id, Object.assign({ quantum: vm.quantum }, l)]));
                 refreshPeaks(state.nodes,
@@ -1092,7 +1093,7 @@ function initApp() {
         onTogglePlay: () => togglePlayFromStart(callNative, projectInfo.id),
         // Ruler scrub: target in the published-masterPos domain,
         // samples. Streams while dragging
-        // (cheap epoch re-base engine-side); NOT undoable — a
+        // (the engine shifts every origin with its zero); NOT undoable — a
         // monitoring gesture, like auditionStep. The engine refuses
         // mid-take (the UI locks the gesture too). A landed seek is
         // also the new play start (play_start.js).

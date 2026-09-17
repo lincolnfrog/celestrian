@@ -1058,24 +1058,115 @@ function effectivePeriod(node) {
 }
 
 /**
- * GROWING FRAME, PHASE-PRESERVING: while recording, the frame shifts
- * by WHOLE CYCLES to the cycle the take started in, and extends one
- * whole Q at a time to hold the growing cursor. Whole-cycle shifts
- * keep every committed lane's phase fixed (a raw-Q shift would rotate
- * the whole timeline for mid-cycle takes) and agree exactly with the
- * engine's commit epoch re-base when a take starts a new cycle top.
- * The take
- * anchor is snapped to a whole Q (Q11), cancelling the pre-record
- * latency wobble baked into live duration (E-E).
+ * THE FRAME ZERO (docs/frame.md): the shared frame's left edge is not
+ * a published fact — it is SEATED from the lanes in the order they are
+ * shown. The first lane's top is the top; each next lane pulls the zero
+ * forward by whole cycles-so-far until its own top lies inside the
+ * current cycle, so it lands at the left edge whenever a whole
+ * cycle-so-far reaches it and otherwise at its offset, wrap ghosted.
+ *
+ *   Z₁ = ⌊top₁⌋grid      Zₖ = Zₖ₋₁ + Cₖ₋₁·⌊(topₖ − Zₖ₋₁) / Cₖ₋₁⌋
+ *   Cₖ = lcm(Cₖ₋₁, periodₖ)      top = origin + a0 (the map's first start)
+ *
+ * The root seats first when it carries a song — the song owns the
+ * frame, and its length is the first cycle-so-far. A group with a
+ * window or a song seats as ONE lane (its pass is what its members are
+ * heard through); a plain group is transparent — its members seat in
+ * the order shown, exactly as top-level lanes do, so a take recorded
+ * into a group starts at the left edge just as one recorded loose
+ * would. One-shots do not seat (their offset IS their placement, Q5).
+ * A recording take seats by its top alone: its period is unknown until
+ * stop and must not move the lanes after it as it grows. An unanchored
+ * stack has no content and no top. The zero is always on the Q grid,
+ * so the arm marker and every tile stay grid-true whatever a ⌥-slid
+ * window start does.
+ *
+ * The growth re-base, the cycle-top rule and the free-move law are
+ * this seating, read off the lanes; the mock and the engine share it
+ * here and store no frame zero of their own.
+ *
+ * @returns {number|null} the frame zero in samples, or null with nothing to seat
+ */
+function seatFrameZero(state, nodes, quantum, gridPhase) {
+    const seats = [];
+    const rootSeq = activeSeqSamples(state);
+    const rootFrame = state.islandEpoch ?? state.origin ?? 0;
+    if (rootSeq > 0) {
+        seats.push({ top: rootFrame, period: lcm(quantum, Math.round(rootSeq)) });
+    }
+    const visit = ns => (ns || []).forEach(n => {
+        if (n.periodSource === 'context') return;
+        const m = mapOf(n, quantum);
+        const authored = !!(m && m.active && !m.suspended && !isAuditionWindow(n));
+        const a0 = authored ? m.segs[0][0] * quantum : 0;
+        if (n.type === 'stack') {
+            if (!n.anchored) return;
+            if (authored || activeSeqSamples(n) > 0) {
+                seats.push({ top: (n.origin || 0) + a0,
+                             period: stackEffectivePeriod(n, quantum) });
+            } else {
+                visit(n.nodes);
+            }
+        } else {
+            if (!(n.duration > 0)) return;
+            seats.push({ top: (n.origin || 0) + a0,
+                         period: n.isRecording ? 0 : clipCycleContribution(n, quantum) });
+        }
+    });
+    visit(nodes);
+    if (!seats.length) return null;
+    const grid = x => gridPhase + Math.floor((x - gridPhase) / quantum) * quantum;
+    let zero = grid(seats[0].top);
+    let cycle = quantum;
+    seats.forEach((s, i) => {
+        if (i > 0) zero += cycle * Math.floor((s.top - zero) / cycle);
+        const p = Math.round(s.period || 0);
+        if (p > 0) cycle = lcm(cycle, p);
+    });
+    return zero;
+}
+
+/**
+ * The cursor while a take grows: the transport, unwrapped, folded back
+ * by WHOLE committed cycles so the take's start sits in the cycle it
+ * started in — the bar then runs past the committed cycle and the frame
+ * extends to hold it (computeRecordingFrame). The start (clock minus
+ * captured length) is snapped to a whole Q before the fold (Q11): the
+ * pre-record latency compensation baked into live duration must not
+ * tip the fold, while the cursor itself keeps it, so the bar trails
+ * the cursor by exactly that compensation — truthful monitoring delay
+ * (E-E). One rule for plain takes, takes through a map, takes inside a
+ * group and new takes of a slot. Null when no take has captured audio.
+ */
+function recordingHeadQ(nodes, rawClock, zero, quantum, lcmQ) {
+    let head = null;
+    const posQ = (rawClock - zero) / quantum;
+    const visit = ns => (ns || []).forEach(n => {
+        if (n.type === 'stack') { visit(n.nodes); return; }
+        if (!n.isRecording || !(n.duration > 0)) return;
+        const anchorQ = Math.round(posQ - n.duration / quantum);
+        const foldQ = lcmQ > 0 ? Math.floor(anchorQ / lcmQ) * lcmQ : 0;
+        const q = Math.max(0, posQ - foldQ);
+        head = head === null ? q : Math.max(head, q);
+    });
+    visit(nodes);
+    return head;
+}
+
+/**
+ * GROWING FRAME: while recording, the frame extends one whole Q at a
+ * time to hold the growing cursor, and settles to its final size the
+ * moment the commit boundary is known. The take's place in the frame
+ * is the seating's (seatFrameZero): it starts in the cycle it started
+ * in, and nothing else moves.
  *
  * @param {Object} args { nodes, quantum, qEstablished, anyRecording,
  *                        lcmQ, playheadQ }
- * @returns {{frameQ: number, shiftQ: number, playheadQ: number}}
+ * @returns {{frameQ: number, playheadQ: number}}
  */
 function computeRecordingFrame({ nodes, quantum, qEstablished, anyRecording,
                                  lcmQ, playheadQ }) {
     let frameQ = lcmQ;
-    let shiftQ = 0;
     if (qEstablished && anyRecording && lcmQ > 0) {
         let maxLenQ = 0;
         let allAwaiting = true;
@@ -1096,9 +1187,6 @@ function computeRecordingFrame({ nodes, quantum, qEstablished, anyRecording,
         });
         scan(nodes);
         if (maxLenQ > 0) {
-            const anchorQ = Math.max(0, Math.round(playheadQ - maxLenQ));
-            shiftQ = Math.floor(anchorQ / lcmQ) * lcmQ;
-            playheadQ = Math.max(0, playheadQ - shiftQ);
             if (allAwaiting && settleSamples > 0) {
                 // FINISHING: the frame settles to its FINAL size NOW —
                 // extending to ceil(playhead) while the cursor runs past
@@ -1122,37 +1210,36 @@ function computeRecordingFrame({ nodes, quantum, qEstablished, anyRecording,
             playheadQ = playheadQ % frameQ;
         }
     }
-    return { frameQ, shiftQ, playheadQ };
+    return { frameQ, playheadQ };
 }
 
 /**
  * FRAME PIN: while a map gesture is live, the shared frame holds at
  * its drag-start value — live commits change the audible cycle, and
  * letting the frame follow would re-scale the whole timeline under the
- * pointer. Settles on release.
+ * pointer. Settles on release. (The frame ZERO is pinned by the caller
+ * the same way: opts.pinZero replaces the seating for the gesture.)
  *
- * @param {Object} args { opts, state, quantum, qEstablished,
+ * @param {Object} args { opts, rawClock, zero, quantum, qEstablished,
  *                        anyRecording, frameQ, loopSamples, playheadQ }
  * @returns {{framePinned: boolean, frameQ: number, loopSamples: number,
  *            playheadQ: number}}
  */
-function applyFramePin({ opts, state, quantum, qEstablished, anyRecording,
-                         frameQ, loopSamples, playheadQ }) {
+function applyFramePin({ opts, rawClock, zero, quantum, qEstablished,
+                         anyRecording, frameQ, loopSamples, playheadQ }) {
     const framePinned = opts.pinFrameQ > 0 && qEstablished && !anyRecording;
     if (framePinned) {
         frameQ = opts.pinFrameQ;
-        // CURSOR CONTINUITY THROUGH LIVE COMMITS: the published
-        // masterPos is folded on the CURRENT audible cycle, and every
-        // live map commit moves that fold point — the white cursor
-        // would jump at each commit. The raw island clock is the
+        // CURSOR CONTINUITY THROUGH LIVE COMMITS: every live map commit
+        // can change the audible cycle the cursor folds on — the white
+        // cursor would jump at each commit. The raw clock is the
         // invariant; fold it on the fold cycle PINNED at drag start
         // (the audible cycle of that moment — matching the cursor's
         // pre-grab sweep exactly, jumpless at the grab too).
         const foldQ = opts.pinFoldQ > 0
             ? Math.min(opts.pinFoldQ, frameQ) : frameQ;
-        if (Number.isFinite(state.islandPos)) {
-            const posQ = state.islandPos / quantum;
-            playheadQ = posMod(posQ, foldQ);
+        if (rawClock !== null) {
+            playheadQ = posMod((rawClock - zero) / quantum, foldQ);
         }
         // The ANIMATOR wraps on loopCycleQ — pin it with the frame or
         // the 60fps line still folds at every live commit (a continuous
@@ -1964,12 +2051,10 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
  */
 function pushLane(node, depth, mapCtx, ctx) {
     if (depth > ctx.maxDepth) return;
-    // Tile offsets are epoch-relative (origins are ABSOLUTE; the
-    // frame's x axis is the engine's epoch-phase view), rotated by
-    // the take anchor while recording (shiftQ is whole Qs, so tiles
-    // stay Q-grid-true; mod-period tiling handles the wrap)
-    const offsetQ = ((node.origin || 0) - ctx.epochSamples) / ctx.quantum
-        - ctx.shiftQ;
+    // Tile offsets are measured from the seated frame zero (origins are
+    // ABSOLUTE; seatFrameZero puts the zero on the Q grid, so tiles stay
+    // Q-grid-true; mod-period tiling handles the wrap)
+    const offsetQ = ((node.origin || 0) - ctx.epochSamples) / ctx.quantum;
 
     if (node.type === 'stack') {
         pushGroupLane(node, depth, mapCtx, ctx, offsetQ);
@@ -2086,12 +2171,30 @@ export function deriveViewModel(state, opts = {}) {
         resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
                                   nodes, state.definerId);
 
-    // The island epoch is published explicitly (getGraphState
-    // "islandEpoch"): commit RE-BASES it on simple extensions, and the
-    // root node's `origin` metadata does NOT follow — reading origin as
-    // the epoch would mis-mark take tiles. origin is the fallback for
-    // states without islandEpoch.
-    const epochSamples = state.islandEpoch ?? state.origin ?? 0;
+    // THE FRAME ZERO is seated from the lanes (seatFrameZero, docs/frame.md)
+    // — never read from the state. The state supplies two things only:
+    // the root's own frame (islandEpoch — the song's top when the root
+    // carries a song, and the Q grid's phase always: every committed
+    // origin the plain arm lands is on it) and, through islandPos, the
+    // raw clock. Pre-Q there is nothing to seat: the first take's own
+    // frame is the root's.
+    const rootFrame = state.islandEpoch ?? state.origin ?? 0;
+    const qEstablished = quantum > 1;
+    const seated = qEstablished
+        ? seatFrameZero(state, nodes, quantum, posMod(rootFrame, quantum))
+        : null;
+    // The map-gesture pin holds the zero too (drag_pin): a live commit
+    // re-anchors the edited lane's origin and the seating would follow
+    // it under the pointer.
+    const zeroPinned = opts.pinFrameQ > 0 && qEstablished && !anyRecording &&
+        Number.isFinite(opts.pinZero);
+    const epochSamples = zeroPinned ? opts.pinZero : (seated ?? rootFrame);
+    // THE RAW CLOCK: islandPos is the unwrapped clock measured from the
+    // root's frame; adding that frame back recovers the transport
+    // sample itself. Absent (hand-built fixtures), the published
+    // masterPos stands in below.
+    const rawClock = Number.isFinite(state.islandPos)
+        ? state.islandPos + rootFrame : null;
 
     let cycleSamples = computeCycleSamples(nodes, quantum);
     // The AUDIBLE loop — what the engine wraps masterPos on — IS the
@@ -2140,7 +2243,6 @@ export function deriveViewModel(state, opts = {}) {
     // meaningful timeline is the growing take itself. Track it (+1 so the
     // playhead never wraps at the take's own edge) and suppress the Q
     // grid; the first commit establishes Q and snaps to the real frame.
-    const qEstablished = quantum > 1;
     if (!qEstablished && maxRecordingDuration > 0) {
         // Grow in WHOLE-SECOND steps (4s minimum): a continuously
         // growing frame would rescale the waveform every poll (a
@@ -2151,25 +2253,34 @@ export function deriveViewModel(state, opts = {}) {
     }
     const lcmQ = cycleSamples / quantum;
 
-    // masterPos CONTRACT (AudioEngine::getGraphState, kernel.md step 3):
-    // the published masterPos is already the DERIVED DISPLAY POSITION —
-    // wrapped to the cycle when idle/playing, and during recording it
-    // grows linearly past the committed LCM from a base frozen at record
-    // start. The VM must NOT re-wrap it: re-deriving with mod makes a
-    // growing take loop 1Q over and over. The mock mirrors this
-    // contract (mock_backend.viewMasterPos).
-    let playheadQ = Math.max(0, (state.masterPos || 0) / quantum);
+    // THE CURSOR is the raw clock folded on the audible cycle from the
+    // seated zero. While a take grows it is the take's end instead
+    // (recordingHeadQ), running past the committed cycle so the frame
+    // extends to hold it — never re-wrapped, or a growing take would
+    // loop 1Q over and over. Without a raw clock (hand-built fixtures)
+    // the published masterPos stands in: the frame it is folded on is
+    // then the root's, which the seating reproduces wherever both apply.
+    let playheadQ;
+    const growing = rawClock !== null && qEstablished
+        ? recordingHeadQ(nodes, rawClock, epochSamples, quantum, lcmQ)
+        : null;
+    if (growing !== null) {
+        playheadQ = growing;
+    } else if (rawClock !== null && seated !== null && loopSamples > 0) {
+        playheadQ = posMod(rawClock - epochSamples, loopSamples) / quantum;
+    } else {
+        playheadQ = Math.max(0, (state.masterPos || 0) / quantum);
+    }
 
     const rec = computeRecordingFrame({
         nodes, quantum, qEstablished, anyRecording, lcmQ, playheadQ,
     });
-    const shiftQ = rec.shiftQ;
     let frameQ = rec.frameQ;
     playheadQ = rec.playheadQ;
 
     const pin = applyFramePin({
-        opts, state, quantum, qEstablished, anyRecording,
-        frameQ, loopSamples, playheadQ,
+        opts, rawClock, zero: epochSamples, quantum, qEstablished,
+        anyRecording, frameQ, loopSamples, playheadQ,
     });
     const framePinned = pin.framePinned;
     frameQ = pin.frameQ;
@@ -2211,7 +2322,7 @@ export function deriveViewModel(state, opts = {}) {
     const lanes = [];
     const ctx = {
         state, lanes, maxDepth, fxOpen, quantum,
-        epochSamples, shiftQ, qEstablished, cycleQ, lcmQ,
+        epochSamples, qEstablished, cycleQ, lcmQ,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
         // Stacks whose sequencer grid is expanded (view state, the
         // fxOpen pattern — docs/sequencer.md §9 S15).

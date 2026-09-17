@@ -286,11 +286,12 @@ in the doc that owns its feature, but each has a pointer here.
   flag with the geometry (`Edit::restoresBypass`); the mock mirrors it.
 - **EDITING ONE LANE NEVER MOVES THE OTHERS (owner, 2026-09-10):**
   a live map edit keeps the edited lane's audio continuous (origin
-  re-anchor), and the epoch follows only by whole cycles of everyone
-  else — never by a delta that would rotate the other lanes on screen.
-  The edited tile absorbs the residual jump. time_maps.md §5 carries
-  the mechanism; the engine e2e journey "editing one lane's loop region
-  never moves the OTHER lanes' tiles" pins it from four start phases.
+  re-anchor), and no other lane's picture moves. *The mechanism ruled
+  that day — the frame's zero following by whole cycles of everyone
+  else — is superseded by the seating (2026-09-16 below), which gives
+  the same pictures for earlier lanes; later lanes follow the edited
+  one.* The engine e2e journey "editing one lane's loop region never
+  moves the OTHER lanes' tiles" pins it from four start phases.
 - **THE FRAME BELONGS TO THE LOOPS ON SCREEN (owner, 2026-09-15):**
   when you shape a loop, the frame starts where that loop starts —
   unless that would move a loop you didn't touch. The cycle-top rule
@@ -301,10 +302,26 @@ in the doc that owns its feature, but each has a pointer here.
   starts. Owner: "things shouldn't move randomly around when I am
   changing loop regions as much as possible" — balanced against never
   sitting in the confusing state where the loop you just shaped starts
-  mid-frame for no visible reason. time_maps.md §5 carries the sequence and
-  the cost table; pinned by `tests/regression_tests.cc` ("no free
-  move") and the engine e2e journey "a shaped loop never moves an
-  untouched lane".
+  mid-frame for no visible reason. *Superseded the next day by the
+  seating below — the same pictures, derived instead of ruled.*
+- **THE FRAME IS A FUNCTION OF THE LOOPS (owner, 2026-09-16):** the
+  shared frame's zero is not stored. The view seats it from the lanes
+  in the order shown: the first lane's top is the top; each next lane
+  pulls the zero forward by whole cycles-so-far until its own top lies
+  inside the current cycle, landing at the left edge when it can and
+  otherwise at its offset, wrap ghosted. The growth re-base, the
+  cycle-top rule, the free-move law and continuity's frame ride are
+  consequences, no longer rules; no commit or map edit moves an island
+  fact. Later lanes follow an earlier lane's edit (the one behaviour
+  change; owner: "if it's overall simpler — I'll play with it"). Owner
+  on the premise: "your performance plays over what you were hearing
+  when you played it, that is paramount" — the anchoring law is
+  untouched; only the picture's zero moved out of the kernel.
+  frame.md is the spec, with the pictures; pinned by
+  `ui/js/tests/under_map_slice.test.mjs`, `trim_drag.test.mjs`,
+  `mock_epoch.test.mjs`, `tests/regression_tests.cc` ("MAP EDITS MOVE
+  NO ISLAND FACT") and the engine e2e journeys in `rebase.spec.js` and
+  `loop_edits.spec.js`.
 - **ONE GESTURE, ONE UNDO — AND NO MORE (owner, 2026-09-10):** a
   drag streams live map commits so the splice is audible while
   dragging, and those fold into ONE undo entry; but two separate cut
@@ -752,9 +769,10 @@ within the cycle is a real fact the display must keep. (The audio
 cannot distinguish: a 2Q loop at 2Q sounds identical to one at 0Q —
 this is purely take marking.) Canon:
 
-- An **era take** (origin ≥ current epoch) marks its bright tile at its
-  performed cycle position, `(origin − epoch) mod committed-cycle`.
-- A **pre-epoch take** (the frame re-based after it committed) has no
+- An **era take** (origin at or after the frame's seated zero) marks
+  its bright tile at its performed cycle position, `(origin − zero)
+  mod committed-cycle` (the zero is the view's seat, frame.md).
+- A **pre-frame take** (a take older than the seated zero) has no
   honest performed position in the current frame and marks the first
   full repetition (the 2026-07-10 behavior survives for exactly these).
 
@@ -775,16 +793,17 @@ leaking back in once the fold modulus grew). Canon, completing Q14:
 
 - Each take records its **heard frame** (`contextCycle`: the committed
   island cycle at its arm). The take tile marks at the tile ≡ its heard
-  PHASE (mod contextCycle) — stable across frame growth and epoch
-  re-bases, for positive and negative rel alike (this subsumes the
-  era/pre-epoch split; takes with no contextCycle keep first-full-rep).
-- **Every cycle growth re-bases the island epoch to the take's heard
-  top** (origin floored to whole pre-take cycles). Whole-old-cycle
-  moves are phase-neutral for all committed clips; the polyrhythmic
-  keep-the-epoch rule is superseded — it predated the recording view's
-  whole-cycle shift, and keeping the raw frame teleported the take at
-  commit. "The cursor sails on" now refers to the WATCHED (shifted)
-  cursor, which is continuous through commit by construction.
+  PHASE (mod contextCycle) — stable across frame growth and any move of
+  the seated zero, for positive and negative rel alike (this subsumes
+  the era/pre-frame split; takes with no contextCycle keep
+  first-full-rep).
+- **A take shows in the cycle it started in.** Ruled here as "every
+  cycle growth re-bases the island epoch to the take's heard top";
+  since 2026-09-16 the same picture is the view's seating (frame.md)
+  and no island fact moves at commit. The polyrhythmic keep-the-epoch
+  rule that preceded both teleported the take at commit. "The cursor
+  sails on" refers to the WATCHED cursor, continuous through commit by
+  construction.
 
 **Q14c (2026-07-16, same session): ghosts show what SOUNDS.** Owner
 ratified the windowed-lane rendering rule: a windowed clip's ghost
@@ -837,7 +856,7 @@ not divide the take: the folded take restarts mid-phrase right after
 it ends. The origin is the capture boundary; the 2026-07-16 field
 complaint ("started recording at 1Q instead of 0Q") is a DISPLAY fact
 that Q14's contextCycle marking already handles. Both cycle snapshots
-stay: heard for `contextCycle`, intrinsic for the epoch re-base.
+stay: heard for `contextCycle`, intrinsic for the take's pre-take cycle.
 
 ### Fourth review round (2026-08-13)
 

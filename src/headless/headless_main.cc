@@ -261,7 +261,13 @@ class Host {
           pos0 = (int64_t)(double)engine_.getGraphState().getProperty("islandPos", 0);
         });
         std::vector<float> out;
-        render(cycle + opts_.block, &out);
+        // The solo lands as a mute RAMP on every other lane (≤ one
+        // fade-step per block): the first blocks of the render still
+        // carry their tails, and a cell centre falling there would read
+        // as this clip sounding. Skip them; the extra length keeps every
+        // phase covered after the skip.
+        const int64_t settle = 2 * (int64_t)opts_.block;
+        render(cycle + settle + opts_.block, &out);
         juce::Array<juce::var> row;
         for (int c = 0; c < cells; ++c) {
           // The cell's centre in the epoch frame, ±128 samples: the
@@ -269,7 +275,7 @@ class Host {
           // far from a cell centre).
           const int64_t want = c * q + q / 2;
           float peak = 0.0f;
-          for (int64_t k = 0; k < (int64_t)out.size(); ++k) {
+          for (int64_t k = settle; k < (int64_t)out.size(); ++k) {
             const int64_t ph = posmod(pos0 + k, cycle);
             if (std::llabs(ph - want) <= 128) peak = std::max(peak, std::abs(out[(size_t)k]));
           }

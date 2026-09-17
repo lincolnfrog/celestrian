@@ -1435,13 +1435,15 @@ test.describe('Creation menu (Q17)', () => {
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,10');
 
-        // The heard view: a 4Q loop from its TOP (cycle-top rule: the
-        // epoch moved to 7Q, whole-Q, audio untouched). BOTH grips
-        // exist at the frame EDGES — no mid-lane pair, no loop-top
-        // chip, nothing that looks like a cut band.
+        // The heard view: a 4Q loop from its TOP. The view SEATS the
+        // frame's zero (docs/frame.md): the 1Q definer seats first, and
+        // this lane's top (1Q + 6Q) pulls the zero forward by whole 1Q
+        // cycles to 7Q — the island zero itself never moves for a map
+        // edit. BOTH grips exist at the frame EDGES — no mid-lane pair,
+        // no loop-top chip, nothing that looks like a cut band.
         await expect.poll(async () => (await page.evaluate(async () =>
             (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q)
-            .toBe(7);
+            .toBe(0);
         const start = body.locator('.trim-grip.start');
         const end = body.locator('.trim-grip.end');
         await expect(start).toHaveCount(1);
@@ -1481,11 +1483,12 @@ test.describe('Creation menu (Q17)', () => {
             const n = await clip2();
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,9');
-        // A 3Q loop from the same top: still no mid-lane pair.
+        // A 3Q loop from the same top: still no mid-lane pair, and the
+        // island zero still where the first take put it.
         await expect(body.locator('.loop-top-chip')).toHaveCount(0);
         await expect(body.locator('.win-chip')).toHaveText(/3Q/);
         expect((await page.evaluate(async () =>
-            (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q).toBe(7);
+            (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q).toBe(0);
 
         // The mid-lane pair DOES exist for an off-grid loop: an ⌥-style
         // fractional slide ([6.4Q, 9.4Q)) leaves the epoch (the grid

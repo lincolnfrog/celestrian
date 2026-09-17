@@ -27,12 +27,13 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     assert.equal(getState().quantum, 1000, 'Q established by take A');
 
     // Take B = 4Q → group inner cycle 4000; its commit grows the cycle
-    // and re-bases the epoch to B's heard top (1000). Stop mid-Q, then
-    // settle pads forward to the 4000 boundary and commits.
+    // and moves no island fact (docs/frame.md): the zero is take A's
+    // origin, 0. Stop mid-Q, then settle pads forward to the 4000
+    // boundary and commits.
     const bId = await recordTake(groupId, 4000, { stopEarly: 100, settle: 200 });
     assert.equal(nodeById(bId).duration, 4000, 'take B committed at 4Q');
     const epoch = getState().islandEpoch;
-    assert.equal(epoch, 1000, 'epoch re-based to B\'s heard top');
+    assert.equal(epoch, 0, 'the zero stays at take A\'s origin');
 
     // Window the group: [1Q, 3Q) → map period 2000, C = 4000.
     await callNative('setLoopPoints', groupId, 1000, 3000);
@@ -48,11 +49,14 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     const stackOrigin = nodeById(groupId).origin;
     assert.equal(stackOrigin, 0, 'the group anchored at take A\'s origin');
     assert.equal(nodeById(groupId).anchored, true);
-    setMasterPos(epoch + 4500);
+    // Heard positions are measured from the MAP's heard zero, origin +
+    // a0 (the island zero is unrelated to it, docs/frame.md).
+    const heardZero = stackOrigin + 1000;
+    setMasterPos(heardZero + 4500);
     const cId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', cId);
     assert.equal(nodeById(cId).isPendingStart, true, 'pends in heard time');
-    assert.equal(nodeById(cId).pendingStartAt, epoch + 5000,
+    assert.equal(nodeById(cId).pendingStartAt, heardZero + 5000,
         'heard target on the map-period grid');
 
     // MID-TAKE MAP-EDIT GATE (owner-ruled): the mapping group refuses
@@ -80,7 +84,7 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
         'origin = stack origin + mapOffset(heard offset) (Q18)');
     assert.equal(c.contextCycle, 2000, 'heard frame = the map period cycle');
     assert.equal(getState().islandEpoch, epoch,
-        'no epoch re-base (C divides the island cycle)');
+        'no island fact moves at commit');
 
     // Gate lifts after commit.
     await callNative('setLoopPoints', groupId, 1000, 3000); // no-op restore
@@ -89,10 +93,10 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     // A short stopped take still commits dense C: arm at heard rel
     // 8500 → target 9000; stop at heard 600 → boundary 1000 (clamped
     // ≤ period), duration still C.
-    setMasterPos(epoch + 8500);
+    setMasterPos(heardZero + 8500);
     const dId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', dId);
-    assert.equal(nodeById(dId).pendingStartAt, epoch + 9000,
+    assert.equal(nodeById(dId).pendingStartAt, heardZero + 9000,
         'target on the period grid, second pass');
     advanceBy(500);  // trigger
     advanceBy(600);

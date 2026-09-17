@@ -256,6 +256,14 @@ Small, concrete, each a half-day or less unless marked. None blocks
   migration history lives in its §6 appendix, stacks.md is folded into
   composition.md §10 and session_view.md, and every spec carries a
   final "alternatives considered and rejected" appendix (README.md).
+- [ ] **The frame, remaining passes (frame.md §7, 2026-09-16):** (1) a
+  root song or window authored after takes should capture the seated
+  zero as the root's own origin at authoring, so authoring moves
+  nothing on screen; (2) bounce, import and seek still take positions
+  in the engine's zero-relative frame — move them to absolute
+  positions the view computes; (3) rename `islandEpoch` /
+  `epoch_samples_` to the island zero across engine, mock, tests and
+  the bundle key.
 - [ ] **Process:** agent tasks stall when they span several features;
   one feature per task with the suites run after each step is the
   cadence that worked (memory note).

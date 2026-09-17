@@ -1,8 +1,9 @@
 // AudioEngine — the ISLAND GEOMETRY LAW: the definer (sole clip or
-// definer stack) and its re-establishment riders, two-anchor continuity
-// and the cycle-top rule (attachMapEditRiders), Q18 origins and
-// anchoring (settleAnchors, applySetsOrigin), island (Q, epoch) writes
-// (setIslandQuantum) and the scrub that keeps pre-Q geometry coherent.
+// definer stack) and its re-establishment riders, the continuity rider
+// (attachMapEditRiders), Q18 origins and anchoring (settleAnchors,
+// applySetsOrigin), island (Q, zero) writes (setIslandQuantum) and the
+// scrub that keeps pre-Q geometry coherent. The FRAME is not placed
+// here: the view seats it from the lanes (docs/frame.md).
 // Only the island root ever holds (Q, epoch): nothing writes them on a
 // nested stack (audit D14-1), so there is nothing to scrub there.
 // Message thread only.
@@ -172,32 +173,24 @@ celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
 }  // namespace celestrian::engine_internal
 
 namespace {
-// TWO-ANCHOR CONTINUITY (time_maps.md §5): "there is no such thing as
-// island 3.5 — that is 0.5Q. The master transport is an implementation
-// detail and should never bleed into the design." Requirements: (1)
-// trims/cuts on a playing clip must not jump unless the edit removes
-// the audio under the cursor; (2) the edited timeline is the source of
-// truth — the seam renders where the cut was made.
-//
-// Moving the clip's ORIGIN alone would rotate the clip's picture in the
-// frame: the monotonic transport folded by the new cycle moves the
-// cursor, and an origin-only re-anchor chases it. So there are TWO
-// anchors — the clip's origin and the island epoch (where the fold
-// starts) — and they move TOGETHER by the same whole-Q delta: the
-// origin pins audio continuity, and the epoch rider re-labels the fold
-// so the edited clip's frame position is UNCHANGED. The Q grid and
-// every Q-period sibling are untouched (the delta is whole-Q by the
-// coherence guard); longer-period siblings may show a whole-Q shift —
-// the honest new cyclic alignment continuity implies.
+// THE CONTINUITY RE-ANCHOR (time_maps.md §5): "there is no such thing
+// as island 3.5 — that is 0.5Q. The master transport is an
+// implementation detail and should never bleed into the design."
+// Requirements: (1) trims/cuts on a playing clip must not jump unless
+// the edit removes the audio under the cursor; (2) the edited timeline
+// is the source of truth — the seam renders where the cut was made.
 //
 // continuityOrigin: when a node's map changes while playing, the
 // origin' at which the buffer position sounding RIGHT NOW keeps
 // sounding — as long as the new map still COVERS it. When the edit
 // REMOVED the sounding region, the origin stays FIXED (an audible jump
-// is expected — you deleted what you were hearing) and the epoch stays
-// with it. An inactive map on either side is its full-span form. The
-// Q13 sole-definer riders keep their own algebra (island re-establish
-// included) and win when they apply.
+// is expected — you deleted what you were hearing). The delta is
+// whole-Q by the coherence guard, so the Q grid is untouched. Where
+// the re-anchored lane then sits on screen is the view's seating
+// (docs/frame.md); no island fact rides the re-anchor. An inactive map
+// on either side is its full-span form. The Q13 sole-definer riders
+// keep their own algebra (island re-establish included) and win when
+// they apply.
 // Q18: one implementation for clips and stacks — the node's inner
 // position now (heard::nodeInner) re-anchored under the new map. For a
 // stack the returned origin moves its whole subtree (applySetsOrigin).
@@ -250,9 +243,9 @@ bool AudioEngine::isPeriodCoherentWithQuantum(int64_t period, int64_t quantum) {
 
 void AudioEngine::attachMapEditRiders(
     celestrian::Edit& e, const celestrian::AudioNode& node,
-    const celestrian::timing::TimeMap& new_map, int64_t quantum) {
+    const celestrian::timing::TimeMap& new_map) {
   // Q18: a stack's frame is its own origin once anchored, else its
-  // received cycle top; the riders below then apply to clips and
+  // received cycle top; the rider below then applies to clips and
   // stacks alike (an unanchored stack has no content — nothing moves).
   const bool anchored = node.isAnchored();  // a clip always is (Q18)
   const int64_t fallback = cycleTopOf(node);
@@ -267,70 +260,11 @@ void AudioEngine::attachMapEditRiders(
     e.setsOrigin = true;
     e.iorg = origin_new;
   }
-  const int64_t delta = anchored ? origin_new - origin : 0;
-  const int64_t epoch = root_node->getIslandEpoch();
-
-  // CYCLE-TOP RULE (time_maps.md §5): the frame belongs to the loops on
-  // screen — an edit that SHAPES a loop (leaves an active map) moves
-  // the epoch to that loop's heard top (origin' + mapOffset(0)) whenever
-  // the move is FREE: a whole number of cycles of everyone else
-  // (`others`, the fold of every other loop's period with Q). Moving
-  // the epoch by Δ rotates a lane of period P by Δ mod P on screen, so
-  // a multiple of the others' fold rotates nobody but the edited lane
-  // — which is the point. When no free move reaches the top (two loops
-  // longer than 1Q whose starts disagree), the untouched lanes hold
-  // still and the shaped loop's start shows under its ↺ marker. A free
-  // move is whole-Q by construction: the Q grid never moves (an
-  // off-grid ⌥-slid top stays mid-phase — honestly). Whether the shaped
-  // loop defines the cycle does not enter. Nothing audible changes:
-  // origins are absolute; the epoch is the visual top + the arm grid.
-  const int64_t a0 = new_map.active() ? new_map.mapOffset(0) : 0;
-  const int64_t top = origin_new + a0;
-  const int64_t new_period = new_map.active() ? new_map.period() : 0;
-  const int64_t others = celestrian::timing::foldPeriod(
-      quantum > 0 ? quantum : 0,
-      celestrian::period_law::ownPeriodOf(*root_node, &node));
-  // …and only when the top is not ALREADY at the frame top: a top ≡
-  // epoch (mod the new period) draws identically, so a re-base would be
-  // pure churn (a 1Q loop under a 1Q Q: every whole-Q epoch is the same
-  // frame).
-  // …and only for an edit that SHAPES a loop (an active map). Clearing
-  // a window back to the whole take shapes nothing, and re-basing to a
-  // whole take's origin rotated other lanes for an edit that changed
-  // nothing audible. Two-anchor continuity below still applies.
-  const bool top_off_frame =
-      new_map.active() && new_period > 0 &&
-      celestrian::timing::posMod(top - epoch, new_period) != 0;
-  // (Q18: a stack's map anchors at the stack's OWN origin, so an epoch
-  // move never re-selects content anywhere — no windowed-group guard is
-  // needed.)
-  const int64_t step = quantum > 0 ? quantum : 0;
-  if (step > 0 && others > 0 && top_off_frame &&
-      (top - epoch) % others == 0) {
-    e.setsIsland = true;
-    e.iq = quantum;  // Q unchanged — only the frame top moves
-    e.iepoch = top;
-    return;
-  }
-  // Otherwise: TWO-ANCHOR CONTINUITY (time_maps.md §5) — the epoch
-  // rides the origin's delta so the edited clip's frame position holds.
-  // OWNER RULING 2026-09-10: the epoch moves only by WHOLE CYCLES OF
-  // EVERYONE ELSE (`others` — the fold of every other loop's period
-  // with Q), the multiple nearest the delta. That is phase-neutral for
-  // every other lane; the EDITED tile takes the residual jump instead
-  // of the whole timeline rotating under the performer (the engine e2e
-  // journey "editing one lane's loop region never moves the OTHER
-  // lanes' tiles" caught the rotation). With nothing else on the
-  // island `others` is Q and the epoch rides the whole delta as before.
-  if (delta != 0 && step > 0 && delta % step == 0) {
-    const int64_t unit = others > 0 ? others : step;
-    const int64_t move = (int64_t)std::llround((double)delta / (double)unit) * unit;
-    if (move != 0) {
-      e.setsIsland = true;
-      e.iq = quantum;
-      e.iepoch = epoch + move;
-    }
-  }
+  // THE FRAME IS NOT THE ENGINE'S TO PLACE (docs/frame.md): where the
+  // shaped loop's top sits on screen is seated by the view from the
+  // lanes, and no map edit moves the island facts — Q and its grid
+  // phase stay what the first take made them. Nothing audible changes:
+  // origins are absolute, and the re-anchor above is the only rider.
 }
 
 // --- Q18: origins on every node (composition.md §5) ---

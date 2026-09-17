@@ -1,10 +1,12 @@
 /**
- * Mock epoch re-base parity (mirrors AudioEngine — test_harness.md
- * gotcha 10). The engine re-bases the island epoch ONLY when the cycle
- * GREW (new_cycle > view_lcm_before_) as a simple extension. The mock
- * once compared against the QUANTUM instead, re-basing on every commit —
- * which rotated all lanes at each stop ("shifting left/right when you
- * finish recording" — field 2026-07-10).
+ * Mock island-zero parity (mirrors AudioEngine — test_harness.md
+ * gotcha 10). The island's zero is established by the first take and
+ * NEVER moves at a commit (docs/frame.md): where a new take sits on
+ * screen is seated by the view from the lanes, in the cycle it started
+ * in. The mock once re-based the zero on every commit — which rotated
+ * all lanes at each stop ("shifting left/right when you finish
+ * recording" — field 2026-07-10) — and later on growth only; both are
+ * gone with the frame's move into the view.
  */
 
 import test from 'node:test';
@@ -18,7 +20,7 @@ import {
 // the commit lands at lengthSamples and raw sits on a boundary (Q11).
 import { recordTake, MOCK_Q as Q } from './helpers.mjs';
 
-test('epoch re-bases only when the cycle GROWS (engine parity)', async () => {
+test('the island zero is the first take\'s origin and no commit moves it (engine parity)', async () => {
     loadScenario('empty');
     const stackId = await callNative('createNode', 'stack', '');
 
@@ -30,15 +32,15 @@ test('epoch re-bases only when the cycle GROWS (engine parity)', async () => {
     assert.equal(getState().islandEpoch, 0);
 
     // Loop a while, then take 2 grows the cycle 1Q → 4Q (simple
-    // extension): epoch re-bases to the take's origin (raw 5Q)
+    // extension): the zero stays — the view seats the take at its own
+    // top (docs/frame.md), nothing in the backend moves
     advanceBy(4 * Q);
     await recordTake(stackId, 4 * Q);
-    assert.equal(getState().islandEpoch, 5 * Q);
+    assert.equal(getState().islandEpoch, 0);
 
-    // Take 3 fits inside the 4Q cycle (no growth): epoch MUST NOT move —
-    // the buggy quantum-comparison re-based here and rotated every lane
+    // Take 3 fits inside the 4Q cycle (no growth): still nothing moves
     await recordTake(stackId, Q);
-    assert.equal(getState().islandEpoch, 5 * Q);
+    assert.equal(getState().islandEpoch, 0);
 
     // The awaiting-stop path committed exact lengths
     const clips = getState().nodes[0].nodes;

@@ -173,12 +173,11 @@ class ScenarioTests : public juce::UnitTest {
       const int64_t rel = is.origin(c3) - epoch0;
       expectEquals(posmod(rel, 4 * Q), 2 * Q, "armed at heard phase 2Q");
       expectEquals(is.cycle(), 8 * Q, "cycle grows to 8Q");
-      // EPOCH RE-BASE ON GROWTH (Q14b): the top moves to the take's
-      // heard top — its origin floored to whole pre-take cycles.
-      expectEquals(is.epoch(), epoch0 + (rel / (4 * Q)) * (4 * Q),
-                   "epoch := the take's heard top (whole old cycles)");
-      expectEquals(is.origin(c3) - is.epoch(), 2 * Q,
-                   "the take sits at 2Q of the new frame");
+      // NO COMMIT MOVES THE ISLAND ZERO (docs/frame.md): it is the
+      // first take's origin. Where the take sits on screen — 2Q into
+      // the cycle it started in — is the view's seating, not a fact
+      // stored here.
+      expectEquals(is.epoch(), epoch0, "the zero stays at the first take");
       expectOutput(is, 8 * Q, is.sumOfLoops({c1, c2, c3}),
                    "every clip aligns by its own origin");
       // c3 presents content[0] exactly at its origin (mod 8Q): the
@@ -187,7 +186,8 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(heard::nodeInner(*is.nodePtr(c3), o3 + 16 * Q, is.engine.rootScope()),
                    (int64_t)0, "content[0] at t ≡ origin (mod 8Q)");
       expectEquals(heard::nodeInner(*is.nodePtr(c3), is.epoch() + 8 * Q, is.engine.rootScope()),
-                   6 * Q, "content[6Q] at the frame top (Example 2's launch point)");
+                   posmod(8 * Q - rel, 8 * Q),
+                   "at the island zero c3 sounds the content its arm offset implies");
     }
 
     // ------------------------------------------------------------------
@@ -254,8 +254,8 @@ class ScenarioTests : public juce::UnitTest {
       const int64_t rel = is.origin(c3) - epoch0;
       expectEquals(posmod(rel, 4 * Q), (int64_t)0, "landed on the top");
       expect(rel >= 4 * Q, "the NEXT top, not a past one");
-      expectEquals(is.epoch(), is.origin(c3),
-                   "simple extension armed at a top: epoch := origin");
+      expectEquals(is.epoch(), epoch0,
+                   "a simple extension moves no island fact (docs/frame.md)");
       expectOutput(is, 8 * Q, is.sumOfLoops({c1, c2, c3}), "aligned");
     }
 
@@ -932,15 +932,16 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c2 = is.record(4 * Q);
       is.drive(4 * Q);
       is.driveToPhase(2 * Q);
-      const juce::String c3 = is.record(8 * Q);  // 4Q → 8Q: the epoch re-bases
+      const juce::String c3 = is.record(8 * Q);  // 4Q → 8Q: the zero stays
       expectEquals(is.cycle(), 8 * Q, "8Q");
       const juce::String root = is.rootId();
       const int64_t E = is.epoch();
       // THE ROOT IS NEVER ANCHORED: its inner timeline is the island
-      // timeline, whose zero is the epoch — the ruler the UI draws on.
+      // timeline, whose zero is the epoch — the first take's origin,
+      // which no commit moves (docs/frame.md).
       expect(!is.nodePtr(root)->isAnchored(), "the root is never anchored");
-      expect(posmod(E - is.origin(c1), 8 * Q) != 0,
-             "the epoch has moved off the first take (the case that used to split them)");
+      expectEquals(posmod(E - is.origin(c1), 8 * Q), (int64_t)0,
+                   "the zero is the first take's origin and stays there");
       is.engine.setSequence(root, seqPayload({{4 * Q}, {4 * Q}}, {{c1, {true, false}}}));
       expectEquals(is.cycle(), 8 * Q, "the song is the cycle");
       const int64_t fade = (int64_t)(44100.0 * 0.010);
@@ -1177,10 +1178,15 @@ class ScenarioTests : public juce::UnitTest {
         expectEquals(is.cycle(), 4 * Q, "whole again");
         expectOutput(is, 4 * Q, lawAll(nullptr), "law after the clear");
       }
-      // Undo the whole chain: every step keeps the invariant.
+      // Undo the whole chain of map edits: every step keeps the
+      // invariant. Stop at the takes — once A itself is undone there is
+      // no phase of A to keep.
       int n = 0;
       while (is.engine.canUndo() && n++ < 20) {
         is.engine.undo();
+        // An untaken A is an empty clip again: no phase to keep.
+        auto* an = is.nodePtr(a);
+        if (an == nullptr || an->getIntrinsicDuration() <= 0) break;
         invariant("undo");
       }
     }

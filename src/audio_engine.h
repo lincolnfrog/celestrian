@@ -701,9 +701,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * node with an active loop window contributes its window length
    * (AudioNode::getEffectivePeriod). This is the cycle the published
    * masterPos wraps on — the playhead must loop with what is heard,
-   * never sail past an active window. Commit and epoch re-base logic
-   * (StackNode::takeCommitted) stay on the INTRINSIC length: windows
-   * are reversible view-of-time state, not committed material.
+   * never sail past an active window. Commit logic and the take's
+   * pre-take cycle (StackNode::takeArmed) stay on the INTRINSIC length:
+   * windows are reversible view-of-time state, not committed material.
    */
   int64_t calculateEffectiveCycleLength() const;
 
@@ -728,10 +728,11 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // Cycle view for the UI (derived, not authoritative): normally
   // (t − island epoch) mod LCM; while recording, frozen base + linear
   // growth so the cursor extends past the committed LCM (recording.md
-  // cursor table). The island epoch (stored on the root stack) re-bases
-  // when the cycle grows (StackNode::rebaseEpochOnGrowth) without
-  // mutating the clock or the audio. Clip arm/commit math reads the same
-  // epoch (AudioNode::getIslandEpoch), keeping ONE cycle frame everywhere.
+  // cursor table). The island epoch (stored on the root stack) is the
+  // first take's origin — Q's grid phase and the root's own frame — and
+  // no commit or map edit moves it (docs/frame.md: the view seats the
+  // frame zero from the lanes). Clip arm/commit math reads the same
+  // epoch (AudioNode::getIslandEpoch), keeping ONE grid everywhere.
   int64_t islandEpoch() const;
 
   bool was_any_node_recording_ = false;  // audio thread only (view upkeep)
@@ -824,30 +825,16 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * effective cycle). False for non-positive periods; q <= 0 (no grid
    * yet) counts as coherent. */
   static bool isPeriodCoherentWithQuantum(int64_t period, int64_t quantum);
-  /** TWO-ANCHOR CONTINUITY riders (see the continuityOrigin note in
-   * engine/island_geometry.cc), shared by setLoopPoints and setSegments: re-anchor
-   * the clip's origin so the sounding sample keeps sounding (while
-   * playing), then place the island epoch by the CYCLE-TOP RULE: the
-   * frame belongs to the loops on screen, so when the edit shapes a
-   * loop (leaves an active map) the epoch moves TO that loop's heard
-   * top (origin' + mapOffset(0)) whenever the move is FREE — a whole
-   * number of cycles of every other loop (their fold with Q), which no
-   * untouched lane can see. Otherwise (no free move reaches the top, an
-   * off-grid ⌥-slid top, a cleared window) the untouched lanes hold
-   * still and the two-anchor delta ride keeps the edited clip's frame
-   * position. Nothing audible moves in either case: origins are
-   * absolute; the epoch is the visual cycle top and the arm grid, which
-   * whole-Q moves preserve.
-   * `quantum` is supplied by the caller because the two paths judge the
-   * delta against different scopes (setLoopPoints against the root's Q,
-   * setSegments against the TARGET's effective Q). Attaches
-   * setsOrigin/setsIsland to `e`; attaches nothing when neither anchor
-   * moves (the cycle-top rule can move the epoch with the origin
-   * fixed — a stopped edit, or one that removed the sounding region). */
+  /** THE CONTINUITY rider (see the continuityOrigin note in
+   * engine/island_geometry.cc), shared by setLoopPoints and setSegments:
+   * while playing, re-anchor the node's origin so the sounding sample
+   * keeps sounding; stopped, nothing moves. The frame is not placed
+   * here — the view seats the frame zero from the lanes (docs/frame.md)
+   * and no map edit moves Q or its grid phase. Attaches setsOrigin to
+   * `e`; attaches nothing when the origin does not move. */
   void attachMapEditRiders(celestrian::Edit& e,
                            const celestrian::AudioNode& node,
-                           const celestrian::timing::TimeMap& new_map,
-                           int64_t quantum);
+                           const celestrian::timing::TimeMap& new_map);
 
   // --- Q18: origins on every node (composition.md §5) ---
   /** Move a node's origin and EVERY descendant's by `delta`, gated on

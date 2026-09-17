@@ -1,8 +1,8 @@
 /**
  * mock/maps.js — the time-map edit surface: single-window loop points,
  * multi-segment overrides (phase 3), and the bypass toggle, with the
- * coherence guard, the Q13 sole-definer re-trims, and the two-anchor
- * continuity law. Refusal paths drop the dispatch's pre-pushed undo
+ * coherence guard, the Q13 sole-definer re-trims, and the continuity
+ * re-anchor. Refusal paths drop the dispatch's pre-pushed undo
  * snapshot (popUndoForRefusal) — a refused edit records nothing.
  */
 
@@ -25,10 +25,9 @@ import { activeSeqLen, retimeSequences } from './sequence.js';
  * stays FIXED (an audible jump is expected, and the display stays
  * anchored at the click). Inactive maps = their full-span form.
  *
- * TWO-ANCHOR CONTINUITY (see AudioEngine's twin note): the island
- * epoch rides the SAME whole-Q delta as the origin, so the edited
- * node's frame position — the timeline the user drew — is unchanged.
- * The fold, not the node, absorbs the difference.
+ * The island's zero does not ride the re-anchor (docs/frame.md): where
+ * the edited node then sits on screen is the view's seating from the
+ * lanes, and the map-gesture pin holds that seat for a drag.
  *
  * ONE implementation for clips and stacks (Q18): the node's inner
  * position now (the node equation, state.innerUnder) re-anchored under
@@ -69,15 +68,11 @@ function periodExcluding(node, skip) {
     return effectivePeriodOf(node);
 }
 
-/** The map-edit riders (engine parity: AudioEngine::attachMapEditRiders).
+/** The map-edit rider (engine parity: AudioEngine::attachMapEditRiders).
  * While playing, continuity re-anchors the origin so the sounding sample
- * keeps sounding. Then the CYCLE-TOP RULE (time_maps.md §5): the frame
- * belongs to the loops on screen — when the edit shapes a loop, the
- * epoch moves TO that loop's heard top (origin' + mapOffset(0)) whenever
- * the move is FREE, a whole number of every untouched lane's cycles.
- * Otherwise the untouched lanes hold still and two-anchor continuity
- * moves the epoch only by the nearest free multiple of the origin's
- * delta. Nothing audible moves either way. */
+ * keeps sounding. Nothing else moves: where the shaped loop sits on
+ * screen is the view's seating (docs/frame.md), and no map edit moves
+ * the island's zero. */
 function applyMapEditRiders(node, oldMap, newMap) {
     // Q18 (engine parity attachMapEditRiders): a stack's frame is its
     // own origin once anchored, else its received cycle top; the riders
@@ -88,42 +83,9 @@ function applyMapEditRiders(node, oldMap, newMap) {
     const org = frameOriginOf(node);
     const org2 = state.isPlaying ? continuityOrigin(node, oldMap, newMap) : org;
     if (org2 !== org && anchored) shiftOrigins(node, org2 - org);
-    const q = state.islandQ;
-    const delta = anchored ? org2 - org : 0;
-    const epoch = state.islandEpoch || 0;
-    const active = newMap && mapActive(newMap) && mapPeriod(newMap) > 0;
-    const a0 = active ? mapOffset(newMap, 0) : 0;
-    const top = org2 + a0;
-    const newPeriod = active ? Math.round(mapPeriod(newMap)) : 0;
-    let others = periodExcluding({ type: 'stack', nodes: state.nodes }, node);
-    if (q > 0) others = others > 0 ? lcm(others, q) : q;
-    // CYCLE-TOP RULE (engine parity, island_geometry.cc; time_maps.md
-    // §5): an edit that SHAPES a loop (an active map) moves the frame
-    // to the loop's top only when the move is FREE — a whole number of
-    // every untouched lane's cycles (`others`), so no other lane moves
-    // on screen. Clearing a window shapes nothing and never fires; a
-    // top already at the frame top (mod the new period) draws
-    // identically and never fires. Whether the loop defines the cycle
-    // does not enter.
-    const topOffFrame = active && newPeriod > 0 && posMod(top - epoch, newPeriod) !== 0;
-    // (Q18: no windowed-group guard is needed — a stack's map anchors at
-    // the stack's OWN origin, so an epoch move never re-selects content
-    // anywhere; composition.md §8.)
-    const step = q > 0 ? q : 0;
-    if (step > 0 && others > 0 && topOffFrame && posMod(top - epoch, others) === 0) {
-        state.islandEpoch = top;
-        return;
-    }
-    if (delta !== 0 && step > 0 && delta % step === 0) {
-        // OWNER RULING 2026-09-10 (engine parity): the epoch moves only
-        // by whole cycles of EVERYONE ELSE (the multiple of `others`
-        // nearest the delta) — phase-neutral for every other lane; the
-        // edited tile takes the residual jump.
-        const unit = others > 0 ? others : step;
-        const move = Math.round(delta / unit) * unit;
-        if (move === 0) return;
-        state.islandEpoch = epoch + move;
-    }
+    // THE FRAME IS NOT THE MOCK'S TO PLACE (engine parity, docs/frame.md):
+    // where the shaped loop's top sits on screen is seated by the view
+    // from the lanes; no map edit moves the island's zero.
 }
 /** Alias under the name the tests import. */
 export const applyTwoAnchorContinuity = applyMapEditRiders;
@@ -168,8 +130,8 @@ function stampWindowDomain(node) {
  *  - Q13 SOLE DEFINER: while the island's only committed content is
  *    this clip, the window re-establishes the STORED (Q, epoch),
  *    phase-preserving.
- *  - Otherwise, on a playing clip, TWO-ANCHOR CONTINUITY re-anchors
- *    origin and rides the epoch (see continuityOrigin above).
+ *  - Otherwise, on a playing clip, the continuity re-anchor moves the
+ *    origin (see continuityOrigin above); no island fact moves.
  *  - Refusals pop the dispatch's pre-pushed undo snapshot.
  */
 export function setLoopPoints(id, loopStart, loopEnd) {
@@ -237,8 +199,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             return;
         }
     }
-    // The pre-edit MAP (window or override) — the two-anchor
-    // continuity below needs it before any mutation.
+    // The pre-edit MAP (window or override) — the continuity re-anchor
+    // below needs it before any mutation.
     const oldMapPre = node.loopBypassed ? { segs: [] } : nodeMap(node);
     // Phase 3 (engine parity): an explicit single-window edit
     // supersedes a multi-segment override.
@@ -353,8 +315,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
                 state.islandQ);
         }
     } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {
-        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders)
-        // — clips and stacks alike (Q18).
+        // THE CONTINUITY rider (applyMapEditRiders) — clips and stacks
+        // alike (Q18).
         applyMapEditRiders(node, oldMapPre,
             loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
                                 : { segs: [] });
@@ -377,8 +339,9 @@ export function setLoopPoints(id, loopStart, loopEnd) {
  *  - n ≤ 1 delegates to the single-window path (which owns Q13 and
  *    clears the override itself — a refused delegation therefore
  *    leaves the existing override untouched).
- *  - Q13 sole definer: Q := map period, epoch := origin' + mapOffset(0),
- *    phase-preserving; otherwise two-anchor continuity on a playing clip.
+ *  - Q13 sole definer: Q := map period, zero := origin' + mapOffset(0),
+ *    phase-preserving; otherwise the continuity re-anchor on a playing
+ *    clip (no island fact moves).
  */
 export function setSegments(id, flat) {
     // Engine parity: a REFUSED edit records nothing — the dispatch
@@ -513,8 +476,8 @@ export function setSegments(id, flat) {
             console.log('[MockBackend] Q13 group segments re-trim → Q =', period);
         }
     } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {
-        // CYCLE-TOP RULE + TWO-ANCHOR CONTINUITY (applyMapEditRiders)
-        // — clips and stacks alike (Q18).
+        // THE CONTINUITY rider (applyMapEditRiders) — clips and stacks
+        // alike (Q18).
         applyMapEditRiders(node, oldMap, { segs });
     }
     console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));

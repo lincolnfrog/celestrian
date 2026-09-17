@@ -35,9 +35,9 @@ The laws the expectations are built from:
 | period law | composition.md §3, period_law.h | cycle = lcm(Q, own(root)); own = map ▸ song ▸ content; one-shots contribute 0 |
 | arm | design_language Q11 | origin = the next Q boundary after the click (the pickup) |
 | origin | clip_node.cc | the stored origin IS the capture boundary — never folded (ruling 2026-09-09, reversing Q15) |
-| song anchor | stack_node.cc renderChildren | a song's steps fold from the owner's frame origin: the epoch for the root (never anchored), the group's Q18 origin for a group; the display draws from the same place |
-| epoch re-base | recording.md Q14b | on growth, epoch := epoch + floor((origin − epoch)/C_old)·C_old |
-| Q13 | design_language Q13 | sole definer trim: Q := len, epoch := origin' + start; second arm collapses; re-open uncollapses |
+| song anchor | stack_node.cc renderChildren | a song's steps fold from the owner's frame origin: the island zero for the root (never anchored), the group's Q18 origin for a group; the display draws from the same place |
+| the island zero | frame.md | the first take's origin; no commit or map edit moves it (the growth re-base is gone) — the view seats the frame from the lanes |
+| Q13 | design_language Q13 | sole definer trim: Q := len, zero := origin' + start; second arm collapses; re-open uncollapses |
 | gates / cues | sequencer.md §3, §5 | gate = 10 ms ramps (checked away from seams); cue: `t' = O + (srel − stepStart)` |
 
 Two grid gotchas worth stating once (they caught two draft scenarios):
@@ -50,10 +50,10 @@ island's Q, not the group's.
 | # | scenario | steps | pins |
 |---|---|---|---|
 | S1 | first take defines Q | 1Q; then 3Q armed mid-cycle | Q := L1; origin = epoch; the second origin on the grid; pad to 3Q; cycle 3Q; the render is Σ loops |
-| S2 | recording.md Example 2 | 1Q, 4Q, then an 8Q take armed at phase 2Q | origin ≡ 2Q (mod 4Q); cycle 8Q; **epoch re-base** to the heard top; content[0] at t ≡ origin; content[6Q] at the frame top |
+| S2 | recording.md Example 2 | 1Q, 4Q, then an 8Q take armed at phase 2Q | origin ≡ 2Q (mod 4Q); cycle 8Q; **the island zero stays** (the view seats the take 2Q in, frame.md); content[0] at t ≡ origin |
 | S3 | the owner's chain | 1Q, 5Q, 3Q; window c3 [1Q,2Q); 12Q; window c4 [0,6Q) | cycles 15Q → 5Q → 60Q → 30Q; Q untouched; both windows loop in place; c4's origin = its capture boundary (no fold) |
 | S4 | LCM growth | 1Q,4Q,3Q,8Q,2Q | 4Q, 12Q, 24Q, 24Q (2Q does not shrink) |
-| S5 | the pickup (E-A) | click within a block of the 4Q top; 8Q take | lands ON the next top; simple extension: epoch := origin |
+| S5 | the pickup (E-A) | click within a block of the 4Q top; 8Q take | lands ON the next top; a simple extension moves no island fact (the view seats it at the top) |
 | S6 | one-shot (Example 3) | 1Q at phase 3Q of 4Q, periodSource=context | cycle stays 4Q; fires at [3Q,4Q) only; back to a loop: every Q |
 | S7 | window changes period (E-C) | [1Q,3Q) on the 4Q clip | cycle 2Q; bypass → 4Q; re-activate → 2Q |
 | S8 | nested composite (E-B/E-C) | 1Q, 4Q; group with 2Q + 3Q; window group [2Q,4Q) | group intrinsic 6Q; island 12Q; windowed: 4Q and members read the mapped clock |
@@ -78,12 +78,12 @@ island's Q, not the group's.
 | S27 | one take at a time | arm c3; arm c4; new take on c2; stop; arm c4 | the second arm and the new take are refused; the next arm is accepted once settled |
 | S28 | content cannot be a one-shot | one-shot on the sole take; then with a loop beside it; a group of every take | refused; allowed; refused |
 | S29 | record INTO a windowed group | 1Q; group with a 4Q member windowed [1Q,3Q); arm an empty member | one map pass auto-finishes; D = the inner cycle 4Q; contextCycle = 2Q; through the map it replays what was heard; bypassed: content where played, silence elsewhere |
-| S30 | **field repro**: the root song's grid | 1Q, 4Q; an 8Q take at 2Q after a full cycle (epoch re-bases); root song 4Q+4Q gating c1 off in step 2 | the root is never anchored; c1 is silent in step 2 of the EPOCH frame — the grid the ruler draws |
+| S30 | **field repro**: the root song's grid | 1Q, 4Q; an 8Q take at 2Q after a full cycle (the island zero stays); root song 4Q+4Q gating c1 off in step 2 | the root is never anchored; c1 is silent in step 2 of the island zero's frame — the frame the view seats the song on |
 | S31 | **field repro**: a group song's grid | 1Q, 4Q; a group anchored at 2Q with a 4Q member; group song 4Q+4Q gating it off in step 2 | the group song folds from the GROUP's origin (2Q past the epoch), not the epoch; the lanes carry that phase (view_model `phaseQ`) |
 | S32 | **field repro**: no origin fold | 1Q, 4Q windowed [1Q,3Q) (heard 2Q); a 3Q take armed at intrinsic phase 3Q | origin = the capture boundary; after the take the phrase continues from content[0], never mid-phrase |
 | display contract | tests/display_contract_tests.cc → ui/js/tests/display_contract.test.mjs | S30 + S31 in one island; each gated clip SOLOED and listened to per Q cell | the audible truth table is dumped with the published state; the real deriveViewModel must dim every lane exactly where the engine is silent |
 | S33 | cut bands | 1Q, 4Q; keep [0,1Q)+[2Q,3Q); slide; bypass; undo; a live stream | the map law seam-exact; separate gestures are separate undo steps, a live drag is one (ruling 2026-09-10) |
-| S34 | edits on B never move A | 1Q, 4Q@2Q, 4Q@1Q; window, cut, bypass, clear B while playing, from three phases; undo all | A's and c1's phases against the epoch never change; the Q grid never moves; clearing re-bases nothing (rulings 2026-09-09/10) |
+| S34 | edits on B never move A | 1Q, 4Q@2Q, 4Q@1Q; window, cut, bypass, clear B while playing, from three phases; undo all | A's and c1's phases against the island zero never change; the Q grid never moves; no edit moves an island fact (frame.md) |
 | S35 | nested maps | group with a 4Q member windowed [1Q,3Q) and a 2Q member; group window [0,1Q); move the inner; bypass the outer | members read the group's mapped clock folded again on their own map |
 | S36 | seek over maps and groups | cut bands + a windowed clip + a windowed group; seek 5Q | the same phase renders the same samples after the seek |
 | S37 | rich round trip | cut bands, a windowed clip, an anchored windowed group, a one-shot, a gated root song; save; load in a fresh engine | every fact (segments, windows, anchors, period source, song) and the render survive |
@@ -106,13 +106,11 @@ Still open:
    horizon length) — masterPos wraps only there. Alternatives: no wrap
    at all (the cursor runs on), or wrap on the loops beneath and let
    the song run over them. Which?
-2. **Epoch re-base on growth** — S2 pins `epoch := epoch +
-   floor((origin − epoch)/C_old)·C_old` (Q14b): when a take grows the
-   cycle, the frame top moves to the top of the OLD cycle in which
-   the take started, so the take shows where the performer watched
-   it (e.g. armed at 2Q of the third 4Q bar → the new 8Q frame starts
-   at 8Q and the take sits at its 2Q). Audio is identical either way;
-   only the displayed frame differs. Confirm.
+2. **The frame on growth** — RULED 2026-09-16 (frame.md): no island
+   fact moves at commit; the view seats the new take in the cycle it
+   started in (armed at 2Q of the third 4Q bar → the 8Q frame shows the
+   take at its 2Q), which is the picture the old growth re-base of the
+   zero produced. S2 pins the zero staying and the take's origin.
 3. **Q15's stored origin** — RULED 2026-09-09: the framing was wrong
    ("if the window has the island repeating every 5Q, the entire
    universe is that 5Q"). The fold is gone; the origin is the capture

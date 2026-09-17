@@ -154,7 +154,7 @@ class StackNode : public AudioNode {
    * (ClipNode::setOriginGated): a writer that moves origins with the
    * epoch names a new generation, so a block adopts the new origins
    * iff it read the new epoch. Single writer at a time: the message
-   * thread, or the audio-thread commit re-base (rebaseEpochOnGrowth) —
+   * thread, or the audio-thread first-take establishment —
    * message-thread fact writers are refused under a live take. */
   void setIslandFacts(int64_t quantum, int64_t epoch, uint32_t generation) {
     island_lock_.write([&] {
@@ -222,7 +222,6 @@ class StackNode : public AudioNode {
   void takeArmed() override;
   void takeCancelled() override { active_takes_.fetch_sub(1); }
   void takeCommitted(int64_t origin, int64_t intrinsic_after) override;
-  void rebaseEpochOnGrowth(int64_t origin, int64_t intrinsic_after);
   bool hasActiveTake() const override { return active_takes_.load() > 0; }
   int64_t activeTakeHeardCycle() const override {
     return heard_cycle_at_arm_.load();
@@ -523,7 +522,7 @@ class StackNode : public AudioNode {
 
   // Take lifecycle: count of armed/capturing takes in this island, and
   // two cycle snapshots taken when the first of them armed: the
-  // INTRINSIC committed cycle (epoch re-base growth baseline + origin
+  // INTRINSIC committed cycle (the take's pre-take cycle, the origin
   // fold frame) and the HEARD/effective cycle (the take's context
   // frame + audible-equivalence step, Q15).
   std::atomic<int> active_takes_{0};

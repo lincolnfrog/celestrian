@@ -28,6 +28,6 @@
 
 export { initSessionView } from './session_view/init.js';
 export { patchSessionView } from './session_view/patch.js';
-export { mapDragPinQ, mapDragPinFoldQ } from './session_view/drag_pin.js';
+export { mapDragPinQ, mapDragPinFoldQ, mapDragPinZero } from './session_view/drag_pin.js';
 export { activeSelectedId, selection } from './session_view/selection.js';
 export { isTypingTarget } from './session_view/sv_util.js';

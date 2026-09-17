@@ -1175,7 +1175,7 @@ void ClipNode::beginCapture(const ProcessContext& context, int64_t target,
   // back to the intrinsic cycle for pre-window engine states). Display
   // take-marking folds by this — "which heard cycle" never matters, the
   // phase within it always does (Q14) — making the mark stable across
-  // later frame growth and epoch re-bases.
+  // later frame growth and any move of the view's seated zero.
   // A SLOT fact: captured for the slot's FIRST take only. A new take of
   // a committed slot (retake_period_ > 0) performs against the slot's
   // existing frame, and a retake that cancels short of its period must
@@ -1494,7 +1494,7 @@ void ClipNode::commitRecording(int64_t final_duration,
     is_playing.store(true);
 
     // The commit EVENT (unification_audit.md §1.5): carries the take's
-    // origin to the island root, which owns the epoch re-base decision.
+    // origin to the island root, which counts the island's live takes.
     // Runs AFTER duration_samples is stored so the island's composite
     // duration includes this take — computed here in SNAPSHOT space
     // (audio thread; graph_snapshot.h) and passed in, because the

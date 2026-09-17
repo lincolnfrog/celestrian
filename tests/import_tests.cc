@@ -142,10 +142,10 @@ class ImportTests : public juce::UnitTest {
       expectEquals((int)prop(engine, id, "channels"), 1, "mono stays mono");
       expect(!(bool)nodeVar(engine, id).getProperty("isRecording", true),
              "idle after the import");
-      // The cycle grew 1Q -> 2Q: the commit re-base moved the epoch to
-      // the heard top the import landed on (a whole old cycle).
-      expectEquals(islandEpoch(engine), epoch + Q,
-                   "growth re-base, as for a recorded take");
+      // The cycle grew 1Q -> 2Q, and no commit moves the island zero
+      // (docs/frame.md) — as for a recorded take.
+      expectEquals(islandEpoch(engine), epoch,
+                   "the zero stays through growth, as for a recorded take");
       // A fractional drop snaps to the nearest boundary (Q11).
       const juce::String id2 = emptyClip(engine);
       const int64_t epoch2 = islandEpoch(engine);

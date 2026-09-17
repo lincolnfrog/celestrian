@@ -128,15 +128,14 @@ recording, so the cursor extends past the committed LCM. The clock
 itself is never wrapped, reset, or snapped — pinned by
 `tests/monotonic_clock_tests.cc`.
 
-**The island epoch is data, not the clock.** The first arm stores its
-moment as the island epoch; stop freezes the view and play resumes the
-phase. At commit, **every cycle growth re-bases the epoch to the take's
-HEARD top** — its origin floored to whole pre-take cycles
-(`StackNode::takeCommitted`). Whole-old-cycle moves are phase-neutral
-for every committed clip, so this is strictly a *frame* choice: it
-makes the take-anchored view the user watched while recording persist
-at commit. Each take stores its heard frame (`contextCycle`) so display
-take-marking survives later re-bases.
+**The island zero is data, not the clock.** The first arm stores its
+moment provisionally and the first commit makes the take's origin the
+island zero (`islandEpoch` in code); stop freezes the view and play
+resumes the phase. No commit moves it (`StackNode::takeCommitted`):
+where a new take sits on screen is the view's seating from the lanes
+(frame.md), which puts it in the cycle it started in without anything
+here moving. Each take stores its heard frame (`contextCycle`) for
+display take-marking (Q14).
 
 **The recording lifecycle is an explicit per-clip state machine** over
 that immutable clock — `ClipNode::RecState`, where Committed is
@@ -162,9 +161,9 @@ it.
   other node's `(origin, period)`, so I4 holds with zero code.
 - **Polyrhythmic 3Q into 4Q**: the cycle view lengthens to 12Q and `t`
   sails on monotonically. The cursor continues because nothing
-  happened to the clock — and it is the *watched*, whole-cycle-shifted
-  cursor that continues, since the epoch re-bases to the take's heard
-  top (Q14b).
+  happened to the clock — and it is the *watched* cursor that
+  continues, since the view seats the take in the cycle it started in
+  (frame.md; Q14b).
 
 ---
 
@@ -262,9 +261,11 @@ clock mutation.
 
 **Polyrhythmic expansions keeping the old epoch** ("the cursor sails
 on"). **Refined 2026-07-16** after the field report that a 5Q take
-teleported to 12Q of an exploded 20Q frame: EVERY cycle growth re-bases
-the epoch to the take's heard top. The "cursor sails on" intent
-survives — it is the watched, shifted cursor that sails on.
+teleported to 12Q of an exploded 20Q frame: every cycle growth moved
+the stored zero to the take's heard top. **Superseded 2026-09-16:** the
+zero is no longer stored or moved; the view seats the take in the
+cycle it started in (frame.md). The "cursor sails on" intent survives —
+it is the watched cursor that sails on.
 
 **Loop-on-collapse as the playback equation's map.** The original §2
 keyed `m` to whether a stack was collapsed. **Convicted by I6b**

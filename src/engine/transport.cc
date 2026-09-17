@@ -84,7 +84,7 @@ bool AudioEngine::seekTransport(double pos_samples) {
   // THE HISTORY RIDES TOO: the undo/redo logs store ABSOLUTE origins
   // and epochs, and a seek re-frames every absolute in the session. An
   // inverse restoring pre-seek absolutes for a SUBSET of clips (a
-  // two-anchor rider, a take payload) would shift that subset against
+  // continuity rider, a take payload) would shift that subset against
   // everything else — undo would audibly move a clip the edit never
   // touched. Shift every absolute in both logs by the same delta, so
   // undo after a seek restores the same PLACEMENT.

@@ -226,37 +226,21 @@ This is session_view.md law 13 as amended: law 13's original concern —
 content hidden with no way to see it — is answered by the editing
 surfaces in §6, not by refusing to reframe.
 
-### The cycle-top rule
+### Where the frame starts
 
-The frame belongs to the loops on screen. **When you shape a loop, the
-frame starts where that loop starts — unless that would move a loop you
-didn't touch.** Everything below is that sentence made exact.
+The anchoring law says where a loop's content *sounds*. Where the
+frame's left edge sits is a separate fact, and it is not stored: the
+view **seats** the zero from the lanes in the order they are shown —
+the first lane's top is the top, and each next lane pulls the zero
+forward by whole cycles-so-far until its own top lies inside the
+current cycle, landing at the left edge when it can and otherwise at
+its offset, wrap ghosted. The full statement, the pictures and the
+rulings live in frame.md. No map edit and no commit moves an island
+fact; the island zero is the first take's origin, Q's grid phase, and
+only a Q13 re-trim or a seek moves it.
 
-Moving the epoch by Δ rotates a lane of period P by `Δ mod P` on
-screen, and does nothing else — audio never moves, origins are
-absolute:
-
-```text
-P = 1Q : invisible for every whole-Q Δ
-P = 2Q : invisible for even Δ
-P = 4Q : invisible only for Δ = 4Q, 8Q, …
-```
-
-A move is **free** — invisible to every untouched lane — iff Δ is a
-multiple of their fold (their lcm with Q). The rule: an edit that
-shapes a loop (leaves an active map) moves the epoch to that loop's
-heard top (`origin' + a0`) whenever that move is free and the top is
-not already at the frame top (mod the new period). A free move is
-whole-Q by construction, so the grid never moves; an off-grid ⌥-slid
-top honestly stays mid-phase (its end/start grips meet under the "↺
-loop top" chip). Clearing a window back to the whole take shapes
-nothing and never fires. Whether the shaped loop *defines* the cycle
-does not enter: a 3Q loop under a 4Q neighbour whose top sits 4Q off
-the epoch re-bases (free for the neighbour); a 4Q loop tying a 4Q
-neighbour 1Q off never does.
-
-The sequence the rule exists for. A is 1Q, B a 10Q take, digits are
-B's Qs; every state drawn is one the user sees:
+The case the rule exists for — A is 1Q, B a 10Q take, digits are B's
+Qs; every state drawn is one the user sees:
 
 ```text
 record A, 1Q            A  |a   |
@@ -264,51 +248,22 @@ record A, 1Q            A  |a   |
 record B, 10Q           B  |0   |1   |2   |3   |4   |5   |6   |7   |8   |9   |
                         A  |a   |a   |a   |a   |a   |a   |a   |a   |a   |a   |
 
-window B to 6Q..10Q     B  |6   |7   |8   |9   |     epoch := B's origin + 6Q
-                        A  |a   |a   |a   |a   |     (free: A is 1Q)
+window B to 6Q..10Q     B  |6   |7   |8   |9   |     A constrains nothing;
+                        A  |a   |a   |a   |a   |     B's top seats the frame
 ```
 
-Without the rule the epoch would stay at B's origin from commit and
-the loop would draw as `8 9 6 7`: windowed content sounds at its own
-performed moment (the anchoring law), 6Q in, and 6 mod 4 = 2. That is
-the epoch — engine state, never a user-facing fact — leaking into the
-picture. The window edit and the frame move are ONE edit (one undo
-entry), so the leaked state is never on screen.
-
-When no free move reaches the top, the untouched lane wins. A is a 2Q
-loop; B is an 8Q take recorded on A's start, shaped into a 4Q loop at
-1Q..5Q:
+And the case that needs no rule — A is a 2Q loop, B a 4Q loop whose
+top falls 1Q after A's — is drawn honestly, wrap ghosted:
 
 ```text
-frame at A's start (the rule)          frame at B's start (rejected)
-     0    1    2    3                       0    1    2    3
-A    |p   |q   |p   |q   |             A    |q   |p   |q   |p   |   A flipped for an edit on B
-B    |4   |1   |2   |3   |             B    |1   |2   |3   |4   |
-     B starts 1Q in; ↺ marks it
+     0    1    2    3
+A    |p   |q   |p   |q   |
+B    |4   |1   |2   |3   |     offset 1Q; ↺ marks the loop's top
 ```
 
-The commit re-base is the same principle at a different moment: a take
-that grows the cycle moves the epoch only by whole pre-take cycles
-(`StackNode::rebaseEpochOnGrowth`, recording.md "LCM Expansion Snap"),
-so every committed lane holds still and the new take's origin lands
-wherever that leaves it.
-
-The origin stays put in every case — only the frame top moves.
-`AudioEngine::attachMapEditRiders`, mock `applyMapEditRiders`; pinned in
-`tests/regression_tests.cc` ("CYCLE-TOP RULE", "no free move"),
-`tests/time_map_record_tests.cc`, `ui/js/tests/trim_drag.test.mjs`, and
-`ui/e2e_engine/loop_edits.spec.js` ("editing one lane's loop region
-never moves the OTHER lanes' tiles", "a shaped loop never moves an
-untouched lane").
-
-### Two-anchor continuity (while playing)
-
-When the rule does not fire and the edit was made while playing, the
-epoch follows the origin re-anchor (next section) by the nearest free
-move — the multiple of everyone else's fold nearest the origin delta —
-so no other lane moves and the edited tile takes the residual jump.
-With nothing else on the island the epoch rides the whole delta.
-Stopped, nothing moves.
+A map edit while playing re-anchors the edited lane's origin (next
+section) and nothing else; the seating re-derives from the new origin,
+and the map-gesture pin holds the zero for the length of a drag.
 
 ### The continuity re-anchor
 
@@ -330,8 +285,8 @@ mock in lockstep) keeps the sounding sample sounding:
 
 Net behaviour for the origin: a cut AFTER the playing point causes no
 re-anchor and no jump; BEFORE it, a whole-Q re-anchor and no jump; AT
-it, no re-anchor and one expected jump. The frame is placed separately,
-by the cycle-top rule above, in every case. Engine-level continuity test in
+it, no re-anchor and one expected jump. Where the loop then sits on
+screen is the view's seating (frame.md), in every case. Engine-level continuity test in
 `tests/time_map_record_tests.cc`; the I4 regression pin asserts the
 mod-Q invariant.
 
@@ -461,8 +416,8 @@ under the pointer and pans at the edge).
   (zeroed at ARM on the message thread; documented D4 deviation),
   literal silence in unvisited regions.
 - **Commit.** `duration = C`, the mapping node's full inner cycle
-  snapshotted at arm; no epoch re-base, since C divides the island
-  cycle. Compaction keeps `max(recordedLength, duration)`.
+  snapshotted at arm; no island fact moves (none does at any commit).
+  Compaction keeps `max(recordedLength, duration)`.
 - **Seam-exact playback.** `StackNode` and `ClipNode` split blocks into
   runs at `seamDistance` boundaries, so playback through a map is
   sample-exact across mid-block seams.
@@ -617,14 +572,19 @@ origin ≢ 0 (mod its duration) — the 2026-07-09 field bug where a 2Q clip
 looped its Q2 under a Q1 window, still pinned by "Stack window selects
 view positions" in `tests/pre_record_tests.cc`.
 
-**The definer test for the cycle-top rule** (2026-08-18 → 2026-09-15).
-The rule fired for the loop that *defined* the cycle (its period a
-multiple of every other loop's), on any whole-Q move. **Rejected:** a
-definer's top can sit off the epoch by less than a neighbour's cycle —
-a 4Q loop 1Q off a 2Q neighbour — and the whole-Q move then flipped the
-neighbour for an edit it was not part of. Two patches followed (no fire
-on a cleared window, 2026-09-09; continuity moves only by whole cycles
-of everyone else, 2026-09-10) before the owner ruled the principle
-itself: the frame moves only when the move is invisible to every
-untouched lane. That condition subsumes the definer test, the "ties
-don't qualify" clause and both patches (§5).
+**A stored frame zero, moved by rules** (2026-07-19 → 2026-09-16). The
+frame's left edge was the island "epoch", a stored absolute sample the
+engine moved for display reasons: at commit by whole old cycles (the
+growth re-base, Q14b), on a window edit to the shaped loop's top (the
+cycle-top rule, 2026-08-18; later gated to the loop that *defined* the
+cycle, then to a "free" move invisible to every untouched lane,
+2026-09-15), and alongside a playing lane's origin re-anchor (two-anchor
+continuity, 2026-08-09, then only by whole cycles of everyone else,
+2026-09-10). Each rule was a patch on where that number should go, it
+rode every undo entry and the bundle, and the mock twinned every write.
+**Rejected by the owner** as a kernel abstraction with no user-facing
+meaning: the zero is not stored at all — the view seats it from the
+lanes in the order shown, which reproduces every picture those rules
+produced (frame.md). The engine keeps the island zero as the first
+take's origin, Q's grid phase, and never moves it for a commit or an
+edit.

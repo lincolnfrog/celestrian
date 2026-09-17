@@ -28,7 +28,10 @@ test('the playhead follows the island phase over the frame', async ({ page }) =>
     for (const step of [Q, Q + 12345, 2 * Q - 99]) {
         await engine(page, 'advance', { samples: step });
         const st = await state(page);
-        const expected = (st.masterPos / Q) / 4;
+        // The frame's zero is the view's seat (docs/frame.md): the
+        // playhead's x is the view model's phase over its frame.
+        const vm = deriveViewModel(st, { fxOpen: new Set(), windowEdit: new Set() });
+        const expected = vm.playheadQ / vm.cycleQ;
         await expect.poll(() => playheadFrac(page), { timeout: 3000 })
             .toBeCloseTo(expected, 2);
     }

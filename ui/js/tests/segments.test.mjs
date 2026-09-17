@@ -62,17 +62,14 @@ test('cell map shortens the audible cycle; record-through-cells parity', async (
     const epoch = getState().islandEpoch;
 
     await callNative('setSegments', groupId, [0, 1000, 2000, 3000]);
-    // Q18 (engine parity attachMapEditRiders — "clips and stacks alike"):
-    // the group's map anchors at the group's OWN origin (take A's, 0),
-    // so its heard top is 0 and the CYCLE-TOP RULE moves the epoch
-    // there (1000 → 0 is a whole Q, free for the 1Q definer).
-    // Pre-Q18 the stack map anchored at the epoch and a stack edit
-    // rode no riders.
-    assert.equal(getState().islandEpoch, 0, 'cycle-top rule: epoch → the map\'s heard top');
+    // A map edit moves no island fact (docs/frame.md): the zero is take
+    // A's origin, 0, before and after.
+    assert.equal(getState().islandEpoch, epoch, 'a map edit never moves the zero');
     // Audible cycle = lcm(Q=1000, period 2000) = 2000: published
-    // masterPos wraps on it, from the NEW epoch.
+    // masterPos wraps on it, from the zero.
     setMasterPos(epoch + 4500);
-    assert.equal(getState().masterPos, 1500, 'view wraps on the cell period');
+    assert.equal(getState().masterPos, ((epoch + 4500 - getState().islandEpoch) % 2000 + 2000) % 2000,
+        'view wraps on the cell period');
 
     // Record C through the cells: heard pend, one-period cap, dense C.
     const cId = await callNative('createNode', 'clip', groupId);

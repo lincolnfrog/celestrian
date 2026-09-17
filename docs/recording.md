@@ -159,15 +159,17 @@ step 2; `launchPoint` in metadata derives at read time.)*
 
 Island facts `(Q, epoch)` live once, at the session root (Q1, Q13).
 
-### The Epoch Frame (one frame for everything)
+### The island zero (one grid for everything)
 
-All cycle-relative reasoning — anchors, slots, effective positions, the
-UI's masterPos view — happens in the **island epoch frame**:
-`rel = t − island_epoch`. The epoch re-bases to the newest
-cycle-defining origin on simple-extension commits (the visual successor
-of the old transport snap), and windowed stacks re-base it again for
-their children (time_maps.md). Mixing absolute-frame math with the
-epoch frame has caused field bugs; don't.
+All grid-relative reasoning in the engine — arm targets, slots, the
+root's own song and window — happens from the **island zero**, the
+first take's origin: `rel = t − zero`. No commit and no map edit moves
+it (a Q13 re-trim re-sets it with Q; a seek shifts it with every
+origin); windowed stacks fold their own frame for their children from
+their own origin (time_maps.md, Q18). The DISPLAY frame is another
+matter: its left edge is seated by the view from the lanes (frame.md),
+never read from the engine. Mixing absolute-frame math with the zero's
+frame has caused field bugs; don't.
 
 **Why loop-relative intent?**
 - You might listen to Clip 1 looping for 5 minutes before recording Clip 2
@@ -742,16 +744,14 @@ Step 5: Stop Clip 3 at 3Q
 - At 12Q, cursor loops to 0Q
 ```
 
-> **Refined (2026-07-16, ruling Q14b):** the cursor continuity above is
-> the **watched** cursor. While recording, the view shifts by whole
-> committed cycles to the cycle the take started in; at commit the
-> island epoch re-bases to the take's HEARD top (origin floored to
-> whole pre-take cycles — phase-neutral for every committed clip), so
-> the shifted frame the performer watched persists. The old rule
-> ("polyrhythmic expansions keep the epoch") predated the recording
-> view shift and teleported the new take to its raw frame position at
-> commit (field: a 5Q take from a heard top displayed at 12Q–17Q of
-> the exploded 20Q frame).
+> **Refined (2026-07-16, ruling Q14b; restated 2026-09-16):** the
+> cursor continuity above is the **watched** cursor. While recording,
+> the view seats the pending take in the cycle it started in, and the
+> frame after commit is the same frame — nothing snaps. The island
+> zero itself never moves at commit (frame.md); the seating is what
+> the old growth re-base of the zero used to achieve (its predecessor,
+> "polyrhythmic expansions keep the epoch", teleported a 5Q take from
+> a heard top to 12Q–17Q of the exploded 20Q frame in the field).
 
 ### Current Implementation Issues
 

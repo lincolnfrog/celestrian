@@ -137,14 +137,15 @@ class AuditRegressionTests : public juce::UnitTest {
       const int64_t orgA0 = (int64_t)deepProp(engine, a, "origin");
       const int64_t orgB0 = (int64_t)deepProp(engine, b, "origin");
 
-      // Playing map edit on A: two-anchor continuity (origin + epoch ride).
+      // Playing map edit on A: the continuity rider re-anchors A's
+      // origin; the island zero stays (docs/frame.md).
       engine.setLoopPoints(a, 0, D / 2);
       const int64_t epoch1 = rootProp(engine, "islandEpoch");
       const int64_t orgA1 = (int64_t)deepProp(engine, a, "origin");
       logMessage("trim delta: origin " + juce::String(orgA1 - orgA0) +
                  ", epoch " + juce::String(epoch1 - epoch0));
-      expect(orgA1 != orgA0 && epoch1 != epoch0,
-             "precondition: the edit carried origin+epoch riders");
+      expect(orgA1 != orgA0, "precondition: the edit carried the origin rider");
+      expectEquals(epoch1, epoch0, "the zero does not ride a map edit");
 
       // A seek (not undoable) rides EVERY origin + the epoch by ds.
       const bool ok = engine.seekTransport((double)(D / 3));

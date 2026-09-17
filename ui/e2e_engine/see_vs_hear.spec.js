@@ -4,9 +4,9 @@
  * guitar-only section while the lanes showed otherwise).
  *
  * The real UI builds the song with real clicks on the root sequencer
- * grid, over takes the real engine recorded (one armed mid-cycle so the
- * epoch re-bases — the case that used to part the engine's grid from
- * the display's). Then the engine is asked for the AUDIBLE TRUTH — it
+ * grid, over takes the real engine recorded (one armed mid-cycle, the
+ * case that once parted the engine's grid from the display's). Then
+ * the engine is asked for the AUDIBLE TRUTH — it
  * solos each clip and listens, cell by cell — and every lane's dims in
  * the DOM must sit exactly where the engine is silent.
  */

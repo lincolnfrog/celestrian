@@ -37,6 +37,7 @@
 | [bounce.md](bounce.md) | spec | Bounce / export (Q19): the span rule (root: one effective cycle from the epoch; node: one effective period from origin + a0), the −90 dBFS tail, stereo float WAV at the device rate, the bounce == live render golden. |
 | [takes.md](takes.md) | spec | Takes and comping (B4): a committed slot holds N immutable takes sharing one origin/period; the new-take arm rule (`t ≡ origin mod period`, one-period cap, stop = cancel); per-Q-cell comp with cell seams; undo shapes; persistence keys; what the UI half owes. Engine shipped; UI pending. |
 | [import.md](import.md) | spec | Audio file import (B6): a WAV/AIFF/FLAC as a committed take — nearest-Q placement from the drop, the hysteresis length law, pre-Q import defines Q, a new take onto a committed slot, resampling, undo; the WebView path limit (a drop without a path → the chooser at the drop's Q). |
+| [frame.md](frame.md) | spec | Where the frame starts: the shared frame's zero is seated by the view from the lanes in the order shown (each loop's top at the left edge when a whole cycle-so-far reaches it, else where it fell, wrap ghosted), never stored. The engine keeps Q and the island zero (the first take's origin) and moves neither for a commit or a map edit. The pictures, the rulings it replaced (2026-09-16), what is pending. |
 | [tasks.md](tasks.md) | tracker | Tiered task list + the Open Design Questions table. |
 | [mockups/](mockups/) | design artifacts | HTML mockups (`sequencer_ux.html`, `sequencer_ux2.html` — the 2026-08-19 sequencer rounds behind S15). |
 

@@ -164,8 +164,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       const int64_t old_pos = global_transport_pos.load();
 
       // The take LIFECYCLE lives on the island root (a counter fed by
-      // arm/cancel/commit events) and the epoch re-base runs inside the
-      // commit event itself (StackNode::takeCommitted); this block is
+      // arm/cancel/commit events; no island fact moves at commit,
+      // docs/frame.md); this block is
       // purely VIEW upkeep: freeze the cycle view's base when a take
       // begins so the cursor extends past the committed LCM while
       // recording (recording.md cursor table).

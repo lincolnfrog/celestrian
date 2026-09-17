@@ -8,10 +8,10 @@
  * the epoch parked at the take's origin its top sat at cycle phase 2Q,
  * so the end grip and the start grip met mid-lane and the waveform
  * wrapped there. The owner's follow-up ("if my first track is 1Q, why
- * the mid-lane split?") became the CYCLE-TOP RULE (time_maps.md §5): a
- * shaped loop puts its heard top at the frame top whenever the move is
- * invisible to every untouched lane (epoch := origin + window start —
- * whole-Q, grid untouched, audio untouched; with a 1Q neighbour every
+ * the mid-lane split?") is answered by the frame's SEATING (docs/frame.md):
+ * a shaped loop draws from the frame top whenever a whole cycle-so-far
+ * of the lanes before it reaches its top (the island zero itself never
+ * moves — whole-Q, grid untouched, audio untouched; with a 1Q neighbour every
  * whole-Q move is free). What this pins: (a) the model facts, (b) that
  * both trims commit exactly what the drag math proposes, (c) the rule's
  * boundaries (an off-grid ⌥-slide honestly stays mid-phase; a sub-loop
@@ -67,11 +67,11 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     assert.equal(n.loopEnd / Q, 10);
     assert.equal(n.windowActive, true);
 
-    // CYCLE-TOP RULE: the 4Q loop IS the cycle (the 1Q definer divides
-    // it), so the epoch moves to its heard top (1Q + 6Q = 7Q) — whole-Q,
-    // grid untouched — and the loop fills the frame from the top. No
-    // mid-lane pair, no "split". Audio untouched: origin unchanged.
-    assert.equal((getState().islandEpoch || 0) / Q, 7, 'epoch := loop top');
+    // THE FRAME IS SEATED (docs/frame.md): the 1Q definer constrains
+    // nothing, so the shaped 4Q loop starts at the left edge — the view
+    // seats it there; the island zero itself never moves. No mid-lane
+    // pair, no "split". Audio untouched: origin unchanged.
+    const zero0 = (getState().islandEpoch || 0) / Q;
     assert.equal((n.origin || 0) / Q, 1, 'origin untouched (audio)');
     let vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
@@ -95,8 +95,8 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     assert.equal(n.loopStart / Q, 6);
     assert.equal(n.loopEnd / Q, 9);
 
-    // A 3Q loop from the same top: cycle 3Q, epoch stays (no churn).
-    assert.equal((getState().islandEpoch || 0) / Q, 7, 'same top, epoch stays');
+    // A 3Q loop from the same top: cycle 3Q, the zero stays as always.
+    assert.equal((getState().islandEpoch || 0) / Q, zero0, 'the zero never moves');
     vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
     assert.equal(vm.cycleQ, 3);
@@ -105,26 +105,24 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     assert.equal(lane.takeStartQ, 0, 'loop top at the frame top');
 
     // RULE BOUNDARY 1 — an off-grid ⌥-slide ([6.4Q, 9.4Q)): the top is
-    // 0.4Q past the epoch, not a whole Q → the epoch must NOT move (the
-    // grid never does); the loop honestly shows 0.4Q into the frame,
-    // its end/start pair mid-lane under the "↺ loop top" chip.
+    // 0.4Q past the grid; the seating stays on the grid, so the loop
+    // honestly shows 0.4Q into the frame, its end/start pair mid-lane
+    // under the "↺ loop top" chip.
     await callNative('setSegments', c2, [Math.round(6.4 * Q), Math.round(9.4 * Q)]);
-    assert.equal((getState().islandEpoch || 0) / Q, 7, 'off-grid top: epoch stays');
+    assert.equal((getState().islandEpoch || 0) / Q, zero0, 'off-grid top: the zero never moves');
     vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
     assert.equal(vm.cycleQ, 3);
     assert.ok(Math.abs(lane.takeStartQ - 0.4) < 1e-9, 'loop shows 0.4Q in');
     await callNative('setSegments', c2, [6 * Q, 9 * Q]);  // back on grid
 
-    // RULE BOUNDARY 2 — no free move: a third take of 6Q makes the
-    // cycle 6Q (lcm 1, 3, 6); trimming clip 2 to [6Q, 8Q) asks for a
-    // move that is not a whole 6Q cycle of clip 3 → clip 3 holds still,
-    // the epoch stays put.
+    // A third take of 6Q makes the cycle 6Q (lcm 1, 3, 6); trimming
+    // clip 2 to [6Q, 8Q) moves no island fact either way.
     await recordTake('', 6 * Q);
     const epochBefore = getState().islandEpoch || 0;
     await callNative('setSegments', c2, [6 * Q, 8 * Q]);
     assert.equal(getState().islandEpoch || 0, epochBefore,
-        'non-definer trim: epoch untouched');
+        'a map edit never moves the zero');
     vm = deriveViewModel(getState(), opts);
     assert.equal(vm.cycleQ, 6);
 });

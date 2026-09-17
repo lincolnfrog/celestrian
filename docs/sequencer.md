@@ -409,13 +409,12 @@ step — the sole-top-level-window pattern. Group lanes under an audition
 hid their brackets until §12 put group lanes in song coordinates. Esc
 clears it through `onEscapeAudition`.
 
-### 11.4 The commit cycle — the song rides the epoch (S18)
+### 11.4 The commit cycle — the song rides the island zero (S18)
 
-The commit re-base moves the epoch in whole **songs** or not at all:
-`StackNode::takeCommitted` (and the mock) lcm the active sequence
-length into BOTH sides of the growth comparison. Without this, a 4Q
-part recorded into an 8Q song shifted the epoch by 4Q and the chorus
-became the intro.
+A root song's steps fold from the island zero, and no commit moves it
+(`StackNode::takeCommitted`; frame.md): a part recorded into a song
+never re-phases the song. The view seats the root song first, so the
+song owns the frame on screen exactly as it does on the audio thread.
 
 ### 11.5 Takes are undoable, and the auto-gate composes (S19)
 
@@ -429,8 +428,8 @@ target) and `reconcileTakes()` logs it — at the top of every
 `getGraphState` poll and before any log operation — once every member
 has settled. A Q7 group take is ONE entry; a cancelled performance logs
 nothing. Undo/redo of a take entry is REFUSED (entry kept) while a take
-is live. The first take's Q/epoch establishment and any growth re-base
-ride `setsIsland`. Untake deliberately does NOT uncollapse a Q13
+is live. The first take's establishment of Q and the island zero rides
+`setsIsland` (no commit moves them afterwards). Untake deliberately does NOT uncollapse a Q13
 definer — the `CollapseTake` entry beneath it does.
 
 **The auto-gate composes:** `applyAutoGate` folds one `Edit::Sequence`

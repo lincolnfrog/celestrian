@@ -266,8 +266,8 @@ class AudioNode {
   /**
    * CONTROL/INGEST phase (unification_audit.md §2.3 — the control
    * plane): everything that DECIDES or CAPTURES. Arm targets, stop
-   * boundaries, input capture, commit events (and their island
-   * consequences: establish, epoch re-base). Mutates node state.
+   * boundaries, input capture, commit events (and their one island
+   * consequence: the first establishment). Mutates node state.
    * Inputs flow in here; nothing is rendered.
    */
   virtual void control(const float* const* input_channels,
@@ -431,8 +431,8 @@ class AudioNode {
    * The recording LIFECYCLE is active: armed, capturing, or pending
    * stop. Wider than isRecording() (an armed clip hasn't captured a
    * sample yet). Stacks answer for their subtree. This is what engine
-   * bookkeeping (view freeze, epoch re-base, sibling context scans)
-   * keys on. Audio-thread safe.
+   * bookkeeping (view freeze, sibling context scans) keys on.
+   * Audio-thread safe.
    */
   virtual bool isArmedOrRecording() const { return isRecording(); }
 
@@ -497,9 +497,9 @@ class AudioNode {
    * AND the audible-equivalence step for the origin fold (Q15). */
   virtual int64_t activeTakeHeardCycle() const { return 0; }
   /** The INTRINSIC committed cycle at arm (windows ignored) — the
-   * frame modulus for the origin fold and the growth baseline for the
-   * commit epoch re-base. Windows are reversible view-of-time state
-   * and must not leak into either permanently. */
+   * frame modulus for the origin fold, the take's pre-take cycle.
+   * Windows are reversible view-of-time state and must not leak into
+   * it permanently. */
   virtual int64_t activeTakeIntrinsicCycle() const { return 0; }
 
   // --- THE MAP (time_maps.md §2, composition.md §1): ONE storage ---

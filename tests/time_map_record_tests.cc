@@ -207,7 +207,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals((juce::int64)take->contextCycle(), (juce::int64)2000,
                    "heard frame at arm = effective cycle (window length)");
       expectEquals((juce::int64)root.getIslandEpoch(), (juce::int64)0,
-                   "no epoch re-base (C divides the island cycle)");
+                   "no island fact moves at commit");
       expectEquals((juce::int64)root.getIntrinsicDuration(), (juce::int64)4000,
                    "island cycle unchanged");
 
@@ -866,8 +866,8 @@ class TimeMapRecordTests : public juce::UnitTest {
     }
 
     beginTest(
-        "ENGINE: two-anchor continuity - sounding sample kept, "
-        "frame position invariant (owner ruling 2026-08-09)");
+        "ENGINE: the continuity re-anchor - sounding sample kept, "
+        "the island zero never moves");
     {
       AudioEngine engine;
       const int BLOCK = 512;
@@ -995,20 +995,18 @@ class TimeMapRecordTests : public juce::UnitTest {
       const int64_t ep1 = islandEpoch();
       expectEquals((juce::int64)p0Of(orgB1, m1), (juce::int64)p0,
                    "covered position keeps sounding across the edit");
-      expectEquals((juce::int64)(orgB1 - ep1), (juce::int64)(orgB - ep0),
-                   "frame position (org - epoch) invariant");
+      // The island zero does not ride the re-anchor (docs/frame.md):
+      // where B's tile sits is the view's seating.
+      expectEquals((juce::int64)ep1, (juce::int64)ep0,
+                   "the zero stays through the re-anchor");
       expectEquals((juce::int64)(((orgB1 - orgB) % dA + dA) % dA),
                    (juce::int64)0, "the delta is a whole number of Qs");
 
       // A map that REMOVES p0's region: {[1Q, 2Q), [2Q, 3Q)} — the
-      // ORIGIN stays put (2026-07-25i: you deleted what you were
-      // hearing; the jump is expected), but the EPOCH moves to the
-      // loop's heard top: CYCLE-TOP RULE (time_maps.md §5 — a shaped
-      // loop fills the frame from its own top whenever the move is
-      // invisible to every untouched lane). B's 2Q loop [1Q, 3Q) sits
-      // 1Q into the old frame, and 1Q is a whole cycle of A (1Q) →
-      // epoch := origin + 1Q. Whole-Q: the grid is untouched; audio
-      // never moved (origins are absolute).
+      // ORIGIN stays put (you deleted what you were hearing; the jump
+      // is expected), and the island zero stays as always
+      // (docs/frame.md): where the shaped loop's top sits on screen is
+      // the view's seating. Audio never moved (origins are absolute).
       timing::TimeMap m2;
       m2.n = 2;
       m2.segs[0] = {dA, 2 * dA};
@@ -1019,10 +1017,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.setSegments(bId, m2, /*live=*/true);
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
                    "removed sounding region: origin stays put");
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)(orgB1 + dA),
-                   "cycle-top rule: epoch at the loop's heard top");
-      expectEquals((juce::int64)(((islandEpoch() - ep1) % dA + dA) % dA),
-                   (juce::int64)0, "the epoch moved by whole Qs");
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)ep1,
+                   "a map edit never moves the zero");
 
       // ONE undo restores both anchors: consecutive Segments edits
       // coalesce (one gesture, one undo step) and the setsOrigin /
@@ -1040,8 +1036,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       const int64_t orgG1 = nodeProp(bId, "origin");
       const int64_t epG1 = islandEpoch();
       engine.setSegments(bId, m2);
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)(orgG1 + dA),
-                   "gesture 2: the cycle-top rule again");
+      expectEquals((juce::int64)islandEpoch(), (juce::int64)epG1,
+                   "gesture 2: the zero still never moves");
       engine.undo();
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgG1,
                    "one undo: back to gesture 1's origin, not before it");

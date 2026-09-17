@@ -134,10 +134,9 @@ test('the definer trim (Q13): Q := the window; lock-collapse is audio-neutral; d
 test('editing one lane\'s loop region never moves the OTHER lanes\' tiles', async ({ page }) => {
     // The subtle one: a window or cut on lane B must not rotate lane A's
     // material on screen. Audio never moves (origins are absolute); the
-    // FRAME may re-base only by a FREE move — a whole number of every
-    // untouched lane's cycles (the cycle-top rule and two-anchor
-    // continuity both, time_maps.md §5) — and any other re-base shows
-    // as every other lane jumping. Pinned here from the user's seat:
+    // view SEATS the frame from the lanes (docs/frame.md), and a lane
+    // before B is never moved by an edit on B — any other move would
+    // show as that lane jumping. Pinned here from the user's seat:
     // A's bright tile stays where it was, at every edit, whatever phase
     // the edit lands at (which phases trigger a move depends on where
     // the playhead sits when the edit lands; this test tries several).
@@ -228,9 +227,11 @@ test('a shaped loop never moves an untouched lane, even when it owns the cycle',
         const st = await state(page);
         const vm = deriveViewModel(st, { fxOpen: new Set(), windowEdit: new Set() });
         const lane = vm.lanes.find(l => l.id === id);
+        // The frame zero is the view model's seat (docs/frame.md), not
+        // an engine field: the engine publishes origins, the view seats.
         return { takeStartQ: lane.takeStartQ,
                  firstBright: (lane.reps.find(r => !r.ghost) || {}).startQ,
-                 epoch: st.islandEpoch };
+                 epoch: vm.epochSamples };
     };
     const a0 = await laneOf(a);
     const epoch0 = a0.epoch;
@@ -242,9 +243,13 @@ test('a shaped loop never moves an untouched lane, even when it owns the cycle',
 
     await call(page, 'setLoopPoints', b, stuck, stuck + 4 * Q);
     const a1 = await laneOf(a);
-    expect(a1.epoch, 'no free move: the frame stays').toBe(epoch0);
+    // No free move reaches B's new top: the zero may still move by whole
+    // cycles of A (invisible to A), but never by less.
+    expect(mod(a1.epoch - epoch0, 2 * Q), 'the zero moves only by whole cycles of A').toBe(0);
     expect([a1.takeStartQ, a1.firstBright], 'A holds still').toEqual([a0.takeStartQ, a0.firstBright]);
-    expect((await laneOf(b)).takeStartQ, 'B\'s loop starts mid-frame').toBe((inQ + stuck / Q) % 4);
+    // The seating pulls the zero forward by whole cycles of A (2Q) until
+    // B's top lies inside one, so B sits at its offset MOD 2Q.
+    expect((await laneOf(b)).takeStartQ, 'B\'s loop starts mid-frame').toBe((inQ + stuck / Q) % 2);
 
     await call(page, 'setLoopPoints', b, free, free + 4 * Q);
     const a2 = await laneOf(a);

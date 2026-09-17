@@ -179,8 +179,8 @@ class PreRecordTests : public juce::UnitTest {
       // sustained playback, stopped mid-4th-Q (anticipatory snap to 4Q).
       // With the origin stored mod the CONTEXT (1Q), the which-cycle
       // information was lost and the committed clip looped at 3Q. The
-      // origin must be absolute; the view epoch re-bases at commit so
-      // the visual cycle top is the new phrase's top.
+      // origin must be absolute; the view seats the new phrase at its
+      // own top (docs/frame.md).
       AudioEngine engine;
       engine.createNode("stack");
       juce::String stackId = firstNodeId(engine);
@@ -223,11 +223,14 @@ class PreRecordTests : public juce::UnitTest {
              "clip B loops from its own top after commit, not mid-clip "
              "(playhead=" +
                  juce::String(playheadB) + ")");
+      // The published cycle view folds from the island zero, which no
+      // commit moves (docs/frame.md): where the new phrase sits on
+      // screen is the view model's seating, not the engine's fold.
       const double masterView =
           (double)engine.getGraphState().getDynamicObject()->getProperty(
               "masterPos");
-      expect(masterView < 1500.0,
-             "view re-based to the new phrase's top (masterPos=" +
+      expect(masterView >= 0.0 && masterView < 4000.0,
+             "cycle view folds on the 4Q cycle (masterPos=" +
                  juce::String(masterView) + ")");
     }
 

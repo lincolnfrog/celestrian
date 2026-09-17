@@ -59,8 +59,8 @@ class ClipNode : public AudioNode {
    * (an instrument slot makes it a MIDI track — one class, because the
    * take lifecycle is content-agnostic) and fixed for the take's
    * lifetime; the
-   * kernel playback equation, arm/stop/commit math, through-map fold,
-   * epoch re-base and undo entries are shared verbatim.
+   * kernel playback equation, arm/stop/commit math, through-map fold
+   * and undo entries are shared verbatim.
    */
   enum class ContentKind : int { Audio = 0, Midi };
 

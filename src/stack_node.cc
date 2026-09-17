@@ -8,8 +8,9 @@
 //   - control() / render(): recursion over the snapshot with map-seam
 //     block splitting, the summing scratch buffer, the sequencer gate
 //     and the group output stage;
-//   - the seqlock'd island triple (Q, epoch, generation) and the take
-//     lifecycle events (takeArmed / takeCommitted / epoch re-base);
+//   - the seqlock'd island triple (Q, zero, generation) and the take
+//     lifecycle events (takeArmed / takeCommitted — no fact moves at
+//     commit, docs/frame.md);
 //   - period / duration / metadata / waveform readouts.
 
 #include "stack_node.h"
@@ -196,58 +197,14 @@ void StackNode::takeArmed() {
 }
 
 void StackNode::takeCommitted(int64_t origin, int64_t intrinsic_after) {
-  // Re-base FIRST, decrement LAST: active_takes_ is the message
-  // thread's "island settled" signal (hasActiveTake); decrementing
-  // before the epoch store would let an edit observe a settled island
-  // whose epoch re-base has not landed yet.
-  rebaseEpochOnGrowth(origin, intrinsic_after);
+  // A commit moves no island fact: the island's zero is the first
+  // take's origin and stays there (docs/frame.md — where a new take
+  // sits on screen is seated by the view from the lanes, which puts it
+  // in the cycle it started in without anything here moving). The
+  // audio thread's only island write is the first establishment.
+  (void)origin;
+  (void)intrinsic_after;
   active_takes_.fetch_sub(1);
-}
-
-void StackNode::rebaseEpochOnGrowth(int64_t origin, int64_t intrinsic_after) {
-  // Epoch re-base on cycle growth (recording.md "LCM Expansion Snap"):
-  // the cycle top moves to the HEARD top the take was performed
-  // against — its origin floored to a whole multiple of the pre-take
-  // cycle. Whole-old-cycle moves are PHASE-NEUTRAL for every committed
-  // clip (their periods divide the old cycle), so audio alignment and
-  // I3 are untouched; what it buys is that the frame the performer
-  // WATCHED while recording (the take-anchored whole-cycle shift in
-  // view_model.js) persists at commit instead of snapping back.
-  //   - Simple extension armed at a top: floor(rel/before)·before = rel,
-  //     so epoch := origin.
-  //   - Polyrhythmic growth: the WATCHED cursor is what sails on.
-  int64_t before = lcm_before_take_.load();
-  if (before <= 0) return;  // first take: epoch was established at arm
-
-  // Passed in (snapshot space) — this event fires on the AUDIO thread,
-  // and the stack's own traversal is message-thread-only.
-  int64_t after = timing::lcm(quantum_samples_.load(), intrinsic_after);
-  // THE SONG RIDES THE EPOCH (docs/sequencer.md §11): an active
-  // sequence's steps are positioned from the cycle epoch, so a
-  // whole-old-cycle re-base that is NOT a whole number of songs would
-  // shift every section (a 4Q part recorded into an 8Q song would
-  // re-base by 4Q — the chorus becomes the intro). The sequence length
-  // joins both sides of the growth comparison: shifts happen in whole
-  // songs or not at all. (Sequence edits are refused mid-take, so the
-  // length here is the one the take heard.)
-  if (const int64_t seq_len = activeSequenceLen(); seq_len > 0) {
-    before = timing::lcm(before, seq_len);
-    after = timing::lcm(after, seq_len);
-  }
-  if (after <= before) return;
-
-  const int64_t epoch = epoch_samples_.load();
-  int64_t rel = origin - epoch;
-  if (rel < 0) rel = 0;
-  // Through the seqlock: a raw epoch store would let a block reading
-  // (Q, epoch) mid-commit take a mixed pair. Same generation — the
-  // re-base is a whole-old-cycle move, phase-neutral for every
-  // committed clip's origin-relative render, so no origin gating rides
-  // it. This commit event is the only audio-thread writer, and
-  // message-thread fact writers are refused under a live take, so the
-  // seqlock's single-writer discipline holds.
-  setIslandFacts(quantum_samples_.load(), epoch + (rel / before) * before,
-                 islandGeneration());
 }
 
 void StackNode::addChild(std::unique_ptr<AudioNode> child) {

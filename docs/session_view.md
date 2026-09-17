@@ -83,12 +83,12 @@ empty husks while a single active island pays nothing for it.
   record verb; the transport carries no record button (per-track record,
   projects.md). An armed lane shows a marker at the next Q boundary:
   "your take starts here" (Q11).
-- **The recording frame is TAKE-ANCHORED.** While recording, the frame
-  anchors at the take's start — the new phrase's downbeat is the visual
-  top, previewing the engine's epoch re-base on commit — and grows one
-  whole Q at a time to hold the cursor (`vm.cycleQ` = frame, decoupled
-  from `vm.lcmQ`). Committed lanes rotate their origin-anchored tiles to
-  show their phase against the take. The anchor snaps to a whole Q
+- **The recording frame is TAKE-SEATED.** While recording, the pending
+  take seats last in the frame's seating (frame.md) — it starts in the
+  cycle it started in, so the frame during recording IS the frame after
+  commit — and the frame grows one whole Q at a time to hold the cursor
+  (`vm.cycleQ` = frame, decoupled from `vm.lcmQ`). Committed lanes keep
+  their pictures. The take's start snaps to a whole Q
   (Q11), which also cancels the pre-record latency compensation baked
   into live `duration` — the bar's end honestly trails the playhead by
   ~C (E-E). Ruler and readout mark a growing frame with `…`, a settled

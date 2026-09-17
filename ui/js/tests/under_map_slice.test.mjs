@@ -71,18 +71,31 @@ test('1b. a member whose origin trails the group by 1Q shows the slice shifted b
 });
 
 test('2. members carry the group\'s rotation (its heard top over the map period)', () => {
-    // Group at epoch − 8Q… here: origin 0 = epoch − 2Q, window [1Q, 3Q):
-    // heard top = posMod(−2 + 1, 2) = 1Q → srcTopFrac 0.5 on the group
-    // lane AND on its member.
-    const vm = deriveViewModel(island(0), opts);
+    // A genuinely offset group (docs/frame.md): the first lane is a 4Q
+    // loop at 0, so the frame zero is seated on it; the group's window
+    // [1Q, 3Q) at origin 0 has its heard top at 1Q — no whole 4Q cycle
+    // reaches it, so it sits 1Q in, wrap ghosted: srcTopFrac 0.5 on the
+    // group lane AND on its member.
+    const st = island(0);
+    st.nodes[0].duration = 4 * Q;
+    const vm = deriveViewModel(st, opts);
     const g = laneOf(vm, 'g'), m = laneOf(vm, 'm');
     assert.equal(g.reps[0].srcTopFrac, 0.5, 'the group lane rotates by its heard top');
     assert.equal(m.reps[0].srcTopFrac, 0.5, 'the member rotates with it');
     assert.equal(m.takeStartQ, 1, 'the member\'s heard top is the group\'s');
-    // A group whose heard top IS the frame top: no rotation anywhere.
-    const vm0 = deriveViewModel(island(3 * Q), opts);
+    // A group whose heard top IS a whole 4Q cycle from the first lane's
+    // (origin 3Q, window from 1Q → top 4Q): seated at the frame top, no
+    // rotation anywhere.
+    const st0 = island(3 * Q);
+    st0.nodes[0].duration = 4 * Q;
+    const vm0 = deriveViewModel(st0, opts);
     assert.equal(laneOf(vm0, 'g').reps[0].srcTopFrac, 0);
     assert.equal(laneOf(vm0, 'm').reps[0].srcTopFrac, 0);
+    // Only a 1Q first lane: it constrains nothing, so the windowed group
+    // seats at the left edge itself — the loop you shaped starts at 0.
+    const vm1 = deriveViewModel(island(0), opts);
+    assert.equal(laneOf(vm1, 'g').reps[0].srcTopFrac, 0, 'a lone loop starts at the top');
+    assert.equal(laneOf(vm1, 'm').reps[0].srcTopFrac, 0);
 });
 
 test('3. nested maps: a member\'s own window inside a windowed group composes', () => {

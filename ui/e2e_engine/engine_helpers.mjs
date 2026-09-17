@@ -260,10 +260,15 @@ export async function verifyHeard(page, {
                 `${label}: heard content[${(nearest.inner / Q).toFixed(3)}Q], law says content[${(law.inner / Q).toFixed(3)}Q]`)
                 .toBeLessThan(tolQ);
             // …and the lane draws that very content there.
-            // The lane-frame x of this island phase: the frame top is
-            // the phase's zero — except the sole definer's RAW frame,
-            // where the cursor is mapped into the trim brackets.
-            const laneQ = phaseQ + (vm.provisionalDefiner ? (vm.loopStartQ || 0) : 0);
+            // The lane-frame x of this instant: the view model SEATS the
+            // frame zero from the lanes (docs/frame.md; vm.epochSamples),
+            // so the frame's x is the absolute clock folded from that
+            // zero — never the engine's phase — except the sole definer's
+            // RAW frame, where the cursor is mapped into the trim brackets.
+            const zeroQ = vm.epochSamples / Q;
+            const laneQ = vm.provisionalDefiner
+                ? (vm.loopStartQ || 0) + mod(t / Q - zeroQ, vm.loopCycleQ || vm.cycleQ)
+                : mod(t / Q - zeroQ, vm.cycleQ);
             const d = underMap(c.id) ? null : displayInnerQ(vm, c.id, laneQ, c.duration / Q);
             if (d && !d.rest) {
                 const diff = Math.abs(mod(d.innerQ - nearest.inner / Q + c.duration / Q / 2, c.duration / Q) - c.duration / Q / 2);

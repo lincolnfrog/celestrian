@@ -5,7 +5,7 @@
  * input), so this is the testable seam: drive a scripted record→commit
  * through the REAL engine, capture every getGraphState() "poll", and
  *   1. assert the published-state contract here (masterPos view
- *      semantics, islandEpoch re-base, live duration growth), and
+ *      semantics, the island zero staying, live duration growth), and
  *   2. dump the full poll sequence to shared/ui_contract_capture.json,
  *      which ui/js/tests/engine_replay.test.mjs replays through the
  *      actual deriveViewModel to assert DISPLAY invariants (frame
@@ -124,11 +124,10 @@ class UiContractTests : public juce::UnitTest {
     // Committed at the NEXT boundary above the stop request: 3Q
     expectEquals(childDuration(engine, 1), (int64_t)(3 * Q),
                  "stop pads forward to the next boundary (no snap-down)");
-    // Epoch re-bases ONLY on growth — to the newest committed origin
+    // No commit moves the island zero (docs/frame.md): the JS replay
+    // seats the new take from the lanes.
     const int64_t epochAfter = islandEpoch(engine);
-    expect(epochAfter != epochBefore, "epoch re-bases when the cycle grows");
-    expectEquals(epochAfter, childOrigin(engine, 1),
-                 "epoch re-bases to the newest committed origin");
+    expectEquals(epochAfter, epochBefore, "the zero stays through growth");
 
     // --- Dump the capture for the JS replay ---
     auto outFile = repoFile("shared/ui_contract_capture.json");

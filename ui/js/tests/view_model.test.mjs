@@ -205,11 +205,11 @@ test('FIELD 2026-07-16: a 2Q take performed at heard 2Q marks at 2Q, not 0', () 
     vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
 });
 
-test('epoch re-base: the take is ONE solid tile, not 3Q of ghost (field bug)', () => {
+test('a take recorded 3Q in is ONE solid tile, not 3Q of ghost (field bug)', () => {
     // Screenshot 2026-07-09: 1Q loop + a 4Q take recorded from absolute
-    // 3Q. Commit re-based the island epoch to 3Q (simple extension), but
-    // the root node's `origin` stays 0 — the epoch must come from the
-    // published islandEpoch, or the 4Q take marks as [0,3) ghost + [3,4) take.
+    // 3Q. The view seats the take at its own top (docs/frame.md) — the
+    // 1Q loop constrains nothing — so it draws as one tile from 0, never
+    // as [0,3) ghost + [3,4) take.
     const s = state(
         [clip(1, { origin: 0 }), clip(4, { origin: 3 * Q })],
         { origin: 0, islandEpoch: 3 * Q, masterPos: 1.1 * Q },
@@ -477,14 +477,18 @@ test('clip lanes carry inputChannel; unset reads as −1 (device default)', () =
 // (and the mirroring mock) publish them.
 
 test('GROWING FRAME is PHASE-PRESERVING: no rotation for mid-cycle takes', () => {
-    // 4Q song; recording started at view 2Q (a mid-cycle Q boundary),
-    // take has grown 5.5Q — the view cursor is at 7.5Q (past the cycle)
-    const rec = clip(0, { isRecording: true, duration: 5.5 * Q, name: 'take' });
-    const vm = deriveViewModel(state([clip(4), rec], { masterPos: 7.5 * Q }));
+    // 4Q song; recording started at 2Q (a mid-cycle Q boundary), the
+    // take has grown 5.5Q — the clock is at 7.5Q (past the cycle). The
+    // raw clock rides islandPos (measured from the root's frame, 0 here).
+    const rec = clip(0, { isRecording: true, duration: 5.5 * Q, name: 'take',
+                          origin: 2 * Q });
+    const vm = deriveViewModel(state([clip(4), rec],
+                                     { masterPos: 7.5 * Q, islandPos: 7.5 * Q }));
 
     assert.equal(vm.lcmQ, 4);            // the committed cycle is untouched (I4)
-    // Shift is whole CYCLES only: anchor 2Q is inside cycle 0 → shift 0.
-    // The frame extends to hold the cursor; nothing rotates.
+    // The take seats in the cycle it started in (docs/frame.md): its
+    // start 2Q is inside cycle 0. The frame extends to hold the cursor;
+    // nothing rotates.
     assert.equal(vm.cycleQ, 8);
     assert.equal(vm.frameExtended, true);
     assert.equal(vm.playheadQ, 7.5);     // never re-wrapped
@@ -495,10 +499,12 @@ test('GROWING FRAME is PHASE-PRESERVING: no rotation for mid-cycle takes', () =>
     assert.deepEqual(committed.reps.map(r => [r.startQ, r.endQ]), [[0, 4], [4, 8]]);
     assert.equal(committed.reps.filter(r => !r.ghost).length, 1);
 
-    // A take starting cycles deep shifts by WHOLE cycles: anchor 9Q in a
-    // 4Q song → shift 8Q, bar lands at its in-cycle phase 1Q
-    const deep = clip(0, { isRecording: true, duration: 0.5 * Q });
-    const vm2 = deriveViewModel(state([clip(4), deep], { masterPos: 9.5 * Q }));
+    // A take starting cycles deep seats by WHOLE cycles: a start at 9Q in
+    // a 4Q song is 2 whole cycles on, so its bar lands at its in-cycle
+    // phase 1Q and the 4Q lane reads exactly as before.
+    const deep = clip(0, { isRecording: true, duration: 0.5 * Q, origin: 9 * Q });
+    const vm2 = deriveViewModel(state([clip(4), deep],
+                                      { masterPos: 9.5 * Q, islandPos: 9.5 * Q }));
     assert.equal(vm2.playheadQ, 1.5); // 9.5 − 8
     assert.equal(vm2.cycleQ, 4);
     const committed2 = vm2.lanes.find(l => !l.recording);
@@ -559,15 +565,18 @@ test('take anchor snaps to the Q boundary, cancelling latency wobble', () => {
     // calibrated 139ms pre-record compensation baked into live duration.
     // The anchor must snap to 1Q so the bar sits on the downbeat.
     const Qd = 131584;
-    const rec = clip(0, { isRecording: true, duration: 673772, effectiveQuantum: Qd });
+    const rec = clip(0, { isRecording: true, duration: 673772, effectiveQuantum: Qd,
+                          origin: Qd });
     const committed = clip(0, {
         duration: Qd, effectiveQuantum: Qd, loopEnd: Qd, name: 'loop',
     });
-    const vm = deriveViewModel(state([committed, rec], { masterPos: 812032 }));
+    const vm = deriveViewModel(state([committed, rec],
+                                     { masterPos: 812032, islandPos: 812032 }));
 
     assert.equal(vm.quantum, Qd);
     assert.equal(vm.lcmQ, 1);
-    // shift snapped to 1Q (not 1.0507): playhead = 6.171 − 1 ≈ 5.17
+    // The take seats at its origin's whole Q (1Q), not at the 1.0507Q
+    // its live duration implies: playhead = 6.171 − 1 ≈ 5.17
     assert.ok(Math.abs(vm.playheadQ - 5.1707) < 0.001);
     assert.equal(vm.cycleQ, 6);
     const lane = vm.lanes.find(l => l.recording);

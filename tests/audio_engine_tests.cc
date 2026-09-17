@@ -432,9 +432,9 @@ class AudioEngineTests : public juce::UnitTest {
       // Post-kernel expectation (kernel.md): the clock is monotonic and
       // never snaps. Every block since the first arm advanced it: 1Q +
       // 4Q + 1Q + 3Q of samples driven. The UI sees it in two parts —
-      // islandEpoch (re-based on cycle growth by the commits above,
-      // StackNode::rebaseEpochOnGrowth) plus islandPos (the epoch-
-      // relative clock) — whose sum is the raw transport position.
+      // islandEpoch (the island zero, the first take's origin — no
+      // commit moves it) plus islandPos (the zero-relative clock) —
+      // whose sum is the raw transport position.
       const auto state3 = engine.getGraphState();
       const int64_t epoch =
           (juce::int64)state3.getDynamicObject()->getProperty("islandEpoch");

@@ -1,7 +1,8 @@
 /**
  * mock/recording.js — the take lifecycle: arm (with Q11 pending starts,
  * the Q13 lock-collapse, and through-map arms), the awaiting-stop pad,
- * commit (Q establishment, heard-frame origin fold, epoch re-base), and
+ * commit (Q establishment, heard-frame origin fold; no island fact
+ * moves afterwards, docs/frame.md), and
  * the per-tick growth of live takes. Also owns `recView`, the frozen
  * view base the transport publishes against while any take records.
  */
@@ -730,32 +731,10 @@ export function commitClip(node, duration) {
     node.contextCycle = heardAtArm > 0 ? heardAtArm
         : (recView.lcmBefore > 0 ? recView.lcmBefore : 0);
 
-    // Commit epoch re-base (mirrors StackNode::takeCommitted): when
-    // the cycle GREW, the epoch moves to the HEARD
-    // top the take was performed against — its (folded) origin floored
-    // to whole pre-take INTRINSIC cycles. Phase-neutral for every
-    // committed lane; the frame the user watched while recording
-    // persists at commit.
-    // THE SONG RIDES THE EPOCH (engine parity, StackNode::takeCommitted):
-    // an active root sequence joins both sides of the growth comparison,
-    // so re-bases happen in whole songs or not at all.
-    let newCycle = committedCycle(effectiveQuantumForState());
-    let before = recView.lcmBefore;
-    {
-        const seqLen = activeSeqLen({ sequence: state.rootSequence,
-                                      sequenceBypassed: state.rootSequenceBypassed });
-        if (seqLen > 0 && before > 0) {
-            before = lcm(before, seqLen);
-            newCycle = lcm(newCycle, seqLen);
-        }
-    }
-    if (before > 0 && newCycle > before && duration > 0) {
-        const rel = Math.max(0, foldedOrigin - state.islandEpoch);
-        state.islandEpoch = state.islandEpoch +
-            Math.floor(rel / before) * before;
-        console.log('[MockBackend] Cycle grew: epoch re-based to heard top',
-            state.islandEpoch);
-    }
+    // A commit moves no island fact (engine parity, StackNode::takeCommitted;
+    // docs/frame.md): the island's zero is the first take's origin and
+    // stays there. Where the new take sits on screen is seated by the
+    // view from the lanes — in the cycle it started in.
 
     // Release the frozen view base when the LAST recording stops
     // (mirrors the engine's was_any_node_recording_ edge)
