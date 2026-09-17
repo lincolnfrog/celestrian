@@ -43,7 +43,9 @@ topₖ = originₖ + a0ₖ;  a lane's offset in the frame = (topₖ − Z) mod p
   recorded into a group starts at the left edge just as one recorded
   loose would.
 - The root seats **first** when it carries a song: the song owns the
-  frame, and its length is the first cycle-so-far.
+  frame, and its length is the first cycle-so-far. Its top is the
+  root's own origin — the zero the view had seated when the song was
+  authored (§4) — so authoring a song moves nothing.
 - One-shots do not seat (their offset is their placement, Q5).
 - A recording take seats by its top alone; its period is unknown until
   stop and must not move the lanes after it as it grows. So the frame
@@ -104,7 +106,8 @@ A — so the zero moves 2Q, B lands at 0, and A's picture is unchanged.
 | Fact | What it is |
 |---|---|
 | **Origins**, on every node (Q18) | when the node began; moved only to keep audio continuous (the continuity re-anchor while playing, the definer's re-trim), by a seek (everything together), and by a lock-collapse |
-| **Q, with the island zero** | the grid: a length and where it starts. The zero is the first take's origin, set at the first commit (an import that establishes Q likewise), immortal until the island empties (Q1, S11), shifted by seek, re-set by a Q13 re-trim to the definer's new top. It is the arm grid's phase — user-facing as the ● "your take starts here" marker and the count-in — and the frame the root's own song or window folds from. Stored as a residue because committed origins are *not* all on the grid: a take recorded through an ⌥-slid window has an off-grid origin. |
+| **Q, with the island zero** | the grid: a length and where it starts. The zero is the first take's origin, set at the first commit (an import that establishes Q likewise), immortal until the island empties (Q1, S11), shifted by seek, re-set by a Q13 re-trim to the definer's new top. It is the arm grid's phase — user-facing as the ● "your take starts here" marker and the count-in — and the frame a root window folds from. Stored as a residue because committed origins are *not* all on the grid: a take recorded through an ⌥-slid window has an off-grid origin. |
+| **The root's origin**, while it carries a song (2026-09-17) | Q18 at depth 0: authoring a song on the root anchors it at the zero the view had seated — `setSequence` carries that zero, snapped to the Q grid; the island zero when none is given — so the song's top is where the picture already started. Its song folds from it on both threads (`StackNode::frameOrigin`, `heard::songPositionAt`), the cursor, a seek and the root's bounce measure from it (`AudioEngine::rootFrameTop`), a seek shifts it with every origin, and the session stores it like any stack's. A root already anchored keeps its origin (the song owns the frame); clearing the song un-anchors, as does the island revert that clears every song. Content never anchors the root (`settleAnchors` skips it). Both changes ride the edit's inverse. |
 
 Nothing else. No commit and no map edit moves the zero
 (`StackNode::takeCommitted`, `AudioEngine::attachMapEditRiders`).
@@ -136,12 +139,12 @@ Everything else is the picture the old rules produced, now derived.
 
 ## 7. Pending
 
-- **A root song or window authored after takes** folds from the island
-  zero (the first take's origin), so the view seats the root there when
-  the song appears; if the seated zero was elsewhere, the picture moves
-  to the song's top at authoring. The refinement ruled but not yet
-  built: capture the seated zero as the root's own origin at authoring
-  (Q18 at depth 0), so authoring a song moves nothing.
+- ~~**A root song authored after takes** moves the picture to the
+  island zero.~~ **Built 2026-09-17** (§4): the root anchors at the
+  seated zero when its song is authored; pinned by scenario S39, the
+  mock parity test in `ui/js/tests/sequence.test.mjs` and the engine
+  e2e journey in `see_vs_hear.spec.js`. A root **window** (engine API
+  only; the UI authors none) still folds from the island zero.
 - **Bounce, import and seek** still take positions in the engine's
   zero-relative frame; the view converts. Moving them to absolute
   positions removes the last engine reads of the frame.

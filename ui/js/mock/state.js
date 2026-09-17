@@ -28,7 +28,19 @@ export const state = {
     // effects.js installs the default chain here lazily, like a node.
     root: { id: 'mock-root', type: 'stack', effects: null },
     rootAuditionStep: -1,  // the root's step audition (§11.2), −1 = none
+    // THE ROOT'S ANCHOR (docs/frame.md §4; engine parity): the root is
+    // anchored while it carries a song, at the frame zero the view had
+    // seated when the song was authored; its song folds from there.
+    rootAnchored: false,
+    rootOrigin: 0,
 };
+
+/** The ROOT'S FRAME TOP (engine AudioEngine::rootFrameTop): its origin
+ * while a song anchors it, else the island zero. The cursor fold, the
+ * recording view base and a seek measure from here. */
+export function rootFrameTop() {
+    return state.rootAnchored ? (state.rootOrigin || 0) : (state.islandEpoch || 0);
+}
 
 // Generate unique IDs
 export function generateId() {
@@ -500,6 +512,9 @@ export function serializeGraph() {
                             // node-level sequences ride state.nodes.
                             rootSequence: state.rootSequence || null,
                             rootSequenceBypassed: !!state.rootSequenceBypassed,
+                            // The root's anchor rides its song (frame.md §4).
+                            rootAnchored: !!state.rootAnchored,
+                            rootOrigin: state.rootOrigin || 0,
                             // The root's rack (chain STRUCTURE is undoable).
                             rootEffects: state.root.effects || null });
 }
@@ -528,5 +543,7 @@ export function restoreGraph(snap) {
     state.islandQ = o.islandQ || 0;
     state.rootSequence = o.rootSequence || null;
     state.rootSequenceBypassed = !!o.rootSequenceBypassed;
+    state.rootAnchored = !!o.rootAnchored;
+    state.rootOrigin = o.rootOrigin || 0;
     state.root.effects = o.rootEffects || null;
 }

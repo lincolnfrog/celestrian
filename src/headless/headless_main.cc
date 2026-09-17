@@ -254,11 +254,19 @@ class Host {
         bool found = false;
         call("toggleSolo", dummy, found);
         // The published islandPos is the raw clock EPOCH-RELATIVE and
-        // unwrapped (AudioEngine::getGraphState) — the phase of the
-        // first rendered sample is simply its fold on the cycle.
+        // unwrapped (AudioEngine::getGraphState). The cells are laid
+        // out from the ROOT'S FRAME TOP — its origin while a song
+        // anchors it (docs/frame.md §4), else the island zero — the
+        // frame the view seats the song on; the phase of the first
+        // rendered sample is its fold on the cycle from there.
         int64_t pos0 = 0;
         onMessageThread([&] {
-          pos0 = (int64_t)(double)engine_.getGraphState().getProperty("islandPos", 0);
+          const juce::var s = engine_.getGraphState();
+          const int64_t epoch = (int64_t)(double)s.getProperty("islandEpoch", 0);
+          const int64_t top = (bool)s.getProperty("anchored", false)
+                                  ? (int64_t)(double)s.getProperty("origin", 0)
+                                  : epoch;
+          pos0 = (int64_t)(double)s.getProperty("islandPos", 0) + epoch - top;
         });
         std::vector<float> out;
         // The solo lands as a mute RAMP on every other lane (≤ one
@@ -431,10 +439,19 @@ class Host {
     const bool was_paused = paused_.exchange(true);
     juce::var st;
     int64_t pos0 = 0;
+    // `pos` stays EPOCH-relative (the specs recover the absolute clock
+    // as epoch + pos); `phase` folds from the ROOT'S FRAME TOP — its
+    // origin while a song anchors it (docs/frame.md §4), else the
+    // island zero — the frame a root song's gates fold on.
+    int64_t top_from_epoch = 0;
     onMessageThread([&] {
       if (!engine_.isPlaying()) engine_.togglePlayback();
       st = engine_.getGraphState();
       pos0 = (int64_t)(double)st.getProperty("islandPos", 0);
+      if ((bool)st.getProperty("anchored", false)) {
+        top_from_epoch = (int64_t)(double)st.getProperty("origin", 0) -
+                         (int64_t)(double)st.getProperty("islandEpoch", 0);
+      }
     });
     const int64_t cycle = islandCycleOnMessageThread(st);
     if (samples <= 0) samples = cycle > 0 ? cycle : (int64_t)rate_;
@@ -457,7 +474,8 @@ class Host {
       auto* f = new juce::DynamicObject();
       const int64_t centre = pos0 + s + kFrame / 2;
       f->setProperty("pos", (double)centre);
-      f->setProperty("phase", (double)posmod(centre, cycle > 0 ? cycle : 1));
+      f->setProperty("phase",
+                     (double)posmod(centre - top_from_epoch, cycle > 0 ? cycle : 1));
       juce::Array<juce::var> heard, unknown;
       for (const auto& p : decode(out.data() + s)) {
         // Attribution: the take whose capture range holds the clock.

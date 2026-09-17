@@ -380,7 +380,8 @@ void AudioEngine::toggleLoopWindow(const juce::String& uuid) {
 }
 
 void AudioEngine::setSequence(const juce::String& uuid,
-                              const juce::var& payload) {
+                              const juce::var& payload,
+                              std::optional<int64_t> zero) {
   auto* stack = dynamic_cast<celestrian::StackNode*>(
       findNodeByUuid(root_node.get(), uuid));
   if (stack == nullptr) {
@@ -476,6 +477,34 @@ void AudioEngine::setSequence(const juce::String& uuid,
     // NOTE (S10): step lengths are NOT gated on Q coherence —
     // steps CONCATENATE (never LCM), free lengths are deliberate and
     // badged in the UI; the frame-health warning is display machinery.
+  }
+  // THE ROOT'S ANCHOR (docs/frame.md §4, Q18 at depth 0): a song on
+  // the root anchors it at the zero the view had seated — the song's
+  // top is where the picture already started, so authoring moves
+  // nothing. The zero lands on the Q grid (the view seats it there; an
+  // off-grid caller is snapped) and defaults to the island zero, the
+  // frame the root folded from before. A root that already carries a
+  // song keeps its origin: the song owns the frame. Clearing the song
+  // un-anchors. Either way the change is an anchor rider the inverse
+  // reverses exactly (applyAnchorRiders), never a re-derivation.
+  if (stack == root_node.get()) {
+    const int64_t q = root_node->getQuantum();
+    const bool anchored = root_node->isAnchored();
+    if (e.seq && !anchored && q > 0) {
+      const int64_t epoch = root_node->getEpoch();
+      const int64_t z = zero.value_or(epoch);
+      celestrian::Edit::AnchorRider r;
+      r.uuid = uuid;
+      r.anchored = true;
+      r.origin = z - celestrian::timing::posMod(z - epoch, q);
+      e.anchors.push_back(std::move(r));
+    } else if (!e.seq && anchored) {
+      celestrian::Edit::AnchorRider r;
+      r.uuid = uuid;
+      r.anchored = false;
+      r.origin = 0;
+      e.anchors.push_back(std::move(r));
+    }
   }
   record(std::move(e));
 }

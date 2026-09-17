@@ -57,14 +57,17 @@ bool AudioEngine::seekTransport(double pos_samples) {
     pos = 0;
   }
 
-  // The seek itself: epoch := t - pos, so rel = t - epoch reads as
-  // exactly the requested phase from the next block/poll on. The
-  // monotonic clock is untouched (kernel.md); islandPos teleports
-  // with the epoch, and the UI's dead-reckoner classifies the jump
-  // as a TELEPORT, never velocity (playhead_clock.js).
+  // The seek itself: the island's zero moves so that the root's frame
+  // top lands at t − pos (the top IS the epoch without a root song;
+  // under one it is the root's origin, which rides the same delta
+  // below), so masterPos reads as exactly the requested phase from
+  // the next block/poll on. The monotonic clock is untouched
+  // (kernel.md); islandPos teleports with the epoch, and the UI's
+  // dead-reckoner classifies the jump as a TELEPORT, never velocity
+  // (playhead_clock.js).
   const int64_t t = global_transport_pos.load();
   const int64_t epoch_old = root_node->getEpoch();
-  const int64_t epoch_new = t - pos;
+  const int64_t epoch_new = epoch_old + ((t - pos) - rootFrameTop());
   const uint32_t gen = root_node->nextIslandGeneration();
   // THE CONTENT-FRAME LAW (time_maps.md; pinned by
   // tests/content_frame_tests.cc): clips read their buffers
@@ -112,6 +115,7 @@ void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
     if (e.setsIsland) e.iepoch += delta;
     if (e.setsOrigin) e.iorg += delta;
     for (auto& r : e.anchors) r.origin += delta;
+    for (auto& r : e.seq_riders) r.origin += delta;  // the root's anchor
     for (auto& tp : e.takes) tp.state.origin += delta;
     for (auto& ot : e.other_takes) ot.second.origin += delta;
     shiftSubtree(e.node.get());
@@ -143,9 +147,11 @@ juce::var AudioEngine::getGraphState() {
     master_view = (double)(view_base_.load() + (t - view_anchor_t_.load()));
   } else {
     // Wrap on the EFFECTIVE cycle (E-C): active windows shorten what
-    // is audible, and the playhead loops with what is heard.
+    // is audible, and the playhead loops with what is heard — from the
+    // root's frame top (its song's origin while it carries one, else
+    // the island zero), the place the root's own geometry folds from.
     const int64_t cycle = calculateEffectiveCycleLength();
-    const int64_t rel = t - islandEpoch();
+    const int64_t rel = t - rootFrameTop();
     master_view = (double)celestrian::timing::posMod(rel, cycle);
   }
   // The RAW island clock (epoch-relative, unwrapped): masterPos above is

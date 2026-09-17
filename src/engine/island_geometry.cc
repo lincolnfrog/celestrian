@@ -335,15 +335,15 @@ int64_t AudioEngine::cycleTopOf(const celestrian::AudioNode& node) const {
 
 void AudioEngine::settleAnchors(celestrian::Edit& inv) {
   forEachStack(root_node.get(), [&](celestrian::StackNode& stack) {
-    // THE ROOT IS NEVER ANCHORED (owner ruling 2026-09-09, "the grid
-    // you see is the grid you hear"): the island root's inner timeline
-    // IS the island timeline, whose zero is the EPOCH — the ruler the
-    // UI draws every root song, window and tile from. Anchoring the
-    // root at its first take's origin parted the two on every growth
-    // re-base (the epoch moves by whole old cycles; the origin stayed),
-    // and the root song's gates then landed whole cycles off the grid
-    // on screen. frameOrigin/frameOriginOf fall through to the received
-    // cycle top — the epoch — for an unanchored stack.
+    // THE ROOT NEVER SETTLES: content does not anchor it. Its anchor is
+    // owned by its SONG (docs/frame.md §4; setSequence): authoring a
+    // root song anchors the root at the zero the view had seated, so
+    // the song's grid is the grid on screen ("the grid you see is the
+    // grid you hear", 2026-09-09 — once broken by anchoring the root at
+    // its first take while the growth re-base moved the epoch; no
+    // commit moves the zero now). Without a song frameOrigin /
+    // frameOriginOf fall through to the received cycle top — the
+    // island zero.
     if (&stack == root_node.get()) return;
     const bool has = hasCommittedContent(stack);
     if (has == stack.isAnchored()) return;  // nothing to settle
@@ -465,6 +465,13 @@ void AudioEngine::setIslandQuantum(int64_t q, int64_t epoch,
       celestrian::Edit::SeqRider r;
       r.uuid = stack.getUuid();
       r.seq = std::make_unique<celestrian::Sequence>(*cur);
+      // The ROOT's anchor rides its song (docs/frame.md §4): the song
+      // goes, so does the anchor; the rider brings both back.
+      if (&stack == root_node.get() && stack.isAnchored()) {
+        r.anchored = true;
+        r.origin = stack.origin_samples.load();
+        stack.setAnchor(false, 0, 0);
+      }
       inv.seq_riders.push_back(std::move(r));
       stack.setAuditionStep(-1);
       if (const auto* old = stack.exchangeSequence(nullptr)) retireOwned(old);
@@ -493,6 +500,10 @@ void AudioEngine::reinstallSequenceRiders(celestrian::Edit& e) {
     auto* fresh = new celestrian::Sequence(*r.seq);
     fresh->finalize();
     if (const auto* old = stack->exchangeSequence(fresh)) retireOwned(old);
+    // The root's anchor comes back with its song (docs/frame.md §4).
+    if (r.anchored && stack == root_node.get()) {
+      stack->setAnchor(true, r.origin, 0);
+    }
   }
   e.seq_riders.clear();
 }

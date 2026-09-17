@@ -177,7 +177,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         const int64_t view_cycle = celestrian::snapEffectiveCycle(
             *pc.snap, root_node->getQuantum(),
             (int64_t)cached_sample_rate_.load());
-        const int64_t rel = old_pos - islandEpoch();
+        // …measured from the root's frame top (its song's origin under
+        // a root song, else the island zero — AudioNode::frameOrigin),
+        // the same top getGraphState folds masterPos from.
+        const int64_t rel = old_pos - root_node->frameOrigin(pc);
         view_base_.store(view_cycle > 0 ? rel % view_cycle : rel);
         view_anchor_t_.store(old_pos);
       }

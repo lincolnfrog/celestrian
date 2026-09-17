@@ -84,6 +84,8 @@ export function loadScenario(name) {
     state.rootSequence = null;        // the root song (sequencer.md)
     state.rootSequenceBypassed = false;
     state.rootAuditionStep = -1;
+    state.rootAnchored = false;       // the root's anchor rides its song
+    state.rootOrigin = 0;
     // Loading a scenario is a fresh session — undo history does not carry
     // across it (test isolation + mirrors constructing a fresh engine).
     clearUndoHistory();

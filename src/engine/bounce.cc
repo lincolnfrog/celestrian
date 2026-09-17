@@ -79,8 +79,9 @@ bool AudioEngine::bounce(const juce::String& uuid,
   // THE SPAN (docs/bounce.md): one pass from the node's FRAME TOP,
   // origin + a0 (a0 = its active map's first segment start) — ONE law
   // for every node (audit D15-1). A clip is anchored by construction
-  // (Q18); an unanchored stack's frame is the received island frame,
-  // and the root is never anchored, so the root's top is the epoch
+  // (Q18); an unanchored stack's frame is the received island frame —
+  // the root's too, unless a song anchors it at the zero the song was
+  // authored on (docs/frame.md §4) — so the root's top is its frame top
   // (+ a0 under a root map: the moment its window starts, not the
   // moment the island cycle wraps). The root spans one EFFECTIVE
   // island cycle (Q19 — the cycle the transport wraps on; a root window
@@ -94,6 +95,9 @@ bool AudioEngine::bounce(const juce::String& uuid,
               : celestrian::period_law::ownPeriodOf(*target);
   const celestrian::timing::TimeMap map = target->activeTimeMap();
   const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
+  // The frame top by the one law (D15-1): an anchored node's origin —
+  // the root's too, under a root song (docs/frame.md §4) — else the
+  // island zero; plus the map's first start.
   const int64_t top =
       (target->isAnchored() ? target->origin_samples.load() : islandEpoch()) +
       a0;

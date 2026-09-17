@@ -65,6 +65,13 @@ struct LoadedSession {
   // its LIVE root with applyNodeFacts — the root's identity never
   // changes across a load.
   juce::var root;
+  // THE ROOT'S ANCHOR (docs/frame.md §4): a root that carried a song
+  // was anchored at the zero the song was authored on; its record
+  // stores it like any stack's (`anchored` + `originQ` from the
+  // epoch). Absent = unanchored (no song, or a bundle from before
+  // 2026-09-17). Resolved here because the epoch is a load-level fact.
+  bool root_anchored = false;
+  int64_t root_origin = 0;
   std::vector<std::unique_ptr<AudioNode>> children;
   juce::String display_name;  // project display name (docs/projects.md)
   juce::String created;       // creation stamp, echoed verbatim

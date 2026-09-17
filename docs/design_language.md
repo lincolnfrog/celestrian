@@ -322,6 +322,22 @@ in the doc that owns its feature, but each has a pointer here.
   `mock_epoch.test.mjs`, `tests/regression_tests.cc` ("MAP EDITS MOVE
   NO ISLAND FACT") and the engine e2e journeys in `rebase.spec.js` and
   `loop_edits.spec.js`.
+- **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
+  2026-09-17; frame.md §4):** a song authored on the root anchors the
+  root — Q18 at depth 0 — at the zero the view had seated when the
+  song was authored (`setSequence` carries it, snapped to the Q grid;
+  the island zero when none is given), so the song's top is where the
+  picture already started and authoring moves nothing. Before this the
+  root's song folded from the island zero, and a picture the lanes had
+  seated elsewhere jumped to it the moment a song appeared. A root
+  already anchored keeps its origin (the song owns the frame); clearing
+  the song un-anchors, as does the island revert that clears every
+  song; content never anchors the root. The cursor fold, a seek and
+  the root's bounce measure from the root's frame top
+  (`AudioEngine::rootFrameTop`); a seek shifts the root's origin with
+  every other; the session stores it like any stack's. Pinned by
+  scenario S39, `ui/js/tests/sequence.test.mjs` (mock parity + the
+  seating) and the root-song journey in `see_vs_hear.spec.js`.
 - **ONE GESTURE, ONE UNDO — AND NO MORE (owner, 2026-09-10):** a
   drag streams live map commits so the splice is audible while
   dragging, and those fold into ONE undo entry; but two separate cut
@@ -336,13 +352,16 @@ in the doc that owns its feature, but each has a pointer here.
   bug: a 4-section root song sounded the full band over the guitar-only
   section, the guilty section wandering with every take):** a song's
   step grid folds from its OWNER'S frame origin, and the display draws
-  it from the same place. The ROOT IS NEVER ANCHORED — its inner
-  timeline is the island timeline, whose zero is the EPOCH, the ruler
-  every root song, window and tile is drawn on (`settleAnchors` skips
-  the root; `frameOrigin` falls through to the epoch). Anchoring the
-  root at its first take's origin had parted the two on every growth
-  re-base (the epoch moves by whole old cycles, the origin stayed) —
-  the gates landed whole cycles off the grid on screen. A GROUP's song
+  it from the same place. CONTENT NEVER ANCHORS THE ROOT — without a
+  song its inner timeline is the island timeline, whose zero is the
+  EPOCH, the ruler every root window and tile is drawn on
+  (`settleAnchors` skips the root; `frameOrigin` falls through to the
+  epoch). Anchoring the root at its first take's origin had parted the
+  two on every growth re-base (the epoch moves by whole old cycles, the
+  origin stayed) — the gates landed whole cycles off the grid on
+  screen. *Since 2026-09-17 the root IS anchored while it carries a
+  song — at the zero the view had seated when the song was authored,
+  which is the grid on screen by construction (the entry below).* A GROUP's song
   folds from the group's Q18 origin, where its window brackets and take
   tile already sit; the lanes now carry that phase (`seqDims[].phaseQ`,
   the grid row's `phaseQ`). Pinned end to end: scenarios S30/S31 (what

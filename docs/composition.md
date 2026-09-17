@@ -196,7 +196,8 @@ relies on it only for where to draw the brackets, not for what sounds.
 
 | Event | Effect on origins |
 |---|---|
-| First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root — **the root itself excluded**: it is never anchored, its inner timeline is the island timeline and its zero is the epoch (ruling 2026-09-09, design_language §5) (rides the take's undo entry; Untake un-anchors) |
+| First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root — **the root itself excluded**: content never anchors it; without a song its inner timeline is the island timeline and its zero is the epoch (ruling 2026-09-09, design_language §5) (rides the take's undo entry; Untake un-anchors) |
+| A song is authored on the root (2026-09-17, frame.md §4) | `root.origin := the zero the view had seated` (snapped to the Q grid; the island zero when none is passed), anchored — Q18 at depth 0, so the song's top is where the picture already started. A root already anchored keeps its origin; clearing the song (or the island revert that clears every song) un-anchors. Rides the Sequence edit's inverse. |
 | Combine (post-hoc group) | `new.origin := min(member origins)`, anchored |
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
 | Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `epoch := O' + start`; `Q := len`. **One implementation** for clips and stacks. |

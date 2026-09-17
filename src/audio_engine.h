@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 
 #include "audio_node.h"
@@ -341,8 +342,18 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * payload clears. Undoable (Edit::Sequence); refused while a take is
    * armed/recording in the subtree (the mid-take gate) and on
    * malformed payloads (0 or >64 steps, non-positive lengths).
+   *
+   * THE ROOT'S ANCHOR (docs/frame.md §4): a song authored on the ROOT
+   * anchors it — Q18 at depth 0 — at `zero`, the absolute sample the
+   * view had seated the frame's zero on (snapped to the Q grid; the
+   * island zero when absent), so authoring a song moves nothing on
+   * screen: the song's top IS where the picture already started. A
+   * root already anchored keeps its origin (the song owns the frame);
+   * clearing the root's song un-anchors it. Both ride the edit's
+   * inverse. Nested stacks ignore `zero` (they anchor at content).
    */
-  void setSequence(const juce::String& uuid, const juce::var& payload);
+  void setSequence(const juce::String& uuid, const juce::var& payload,
+                   std::optional<int64_t> zero = std::nullopt);
 
   /** The sequence's jam toggle (bypass), the loop-window twin:
    * bypassed = everything sounds, geometry kept. */
@@ -734,6 +745,13 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // frame zero from the lanes). Clip arm/commit math reads the same
   // epoch (AudioNode::getIslandEpoch), keeping ONE grid everywhere.
   int64_t islandEpoch() const;
+  /** The ROOT'S FRAME TOP (the one frame-top law, D15-1): its own
+   * origin while it carries a song (anchored at the zero the song was
+   * authored on, docs/frame.md §4), else the island zero. The cursor
+   * fold, the recording view base, a seek and the root's bounce all
+   * measure from here — the same place the root's song folds from on
+   * the audio thread (StackNode::frameOrigin). */
+  int64_t rootFrameTop() const;
 
   bool was_any_node_recording_ = false;  // audio thread only (view upkeep)
   std::atomic<int64_t> view_base_{0};

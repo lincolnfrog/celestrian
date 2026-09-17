@@ -173,7 +173,8 @@ export function patchSeqGrid(row, lane, vm) {
     if (lane.visits.length && lane.totalQ > 0 && vm.isPlaying &&
         !lane.bypassed) {
         // The song is anchored at its owner's frame origin (Q18: a
-        // group's origin; the epoch for the root) — `phaseQ` is that
+        // group's origin; the root's, the zero its song was authored
+        // on — frame.md §4) — `phaseQ` is that
         // origin in the lane frame, so the column follows what the
         // engine actually gates (the grid you see is the grid you hear).
         const rel = posMod(vm.playheadQ - (lane.phaseQ || 0), lane.totalQ);

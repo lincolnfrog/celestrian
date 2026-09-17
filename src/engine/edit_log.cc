@@ -67,9 +67,13 @@ celestrian::Edit AudioEngine::applyEdit(celestrian::Edit e) {
   celestrian::Edit anchor_riders_in;
   if (had_anchor_riders) anchor_riders_in.anchors = std::move(e.anchors);
   celestrian::Edit inv = applyEditImpl(std::move(e));
-  if (inv.kind != K::Nop && content_edit) {
+  // A Sequence edit carries the ROOT's anchor rider (a song authored on
+  // the root anchors it at the seated zero; clearing un-anchors —
+  // docs/frame.md §4): the rider applies, but nothing settles — the
+  // root's anchor is owned by its song, not by content.
+  if (inv.kind != K::Nop && (content_edit || kind == K::Sequence)) {
     if (had_anchor_riders) applyAnchorRiders(anchor_riders_in, inv);
-    settleAnchors(inv);
+    if (content_edit) settleAnchors(inv);
   }
   // Structural mutations re-publish the whole-graph snapshot:
   // record/undo/redo all funnel through here, so this is the one place

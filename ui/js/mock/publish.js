@@ -230,9 +230,16 @@ export function getState() {
         // unwrapped — the UI folds it on its own pinned frame during
         // map gestures for a continuous cursor.
         islandPos: state.masterPos - state.islandEpoch,
-        // Island epoch (mirrors getGraphState): the UI's frame origin.
-        // Commit re-bases it to the newest origin on simple extensions.
+        // The island zero (mirrors getGraphState): the first take's
+        // origin, the Q grid's phase; no commit moves it (frame.md).
         islandEpoch: state.islandEpoch,
+        // THE ROOT'S ANCHOR (frame.md §4; engine parity: the root
+        // StackNode publishes `anchored` + `origin` like every node):
+        // anchored while it carries a song, at the zero the song was
+        // authored on — the view seats the root there and folds its
+        // song from there.
+        anchored: !!state.rootAnchored,
+        origin: state.rootAnchored ? (state.rootOrigin || 0) : 0,
         // The definer (engine parity): the sole committed clip or the
         // definer stack; '' when none.
         definerId: publishedDefinerId(),

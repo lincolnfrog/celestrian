@@ -936,10 +936,10 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(is.cycle(), 8 * Q, "8Q");
       const juce::String root = is.rootId();
       const int64_t E = is.epoch();
-      // THE ROOT IS NEVER ANCHORED: its inner timeline is the island
-      // timeline, whose zero is the epoch — the first take's origin,
-      // which no commit moves (docs/frame.md).
-      expect(!is.nodePtr(root)->isAnchored(), "the root is never anchored");
+      // NO CONTENT ANCHORS THE ROOT: without a song its inner timeline
+      // is the island timeline, whose zero is the epoch — the first
+      // take's origin, which no commit moves (docs/frame.md).
+      expect(!is.nodePtr(root)->isAnchored(), "no song: the root is unanchored");
       expectEquals(posmod(E - is.origin(c1), 8 * Q), (int64_t)0,
                    "the zero is the first take's origin and stays there");
       is.engine.setSequence(root, seqPayload({{4 * Q}, {4 * Q}}, {{c1, {true, false}}}));
@@ -960,6 +960,115 @@ class ScenarioTests : public juce::UnitTest {
         if (std::abs(want - v) > 2.0e-7f) ++bad;
       }
       expectEquals(bad, 0, "c1 is silent in step 2 of the grid you SEE (epoch frame)");
+      // THE ROOT'S ANCHOR RIDES ITS SONG (docs/frame.md §4): authoring
+      // the song anchored the root — at the island zero, the default
+      // when no seated zero is passed.
+      expect(is.nodePtr(root)->isAnchored(), "a root song anchors the root");
+      expectEquals(is.nodePtr(root)->origin_samples.load(), E,
+                   "at the island zero by default");
+    }
+
+    // ------------------------------------------------------------------
+    beginTest("S39: a root song authored on a SEATED zero off the island "
+              "zero anchors the root there; the song folds from it; clearing, "
+              "undo and an island revert un-anchor; a seek and a session round "
+              "trip keep the anchor");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String c2 = is.record(4 * Q);
+      is.drive(4 * Q);
+      const juce::String root = is.rootId();
+      const int64_t E = is.epoch();
+      expectEquals(is.cycle(), 4 * Q, "4Q");
+      expect(!is.nodePtr(root)->isAnchored(), "no song: the root is unanchored");
+      // The view had seated the frame's zero a whole cycle-so-far past
+      // the island zero (say c2's top, 1Q after c1's): the song lands
+      // there, so authoring it moves nothing on screen. An off-grid
+      // zero is snapped onto the Q grid (the view never sends one).
+      const int64_t Z = E + Q;
+      is.engine.setSequence(
+          root, seqPayload({{2 * Q}, {2 * Q}}, {{c2, {true, false}}}),
+          Z + Q / 3);
+      expect(is.nodePtr(root)->isAnchored(), "the song anchors the root");
+      expectEquals(is.nodePtr(root)->origin_samples.load(), Z,
+                   "at the seated zero, on the Q grid");
+      expectEquals(is.epoch(), E, "the island zero itself never moves");
+      expectEquals(is.cycle(), 4 * Q, "the song is the cycle");
+      // WHAT SOUNDS: the song folds from Z — c2 is silent in step 2,
+      // which is [Z + 2Q, Z + 4Q) mod 4Q, NOT [E + 2Q, E + 4Q).
+      const int64_t fade = (int64_t)(44100.0 * 0.010);
+      auto check = [&](int64_t zero, const char* label) {
+        is.refresh();
+        std::vector<std::pair<int64_t, float>> out;
+        is.drive(8 * Q, &out);
+        int bad = 0;
+        for (const auto& [t, v] : out) {
+          const int64_t srel = posmod(t - zero, 4 * Q);
+          const int64_t dseam =
+              std::min(posmod(srel, 2 * Q), 2 * Q - posmod(srel, 2 * Q));
+          if (dseam <= fade) continue;
+          const bool on = srel < 2 * Q;
+          const float want = is.loopVal(c1, t) + (on ? is.loopVal(c2, t) : 0.0f);
+          if (std::abs(want - v) > 2.0e-7f) ++bad;
+        }
+        expectEquals(bad, 0, label);
+      };
+      check(Z, "c2 is silent in step 2 of the song folded from the seated zero");
+      // masterPos folds from the root's frame top too (the cursor
+      // agrees with the gates).
+      expectEquals(is.masterPos(), posmod(is.clock - Z, 4 * Q),
+                   "masterPos is measured from the root's frame top");
+      // A SEEK moves every origin with the zero — the root's included —
+      // and lands the requested phase against the root's frame top.
+      expect(is.engine.seekTransport(0.0), "seek to phase 0");
+      expectEquals(is.masterPos(), (int64_t)0, "phase 0 after the seek");
+      const int64_t Z2 = is.nodePtr(root)->origin_samples.load();
+      expectEquals(Z2 - is.epoch(), Z - E, "the root's placement survives the seek");
+      check(Z2, "the song still folds from the root's origin after the seek");
+      // UNDO of the authoring un-anchors (the rider restores the exact
+      // stored state, never a re-derivation); REDO re-anchors.
+      is.engine.undo();
+      expect(!is.nodePtr(root)->isAnchored(), "undo un-anchors the root");
+      is.engine.redo();
+      expect(is.nodePtr(root)->isAnchored(), "redo re-anchors");
+      expectEquals(is.nodePtr(root)->origin_samples.load(), Z2, "at the same origin");
+      // A SESSION ROUND TRIP keeps the anchor with the song.
+      {
+        const juce::File dir =
+            juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("celestrian_s39_" + juce::Uuid().toString());
+        expect(is.engine.saveSession(dir.getFullPathName()), "saved");
+        AudioEngine other;
+        expect(other.loadSession(dir.getFullPathName()), "loaded");
+        const juce::var st = other.getGraphState();
+        expect((bool)st.getProperty("anchored", false), "anchored after load");
+        expectEquals((int64_t)(double)st.getProperty("origin", 0.0) -
+                         (int64_t)(double)st.getProperty("islandEpoch", 0.0),
+                     Z - E, "the root's placement survives the round trip");
+        dir.deleteRecursively();
+      }
+      // A re-authoring keeps the origin (the song owns the frame; the
+      // zero the view passes is that origin anyway).
+      is.engine.setSequence(root, seqPayload({{4 * Q}}), Z2 + 4 * Q);
+      expectEquals(is.nodePtr(root)->origin_samples.load(), Z2,
+                   "a root already anchored keeps its origin");
+      // CLEARING the song un-anchors; undo brings the anchor back.
+      is.engine.setSequence(root, juce::var());
+      expect(!is.nodePtr(root)->isAnchored(), "no song, no anchor");
+      is.engine.undo();
+      expect(is.nodePtr(root)->isAnchored(), "undo of the clear re-anchors");
+      expectEquals(is.nodePtr(root)->origin_samples.load(), Z2, "where it was");
+      // THE ISLAND REVERT (the last content deleted clears every song):
+      // the root's anchor goes with its song and comes back with it.
+      is.engine.deleteNode(c2);
+      is.engine.deleteNode(c1);
+      expectEquals(is.Q(), (int64_t)0, "the island reverted");
+      expect(!is.nodePtr(root)->isAnchored(), "the revert un-anchors the root");
+      is.engine.undo();
+      is.engine.undo();
+      expect(is.nodePtr(root)->isAnchored(), "undo restores the song and its anchor");
+      expectEquals(is.nodePtr(root)->origin_samples.load(), Z2, "at its stored origin");
     }
 
     // ------------------------------------------------------------------

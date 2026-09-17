@@ -95,7 +95,29 @@ function readSuccessors(step, stepCount) {
     return next;
 }
 
-export function setSequence(id, payload) {
+/**
+ * THE ROOT'S ANCHOR (docs/frame.md §4; engine parity
+ * AudioEngine::setSequence): a song authored on the root anchors it —
+ * Q18 at depth 0 — at `zero`, the absolute sample the view had seated
+ * the frame's zero on (snapped to the Q grid; the island zero when
+ * absent), so authoring a song moves nothing on screen. A root already
+ * anchored keeps its origin (the song owns the frame); clearing the
+ * song un-anchors. The undo snapshot carries both.
+ */
+function anchorRootForSong(installing, zero) {
+    const Q = state.islandQ;
+    if (installing && !state.rootAnchored && Q > 0) {
+        const epoch = state.islandEpoch || 0;
+        const z = Number.isFinite(zero) ? Math.round(zero) : epoch;
+        state.rootAnchored = true;
+        state.rootOrigin = z - posMod(z - epoch, Q);
+    } else if (!installing && state.rootAnchored) {
+        state.rootAnchored = false;
+        state.rootOrigin = 0;
+    }
+}
+
+export function setSequence(id, payload, zero) {
     const t = resolve(id);
     if (!t) {
         console.log('[MockBackend] setSequence refused — not a stack:', id);
@@ -110,6 +132,7 @@ export function setSequence(id, payload) {
     if (!payload || !Array.isArray(payload.steps) || !payload.steps.length) {
         t.holder.sequence = null;  // clear (bypass flag survives, engine parity)
         t.holder.auditionStep = -1;
+        if (t.isRoot) anchorRootForSong(false);
         console.log('[MockBackend] Sequence cleared on', id);
         return;
     }
@@ -156,6 +179,7 @@ export function setSequence(id, payload) {
     const before = t.holder.sequence ? t.holder.sequence.steps.length : 0;
     if (before !== steps.length) t.holder.auditionStep = -1;
     t.holder.sequence = { steps, gates, seed };
+    if (t.isRoot) anchorRootForSong(true, zero);
     console.log('[MockBackend] Sequence set on', id, '-', steps.length,
         'steps,', seqTotal(t.holder.sequence), 'samples');
 }
@@ -272,6 +296,8 @@ export function retimeSequences(oldQ, newQ) {
         if (!(newQ > 0)) {
             h.sequence = null;
             h.auditionStep = -1;
+            // The root's anchor rides its song (frame.md §4).
+            if (h === holders[0]) anchorRootForSong(false);
             console.log('[MockBackend] sequences cleared: empty island');
             return;
         }

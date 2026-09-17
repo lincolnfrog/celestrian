@@ -118,6 +118,11 @@ void AudioEngine::retire(std::function<void()> deleter) {
 
 int64_t AudioEngine::islandEpoch() const { return root_node->getEpoch(); }
 
+int64_t AudioEngine::rootFrameTop() const {
+  return root_node->isAnchored() ? root_node->origin_samples.load()
+                                 : root_node->getEpoch();
+}
+
 void AudioEngine::flushGraveyard() {
   std::vector<RetiredItem> pending;
   {
@@ -160,6 +165,12 @@ bool AudioEngine::loadSession(const juce::String& path) {
   // The island facts are the persisted ones (attaching content never
   // establishes any — audit D14-1).
   root_node->setQuantum(loaded.q_samples, loaded.epoch);
+  // THE ROOT'S ANCHOR (docs/frame.md §4): a root that carried a song
+  // was anchored at the zero the song was authored on; the loader
+  // resolved it from the root's record (absent = unanchored). Never
+  // settled from content (settleAnchors skips the root).
+  root_node->setAnchor(loaded.root_anchored,
+                       loaded.root_anchored ? loaded.root_origin : 0, 0);
   // The root's own record (audit D7-3) on the LIVE root: mute, the
   // master stage (B5), window, map, bypass, period source, window
   // domain, rack and song — the same facts a nested stack loads, at

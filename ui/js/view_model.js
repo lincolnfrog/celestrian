@@ -460,8 +460,9 @@ function buildSeqRow({ holder, ownerId, children, depth, quantum,
         visits,
         totalQ,
         // The song's anchor in the lane frame (the owner's origin — a
-        // group's Q18 origin; 0 for the root): the playing column is
-        // the playhead folded FROM here (engine parity; seq_grid.js).
+        // group's Q18 origin; the root's, a whole song from the seated
+        // zero, so 0 — frame.md §4): the playing column is the
+        // playhead folded FROM here (engine parity; seq_grid.js).
         phaseQ: totalQ > 0 ? (((anchorQ % totalQ) + totalQ) % totalQ) || 0 : 0,
         // The radio (§6): period-less — the seed is its performance.
         radio: !!prog.radio,
@@ -1090,9 +1091,8 @@ function effectivePeriod(node) {
 function seatFrameZero(state, nodes, quantum, gridPhase) {
     const seats = [];
     const rootSeq = activeSeqSamples(state);
-    const rootFrame = state.islandEpoch ?? state.origin ?? 0;
     if (rootSeq > 0) {
-        seats.push({ top: rootFrame, period: lcm(quantum, Math.round(rootSeq)) });
+        seats.push({ top: rootSongTop(state), period: lcm(quantum, Math.round(rootSeq)) });
     }
     const visit = ns => (ns || []).forEach(n => {
         if (n.periodSource === 'context') return;
@@ -1124,6 +1124,19 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
         if (p > 0) cycle = lcm(cycle, p);
     });
     return zero;
+}
+
+/**
+ * THE ROOT'S SONG TOP (docs/frame.md §4): the root is anchored while
+ * it carries a song — at the zero the view had seated when the song
+ * was authored (Q18 at depth 0; the engine's setSequence and the mock
+ * twin) — and its song folds from that origin, the same place the
+ * root seats first from. Unanchored (no song; a state from before the
+ * rule), the root's frame is the island zero.
+ */
+function rootSongTop(state) {
+    if (state.anchored && Number.isFinite(state.origin)) return state.origin;
+    return state.islandEpoch ?? state.origin ?? 0;
 }
 
 /**
@@ -2341,12 +2354,20 @@ export function deriveViewModel(state, opts = {}) {
                                         : loopSamples / quantum,
     };
     nodes.forEach(n => pushLane(n, 0, null, ctx));
+    // THE ROOT SONG'S PHASE in the frame (docs/frame.md §4): the song
+    // folds from the root's origin — the zero it was authored on — and
+    // the frame is seated from the lanes, so the song's top sits at
+    // (origin − zero) in Q. Zero whenever the root seats first (it
+    // carries the song), which is every state the engine produces;
+    // a fixture may put the two apart.
+    const rootAnchorQ = qEstablished
+        ? Math.round((rootSongTop(state) - epochSamples) / quantum) : 0;
     // The ROOT's active sequence projects onto the top-level lanes
     // (engine root = the song when tracks live loose at the top).
     {
         const s = seqOf(state);
         if (s && !s.bypassed) {
-            attachSeqDims(lanes, 0, lanes.length, nodes, s, quantum);
+            attachSeqDims(lanes, 0, lanes.length, nodes, s, quantum, rootAnchorQ);
         }
     }
     // THE ROOT SEQUENCER GRID (the session's own song — the root has
@@ -2366,6 +2387,7 @@ export function deriveViewModel(state, opts = {}) {
             // frame (or each "+ step" doubles).
             innerCycleQ: intrinsicCycleQ,
             editable: !anyRecording,
+            anchorQ: rootAnchorQ,
         }));
     }
     // THE MASTER RACK (B5): the root stack's fx row — the same synthetic

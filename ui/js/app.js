@@ -302,6 +302,10 @@ function indexNodes(nodes, map = new Map()) {
 
 let lastNodesById = new Map(); // refreshed every poll, used by arm handlers
 let lastRootId = '';           // island root uuid (move-to-top target)
+// The frame zero the view last SEATED (docs/frame.md), absolute
+// samples: a song authored on the root anchors the root there, so the
+// song's top is where the picture already starts (setSequence's `zero`).
+let lastSeatedZero = null;
 let auditionOwner = null;      // the stack whose step is looping (Esc target)
 
 /* ---------- record & arm (Q7: arm targets emptiness) ---------- */
@@ -709,6 +713,8 @@ async function startPolling() {
                       pinFrameQ: mapDragPinQ(),
                       pinFoldQ: mapDragPinFoldQ(),
                       pinZero: mapDragPinZero() });
+                lastSeatedZero = vm.qEstablished && Number.isFinite(vm.epochSamples)
+                    ? vm.epochSamples : null;
                 const lanesById = new Map(vm.lanes.map(l =>
                     [l.id, Object.assign({ quantum: vm.quantum }, l)]));
                 refreshPeaks(state.nodes,
@@ -1205,8 +1211,12 @@ function initApp() {
             if (seqOpen.has(id)) seqOpen.delete(id);
             else seqOpen.add(id);
         },
+        // A song on the ROOT carries the seated frame zero: the root
+        // anchors there (docs/frame.md §4), so authoring moves nothing.
         onSetSequence: (id, payload) =>
-            call('setSequence', [id, payload],
+            call('setSequence',
+                payload && id === lastRootId && lastSeatedZero !== null
+                    ? [id, payload, lastSeatedZero] : [id, payload],
                 payload ? 'sequence updated (⌘Z to undo)'
                         : 'sequence cleared (⌘Z to undo)'),
         onToggleSequenceBypass: id =>

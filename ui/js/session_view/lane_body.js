@@ -752,7 +752,8 @@ function patchSeqDims(body, lane, cycleQ) {
         const P = dims.periodQ;
         if (!(P > 0)) return;
         // The layer's song is anchored at `phaseQ` in the lane frame
-        // (its owner's origin — a group's Q18 origin; 0 for the root):
+        // (its owner's origin — a group's Q18 origin; the root's, a
+        // whole song from the seated zero, so 0 — frame.md §4):
         // tile from the first pass that touches the frame, clipped.
         const ph = (((dims.phaseQ || 0) % P) + P) % P;
         for (let base = ph - P; base < cycleQ; base += P) {

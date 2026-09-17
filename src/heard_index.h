@@ -117,8 +117,9 @@ inline int64_t foldedClockAt(const StackNode& stack, const Received& r,
 /** THE SONG POSITION a sequenced stack reads at its received clock —
  * the message-thread twin of StackNode::childContext's cue lookup: the
  * folded clock measured from the stack's OWN frame origin (Q18: a
- * group's origin; the epoch for the root, which is never anchored),
- * wrapped on the song. −1 when the stack has no active sequence. */
+ * group's origin; the root's, anchored at the zero its song was
+ * authored on — docs/frame.md §4), wrapped on the song. −1 when the
+ * stack has no active sequence. */
 inline int64_t songPositionAt(const StackNode& stack, const Received& r) {
   const Sequence* seq = stack.activeSequence();
   if (seq == nullptr || seq->total <= 0) return -1;

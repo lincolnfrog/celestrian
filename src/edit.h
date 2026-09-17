@@ -222,6 +222,12 @@ struct Edit {
   struct SeqRider {
     juce::String uuid;  // the owning stack
     std::unique_ptr<celestrian::Sequence> seq;
+    // THE ROOT'S ANCHOR RIDES ITS SONG (docs/frame.md §4): the root is
+    // anchored only while it carries a song, at the zero the song was
+    // authored on; an island revert that clears the song un-anchors
+    // it, and the reinstall re-anchors at the same stored origin.
+    bool anchored = false;
+    int64_t origin = 0;
   };
   std::vector<SeqRider> seq_riders;
 

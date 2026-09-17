@@ -14,19 +14,37 @@
 import { test, expect } from '@playwright/test';
 import { openEngine, engine, state, rec, dimmedCells, verifyHeard, listen, findNode, mod }
     from './engine_helpers.mjs';
+import { deriveViewModel } from '../js/view_model.js';
 
-test('root song after a growth re-base: lane dims == engine silence', async ({ page }) => {
+test('root song after a growth re-base: lane dims == engine silence; authoring anchors the root at the seated zero and moves no tile', async ({ page }) => {
     await openEngine(page);
     const Q = 44100;
     const c1 = await rec(page, Q);
     const c2 = await rec(page, 4 * Q);
     await engine(page, 'advance', { samples: 4 * Q });
-    // An 8Q take armed at phase 2Q: the cycle grows 4Q → 8Q and the
-    // epoch moves to the take's heard top (whole old cycles).
+    // An 8Q take armed at phase 2Q: the cycle grows 4Q → 8Q; the island
+    // zero stays and the view seats the take in the cycle it started in.
     const c3 = await rec(page, 8 * Q, { atPhase: 2 * Q });
     const s = await engine(page, 'status');
     expect(s.cycle).toBe(8 * Q);
     await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(3);
+
+    // THE PICTURE BEFORE THE SONG (docs/frame.md): the frame's zero is
+    // seated from the lanes — c2's top pulled it whole Qs past the
+    // island zero (c2 armed after c1's 1Q committed) — and each tile
+    // sits at its offset in that frame. The song must change none of it.
+    const vmOpts = { fxOpen: new Set(), windowEdit: new Set() };
+    const st0 = await state(page);
+    expect(st0.anchored, 'no song: the root is unanchored').toBe(false);
+    const vm0 = deriveViewModel(st0, vmOpts);
+    const seatedZero = vm0.epochSamples;
+    expect(seatedZero, 'the seated zero sits off the island zero').not.toBe(st0.islandEpoch);
+    const picture = vm => [c1, c2, c3].map(id => vm.lanes.find(l => l.id === id).takeStartQ);
+    const before = picture(vm0);
+    // (c3 was armed at 2Q of the island zero's frame; the seated zero
+    // sits whole Qs later, so its tile lands off the left edge — the
+    // one that would visibly move if the song re-seated the frame.)
+    expect(before[2], 'c3 seats off the left edge').toBeGreaterThan(0);
 
     // THE ROOT SONG, by hand: chip → start (one 8Q step) → + step →
     // gate the first track off in step 2.
@@ -47,6 +65,24 @@ test('root song after a growth re-base: lane dims == engine silence', async ({ p
         return g ? g.join(',') : null;
     }).toBe('true,false');
     await expect(page.locator(`.lane[data-id="${c1}"] .seq-dim`)).toHaveCount(1);
+
+    // THE ROOT'S ANCHOR RIDES ITS SONG (docs/frame.md §4): the app sent
+    // the seated zero with the first authoring, and the engine anchored
+    // the root there — the song's top IS where the picture started, so
+    // no tile moved; the island zero itself never moves.
+    const st1 = await state(page);
+    expect(st1.anchored, 'a root song anchors the root').toBe(true);
+    expect(st1.origin, 'at the zero the view had seated').toBe(seatedZero);
+    expect(st1.islandEpoch).toBe(st0.islandEpoch);
+    const vm1 = deriveViewModel(st1, vmOpts);
+    expect(vm1.cycleQ).toBe(16);
+    expect(picture(vm1), 'authoring the song moved no tile').toEqual(before);
+    // …and the DOM agrees: c3's bright tile still starts the same
+    // whole Qs in, now of a 16Q frame. (Polled: a reused tile div
+    // MORPHS over 180 ms.)
+    await expect.poll(() => page.locator(`.lane[data-id="${c3}"] .rep:not(.ghost)`).first()
+        .evaluate(el => el.offsetLeft / el.offsetParent.clientWidth), { timeout: 3000 })
+        .toBeCloseTo(before[2] / 16, 1);
 
     // The engine's audible truth, per Q cell of the 16Q song.
     const truth = await engine(page, 'truth');

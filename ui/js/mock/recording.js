@@ -15,7 +15,7 @@ import { activeGeometryOutside,
     rootActiveMap, auditionMapOf, serializeGraph,
     committedClipCount, findSoleCommittedClip, anyNodeRecording,
     effectiveQuantumForState, definerStackNode,
-    shiftOrigins, settleAnchors, frameOriginOf, nodeInner,
+    shiftOrigins, settleAnchors, frameOriginOf, nodeInner, rootFrameTop,
 } from './state.js';
 import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
 import { committedCycle, effectiveCycle } from './cycles.js';
@@ -252,7 +252,7 @@ function armRetake(node) {
         const raw = state.masterPos;
         const Q = effectiveQuantumForState();
         const viewCycle = effectiveCycle(Q);
-        const rel = raw - state.islandEpoch;
+        const rel = raw - rootFrameTop();  // the root's frame top (frame.md §4)
         recView.base = viewCycle > 0 ? posMod(rel, viewCycle) : rel;
         recView.anchor = raw;
         recView.lcmBefore = committedCycle(Q);
@@ -383,7 +383,7 @@ function armClip(node) {
         const raw = state.masterPos;
         const Q = effectiveQuantumForState();
         const viewCycle = effectiveCycle(Q);
-        const rel = raw - state.islandEpoch;
+        const rel = raw - rootFrameTop();  // the root's frame top (frame.md §4)
         recView.base = viewCycle > 0 ? posMod(rel, viewCycle) : rel;
         recView.anchor = raw;
         recView.lcmBefore = committedCycle(Q); // engine's lcm_before_take_

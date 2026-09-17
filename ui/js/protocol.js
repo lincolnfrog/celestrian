@@ -151,7 +151,11 @@ export const BRIDGE_METHODS = [
     // The SEQUENCER (docs/sequencer.md): install/replace/clear a stack's
     // sequence — { steps: [{name, len}], gates: {uuid: [0/1 per step]} },
     // lengths in samples; null/void clears. Undoable; refused mid-take.
-    { name: 'setSequence', params: ['uuid', 'sequence'] },
+    // `zero` (optional, absolute samples) is the frame zero the view
+    // has seated: a song authored on the ROOT anchors it there
+    // (docs/frame.md §4), so the song's top is where the picture
+    // already started.
+    { name: 'setSequence', params: ['uuid', 'sequence', 'zero?'] },
     // The sequence's jam toggle (bypass) — the loop-window twin.
     { name: 'toggleSequence', params: ['uuid'] },
     { name: 'auditionStep', params: ['uuid', 'step'] },

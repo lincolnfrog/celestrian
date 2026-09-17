@@ -11,7 +11,7 @@
 // Deterministic mode uses advanceBy() for exact sample-count stepping.
 
 import { posMod } from '../math_utils.js';
-import { state, effectiveQuantumForState, shiftOrigins } from './state.js';
+import { state, effectiveQuantumForState, shiftOrigins, rootFrameTop } from './state.js';
 import { effectiveCycle } from './cycles.js';
 import { recView, growRecordingClips } from './recording.js';
 
@@ -97,14 +97,19 @@ export function seekTransport(posSamples) {
     if (cycle > 0) pos = posMod(pos, cycle);
     else if (pos < 0) pos = 0;
     const epochOld = state.islandEpoch || 0;
-    state.islandEpoch = state.masterPos - pos;
+    // The island's zero moves so that the ROOT'S FRAME TOP (its song's
+    // origin under a root song, else the zero itself) lands at
+    // masterPos − pos (engine parity AudioEngine::seekTransport).
+    const delta = (state.masterPos - pos) - rootFrameTop();
+    state.islandEpoch = epochOld + delta;
     // A seek is a phase jump of the whole island (composition.md §5,
     // engine parity AudioEngine::seekTransport): every origin — clips
-    // AND stacks (Q18) — rides the epoch delta, so placement on the
-    // grid (origin − epoch) is unchanged and playback lands at the
-    // requested phase. shiftOrigins(root, delta) is the one primitive.
-    const delta = state.islandEpoch - epochOld;
+    // AND stacks (Q18), the root's too — rides the epoch delta, so
+    // placement on the grid (origin − epoch) is unchanged and playback
+    // lands at the requested phase. shiftOrigins(root, delta) is the
+    // one primitive.
     if (delta !== 0) state.nodes.forEach(n => shiftOrigins(n, delta));
+    if (delta !== 0 && state.rootAnchored) state.rootOrigin += delta;
     console.log(`[MockBackend] seekTransport → rel=${pos} (epoch=${state.islandEpoch})`);
     return true;
 }
@@ -139,6 +144,6 @@ export function viewMasterPos() {
     // E-C (engine parity): the view wraps on the EFFECTIVE cycle — the
     // playhead loops with what is heard, never past an active window.
     const cycle = effectiveCycle(Q);
-    const rel = raw - state.islandEpoch; // engine: rel = t − islandEpoch()
+    const rel = raw - rootFrameTop(); // engine: rel = t − rootFrameTop()
     return cycle > 0 ? posMod(rel, cycle) : rel;
 }

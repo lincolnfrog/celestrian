@@ -608,8 +608,9 @@ bool save(const StackNode& root, double device_sample_rate,
   // The island facts are the ONLY bundle-level state (I14): the root is
   // one node record like every stack beneath it (audit D7-3) — its
   // window, map, bypass, period source, window domain, rack, song and
-  // output stage persist through the one serializer. (The root is never
-  // anchored, so it writes no origin; its `nodes` are the session.)
+  // output stage persist through the one serializer — its anchor too,
+  // when a song anchored it (docs/frame.md §4; the loader reads it back
+  // as LoadedSession::root_anchored). Its `nodes` are the session.
   top->setProperty("qSamples", (double)q);
   top->setProperty("epoch", (double)epoch);
   top->setProperty("root", serializeNode(root, q, epoch, audioDir, opts));
@@ -649,6 +650,13 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   // record; the session's nodes are its children either way.
   out.root = o->getProperty("root").isObject() ? o->getProperty("root")
                                                 : legacyRootRecord(*o);
+  if (auto* r = out.root.getDynamicObject();
+      r != nullptr && (bool)r->getProperty("anchored")) {
+    out.root_anchored = true;
+    out.root_origin =
+        out.epoch + timing::toSamples(qread(r->getProperty("originQ")),
+                                      out.q_samples);
+  }
 
   const auto audioDir = dir.getChildFile("audio");
   if (auto* nodes = out.root.getProperty("nodes", {}).getArray()) {

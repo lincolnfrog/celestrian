@@ -509,7 +509,9 @@ is the period law (§2), "ghosts show what sounds" (Q10), and S15
 **The nested grid is the same grid**, one row down (S15: one control,
 every depth). The playing column is `(playheadQ − phaseQ) mod totalQ`,
 where `phaseQ` is the group's Q18 origin in the lane frame — **a nested
-song folds from its GROUP's origin, the root's from the epoch** ("the
+song folds from its GROUP's origin, the root's from the root's own
+origin — the zero the view had seated when the song was authored
+(frame.md §4, 2026-09-17), the island zero before that** ("the
 grid you see is the grid you hear", design_language.md §5).
 
 ---

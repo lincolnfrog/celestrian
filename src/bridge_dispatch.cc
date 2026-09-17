@@ -415,7 +415,14 @@ std::vector<Method> engineMethods(Services s) {
                  [e](const auto& args) {
                    // args[1] = {steps: [{name, len}], gates: {uuid:
                    // [0/1...]}} (docs/sequencer.md); void/empty clears.
-                   e->setSequence(args[0].toString(), args[1]);
+                   // args[2] (optional) = the frame zero the view has
+                   // seated, absolute samples — the root anchors its
+                   // song there (docs/frame.md §4).
+                   std::optional<int64_t> zero;
+                   if (args.size() > 2 && !args[2].isVoid()) {
+                     zero = (int64_t)(double)args[2];
+                   }
+                   e->setSequence(args[0].toString(), args[1], zero);
                  }),
       voidMethod("toggleSequence", 1,
                  [e](const auto& args) { e->toggleSequence(args[0].toString()); }),
