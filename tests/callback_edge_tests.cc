@@ -259,16 +259,16 @@ class CallbackEdgeTests : public juce::UnitTest {
     beginTest("reclaimer: retire() honors the 2-callback grace");
     {
       // Mechanics pinned here (AudioEngine::retire): every retire() call
-      // stamps its deleter with the CURRENT callback_count_ epoch and
-      // then sweeps the graveyard, freeing items whose epoch satisfies
-      // `epoch + 2 <= now`. Reaping happens ONLY inside retire() calls
+      // stamps its deleter with the CURRENT callback_count_ zero and
+      // then sweeps the graveyard, freeing items whose zero satisfies
+      // `zero + 2 <= now`. Reaping happens ONLY inside retire() calls
       // — callbacks advance the counter but never free anything.
       AudioEngine engine;
       bool freed = false;
       engine.retire([&freed] { freed = true; });
       expect(!freed,
              "the retiring call cannot free its own item "
-             "(epoch + 2 > now at zero elapsed callbacks)");
+             "(zero + 2 > now at zero elapsed callbacks)");
 
       test_utils::driveEngine(engine, kBlockSize);  // callback #1
       engine.retire([] {});  // reap attempt at one elapsed callback

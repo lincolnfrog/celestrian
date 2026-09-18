@@ -71,17 +71,19 @@ class MainComponent : public juce::Component, public juce::Timer {
   // Bounce (Q19, docs/bounce.md): opens a native save chooser for the
   // node's WAV — named after the node, in the project folder when one
   // exists, else the user's music folder — then renders through
-  // AudioEngine::bounce and reports its verdict to the webview.
+  // AudioEngine::bounce from `start` (absolute samples; absent, the
+  // node's own top) and reports its verdict to the webview.
   void bounceWithDialog(
-      const juce::String& uuid,
+      const juce::String& uuid, std::optional<int64_t> start,
       juce::WebBrowserComponent::NativeFunctionCompletion done);
   std::unique_ptr<juce::FileChooser> bounce_chooser_;
 
   // Import (docs/import.md): opens a native open chooser filtered to
-  // WAV/AIFF/FLAC, then imports the pick at `at_q` (a QTime rational)
-  // through AudioEngine::importAudio; false when cancelled or refused.
+  // WAV/AIFF/FLAC, then imports the pick at `origin_samples` (absolute;
+  // the engine snaps it to the Q grid) through AudioEngine::importAudio;
+  // false when cancelled or refused.
   void importAudioWithDialog(
-      const juce::String& uuid, int64_t at_q_num, int64_t at_q_den,
+      const juce::String& uuid, int64_t origin_samples,
       juce::WebBrowserComponent::NativeFunctionCompletion done);
   std::unique_ptr<juce::FileChooser> import_chooser_;
 

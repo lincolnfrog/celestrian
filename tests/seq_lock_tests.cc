@@ -143,11 +143,11 @@ class SeqLockTests : public juce::UnitTest {
       std::thread reader([&] {
         while (!done.load(std::memory_order_relaxed)) {
           const auto f = root.readIslandFacts();
-          const bool ok = (f.quantum == 1000 && f.epoch == 0 &&
+          const bool ok = (f.quantum == 1000 && f.zero == 0 &&
                            f.generation == 1) ||
-                          (f.quantum == 2000 && f.epoch == 500 &&
+                          (f.quantum == 2000 && f.zero == 500 &&
                            f.generation == 2) ||
-                          (f.quantum == 0 && f.epoch == 0 && f.generation == 0);
+                          (f.quantum == 0 && f.zero == 0 && f.generation == 0);
           if (!ok) torn.fetch_add(1);
         }
       });

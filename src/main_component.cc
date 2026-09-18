@@ -88,7 +88,9 @@ juce::WebBrowserComponent::Options MainComponent::browserOptions() {
     chooseSessionPath(ChooserMode::OPEN, std::move(completion));
   });
   // Bounce (Q19, docs/bounce.md): the dialog verb picks a path
-  // natively, then bounces.
+  // natively, then bounces — from the render start the page names
+  // (absolute samples, the frame zero it seated; docs/frame.md), or
+  // the node's own top.
   bindWindowVerb("bounceWithDialog", [this](const juce::Array<juce::var>& args,
                                             Completion completion) {
     celestrian::bridge::logCall("bounceWithDialog");
@@ -96,10 +98,12 @@ juce::WebBrowserComponent::Options MainComponent::browserOptions() {
       completion(false);
       return;
     }
-    bounceWithDialog(args[0].toString(), std::move(completion));
+    std::optional<int64_t> start;
+    if (args.size() > 1 && !args[1].isVoid()) start = (int64_t)(double)args[1];
+    bounceWithDialog(args[0].toString(), start, std::move(completion));
   });
   // Import (docs/import.md): the dialog verb picks the file natively,
-  // then imports.
+  // then imports at the origin the page names (absolute samples).
   bindWindowVerb("importAudioWithDialog",
                  [this](const juce::Array<juce::var>& args,
                         Completion completion) {
@@ -108,10 +112,10 @@ juce::WebBrowserComponent::Options MainComponent::browserOptions() {
                      completion(false);
                      return;
                    }
-                   const auto at = celestrian::bridge::qtimeArg(
-                       args.size() > 1 ? args[1] : juce::var(0));
-                   importAudioWithDialog(args[0].toString(), at.first,
-                                         at.second, std::move(completion));
+                   const int64_t origin =
+                       args.size() > 1 ? (int64_t)(double)args[1] : 0;
+                   importAudioWithDialog(args[0].toString(), origin,
+                                         std::move(completion));
                  });
   // Preferences: the chooser verb picks the projects root natively and
   // answers the new path.
@@ -299,7 +303,7 @@ void MainComponent::chooseSessionPath(
 }
 
 void MainComponent::bounceWithDialog(
-    const juce::String& uuid,
+    const juce::String& uuid, std::optional<int64_t> start,
     juce::WebBrowserComponent::NativeFunctionCompletion done) {
   // A live take refuses the bounce (AudioEngine::bounce); no dialog for
   // a render that cannot happen.
@@ -322,19 +326,20 @@ void MainComponent::bounceWithDialog(
                     juce::FileBrowserComponent::warnAboutOverwriting;
   bounce_chooser_->launchAsync(
       flags,
-      [this, uuid, done = std::move(done)](const juce::FileChooser& fc) mutable {
+      [this, uuid, start,
+       done = std::move(done)](const juce::FileChooser& fc) mutable {
         const juce::File file = fc.getResult();
         if (file == juce::File()) {
           done(false);  // cancelled
           return;
         }
         done(audio_engine.bounce(
-            uuid, file.withFileExtension("wav").getFullPathName()));
+            uuid, file.withFileExtension("wav").getFullPathName(), start));
       });
 }
 
 void MainComponent::importAudioWithDialog(
-    const juce::String& uuid, int64_t at_q_num, int64_t at_q_den,
+    const juce::String& uuid, int64_t origin_samples,
     juce::WebBrowserComponent::NativeFunctionCompletion done) {
   // A live take refuses the import (AudioEngine::importAudio); no
   // dialog for an import that cannot land.
@@ -349,15 +354,15 @@ void MainComponent::importAudioWithDialog(
   const int flags = juce::FileBrowserComponent::openMode |
                     juce::FileBrowserComponent::canSelectFiles;
   import_chooser_->launchAsync(
-      flags, [this, uuid, at_q_num, at_q_den,
+      flags, [this, uuid, origin_samples,
               done = std::move(done)](const juce::FileChooser& fc) mutable {
         const juce::File file = fc.getResult();
         if (file == juce::File()) {
           done(false);  // cancelled
           return;
         }
-        done(audio_engine.importAudio(uuid, file.getFullPathName(), at_q_num,
-                                      at_q_den));
+        done(audio_engine.importAudio(uuid, file.getFullPathName(),
+                                      origin_samples));
       });
 }
 

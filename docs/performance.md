@@ -41,7 +41,7 @@ obey:
 | No buffer copies proportional to clip length | A 30 s clip copy is milliseconds of stall | No rotation exists at all — content is stored in the origin frame and playback offsets reads by the clip's origin (kernel.md; plus a `content_base_` storage offset after a Q13 lock-collapse); samples never move |
 | No unbounded waits | — | The one remaining lock-ish thing is the RtLog `SpinLock`, held for a ≤160-byte memcpy, with try-lock (drops the message on contention) |
 | No device queries per block | Driver calls can block | Latencies cached in `audioDeviceAboutToStart` |
-| **One structure load per callback** | Per-stack loads could straddle a republish mid-callback; a whole-graph load can't | The engine loads `graph_snapshot_` once into `ProcessContext.snap`; stacks iterate child index spans, leaves resolve ancestry by parent indices. Island facts (quantum, epoch, island root) ride the context — the audio thread never walks node parent pointers or reads the ownership vectors |
+| **One structure load per callback** | Per-stack loads could straddle a republish mid-callback; a whole-graph load can't | The engine loads `graph_snapshot_` once into `ProcessContext.snap`; stacks iterate child index spans, leaves resolve ancestry by parent indices. Island facts (quantum, zero, island root) ride the context — the audio thread never walks node parent pointers or reads the ownership vectors |
 
 **Object lifetime rule:** anything removed from the graph while audio runs is
 freed via `AudioEngine::retire()` — the deleter runs only after the callback
@@ -120,7 +120,7 @@ callback uses.
 - [ ] No `juce::Logger` — use `RtLog::instance().post(...)`.
 - [ ] Structure traversal uses `ProcessContext.snap` / `graph_snapshot.h`
       — never `ownedChildren()`, never parent pointers.
-- [ ] Island facts come from the context (`quantum`, `island_epoch`,
+- [ ] Island facts come from the context (`quantum`, `island_zero`,
       `island`) — no walks.
 - [ ] Cross-thread fields are `std::atomic`.
 - [ ] Destruction of graph objects goes through `retire()`.

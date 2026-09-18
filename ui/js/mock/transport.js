@@ -80,38 +80,37 @@ export function pauseTransport() {
 }
 
 /**
- * Ruler scrub (engine parity: AudioEngine::seekTransport). The target
- * arrives in the published-masterPos domain — epoch-relative samples,
- * folded on the audible cycle. The mock's clock is monotonic like the
- * engine's (kernel.md), so a seek RE-BASES islandEpoch rather than
- * touching masterPos: epoch := raw − pos, and viewMasterPos then reads
- * exactly the requested phase. Refused (false) while any take is live
- * or armed — takes place audio by the clock. NOT undoable (a
- * monitoring gesture — keep it out of mock/undo.js's intercept set).
+ * Ruler scrub (engine parity: AudioEngine::seekTransport). THE SEEK IS
+ * A PHASE ADVANCE (docs/frame.md): the backend reads no frame — the
+ * view seats the frame's zero — so the view sends how far the playing
+ * phase should move, computed against the raw clock it last polled
+ * (`atClock`); the backend corrects for the clock having moved since.
+ * The mock's clock is monotonic like the engine's (kernel.md), so
+ * advancing the phase moves the island's zero — and every origin with
+ * it — BACK by the advance, never masterPos. Refused (false) while any
+ * take is live or armed — takes place audio by the clock. NOT undoable
+ * (a monitoring gesture — keep it out of mock/undo.js's intercept set).
  */
-export function seekTransport(posSamples) {
+export function seekTransport(deltaSamples, atClock) {
     if (recView.active || anyClipHot(state.nodes)) return false;
-    const Q = effectiveQuantumForState();
-    const cycle = effectiveCycle(Q);
-    let pos = Math.round(Number(posSamples) || 0);
-    if (cycle > 0) pos = posMod(pos, cycle);
-    else if (pos < 0) pos = 0;
-    const epochOld = state.islandEpoch || 0;
-    // The island's zero moves so that the ROOT'S FRAME TOP (its song's
-    // origin under a root song, else the zero itself) lands at
-    // masterPos − pos (engine parity AudioEngine::seekTransport).
-    const delta = (state.masterPos - pos) - rootFrameTop();
-    state.islandEpoch = epochOld + delta;
+    let advance = Math.round(Number(deltaSamples) || 0);
+    if (Number.isFinite(atClock)) advance -= state.masterPos - Math.round(atClock);
+    // Answers what was applied and when (engine parity), so the view
+    // keeps its frame facts exact between polls.
+    const applied = { advance, clock: state.masterPos };
+    const delta = -advance;
+    if (delta === 0) return applied;
+    state.islandZero = (state.islandZero || 0) + delta;
     // A seek is a phase jump of the whole island (composition.md §5,
     // engine parity AudioEngine::seekTransport): every origin — clips
-    // AND stacks (Q18), the root's too — rides the epoch delta, so
-    // placement on the grid (origin − epoch) is unchanged and playback
+    // AND stacks (Q18), the root's too — rides the zero's delta, so
+    // placement on the grid (origin − zero) is unchanged and playback
     // lands at the requested phase. shiftOrigins(root, delta) is the
     // one primitive.
-    if (delta !== 0) state.nodes.forEach(n => shiftOrigins(n, delta));
-    if (delta !== 0 && state.rootAnchored) state.rootOrigin += delta;
-    console.log(`[MockBackend] seekTransport → rel=${pos} (epoch=${state.islandEpoch})`);
-    return true;
+    state.nodes.forEach(n => shiftOrigins(n, delta));
+    if (state.rootAnchored) state.rootOrigin += delta;
+    console.log(`[MockBackend] seekTransport → phase +${advance} (zero=${state.islandZero})`);
+    return applied;
 }
 
 /** Any clip live or armed anywhere in the graph (the engine's

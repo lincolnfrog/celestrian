@@ -709,13 +709,13 @@ function lanePeaks(lane, aux, bodyW = 0) {
         // INNER positions, so the mixdown is built in the STACK's own
         // frame — x = 0 is the stack's origin (inner time 0), each
         // member's content at its origin relative to that. An
-        // unanchored stack (no content) keeps the epoch frame.
-        epochSamples: node.anchored ? (node.origin || 0)
-                                    : (aux.epochSamples || 0),
+        // unanchored stack (no content) keeps the island frame.
+        frameZero: node.anchored ? (node.origin || 0)
+                                    : (aux.frameZero || 0),
         // The Q-definer trim view frames the RAW take with the
         // selection over it (pushDefinerLane); its members draw their
         // whole takes beneath. The composite must be the same raw
-        // material — a heard mixdown (windowed slices on the epoch
+        // material — a heard mixdown (windowed slices on the zero
         // grid) would disagree with the children and re-shape on every
         // trim release.
         raw: !!lane.isQDefiner,

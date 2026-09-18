@@ -59,7 +59,7 @@ export function enrichNodes(nodes) {
         // Loop window state — FRACTAL, engine parity (AudioNode base):
         // active iff valid and not bypassed, published for clips and
         // stacks alike; `playhead` carries the window phase while
-        // active: (masterPos − epoch) mod len.
+        // active: (masterPos − zero) mod len.
         // A stack's STEP AUDITION (§11.2) publishes its DERIVED window
         // over the base fields (engine parity: StackNode::getMetadata).
         const audition = node.type === 'stack' ? auditionMapOf(node) : null;
@@ -226,13 +226,13 @@ export function getState() {
         // The root's rack (engine parity: `effects` on every node's
         // metadata, the root included) — the master fx panel's model.
         effects: ensureEffects(state.root),
-        // The raw island clock (engine parity): epoch-relative,
+        // The raw island clock (engine parity): zero-relative,
         // unwrapped — the UI folds it on its own pinned frame during
         // map gestures for a continuous cursor.
-        islandPos: state.masterPos - state.islandEpoch,
+        islandPos: state.masterPos - state.islandZero,
         // The island zero (mirrors getGraphState): the first take's
         // origin, the Q grid's phase; no commit moves it (frame.md).
-        islandEpoch: state.islandEpoch,
+        islandZero: state.islandZero,
         // THE ROOT'S ANCHOR (frame.md §4; engine parity: the root
         // StackNode publishes `anchored` + `origin` like every node):
         // anchored while it carries a song, at the zero the song was

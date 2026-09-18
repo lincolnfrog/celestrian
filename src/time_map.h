@@ -10,10 +10,10 @@
  *
  * A map is an ordered list of segments over a node's inner timeline:
  *
- *   m(t) = cycle_epoch + walk_segments((t − cycle_epoch) mod period)
+ *   m(t) = frame_top + walk_segments((t − frame_top) mod period)
  *
  * Segments select VIEW positions of the received cycle; the mapped time
- * stays in the received frame (the caller adds the epoch — see the
+ * stays in the received frame (the caller adds the zero — see the
  * one-frame warning in time_maps.md §2). A loop window is the
  * single-segment case (AudioNode::activeTimeMap builds it from the
  * window atomics); a multi-segment map is the node's mapOverride.
@@ -63,7 +63,7 @@ struct TimeMap {
    * walk_segments: a HEARD offset (any integer — folded mod period,
    * negatives included) → the inner-time offset it selects, relative to
    * the same frame the segments are expressed in. The caller re-bases
-   * into absolute time by adding the received cycle_epoch.
+   * into absolute time by adding the received frame_top.
    */
   int64_t mapOffset(int64_t heard_off) const {
     const int64_t p = period();

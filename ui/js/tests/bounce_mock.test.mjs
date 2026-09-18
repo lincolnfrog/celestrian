@@ -34,14 +34,18 @@ test('bounce records {uuid, path} and answers true', async () => {
     resetLastBounce();
     assert.equal(getLastBounce(), null);
     assert.equal(await callNative('bounce', 'clip-1', '/tmp/song.wav'), true);
-    assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: '/tmp/song.wav' });
+    assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: '/tmp/song.wav', start: null });
+    // The app names the song's start outright (the seated frame zero,
+    // docs/frame.md); the mock records it.
+    assert.equal(await callNative('bounce', 'clip-1', '/tmp/song.wav', 12345), true);
+    assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: '/tmp/song.wav', start: 12345 });
 });
 
 test('bounceWithDialog records the dialog placeholder path', async () => {
     loadScenario('single-clip');
     resetLastBounce();
     assert.equal(await callNative('bounceWithDialog', 'clip-1'), true);
-    assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: DIALOG_PATH });
+    assert.deepEqual(getLastBounce(), { uuid: 'clip-1', path: DIALOG_PATH, start: null });
 });
 
 test('a live take refuses both verbs and records nothing', async () => {

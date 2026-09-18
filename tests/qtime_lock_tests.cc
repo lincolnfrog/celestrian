@@ -24,7 +24,7 @@ int64_t islandQ(AudioEngine& e) {
   return (int64_t)(double)e.getGraphState().getProperty("quantum", 0);
 }
 int64_t islandEp(AudioEngine& e) {
-  return (int64_t)(double)e.getGraphState().getProperty("epoch", 0);
+  return (int64_t)(double)e.getGraphState().getProperty("zero", 0);
 }
 int64_t clipProp(AudioEngine& e, const juce::String& uuid, const char* prop) {
   const juce::var s = e.getGraphState();  // hold: getArray() dangles past it
@@ -100,7 +100,7 @@ class QTimeLockTests : public juce::UnitTest {
     };
 
     beginTest(
-        "sole clip: loop re-trim re-establishes (Q, epoch); undo restores");
+        "sole clip: loop re-trim re-establishes (Q, zero); undo restores");
     {
       AudioEngine engine;
       auto process = makeProcess(engine);
@@ -108,7 +108,7 @@ class QTimeLockTests : public juce::UnitTest {
       const int64_t q0 = islandQ(engine), ep0 = islandEp(engine);
       expect(q0 > 0, "Q established by the sole take");
 
-      // Trim to a sub-window [ws, ws+len): Q := len, epoch := origin+ws.
+      // Trim to a sub-window [ws, ws+len): Q := len, zero := origin+ws.
       // (The trim RE-ANCHORS origin for phase continuity, so read it
       // back after the edit.)
       const int64_t ws = 5000, len = 30000;
@@ -116,11 +116,11 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), len,
                    "Q re-established to the window length");
       expectEquals(islandEp(engine), clipOrigin(engine, c1) + ws,
-                   "epoch := origin + window start");
+                   "zero := origin + window start");
 
       engine.undo();
       expectEquals(islandQ(engine), q0, "undo restores the old Q");
-      expectEquals(islandEp(engine), ep0, "undo restores the old epoch");
+      expectEquals(islandEp(engine), ep0, "undo restores the old zero");
 
       engine.redo();
       expectEquals(islandQ(engine), len, "redo re-applies the re-trim");
@@ -150,11 +150,11 @@ class QTimeLockTests : public juce::UnitTest {
 
       engine.deleteNode(c1);
       expectEquals(islandQ(engine), (int64_t)0, "Q reverts to unestablished");
-      expectEquals(islandEp(engine), (int64_t)0, "epoch reverts");
+      expectEquals(islandEp(engine), (int64_t)0, "zero reverts");
 
       engine.undo();
       expectEquals(islandQ(engine), q0, "undo restores Q with the clip");
-      expectEquals(islandEp(engine), ep0, "undo restores epoch");
+      expectEquals(islandEp(engine), ep0, "undo restores zero");
 
       engine.redo();
       expectEquals(islandQ(engine), (int64_t)0, "redo re-reverts");
@@ -183,10 +183,10 @@ class QTimeLockTests : public juce::UnitTest {
     {
       // Owner ruling 2026-07-19: the trim is a PRE-LOCK affordance —
       // once you build on it, clip 1 reads as if it was performed
-      // exactly (duration = Q, origin = epoch, window consumed). The
+      // exactly (duration = Q, origin = zero, window consumed). The
       // looper is normal again; no incommensurate buffer survives to
       // poison arm boundaries / context loops / LCMs (field: take 2
-      // anchored at origin − epoch = 56298 ∉ Q·Z).
+      // anchored at origin − zero = 56298 ∉ Q·Z).
       AudioEngine engine;
       auto process = makeProcess(engine);
       auto c1 = recordClip(engine, process, Q);
@@ -203,11 +203,11 @@ class QTimeLockTests : public juce::UnitTest {
                    "clip 1 collapsed: the window IS the take");
       expectEquals(clipOrigin(engine, c1), originT + ws,
                    "clip 1 origin = the trimmed loop's top");
-      // Commit may RE-BASE the epoch (simple-extension rule) — but only
+      // Commit may RE-BASE the zero (simple-extension rule) — but only
       // by whole cycles of the trimmed grid: phase is preserved.
       const int64_t ep1 = islandEp(engine);
       expectEquals((((ep1 - (originT + ws)) % len) + len) % len, (int64_t)0,
-                   "epoch stays on the trimmed grid");
+                   "zero stays on the trimmed grid");
       expectEquals(islandQ(engine), len, "Q unmoved");
       expectEquals(clipProp(engine, c1, "loopStart"), (int64_t)0,
                    "window consumed (none)");
@@ -216,7 +216,7 @@ class QTimeLockTests : public juce::UnitTest {
       // THE regression: take 2 lands ON the grid.
       const int64_t rel = clipOrigin(engine, c2) - islandEp(engine);
       expectEquals(((rel % len) + len) % len, (int64_t)0,
-                   "take 2 anchors on a Q boundary of the epoch grid");
+                   "take 2 anchors on a Q boundary of the zero grid");
 
       // Undo. Log order is [.., trim, Insert(c2), CollapseTake] — the
       // collapse rode the ARM, which happens after the take's create —
@@ -322,9 +322,9 @@ class QTimeLockTests : public juce::UnitTest {
     }
 
     beginTest(
-        "windowed playback anchors at origin + loopStart (epoch contract)");
+        "windowed playback anchors at origin + loopStart (zero contract)");
     {
-      // Q13's epoch := origin + loopStart names the trimmed loop's top
+      // Q13's zero := origin + loopStart names the trimmed loop's top
       // as island phase 0 — so at t = origin + loopStart the clip must
       // sound buffer[loopStart]. The old origin-anchored launch played
       // buffer[loopStart + (loopStart mod len)] there: a sub-Q trim put
@@ -391,7 +391,7 @@ class QTimeLockTests : public juce::UnitTest {
 
     beginTest(
         "multi-segment re-trim of the sole definer re-establishes "
-        "(Q := period, epoch := origin' + mapOffset(0)); undo restores");
+        "(Q := period, zero := origin' + mapOffset(0)); undo restores");
     {
       // Phase 3 (owner-ruled fully fractal): punching a cell out of the
       // scratch loop before locking is the multi-segment twin of the
@@ -411,16 +411,16 @@ class QTimeLockTests : public juce::UnitTest {
 
       expectEquals(islandQ(engine), q0 / 2, "Q := the map period (sum of cells)");
       expectEquals(islandEp(engine), clipOrigin(engine, c1),
-                   "epoch = origin' + mapOffset(0) (first cell at 0)");
+                   "zero = origin' + mapOffset(0) (first cell at 0)");
 
       engine.undo();
       expectEquals(islandQ(engine), q0, "undo restores the grid");
-      expectEquals(islandEp(engine), ep0, "...and the epoch");
+      expectEquals(islandEp(engine), ep0, "...and the zero");
       engine.redo();
       expectEquals(islandQ(engine), q0 / 2, "redo re-establishes");
 
       // LOCK-COLLAPSE, multi-segment: arming take 2 SPLICES the kept
-      // cells into THE take (duration = period, origin = the epoch, map
+      // cells into THE take (duration = period, origin = the zero, map
       // consumed); undo un-splices (full material + map return).
       auto segsOf = [&](const juce::String& id) {
         const juce::var s = engine.getGraphState();  // hold the var
@@ -437,7 +437,7 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(clipProp(engine, c1, "duration"), q0 / 2,
                    "splice: definer duration = the map period");
       expectEquals(clipOrigin(engine, c1), epBefore,
-                   "splice: origin = the epoch (anchoring law)");
+                   "splice: origin = the zero (anchoring law)");
       expect(!segsOf(c1).isArray(), "splice: map consumed");
 
       // A SEEK re-frames every absolute in the session, the log's
@@ -451,7 +451,7 @@ class QTimeLockTests : public juce::UnitTest {
         expect(engine.seekTransport((double)(q0 / 8 + q0 / 4)), "seek 2");
         delta = islandEp(engine) - epSeekBefore;
       }
-      expect(delta != 0, "the seek moved the epoch");
+      expect(delta != 0, "the seek moved the zero");
 
       // TAKES ARE UNDOABLE (2026-08-20): the first undo removes take 2
       // itself (the log reads: CollapseTake, Take 2); the second
@@ -471,7 +471,7 @@ class QTimeLockTests : public juce::UnitTest {
     // ---- Q13 FOR GROUPS (owner ruling 2026-08-21) ----
     // The fractal twin of the sole-clip definer: a first take recorded
     // as a GROUP (N mics, one origin, one duration) is the island's
-    // definer; the STACK's window re-establishes (Q, epoch). The window
+    // definer; the STACK's window re-establishes (Q, zero). The window
     // stays on the stack (it IS the part under the window law), the
     // children stay whole, and no lock-collapse follows.
     beginTest("GROUPS: a first group take is the Q-definer; its window re-defines Q");
@@ -529,12 +529,12 @@ class QTimeLockTests : public juce::UnitTest {
             (int64_t)(double)engine.getGraphState().getProperty("masterPos", 0);
         const int64_t pT = ws + (((p0 - ws) % len) + len) % len;
         expectEquals(ws + mp1, pT,
-                     "epoch solved for continuity (pos(t) = start + ((t - epoch) mod len))");
+                     "zero solved for continuity (pos(t) = start + ((t - zero) mod len))");
       }
 
       engine.undo();
       expectEquals(islandQ(engine), q0, "undo restores the old Q");
-      expectEquals(islandEp(engine), ep0, "undo restores the old epoch");
+      expectEquals(islandEp(engine), ep0, "undo restores the old zero");
       engine.redo();
       expectEquals(islandQ(engine), len, "redo re-applies");
 
@@ -622,14 +622,14 @@ class QTimeLockTests : public juce::UnitTest {
       expectEquals(islandQ(engine), D, "Q untouched");
     }
 
-    // ---- ONE ISLAND, ONE OWNER OF (Q, epoch) (field dump 2026-08-29) ----
+    // ---- ONE ISLAND, ONE OWNER OF (Q, zero) (field dump 2026-08-29) ----
     // Combine assembles the new stack DETACHED, so addChild stamped the
     // first committed child's duration/origin onto it as island facts.
     // Attached, the subtree then ran on that private grid: a delete-all
     // reverted the ROOT's Q, and the next group take inside the stack
     // committed against the stale one (immediate stop, Instant Stop
     // branch: loop region [0, Q_stale/2), origin on the stale grid).
-    beginTest("NESTED FACTS: combine leaves no (Q, epoch) on the stack; a later first take establishes fresh");
+    beginTest("NESTED FACTS: combine leaves no (Q, zero) on the stack; a later first take establishes fresh");
     {
       AudioEngine engine;
       auto process = [&](int64_t n) { test_utils::driveEngine(engine, n); };
@@ -652,8 +652,8 @@ class QTimeLockTests : public juce::UnitTest {
       expect(stack_id.isNotEmpty(), "combined");
       expectEquals((int64_t)deepProp(engine, stack_id, "quantum"), (int64_t)0,
                    "the nested stack holds no island Q");
-      expectEquals((int64_t)deepProp(engine, stack_id, "epoch"), (int64_t)0,
-                   "nor an epoch");
+      expectEquals((int64_t)deepProp(engine, stack_id, "zero"), (int64_t)0,
+                   "nor a zero");
       expectEquals(islandQ(engine), (int64_t)(3 * Q), "root Q untouched by the combine");
       // Delete both takes: the island empties, Q reverts.
       engine.deleteNode(a);
@@ -812,14 +812,14 @@ class QTimeLockTests : public juce::UnitTest {
                        "members whole (no window)");
         }
         // Q18: the window anchors at the STACK's origin (== the members',
-        // one take) and the cycle top is the window top: epoch == origin
+        // one take) and the cycle top is the window top: zero == origin
         // + start. The subtree moved as one (no per-member riders).
         expectEquals((int64_t)deepProp(engine, stack_id, "origin"),
                      (int64_t)deepProp(engine, ids[0], "origin"),
                      "the stack's origin == its members' (one take)");
         expectEquals(islandEp(engine),
                      (int64_t)deepProp(engine, ids[0], "origin") + start,
-                     "epoch == origin + start (the window top is the cycle top)");
+                     "zero == origin + start (the window top is the cycle top)");
         end_sent = (int64_t)deepProp(engine, stack_id, "loopEnd");
         process(3333);
       }

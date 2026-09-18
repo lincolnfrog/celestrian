@@ -59,20 +59,33 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   bool isPlaying() const { return is_playing_global; }
 
   /**
-   * Seeks the transport to `pos_samples` — a position in the SAME
-   * domain the published masterPos wraps in: relative to the island
-   * epoch, folded on the audible cycle (E-C; under a root audition
-   * that cycle IS the step). The monotonic clock is never touched
-   * (kernel.md): a seek RE-BASES the island epoch so the current
-   * clock reads as the requested phase — the same lever the commit
-   * re-base uses, applied as a transport gesture. Works stopped or
+   * Seeks the transport: a PHASE ADVANCE. The monotonic clock is never
+   * touched (kernel.md): a seek moves the island's zero — and every
+   * origin with it, placement invariant — so the current clock reads
+   * as the wanted phase; the same lever a Q13 re-trim's re-anchor
+   * uses, applied as a transport gesture. Works stopped or
    * playing; NOT undoable (a monitoring gesture, like auditionStep).
+   * `delta_samples` is how far the playing PHASE advances (negative
+   * moves it back): the view computes it against the frame zero it
+   * has seated (docs/frame.md), since the engine reads no frame, and
+   * names the transport reading it used as `at_clock` so the engine
+   * corrects for the clock having moved since (absent: no correction).
+   * A zero advance is an accepted no-op. `applied`, when given, receives
+   * the advance actually applied and the transport reading it was
+   * applied at, so the view can keep its frame facts exact between
+   * polls (a scrub streams seeks faster than the poll).
    *
    * Refused (returns false) while any take is live or armed: takes
    * place audio by this clock, and moving it mid-take would corrupt
    * the take's placement.
    */
-  bool seekTransport(double pos_samples);
+  struct SeekResult {
+    int64_t advance = 0;  // the phase advance applied
+    int64_t clock = 0;    // the transport reading it was applied at
+  };
+  bool seekTransport(double delta_samples,
+                     std::optional<int64_t> at_clock = std::nullopt,
+                     SeekResult* applied = nullptr);
 
   // Node Recording
   /**
@@ -216,8 +229,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * Renders node `uuid` OFFLINE through the real render path to a
    * stereo 32-bit float WAV at the device rate: the island root for
    * one EFFECTIVE cycle (the whole song under an active sequence) from
-   * the island epoch; any other node for one effective period from its
-   * frame top (origin + a0; the island epoch for an unanchored stack).
+   * the island zero; any other node for one effective period from its
+   * frame top (origin + a0; the island zero for an unanchored stack).
    * Past the span every leaf's content falls silent while the racks
    * keep running, and the file ends with the effect tail (through its
    * first block under −90 dBFS; 10 s cap). The device callback is
@@ -226,8 +239,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * monotonic transport is not. Refused (false) while any take is
    * armed or recording, when the target has no committed content, or
    * when the file cannot be written. Parent directories are created.
+   * `start` (absolute samples) names the render's start outright —
+   * the app bounces the song from the frame zero the view seated
+   * (docs/frame.md); absent, the node's frame top, `origin + a0`.
    */
-  bool bounce(const juce::String& uuid, const juce::String& wav_path);
+  bool bounce(const juce::String& uuid, const juce::String& wav_path,
+              std::optional<int64_t> start = std::nullopt);
   // --- Audio file import (docs/import.md). Message thread only.
   /**
    * Imports a WAV/AIFF/FLAC as a committed take. The file decodes on
@@ -236,19 +253,21 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * two ways:
    *   - on an EMPTY clip (or a stack, which gains a fresh clip child
    *     named after the file — one undoable Insert): a first take at
-   *     origin = epoch + the nearest Q boundary to `at_q` (Q11), its
-   *     length through the record path's hysteresis law
-   *     (timing::snapCommittedDuration); on a pre-Q island the file
-   *     establishes Q like a first take;
+   *     `origin_samples` snapped to the nearest boundary of the island's
+   *     Q grid (Q11; the view computes it from the frame zero it
+   *     seated, docs/frame.md — the engine reads no frame), its length
+   *     through the record path's hysteresis law
+   *     (timing::snapCommittedDuration); on a pre-Q island the clock is
+   *     the origin and the file establishes Q like a first take;
    *   - on a COMMITTED clip: a NEW TAKE of the slot, cut or zero-
    *     padded to the slot's period (docs/takes.md — one origin, one
-   *     period per slot), active on arrival.
+   *     period per slot), active on arrival; the origin is ignored.
    * Both forms ride Edit::Take/Untake (undoable) and settle anchors.
    * Refused (false, logged) while any take is live or armed, on a MIDI
    * track, on a full take list, or when the file cannot be decoded.
    */
   bool importAudio(const juce::String& uuid, const juce::String& path,
-                   int64_t at_q_num, int64_t at_q_den);
+                   int64_t origin_samples);
   /**
    * A MIDI clip's notes for the lane's piano-roll tile (docs/vst3.md
    * §11): note-on/off PAIRED per channel and pitch into
@@ -267,7 +286,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                                         dir, opts);
   }
   bool hasActiveTake() const { return root_node->hasActiveTake(); }
-  /** The island frame the root receives (heard_index.h): the epoch,
+  /** The island frame the root receives (heard_index.h): the zero,
    * the audible island cycle and Q — what heard::receivedAt composes
    * the ancestors' laws from. Message thread. */
   celestrian::heard::Scope rootScope() const;
@@ -317,12 +336,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * recursive. Drives provisional-Q mutability (Q13 non-sticky) and the
    * project-birth trigger (ProjectManager). Message thread. */
   int islandCommittedClipCount() const;
-  /** Set the island (Q, epoch) from an edit applier AND keep every
+  /** Set the island (Q, zero) from an edit applier AND keep every
    * sequence musically true (sequences track Q): Q → Q' rescales step
    * lengths by Q'/Q; Q → 0 (empty island)
    * clears them, capturing each into `inv.seq_riders` so the inverse
    * reinstalls them. Message thread; the one path appliers use. */
-  void setIslandQuantum(int64_t q, int64_t epoch, celestrian::Edit& inv,
+  void setIslandQuantum(int64_t q, int64_t zero, celestrian::Edit& inv,
                         uint32_t generation = 0);
   /** Reinstall sequences an inverse carries (undo of a clearing
    * revert). */
@@ -686,7 +705,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // right after a take undoes THAT take.
   struct PendingTake {
     std::vector<juce::String> uuids;
-    int64_t q_before = 0, epoch_before = 0;  // island facts at arm
+    int64_t q_before = 0, zero_before = 0;  // island facts at arm
     // Step-record auto-gate (docs/sequencer.md §11.5, S19): the
     // auditioning DIRECT parent + its step, when the arm was aimed at
     // a looping step; empty = plain take.
@@ -725,26 +744,26 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   bool device_callback_registered_ = false;
 
   // The root of the hierarchical audio graph — always a stack (it is
-  // the island root: owns Q, epoch, and the take-lifecycle counter).
+  // the island root: owns Q, zero, and the take-lifecycle counter).
   std::unique_ptr<celestrian::StackNode> root_node;
 
   // Global Transport (kernel.md): MONOTONIC. The clock only moves
   // forward while playing and is NEVER reset or rebased — not by
-  // commits, not by first clips (the island epoch is captured as data
+  // commits, not by first clips (the island zero is captured as data
   // instead), not by stop (pause/resume). Clips align by their stored
   // origins; every cyclic view is derived.
   std::atomic<bool> is_playing_global{false};
   std::atomic<int64_t> global_transport_pos{0};
 
   // Cycle view for the UI (derived, not authoritative): normally
-  // (t − island epoch) mod LCM; while recording, frozen base + linear
+  // (t − island zero) mod LCM; while recording, frozen base + linear
   // growth so the cursor extends past the committed LCM (recording.md
-  // cursor table). The island epoch (stored on the root stack) is the
+  // cursor table). The island zero (stored on the root stack) is the
   // first take's origin — Q's grid phase and the root's own frame — and
   // no commit or map edit moves it (docs/frame.md: the view seats the
   // frame zero from the lanes). Clip arm/commit math reads the same
-  // epoch (AudioNode::getIslandEpoch), keeping ONE grid everywhere.
-  int64_t islandEpoch() const;
+  // zero (AudioNode::getIslandZero), keeping ONE grid everywhere.
+  int64_t islandZero() const;
   /** The ROOT'S FRAME TOP (the one frame-top law, D15-1): its own
    * origin while it carries a song (anchored at the zero the song was
    * authored on, docs/frame.md §4), else the island zero. The cursor
@@ -899,8 +918,8 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * the current state into the inverse. */
   void applyAnchorRiders(const celestrian::Edit& e, celestrian::Edit& inv);
   /** The received cycle top a node's frame is measured from — the
-   * message-thread twin of ProcessContext.cycle_epoch at that node
-   * (island epoch, re-based by each anchored+mapped ancestor). */
+   * message-thread twin of ProcessContext.frame_top at that node
+   * (island zero, re-based by each anchored+mapped ancestor). */
   int64_t cycleTopOf(const celestrian::AudioNode& node) const;
   /** prepare() a node's rack at the device rate (falling back to
    * kFallbackSampleRate before any device has started) — the
@@ -944,7 +963,7 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * structural change (applyEdit does this for structural kinds). */
   void publishGraph();
   /** A seek re-frames every absolute time in the session; the undo and
-   * redo logs (which store absolute origins/epochs) ride the same
+   * redo logs (which store absolute origins/zeros) ride the same
    * delta so undo restores PLACEMENT, not stale absolutes. */
   void shiftHistoryAbsolutes(int64_t delta);
 

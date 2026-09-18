@@ -38,7 +38,7 @@ export const recView = { active: false, base: 0, anchor: 0, lcmBefore: 0 };
  *    arm on the period grid, one-period cap, dense [0, C) commit);
  *    nested active maps refuse the arm outright.
  *  - Q11: with Q established, arming PENDS to the next Q boundary in
- *    the epoch frame; exactly-on-boundary starts immediately.
+ *    the island frame; exactly-on-boundary starts immediately.
  */
 /** All clips in a subtree (document order). */
 function clipsUnder(node, out = []) {
@@ -420,7 +420,7 @@ function armClip(node) {
             }
         }
         if (!aimed && !rootActiveMap() && activeSeqLen(rootSeqHolder) > 0) {
-            const rel = state.masterPos - state.islandEpoch;
+            const rel = state.masterPos - state.islandZero;
             const i = stepIndexAt(state.rootSequence, rel);
             if (stepCued(state.rootSequence, i)) {
                 state.rootAuditionStep = i;
@@ -485,15 +485,15 @@ function armClip(node) {
                 stepCued(gseq, gAudStep)
                 ? (firstVisitSpan(gseq, gAudStep) || [0])[0] : 0;
             // Q18 (engine parity StackNode::childContext →
-            // map_origin / map_heard_epoch): the map's inner positions
+            // map_origin / map_heard_top): the map's inner positions
             // are offsets from the mapping node's ORIGIN (an anchored
             // stack's own; the received cycle top otherwise — and the
-            // synthetic root's frame is the epoch), and the heard grid
+            // synthetic root's frame is the zero), and the heard grid
             // anchor the arm math runs against is origin + mapOffset(0).
-            const mapOrigin = g._root ? (state.islandEpoch || 0)
+            const mapOrigin = g._root ? (state.islandZero || 0)
                                       : frameOriginOf(g);
             mapArm = { map, period, C, mapOrigin,
-                       heardEpoch: mapOrigin + mapOffset(map, 0), cueBase };
+                       heardTop: mapOrigin + mapOffset(map, 0), cueBase };
         }
     }
 
@@ -509,9 +509,9 @@ function armClip(node) {
     if (mapArm) {
         const Qm = effectiveQuantumForState();
         const raw = state.masterPos;
-        const relH = Math.max(0, raw - mapArm.heardEpoch);
+        const relH = Math.max(0, raw - mapArm.heardTop);
         const tRel = armTarget(relH, Qm, mapArm.period);
-        const at = mapArm.heardEpoch + tRel;
+        const at = mapArm.heardTop + tRel;
         node._mapArm = {
             C: mapArm.C,
             period: mapArm.period,
@@ -536,14 +536,14 @@ function armClip(node) {
     }
 
     // Q11 (engine parity): with Q established, arming PENDS until the
-    // next Q boundary in the epoch frame — recording begins there, so
+    // next Q boundary in the island frame — recording begins there, so
     // origins always land ON boundaries (a mid-Q origin would make the
     // commit re-base shift every lane's grid by a fraction).
     // Exactly-on-boundary starts immediately.
     const Q = effectiveQuantumForState();
     const raw = state.masterPos;
     if (Q > 0) {
-        const rel = posMod(raw - state.islandEpoch, Q);
+        const rel = posMod(raw - state.islandZero, Q);
         const toNext = rel === 0 ? 0 : Q - rel;
         if (toNext > 0) {
             node.isPendingStart = true;
@@ -553,12 +553,12 @@ function armClip(node) {
             return;
         }
     } else {
-        // FIRST-CLIP ARM ESTABLISHES THE PROVISIONAL EPOCH (engine
-        // parity: establishIsland(0, epoch) — q == 0 sets a provisional
-        // epoch only). A stale epoch standing until commit would run
+        // FIRST-CLIP ARM ESTABLISHES THE PROVISIONAL ZERO (engine
+        // parity: establishIsland(0, zero) — q == 0 sets a provisional
+        // zero only). A stale zero standing until commit would run
         // the pre-commit projections (recording view, ghost tiles) in
         // the wrong frame.
-        state.islandEpoch = raw;
+        state.islandZero = raw;
     }
     node.recordingStartPos = raw;
 }
@@ -745,11 +745,11 @@ export function commitClip(node, duration) {
     // Launch point is its projection, kept for UI compatibility.
     node.origin = foldedOrigin;
     node.launchPoint = launchPointFor(node.origin, duration);
-    // First commit: (Q, epoch) establish TOGETHER (engine parity
-    // establishIsland(d, origin)) — the epoch is the first take's
+    // First commit: (Q, zero) establish TOGETHER (engine parity
+    // establishIsland(d, origin)) — the zero is the first take's
     // origin, not whatever the arm left behind.
     if (establishing) {
-        state.islandEpoch = foldedOrigin;
+        state.islandZero = foldedOrigin;
         scrubIncoherentGeometry(state.islandQ);
     }
     // Q18 (engine parity reconcileTakes → settleAnchors): the first

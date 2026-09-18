@@ -5,7 +5,7 @@
  *
  * tests/display_contract_tests.cc drives the REAL engine, measures per
  * Q cell which gated clips actually sound (by soloing and listening —
- * the audible truth, in the epoch frame the ruler draws), and dumps
+ * the audible truth, in the island frame the ruler draws), and dumps
  * that with the published state into shared/display_contract_capture.json.
  * This test replays the state through the actual deriveViewModel and
  * asserts every lane is DIMMED exactly where the engine is silent —

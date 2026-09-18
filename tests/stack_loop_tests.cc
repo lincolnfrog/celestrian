@@ -16,7 +16,7 @@ using test_utils::NodeContext;
  *  - A window is ACTIVE iff valid (end > start) and not bypassed —
  *    independent of expansion (I6b: collapse is purely visual).
  *  - Window phase is a pure function of the received clock:
- *    child_time = start + ((t − cycle_epoch) mod len). No private
+ *    child_time = start + ((t − frame_top) mod len). No private
  *    counter, no reset-on-collapse, fully deterministic (I8).
  */
 class StackLoopTests : public juce::UnitTest {
@@ -100,7 +100,7 @@ class StackLoopTests : public juce::UnitTest {
                                 "re-activation restores the mapping");
     }
 
-    beginTest("Window phase derives from the cycle epoch");
+    beginTest("Window phase derives from the zero");
     {
       StackNode stack("TestStack");
       stack.addChild(makeRampClip(3000));
@@ -110,7 +110,7 @@ class StackLoopTests : public juce::UnitTest {
       NodeContext nc = contextFor(stack, 1, 7500);
       ProcessContext& ctx = nc.ctx;
       ctx.is_playing = true;
-      ctx.cycle_epoch = 7000;  // epoch-rebased frame (e.g. after a commit)
+      ctx.frame_top = 7000;  // zero-rebased frame (e.g. after a commit)
 
       float out[1] = {0.0f};
       float* const outs2[] = {out};
@@ -126,14 +126,14 @@ class StackLoopTests : public juce::UnitTest {
                                 "t_child = O + start + ((t - O - start) mod "
                                 "len) (the one anchoring law)");
 
-      // Deterministic: same t, same epoch, same output.
+      // Deterministic: same t, same zero, same output.
       out[0] = 0.0f;
       stack.process(nullptr, outs2, 0, 1, ctx);
       expectWithinAbsoluteError(out[0], rampValue(1500), 0.0001f,
-                                "phase is a pure function of (t, epoch)");
+                                "phase is a pure function of (t, zero)");
     }
 
-    beginTest("Windowed stack re-bases cycle_epoch for children");
+    beginTest("Windowed stack re-bases frame_top for children");
     {
       // Nested windows: the inner stack's phase locks to the OUTER
       // window's frame — its cycle top is the outer window's start.
@@ -146,7 +146,7 @@ class StackLoopTests : public juce::UnitTest {
       outer.addChild(std::move(inner));
       outer.setLoopPoints(1000, 2000);  // outer window: [1000, 2000)
 
-      NodeContext nc = contextFor(outer, 1, 2500);  // cycle_epoch 0
+      NodeContext nc = contextFor(outer, 1, 2500);  // frame_top 0
       nc.ctx.is_playing = true;
 
       float out[1] = {0.0f};
@@ -154,7 +154,7 @@ class StackLoopTests : public juce::UnitTest {
       outer.process(nullptr, outs, 0, 1, nc.ctx);
 
       // Outer: rel = 2500 mod 1000 = 500 → child time 0+1000+500 = 1500,
-      // child epoch 1000. Inner: rel = (1500 − 1000) mod 300 = 200 →
+      // child zero 1000. Inner: rel = (1500 − 1000) mod 300 = 200 →
       // clip time 1000 + 0 + 200 = 1200 (the inner window selects the
       // first 300 of the inner cycle, whose top is the outer window top).
       expectWithinAbsoluteError(out[0], rampValue(1200), 0.0001f,

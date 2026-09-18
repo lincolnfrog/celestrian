@@ -234,13 +234,13 @@ class PreRecordTests : public juce::UnitTest {
                  juce::String(masterView) + ")");
     }
 
-    beginTest("Anchor stays in the epoch frame after cycle re-base");
+    beginTest("Anchor stays in the island frame after cycle re-base");
     {
       // Field bug (2026-07-07): 1Q groove, 4Q take whose commit re-based
-      // the cycle epoch to its origin (7000; 7000 mod 4000 = 3000 — the
+      // the zero to its origin (7000; 7000 mod 4000 = 3000 — the
       // shifted case). Clicking record late in the VIEW cycle must then
       // anchor clip 3 at view 0Q — the arm math previously mixed the
-      // absolute frame with the epoch-rebased view and anchored at 3Q.
+      // absolute frame with the zero-rebased view and anchored at 3Q.
       AudioEngine engine;
       engine.createNode("stack");
       juce::String stackId = firstNodeId(engine);
@@ -250,7 +250,7 @@ class PreRecordTests : public juce::UnitTest {
       engine.startRecordingInNode(clipA);
       processSilence(engine, 500);
       processSilence(engine, 500);
-      engine.stopRecordingInNode(clipA);  // Q = 1000, epoch = 0
+      engine.stopRecordingInNode(clipA);  // Q = 1000, zero = 0
       expectEquals(childDuration(engine, 0), (int64_t)1000);
 
       // Idle to master 6500, then record clip B: trigger = 7000.
@@ -264,7 +264,7 @@ class PreRecordTests : public juce::UnitTest {
         processSilence(engine, 500);
       }
       expectEquals(childDuration(engine, 1), (int64_t)4000,
-                   "clip B is 4Q; its commit re-bases the epoch to 7000");
+                   "clip B is 4Q; its commit re-bases the zero to 7000");
 
       // Idle to master 14500 = view 3.5Q, then click record: the PLL
       // targets the top of the NEXT cycle (view 0Q, absolute 15000).
@@ -300,9 +300,9 @@ class PreRecordTests : public juce::UnitTest {
     beginTest("Stack window selects view positions (2Q clip loops Q1)");
     {
       // Field bug (2026-07-09): clip 1 = 1Q, clip 2 = 2Q (origin at an
-      // ODD Q multiple — the re-based epoch), stack window set to Q1.
+      // ODD Q multiple — the re-based zero), stack window set to Q1.
       // Clip 2 must loop ITS Q1 like everything else; the buggy mapping
-      // dropped the epoch from the child time, shifting clip 2 by 1Q so
+      // dropped the zero from the child time, shifting clip 2 by 1Q so
       // it looped its Q2.
       AudioEngine engine;
       engine.createNode("stack");
@@ -313,11 +313,11 @@ class PreRecordTests : public juce::UnitTest {
       engine.startRecordingInNode(clipA);
       processSilence(engine, 500);
       processSilence(engine, 500);
-      engine.stopRecordingInNode(clipA);  // Q = 1000, epoch 0
+      engine.stopRecordingInNode(clipA);  // Q = 1000, zero at 0
       expectEquals(childDuration(engine, 0), (int64_t)1000);
 
       // Clip B: trigger at 7000 (7000 mod 2000 = 1000 — the shifted
-      // case); records 2Q; commit re-bases the epoch to 7000.
+      // case); records 2Q; commit re-bases the zero to 7000.
       for (int i = 0; i < 11; ++i) processSilence(engine, 500);
       engine.createNode("clip", stackId);
       juce::String clipB = childId(engine, 1);
@@ -333,7 +333,7 @@ class PreRecordTests : public juce::UnitTest {
       // content's origin — clip A's, 0 — and its window selects INNER
       // positions from there, never view positions of the re-based
       // frame. Clip B (origin 7000 ≡ 1000 mod its 2Q) sits at inner 1Q;
-      // the UI draws the group's take mark at (origin − epoch) mod frame
+      // the UI draws the group's take mark at (origin − zero) mod frame
       // and translates bracket geometry by it, so "the first Q you see"
       // (frame [0, 1Q) = clip B's first half) is inner [1Q, 2Q).
       {

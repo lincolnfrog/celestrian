@@ -5,8 +5,8 @@
  *  - E1: K::Remove uncollapsed the definer on ANY delete — including an
  *    unrelated empty clip deleted while a take recorded against the
  *    collapsed grid (mid-take material change under the recorder).
- *  - E3: seekTransport slides every live origin + the epoch, but the
- *    UNDO LOG's absolute values (iepoch/iorg/riders/takes) stayed in
+ *  - E3: seekTransport slides every live origin + the zero, but the
+ *    UNDO LOG's absolute values (izero/iorg/riders/takes) stayed in
  *    the pre-seek frame — an undo after a seek moved siblings against
  *    the grid (shiftHistoryAbsolutes is the fix).
  */
@@ -133,35 +133,35 @@ class AuditRegressionTests : public juce::UnitTest {
       // re-anchor produces a non-zero whole-D delta.
       driveEngine(engine, 3 * D);
 
-      const int64_t epoch0 = rootProp(engine, "islandEpoch");
+      const int64_t zero0 = rootProp(engine, "islandZero");
       const int64_t orgA0 = (int64_t)deepProp(engine, a, "origin");
       const int64_t orgB0 = (int64_t)deepProp(engine, b, "origin");
 
       // Playing map edit on A: the continuity rider re-anchors A's
       // origin; the island zero stays (docs/frame.md).
       engine.setLoopPoints(a, 0, D / 2);
-      const int64_t epoch1 = rootProp(engine, "islandEpoch");
+      const int64_t zero1 = rootProp(engine, "islandZero");
       const int64_t orgA1 = (int64_t)deepProp(engine, a, "origin");
       logMessage("trim delta: origin " + juce::String(orgA1 - orgA0) +
-                 ", epoch " + juce::String(epoch1 - epoch0));
+                 ", zero " + juce::String(zero1 - zero0));
       expect(orgA1 != orgA0, "precondition: the edit carried the origin rider");
-      expectEquals(epoch1, epoch0, "the zero does not ride a map edit");
+      expectEquals(zero1, zero0, "the zero does not ride a map edit");
 
-      // A seek (not undoable) rides EVERY origin + the epoch by ds.
+      // A seek (not undoable) rides EVERY origin + the zero by ds.
       const bool ok = engine.seekTransport((double)(D / 3));
       expect(ok, "seek accepted");
-      const int64_t epoch2 = rootProp(engine, "islandEpoch");
-      const int64_t ds = epoch2 - epoch1;
-      expect(ds != 0, "precondition: the seek moved the epoch");
+      const int64_t zero2 = rootProp(engine, "islandZero");
+      const int64_t ds = zero2 - zero1;
+      expect(ds != 0, "precondition: the seek moved the zero");
 
-      // Undo the trim: restores A's window, A's origin and the epoch to
+      // Undo the trim: restores A's window, A's origin and the zero to
       // their PRE-SEEK absolute values; B keeps its post-seek origin.
       engine.undo();
-      const int64_t epoch3 = rootProp(engine, "islandEpoch");
+      const int64_t zero3 = rootProp(engine, "islandZero");
       const int64_t orgB3 = (int64_t)deepProp(engine, b, "origin");
-      const int64_t placeB_before = orgB0 - epoch0;
-      const int64_t placeB_after = orgB3 - epoch3;
-      logMessage("B placement (origin - epoch): before=" +
+      const int64_t placeB_before = orgB0 - zero0;
+      const int64_t placeB_after = orgB3 - zero3;
+      logMessage("B placement (origin - zero): before=" +
                  juce::String(placeB_before) +
                  " after undo=" + juce::String(placeB_after) +
                  " (seek ds=" + juce::String(ds) + ")");

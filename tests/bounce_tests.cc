@@ -133,7 +133,7 @@ void recordTake(AudioEngine& engine, const juce::String& target, int64_t D,
   engine.stopRecordingInNode(target);  // first take: immediate commit
   driveLive(engine, BLOCK, clock, /*ramp_input=*/true);
   // Mirror the engine clock exactly from here on.
-  clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+  clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
 }
 
 }  // namespace
@@ -173,11 +173,11 @@ class BounceTests : public juce::UnitTest {
       const int64_t span = D;  // effective cycle = Q = D
       expect(file.getNumSamples() >= span, "the file covers the span");
 
-      // The live twin: from a clock ≡ epoch (the bounce's frame top),
+      // The live twin: from a clock ≡ zero (the bounce's frame top),
       // one cycle through the device callback.
-      const int64_t epoch = rootProp(engine, "islandEpoch");
-      driveLive(engine, mod(epoch - clock, span), clock, false);
-      expectEquals(mod(clock - epoch, span), (int64_t)0, "at the cycle top");
+      const int64_t zero = rootProp(engine, "islandZero");
+      driveLive(engine, mod(zero - clock, span), clock, false);
+      expectEquals(mod(clock - zero, span), (int64_t)0, "at the cycle top");
       std::vector<float> live_l, live_r;
       driveLive(engine, span, clock, false, &live_l, &live_r);
 
@@ -236,11 +236,11 @@ class BounceTests : public juce::UnitTest {
     }
 
     // Audit D15-1: ONE frame-top law for every node. The root is never
-    // anchored, so its frame top is the epoch — plus a0 under a root
+    // anchored, so its frame top is the zero — plus a0 under a root
     // window: the bounce starts where the window starts, not where the
-    // island cycle wraps (from the epoch a [D/4, 3D/4) window would have
+    // island cycle wraps (from the zero a [D/4, 3D/4) window would have
     // started 3D/4 in — inside the rest, silent).
-    beginTest("GOLDEN: a windowed ROOT bounces from its window top (epoch + a0)");
+    beginTest("GOLDEN: a windowed ROOT bounces from its window top (zero + a0)");
     {
       AudioEngine engine;
       int64_t clock = 0;
@@ -260,8 +260,8 @@ class BounceTests : public juce::UnitTest {
       const int64_t span = D;  // one effective island cycle
       expect(file.getNumSamples() >= span, "the file covers the cycle");
 
-      // The live twin from a clock ≡ epoch + a0 (the window top).
-      const int64_t top = rootProp(engine, "islandEpoch") + D / 4;
+      // The live twin from a clock ≡ zero + a0 (the window top).
+      const int64_t top = rootProp(engine, "islandZero") + D / 4;
       driveLive(engine, mod(top - clock, span), clock, false);
       expectEquals(mod(clock - top, span), (int64_t)0, "at the window top");
       std::vector<float> live_l, live_r;

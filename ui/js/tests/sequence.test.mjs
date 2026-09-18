@@ -238,7 +238,7 @@ test('STEP 3 (§12): nested sequences — period law on the group lane, layered 
  * gate dims from the lane frame's zero, and the grid's playing column
  * folded the raw playhead. A group anchored mid-cycle then dimmed the
  * wrong sections. The layer now carries the owner's phase; the root
- * (never anchored — its frame IS the epoch) carries none. The engine
+ * (never anchored — its frame IS the zero) carries none. The engine
  * side is tests/scenario_tests.cc S30/S31; the cross-layer seam is
  * tests/display_contract_tests.cc + display_contract.test.mjs. */
 test('a group song\'s dims and playing column fold from the GROUP origin (2026-09-09)', () => {
@@ -247,18 +247,18 @@ test('a group song\'s dims and playing column fold from the GROUP origin (2026-0
     const Q = st.quantum;
     const drums = st.nodes.find(n => n.id === 'drums');
     drums.anchored = true;
-    drums.origin = 2 * Q;  // anchored 2Q past the epoch
+    drums.origin = 2 * Q;  // anchored 2Q past the zero
     const vm = deriveViewModel(st, { ...opts, seqOpen: new Set(['drums']) });
     const kick = vm.lanes.find(l => l.id === 'kick');
     assert.deepEqual(kick.seqDims, [
         { periodQ: 8, offSegsQ: [[0, 4]], cueSegsQ: null },
         { periodQ: 4, offSegsQ: [[1, 2], [3, 4]], cueSegsQ: null, phaseQ: 2 },
-    ], 'the root layer sits at the epoch; the kit layer carries the group phase');
+    ], 'the root layer sits at the zero; the kit layer carries the group phase');
     const grid = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === 'drums');
     assert.equal(grid.phaseQ, 2, 'the grid row folds the playhead from the group origin');
     const rootGrid = deriveViewModel(st, { ...opts, seqOpen: new Set([st.id]) })
         .lanes.find(l => l.kind === 'seq' && l.ownerId === st.id);
-    assert.equal(rootGrid.phaseQ, 0, 'the root song is anchored at the epoch');
+    assert.equal(rootGrid.phaseQ, 0, 'the root song is anchored at the zero');
     // A phase of a whole song is no phase (the layer stays bare).
     drums.origin = 4 * Q;
     const vm2 = deriveViewModel(st, { ...opts, seqOpen: new Set(['drums']) });
@@ -326,21 +326,21 @@ test('"+ step" unit and the group chip follow a windowed group (2026-08-21)', as
 test('a root song anchors the root at the seated zero (mock parity; frame.md §4)', async () => {
     const { a, b, Q } = await seedTwoTracks();
     const st0 = getState();
-    const E = st0.islandEpoch;
+    const E = st0.islandZero;
     assert.equal(st0.anchored, false, 'no song: the root is unanchored');
     const picture = vm => [a, b].map(id => vm.lanes.find(l => l.id === id).takeStartQ);
     const before = deriveViewModel(st0, opts);
     // The view passes the zero it has seated (here: a cycle past the
     // island zero, off-grid by a third of a Q — the engine snaps it).
-    const zero = before.epochSamples + 4 * Q + Math.floor(Q / 3);
+    const zero = before.frameZero + 4 * Q + Math.floor(Q / 3);
     await callNative('setSequence', 'mock-root', {
         steps: [{ name: 'a', len: 2 * Q }, { name: 'b', len: 2 * Q }],
         gates: { [b]: [true, false] },
     }, zero);
     let st = getState();
     assert.equal(st.anchored, true, 'the song anchors the root');
-    assert.equal(st.origin, before.epochSamples + 4 * Q, 'at the seated zero, on the Q grid');
-    assert.equal(st.islandEpoch, E, 'the island zero itself never moves');
+    assert.equal(st.origin, before.frameZero + 4 * Q, 'at the seated zero, on the Q grid');
+    assert.equal(st.islandZero, E, 'the island zero itself never moves');
 
     // THE PICTURE: the root seats first, from its origin; the lanes
     // then pull the zero only by whole cycles-so-far, which the song
@@ -348,7 +348,7 @@ test('a root song anchors the root at the seated zero (mock parity; frame.md §4
     // in the frame is 0 (grid row and lane dims alike).
     let vm = deriveViewModel(st, { ...opts, seqOpen: new Set([st.id]) });
     assert.deepEqual(picture(vm), picture(before), 'authoring the song moved no tile');
-    assert.equal((st.origin - vm.epochSamples) % (4 * Q), 0,
+    assert.equal((st.origin - vm.frameZero) % (4 * Q), 0,
         'the frame\'s zero is a whole song from the root\'s origin');
     const rootGrid = vm.lanes.find(l => l.kind === 'seq' && l.ownerId === st.id);
     assert.equal(rootGrid.phaseQ, 0, 'the root song sits at the frame\'s zero');
@@ -363,11 +363,12 @@ test('a root song anchors the root at the seated zero (mock parity; frame.md §4
 
     // A SEEK moves every origin with the zero — the root's included —
     // and lands the requested phase against the root's frame top.
-    const placement = st.origin - st.islandEpoch;
-    assert.equal(await callNative('seekTransport', 0), true);
+    const placement = st.origin - st.islandZero;
+    // (The engine takes a phase ADVANCE: back to 0 from 3.)
+    assert.ok(await callNative('seekTransport', -getState().masterPos));
     st = getState();
     assert.equal(st.masterPos, 0, 'phase 0 after the seek');
-    assert.equal(st.origin - st.islandEpoch, placement, 'the root\'s placement survives the seek');
+    assert.equal(st.origin - st.islandZero, placement, 'the root\'s placement survives the seek');
 
     // UNDO of the authoring un-anchors; redo re-anchors at the stored origin.
     const O = st.origin;
@@ -414,11 +415,11 @@ test('the root seats first at its origin under a song; unanchored it seats at th
     // Anchored (the engine after 2026-09-17): the song's top is the
     // root's origin, a cycle past the island zero — the frame follows.
     const anchored = sceneState([c1, c2], {
-        id: 'root', quantum: Q, islandEpoch: E, anchored: true, origin: E + 4 * Q,
+        id: 'root', quantum: Q, islandZero: E, anchored: true, origin: E + 4 * Q,
         sequence: song, masterPos: 0,
     });
     const vm = deriveViewModel(anchored, { ...opts, seqOpen: new Set(['root']) });
-    assert.equal(Math.abs(vm.epochSamples - (E + 4 * Q)) % (4 * Q), 0,
+    assert.equal(Math.abs(vm.frameZero - (E + 4 * Q)) % (4 * Q), 0,
         'the frame\'s zero is a whole song from the root\'s origin');
     assert.equal(vm.lanes.find(l => l.kind === 'seq').phaseQ, 0);
     assert.equal(vm.lanes.find(l => l.id === c2.id).takeStartQ, 0,
@@ -426,9 +427,9 @@ test('the root seats first at its origin under a song; unanchored it seats at th
     // Unanchored (a state from before the rule, or a fixture): the
     // root's frame is the island zero.
     const legacy = sceneState([c1, c2], {
-        id: 'root', quantum: Q, islandEpoch: E, anchored: false, origin: 0,
+        id: 'root', quantum: Q, islandZero: E, anchored: false, origin: 0,
         sequence: song, masterPos: 0,
     });
-    assert.equal(deriveViewModel(legacy, opts).epochSamples, E,
+    assert.equal(deriveViewModel(legacy, opts).frameZero, E,
         'unanchored: the song folds from the island zero');
 });

@@ -4,9 +4,9 @@
  *
  * Three laws, all found by the engine e2e harness (2026-09-09, the
  * groups journeys — the mock never showed them because its fixtures
- * put every group's origin at the epoch):
+ * put every group's origin at the zero):
  *  1. the slice is measured from the GROUP'S origin (Q18), not the
- *     epoch: a group anchored 1Q past the epoch with a [1Q, 3Q) window
+ *     zero: a group anchored 1Q past the zero with a [1Q, 3Q) window
  *     plays its member's content [1Q, 3Q) (engine: t' = O + inner,
  *     content = t' − origin) — the lane drew [2Q, 4Q);
  *  2. the members carry the GROUP'S ROTATION (srcTopFrac = the group's
@@ -33,7 +33,7 @@ const clip = (id, origin, duration, extra = {}) => ({
 
 function island(groupOrigin, { loop = [Q, 3 * Q], member = {} } = {}) {
     return {
-        id: 'root', type: 'stack', quantum: Q, islandEpoch: 2 * Q,
+        id: 'root', type: 'stack', quantum: Q, islandZero: 2 * Q,
         isPlaying: true, masterPos: 0, islandPos: 0,
         nodes: [
             clip('c1', 0, Q),
@@ -51,13 +51,13 @@ const opts = { fxOpen: new Set() };
 const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
 
 test('1. the slice is measured from the GROUP origin', () => {
-    // Group (and its sole member) anchored 1Q past the epoch: the map's
+    // Group (and its sole member) anchored 1Q past the zero: the map's
     // [1Q, 3Q) selects the member's OWN [1Q, 3Q) — origins coincide.
     const m = laneOf(deriveViewModel(island(3 * Q), opts), 'm');
     assert.equal(m.underMap, true);
     assert.deepEqual(m.reps[0].srcSegs, [[0.25, 0.75]],
         'the member shows content [1Q, 3Q) of its 4Q take');
-    // At the epoch the answer is the same (the old code agreed only here).
+    // At the zero the answer is the same (the old code agreed only here).
     assert.deepEqual(laneOf(deriveViewModel(island(2 * Q), opts), 'm').reps[0].srcSegs,
         [[0.25, 0.75]]);
 });

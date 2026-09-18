@@ -5,13 +5,13 @@
  * The field bug behind this file: a 4-section root song sounded the
  * full band over the guitar-only section. The engine gated from one
  * frame (the root's origin), the UI drew the sections from another
- * (the epoch), and NO test layer could see the split — the mock has no
+ * (the zero), and NO test layer could see the split — the mock has no
  * audio, and the engine tests never asked what the lanes draw.
  *
  * This is the seam that closes it. Drive the REAL engine through the
  * scenario harness, and for every gated clip measure — by SOLOING it
  * and listening — which Q cells of the island cycle it actually sounds
- * in (the AUDIBLE TRUTH, in the epoch frame the ruler draws). Dump the
+ * in (the AUDIBLE TRUTH, in the island frame the ruler draws). Dump the
  * published state alongside the truth table to
  * shared/display_contract_capture.json; ui/js/tests/display_contract.test.mjs
  * replays the state through the real deriveViewModel and asserts that
@@ -86,7 +86,7 @@ class DisplayContractTests : public juce::UnitTest {
     const juce::String g = is.createStack();
     const juce::String c4 = is.record(4 * Q, g);
     expect(is.bprop(g, "anchored"), "the group is anchored");
-    const int64_t E = is.epoch();
+    const int64_t E = is.zero();
     const int64_t Og = is.origin(g);
     expectEquals(posmod(Og - E, 8 * Q), 2 * Q, "the group sits at phase 2Q");
     is.engine.setSequence(g, song(4 * Q, 4 * Q, c4));
@@ -95,7 +95,7 @@ class DisplayContractTests : public juce::UnitTest {
     // THE AUDIBLE TRUTH: solo one clip, listen one cycle, judge each Q
     // cell at its centre (away from the 10 ms gate ramps): the clip's
     // own loop value = ON, silence = OFF, anything else = a harness
-    // fault. Cells are in the EPOCH frame — the ruler the lanes draw.
+    // fault. Cells are in the ISLAND frame — the ruler the lanes draw.
     const int cells = 8;
     std::map<juce::String, std::vector<bool>> truth;
     for (const juce::String& id : {c1, c2, c3, c4}) {
@@ -121,15 +121,15 @@ class DisplayContractTests : public juce::UnitTest {
       truth[id] = row;
       is.engine.toggleSolo(id);
     }
-    // The laws, restated in the epoch frame (S30/S31): c1 off in the
+    // The laws, restated in the island frame (S30/S31): c1 off in the
     // root song's step 2 = cells 4–7; c4 off in the GROUP song's step 2
-    // = cells 6, 7, 0, 1 (the group's origin is 2Q past the epoch).
+    // = cells 6, 7, 0, 1 (the group's origin is 2Q past the zero).
     const std::vector<bool> all_on(cells, true);
     expect(truth[c1] == std::vector<bool>{1, 1, 1, 1, 0, 0, 0, 0},
-           "c1 sounds in root step 1 only (epoch frame)");
+           "c1 sounds in root step 1 only (island frame)");
     expect(truth[c2] == all_on && truth[c3] == all_on, "ungated clips sound throughout");
     expect(truth[c4] == std::vector<bool>{0, 0, 1, 1, 1, 1, 0, 0},
-           "c4 sounds in the group's step 1, which starts 2Q past the epoch");
+           "c4 sounds in the group's step 1, which starts 2Q past the zero");
 
     // --- Dump for the JS replay ---
     auto* doc = new juce::DynamicObject();

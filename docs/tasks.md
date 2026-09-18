@@ -110,8 +110,8 @@ Nothing in Tier D is required for 1.0.
   attaching content writes no island facts (`maybeEstablishQuantumFrom`,
   `scrubNestedIslandFacts` and the load-time scrub are gone; the NESTED
   FACTS test pins it); D15-1 — one frame-top law for every node (the
-  root's frame top IS the epoch by the 2026-09-09 never-anchored ruling;
-  the bounce's root branch collapsed into the node branch, `epoch + a0`
+  root's frame top IS the zero by the 2026-09-09 never-anchored ruling;
+  the bounce's root branch collapsed into the node branch, `zero + a0`
   under a root window; the S21 lookup reads the owning stack's song
   position through `heard::songPositionAt`); D7-3 + D15-8 — the root
   is ONE node record (`root`) in a version-2 bundle, loaded onto the
@@ -256,15 +256,17 @@ Small, concrete, each a half-day or less unless marked. None blocks
   migration history lives in its §6 appendix, stacks.md is folded into
   composition.md §10 and session_view.md, and every spec carries a
   final "alternatives considered and rejected" appendix (README.md).
-- [ ] **The frame, remaining passes (frame.md §7, 2026-09-16):** (1) ✅
+- [x] **The frame, remaining passes (frame.md §7, 2026-09-16):** (1) ✅
   2026-09-17 — a root song authored after takes anchors the root at the
   seated zero (`setSequence` carries it; frame.md §4, S39, mock parity,
   the see_vs_hear journey); a root window (engine API only) still folds
-  from the island zero; (2) bounce, import and seek still take
-  positions in the engine's zero-relative frame — move them to
-  absolute positions the view computes; (3) rename `islandEpoch` /
-  `epoch_samples_` to the island zero across engine, mock, tests and
-  the bundle key.
+  from the island zero; (2) ✅ 2026-09-17 — seek is a phase advance the
+  view computes (`seek.js`), import lands at an absolute origin, bounce
+  takes an absolute start (frame.md §7); (3) ✅ 2026-09-17 — the
+  "epoch" is gone from the code: `islandZero` / `zero_samples_` across
+  engine, mock, tests, docs and fixtures, bundle key `zero` (session
+  version 3, legacy `epoch` still loads), `frame_top` for the received
+  frame top (was `cycle_epoch`).
 - [ ] **Process:** agent tasks stall when they span several features;
   one feature per task with the suites run after each step is the
   cadence that worked (memory note).

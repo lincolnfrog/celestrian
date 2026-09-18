@@ -1,12 +1,14 @@
 /**
  * Transport seek tests (owner ruling 2026-08-27, the ruler scrub).
  *
- * AudioEngine::seekTransport(pos) re-bases the island epoch so the
- * monotonic clock reads as the requested phase — the clock itself is
- * NEVER touched (kernel.md). The target arrives in the published
- * masterPos domain (epoch-relative, folded on the audible cycle E-C),
- * and the engine folds out-of-range targets defensively. Refused while
- * any take is live or armed: takes place audio by the clock.
+ * AudioEngine::seekTransport(advance) moves the playing PHASE by
+ * `advance` samples — the island's zero and every origin move back by
+ * it — so the monotonic clock reads as the wanted phase; the clock
+ * itself is NEVER touched (kernel.md). The engine reads no frame
+ * (docs/frame.md): the view computes the advance against the zero it
+ * seated, and may name the clock reading it used (`at_clock`) so the
+ * engine corrects for the time since the poll. Refused while any take
+ * is live or armed: takes place audio by the clock.
  *
  * Fixture note: the first take is recorded MANUALLY at exactly 1Q
  * (the monotonic_clock_tests pattern) — test_utils::recordClip pads
@@ -46,25 +48,31 @@ class SeekTests : public juce::UnitTest {
           .getDynamicObject()
           ->getProperty("masterPos");
     };
-    auto islandFacts = [](AudioEngine& engine, int64_t& pos, int64_t& epoch) {
+    auto islandFacts = [](AudioEngine& engine, int64_t& pos, int64_t& zero) {
       auto state = engine.getGraphState();
       auto* root = state.getDynamicObject();
       pos = (int64_t)(double)root->getProperty("islandPos");
-      epoch = (int64_t)(double)root->getProperty("islandEpoch");
+      zero = (int64_t)(double)root->getProperty("islandZero");
     };
 
-    // Record the FIRST take at exactly 1Q (epoch 0, cycle 1Q), then
+    // Record the FIRST take at exactly 1Q (zero at 0, cycle 1Q), then
     // settle one block so the recording-view flag clears. Leaves the
     // transport PLAYING at t = Q + BLOCK_SIZE.
     auto establish1Q = [&](AudioEngine& engine,
                            const std::function<void(int64_t)>& process) {
       engine.createNode("clip");
       const juce::String id = firstClipId(engine);
-      engine.startRecordingInNode(id);  // auto-plays; epoch = 0
+      engine.startRecordingInNode(id);  // auto-plays; zero = 0
       process(Q);
       engine.stopRecordingInNode(id);  // no island Q yet -> immediate commit
       process(BLOCK_SIZE);             // settle the view flags
       return id;
+    };
+
+    // A test names the PHASE it wants; the engine takes the advance
+    // (the view's arithmetic, docs/frame.md).
+    auto seekTo = [&](AudioEngine& engine, int64_t phase) {
+      return engine.seekTransport((double)(phase - masterPos(engine)));
     };
 
     beginTest("Seek sets the published phase; the clock never moves");
@@ -74,20 +82,20 @@ class SeekTests : public juce::UnitTest {
       establish1Q(engine, process);
 
       // The raw monotonic clock, reconstructed from the published pair
-      // (islandPos = t - epoch, so t = islandPos + epoch).
-      int64_t pos_before = 0, epoch_before = 0;
-      islandFacts(engine, pos_before, epoch_before);
-      const int64_t raw_before = pos_before + epoch_before;
+      // (islandPos = t - zero, so t = islandPos + zero).
+      int64_t pos_before = 0, zero_before = 0;
+      islandFacts(engine, pos_before, zero_before);
+      const int64_t raw_before = pos_before + zero_before;
 
       // Stopped seek: the frozen view teleports to the target.
       if (engine.isPlaying()) engine.togglePlayback();
-      expect(engine.seekTransport((double)(Q / 2)), "seek applied");
+      expect(seekTo(engine, Q / 2), "seek applied");
       expectEquals((juce::int64)masterPos(engine), (juce::int64)(Q / 2),
                    "stopped view reads the seek");
 
-      int64_t pos_after = 0, epoch_after = 0;
-      islandFacts(engine, pos_after, epoch_after);
-      expectEquals((juce::int64)(pos_after + epoch_after),
+      int64_t pos_after = 0, zero_after = 0;
+      islandFacts(engine, pos_after, zero_after);
+      expectEquals((juce::int64)(pos_after + zero_after),
                    (juce::int64)raw_before,
                    "the monotonic clock itself never moved (kernel.md)");
 
@@ -99,18 +107,42 @@ class SeekTests : public juce::UnitTest {
                    "playback rides the new phase");
     }
 
-    beginTest("Out-of-range targets fold on the audible cycle");
+    beginTest("Any advance folds on the audible cycle; at_clock corrects for the "
+              "clock since the poll; a zero advance is a no-op");
     {
       AudioEngine engine;
       auto process = makeDriver(engine);
       establish1Q(engine, process);  // cycle 1Q
+      if (engine.isPlaying()) engine.togglePlayback();
+      expect(seekTo(engine, 0), "at phase 0");
 
       expect(engine.seekTransport((double)(2 * Q + Q / 4)), "seek applied");
       expectEquals((juce::int64)masterPos(engine), (juce::int64)(Q / 4),
-                   "2.25Q folds to 0.25Q on a 1Q cycle");
-      expect(engine.seekTransport((double)(-(Q / 4))), "seek applied");
+                   "an advance of 2.25Q lands at 0.25Q on a 1Q cycle");
+      expect(engine.seekTransport((double)(-(Q / 2))), "seek applied");
       expectEquals((juce::int64)masterPos(engine), (juce::int64)(3 * Q / 4),
-                   "negative targets fold from the cycle end");
+                   "a negative advance moves back, folded from the cycle end");
+
+      // The view computed its advance against a clock reading that is
+      // now stale (playback ran on): naming it lands the phase the view
+      // meant, not the phase plus the elapsed time.
+      engine.togglePlayback();
+      int64_t pos_poll = 0, zero_poll = 0;
+      islandFacts(engine, pos_poll, zero_poll);
+      const int64_t raw_poll = pos_poll + zero_poll;
+      const int64_t advance = Q / 2 - masterPos(engine);  // to phase 0.5Q, as polled
+      process(Q / 3);                                     // …then the clock ran on
+      expect(engine.seekTransport((double)advance, raw_poll), "seek applied");
+      expectEquals((juce::int64)masterPos(engine), (juce::int64)(Q / 2),
+                   "at_clock: the phase lands where the view meant");
+
+      int64_t pos_z = 0, zero_z = 0;
+      islandFacts(engine, pos_z, zero_z);
+      expect(engine.seekTransport(0.0), "a zero advance is accepted");
+      int64_t pos_z2 = 0, zero_z2 = 0;
+      islandFacts(engine, pos_z2, zero_z2);
+      expectEquals((juce::int64)zero_z2, (juce::int64)zero_z,
+                   "…and moves nothing");
     }
 
     beginTest("Refused while a take is live or armed");
@@ -119,8 +151,8 @@ class SeekTests : public juce::UnitTest {
       auto process = makeDriver(engine);
       establish1Q(engine, process);  // Q locked
 
-      int64_t pos0 = 0, epoch0 = 0;
-      islandFacts(engine, pos0, epoch0);
+      int64_t pos0 = 0, zero0 = 0;
+      islandFacts(engine, pos0, zero0);
 
       engine.createNode("clip");
       juce::String second;
@@ -139,10 +171,10 @@ class SeekTests : public juce::UnitTest {
       expect(!engine.seekTransport((double)(Q / 2)),
              "live take: seek refused");
 
-      int64_t pos1 = 0, epoch1 = 0;
-      islandFacts(engine, pos1, epoch1);
-      expectEquals((juce::int64)epoch1, (juce::int64)epoch0,
-                   "refused seeks leave the epoch alone");
+      int64_t pos1 = 0, zero1 = 0;
+      islandFacts(engine, pos1, zero1);
+      expectEquals((juce::int64)zero1, (juce::int64)zero0,
+                   "refused seeks leave the zero alone");
 
       engine.stopRecordingInNode(second);
       for (int i = 0;
@@ -157,7 +189,7 @@ class SeekTests : public juce::UnitTest {
     {
       AudioEngine engine;
       auto process = makeDriver(engine);
-      establish1Q(engine, process);  // Q = 1s, epoch 0
+      establish1Q(engine, process);  // Q = 1s, zero at 0
 
       // A second, longer clip grows the committed cycle to a whole
       // multiple of Q (recordClip pads to the boundary).
@@ -169,7 +201,7 @@ class SeekTests : public juce::UnitTest {
       // 1Q (E-C): the playhead loops with what is heard, and so must
       // the seek's fold.
       engine.setLoopPoints(big, Q, 2 * Q);
-      expect(engine.seekTransport((double)(2 * Q + Q / 2)), "seek applied");
+      expect(seekTo(engine, 2 * Q + Q / 2), "seek applied");
       expectEquals((juce::int64)masterPos(engine), (juce::int64)(Q / 2),
                    "target folds on the 1Q audible cycle, not the grown LCM");
     }

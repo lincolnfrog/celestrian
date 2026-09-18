@@ -44,7 +44,7 @@ test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
                        // the old origin-only law
 
     const orgBefore = nodeById(c2).origin || 0;
-    const epochBefore = getState().islandEpoch || 0;
+    const zeroBefore = getState().islandZero || 0;
     const t0 = getState().masterPos || 0;
     // The raw sample sounding at the click (identity map pre-cut).
     const dur = nodeById(c2).duration;
@@ -53,7 +53,7 @@ test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
     // Double-click the middle Q → cut [1Q, 2Q).
     await callNative('setSegments', c2, [0, 1000, 2000, 3000]);
     const orgAfter = nodeById(c2).origin || 0;
-    const epochAfter = getState().islandEpoch || 0;
+    const zeroAfter = getState().islandZero || 0;
 
     // LAW, part 1 — audio continuity: the same raw sample sounds at t0
     // through the new map (when the cut kept it; 1700 parks p0 in a
@@ -70,11 +70,11 @@ test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
             'sounding region removed: origin stays put');
     }
 
-    // LAW, part 2 — the epoch rides the same delta: the clip's frame
-    // position (org − epoch) is invariant, so the timeline reads
+    // LAW, part 2 — the zero rides the same delta: the clip's frame
+    // position (org − zero) is invariant, so the timeline reads
     // exactly as drawn.
-    assert.equal(orgAfter - epochAfter, orgBefore - epochBefore,
-        'frame position (org − epoch) invariant: the fold absorbs it');
+    assert.equal(orgAfter - zeroAfter, orgBefore - zeroBefore,
+        'frame position (org − zero) invariant: the fold absorbs it');
     assert.equal((((orgAfter - orgBefore) % 1000) + 1000) % 1000, 0,
         'the delta is a whole number of Qs (grid untouched)');
 
@@ -93,9 +93,9 @@ test('cutting the middle Q of a playing 3Q clip: no audio jump AND ' +
     // Healing is a map edit too: the origin may re-anchor by whole Qs
     // (continuity); the island zero never moves (docs/frame.md).
     const org2 = nodeById(c2).origin || 0;
-    const epoch2 = getState().islandEpoch || 0;
+    const zero2 = getState().islandZero || 0;
     await callNative('setSegments', c2, []);
-    assert.equal(getState().islandEpoch || 0, epoch2, 'heal: the zero stays');
+    assert.equal(getState().islandZero || 0, zero2, 'heal: the zero stays');
     assert.equal((((nodeById(c2).origin || 0) - org2) % 1000 + 1000) % 1000, 0,
         'heal: the origin moves by whole Qs or not at all');
 });

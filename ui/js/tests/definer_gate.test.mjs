@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import { deriveViewModel } from '../view_model.js';
 
 const mkState = ({ oneShotMember }) => ({
-    quantum: 100, islandEpoch: 0, masterPos: 0, isPlaying: false,
+    quantum: 100, islandZero: 0, masterPos: 0, isPlaying: false,
     definerId: 'g',
     nodes: [{
         id: 'g', type: 'stack', loopStart: 0, loopEnd: 130,

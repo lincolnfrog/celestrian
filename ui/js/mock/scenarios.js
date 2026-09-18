@@ -37,7 +37,7 @@ const IDLE_FLAGS = { isRecording: false, isPlaying: false,
  * Load a named test scenario into the state singleton.
  *
  * Contract: a scenario load is a FULLY ISOLATED fresh session — the
- * graph, island facts (Q, epoch), master fader, transport clock
+ * graph, island facts (Q, zero), master fader, transport clock
  * (isPlaying + masterPos), recording view base, and undo history all
  * reset before the fixture installs; scenarios that stage a running
  * transport re-assert isPlaying/masterPos in their own case.
@@ -77,7 +77,7 @@ export function loadScenario(name) {
     // (transport.running is already false, above).
     state.isPlaying = false;
     state.masterPos = 0;
-    state.islandEpoch = 0;
+    state.islandZero = 0;
     state.islandQ = 0;  // fresh session: Q re-establishes per scenario
     state.masterGain = 1;  // master fader back to unity (test isolation)
     state.root.effects = null;  // the master rack: fresh default chain

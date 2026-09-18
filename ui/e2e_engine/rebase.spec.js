@@ -17,11 +17,11 @@ test('an 8Q take at 2Q of a 4Q cycle: the zero stays, the view seats the tile at
     const c1 = await rec(page, Q);
     const c2 = await rec(page, 4 * Q);
     const st0 = await state(page);
-    const epoch0 = st0.islandEpoch;
+    const zero0 = st0.islandZero;
     // "Phase 2Q of the 4Q cycle" is measured from the 4Q loop's top —
     // the frame the view seats — while driveToPhase counts from the
     // island zero (the 1Q take's origin, a Q earlier).
-    const shift = mod(findNode(st0, c2).origin - epoch0, 4 * Q);
+    const shift = mod(findNode(st0, c2).origin - zero0, 4 * Q);
     await engine(page, 'advance', { samples: 4 * Q });
     const c3 = await rec(page, 8 * Q, { atPhase: mod(2 * Q + shift, 4 * Q) });
     const st = await state(page);
@@ -29,7 +29,7 @@ test('an 8Q take at 2Q of a 4Q cycle: the zero stays, the view seats the tile at
     expect(n3.duration).toBe(8 * Q);
     const rel = n3.origin - findNode(st, c2).origin;
     expect(mod(rel, 4 * Q)).toBe(2 * Q);
-    expect(st.islandEpoch, 'no commit moves the island zero').toBe(epoch0);
+    expect(st.islandZero, 'no commit moves the island zero').toBe(zero0);
     expect((await engine(page, 'status')).cycle).toBe(8 * Q);
 
     // The lane: the view seats the take in the 4Q cycle it started in —
@@ -59,14 +59,14 @@ test('the pickup (S5): an arm a block before the top lands ON the top; a simple 
     await rec(page, Q);
     const c2 = await rec(page, 4 * Q);
     const st0 = await state(page);
-    const epoch0 = st0.islandEpoch;
+    const zero0 = st0.islandZero;
     // The 4Q loop's top, in driveToPhase's island-zero frame.
-    const shift = mod(findNode(st0, c2).origin - epoch0, 4 * Q);
+    const shift = mod(findNode(st0, c2).origin - zero0, 4 * Q);
     const c3 = await rec(page, 8 * Q, { atPhase: shift });
     const st = await state(page);
     const rel = findNode(st, c3).origin - findNode(st, c2).origin;
     expect(mod(rel, 4 * Q)).toBe(0);
-    expect(st.islandEpoch, 'no commit moves the island zero').toBe(epoch0);
+    expect(st.islandZero, 'no commit moves the island zero').toBe(zero0);
     // The view seats the take at the top of the cycle it started in.
     const vm = deriveViewModel(st, { fxOpen: new Set(), windowEdit: new Set() });
     expect(vm.lanes.find(l => l.id === c3).takeStartQ).toBe(0);

@@ -3,7 +3,7 @@
  * committed take through the record path's laws. Pins:
  *
  *   (a) a 44.1k WAV of exactly 2Q dropped at frame 1Q imports as a 2Q
- *       committed clip at origin = epoch + 1Q, snapped (whole window);
+ *       committed clip at origin = zero + 1Q, snapped (whole window);
  *   (b) a 1.3Q file keeps its raw length with the window at 1Q (the
  *       hysteresis law, timing::snapCommittedDuration);
  *   (c) a 48k file into a 44.1k island is resampled to the device
@@ -86,8 +86,8 @@ double prop(AudioEngine& engine, const juce::String& id,
 int64_t islandQ(AudioEngine& engine) {
   return (int64_t)(double)engine.getGraphState().getProperty("quantum", 0.0);
 }
-int64_t islandEpoch(AudioEngine& engine) {
-  return (int64_t)(double)engine.getGraphState().getProperty("islandEpoch",
+int64_t islandZero(AudioEngine& engine) {
+  return (int64_t)(double)engine.getGraphState().getProperty("islandZero",
                                                              0.0);
 }
 
@@ -114,6 +114,13 @@ void establishQ(AudioEngine& engine) {
   celestrian::test_utils::recordClip(engine, process, Q - 100);
 }
 
+/** An absolute origin `q` (possibly fractional) Qs past the island
+ * zero — what the view hands importAudio (docs/frame.md); the engine
+ * snaps it to the nearest Q boundary. */
+int64_t at(AudioEngine& engine, double q) {
+  return islandZero(engine) + (int64_t)std::llround(q * (double)Q);
+}
+
 }  // namespace
 
 class ImportTests : public juce::UnitTest {
@@ -123,19 +130,19 @@ class ImportTests : public juce::UnitTest {
   void runTest() override {
     const juce::File dir = celestrian::test_utils::freshTempDir("import");
 
-    beginTest("(a) a 2Q WAV at frame 1Q lands snapped at epoch + 1Q");
+    beginTest("(a) a 2Q WAV at frame 1Q lands snapped at zero + 1Q");
     {
       AudioEngine engine;
       establishQ(engine);
       expectEquals(islandQ(engine), (int64_t)Q, "Q established by the take");
-      const int64_t epoch = islandEpoch(engine);
+      const int64_t zero = islandZero(engine);
       const juce::String id = emptyClip(engine);
       const juce::File wav = writeWav(dir, "two_q.wav", 44100.0, 1, 2 * Q);
-      expect(engine.importAudio(id, wav.getFullPathName(), 1, 1), "imported");
+      expect(engine.importAudio(id, wav.getFullPathName(), at(engine, 1)), "imported");
       expectEquals((int64_t)prop(engine, id, "duration"), (int64_t)(2 * Q),
                    "2Q committed");
-      expectEquals((int64_t)prop(engine, id, "origin"), epoch + Q,
-                   "origin = epoch + 1Q");
+      expectEquals((int64_t)prop(engine, id, "origin"), zero + Q,
+                   "origin = zero + 1Q");
       expectEquals((int64_t)prop(engine, id, "loopEnd"), (int64_t)0,
                    "whole: no window (D4-7)");
       expectEquals((int)prop(engine, id, "takes"), 1, "one take");
@@ -144,13 +151,13 @@ class ImportTests : public juce::UnitTest {
              "idle after the import");
       // The cycle grew 1Q -> 2Q, and no commit moves the island zero
       // (docs/frame.md) — as for a recorded take.
-      expectEquals(islandEpoch(engine), epoch,
+      expectEquals(islandZero(engine), zero,
                    "the zero stays through growth, as for a recorded take");
       // A fractional drop snaps to the nearest boundary (Q11).
       const juce::String id2 = emptyClip(engine);
-      const int64_t epoch2 = islandEpoch(engine);
-      expect(engine.importAudio(id2, wav.getFullPathName(), 5, 2), "5/2 Q");
-      expectEquals((int64_t)prop(engine, id2, "origin"), epoch2 + 3 * Q,
+      const int64_t zero2 = islandZero(engine);
+      expect(engine.importAudio(id2, wav.getFullPathName(), at(engine, 2.5)), "5/2 Q");
+      expectEquals((int64_t)prop(engine, id2, "origin"), zero2 + 3 * Q,
                    "5/2 rounds to the 3Q boundary");
       // The buffer holds the file's samples.
       auto* clip = dynamic_cast<celestrian::ClipNode*>(
@@ -177,7 +184,7 @@ class ImportTests : public juce::UnitTest {
       const juce::String id = emptyClip(engine);
       const juce::File wav = writeWav(dir, "one_three_q.wav", 44100.0, 1,
                                       (int)(1.3 * Q));
-      expect(engine.importAudio(id, wav.getFullPathName(), 0, 1), "imported");
+      expect(engine.importAudio(id, wav.getFullPathName(), at(engine, 0)), "imported");
       expectEquals((int64_t)prop(engine, id, "duration"), (int64_t)(1.3 * Q),
                    "raw length kept (outside the hysteresis tolerance)");
       expectEquals((int64_t)prop(engine, id, "loopEnd"), (int64_t)Q,
@@ -186,7 +193,7 @@ class ImportTests : public juce::UnitTest {
       const juce::String id2 = emptyClip(engine);
       const juce::File wav2 = writeWav(dir, "one_one_q.wav", 44100.0, 1,
                                        (int)(1.1 * Q));
-      expect(engine.importAudio(id2, wav2.getFullPathName(), 0, 1));
+      expect(engine.importAudio(id2, wav2.getFullPathName(), at(engine, 0)));
       expectEquals((int64_t)prop(engine, id2, "duration"), (int64_t)Q,
                    "1.1Q snaps down to 1Q");
     }
@@ -199,7 +206,7 @@ class ImportTests : public juce::UnitTest {
       // 4800 frames at 48k = 0.1 s = 4410 frames at 44.1k: outside the
       // snap tolerance from 4000 and 5000, so the raw length shows.
       const juce::File wav = writeWav(dir, "forty_eight.wav", 48000.0, 1, 4800);
-      expect(engine.importAudio(id, wav.getFullPathName(), 0, 1), "imported");
+      expect(engine.importAudio(id, wav.getFullPathName(), at(engine, 0)), "imported");
       expectEquals((int64_t)prop(engine, id, "duration"), (int64_t)4410,
                    "resampled to the device rate");
       expectEquals((int64_t)prop(engine, id, "loopEnd"), (int64_t)4000,
@@ -215,11 +222,11 @@ class ImportTests : public juce::UnitTest {
       AudioEngine engine;
       const juce::String id = emptyClip(engine);
       const juce::File wav = writeWav(dir, "seed.wav", 44100.0, 1, 1500);
-      expect(engine.importAudio(id, wav.getFullPathName(), 0, 1), "imported");
+      expect(engine.importAudio(id, wav.getFullPathName(), at(engine, 0)), "imported");
       expectEquals(islandQ(engine), (int64_t)1500, "Q = the file's length");
       expectEquals((int64_t)prop(engine, id, "duration"), (int64_t)1500);
-      expectEquals(islandEpoch(engine), (int64_t)prop(engine, id, "origin"),
-                   "epoch = the first take's origin");
+      expectEquals(islandZero(engine), (int64_t)prop(engine, id, "origin"),
+                   "zero = the first take's origin");
       expect(engine.canUndo(), "logged");
       engine.undo();
       expectEquals(islandQ(engine), (int64_t)0, "undo reverts the grid");
@@ -235,11 +242,11 @@ class ImportTests : public juce::UnitTest {
       establishQ(engine);
       const juce::String id = emptyClip(engine);
       const juce::File two = writeWav(dir, "slot.wav", 44100.0, 1, 2 * Q);
-      expect(engine.importAudio(id, two.getFullPathName(), 0, 1));
+      expect(engine.importAudio(id, two.getFullPathName(), at(engine, 0)));
       const int64_t origin = (int64_t)prop(engine, id, "origin");
       // Longer than the slot: cut.
       const juce::File three = writeWav(dir, "long.wav", 44100.0, 1, 3 * Q, 0.7f);
-      expect(engine.importAudio(id, three.getFullPathName(), 1, 1),
+      expect(engine.importAudio(id, three.getFullPathName(), at(engine, 1)),
              "second import lands as a take");
       expectEquals((int)prop(engine, id, "takes"), 2, "two takes");
       expectEquals((int)prop(engine, id, "activeTake"), 1, "the new one active");
@@ -255,7 +262,7 @@ class ImportTests : public juce::UnitTest {
                                 0.7f, 1e-4f, "the file's material");
       // Shorter than the slot: zero-padded.
       const juce::File half = writeWav(dir, "short.wav", 44100.0, 1, Q / 2, 0.3f);
-      expect(engine.importAudio(id, half.getFullPathName(), 0, 1));
+      expect(engine.importAudio(id, half.getFullPathName(), at(engine, 0)));
       expectEquals((int)prop(engine, id, "takes"), 3);
       expectWithinAbsoluteError(clip->getAudioBuffer().getSample(0, Q / 2 - 1),
                                 0.3f, 1e-4f, "material where the file had it");
@@ -288,7 +295,7 @@ class ImportTests : public juce::UnitTest {
       establishQ(engine);
       const juce::String id = emptyClip(engine);
       const juce::File stereo = writeWav(dir, "stereo.wav", 44100.0, 2, Q);
-      expect(engine.importAudio(id, stereo.getFullPathName(), 0, 1));
+      expect(engine.importAudio(id, stereo.getFullPathName(), at(engine, 0)));
       expectEquals((int)prop(engine, id, "channels"), 2, "stereo published");
       auto* clip = dynamic_cast<celestrian::ClipNode*>(
           engine.findNodeByUuidForTest(id));
@@ -297,7 +304,7 @@ class ImportTests : public juce::UnitTest {
                                 1e-4f, "the right side is the file's right");
       const juce::String id2 = emptyClip(engine);
       const juce::File quad = writeWav(dir, "quad.wav", 44100.0, 4, Q);
-      expect(engine.importAudio(id2, quad.getFullPathName(), 0, 1));
+      expect(engine.importAudio(id2, quad.getFullPathName(), at(engine, 0)));
       expectEquals((int)prop(engine, id2, "channels"), 2, "four fold to two");
       auto* clip2 = dynamic_cast<celestrian::ClipNode*>(
           engine.findNodeByUuidForTest(id2));
@@ -315,7 +322,7 @@ class ImportTests : public juce::UnitTest {
       engine.createNode("stack");
       const juce::String stack = lastTopId(engine);
       const juce::File wav = writeWav(dir, "Kick Loop.wav", 44100.0, 1, Q);
-      expect(engine.importAudio(stack, wav.getFullPathName(), 2, 1));
+      expect(engine.importAudio(stack, wav.getFullPathName(), at(engine, 2)));
       const juce::var sv = nodeVar(engine, stack);
       auto* kids = sv.getProperty("nodes", juce::var()).getArray();
       expect(kids != nullptr && kids->size() == 1, "one clip child");
@@ -324,17 +331,17 @@ class ImportTests : public juce::UnitTest {
                    juce::String("Kick Loop"), "named after the file");
       expectEquals((int64_t)(double)kid.getProperty("duration", 0.0), (int64_t)Q);
       expectEquals((int64_t)(double)kid.getProperty("origin", 0.0),
-                   islandEpoch(engine) + 2 * Q, "placed at 2Q");
+                   islandZero(engine) + 2 * Q, "placed at 2Q");
       expect((bool)sv.getProperty("anchored", false),
              "the stack anchors on its first content (Q18)");
       // Refusals: a missing file, a live take.
       const juce::String id = emptyClip(engine);
-      expect(!engine.importAudio(id, dir.getChildFile("nope.wav").getFullPathName(), 0, 1),
+      expect(!engine.importAudio(id, dir.getChildFile("nope.wav").getFullPathName(), at(engine, 0)),
              "a missing file is refused");
       expectEquals((int64_t)prop(engine, id, "duration"), (int64_t)0,
                    "nothing landed");
       engine.startRecordingInNode(id);
-      expect(!engine.importAudio(id, wav.getFullPathName(), 0, 1),
+      expect(!engine.importAudio(id, wav.getFullPathName(), at(engine, 0)),
              "refused while a take is live");
       engine.stopRecordingInNode(id);
     }
@@ -362,7 +369,7 @@ class ImportTests : public juce::UnitTest {
           ev(250, 0x90, 64, 80),  ev(1250, 0x90, 64, 0),  // 64: [1/4, 5/4) (on with vel 0 = off)
           ev(1500, 0x90, 67, 90),                          // 67: unpaired -> to the end
       };
-      clip->origin_samples.store(islandEpoch(engine));
+      clip->origin_samples.store(islandZero(engine));
       clip->duration_samples.store(2 * Q);
       clip->setLoopPoints(0, 2 * Q);
       clip->loadCommittedMidi(events, 0);
@@ -383,7 +390,7 @@ class ImportTests : public juce::UnitTest {
       expectEquals(row(2, 4) / row(2, 5), 0.5, "unpaired: runs to the end");
       // Importing audio onto a MIDI track is refused.
       const juce::File wav = writeWav(dir, "onto_midi.wav", 44100.0, 1, Q);
-      expect(!engine.importAudio(id, wav.getFullPathName(), 0, 1),
+      expect(!engine.importAudio(id, wav.getFullPathName(), at(engine, 0)),
              "a MIDI track takes notes, not audio");
     }
   }

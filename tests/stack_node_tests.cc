@@ -29,7 +29,7 @@ class StackNodeTests : public juce::UnitTest {
       expectEquals(root.getNumChildren(), 0);
     }
 
-    // Audit D14-1 stage 1: (Q, epoch) are written by a commit or an
+    // Audit D14-1 stage 1: (Q, zero) are written by a commit or an
     // import on the island root and by NOTHING else — attaching
     // committed content, attached or detached, establishes no facts.
     beginTest("Attaching committed content establishes no island facts");
@@ -45,7 +45,7 @@ class StackNodeTests : public juce::UnitTest {
       StackNode root("Root");
       root.addChild(committed("A", 500, 1000));
       expectEquals(root.getQuantum(), (int64_t)0, "addChild writes no Q");
-      expectEquals(root.getEpoch(), (int64_t)0, "nor an epoch");
+      expectEquals(root.getZero(), (int64_t)0, "nor a zero");
 
       // A DETACHED assembly (Combine builds its stack before inserting
       // it; the undo log holds subtrees) is its own rootNode(): it must

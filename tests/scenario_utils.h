@@ -109,9 +109,15 @@ struct Island {
   }
   juce::String rootId() { return state().getProperty("id", "").toString(); }
   int64_t Q() { return rootProp("quantum"); }
-  int64_t epoch() { return rootProp("islandEpoch"); }
+  int64_t zero() { return rootProp("islandZero"); }
   int64_t islandPos() { return rootProp("islandPos"); }
   int64_t masterPos() { return rootProp("masterPos"); }
+  /** Seek to the published phase `phase`: the engine takes a phase
+   * ADVANCE (docs/frame.md; the view computes it), so a test names the
+   * phase it wants and advances by the difference. */
+  bool seekToPhase(int64_t phase) {
+    return engine.seekTransport((double)(phase - masterPos()));
+  }
   int64_t dur(const juce::String& id) { return iprop(id, "duration"); }
   int64_t origin(const juce::String& id) { return iprop(id, "origin"); }
   /** The audible island cycle by THE PERIOD LAW over the live tree. */
@@ -218,7 +224,7 @@ struct Island {
    * cycle; `phase` must be on the Q grid. */
   void driveToPhase(int64_t phase) {
     const int64_t C = cycle();
-    const int64_t e = epoch();  // idle playback: neither moves
+    const int64_t e = zero();  // idle playback: neither moves
     for (int i = 0; i < 100000; ++i) {
       const int64_t p = posmod(clock - e, C);
       const int64_t to = posmod(phase - p, C);
@@ -297,8 +303,8 @@ struct Island {
       if (std::abs(want - v) > tol) {
         if (logged++ < 3) {
           juce::Logger::writeToLog(
-              "  scenario mismatch at t=" + juce::String(t) + " (t-epoch=" +
-              juce::String(t - epoch()) + "): want " + juce::String(want, 7) +
+              "  scenario mismatch at t=" + juce::String(t) + " (t-zero=" +
+              juce::String(t - zero()) + "): want " + juce::String(want, 7) +
               " got " + juce::String(v, 7));
         }
         ++bad;

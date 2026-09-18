@@ -24,7 +24,7 @@ const { stackEffectivePeriod, calculateStackLCM } =
 const Q = state.quantum || 1;
 const q = v => (v == null ? '—' : (v / Q).toFixed(3) + 'Q');
 
-console.log(`state: quantum=${Q} islandEpoch=${state.islandEpoch} ` +
+console.log(`state: quantum=${Q} islandZero=${state.islandZero} ` +
     `masterPos=${q(state.masterPos)} rootSeq=${JSON.stringify(state.sequence || null)}`);
 
 function walk(n, d = 0) {

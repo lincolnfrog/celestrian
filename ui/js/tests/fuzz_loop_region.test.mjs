@@ -18,7 +18,7 @@
  *      DEFINER STACK (state.definerId) is anchored and its members'
  *      origins equal the stack's (they ride with their parent).
  *   I4 undo/redo round-trip: graph-shape facts (ids, durations,
- *      origins, loop points, segments, quantum, epoch) return EXACTLY
+ *      origins, loop points, segments, quantum, zero) return EXACTLY
  *      after k undos + k redos.
  *   I5 no NaN/Infinity anywhere in the published state.
  *
@@ -106,8 +106,8 @@ const IGNORE = new Set((process.env.FUZZ_IGNORE || '')
  *     covers the recording target; the definer paths (clip AND stack)
  *     refuse through wrapper warps, so re-establishment can no longer
  *     strand an ancestor's geometry off-grid.
- *   FAMILY B (I3, epoch establishment): the first-clip arm sets the
- *     provisional epoch, first commit establishes (Q, epoch) together,
+ *   FAMILY B (I3, zero establishment): the first-clip arm sets the
+ *     provisional zero, first commit establishes (Q, zero) together,
  *     and combineNodes no longer fabricates a declared Q.
  *   FAMILY C (I6, refusal bookkeeping): unknown-node paths pop the
  *     dispatch snapshot, and a refusal restores the redo branch.
@@ -176,7 +176,7 @@ function findNonFinite(v, path) {
 }
 
 /** Graph-shape facts for the I4 round-trip (spec: ids, durations,
- * origins, loop points, segments, quantum, epoch). Durations of hot
+ * origins, loop points, segments, quantum, zero). Durations of hot
  * (recording/pending) clips excluded — the transport grows them. */
 function graphFacts(st) {
     const nodes = [];
@@ -193,7 +193,7 @@ function graphFacts(st) {
         walk(n.nodes);
     });
     walk(st.nodes);
-    return JSON.stringify({ q: st.quantum, epoch: st.islandEpoch, nodes });
+    return JSON.stringify({ q: st.quantum, zero: st.islandZero, nodes });
 }
 
 /* ------------------------------------------------------------------ */
@@ -273,9 +273,9 @@ function checkInvariants() {
     // and its members' origins ride with it — a member's origin equals
     // the stack's, since the group's one take anchored the stack there
     // and every re-anchor since (definer trim, seek, lock-collapse)
-    // moved the whole subtree by one delta. (The pre-Q18 form, "epoch
-    // ≡ member origin (mod duration)", encoded the epoch-anchored stack
-    // map: after a Q18 trim epoch = origin + window start, so that
+    // moved the whole subtree by one delta. (The pre-Q18 form, "zero
+    // ≡ member origin (mod duration)", encoded the zero-anchored stack
+    // map: after a Q18 trim zero = origin + window start, so that
     // congruence is no longer a law — composition.md §4.)
     if (st.definerId && !IGNORE.has('I3')) {
         const d = findIn(st.nodes, st.definerId);

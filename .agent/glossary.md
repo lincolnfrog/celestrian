@@ -18,6 +18,6 @@ name yours.
 | **One-shot** | A clip whose period is the context cycle rather than its own length: it sounds once per cycle at its origin, then rests. A period-source KNOB (`periodSource`, the ↺/1× rail chip), not a duration rule (Q5). |
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM (effective period: window ▸ active sequence ▸ children's effective LCM — sequencer.md §2). |
 | **Loop window** | A `[start, end)` restriction on a node's cycle — a one-segment time-map. Active iff valid and not bypassed; independent of view state (time_maps.md). |
-| **Time-map** | THE mechanism that transforms time: an ordered segment list phased off the cycle epoch, `m(t) = epoch + walk_segments((t − epoch) mod period)`. Loop windows, non-contiguous selections, and (future) warp / serial connections are all instances. |
+| **Time-map** | THE mechanism that transforms time: an ordered segment list phased off the zero, `m(t) = zero + walk_segments((t − zero) mod period)`. Loop windows, non-contiguous selections, and (future) warp / serial connections are all instances. |
 | **Hysteresis snap** | ARM: the target is always the next Q boundary in the heard frame (Q11). STOP: always forward — a stop records on to the NEXT boundary (2026-07-10). Every map/window period is a whole multiple or exact divisor of Q (engine_lcm_guard.md). |
 | **Fractality** | The law that any subtree, collapsed, obeys exactly the laws of a clip. If a rule doesn't hold recursively, it isn't a rule yet. |

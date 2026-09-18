@@ -30,12 +30,12 @@ inline ProcessContext renderContext(StackNode& root, const GraphSnapshot& snap,
   pc.num_samples = num_samples;
   pc.is_playing = is_playing;
   pc.master_pos = clock;
-  // (Q, epoch, generation) as ONE fact (StackNode::readIslandFacts —
+  // (Q, zero, generation) as ONE fact (StackNode::readIslandFacts —
   // a re-trim between separate reads would hand a block a mixed pair).
   const StackNode::IslandFacts island_facts = root.readIslandFacts();
   // Cycle-top of the island frame — loop-window time-maps phase off
   // this (time_maps.md); windowed stacks re-base it for their children.
-  pc.cycle_epoch = island_facts.epoch;
+  pc.frame_top = island_facts.zero;
   pc.snap = &snap;
   pc.self = 0;
   // Solo canon (Q16): one snapshot scan per block answers "is any solo
@@ -44,9 +44,9 @@ inline ProcessContext renderContext(StackNode& root, const GraphSnapshot& snap,
   pc.quantum = island_facts.quantum;
   pc.island_generation = island_facts.generation;
   pc.stop_generation = root.stopGeneration();
-  pc.island_epoch = pc.cycle_epoch;
+  pc.island_zero = pc.frame_top;
   pc.island = &root;
-  // The invariant monotonic clock (master_pos twin of island_epoch):
+  // The invariant monotonic clock (master_pos twin of island_zero):
   // mapping stacks fold master_pos on the way down but never this.
   pc.island_pos = clock;
   // Context-cycle seed (Q5 one-shots): the island's audible cycle.
@@ -63,7 +63,7 @@ inline ProcessContext renderContext(StackNode& root, const GraphSnapshot& snap,
  * children are the island's ONLY committed content and were recorded
  * as ONE take (identical origin and duration), two or more of them (a
  * single committed clip keeps the clip-definer path, whatever holds
- * it). Its window then re-establishes (Q, epoch) exactly as a sole
+ * it). Its window then re-establishes (Q, zero) exactly as a sole
  * clip's does. Null otherwise.
  */
 celestrian::StackNode* definerStack(celestrian::AudioNode* root);
@@ -86,7 +86,7 @@ celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node);
 
 /**
  * THE Q13 DEFINER, stated once: the ONE node whose window re-establishes
- * (Q, epoch) and lock-collapses at the next arm — the island's sole
+ * (Q, zero) and lock-collapses at the next arm — the island's sole
  * committed clip, or its definer STACK (above) — and only while its
  * geometry is the island's ONLY geometry (hasActiveGeometryOutside),
  * no take is armed or capturing (a take performs against the current

@@ -20,12 +20,14 @@ export const BRIDGE_METHODS = [
 
     // Transport
     { name: 'togglePlayback', params: [] },
-    // Ruler scrub: seek to a position in the
-    // SAME domain the published masterPos wraps in — epoch-relative
-    // samples, folded on the audible cycle. NOT undoable (a monitoring
-    // gesture, like auditionStep). Refused while any take is live or
-    // armed (returns false): takes place audio by the clock.
-    { name: 'seekTransport', params: ['posSamples'], returns: 'true when applied; false refused (take live/armed)' },
+    // Ruler scrub: advance the playing PHASE by `deltaSamples`
+    // (negative moves it back). The engine reads no frame — the view
+    // seats the frame's zero (docs/frame.md) and computes the advance
+    // (seek.js) against the transport reading `atClock` it polled; the
+    // engine corrects for the clock having moved since. NOT undoable (a
+    // monitoring gesture, like auditionStep). Refused while any take is
+    // live or armed (returns false): takes place audio by the clock.
+    { name: 'seekTransport', params: ['deltaSamples', 'atClock?'], returns: '{advance, clock} — what was applied and when; false refused (take live/armed)' },
 
     // Recording
     { name: 'startRecordingInNode', params: ['uuid'] },
@@ -80,21 +82,27 @@ export const BRIDGE_METHODS = [
     // live or armed, or when the node has no committed content.
     // bounceWithDialog picks the path natively (default <node>.wav in
     // the project folder); false when cancelled.
-    { name: 'bounce', params: ['uuid', 'path'], returns: 'true on success' },
-    { name: 'bounceWithDialog', params: ['uuid'], returns: 'true on success' },
+    // `start` (optional, absolute samples) names the render's start —
+    // the app bounces the song from the frame zero the view seated
+    // (docs/frame.md), so the file starts where the picture starts;
+    // absent, the node's own top.
+    { name: 'bounce', params: ['uuid', 'path', 'start?'], returns: 'true on success' },
+    { name: 'bounceWithDialog', params: ['uuid', 'start?'], returns: 'true on success' },
 
     // Audio file import (docs/import.md): a WAV/AIFF/FLAC becomes a
-    // committed take. `atQ` is a QTime [num, den] in the epoch frame
-    // (the drop's lane position); the import lands on the nearest Q
-    // boundary. An EMPTY clip (or a stack, which gains a clip child
-    // named after the file) takes a first take with the record path's
-    // hysteresis snap — establishing Q on a pre-Q island; a COMMITTED
+    // committed take. `originSamples` is the origin in absolute
+    // samples — the view computes it from the frame zero it seated
+    // (docs/frame.md; the drop's lane position in whole Q from that
+    // zero) and the engine snaps it to the Q grid. An EMPTY clip (or a
+    // stack, which gains a clip child named after the file) takes a
+    // first take with the record path's hysteresis snap — establishing
+    // Q on a pre-Q island, where the clock is the origin; a COMMITTED
     // clip takes a NEW TAKE cut or zero-padded to its period. Undoable
     // (rides Take/Untake). Refused (false) under a live take, on a
     // MIDI track, or for an unreadable file. importAudioWithDialog
     // picks the file natively (WAV/AIFF/FLAC); false when cancelled.
-    { name: 'importAudio', params: ['uuid', 'path', 'atQ'], returns: 'true on success' },
-    { name: 'importAudioWithDialog', params: ['uuid', 'atQ'], returns: 'true on success' },
+    { name: 'importAudio', params: ['uuid', 'path', 'originSamples'], returns: 'true on success' },
+    { name: 'importAudioWithDialog', params: ['uuid', 'originSamples'], returns: 'true on success' },
 
     // MIDI lane rendering (docs/vst3.md §11): a MIDI clip's notes,
     // note-on/off PAIRED (an unpaired note-on runs to the take end),

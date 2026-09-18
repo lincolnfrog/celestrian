@@ -33,12 +33,12 @@ namespace test_utils {
  * snapshot. Keep refresh() in lockstep with the callback.
  *
  * `root` is the island root the engine would process: a StackNode, or
- * a lone ClipNode standing as its own island (Q 0, epoch 0, no take
+ * a lone ClipNode standing as its own island (Q 0, zero at 0, no take
  * lifecycle — the first-take path). The snapshot pins STRUCTURE:
  * rebuild() after addChild/removeChild. The island facts are re-read
  * at every engine block top, so refresh() before a block whenever they
  * may have moved (a commit established Q, setQuantum, a solo toggle).
- * Test-authored overrides on `ctx` (cycle_epoch, map facts, rings,
+ * Test-authored overrides on `ctx` (frame_top, map facts, rings,
  * MIDI) go AFTER the last refresh()/rebuild(), which overwrite the
  * engine-owned fields.
  */
@@ -71,16 +71,16 @@ struct NodeContext {
     if (const auto* stack = dynamic_cast<const StackNode*>(root)) {
       const StackNode::IslandFacts facts = stack->readIslandFacts();
       ctx.quantum = facts.quantum;
-      ctx.island_epoch = facts.epoch;
+      ctx.island_zero = facts.zero;
       ctx.island_generation = facts.generation;
       ctx.stop_generation = stack->stopGeneration();
     } else {
       ctx.quantum = 0;
-      ctx.island_epoch = 0;
+      ctx.island_zero = 0;
       ctx.island_generation = 0;
       ctx.stop_generation = 0;
     }
-    ctx.cycle_epoch = ctx.island_epoch;
+    ctx.frame_top = ctx.island_zero;
     ctx.any_solo = snapAnySolo(*snap);
     ctx.context_cycle =
         snapEffectiveCycle(*snap, ctx.quantum, (int64_t)ctx.sample_rate);

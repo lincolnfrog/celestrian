@@ -327,7 +327,7 @@ free via their every-block fx pass. `getMidiInputs` exposes diagnostics.
 
 **Content kind, not a second class.** `ClipNode` carries
 `ContentKind::{Audio, Midi}` (`midi_sequence.h`). The take lifecycle —
-arm → capture → stop → commit, quantum snapping, through-map fold, epoch
+arm → capture → stop → commit, quantum snapping, through-map fold, zero
 re-base, undo entries — is content-agnostic and lives in ClipNode, so a
 MIDI take reuses it *verbatim*; only ingest and render differ
 (`captureMidiBlock`, `renderMidi`).

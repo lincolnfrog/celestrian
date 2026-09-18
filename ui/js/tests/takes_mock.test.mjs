@@ -27,7 +27,7 @@ import { recordTake, nodeById } from './helpers.mjs';
 const clip = id => nodeById(id, getState().nodes);
 /** The RAW clock (the published masterPos is the folded view;
  * pendingStartAt is raw). */
-const rawClock = () => { const s = getState(); return s.islandPos + s.islandEpoch; };
+const rawClock = () => { const s = getState(); return s.islandPos + s.islandZero; };
 
 /** Arm a new take on `id` from a MID-period clock, pin the arm rule,
  * drive it to its auto-finish; returns the arm target. */

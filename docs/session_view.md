@@ -123,7 +123,7 @@ empty husks while a single active island pays nothing for it.
   privileged historical rep — "which cycle it was recorded in" is not a
   musical fact — so only the clip's PHASE (`origin mod period`) shapes
   the tile grid. The take tile marks at its heard phase
-  `(origin − epoch) mod contextCycle` (Q14); whole cycle-counts fold
+  `(origin − zero) mod contextCycle` (Q14); whole cycle-counts fold
   away, and only takes with no honest position in the current frame fall
   back to the first full rep. A group has an origin and its lane carries
   a take mark like a clip's (Q18, composition.md §9).
@@ -375,7 +375,7 @@ nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
    (their alien amplitude scale re-normalizes the composite to nothing).
 9. **Tiles derive from phase.** A looping clip has no privileged
    historical rep; only phase shapes the grid. The take tile marks at
-   its heard phase `(origin − epoch) mod contextCycle` (Q14/Q14b), and
+   its heard phase `(origin − zero) mod contextCycle` (Q14/Q14b), and
    whole cycle-counts fold away. Groups have origins and take marks like
    clips (Q18, composition.md §9).
 10. **The bar's edge is "now".** The recording bar extends to the
@@ -440,17 +440,23 @@ nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
     occupies `[loopStartQ, loopStartQ + loopCycleQ)` of the display
     frame, a click CLAMPS into that span (an audition's bracket is a
     boundary, never an exit — clicking outside it scrubs to its edge),
-    and the engine target is the offset into the loop, in the published
-    masterPos domain.
+    and the target is the offset into the loop — a PHASE. The app turns
+    it into the phase ADVANCE the engine takes (`seek.js`): the view
+    seats the frame's zero (frame.md), the engine reads no frame, so
+    the view computes how far the phase must move against the latest
+    poll's frame facts and names the clock reading it used; the engine
+    corrects for the clock since. The play start (law 15) is a phase
+    too, converted the same way on every return.
 
-    Engine side, a seek RE-BASES the island epoch
-    (`AudioEngine::seekTransport` → `StackNode::seekEpochTo`): the
-    monotonic clock is never touched (kernel.md), `islandPos` teleports
-    with the epoch, and the dead-reckoner (law 10) classifies the jump
-    as a teleport, never velocity. NOT undoable — a monitoring gesture,
-    like `auditionStep`. REFUSED while any take is live or armed (takes
-    place audio by the clock), mirrored in the UI as a locked cursor
-    (`seek-locked`).
+    Engine side, a seek moves the island's zero — and every origin with
+    it — BACK by the advance (`AudioEngine::seekTransport` →
+    `StackNode::seekZeroTo`): the monotonic clock is never touched
+    (kernel.md), `islandPos` teleports with the zero, the picture is
+    invariant (every lane rides the move), and the dead-reckoner (law
+    10) classifies the jump as a teleport, never velocity. NOT undoable
+    — a monitoring gesture, like `auditionStep`. REFUSED while any take
+    is live or armed (takes place audio by the clock), mirrored in the
+    UI as a locked cursor (`seek-locked`).
 
     Corollary: the playhead is VISIBLE WHILE STOPPED (dimmed,
     `#playhead.idle`) once Q is established — a seek needs somewhere to

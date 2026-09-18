@@ -39,7 +39,7 @@ test('first take: one undo step; undo empties + reverts Q; redo restores', async
 test('take 2 then rename: first undo is the rename, second is the take', async () => {
     loadScenario('empty');
     await recordTake('', 1000, { stopEarly: 0, settle: 0 });
-    const ep0 = getState().islandEpoch;
+    const ep0 = getState().islandZero;
     advanceBy(1500);
     const b = await recordTake('', 2000);
     advanceBy(3000);  // the arm waited for a boundary; let the stop land
@@ -51,7 +51,7 @@ test('take 2 then rename: first undo is the rename, second is the take', async (
     assert.equal(nodeById(b, getState().nodes).duration, dur, 'take 2 stands');
     await callNative('undo');
     assert.equal(nodeById(b, getState().nodes).duration, 0, 'take 2 stripped');
-    assert.equal(getState().islandEpoch, ep0, 'pre-take epoch restored');
+    assert.equal(getState().islandZero, ep0, 'pre-take zero restored');
     assert.equal(getState().quantum, 1000, 'Q untouched');
 });
 

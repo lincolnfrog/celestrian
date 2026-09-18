@@ -62,7 +62,8 @@ bool writeStereoWav(const juce::File& file, double sample_rate,
 }  // namespace
 
 bool AudioEngine::bounce(const juce::String& uuid,
-                         const juce::String& wav_path) {
+                         const juce::String& wav_path,
+                         std::optional<int64_t> start) {
   // Refused mid-take: the render advances every leaf's control phase
   // on its own clock, which would corrupt a take's placement.
   if (root_node == nullptr) return false;
@@ -76,15 +77,19 @@ bool AudioEngine::bounce(const juce::String& uuid,
     return false;
   }
 
-  // THE SPAN (docs/bounce.md): one pass from the node's FRAME TOP,
-  // origin + a0 (a0 = its active map's first segment start) — ONE law
-  // for every node (audit D15-1). A clip is anchored by construction
-  // (Q18); an unanchored stack's frame is the received island frame —
-  // the root's too, unless a song anchors it at the zero the song was
-  // authored on (docs/frame.md §4) — so the root's top is its frame top
-  // (+ a0 under a root map: the moment its window starts, not the
-  // moment the island cycle wraps). The root spans one EFFECTIVE
-  // island cycle (Q19 — the cycle the transport wraps on; a root window
+  // THE SPAN (docs/bounce.md): one pass from the render's START. By
+  // default that is the node's FRAME TOP, origin + a0 (a0 = its active
+  // map's first segment start) — ONE law for every node (audit D15-1).
+  // A clip is anchored by construction (Q18); an unanchored stack's
+  // frame is the received island frame — the root's too, unless a song
+  // anchors it at the zero the song was authored on (docs/frame.md §4)
+  // — so the root's top is its frame top (+ a0 under a root map: the
+  // moment its window starts, not the moment the island cycle wraps).
+  // The caller may name the start outright (absolute samples): the app
+  // bounces the root from the frame zero the view has SEATED, so the
+  // file starts where the picture starts (docs/frame.md) — the engine
+  // reads no frame of its own. The root spans one EFFECTIVE island
+  // cycle (Q19 — the cycle the transport wraps on; a root window
   // shorter than Q repeats within it); any other node spans its own
   // period by THE PERIOD LAW (map ▸ sequence ▸ content: a windowed
   // one-shot bounces its window, a one-shot song its song).
@@ -95,12 +100,12 @@ bool AudioEngine::bounce(const juce::String& uuid,
               : celestrian::period_law::ownPeriodOf(*target);
   const celestrian::timing::TimeMap map = target->activeTimeMap();
   const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
-  // The frame top by the one law (D15-1): an anchored node's origin —
-  // the root's too, under a root song (docs/frame.md §4) — else the
-  // island zero; plus the map's first start.
   const int64_t top =
-      (target->isAnchored() ? target->origin_samples.load() : islandEpoch()) +
-      a0;
+      start.has_value()
+          ? *start
+          : (target->isAnchored() ? target->origin_samples.load()
+                                  : islandZero()) +
+                a0;
   if (span <= 0) {
     juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +
                              " has no committed content");

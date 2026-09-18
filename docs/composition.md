@@ -18,8 +18,8 @@
 
 The kernel says a node is `(content, period, origin)`. Until this
 ruling only clips stored an origin; a stack anchored its time-map to the
-epoch it received. The two anchoring laws agreed only while
-`epoch ≡ origin (mod D)`, and every loop-region defect of August 2026
+zero it received. The two anchoring laws agreed only while
+`zero ≡ origin (mod D)`, and every loop-region defect of August 2026
 was a gesture that moved one without the other (loop_region_audit.md
 §0). The fix that landed then — "content-selecting frames move
 together", enforced by origin riders, `epochViewStep`, and a group twin
@@ -36,7 +36,7 @@ Canon:
   time 0 belongs to, exactly as a clip's origin is the moment
   `content[0]` belongs to. It is stored, never derived (kernel.md §2).
 - **One anchoring law for every node** (§2). A stack's time-map anchors
-  at `origin + mapOffset(0)`, as a clip's does. The epoch no longer
+  at `origin + mapOffset(0)`, as a clip's does. The zero no longer
   selects content anywhere in the render path.
 - **Re-anchoring a node re-anchors its subtree** (§5): a node's content
   is its subtree, so an origin shift is applied recursively. This
@@ -76,7 +76,7 @@ metadata/persistence boundary (Q12). The island holds the exchange rate.
 
 **Unanchored stacks.** A stack with no committed content in its subtree
 has no origin yet (`anchored = false`). Until the first content arrives
-its inner zero is the received cycle top (`origin := cycle_epoch` for
+its inner zero is the received cycle top (`origin := frame_top` for
 the block). No member exists to disagree, so this is not a second law;
 it is the empty case. Pre-Q authored geometry on such a stack is
 subject to the establishment scrub as before.
@@ -167,7 +167,7 @@ Rules:
 ## 4. The island zero
 
 The island keeps one fact besides Q: its **zero**, the first take's
-origin (in code still `islandEpoch`). It is a grid fact, not a content
+origin (in code still `islandZero`). It is a grid fact, not a content
 fact (Q2: the LCM and everything derived from it is legibility
 machinery), and its consumers are exactly:
 
@@ -196,11 +196,11 @@ relies on it only for where to draw the brackets, not for what sounds.
 
 | Event | Effect on origins |
 |---|---|
-| First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root — **the root itself excluded**: content never anchors it; without a song its inner timeline is the island timeline and its zero is the epoch (ruling 2026-09-09, design_language §5) (rides the take's undo entry; Untake un-anchors) |
+| First take under a stack commits | `stack.origin := take.origin` for every unanchored ancestor stack between the clip and the island root — **the root itself excluded**: content never anchors it; without a song its inner timeline is the island timeline and its zero is the zero (ruling 2026-09-09, design_language §5) (rides the take's undo entry; Untake un-anchors) |
 | A song is authored on the root (2026-09-17, frame.md §4) | `root.origin := the zero the view had seated` (snapped to the Q grid; the island zero when none is passed), anchored — Q18 at depth 0, so the song's top is where the picture already started. A root already anchored keeps its origin; clearing the song (or the island revert that clears every song) un-anchors. Rides the Sequence edit's inverse. |
 | Combine (post-hoc group) | `new.origin := min(member origins)`, anchored |
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
-| Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `epoch := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
+| Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `zero := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
 | Lock-collapse at the second arm (clip or stack definer) | leaves under the node: `base += s`, `D := len`; `shiftOrigins(node, s)`; node window consumed. Audio-neutral (§2). Re-open reverses it. |
 | Map edit while playing (the continuity rider) | `shiftOrigins(node, O' − O)` with `O'` from `originForHeard`; the island zero stays (the view re-seats the frame, frame.md) |
 | Seek | `shiftOrigins(root, delta)`, `zero += delta`, history absolutes shifted |
@@ -209,7 +209,7 @@ relies on it only for where to draw the brackets, not for what sounds.
 `shiftOrigins(node, delta)` is recursive: it moves the node's origin and
 every descendant's. For a clip it is `origin += delta`. Every origin
 write from the message thread is gated on the island generation
-(`setOriginGated`) so a block adopts new origins and the new epoch
+(`setOriginGated`) so a block adopts new origins and the new zero
 together or neither.
 
 ---
@@ -225,7 +225,7 @@ together or neither.
 - **I13 — Q-coherence.** Every authored period is `kQ` or `Q/k`; the
   definer re-trim is the one edit that changes Q rather than obeying it.
 - **I14 — One owner of island facts.** Only the island root stores
-  `(Q, epoch)`; nested stacks never do.
+  `(Q, zero)`; nested stacks never do.
 - **I15 — Encapsulation.** A parent sees a child as `(origin, effective
   period, output)` and nothing else. (`epochViewStep` violated this by
   reading windowed stacks' inner cycles; it is deleted.)
@@ -241,7 +241,7 @@ together or neither.
 
 Five mics armed as a group (Q7) on an empty island; the take runs 4Q
 with dead air before the groove. Origins: every mic `O = 10000`, the
-stack anchors at `O_s = 10000` at commit; `epoch = 10000`, `Q = 4000`
+stack anchors at `O_s = 10000` at commit; `zero = 10000`, `Q = 4000`
 provisional.
 
 Owner trims the GROUP window to `[1000, 2000)` while playing at
@@ -252,7 +252,7 @@ Owner trims the GROUP window to `[1000, 2000)` while playing at
 | inner now | `(15400 − 10000) mod 4000 = 1400` |
 | fold into window | `pT = 1000 + ((1400 − 1000) mod 1000) = 1400` |
 | new origin | `O' = t0 − pT = 14000`; `shiftOrigins(stack, +4000)` → mics `14000` |
-| island | `epoch := O' + start = 15000`, `Q := 1000` |
+| island | `zero := O' + start = 15000`, `Q := 1000` |
 
 | node | origin | period | contributes to parent |
 |---|---|---|---|
@@ -265,7 +265,7 @@ Render check at `t0`: `inner = 1000 + ((15400 − 14000 − 1000) mod 1000)
 the mics individually; they moved because their parent moved.
 
 Second arm (lock-collapse): each mic `base += 1000, D := 1000`;
-`shiftOrigins(stack, +1000)` → mics and stack at `15000 = epoch`; stack
+`shiftOrigins(stack, +1000)` → mics and stack at `15000 = zero`; stack
 window consumed. The island is an ordinary whole-Q looper.
 
 ### G-2. The drum group as a one-shot (Q18's motivating case)
@@ -318,7 +318,7 @@ ghosts, mics drawn whole beneath. Trimming the drums' window to
 ## 9. Display twins
 
 - **Group lanes get a take mark.** A stack's lane x is
-  `(origin − epoch) mod frame`, exactly a clip's `takeStartQ`. Brackets
+  `(origin − zero) mod frame`, exactly a clip's `takeStartQ`. Brackets
   and cut bands on a group lane are INNER positions offset by that mark.
 - **Composite waveform** is unchanged: it already mixes each member's
   audible content at the member's own origin.

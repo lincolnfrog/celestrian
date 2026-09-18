@@ -290,7 +290,7 @@ class TimingGoldenTests : public juce::UnitTest {
     if (auto* cases = root.getProperty("qtime_origin_cases", {}).getArray()) {
       for (auto& c : *cases) {
         const auto name = c.getProperty("name", "?").toString();
-        const QTime q = originQ(asInt64(c, "origin"), asInt64(c, "epoch"),
+        const QTime q = originQ(asInt64(c, "origin"), asInt64(c, "zero"),
                                 asInt64(c, "qSamples"));
         expectEquals((juce::int64)q.num, (juce::int64)asInt64(c, "expectedNum"),
                      "originQ num: " + name);
@@ -299,7 +299,7 @@ class TimingGoldenTests : public juce::UnitTest {
         // The boundary must be lossless at the same exchange rate:
         // projecting to Q and back lands on the exact sample offset (I1).
         expectEquals((juce::int64)toSamples(q, asInt64(c, "qSamples")),
-                     (juce::int64)(asInt64(c, "origin") - asInt64(c, "epoch")),
+                     (juce::int64)(asInt64(c, "origin") - asInt64(c, "zero")),
                      "originQ round-trip: " + name);
       }
     }

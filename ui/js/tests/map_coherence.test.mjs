@@ -132,7 +132,7 @@ test('FRACTAL: the view-model hands groups the same handle-UI fields', async () 
 // (takeStartQ / srcTopFrac are deliberately NOT compared: they are the
 // loop's heard-top ROTATION, and the two anchor differently by ENGINE
 // law — a clip's map anchors at origin + loopStart (the anchoring law),
-// a group's at the island epoch. Same view, different phase; the
+// a group's at the island zero. Same view, different phase; the
 // published windowPhase follows the same anchors.)
 const LANE_PARITY_FIELDS = [
     'periodQ', 'intrinsicQ', 'window', 'windowChipQ',

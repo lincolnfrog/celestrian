@@ -150,14 +150,14 @@ step 2; `launchPoint` in metadata derives at read time.)*
 
 | Field | Description | Set When |
 |-------|-------------|----------|
-| **`origin`** | **THE canonical timing fact** (kernel.md): the absolute performance moment the clip's `content[0]` belongs to (samples on the monotonic clock; QTime offset from the island epoch in the save format, Q12). Every other timing quantity — launch point `(−origin) mod period`, tile x, playhead — is a projection of it. | Recording arms (folded per Q15 / re-anchored per Q13 at edits) |
+| **`origin`** | **THE canonical timing fact** (kernel.md): the absolute performance moment the clip's `content[0]` belongs to (samples on the monotonic clock; QTime offset from the island zero in the save format, Q12). Every other timing quantity — launch point `(−origin) mod period`, tile x, playhead — is a projection of it. | Recording arms (folded per Q15 / re-anchored per Q13 at edits) |
 | `duration` | Total clip length, samples (heard-time snap to the next boundary; live written length while recording) | Recording commits |
 | `periodSource` | `own` (loops at `duration`) or `context` (one-shot: period = the context cycle, Q5) — a knob, not a formula | Default `own`; the ↺/1× chip toggles it (undoable) |
 | window / map | The node's time-map: single-segment loop points (`loop_start/end` + bypass flag) or a multi-segment `segments` override; active iff valid and not bypassed (time_maps.md). Periods are whole multiples or exact divisors of Q (engine_lcm_guard.md) | Commit sets the full span; edits thereafter |
 | `contextCycle` | The heard frame the take was performed against (effective island cycle at arm) — the fold modulus for take marking (Q14b) | Recording arms |
 | buffer | The content: a dense sample buffer in origin frame (no rotation, no remap); immutable after commit | Recording commits |
 
-Island facts `(Q, epoch)` live once, at the session root (Q1, Q13).
+Island facts `(Q, zero)` live once, at the session root (Q1, Q13).
 
 ### The island zero (one grid for everything)
 
@@ -174,16 +174,16 @@ frame has caused field bugs; don't.
 **Why loop-relative intent?**
 - You might listen to Clip 1 looping for 5 minutes before recording Clip 2
 - The monotonic clock keeps ticking, but your INTENT is relative to the cycle you hear
-- Pressing record near the END of the cycle means the upcoming top (Q11 ruling: the arm target is always the next Q boundary in the epoch frame — the cycle top is just what that boundary is in the final Q)
+- Pressing record near the END of the cycle means the upcoming top (Q11 ruling: the arm target is always the next Q boundary in the island frame — the cycle top is just what that boundary is in the final Q)
 
-**Formula (current, epoch-relative — sibling launch offsets are gone;
-in the epoch frame every committed sibling's phase is simply
+**Formula (current, zero-relative — sibling launch offsets are gone;
+in the island frame every committed sibling's phase is simply
 `rel mod duration`):**
 ```cpp
-rel           = compensated_pos - island_epoch
+rel           = compensated_pos - island_zero
 effective_pos = rel % context_loop          // what the user perceived
 next_q_rel    = snap-forward-to-Q(...)      // Q11: next boundary
-origin        = island_epoch + next_q_rel   // stored ABSOLUTE
+origin        = island_zero + next_q_rel   // stored ABSOLUTE
 ```
 
 ---
@@ -200,18 +200,18 @@ When a clip starts recording, the **context loop** = longest existing clip's dur
 - If no clips exist → context_loop = Q (quantum, defined by first clip)
 - If Clip 1 = 1Q, Clip 2 = 4Q exist → context_loop = 4Q
 
-### Formula (calculated in C++ at recording start — epoch frame)
+### Formula (calculated in C++ at recording start — island frame)
 
 ```cpp
 context_loop   = max(longest_sibling_duration, Q)
-rel            = compensated_pos - island_epoch
+rel            = compensated_pos - island_zero
 next_q_rel     = snap rel forward to the next Q boundary (Q11)
 slot           = (next_q_rel % context_loop) / Q
 x_pos          = base_x + slot * base_width
 anchor_phase   = (next_q_rel % context_loop) % Q
-origin         = island_epoch + next_q_rel   // absolute; launch derives
+origin         = island_zero + next_q_rel   // absolute; launch derives
 ```
-No sibling launch-point offsets: in the epoch frame every committed
+No sibling launch-point offsets: in the island frame every committed
 sibling plays phase `rel mod duration`, so "what the user perceived" is
 just `rel % context_loop`.
 
@@ -346,7 +346,7 @@ Clip 2:    [██████████████████████�
 
 > **Note**: Recording/stopping ALWAYS snaps to the next clean quantum boundary. This keeps loops in sync with the rhythmic grid.
 > **Owner-ratified general rule (2026-07-09, design_language.md Q11):**
-> the arm target is the next Q boundary *in the epoch frame* — never the
+> the arm target is the next Q boundary *in the island frame* — never the
 > cycle top specifically. Clicking within the final Q of the LCM cycle
 > anchors at Q0 simply because that IS the next boundary.
 
@@ -391,7 +391,7 @@ If a clip is recorded with an **Anchor Offset** (e.g., recorded starting at Q=2 
 
 - **Ideal State**: The first clip defines the timeline origin (Q=0). It should have **Anchor Offset = 0**.
 - **Result**: Primary Instance at 0. No gap at the start. **No Left Ghost**.
-- ~~**Edge Case**: If the transport is running *before* the first recording, the first clip might capture a non-zero anchor… bug/artifact of an un-reset transport.~~ **Superseded (2026-07-16):** the transport is never reset at all (kernel.md §2 holds without exceptions); the first clip's arm moment is captured as the ISLAND EPOCH instead, so anchor 0 holds **by construction** no matter how long the transport ran first — the edge case cannot occur. Pinned by `tests/monotonic_clock_tests.cc`.
+- ~~**Edge Case**: If the transport is running *before* the first recording, the first clip might capture a non-zero anchor… bug/artifact of an un-reset transport.~~ **Superseded (2026-07-16):** the transport is never reset at all (kernel.md §2 holds without exceptions); the first clip's arm moment is captured as the ISLAND ZERO instead, so anchor 0 holds **by construction** no matter how long the transport ran first — the edge case cannot occur. Pinned by `tests/monotonic_clock_tests.cc`.
 
 ---
 
@@ -484,7 +484,7 @@ When Clip 3 commits at 4Q:
 
 > **Superseded (2026-07-07, kernel.md step 3; completed 2026-07-16).**
 > The engine transport is now **monotonic** and NEVER mutated: not by
-> commits, not by first clips (the island epoch is captured as data at
+> commits, not by first clips (the island zero is captured as data at
 > the first arm), not by stop (pause/resume — stop freezes the view,
 > play resumes the phase).
 >
@@ -750,7 +750,7 @@ Step 5: Stop Clip 3 at 3Q
 > frame after commit is the same frame — nothing snaps. The island
 > zero itself never moves at commit (frame.md); the seating is what
 > the old growth re-base of the zero used to achieve (its predecessor,
-> "polyrhythmic expansions keep the epoch", teleported a 5Q take from
+> "polyrhythmic expansions keep the zero", teleported a 5Q take from
 > a heard top to 12Q–17Q of the exploded 20Q frame in the field).
 
 ### Current Implementation Issues

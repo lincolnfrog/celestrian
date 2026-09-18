@@ -128,7 +128,7 @@ function stampWindowDomain(node) {
  *    re-establishes Q (Q13 sole definer) or clears the window
  *    (length 0).
  *  - Q13 SOLE DEFINER: while the island's only committed content is
- *    this clip, the window re-establishes the STORED (Q, epoch),
+ *    this clip, the window re-establishes the STORED (Q, zero),
  *    phase-preserving.
  *  - Otherwise, on a playing clip, the continuity re-anchor moves the
  *    origin (see continuityOrigin above); no island fact moves.
@@ -227,8 +227,8 @@ export function setLoopPoints(id, loopStart, loopEnd) {
     }
     // Q13 parity (AudioEngine::setLoopPoints): while the island's only
     // committed content is this clip (and no take is in flight), its
-    // loop region re-establishes the STORED island (Q, epoch):
-    // Q := window length, epoch := origin + window start. PHASE-
+    // loop region re-establishes the STORED island (Q, zero):
+    // Q := window length, zero := origin + window start. PHASE-
     // PRESERVING (engine parity): re-anchor origin so the buffer
     // position sounding right now doesn't move — fold it into the new
     // window and solve origin' = t0 − p_target.
@@ -243,22 +243,22 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         node.origin = t0 - pT;
         retimeSequences(state.islandQ, len);  // sequences track Q
         state.islandQ = len;
-        state.islandEpoch = node.origin + loopStart;
+        state.islandZero = node.origin + loopStart;
         console.log('[MockBackend] Q13 re-trim → Q =', state.islandQ);
     } else if (!(loopEnd > loopStart) && isQ13SoleDefiner(node) &&
                (node.duration || 0) > 0) {
         // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (engine parity):
         // the definer's window was Q — clearing it restores the full
-        // take as the part: Q := D, epoch := origin.
+        // take as the part: Q := D, zero := origin.
         retimeSequences(state.islandQ, node.duration);
         state.islandQ = node.duration;
-        state.islandEpoch = node.origin || 0;
+        state.islandZero = node.origin || 0;
         console.log('[MockBackend] Q13 window clear → Q =', state.islandQ);
     } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
         // Q13 FOR GROUPS — ONE PATH with the sole clip (Q18, composition
         // .md §5; engine parity AudioEngine::setLoopPoints): the definer
         // STACK's window re-establishes the island exactly as a sole
-        // clip's does — Q := window length, epoch := origin' + start —
+        // clip's does — Q := window length, zero := origin' + start —
         // PHASE-PRESERVING by the node equation: the inner position
         // sounding now (state.nodeInner, measured from the STACK's own
         // origin) folds into the new window, origin' = t0 − pT, and the
@@ -302,15 +302,15 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             if (anchored) shiftOrigins(node, origin1 - O);
             retimeSequences(state.islandQ, len);  // sequences track Q
             state.islandQ = len;
-            state.islandEpoch = origin1 + loopStart;
+            state.islandZero = origin1 + loopStart;
             console.log('[MockBackend] Q13 group re-trim → Q =', state.islandQ);
         } else if (!(loopEnd > loopStart) && inner > 0) {
             // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS (one path with
-            // the clip): Q := the whole inner cycle, epoch := the
+            // the clip): Q := the whole inner cycle, zero := the
             // stack's origin (the content-frame identity).
             retimeSequences(state.islandQ, inner);
             state.islandQ = inner;
-            state.islandEpoch = anchored ? O : (state.islandEpoch || 0);
+            state.islandZero = anchored ? O : (state.islandZero || 0);
             console.log('[MockBackend] Q13 group window clear → Q =',
                 state.islandQ);
         }
@@ -439,12 +439,12 @@ export function setSegments(id, flat) {
         node.origin = t0 - a0 - hNew;
         retimeSequences(state.islandQ, period);  // sequences track Q
         state.islandQ = period;
-        state.islandEpoch = node.origin + a0;
+        state.islandZero = node.origin + a0;
         console.log('[MockBackend] Q13 segments re-trim → Q =', period);
     } else if (node.type === 'stack' && isQ13DefinerStack(node)) {
         // Q13 FOR GROUPS, multi-segment — ONE PATH with the clip
         // definer (Q18; engine parity AudioEngine::setSegments): Q :=
-        // period, epoch := origin' + mapOffset(0), with the
+        // period, zero := origin' + mapOffset(0), with the
         // phase-preserving re-anchor generalized through the map: the
         // inner position sounding now (from the STACK's own origin)
         // re-anchors under the new map (inverse-mapped when still
@@ -472,7 +472,7 @@ export function setSegments(id, flat) {
             });
             retimeSequences(state.islandQ, period);  // sequences track Q
             state.islandQ = period;
-            state.islandEpoch = originNew + a0;
+            state.islandZero = originNew + a0;
             console.log('[MockBackend] Q13 group segments re-trim → Q =', period);
         }
     } else if (intrinsicOfNode(node) > 0 && !anyNodeRecording()) {

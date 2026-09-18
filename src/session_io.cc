@@ -7,7 +7,7 @@
 // readBundleInfo (the project picker's summary), applyEffects (rack
 // restore from the metadata blob), applyNodeFacts (a record's facts on
 // a node — the live root's load path) and save / load (the bundle
-// level: island (Q, epoch), sample rate, the root's record). Message
+// level: island (Q, zero), sample rate, the root's record). Message
 // thread only.
 
 #include "session_io.h"
@@ -205,7 +205,7 @@ bool readClipWav(const juce::File& file, juce::AudioBuffer<float>& out) {
   return true;
 }
 
-juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
+juce::var serializeNode(const AudioNode& node, int64_t q, int64_t zero,
                         const juce::File& audioDir, const SaveOptions& opts) {
   auto* o = new juce::DynamicObject();
   o->setProperty("id", node.getUuid());
@@ -259,12 +259,12 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     // Software input monitoring (Q20) — additive: absent = off. Input
     // setup like the channels, so templates keep it.
     if (clip.isMonitoring()) o->setProperty("monitor", true);
-    // origin as an OFFSET FROM EPOCH, period, contextCycle — all musical.
+    // origin as an OFFSET FROM ZERO, period, contextCycle — all musical.
     // Templates strip performances: the clip persists as a named, wired,
     // EMPTY track (docs/projects.md).
     const int64_t sOrigin = opts.strip_performances ? 0 : origin;
     const int64_t sDur = opts.strip_performances ? 0 : duration;
-    o->setProperty("originQ", qvar(timing::originQ(sOrigin, epoch, q)));
+    o->setProperty("originQ", qvar(timing::originQ(sOrigin, zero, q)));
     o->setProperty("periodQ", qvar(timing::periodQ(sDur, q)));
     o->setProperty("contextCycleQ",
                    qvar(timing::fromSamples(
@@ -321,7 +321,7 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     if (!opts.strip_performances && node.isAnchored()) {
       o->setProperty("anchored", true);
       o->setProperty("originQ", qvar(timing::originQ(node.origin_samples.load(),
-                                                     epoch, q)));
+                                                     zero, q)));
     }
     // The SEQUENCE (docs/sequencer.md) — additive block. Stripped with
     // performances: a sequence references committed takes' children
@@ -332,14 +332,14 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t epoch,
     }
     juce::Array<juce::var> kids;
     for (const auto& child : stack.ownedChildren())
-      kids.add(serializeNode(*child, q, epoch, audioDir, opts));
+      kids.add(serializeNode(*child, q, zero, audioDir, opts));
     o->setProperty("nodes", kids);
   }
   return juce::var(o);
 }
 
 std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
-                                           int64_t epoch, double sr,
+                                           int64_t zero, double sr,
                                            const juce::File& audioDir) {
   auto* o = v.getDynamicObject();
   if (!o) return nullptr;
@@ -352,21 +352,21 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     auto stack = std::make_unique<StackNode>(name);
     if (auto* kids = o->getProperty("nodes").getArray()) {
       for (const auto& c : *kids)
-        if (auto ch = deserializeNode(c, q, epoch, sr, audioDir))
+        if (auto ch = deserializeNode(c, q, zero, sr, audioDir))
           stack->addChild(std::move(ch));
     }
     // Q18: an anchored stack's origin is a stored fact; absent key =
     // unanchored (settleAnchors derives one from content after load).
     if ((bool)stack->isAnchored() == false && (bool)o->getProperty("anchored")) {
       stack->setAnchor(
-          true, epoch + timing::toSamples(qread(o->getProperty("originQ")), q),
+          true, zero + timing::toSamples(qread(o->getProperty("originQ")), q),
           0);
     }
     node = std::move(stack);
   } else {
     auto clip = std::make_unique<ClipNode>(name, sr);
     const int64_t origin =
-        epoch + timing::toSamples(qread(o->getProperty("originQ")), q);
+        zero + timing::toSamples(qread(o->getProperty("originQ")), q);
     const int64_t duration =
         timing::toSamples(qread(o->getProperty("periodQ")), q);
     const int64_t ctx =
@@ -597,7 +597,7 @@ bool save(const StackNode& root, double device_sample_rate,
 
   // Templates are pre-Q by construction (no performances → no grid).
   const int64_t q = opts.strip_performances ? 0 : root.getQuantum();
-  const int64_t epoch = opts.strip_performances ? 0 : root.getEpoch();
+  const int64_t zero = opts.strip_performances ? 0 : root.getZero();
 
   auto* top = new juce::DynamicObject();
   top->setProperty("version", kSessionVersion);
@@ -612,8 +612,8 @@ bool save(const StackNode& root, double device_sample_rate,
   // when a song anchored it (docs/frame.md §4; the loader reads it back
   // as LoadedSession::root_anchored). Its `nodes` are the session.
   top->setProperty("qSamples", (double)q);
-  top->setProperty("epoch", (double)epoch);
-  top->setProperty("root", serializeNode(root, q, epoch, audioDir, opts));
+  top->setProperty("zero", (double)zero);
+  top->setProperty("root", serializeNode(root, q, zero, audioDir, opts));
 
   const auto json = juce::JSON::toString(juce::var(top), true);
   return dir.getChildFile("session.json").replaceWithText(json);
@@ -640,7 +640,11 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   }
 
   out.q_samples = (int64_t)(double)o->getProperty("qSamples");
-  out.epoch = (int64_t)(double)o->getProperty("epoch");
+  // The island zero: `zero` since version 3, `epoch` in every bundle
+  // before the rename (docs/frame.md §7) — both load.
+  out.zero = (int64_t)(double)(o->hasProperty("zero")
+                                   ? o->getProperty("zero")
+                                   : o->getProperty("epoch"));
   out.sample_rate = o->hasProperty("sampleRate")
                         ? (double)o->getProperty("sampleRate")
                         : device_sample_rate;
@@ -654,14 +658,14 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
       r != nullptr && (bool)r->getProperty("anchored")) {
     out.root_anchored = true;
     out.root_origin =
-        out.epoch + timing::toSamples(qread(r->getProperty("originQ")),
+        out.zero + timing::toSamples(qread(r->getProperty("originQ")),
                                       out.q_samples);
   }
 
   const auto audioDir = dir.getChildFile("audio");
   if (auto* nodes = out.root.getProperty("nodes", {}).getArray()) {
     for (const auto& n : *nodes)
-      if (auto ch = deserializeNode(n, out.q_samples, out.epoch,
+      if (auto ch = deserializeNode(n, out.q_samples, out.zero,
                                     out.sample_rate, audioDir))
         out.children.push_back(std::move(ch));
   }

@@ -5,7 +5,7 @@
 //     stop -> commit), capture from the pre-record ring / MIDI history
 //     with latency compensation, the reservation wall guard, through-map
 //     takes and new takes of a committed slot;
-//   - the arm math (armEvaluate / beginCapture: first-clip epoch, Q-grid
+//   - the arm math (armEvaluate / beginCapture: first-clip zero, Q-grid
 //     targets, through-map anchors, the new-take top) and
 //     commitRecording (duration, loop points, island establishment,
 //     lifecycle events to the root);
@@ -103,7 +103,7 @@ void ClipNode::control(const float* const* input_channels,
   // once; playback proceeds from this block on.
   committed_this_block_.store(false);
   // Adopt the rendering origin (island-generation gate, audio_node.h):
-  // a pending origin lands at the block top that also read the epoch
+  // a pending origin lands at the block top that also read the zero
   // it belongs with.
   if (context.island_generation >= origin_gate_gen_.load()) {
     origin_rt_.store(origin_samples.load());
@@ -536,7 +536,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
       // Audio Memory Principle — the kernel playback equation
       // (docs/kernel.md §2), generalized through the map (phase 3, the
       // ANCHORING LAW): clip map playback ≡ the stack map with
-      // epoch := origin + mapOffset(0):
+      // zero := origin + mapOffset(0):
       //
       //   p(t) = mapOffset((t − origin − mapOffset(0)) mod period)
       //
@@ -1009,7 +1009,7 @@ void ClipNode::renderMidi(float* const* output_channels,
 }
 
 void ClipNode::armEvaluate(const ProcessContext& context) {
-  // Island facts ride the context: quantum, invariant epoch, and the
+  // Island facts ride the context: quantum, invariant zero, and the
   // island root itself — no audio-thread parent walks.
   const int64_t Q = context.quantum;
   celestrian::AudioNode* island = context.island;
@@ -1047,9 +1047,9 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   }
 
   if (Q <= 0) {
-    // First clip: starts NOW. This arm moment IS the island epoch —
+    // First clip: starts NOW. This arm moment IS the island zero —
     // captured as data at the root (the clock is never reset,
-    // kernel.md); commit stores Q + epoch together with the same value.
+    // kernel.md); commit stores Q + zero together with the same value.
     origin_samples.store(compensated_pos);
     origin_rt_.store(compensated_pos);
     island->establishIsland(0, compensated_pos);
@@ -1075,16 +1075,16 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     int64_t heard =
         context.island_pos - context.input_latency;
     if (heard < 0) heard = 0;
-    int64_t rel_h = heard - context.map_heard_epoch;
+    int64_t rel_h = heard - context.map_heard_top;
     if (rel_h < 0) rel_h = 0;
 
     const int64_t t_rel = timing::armTarget(rel_h, Q, period);
-    const int64_t heard_target = context.map_heard_epoch + t_rel;
+    const int64_t heard_target = context.map_heard_top + t_rel;
     // The anchor's inner position, absolute: segments select view
     // positions of the mapping node's received frame, whose cycle top
-    // is map_heard_epoch (the one-frame rule, time_maps.md §2).
+    // is map_heard_top (the one-frame rule, time_maps.md §2).
     // (Q18: the map's inner positions are offsets from the mapping
-    // stack's ORIGIN — map_origin; map_heard_epoch = map_origin + a0.)
+    // stack's ORIGIN — map_origin; map_heard_top = map_origin + a0.)
     const int64_t origin = context.map_origin + context.map.mapOffset(t_rel);
 
     origin_samples.store(origin);
@@ -1109,11 +1109,11 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
     return;
   }
 
-  // ALL cycle-relative math happens in the ISLAND EPOCH frame — mixing
-  // absolute-frame math with the epoch-rebased view anchors a take
-  // whole cycles off. The INVARIANT epoch rides the context
-  // (cycle_epoch gets re-based by windowed stacks; this one never is).
-  const int64_t epoch = context.island_epoch;
+  // ALL cycle-relative math happens in the ISLAND frame — mixing
+  // absolute-frame math with the zero-rebased view anchors a take
+  // whole cycles off. The INVARIANT zero rides the context
+  // (frame_top gets re-based by windowed stacks; this one never is).
+  const int64_t zero = context.island_zero;
 
   // The arm grid = the loop the performer was listening to: the scope's
   // CONTEXT CYCLE (the one scope cycle, composition.md §3 — the map
@@ -1123,7 +1123,7 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // every depth (I5).
   const int64_t context_loop = std::max(Q, context.context_cycle);
 
-  int64_t rel = compensated_pos - epoch;
+  int64_t rel = compensated_pos - zero;
   if (rel < 0) rel = 0;
 
   // THE canonical timing fact: this clip's content belongs at the arm
@@ -1132,13 +1132,13 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // block while Armed; it converges to the chosen boundary.
   //
   // The target is the next Q boundary in the HEARD frame
-  // (latency-compensated, epoch-relative): a click shortly before a
+  // (latency-compensated, zero-relative): a click shortly before a
   // boundary compensates back ONTO it — "the pickup" (E-A) needs no
   // extra machinery. There is deliberately no anticipatory-window
   // DEFERRAL: any click before a boundary already targets that
   // boundary, and a deferral would skip past the boundary when the
   // compensation is small, overshooting the take to the NEXT one.
-  const int64_t target = epoch + timing::armTarget(rel, Q, context_loop);
+  const int64_t target = zero + timing::armTarget(rel, Q, context_loop);
 
   // THE ORIGIN IS THE CAPTURE BOUNDARY — no fold (owner ruling
   // 2026-09-09, reversing Q15). The heard-frame fold stored `target −
@@ -1474,12 +1474,12 @@ void ClipNode::commitRecording(int64_t final_duration,
 
     // First committed clip in the island establishes Q — stored once at
     // the island root, never derived again (Q13: Q survives its
-    // creator). Epoch = this clip's origin.
+    // creator). Zero = this clip's origin.
     const int64_t origin = origin_samples.load();
     if (Q == 0) {
       island->establishIsland(duration, origin);
       RtLog::instance().post(
-          "ClipNode: Island quantum established: Q=%lld epoch=%lld",
+          "ClipNode: Island quantum established: Q=%lld zero=%lld",
           (long long)duration, (long long)origin);
     }
 

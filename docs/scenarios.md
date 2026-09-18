@@ -49,7 +49,7 @@ island's Q, not the group's.
 
 | # | scenario | steps | pins |
 |---|---|---|---|
-| S1 | first take defines Q | 1Q; then 3Q armed mid-cycle | Q := L1; origin = epoch; the second origin on the grid; pad to 3Q; cycle 3Q; the render is Σ loops |
+| S1 | first take defines Q | 1Q; then 3Q armed mid-cycle | Q := L1; origin = zero; the second origin on the grid; pad to 3Q; cycle 3Q; the render is Σ loops |
 | S2 | recording.md Example 2 | 1Q, 4Q, then an 8Q take armed at phase 2Q | origin ≡ 2Q (mod 4Q); cycle 8Q; **the island zero stays** (the view seats the take 2Q in, frame.md); content[0] at t ≡ origin |
 | S3 | the owner's chain | 1Q, 5Q, 3Q; window c3 [1Q,2Q); 12Q; window c4 [0,6Q) | cycles 15Q → 5Q → 60Q → 30Q; Q untouched; both windows loop in place; c4's origin = its capture boundary (no fold) |
 | S4 | LCM growth | 1Q,4Q,3Q,8Q,2Q | 4Q, 12Q, 24Q, 24Q (2Q does not shrink) |
@@ -57,12 +57,12 @@ island's Q, not the group's.
 | S6 | one-shot (Example 3) | 1Q at phase 3Q of 4Q, periodSource=context | cycle stays 4Q; fires at [3Q,4Q) only; back to a loop: every Q |
 | S7 | window changes period (E-C) | [1Q,3Q) on the 4Q clip | cycle 2Q; bypass → 4Q; re-activate → 2Q |
 | S8 | nested composite (E-B/E-C) | 1Q, 4Q; group with 2Q + 3Q; window group [2Q,4Q) | group intrinsic 6Q; island 12Q; windowed: 4Q and members read the mapped clock |
-| S9 | Q13 sole definer | 4Q alone; window [1Q,2Q); second take; delete it; undo | Q := 1Q, epoch := origin'+start, phase-preserving; collapse: D := 1Q, origin += 1Q, window consumed, audio-neutral; re-open restores 4Q + trim; undo re-collapses |
+| S9 | Q13 sole definer | 4Q alone; window [1Q,2Q); second take; delete it; undo | Q := 1Q, zero := origin'+start, phase-preserving; collapse: D := 1Q, origin += 1Q, window consumed, audio-neutral; re-open restores 4Q + trim; undo re-collapses |
 | S10 | Q13 for groups | 2-mic 4Q group; stack window [1Q,2Q); a 1Q take | Q := 1Q; members whole; group collapse moves the subtree by 1Q; audio-neutral |
 | S11 | Q survives its creator | 1Q, 4Q; delete 1Q; record 3Q; delete all; undo | Q stays; the grid stays; empty island has no Q; undo brings it back |
-| S12 | seek | Example 2 state; seek to 5Q; undo | masterPos 5Q; every origin rides the epoch delta; render invariant; undo after seek strips the take |
+| S12 | seek | Example 2 state; seek to 5Q; undo | masterPos 5Q; every origin rides the zero delta; render invariant; undo after seek strips the take |
 | S13 | undo/redo the whole chain | S3; undo all; redo all | empty island (no Q, no nodes) ↔ identical facts and render |
-| S14 | session round trip | S3; save; load in a fresh engine | identical facts, epoch, and render |
+| S14 | session round trip | S3; save; load in a fresh engine | identical facts, zero, and render |
 | S15 | takes and comping | new take on the 4Q slot; select; comp [0,1,0,1]; delete take | arms at the slot top; two takes; swap is sample-exact; the comp alternates per Q cell, seam-exact; delete renumbers, cells fall back |
 | S16 | retake cancel | stop the new take after 1Q of 4Q | cancelled: one take; the previous sounds |
 | S17 | sequencer period law | root song 4Q+4Q over 1Q+4Q; gate c2 off in step 2 | cycle 8Q; c2 silent in step 2 (outside the 10 ms ramps); bypass → 4Q |
@@ -71,7 +71,7 @@ island's Q, not the group's.
 | S20 | successors | A→B→A; then A→A | 4Q song; 2Q song (B never visited); children's clocks untouched |
 | S21 | combine / explode | 1Q, 4Q, 4Q@2Q; combine; undo | group anchored at the earliest member; nothing moves; explode restores |
 | S22 | mute is a gain | mute 2.3Q, unmute | phase continuous |
-| S23 | bounce == live | S3; bounce the root | the WAV is the live equation from the epoch, sample for sample |
+| S23 | bounce == live | S3; bounce the root | the WAV is the live equation from the zero, sample for sample |
 | S24 | Q-coherence | windows of 1.5Q, 2Q, Q/2 on a 4Q clip | 1.5Q refused; 2Q and Q/2 accepted |
 | S25 | one-shot group (G-2) | 1Q, 4Q; 2-mic 2Q kit at 2Q; periodSource=context | cycle 4Q; fires at [2Q,4Q) from its origin |
 | S26 | the live-take gate | 4Q + 1Q; arm a third; try a window, a delete, a sequence, a period source, undo, pause, mute, rename; stop | every edit refused (undo entry kept, still playing); mute and rename live; all work again after the commit |
@@ -80,7 +80,7 @@ island's Q, not the group's.
 | S29 | record INTO a windowed group | 1Q; group with a 4Q member windowed [1Q,3Q); arm an empty member | one map pass auto-finishes; D = the inner cycle 4Q; contextCycle = 2Q; through the map it replays what was heard; bypassed: content where played, silence elsewhere |
 | S30 | **field repro**: the root song's grid | 1Q, 4Q; an 8Q take at 2Q after a full cycle (the island zero stays); root song 4Q+4Q gating c1 off in step 2 | content never anchors the root; the song anchors it at the island zero (no seated zero passed); c1 is silent in step 2 of that frame — the frame the view seats the song on |
 | S39 | the root's anchor rides its song (frame.md §4) | 1Q, 4Q; root song 2Q+2Q gating c2 off in step 2, authored on a seated zero 1Q past the island zero (off-grid by ⅓Q); seek 0; undo/redo; save + load; re-author; clear; delete both takes; undo ×2 | the root anchors at the zero snapped to the grid; the island zero never moves; c2 is silent in step 2 of the SONG's frame, not the island zero's; masterPos folds from the root's top; the seek keeps the placement; undo un-anchors and redo restores; the round trip keeps the anchor; a re-authoring keeps the origin; the clear and the island revert un-anchor, their undos re-anchor |
-| S31 | **field repro**: a group song's grid | 1Q, 4Q; a group anchored at 2Q with a 4Q member; group song 4Q+4Q gating it off in step 2 | the group song folds from the GROUP's origin (2Q past the epoch), not the epoch; the lanes carry that phase (view_model `phaseQ`) |
+| S31 | **field repro**: a group song's grid | 1Q, 4Q; a group anchored at 2Q with a 4Q member; group song 4Q+4Q gating it off in step 2 | the group song folds from the GROUP's origin (2Q past the zero), not the zero; the lanes carry that phase (view_model `phaseQ`) |
 | S32 | **field repro**: no origin fold | 1Q, 4Q windowed [1Q,3Q) (heard 2Q); a 3Q take armed at intrinsic phase 3Q | origin = the capture boundary; after the take the phrase continues from content[0], never mid-phrase |
 | display contract | tests/display_contract_tests.cc → ui/js/tests/display_contract.test.mjs | S30 + S31 in one island; each gated clip SOLOED and listened to per Q cell | the audible truth table is dumped with the published state; the real deriveViewModel must dim every lane exactly where the engine is silent |
 | S33 | cut bands | 1Q, 4Q; keep [0,1Q)+[2Q,3Q); slide; bypass; undo; a live stream | the map law seam-exact; separate gestures are separate undo steps, a live drag is one (ruling 2026-09-10) |
@@ -125,7 +125,7 @@ Still open:
 ## 3. Adding a scenario
 
 `Island is;` then verbs (`record`, `recordGroup`, `window`,
-`driveToPhase`, the engine's own verbs), then facts (`Q()`, `epoch()`,
+`driveToPhase`, the engine's own verbs), then facts (`Q()`, `zero()`,
 `cycle()`, `origin(id)`, `dur(id)`) and one `expectOutput(is, span,
 fn, label)` whose `fn(t)` sums `loopVal` / `windowVal` / `val(id, k)`
 over the clips that sound at `t` (call `is.o(id)` / `is.d(id)` for

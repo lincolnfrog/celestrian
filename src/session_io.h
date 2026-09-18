@@ -21,17 +21,17 @@ namespace celestrian::session_io {
  *                           takes save as stereo WAVs)
  *
  * The format is device-independent (Q12): every musical fact is
- * stored as QTime — a clip's origin as an offset from the island epoch,
+ * stored as QTime — a clip's origin as an offset from the island zero,
  * its period, its window segments, and the take's contextCycle — through
  * the Phase A projection helpers. Physical facts (the island exchange
- * rate `qSamples`, the epoch, the sample rate) are stored in samples and
+ * rate `qSamples`, the zero, the sample rate) are stored in samples and
  * used to reconstruct the sample-domain state on load at the SAME rate
  * (cross-rate resample is future; the QTime storage is what makes it
  * possible without a re-cut).
  *
  * CANONICAL (serialized): node type, uuid, name, child order,
  * inputChannel, mute, loop points + bypass, fx params, originQ/periodQ/
- * windowQ, contextCycle, island quantum + epoch. The ROOT is one node
+ * windowQ, contextCycle, island quantum + zero. The ROOT is one node
  * record like every stack (`root`, audit D7-3): the bundle level holds
  * only the island facts and the project identity.
  * DERIVED (never): launchPoint, anchors, cycle projections, clip x/y px.
@@ -49,8 +49,10 @@ namespace celestrian::session_io {
  *      nested stack persists — window, map, bypass, period source,
  *      window domain, rack, sequence, output stage — persists on the
  *      root the same way. Version-1 bundles load (their bundle-level
- *      keys are read as the root's record). */
-constexpr int kSessionVersion = 2;
+ *      keys are read as the root's record).
+ *   3  the island zero's key is `zero` (docs/frame.md §7: the
+ *      "epoch" rename); a bundle's legacy `epoch` key still loads. */
+constexpr int kSessionVersion = 3;
 
 /** Result of a load: the island facts, the root's own record, and the
  * reconstructed top-level children (owned by the caller until swapped
@@ -58,7 +60,7 @@ constexpr int kSessionVersion = 2;
 struct LoadedSession {
   bool ok = false;
   int64_t q_samples = 0;
-  int64_t epoch = 0;
+  int64_t zero = 0;
   double sample_rate = 44100.0;
   // The root's serialized record (the `root` block; synthesized from a
   // version-1 bundle's bundle-level keys). The engine applies it to
@@ -68,8 +70,8 @@ struct LoadedSession {
   // THE ROOT'S ANCHOR (docs/frame.md §4): a root that carried a song
   // was anchored at the zero the song was authored on; its record
   // stores it like any stack's (`anchored` + `originQ` from the
-  // epoch). Absent = unanchored (no song, or a bundle from before
-  // 2026-09-17). Resolved here because the epoch is a load-level fact.
+  // zero). Absent = unanchored (no song, or a bundle from before
+  // 2026-09-17). Resolved here because the zero is a load-level fact.
   bool root_anchored = false;
   int64_t root_origin = 0;
   std::vector<std::unique_ptr<AudioNode>> children;
@@ -83,7 +85,7 @@ struct SaveOptions {
   juce::String created;       // stored as "created"
   // Template save: keep STRUCTURE (names, order, inputs, mute, fx) and
   // drop every PERFORMANCE fact (audio, durations, origins, windows,
-  // Q/epoch). A template is a project with no performances — and since
+  // Q/zero). A template is a project with no performances — and since
   // Q is born from the first take, it is pre-Q by construction.
   bool strip_performances = false;
   // Mirror save: a committed take's audio is immutable (no overdub), so
@@ -94,7 +96,7 @@ struct SaveOptions {
 };
 
 /**
- * Serialize `root` (its island quantum/epoch read from the node) to a
+ * Serialize `root` (its island quantum/zero read from the node) to a
  * bundle at `dir`. `device_sample_rate` is stored so a clip's buffer can
  * be recreated at the right size on load. Returns false on I/O failure.
  */

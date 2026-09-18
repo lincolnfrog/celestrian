@@ -22,7 +22,7 @@
 | [sequencer.md](sequencer.md) | spec | The fractal Sequence primitive on stacks: the **period law** (§2 — a stack's effective period is window ▸ active sequence length ▸ LCM of children's effective periods), gate/cue entrances, record-into-a-step, cue steps, successor graphs + the seed (§14 — the PROGRAM, root-only radios), per-step fades. Rulings S1–S22 (§0, §9, §11, §13). Appendix §16. **Section numbers are cited by other docs — do not renumber.** |
 | [engine_lcm_guard.md](engine_lcm_guard.md) | spec | The Q-coherence ruling (2026-08-09): every map/window period is a whole multiple or exact divisor of Q, enforced categorically on both sides; free-length cuts abolished. |
 | [performance.md](performance.md) | spec | The audio-thread contract (§1 is project law), latency model, calibration feature, perf backlog and instrumentation. |
-| [composition.md](composition.md) | spec | The recursive theory of time composition stated once: the node record, the one anchoring law for every node (Q18 — stacks have origins), the period/cycle consumer table, the epoch's role, anchoring events, invariants I10–I16, worked group examples, and nesting in practice (§10 — the fractal principle, per-stack LCM, composites). **Read after design_language.md.** |
+| [composition.md](composition.md) | spec | The recursive theory of time composition stated once: the node record, the one anchoring law for every node (Q18 — stacks have origins), the period/cycle consumer table, the zero's role, anchoring events, invariants I10–I16, worked group examples, and nesting in practice (§10 — the fractal principle, per-stack LCM, composites). **Read after design_language.md.** |
 
 ## Supporting
 
@@ -34,7 +34,7 @@
 | [vst3.md](vst3.md) | spec | VST3/AU effect + instrument hosting: the dynamic per-node chain, native editor windows, out-of-process scanning, MIDI input and note clips (§8). Rulings Q-V1–V5 (§9). Appendix §11. |
 | [ui.md](ui.md) | spec | Frontend/backend separation of concerns; the masterPos contract; bridge placement rules (`ui/js/protocol.js` is the method list). |
 | [test_harness.md](test_harness.md) | spec | How to build and run every test layer, the gotchas, and the field checklist for loop regions. |
-| [bounce.md](bounce.md) | spec | Bounce / export (Q19): the span rule (root: one effective cycle from the epoch; node: one effective period from origin + a0), the −90 dBFS tail, stereo float WAV at the device rate, the bounce == live render golden. |
+| [bounce.md](bounce.md) | spec | Bounce / export (Q19): the span rule (root: one effective cycle from the zero; node: one effective period from origin + a0), the −90 dBFS tail, stereo float WAV at the device rate, the bounce == live render golden. |
 | [takes.md](takes.md) | spec | Takes and comping (B4): a committed slot holds N immutable takes sharing one origin/period; the new-take arm rule (`t ≡ origin mod period`, one-period cap, stop = cancel); per-Q-cell comp with cell seams; undo shapes; persistence keys; what the UI half owes. Engine shipped; UI pending. |
 | [import.md](import.md) | spec | Audio file import (B6): a WAV/AIFF/FLAC as a committed take — nearest-Q placement from the drop, the hysteresis length law, pre-Q import defines Q, a new take onto a committed slot, resampling, undo; the WebView path limit (a drop without a path → the chooser at the drop's Q). |
 | [frame.md](frame.md) | spec | Where the frame starts: the shared frame's zero is seated by the view from the lanes in the order shown (each loop's top at the left edge when a whole cycle-so-far reaches it, else where it fell, wrap ghosted), never stored. The engine keeps Q and the island zero (the first take's origin) and moves neither for a commit or a map edit. The pictures, the rulings it replaced (2026-09-16), what is pending. |
@@ -54,7 +54,7 @@ bug in the live doc — fix the live doc.
 | [refactoring_proposal.md](archive/refactoring_proposal.md) | The 2026-07-07 refactor plan (P0–P3). Its **P-numbers are still cited** — see the legend below | The kernel migration (kernel.md §5; all P0 landed); remaining items in tasks.md |
 | [implementation.md](archive/implementation.md) | Architecture status snapshots + the pre-session-view waveform-rendering design | kernel.md, performance.md, time_maps.md; UI by session_view.md |
 | [unification_audit.md](archive/unification_audit.md) | The 2026-07-16 audit of the engine against the kernel; the rational-time decision (§4) | §1–§3 all fixed / primitives built; §4 RULED 2026-07-16 as Q12 (design_language.md) |
-| [loop_region_audit.md](archive/loop_region_audit.md) | The 2026-08-30/31 loop-region / time-map audit | Content-frame law → time_maps.md §8 + composition.md §0/§8 (the epoch frame it described is deleted by Q18); §5 field checklist → test_harness.md; Q13-for-groups refinements → design_language.md Q13 |
+| [loop_region_audit.md](archive/loop_region_audit.md) | The 2026-08-30/31 loop-region / time-map audit | Content-frame law → time_maps.md §8 + composition.md §0/§8 (the island frame it described is deleted by Q18); §5 field checklist → test_harness.md; Q13-for-groups refinements → design_language.md Q13 |
 | [design_alternatives.md](archive/design_alternatives.md) | Options considered and rejected, with reasons | The rulings in design_language.md §5 |
 
 ### P-number legend

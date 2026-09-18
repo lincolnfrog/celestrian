@@ -31,14 +31,14 @@ const MAX_SEGMENT_TILES = 256;
  * @returns {string} A cache key string
  */
 export function buildCacheKey(stack, targetPeaks, opts = {}) {
-    const { raw = false, stackDuration = 0, epochSamples = 0 } = opts;
+    const { raw = false, stackDuration = 0, frameZero = 0 } = opts;
     const cacheKeyParts = [];
     (stack.nodes || []).forEach(child => {
         if (child.type === 'clip') {
             // RAW mode (the definer trim view): only the material's
-            // identity matters — windows, origins and the epoch are
+            // identity matters — windows, origins and the zero are
             // deliberately NOT in the key, so a re-trim (which moves
-            // Q, the epoch and the window every release) never
+            // Q, the zero and the window every release) never
             // regenerates the composite. A regenerated array is a new
             // identity, and drawRepCanvas cross-fades every new
             // identity — the definer's waveform would flicker on each
@@ -71,9 +71,9 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
     // spans the stack's intrinsic extent; the lane's srcSegs/dims apply
     // the window over it) — it is not in the key either, so a window
     // edit on the group never regenerates the picture underneath. The
-    // tiling inputs that DO shape the picture (extent, epoch frame) are.
+    // tiling inputs that DO shape the picture (extent, island frame) are.
     return `${targetPeaks}:${raw ? 'raw' : 'map'}:${stackDuration}:` +
-        `${raw ? 0 : epochSamples}:${cacheKeyParts.join(',')}`;
+        `${raw ? 0 : frameZero}:${cacheKeyParts.join(',')}`;
 }
 
 /**
@@ -100,14 +100,14 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
  *                                       mixdown AND the cache signature (their
  *                                       live meter peaks use a different
  *                                       amplitude scale — see peaksSig note).
- * @param {number} [opts.epochSamples=0] - Island epoch (samples): origins are
+ * @param {number} [opts.frameZero=0] - Island zero (samples): origins are
  *                                       ABSOLUTE, and segments tile at
  *                                       positions ≡ origin (mod period) in
- *                                       the EPOCH frame.
+ *                                       the ISLAND frame.
  * @param {boolean} [opts.raw=false]   - RAW MATERIAL mode (the Q-definer
  *                                       trim view): every child draws its
  *                                       WHOLE take once, from 0, ignoring
- *                                       windows, origins and the epoch —
+ *                                       windows, origins and the zero —
  *                                       the mixdown of the buffer the
  *                                       selection brackets select over,
  *                                       exactly what the member lanes
@@ -117,7 +117,7 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
  *                                       re-shape on every trim).
  * @returns {Array} Peak data array for the composite waveform
  */
-export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, epochSamples = 0, raw = false }) {
+export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, canvasWidth, livePeaks, cache, excludeIds, frameZero = 0, raw = false }) {
     // No published shortcut exists: neither the engine nor the mock
     // publishes a `waveform` on stacks — the mixdown is always built
     // here from the children's peaks.
@@ -140,7 +140,7 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         .map(c => skip(c) ? 'r' : (livePeaks.get(c.id) || []).length)
         .join(',');
     const cacheKey = buildCacheKey(stack, targetPeaks,
-        { raw, stackDuration, epochSamples }) + '|' + peaksSig;
+        { raw, stackDuration, frameZero }) + '|' + peaksSig;
 
     // Check cache
     const cached = cache.get(stack.id);
@@ -229,7 +229,7 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         };
 
         // The map sounds at positions ≡ its origin (mod its heard
-        // period), in the epoch frame — tiled across the WHOLE cycle,
+        // period), in the island frame — tiled across the WHOLE cycle,
         // INCLUDING the wrapped predecessor before its first full
         // repetition (forward-only tiling would leave everything before
         // the offset blank for a non-zero origin). Within each pass the
@@ -238,8 +238,8 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
         // mapOffset's segment walk, drawn.
         // RAW mode: the buffer sits at 0 — one tile, the trim view's
         // frame (the member lanes tile the same way: "one full tile
-        // from 0 — the trim view ignores the epoch").
-        const rel = raw ? 0 : (child.origin || 0) - epochSamples;
+        // from 0 — the trim view ignores the zero").
+        const rel = raw ? 0 : (child.origin || 0) - frameZero;
         const first = posMod(rel, heardLen);
         for (let s = first - heardLen; s < stackDuration; s += heardLen) {
             let heardOff = 0;

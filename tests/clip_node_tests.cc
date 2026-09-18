@@ -394,7 +394,7 @@ class ClipNodeTests : public juce::UnitTest {
     {
       const double SR = 1000.0;
       StackNode parent("Parent");
-      parent.setQuantum(1000, 0);  // island Q established, epoch 0
+      parent.setQuantum(1000, 0);  // island Q established, zero at 0
 
       auto clip = std::make_unique<ClipNode>("Armed", SR);
       auto* c = clip.get();
@@ -554,7 +554,7 @@ class ClipNodeTests : public juce::UnitTest {
 
     beginTest("The pickup: a click just before a heard boundary lands ON it");
     {
-      // E-A with a nonzero epoch: heard boundaries at 700 + kQ. The arm
+      // E-A with a nonzero island zero: heard boundaries at 700 + kQ. The arm
       // target is the next HEARD boundary — no deferral window (deleted
       // 2026-07-16: it overshot the take by a full Q when the latency
       // compensation was small; field repro in regression_tests).
@@ -582,7 +582,7 @@ class ClipNodeTests : public juce::UnitTest {
       expectEquals(c->origin_samples.load(), (int64_t)1700,
                    "origin = the boundary the performer heard");
       expectEquals((c->origin_samples.load() - 700) % 1000, (int64_t)0,
-                   "origin == 0 (mod Q) in the EPOCH frame");
+                   "origin == 0 (mod Q) in the ISLAND frame");
     }
 
     beginTest("Arm farther out: awaits the boundary, then starts on it");

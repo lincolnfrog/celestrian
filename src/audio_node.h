@@ -5,7 +5,7 @@
  * a ClipNode (a leaf: one take, audio samples or MIDI notes) or a
  * StackNode (a container that sums its children); stacks nest without
  * limit, and the session root is itself a stack — the island root that
- * owns Q and the epoch.
+ * owns Q and the zero.
  *
  * Every node splits its per-block work in two (the control/render
  * split, §2.3): control() is the mutating pass — recording decisions,
@@ -46,10 +46,10 @@ struct GraphSnapshot;
  * Field groups:
  *  - Clock facts: master_pos is the RECEIVED clock (re-based by a
  *    windowed stack, folded by an active map on the way down — what
- *    render positions against); island_pos / island_epoch are the
+ *    render positions against); island_pos / island_zero are the
  *    INVARIANT island clock and its origin (through-map arm triggers,
- *    origin math); cycle_epoch is the received frame's cycle top (window
- *    phase); map_heard_epoch is the heard grid anchor under an active map
+ *    origin math); frame_top is the received frame's cycle top (window
+ *    phase); map_heard_top is the heard grid anchor under an active map
  *    (arm targets in heard time).
  *  - Island facts: quantum, island (the lifecycle-event target), and the
  *    island / stop generations that let the audio thread adopt multi-field
@@ -87,11 +87,11 @@ struct ProcessContext {
   bool any_solo = false;
 
   // The received frame's cycle top (time_maps.md): the engine sets this
-  // to the island epoch; a stack with an ACTIVE loop window re-bases it
+  // to the island zero; a stack with an ACTIVE loop window re-bases it
   // for its children to the window start. Window phase is always
-  // (master_pos − cycle_epoch) mod window_len — a pure function of the
+  // (master_pos − frame_top) mod window_len — a pure function of the
   // received clock, never of view state or a private counter.
-  int64_t cycle_epoch = 0;
+  int64_t frame_top = 0;
 
   // --- Pre-record ring (docs/performance.md §3) ---
   // The engine continuously copies device input into a ring indexed by a
@@ -119,12 +119,12 @@ struct ProcessContext {
 
   // Island facts, passed DOWN so leaves never walk up: the island
   // quantum (0 = unestablished), the
-  // INVARIANT island epoch (unlike cycle_epoch, never re-based by
+  // INVARIANT island zero (unlike frame_top, never re-based by
   // windowed stacks on the way down), and the island root — the target
   // of take lifecycle events and establishIsland. Like `snap`, never
   // null when a node is processed.
   int64_t quantum = 0;
-  int64_t island_epoch = 0;
+  int64_t island_zero = 0;
   AudioNode* island = nullptr;
 
   // The CONTEXT CYCLE for this scope — THE one scope cycle (the Q5
@@ -140,7 +140,7 @@ struct ProcessContext {
   // --- Time-map facts (time_maps.md phase 2) ---
   // The INVARIANT monotonic island clock: the engine's transport
   // position, never folded by a mapping stack on the way down (the
-  // master_pos twin of island_epoch). Through-map arm triggers compare
+  // master_pos twin of island_zero). Through-map arm triggers compare
   // against THIS clock — the folded master_pos wraps every map period
   // and never crosses a target at/past the map's end.
   int64_t island_pos = 0;
@@ -151,12 +151,12 @@ struct ProcessContext {
   // boundary and commit one duration. Read once per callback.
   uint32_t stop_generation = 0;
   // ISLAND GENERATION: a message-thread
-  // edit that moves the epoch AND clip origins together (definer trim,
+  // edit that moves the zero AND clip origins together (definer trim,
   // seek) writes the origins, then the island facts, then bumps this.
   // Clips adopt a new origin for RENDERING (origin_rt_) only at a block
   // top whose context carries the generation the writer named — the
-  // same block top that read the new epoch — so no block ever renders
-  // a new epoch against old origins or vice versa. Read once per
+  // same block top that read the new zero — so no block ever renders
+  // a new zero against old origins or vice versa. Read once per
   // callback with the island facts.
   uint32_t island_generation = 0;
   // Live MIDI (docs/vst3.md §8, phase 4): the block's incoming events,
@@ -195,16 +195,16 @@ struct ProcessContext {
 
   // The innermost enclosing ACTIVE map (empty when none): set by a
   // mapping stack in childContext for its whole subtree, alongside
-  // map_heard_epoch — the RECEIVED frame's cycle top at that stack,
+  // map_heard_top — the RECEIVED frame's cycle top at that stack,
   // i.e. the heard grid anchor (pass tops occur at island times
-  // ≡ map_heard_epoch mod map.period()). map_count counts active maps
+  // ≡ map_heard_top mod map.period()). map_count counts active maps
   // on the delivered chain: > 1 means composed maps (multi-segment
   // product), which recording refuses.
   timing::TimeMap map{};
-  int64_t map_heard_epoch = 0;
+  int64_t map_heard_top = 0;
   // The mapping stack's ORIGIN (Q18, composition.md §2): the map's
   // inner positions are offsets from it, so a through-map take's inner
-  // origin is map_origin + mapOffset(heard offset). map_heard_epoch
+  // origin is map_origin + mapOffset(heard offset). map_heard_top
   // above is map_origin + mapOffset(0) — the heard grid anchor.
   int64_t map_origin = 0;
   int map_count = 0;
@@ -381,10 +381,10 @@ class AudioNode {
     // serializes (sample fields above stay for the UI). `qSamples` is the
     // island exchange rate (physical) that reconstructs them on load.
     const int64_t q_samples = getEffectiveQuantum();
-    const int64_t epoch = getIslandEpoch();
+    const int64_t zero = getIslandZero();
     obj->setProperty("qSamples", (double)q_samples);
     obj->setProperty("originQ", qtimeVar(timing::originQ(origin_samples.load(),
-                                                         epoch, q_samples)));
+                                                         zero, q_samples)));
     obj->setProperty("periodQ", qtimeVar(timing::periodQ(
                                     duration_samples.load(), q_samples)));
     obj->setProperty(
@@ -467,15 +467,15 @@ class AudioNode {
   // root, i.e. StackNode). Clips report their recording lifecycle to
   // `rootNode()` through these instead of the engine detecting edges by
   // scanning the graph every block (unification_audit.md §1.5).
-  /** Establish (Q, epoch) if not yet locked; q == 0 sets a provisional
-   * epoch only (first-clip arm: the arm moment is the epoch — the
+  /** Establish (Q, zero) if not yet locked; q == 0 sets a provisional
+   * zero only (first-clip arm: the arm moment is the zero — the
    * clock itself is never reset). */
-  virtual void establishIsland(int64_t quantum, int64_t epoch) {
+  virtual void establishIsland(int64_t quantum, int64_t zero) {
     (void)quantum;
-    (void)epoch;
+    (void)zero;
   }
   /** A take was armed / cancelled / committed in this island. The
-   * commit event carries the take's origin and drives the epoch
+   * commit event carries the take's origin and drives the zero
    * re-base (simple-extension rule) — see StackNode. */
   virtual void takeArmed() {}
   virtual void takeCancelled() {}
@@ -694,13 +694,13 @@ class AudioNode {
   }
 
   /**
-   * The island's cycle epoch: the master-clock moment of the visual cycle
+   * The island's zero: the master-clock moment of the visual cycle
    * top. ALL cycle-relative projections (anchors, slots, effective
-   * positions) must be computed relative to this — mixing epoch-relative
+   * positions) must be computed relative to this — mixing zero-relative
    * views with absolute-frame math re-splits audio from visuals.
    */
-  virtual int64_t getIslandEpoch() const {
-    if (auto* p = parent.load()) return p->getIslandEpoch();
+  virtual int64_t getIslandZero() const {
+    if (auto* p = parent.load()) return p->getIslandZero();
     return 0;
   }
 
@@ -795,8 +795,8 @@ class AudioNode {
   // The origin the AUDIO thread renders with: adopted from
   // origin_samples at a block top whose island generation has reached
   // origin_gate_gen_ (ProcessContext::island_generation — a writer that
-  // moves origins with the epoch names one generation for both, so a
-  // block renders new origins against the new epoch or neither).
+  // moves origins with the zero names one generation for both, so a
+  // block renders new origins against the new zero or neither).
   // Audio-thread writers (arm, commit) store both directly.
   std::atomic<int64_t> origin_rt_{0};
   std::atomic<uint32_t> origin_gate_gen_{0};
@@ -818,7 +818,7 @@ class AudioNode {
    * origin once anchored (a clip always is), else the received cycle
    * top (an empty stack). Message-thread twin: heard::frameOriginOf. */
   int64_t frameOrigin(const ProcessContext& context) const {
-    return anchored_.load() ? origin_rt_.load() : context.cycle_epoch;
+    return anchored_.load() ? origin_rt_.load() : context.frame_top;
   }
   /** The rendering origin (audio thread). */
   int64_t renderOrigin() const { return origin_rt_.load(); }

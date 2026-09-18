@@ -126,7 +126,7 @@ test('a one-shot GROUP fires from its origin and rests (S25)', async ({ page }) 
     const g = st0.nodes[st0.nodes.length - 1].id;
     const k = await rec(page, 2 * Q, { atPhase: 2 * Q, parent: g });
     let st = await state(page);
-    expect(mod(findNode(st, g).origin - st.islandEpoch, 4 * Q)).toBe(2 * Q);
+    expect(mod(findNode(st, g).origin - st.islandZero, 4 * Q)).toBe(2 * Q);
     await verifyHeard(page);
     await call(page, 'setPeriodSource', g, 'context');
     st = await state(page);

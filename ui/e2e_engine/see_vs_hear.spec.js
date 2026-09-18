@@ -37,8 +37,8 @@ test('root song after a growth re-base: lane dims == engine silence; authoring a
     const st0 = await state(page);
     expect(st0.anchored, 'no song: the root is unanchored').toBe(false);
     const vm0 = deriveViewModel(st0, vmOpts);
-    const seatedZero = vm0.epochSamples;
-    expect(seatedZero, 'the seated zero sits off the island zero').not.toBe(st0.islandEpoch);
+    const seatedZero = vm0.frameZero;
+    expect(seatedZero, 'the seated zero sits off the island zero').not.toBe(st0.islandZero);
     const picture = vm => [c1, c2, c3].map(id => vm.lanes.find(l => l.id === id).takeStartQ);
     const before = picture(vm0);
     // (c3 was armed at 2Q of the island zero's frame; the seated zero
@@ -73,7 +73,7 @@ test('root song after a growth re-base: lane dims == engine silence; authoring a
     const st1 = await state(page);
     expect(st1.anchored, 'a root song anchors the root').toBe(true);
     expect(st1.origin, 'at the zero the view had seated').toBe(seatedZero);
-    expect(st1.islandEpoch).toBe(st0.islandEpoch);
+    expect(st1.islandZero).toBe(st0.islandZero);
     const vm1 = deriveViewModel(st1, vmOpts);
     expect(vm1.cycleQ).toBe(16);
     expect(picture(vm1), 'authoring the song moved no tile').toEqual(before);
@@ -138,7 +138,7 @@ test('a CUED step replays the song top (S18): in step 2 the clips sound what the
         if (d < 3 * L.frame) continue;  // seams: the cue cut and the loop wraps
         for (const id of [c1, c2]) {
             const n = findNode(st, id);
-            const t = st.islandEpoch + cueMap(f);
+            const t = st.islandZero + cueMap(f);
             const expected = mod(t - n.origin, n.duration);
             // The clip's own loop wrap inside the window: skip.
             if (expected < L.frame / 2 || n.duration - expected < L.frame / 2) continue;

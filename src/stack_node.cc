@@ -52,11 +52,11 @@ juce::var StackNode::getMetadata() const {
   // AudioNode base — fractal with clips (I5). The stack's `playhead`
   // field carries the window phase fraction while the window is active.
   // Island state, for diagnosability: `origin` on clips is ABSOLUTE;
-  // the view-frame anchor is (origin − epoch) mod duration, so without
-  // the epoch a dump's "origin = 3Q" reads wrong for a clip recorded at
+  // the view-frame anchor is (origin − zero) mod duration, so without
+  // the zero a dump's "origin = 3Q" reads wrong for a clip recorded at
   // the cycle top.
   obj->setProperty("quantum", (double)quantum_samples_.load());
-  obj->setProperty("epoch", (double)epoch_samples_.load());
+  obj->setProperty("zero", (double)zero_samples_.load());
   // Under a step audition the DERIVED window is the one the UI must
   // draw (brackets, cursor honesty, frame): publish it over the base
   // fields. The authored window survives untouched in the atomics and
@@ -188,7 +188,7 @@ void StackNode::takeArmed() {
   if (active_takes_.fetch_add(1) == 0) {
     // Snapshot the cycles the take begins against: the INTRINSIC
     // committed cycle (growth baseline for the commit re-base; windows
-    // must not leak into epoch permanence) and the HEARD cycle (E-C —
+    // must not leak into zero permanence) and the HEARD cycle (E-C —
     // what the performer is actually listening to; windows shorten it).
     const int64_t q = quantum_samples_.load();
     lcm_before_take_.store(timing::lcm(q, getIntrinsicDuration()));
@@ -213,7 +213,7 @@ void StackNode::addChild(std::unique_ptr<AudioNode> child) {
   // (removeChild balanced it out on the way).
   if (child->isArmedOrRecording()) rootNode()->takeArmed();
   // Attaching content never writes island facts (audit D14-1): (Q,
-  // epoch) are established by a commit or an import on the island
+  // zero) are established by a commit or an import on the island
   // root, and by nothing else. A DETACHED assembly (Combine builds its
   // stack before inserting it; a subtree held by the undo log) is its
   // own rootNode(), so an establishment here would stamp a private
@@ -270,7 +270,7 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // The map applies iff it is ACTIVE (valid + not bypassed) —
   // independent of expansion (I6b: collapse is purely visual). Phase is
   // a pure function of the received clock:
-  // walk_segments((t − cycle_epoch) mod period).
+  // walk_segments((t − frame_top) mod period).
   // No private counter, no reset-on-collapse, fully deterministic.
   // Shared by BOTH §2.3 phases so control decisions and rendering see
   // the SAME mapped child clock.
@@ -308,11 +308,11 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
     // it mod the period) that through-map arm math runs against.
     child_context.map = map;
     child_context.map_origin = O;
-    child_context.map_heard_epoch = O + a0;
+    child_context.map_heard_top = O + a0;
     ++child_context.map_count;
     // The child frame's cycle top is where the map lands at heard phase
     // 0 (the first segment's start).
-    child_context.cycle_epoch = O + a0;
+    child_context.frame_top = O + a0;
   }
 
   // === THE CONTEXT CYCLE (the one scope cycle: the Q5 one-shot period
@@ -342,13 +342,13 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // === CUE STEPS (docs/sequencer.md §3 — the Q6 serial primitive;
   // S11, S20–S22) ===
   // A CUED step re-bases the subtree's received frame to the step top:
-  // children hear t' = epoch + (songRel - stepStart) — a derived
+  // children hear t' = zero + (songRel - stepStart) — a derived
   // per-step time-map layered UNDER any authored/audition map (the S9
   // composition law: the map selects SONG positions; the cue maps song
   // positions to CONTENT positions). forEachSeamRun cuts blocks at
   // step bounds (they are envelope corners), so the step is constant
   // within any one call here. The child frame's cycle top is the
-  // RECEIVED epoch again — the re-based content IS the song-top span,
+  // RECEIVED zero again — the re-based content IS the song-top span,
   // so a nested song-stack restarts from its own top on every
   // entrance. Gate lookup is NOT affected: renderChildren derives the
   // song position independently of this re-base (gates live on the
@@ -356,7 +356,7 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   if (const Sequence* seq = activeSequence();
       seq != nullptr && seq->any_cue && seq->total > 0) {
     // The song position is inner(t) measured from this stack's frame
-    // (Q18: its origin, not the received epoch).
+    // (Q18: its origin, not the received zero).
     const int64_t srel = seq->fold(child_context.master_pos - O);
     // The PROGRAM is the timeline (§14): the lookup is by VISIT, so a
     // step the program revisits re-bases on every entrance.
@@ -364,7 +364,7 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
     if (seq->cueOfVisit(k)) {
       const int64_t step_len = seq->visitLen(k);
       child_context.master_pos = O + (srel - seq->bounds[k]);
-      child_context.cycle_epoch = O;
+      child_context.frame_top = O;
       // Mode-2 record INTO a cued step (S21): the through-map arm math
       // places the take at context.map's inner positions — compose the
       // audition map with the cue so the take lands where cue playback

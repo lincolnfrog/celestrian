@@ -4,7 +4,7 @@
 // applySetsOrigin), island (Q, zero) writes (setIslandQuantum) and the
 // scrub that keeps pre-Q geometry coherent. The FRAME is not placed
 // here: the view seats it from the lanes (docs/frame.md).
-// Only the island root ever holds (Q, epoch): nothing writes them on a
+// Only the island root ever holds (Q, zero): nothing writes them on a
 // nested stack (audit D14-1), so there is nothing to scrub there.
 // Message thread only.
 
@@ -54,7 +54,7 @@ int countCommittedClips(const celestrian::AudioNode* node) {
  * children are the island's ONLY committed content and were recorded
  * as ONE take (identical origin and duration), two or more of them (a
  * single committed clip keeps the clip-definer path, whatever holds
- * it). Its window then re-establishes (Q, epoch) exactly as a sole
+ * it). Its window then re-establishes (Q, zero) exactly as a sole
  * clip's does. Null otherwise. Message thread.
  */
 celestrian::StackNode* definerStackImpl(celestrian::AudioNode* node) {
@@ -91,7 +91,7 @@ celestrian::StackNode* definerStackImpl(celestrian::AudioNode* node) {
     // WRAPPER WARP GUARD: a stack on the path that remaps time — an
     // active map override or its own engaged window — sits between the
     // island clock and the definer, so the definer's window would
-    // re-establish (Q, epoch) through a warp the Q13 equation ignores.
+    // re-establish (Q, zero) through a warp the Q13 equation ignores.
     // No definer through a warp.
     if (stack->hasSegmentMap() ||
         (!stack->isLoopWindowBypassed() &&
@@ -222,11 +222,11 @@ int64_t continuityOrigin(const celestrian::AudioNode& node,
 
 celestrian::heard::Scope AudioEngine::rootScope() const {
   // The island frame the audio callback seeds the root with
-  // (engine_internal::renderContext): the epoch, the audible island
+  // (engine_internal::renderContext): the zero, the audible island
   // cycle and Q — read here from the CURRENT snapshot (immutable once
   // published; the message thread publishes it).
   celestrian::heard::Scope s;
-  s.cycle_epoch = islandEpoch();
+  s.frame_top = islandZero();
   s.quantum = root_node ? root_node->getQuantum() : 0;
   if (const auto* snap = graph_snapshot_.load(std::memory_order_acquire)) {
     s.context_cycle = celestrian::snapEffectiveCycle(
@@ -325,7 +325,7 @@ void AudioEngine::applySetsOrigin(celestrian::AudioNode& node,
 int64_t AudioEngine::cycleTopOf(const celestrian::AudioNode& node) const {
   const auto* parent =
       dynamic_cast<const celestrian::StackNode*>(node.getParent());
-  if (parent == nullptr) return root_node ? root_node->getEpoch() : 0;
+  if (parent == nullptr) return root_node ? root_node->getZero() : 0;
   const int64_t top = cycleTopOf(*parent);
   const celestrian::timing::TimeMap map = parent->activeTimeMap();
   if (!map.active()) return top;
@@ -340,7 +340,7 @@ void AudioEngine::settleAnchors(celestrian::Edit& inv) {
     // root song anchors the root at the zero the view had seated, so
     // the song's grid is the grid on screen ("the grid you see is the
     // grid you hear", 2026-09-09 — once broken by anchoring the root at
-    // its first take while the growth re-base moved the epoch; no
+    // its first take while the growth re-base moved the zero; no
     // commit moves the zero now). Without a song frameOrigin /
     // frameOriginOf fall through to the received cycle top — the
     // island zero.
@@ -446,11 +446,11 @@ void forEachStack(celestrian::AudioNode* node,
 }
 }  // namespace
 
-void AudioEngine::setIslandQuantum(int64_t q, int64_t epoch,
+void AudioEngine::setIslandQuantum(int64_t q, int64_t zero,
                                    celestrian::Edit& inv, uint32_t generation) {
   const int64_t old_q = root_node->getQuantum();
   root_node->setIslandFacts(
-      q, epoch, generation != 0 ? generation : root_node->islandGeneration());
+      q, zero, generation != 0 ? generation : root_node->islandGeneration());
   if (q == old_q) return;
   // SEQUENCES TRACK Q (sequencer.md): a step is "5Q", not "220500
   // samples" — re-establishing Q (a definer trim) keeps every step's Q

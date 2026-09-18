@@ -223,7 +223,7 @@ void AudioEngine::collapseDefinerAtArm(const celestrian::AudioNode* exclude) {
   // stack, one law — collapses to its window BEFORE the arm, so every
   // boundary computation (context loop, cycle snapshots, LCMs) sees an
   // ordinary whole-Q looper; an incommensurate buffer left alive would
-  // poison them all (the next take anchors at origin − epoch ∉ Q·Z).
+  // poison them all (the next take anchors at origin − zero ∉ Q·Z).
   // Undoable — ⌘Z restores the full buffer and the trim. The applier
   // records nothing when there is nothing to collapse.
   auto* d = celestrian::engine_internal::definer(*root_node);
@@ -250,14 +250,14 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       if (!parent || !e.node) return {};
       const juce::String uid = e.node->getUuid();
       const bool restoreIsland = e.setsIsland;
-      const int64_t iq = e.iq, iepoch = e.iepoch;
+      const int64_t iq = e.iq, izero = e.izero;
       parent->insertChildAt(std::move(e.node), e.index);
       // Restore the island grid this insert carries (undo of a
       // provisional-Q-revert delete). The Remove inverse re-derives the
       // revert on redo, so it needs no island payload.
       Edit inv(K::Remove);
       inv.uuid = uid;
-      if (restoreIsland) setIslandQuantum(iq, iepoch, inv);
+      if (restoreIsland) setIslandQuantum(iq, izero, inv);
       // Undo of a clearing revert: the sequences come back with the clip.
       reinstallSequenceRiders(e);
       // Undo of a RE-OPENING delete (uuid2 = the definer that delete
@@ -294,13 +294,13 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
                             !root_node->hasActiveTake();
       // Provisional Q revert (Q13 non-sticky): if this delete emptied the
       // island of committed content, Q is no longer defined by anything —
-      // revert it, carrying the old (Q, epoch) so undo restores the grid
+      // revert it, carrying the old (Q, zero) so undo restores the grid
       // together with the clip. A delete that only drops 2→1 leaves Q
       // untouched (it just becomes re-mutable again — derived, no state).
       if (islandCommittedClipCount() == 0 && root_node->getQuantum() != 0) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
-        inv.iepoch = root_node->getEpoch();
+        inv.izero = root_node->getZero();
         setIslandQuantum(0, 0, inv);  // + clears sequences into inv
       }
       // RE-OPEN ⟹ UNCOLLAPSE (companion of collapse-at-arm, Q13): if
@@ -497,23 +497,23 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       if (e.restoresBypass) node->setLoopWindowBypassed(true);
       stampWindowDomain(node, e, inv);
       applyWindowRiders(find, e, inv);
-      // Origins and epoch land in the SAME block (island generation) —
+      // Origins and zero land in the SAME block (island generation) —
       // a setsOrigin re-anchor gates the same way.
       const uint32_t gen = e.setsOrigin ? root_node->nextIslandGeneration() : 0;
       applySetsOrigin(*node, e, inv, gen);
       // Q13 re-trim: if the forward edit carries an island re-establishment
       // (built by setLoopPoints when the target is the sole committed
-      // clip), apply it and capture the old (Q, epoch) into the inverse so
+      // clip), apply it and capture the old (Q, zero) into the inverse so
       // undo restores the grid, not just the window.
       if (e.setsIsland) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
-        inv.iepoch = root_node->getEpoch();
-        setIslandQuantum(e.iq, e.iepoch, inv, gen);
+        inv.izero = root_node->getZero();
+        setIslandQuantum(e.iq, e.izero, inv, gen);
       } else if (gen != 0) {
-        // Origins moved without the epoch: publish the generation so
+        // Origins moved without the zero: publish the generation so
         // the gated origins are adopted at the next block top.
-        root_node->setIslandFacts(root_node->getQuantum(), root_node->getEpoch(), gen);
+        root_node->setIslandFacts(root_node->getQuantum(), root_node->getZero(), gen);
       }
       return inv;
     }
@@ -524,8 +524,8 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // trimmed region BECOMES the take, as if it had been performed
       // exactly: the leaves under the definer node keep the window's
       // material as their whole content, the node's subtree moves by the
-      // window start (window top → origin = the epoch), its ancestors
-      // follow, the window is consumed. (Q, epoch) do not move: the
+      // window start (window top → origin = the zero), its ancestors
+      // follow, the window is consumed. (Q, zero) do not move: the
       // collapse lands exactly on the grid the trim established.
       auto* node = find(e.uuid);
       if (!node) return {};
@@ -638,11 +638,11 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       if (e.setsIsland) {
         inv.setsIsland = true;
         inv.iq = root_node->getQuantum();
-        inv.iepoch = root_node->getEpoch();
-        setIslandQuantum(e.iq, e.iepoch, inv, seg_gen);
+        inv.izero = root_node->getZero();
+        setIslandQuantum(e.iq, e.izero, inv, seg_gen);
       } else if (seg_gen != 0) {
         root_node->setIslandFacts(root_node->getQuantum(),
-                                  root_node->getEpoch(), seg_gen);
+                                  root_node->getZero(), seg_gen);
       }
       return inv;
     }
@@ -677,7 +677,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
     case K::Untake: {
       // TAKES ARE UNDOABLE (docs/sequencer.md §11.5). Untake strips the
       // named clips to empty, the inverse Take OWNING their content;
-      // Take reinstalls it. Island (Q, epoch) ride via setsIsland in
+      // Take reinstalls it. Island (Q, zero) ride via setsIsland in
       // both directions (the first take's establishment, a growth
       // re-base), captured into the inverse. An optional sequence rider
       // (`seq` + `b1`, the step-record auto-gate) swaps with the same
@@ -711,7 +711,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // Island facts: capture current, then set the payload's.
       inv.setsIsland = true;
       inv.iq = root_node->getQuantum();
-      inv.iepoch = root_node->getEpoch();
+      inv.izero = root_node->getZero();
       for (size_t i = 0; i < clips.size(); ++i) {
         Edit::TakePayload& in = e.takes[i];
         Edit::TakePayload out;
@@ -758,7 +758,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         }
         inv.takes.push_back(std::move(out));
       }
-      if (e.setsIsland) setIslandQuantum(e.iq, e.iepoch, inv);
+      if (e.setsIsland) setIslandQuantum(e.iq, e.izero, inv);
       // Undo of a FIRST take reverts Q to 0, which clears every
       // sequence into the inverse's riders; redo reinstalls them.
       reinstallSequenceRiders(e);
@@ -1027,7 +1027,7 @@ void AudioEngine::record(celestrian::Edit forward) {
 }
 
 namespace {
-// Any edit that moves island facts — (Q, epoch), origins, or the
+// Any edit that moves island facts — (Q, zero), origins, or the
 // windows that select against them — is refused under a live take:
 // the performer is recording against that grid, and a mid-take undo
 // of a trim (window + origin riders, or a lock-collapse) shifts the

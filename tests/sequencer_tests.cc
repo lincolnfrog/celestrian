@@ -23,7 +23,7 @@
  *     one-segment map from the sequence (follows a resize, overrides
  *     the authored window, gone with the sequence), publishes it, is
  *     not undoable; S18: a take recorded INTO the looping step is a
- *     step-sized part (C = the step), and the song rides the epoch (no
+ *     step-sized part (C = the step), and the song rides the zero (no
  *     part-sized re-base shifts the sections).
  *
  * Twin: ui/js/tests/sequence.test.mjs (mock + view-model parity).
@@ -616,7 +616,7 @@ class SequencerTests : public juce::UnitTest {
     }
 
     beginTest("S18: record INTO a looping step = a step-sized part; "
-              "the song rides the epoch");
+              "the song rides the zero");
     {
       AudioEngine engine;
       const int BLOCK = 512;
@@ -674,8 +674,8 @@ class SequencerTests : public juce::UnitTest {
         process(512);
       }
       expectEquals(prop(bId, "duration"), (int64_t)(2 * Q), "B = 2Q");
-      const int64_t epochBefore =
-          (int64_t)(double)engine.getGraphState().getProperty("islandEpoch", 0.0);
+      const int64_t zeroBefore =
+          (int64_t)(double)engine.getGraphState().getProperty("islandZero", 0.0);
 
       // The song: intro 2Q | chorus 4Q | out 2Q = 8Q. Loop the chorus.
       auto* payload = new juce::DynamicObject();
@@ -708,11 +708,11 @@ class SequencerTests : public juce::UnitTest {
       expectEquals(prop(cId, "isRecording"), (int64_t)0, "C committed");
       expectEquals(prop(cId, "duration"), (int64_t)(4 * Q),
                    "S18: C = the STEP length, not the 8Q song");
-      const int64_t epochAfter =
-          (int64_t)(double)engine.getGraphState().getProperty("islandEpoch", 0.0);
-      expectEquals(epochAfter, epochBefore,
+      const int64_t zeroAfter =
+          (int64_t)(double)engine.getGraphState().getProperty("islandZero", 0.0);
+      expectEquals(zeroAfter, zeroBefore,
                    "no re-base: a 4Q part in an 8Q song is not a whole song");
-      const int64_t rel = ((prop(cId, "origin") - epochAfter) % (8 * Q) +
+      const int64_t rel = ((prop(cId, "origin") - zeroAfter) % (8 * Q) +
                            8 * Q) % (8 * Q);
       expect(rel >= 2 * Q && rel < 6 * Q,
              "origin inside the chorus in song coordinates (got " +
@@ -1534,7 +1534,7 @@ class SequencerTests : public juce::UnitTest {
     {
       // A ramp clip under a sequence whose 2nd step is CUED: inside
       // that step the child must play the content it plays at the
-      // SONG TOP - t' = epoch + (songRel - stepStart) (ss3).
+      // SONG TOP - t' = zero + (songRel - stepStart) (ss3).
       StackNode cued("island");
       cued.addChild(makeRampClip("r"));
       auto* cs = new Sequence();
@@ -1664,7 +1664,7 @@ class SequencerTests : public juce::UnitTest {
       auto songRel = [&](int64_t period) {
         const juce::var st = engine.getGraphState();
         const int64_t pos = (int64_t)(double)st.getProperty("islandPos", 0.0);
-        const int64_t ep = (int64_t)(double)st.getProperty("islandEpoch", 0.0);
+        const int64_t ep = (int64_t)(double)st.getProperty("islandZero", 0.0);
         return ((pos - ep) % period + period) % period;
       };
       const juce::String rootId =
@@ -1734,7 +1734,7 @@ class SequencerTests : public juce::UnitTest {
       expectEquals(prop(cId, "duration"), (int64_t)(2 * Q),
                    "S18 through S21: a step-sized part");
       const int64_t ep = (int64_t)(double)engine.getGraphState().getProperty(
-          "islandEpoch", 0.0);
+          "islandZero", 0.0);
       const int64_t rel =
           ((prop(cId, "origin") - ep) % (4 * Q) + 4 * Q) % (4 * Q);
       expect(rel < 2 * Q,
@@ -1789,11 +1789,11 @@ class SequencerTests : public juce::UnitTest {
 
     // Audit D15-1: the S21 lookup reads the SONG POSITION the sequenced
     // stack itself reads — from its own frame origin (Q18: a group's
-    // origin), not the raw clock from the island epoch. A group whose
-    // origin sits 2Q past the epoch has its verse where the epoch frame
+    // origin), not the raw clock from the island zero. A group whose
+    // origin sits 2Q past the zero has its verse where the island frame
     // has its chorus.
     beginTest("S21 at depth: a GROUP song's cued step is looked up from the "
-              "group's origin, not the island epoch");
+              "group's origin, not the island zero");
     {
       AudioEngine engine;
       const int BLOCK = 512;
@@ -1827,7 +1827,7 @@ class SequencerTests : public juce::UnitTest {
         auto* kids = parent.getProperty("nodes", juce::var()).getArray();
         return kids->getLast().getProperty("id", "").toString();
       };
-      // The island phase (t − epoch) folded on the 4Q song grid.
+      // The island phase (t − zero) folded on the 4Q song grid.
       auto phase4 = [&](int64_t Q) {
         const int64_t pos = (int64_t)(double)engine.getGraphState().getProperty(
             "islandPos", 0.0);
@@ -1852,7 +1852,7 @@ class SequencerTests : public juce::UnitTest {
 
       // A group whose first take lands at island phase 2Q: arm inside
       // [1Q, 2Q) so the take starts at the 2Q boundary. One Q long, so
-      // the cycle does not grow and the epoch stays put.
+      // the cycle does not grow and the zero stays put.
       engine.createNode("stack");
       const juce::String gId = lastIdUnder(engine.getGraphState());
       engine.createNode("clip", gId);
@@ -1875,11 +1875,11 @@ class SequencerTests : public juce::UnitTest {
         process(512);
       }
       expectEquals(prop(mId, "duration"), Q, "the group's take is 1Q");
-      const int64_t epoch = (int64_t)(double)engine.getGraphState().getProperty(
-          "islandEpoch", 0.0);
-      expectEquals(((prop(gId, "origin") - epoch) % (4 * Q) + 4 * Q) % (4 * Q),
+      const int64_t zero = (int64_t)(double)engine.getGraphState().getProperty(
+          "islandZero", 0.0);
+      expectEquals(((prop(gId, "origin") - zero) % (4 * Q) + 4 * Q) % (4 * Q),
                    (int64_t)(2 * Q),
-                   "the group's origin sits 2Q past the epoch (Q18 anchoring)");
+                   "the group's origin sits 2Q past the zero (Q18 anchoring)");
 
       // The GROUP's song: verse 2Q | chorus 2Q (CUED) = 4Q, measured
       // from the group's origin.
@@ -1905,7 +1905,7 @@ class SequencerTests : public juce::UnitTest {
                        ->size(),
                    2, "the group carries the song");
 
-      // Island phase [2Q + Q/4, 2Q + 3Q/4): the EPOCH frame's chorus,
+      // Island phase [2Q + Q/4, 2Q + 3Q/4): the ISLAND frame's chorus,
       // the GROUP frame's verse (phase − 2Q). An arm in the group is
       // Mode 1 — no auto-target.
       for (int i = 0; i < 4000; ++i) {
@@ -1926,7 +1926,7 @@ class SequencerTests : public juce::UnitTest {
       }
       expectEquals(prop(nId, "duration"), (int64_t)0, "nothing recorded");
 
-      // Island phase [Q/4, 3Q/4): the epoch frame's verse, the group's
+      // Island phase [Q/4, 3Q/4): the island frame's verse, the group's
       // CHORUS (phase + 2Q) — the arm auto-targets the cued step.
       for (int i = 0; i < 4000; ++i) {
         const int64_t ph = phase4(Q);

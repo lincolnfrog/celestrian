@@ -6,6 +6,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { deriveViewModel } from '../js/view_model.js';
 
 test.describe('Bounce (Q19)', () => {
 
@@ -30,10 +31,14 @@ test.describe('Bounce (Q19)', () => {
         await page.click('#project-menu-btn');
         const item = page.locator('#project-menu .pm-item:has-text("Bounce song…")');
         await expect(item).toBeEnabled();
+        // The song bounces from the frame zero the view has seated
+        // (docs/frame.md), so the file starts where the picture starts.
+        const st = await page.evaluate(() => window.__celestrianTest.callNative('getGraphState'));
+        const start = deriveViewModel(st).frameZero;
         await item.click();
         await expect.poll(() => page.evaluate(
             () => window.__celestrianTest.getLastBounce())).toEqual({
-                uuid: 'mock-root', path: '<dialog>' });
+                uuid: 'mock-root', path: '<dialog>', start });
         await expect(page.locator('#log-line')).toHaveText('Bounced');
     });
 });

@@ -77,15 +77,17 @@ test('seek: the phase jumps, every origin rides the delta, the render is invaria
     await call(page, 'setLoopPoints', c2, Q, 3 * Q);
     const before = await listenAtTop(page);
     const st0 = await state(page);
-    const ok = await call(page, 'seekTransport', 5 * Q);
-    expect(ok).toBe(true);
+    // The engine takes a phase ADVANCE (docs/frame.md): to 5Q from here.
+    const ok = await call(page, 'seekTransport', 5 * Q - st0.masterPos);
+    expect(ok).toBeTruthy();
+    expect(ok.advance).toBe(5 * Q - st0.masterPos);
     const st1 = await state(page);
     expect(Math.round(st1.masterPos / Q)).toBe(5);
     const delta = findNode(st1, c1).origin - findNode(st0, c1).origin;
     for (const id of [c2, c3]) {
         expect(findNode(st1, id).origin - findNode(st0, id).origin).toBe(delta);
     }
-    expect(st1.islandEpoch - st0.islandEpoch).toBe(delta);
+    expect(st1.islandZero - st0.islandZero).toBe(delta);
     await verifyHeard(page);
     const after = await listenAtTop(page);
     expectSameSound(before, after, { label: 'seek' });
@@ -113,13 +115,13 @@ test('save / load round trip after a chain of edits: same facts, same sound, sam
         const a = findNode(st0, id), b = findNode(st1, id);
         expect(b, `${id} survives the round trip`).toBeTruthy();
         expect(b.duration).toBe(a.duration);
-        expect(b.origin - st1.islandEpoch).toBe(a.origin - st0.islandEpoch);
+        expect(b.origin - st1.islandZero).toBe(a.origin - st0.islandZero);
         expect([b.loopStart, b.loopEnd, b.windowActive]).toEqual([a.loopStart, a.loopEnd, a.windowActive]);
         expect(b.segments || null).toEqual(a.segments || null);
     }
     const gb = findNode(st1, g);
     expect(gb.anchored).toBe(true);
-    expect(gb.origin - st1.islandEpoch).toBe(findNode(st0, g).origin - st0.islandEpoch);
+    expect(gb.origin - st1.islandZero).toBe(findNode(st0, g).origin - st0.islandZero);
     await verifyHeard(page);
     const after = await listenAtTop(page);
     expectSameSound(before, after, { label: 'save/load' });

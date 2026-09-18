@@ -47,7 +47,7 @@ while pending start.
 | Operation | Params | Notes |
 |-----------|--------|-------|
 | `togglePlayback` | none | Pure backend state |
-| `seekTransport` | posSamples | Ruler scrub (2026-08-27): epoch re-base in the published-masterPos domain; refused mid-take; not undoable |
+| `seekTransport` | deltaSamples, atClock? | Ruler scrub (2026-08-27; frame.md 2026-09-17): a phase ADVANCE the view computes against the frame zero it seated, corrected by the engine for the clock since `atClock`; refused mid-take; not undoable |
 | `startRecordingInNode` | uuid | Pure audio action |
 | `stopRecordingInNode` | uuid | Pure audio action |
 | `getGraphState` | none | Backend → Frontend data |

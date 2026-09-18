@@ -92,18 +92,18 @@ class ScenarioTests : public juce::UnitTest {
   /** The facts a scenario's end state consists of — for equality across
    * undo/redo and save/load. */
   struct Facts {
-    int64_t q = 0, epoch = 0, cycle = 0;
-    std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t>> clips;  // dur, origin-epoch, ls, le
+    int64_t q = 0, zero = 0, cycle = 0;
+    std::vector<std::tuple<int64_t, int64_t, int64_t, int64_t>> clips;  // dur, origin-zero, ls, le
   };
   Facts facts(Island& is) {
     Facts f;
     f.q = is.Q();
-    f.epoch = is.epoch();
+    f.zero = is.zero();
     f.cycle = is.cycle();
     juce::StringArray ids;
     is.clipIds(ids);
     for (const auto& id : ids)
-      f.clips.push_back({is.dur(id), is.origin(id) - f.epoch,
+      f.clips.push_back({is.dur(id), is.origin(id) - f.zero,
                          is.iprop(id, "loopStart"), is.iprop(id, "loopEnd")});
     return f;
   }
@@ -141,7 +141,7 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c1 = is.record(Q);
       expectEquals(is.Q(), Q, "Q := the first take's length");
       expectEquals(is.dur(c1), Q, "1Q committed");
-      expectEquals(is.origin(c1), is.epoch(), "the first take's origin IS the epoch");
+      expectEquals(is.origin(c1), is.zero(), "the first take's origin IS the zero");
       expectEquals(is.cycle(), Q, "cycle = 1Q");
       // THE HARNESS LAW: content[k] == rampAt(captured + k), and a lone
       // loop renders content[(t − origin) mod D] at unity.
@@ -152,7 +152,7 @@ class ScenarioTests : public juce::UnitTest {
       // pads forward to the boundary after the stop.
       is.drive(Q / 3);
       const juce::String c2 = is.record(3 * Q);
-      expectEquals(posmod(is.origin(c2) - is.epoch(), Q), (int64_t)0,
+      expectEquals(posmod(is.origin(c2) - is.zero(), Q), (int64_t)0,
                    "origin on the Q grid");
       expectEquals(is.dur(c2), 3 * Q, "3Q committed (padded to the boundary)");
       expectEquals(is.cycle(), 3 * Q, "cycle = lcm(1Q, 3Q) = 3Q");
@@ -167,17 +167,17 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c1 = is.record(Q);
       const juce::String c2 = is.record(4 * Q);
       expectEquals(is.cycle(), 4 * Q, "cycle 4Q");
-      const int64_t epoch0 = is.epoch();
+      const int64_t zero0 = is.zero();
       is.driveToPhase(2 * Q);
       const juce::String c3 = is.record(8 * Q);
-      const int64_t rel = is.origin(c3) - epoch0;
+      const int64_t rel = is.origin(c3) - zero0;
       expectEquals(posmod(rel, 4 * Q), 2 * Q, "armed at heard phase 2Q");
       expectEquals(is.cycle(), 8 * Q, "cycle grows to 8Q");
       // NO COMMIT MOVES THE ISLAND ZERO (docs/frame.md): it is the
       // first take's origin. Where the take sits on screen — 2Q into
       // the cycle it started in — is the view's seating, not a fact
       // stored here.
-      expectEquals(is.epoch(), epoch0, "the zero stays at the first take");
+      expectEquals(is.zero(), zero0, "the zero stays at the first take");
       expectOutput(is, 8 * Q, is.sumOfLoops({c1, c2, c3}),
                    "every clip aligns by its own origin");
       // c3 presents content[0] exactly at its origin (mod 8Q): the
@@ -185,7 +185,7 @@ class ScenarioTests : public juce::UnitTest {
       const int64_t o3 = is.origin(c3);
       expectEquals(heard::nodeInner(*is.nodePtr(c3), o3 + 16 * Q, is.engine.rootScope()),
                    (int64_t)0, "content[0] at t ≡ origin (mod 8Q)");
-      expectEquals(heard::nodeInner(*is.nodePtr(c3), is.epoch() + 8 * Q, is.engine.rootScope()),
+      expectEquals(heard::nodeInner(*is.nodePtr(c3), is.zero() + 8 * Q, is.engine.rootScope()),
                    posmod(8 * Q - rel, 8 * Q),
                    "at the island zero c3 sounds the content its arm offset implies");
     }
@@ -243,18 +243,18 @@ class ScenarioTests : public juce::UnitTest {
 
     // ------------------------------------------------------------------
     beginTest("S5: the pickup (E-A) — a click just before the cycle top "
-              "lands ON the top; a simple extension re-bases the epoch to it");
+              "lands ON the top; a simple extension re-bases the zero to it");
     {
       Island is;
       const juce::String c1 = is.record(Q);
       const juce::String c2 = is.record(4 * Q);
-      const int64_t epoch0 = is.epoch();
+      const int64_t zero0 = is.zero();
       is.driveToPhase(0);  // within a block of the next 4Q top
       const juce::String c3 = is.record(8 * Q);
-      const int64_t rel = is.origin(c3) - epoch0;
+      const int64_t rel = is.origin(c3) - zero0;
       expectEquals(posmod(rel, 4 * Q), (int64_t)0, "landed on the top");
       expect(rel >= 4 * Q, "the NEXT top, not a past one");
-      expectEquals(is.epoch(), epoch0,
+      expectEquals(is.zero(), zero0,
                    "a simple extension moves no island fact (docs/frame.md)");
       expectOutput(is, 8 * Q, is.sumOfLoops({c1, c2, c3}), "aligned");
     }
@@ -269,7 +269,7 @@ class ScenarioTests : public juce::UnitTest {
       is.driveToPhase(3 * Q);
       const juce::String c3 = is.record(Q);
       const int64_t o3 = is.origin(c3);
-      expectEquals(posmod(o3 - is.epoch(), 4 * Q), 3 * Q, "at 3Q");
+      expectEquals(posmod(o3 - is.zero(), 4 * Q), 3 * Q, "at 3Q");
       is.engine.setPeriodSource(c3, PeriodSource::CONTEXT_CYCLE);
       expectEquals(is.cycle(), 4 * Q, "a one-shot is excluded from the fold");
       expectOutput(is, 8 * Q, [&](int64_t t) {
@@ -344,7 +344,7 @@ class ScenarioTests : public juce::UnitTest {
       is.window(c1, Q, 2 * Q);  // the definer's trim
       expectEquals(is.Q(), Q, "Q := the window length");
       expectEquals(is.iprop(c1, "loopStart"), Q, "window kept on the clip");
-      expectEquals(is.epoch(), is.origin(c1) + Q, "epoch := origin' + start");
+      expectEquals(is.zero(), is.origin(c1) + Q, "zero := origin' + start");
       expectEquals(is.dur(c1), 4 * Q, "the take is still 4Q of content");
       // Phase preservation: the window plays its material at its
       // performed moment, i.e. content[1Q + ((t − origin) mod 1Q)].
@@ -385,7 +385,7 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(is.origin(g), is.origin(mics[0]), "anchored at the take");
       is.window(g, Q, 2 * Q);
       expectEquals(is.Q(), Q, "the stack window re-defines Q");
-      expectEquals(is.epoch(), is.origin(g) + Q, "epoch := origin' + start");
+      expectEquals(is.zero(), is.origin(g) + Q, "zero := origin' + start");
       for (const auto& m : mics) {
         expectEquals(is.dur(m), 4 * Q, "members whole");
         expect(!is.bprop(m, "windowActive"), "no member window");
@@ -423,7 +423,7 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(is.Q(), Q, "Q survives its creator");
       expectEquals(is.cycle(), 4 * Q, "cycle 4Q");
       const juce::String c3 = is.record(3 * Q);
-      expectEquals(posmod(is.origin(c3) - is.epoch(), Q), (int64_t)0, "still the 1Q grid");
+      expectEquals(posmod(is.origin(c3) - is.zero(), Q), (int64_t)0, "still the 1Q grid");
       expectEquals(is.cycle(), 12 * Q, "12Q");
       expectOutput(is, 12 * Q, is.sumOfLoops({c2, c3}), "two loops");
       is.engine.deleteNode(c2);
@@ -443,14 +443,14 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c2 = is.record(4 * Q);
       is.driveToPhase(2 * Q);
       const juce::String c3 = is.record(8 * Q);
-      const int64_t e0 = is.epoch();
+      const int64_t e0 = is.zero();
       const int64_t r1 = is.origin(c1) - e0, r3 = is.origin(c3) - e0;
-      expect(is.engine.seekTransport((double)(5 * Q)), "seek to 5Q");
+      expect(is.seekToPhase(5 * Q), "seek to 5Q");
       expectEquals(is.masterPos(), 5 * Q, "published phase = 5Q");
-      const int64_t delta = is.epoch() - e0;
-      expect(delta != 0, "the epoch moved");
-      expectEquals(is.origin(c1) - is.epoch(), r1, "c1 keeps its frame place");
-      expectEquals(is.origin(c3) - is.epoch(), r3, "c3 keeps its frame place");
+      const int64_t delta = is.zero() - e0;
+      expect(delta != 0, "the zero moved");
+      expectEquals(is.origin(c1) - is.zero(), r1, "c1 keeps its frame place");
+      expectEquals(is.origin(c3) - is.zero(), r3, "c3 keeps its frame place");
       expectOutput(is, 8 * Q, is.sumOfLoops({c1, c2, c3}),
                    "every clip still reads by its (moved) origin");
       is.engine.undo();  // the c3 take
@@ -496,7 +496,7 @@ class ScenarioTests : public juce::UnitTest {
       b.captured = a.captured;  // the same content
       const Facts fb = facts(b);
       expect(same(fa, fb), "facts identical after load");
-      expectEquals(fb.epoch, fa.epoch, "the epoch persists");
+      expectEquals(fb.zero, fa.zero, "the zero persists");
       if (!b.engine.isPlaying()) b.engine.togglePlayback();
       expectOutput(b, 6 * Q, s3Expected(b, s), "the loaded island renders the same",
                    /*skip=*/BLOCK);
@@ -573,7 +573,7 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String root = is.rootId();
       is.engine.setSequence(root, seqPayload({{4 * Q}, {4 * Q}}, {{c2, {true, false}}}));
       expectEquals(is.cycle(), 8 * Q, "steps concatenate: the song is the cycle");
-      const int64_t O = is.epoch();  // the root song is anchored at the epoch (S30)
+      const int64_t O = is.zero();  // the root song is anchored at the zero (S30)
       const int64_t fade = (int64_t)(44100.0 * 0.010);
       // Away from the gate ramps (10 ms each side of a seam):
       {
@@ -605,7 +605,7 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String root = is.rootId();
       is.engine.setSequence(root, seqPayload({{4 * Q}, {4 * Q, true}}));
       expectEquals(is.cycle(), 8 * Q, "8Q song");
-      const int64_t O = is.epoch();  // the root song is anchored at the epoch (S30)
+      const int64_t O = is.zero();  // the root song is anchored at the zero (S30)
       const int64_t fade = (int64_t)(44100.0 * 0.010);
       is.refresh();
       std::vector<std::pair<int64_t, float>> out;
@@ -695,7 +695,7 @@ class ScenarioTests : public juce::UnitTest {
 
     // ------------------------------------------------------------------
     beginTest("S23: bounce == the live render — one island cycle of S3 from "
-              "the epoch, sample for sample");
+              "the zero, sample for sample");
     {
       Island is;
       const S3State s = buildS3(is);
@@ -716,8 +716,8 @@ class ScenarioTests : public juce::UnitTest {
         const auto fn = s3Expected(is, s);
         int bad = 0;
         for (int i = 0; i < n; ++i)
-          if (std::abs(fn(is.epoch() + i) - b.getSample(0, i)) > 2.0e-7f) ++bad;
-        expectEquals(bad, 0, "the bounce is the live equation from the epoch");
+          if (std::abs(fn(is.zero() + i) - b.getSample(0, i)) > 2.0e-7f) ++bad;
+        expectEquals(bad, 0, "the bounce is the live equation from the zero");
       }
     }
 
@@ -748,7 +748,7 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String kit = is.recordGroup(2, 2 * Q);
       const juce::StringArray mics = is.childIds(kit);
       const int64_t og = is.origin(kit);
-      expectEquals(posmod(og - is.epoch(), 4 * Q), 2 * Q, "the kit sits at 2Q");
+      expectEquals(posmod(og - is.zero(), 4 * Q), 2 * Q, "the kit sits at 2Q");
       expectEquals(is.cycle(), 4 * Q, "2Q divides 4Q");
       is.engine.setPeriodSource(kit, PeriodSource::CONTEXT_CYCLE);
       expectEquals(is.cycle(), 4 * Q, "a one-shot group is excluded from the fold");
@@ -919,13 +919,13 @@ class ScenarioTests : public juce::UnitTest {
     // sounded the full band over the guitar-only section, and a take
     // recorded under a window "restarted into the middle"). These pin
     // the invariant the report is about — THE GRID YOU SEE IS THE GRID
-    // YOU HEAR — in the frame the display draws: the island epoch.
+    // YOU HEAR — in the frame the display draws: the island zero.
     // ==================================================================
 
     // ------------------------------------------------------------------
     beginTest("S30 (field repro): the ROOT song's step grid is anchored at "
-              "the island EPOCH — the ruler zero the grid is drawn on — even "
-              "after a growth re-base moved the epoch off the first take");
+              "the island ZERO — the ruler zero the grid is drawn on — even "
+              "after a growth re-base moved the zero off the first take");
     {
       Island is;
       const juce::String c1 = is.record(Q);
@@ -935,9 +935,9 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c3 = is.record(8 * Q);  // 4Q → 8Q: the zero stays
       expectEquals(is.cycle(), 8 * Q, "8Q");
       const juce::String root = is.rootId();
-      const int64_t E = is.epoch();
+      const int64_t E = is.zero();
       // NO CONTENT ANCHORS THE ROOT: without a song its inner timeline
-      // is the island timeline, whose zero is the epoch — the first
+      // is the island timeline, whose zero is the zero — the first
       // take's origin, which no commit moves (docs/frame.md).
       expect(!is.nodePtr(root)->isAnchored(), "no song: the root is unanchored");
       expectEquals(posmod(E - is.origin(c1), 8 * Q), (int64_t)0,
@@ -950,7 +950,7 @@ class ScenarioTests : public juce::UnitTest {
       is.drive(16 * Q, &out);
       int bad = 0;
       for (const auto& [t, v] : out) {
-        const int64_t srel = posmod(t - E, 8 * Q);  // the grid's frame: the epoch
+        const int64_t srel = posmod(t - E, 8 * Q);  // the grid's frame: the zero
         const int64_t dseam =
             std::min(posmod(srel, 4 * Q), 4 * Q - posmod(srel, 4 * Q));
         if (dseam <= fade) continue;
@@ -959,7 +959,7 @@ class ScenarioTests : public juce::UnitTest {
                            is.loopVal(c3, t);
         if (std::abs(want - v) > 2.0e-7f) ++bad;
       }
-      expectEquals(bad, 0, "c1 is silent in step 2 of the grid you SEE (epoch frame)");
+      expectEquals(bad, 0, "c1 is silent in step 2 of the grid you SEE (island frame)");
       // THE ROOT'S ANCHOR RIDES ITS SONG (docs/frame.md §4): authoring
       // the song anchored the root — at the island zero, the default
       // when no seated zero is passed.
@@ -979,7 +979,7 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c2 = is.record(4 * Q);
       is.drive(4 * Q);
       const juce::String root = is.rootId();
-      const int64_t E = is.epoch();
+      const int64_t E = is.zero();
       expectEquals(is.cycle(), 4 * Q, "4Q");
       expect(!is.nodePtr(root)->isAnchored(), "no song: the root is unanchored");
       // The view had seated the frame's zero a whole cycle-so-far past
@@ -993,7 +993,7 @@ class ScenarioTests : public juce::UnitTest {
       expect(is.nodePtr(root)->isAnchored(), "the song anchors the root");
       expectEquals(is.nodePtr(root)->origin_samples.load(), Z,
                    "at the seated zero, on the Q grid");
-      expectEquals(is.epoch(), E, "the island zero itself never moves");
+      expectEquals(is.zero(), E, "the island zero itself never moves");
       expectEquals(is.cycle(), 4 * Q, "the song is the cycle");
       // WHAT SOUNDS: the song folds from Z — c2 is silent in step 2,
       // which is [Z + 2Q, Z + 4Q) mod 4Q, NOT [E + 2Q, E + 4Q).
@@ -1021,10 +1021,10 @@ class ScenarioTests : public juce::UnitTest {
                    "masterPos is measured from the root's frame top");
       // A SEEK moves every origin with the zero — the root's included —
       // and lands the requested phase against the root's frame top.
-      expect(is.engine.seekTransport(0.0), "seek to phase 0");
+      expect(is.seekToPhase(0), "seek to phase 0");
       expectEquals(is.masterPos(), (int64_t)0, "phase 0 after the seek");
       const int64_t Z2 = is.nodePtr(root)->origin_samples.load();
-      expectEquals(Z2 - is.epoch(), Z - E, "the root's placement survives the seek");
+      expectEquals(Z2 - is.zero(), Z - E, "the root's placement survives the seek");
       check(Z2, "the song still folds from the root's origin after the seek");
       // UNDO of the authoring un-anchors (the rider restores the exact
       // stored state, never a re-derivation); REDO re-anchors.
@@ -1044,7 +1044,7 @@ class ScenarioTests : public juce::UnitTest {
         const juce::var st = other.getGraphState();
         expect((bool)st.getProperty("anchored", false), "anchored after load");
         expectEquals((int64_t)(double)st.getProperty("origin", 0.0) -
-                         (int64_t)(double)st.getProperty("islandEpoch", 0.0),
+                         (int64_t)(double)st.getProperty("islandZero", 0.0),
                      Z - E, "the root's placement survives the round trip");
         dir.deleteRecursively();
       }
@@ -1085,7 +1085,7 @@ class ScenarioTests : public juce::UnitTest {
       const juce::String c3 = is.record(4 * Q, g);  // anchors g at phase 2Q
       expect(is.bprop(g, "anchored"), "the group is anchored");
       const int64_t Og = is.origin(g);
-      const int64_t E = is.epoch();
+      const int64_t E = is.zero();
       expectEquals(posmod(Og - E, 4 * Q), 2 * Q, "the group's origin sits at 2Q");
       is.engine.setSequence(g, seqPayload({{4 * Q}, {4 * Q}}, {{c3, {true, false}}}));
       expectEquals(is.cycle(), 8 * Q, "the group's song is 8Q; island lcm(1,4,8) = 8Q");
@@ -1093,7 +1093,7 @@ class ScenarioTests : public juce::UnitTest {
       is.refresh();
       std::vector<std::pair<int64_t, float>> out;
       is.drive(16 * Q, &out);
-      int bad_epoch = 0, bad_origin = 0;
+      int bad_zero = 0, bad_origin = 0;
       for (const auto& [t, v] : out) {
         auto check = [&](int64_t anchor, int& bad) {
           const int64_t srel = posmod(t - anchor, 8 * Q);
@@ -1105,17 +1105,17 @@ class ScenarioTests : public juce::UnitTest {
                              (on ? is.loopVal(c3, t) : 0.0f);
           if (std::abs(want - v) > 2.0e-7f) ++bad;
         };
-        check(E, bad_epoch);
+        check(E, bad_zero);
         check(Og, bad_origin);
       }
       // RULED 2026-09-09: a group's song folds from the group's origin
       // (the frame its window brackets and take tile already draw
       // from); the display carries the phase (view_model attachSeqDims
       // `phaseQ`, pinned by ui/js/tests/sequence.test.mjs and the
-      // display-contract capture). The epoch-anchored reading is the
+      // display-contract capture). The zero-anchored reading is the
       // one the lanes USED to draw — it must not be what sounds.
       expectEquals(bad_origin, 0, "c3 is silent in step 2 from the group's origin");
-      expect(bad_epoch > 0, "...which is NOT the epoch frame here (2Q apart)");
+      expect(bad_zero > 0, "...which is NOT the island frame here (2Q apart)");
     }
 
     // ------------------------------------------------------------------
@@ -1130,7 +1130,7 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(is.cycle(), 2 * Q, "heard cycle 2Q");
       // Arm so the target lands at INTRINSIC phase 3Q (the heard cursor
       // cannot tell 1Q from 3Q; the fold would pick 1Q).
-      const int64_t e = is.epoch();
+      const int64_t e = is.zero();
       for (int i = 0; i < 100000; ++i) {
         const int64_t p = posmod(is.clock - e, 4 * Q);
         const int64_t to = posmod(3 * Q - p, 4 * Q);
@@ -1215,7 +1215,7 @@ class ScenarioTests : public juce::UnitTest {
 
     // ------------------------------------------------------------------
     beginTest("S34: editing one lane's map while playing never moves the "
-              "OTHER lanes' phase (owner ruling 2026-09-10) — the epoch "
+              "OTHER lanes' phase (owner ruling 2026-09-10) — the zero "
               "follows by whole cycles of everyone else, the edited tile "
               "takes the residual; clearing a window re-bases nothing");
     {
@@ -1228,13 +1228,13 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(is.cycle(), 4 * Q, "4Q");
       // Before any edit: the plain island.
       expectOutput(is, 4 * Q, is.sumOfLoops({c1, a, b}), "the plain island before edits");
-      const int64_t pa = posmod(is.origin(a) - is.epoch(), 4 * Q);
+      const int64_t pa = posmod(is.origin(a) - is.zero(), 4 * Q);
       auto invariant = [&](const char* after) {
-        expectEquals(posmod(is.origin(a) - is.epoch(), 4 * Q), pa,
+        expectEquals(posmod(is.origin(a) - is.zero(), 4 * Q), pa,
                      juce::String("A keeps its phase after ") + after);
-        expectEquals(posmod(is.origin(c1) - is.epoch(), Q), (int64_t)0,
+        expectEquals(posmod(is.origin(c1) - is.zero(), Q), (int64_t)0,
                      juce::String("c1 keeps its phase after ") + after);
-        expectEquals(posmod(is.epoch(), Q), posmod(is.origin(c1), Q),
+        expectEquals(posmod(is.zero(), Q), posmod(is.origin(c1), Q),
                      juce::String("the Q grid is untouched after ") + after);
       };
       // B's law under whatever map it has: the stored origin + its map.
@@ -1362,12 +1362,12 @@ class ScenarioTests : public juce::UnitTest {
       // two runs misaligned by whatever the block overshot).
       auto toTop = [](Island& i) {
         const int64_t Ci = i.cycle();
-        i.drive(posmod(-(i.clock - i.epoch()), Ci));
+        i.drive(posmod(-(i.clock - i.zero()), Ci));
       };
       toTop(is);
       std::vector<std::pair<int64_t, float>> before, after;
       is.drive(C, &before);
-      expect(is.engine.seekTransport((double)(5 * Q % C)), "seek accepted");
+      expect(is.seekToPhase(5 * Q % C), "seek accepted");
       toTop(is);
       is.drive(C, &after);
       int bad = 0;
@@ -1412,7 +1412,7 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(b.cycle(), a.cycle(), "cycle");
       for (const auto& id : {c1, c2, c3, ga, c5}) {
         expectEquals(b.dur(id), a.dur(id), "duration " + id);
-        expectEquals(b.origin(id) - b.epoch(), a.origin(id) - a.epoch(), "frame place " + id);
+        expectEquals(b.origin(id) - b.zero(), a.origin(id) - a.zero(), "frame place " + id);
         expectEquals(b.iprop(id, "loopStart"), a.iprop(id, "loopStart"), "loopStart " + id);
         expectEquals(b.iprop(id, "loopEnd"), a.iprop(id, "loopEnd"), "loopEnd " + id);
         expectEquals(b.sprop(id, "periodSource"), a.sprop(id, "periodSource"), "periodSource " + id);
@@ -1432,7 +1432,7 @@ class ScenarioTests : public juce::UnitTest {
       };
       expectEquals(segsOf(b, c2), segsOf(a, c2), "the cut bands persist");
       expect(b.bprop(g, "anchored"), "the group is anchored after load");
-      expectEquals(b.origin(g) - b.epoch(), a.origin(g) - a.epoch(), "the group's frame place");
+      expectEquals(b.origin(g) - b.zero(), a.origin(g) - a.zero(), "the group's frame place");
       expectEquals(b.iprop(g, "loopStart"), Q, "the group's window persists");
       expect(b.state().getProperty("sequence", juce::var()).isObject(), "the root song persists");
       if (!b.engine.isPlaying()) b.engine.togglePlayback();
@@ -1440,7 +1440,7 @@ class ScenarioTests : public juce::UnitTest {
       // for sample.
       auto toTop = [](Island& i) {
         const int64_t Ci = i.cycle();
-        i.drive(posmod(-(i.clock - i.epoch()), Ci));
+        i.drive(posmod(-(i.clock - i.zero()), Ci));
       };
       std::vector<std::pair<int64_t, float>> ra, rb;
       toTop(a);
@@ -1469,7 +1469,7 @@ class ScenarioTests : public juce::UnitTest {
         expectEquals(is.origin(mic), is.origin(mics[0]), "one origin for the performance");
         expectEquals(is.dur(mic), 4 * Q, "4Q each");
       }
-      expectEquals(posmod(is.origin(kit) - is.epoch(), 4 * Q), 2 * Q, "the kit sits at 2Q");
+      expectEquals(posmod(is.origin(kit) - is.zero(), 4 * Q), 2 * Q, "the kit sits at 2Q");
       is.window(kit, Q, 3 * Q);
       expectEquals(is.cycle(), 4 * Q, "lcm(1Q, 4Q, 2Q)");
       auto law = [&](const juce::StringArray& live) {
@@ -1482,12 +1482,12 @@ class ScenarioTests : public juce::UnitTest {
         };
       };
       expectOutput(is, 8 * Q, law(mics), "every mic reads the group's mapped clock");
-      const int64_t kitRel = is.origin(kit) - is.epoch();
+      const int64_t kitRel = is.origin(kit) - is.zero();
       is.engine.deleteNode(mics[1]);
       juce::StringArray two;
       two.add(mics[0]);
       two.add(mics[2]);
-      expectEquals(is.origin(kit) - is.epoch(), kitRel, "the kit stays anchored where it was");
+      expectEquals(is.origin(kit) - is.zero(), kitRel, "the kit stays anchored where it was");
       expectOutput(is, 8 * Q, law(two), "the remaining mics keep their phase");
       is.engine.undo();
       expectOutput(is, 8 * Q, law(mics), "the mic returns in phase");

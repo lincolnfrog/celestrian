@@ -1,7 +1,7 @@
 /**
  * Composite waveform for folded stacks (composite_waveform.js): the
  * group lane's drawn peaks must be the SUM of what its children
- * audibly do — origin offsets are epoch-relative (one-frame rule),
+ * audibly do — origin offsets are zero-relative (one-frame rule),
  * looping clips tile the WHOLE cycle including before their offset
  * (FIELD 2026-07-16d: forward-only tiling left a blank head), and an
  * ACTIVE window contributes only its segment. buildCacheKey pins the
@@ -58,24 +58,24 @@ test('buildCacheKey', async (t) => {
         assert.equal(buildCacheKey(stack1, 400), buildCacheKey(stack2, 400));
     });
 
-    await t.test('epoch and extent are in the key (they place the tiles)', () => {
+    await t.test('zero and extent are in the key (they place the tiles)', () => {
         const stack = { nodes: [{ id: 'c', type: 'clip', duration: Q, origin: 3 * Q }] };
-        assert.notEqual(buildCacheKey(stack, 400, { epochSamples: 0 }),
-                        buildCacheKey(stack, 400, { epochSamples: Q }));
+        assert.notEqual(buildCacheKey(stack, 400, { frameZero: 0 }),
+                        buildCacheKey(stack, 400, { frameZero: Q }));
         assert.notEqual(buildCacheKey(stack, 400, { stackDuration: 4 * Q }),
                         buildCacheKey(stack, 400, { stackDuration: 8 * Q }));
     });
 
     await t.test('RAW mode: only material identity is in the key', () => {
         // The definer trim view draws the whole take from 0: a re-trim
-        // moves the window, the origin/epoch frame and Q on every
+        // moves the window, the origin/island frame and Q on every
         // release — none of it may regenerate the picture underneath.
         const a = { loopStart: 0, loopEnd: Q, nodes: [{ id: 'c', type: 'clip', duration: 4 * Q,
             origin: 0, loopStart: 0, loopEnd: 2 * Q, windowActive: true }] };
         const b = { loopStart: Q, loopEnd: 3 * Q, nodes: [{ id: 'c', type: 'clip', duration: 4 * Q,
             origin: 5 * Q, loopStart: Q, loopEnd: 3 * Q, windowActive: false }] };
-        assert.equal(buildCacheKey(a, 400, { raw: true, stackDuration: 4 * Q, epochSamples: 0 }),
-                     buildCacheKey(b, 400, { raw: true, stackDuration: 4 * Q, epochSamples: 7 * Q }));
+        assert.equal(buildCacheKey(a, 400, { raw: true, stackDuration: 4 * Q, frameZero: 0 }),
+                     buildCacheKey(b, 400, { raw: true, stackDuration: 4 * Q, frameZero: 7 * Q }));
         // …but a different take is a different picture.
         const c = { nodes: [{ id: 'c', type: 'clip', duration: 5 * Q }] };
         assert.notEqual(buildCacheKey(a, 400, { raw: true }), buildCacheKey(c, 400, { raw: true }));
@@ -189,7 +189,7 @@ test('generateCompositeWaveform', async (t) => {
         const livePeaks = new Map([['c', [1, 1, 0, 0]]]);
         const result = generateCompositeWaveform({
             stack, stackDuration: 4 * Q, effectiveQ: Q,
-            canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 0
+            canvasWidth: 100, livePeaks, cache: new Map(), frameZero: 0
         });
         const n = result.length;
         assert.equal(result[Math.floor(n / 8)], 0, '[0,1Q) is the silent half');
@@ -198,8 +198,8 @@ test('generateCompositeWaveform', async (t) => {
         assert.ok(result[Math.floor(7 * n / 8)] > 0, '[3,4Q) loud again');
     });
 
-    await t.test('origin offsets are epoch-relative (one-frame rule)', () => {
-        // Same loud/silent clip as above, but the island epoch IS its
+    await t.test('origin offsets are zero-relative (one-frame rule)', () => {
+        // Same loud/silent clip as above, but the island zero IS its
         // origin: rel = 0, so the loud half sits at the frame TOP.
         const stack = makeStack([
             { id: 'c', type: 'clip', duration: 2 * Q, origin: 2 * Q }
@@ -207,7 +207,7 @@ test('generateCompositeWaveform', async (t) => {
         const livePeaks = new Map([['c', [1, 1, 0, 0]]]);
         const result = generateCompositeWaveform({
             stack, stackDuration: 4 * Q, effectiveQ: Q,
-            canvasWidth: 100, livePeaks, cache: new Map(), epochSamples: 2 * Q
+            canvasWidth: 100, livePeaks, cache: new Map(), frameZero: 2 * Q
         });
         const n = result.length;
         assert.ok(result[Math.floor(n / 8)] > 0, '[0,1Q) loud (rel 0)');
@@ -227,7 +227,7 @@ test('generateCompositeWaveform', async (t) => {
         const result = generateCompositeWaveform({
             stack, stackDuration: 4 * Q, effectiveQ: Q,
             canvasWidth: 100, livePeaks, cache: new Map(),
-            epochSamples: 4 * Q  // rel = −1Q
+            frameZero: 4 * Q  // rel = −1Q
         });
         assert.ok(result.every(v => v > 0),
             'a looping clip covers the WHOLE cycle, including before its offset');
@@ -247,7 +247,7 @@ test('generateCompositeWaveform', async (t) => {
         const active = generateCompositeWaveform({
             stack: makeStack([clip]), stackDuration: 4 * Q,
             effectiveQ: Q, canvasWidth: 100, livePeaks,
-            cache: new Map(), epochSamples: 0
+            cache: new Map(), frameZero: 0
         });
         assert.ok(active.every(v => v > 0),
             'window segment (loud) tiles the whole cycle');
@@ -259,7 +259,7 @@ test('generateCompositeWaveform', async (t) => {
                 loopBypassed: true }]),
             stackDuration: 4 * Q, effectiveQ: Q, canvasWidth: 100,
             livePeaks: new Map([['c2', [0, 0, 1, 1]]]),
-            cache: new Map(), epochSamples: 0
+            cache: new Map(), frameZero: 0
         });
         const n = bypassed.length;
         assert.equal(bypassed[Math.floor(n / 8)], 0,
@@ -283,7 +283,7 @@ test('generateCompositeWaveform', async (t) => {
         const wf = generateCompositeWaveform({
             stack: makeStack([clip]), stackDuration: 4 * Q,
             effectiveQ: Q, canvasWidth: 100, livePeaks,
-            cache: new Map(), epochSamples: 0
+            cache: new Map(), frameZero: 0
         });
         // Heard period 2Q over a 4Q cycle: [0.5, 1, 0.5, 1] per Q.
         assert.ok(wf.every(v => v > 0), 'the cut (silent) Q never appears');
@@ -304,7 +304,7 @@ test('generateCompositeWaveform', async (t) => {
         const wf = generateCompositeWaveform({
             stack: makeStack([clip]), stackDuration: 3 * Q,
             effectiveQ: Q, canvasWidth: 100, livePeaks,
-            cache: new Map(), epochSamples: 0
+            cache: new Map(), frameZero: 0
         });
         // Full 3Q take at its recorded positions: the silent middle
         // third SHOWS again when the map is bypassed.
@@ -316,7 +316,7 @@ test('generateCompositeWaveform', async (t) => {
 
     await t.test('a mapped child anchors at origin and wraps before its offset', () => {
         // Same 2Q-heard map, origin 1Q: passes sit at ≡1Q (mod 2Q) in
-        // the epoch frame, and the PRE-origin head [0,1Q) must carry
+        // the island frame, and the PRE-origin head [0,1Q) must carry
         // the wrapped predecessor's tail (second segment = loud), not
         // blankness — the segment-general twin of field 2026-07-16d.
         const clip = {
@@ -329,7 +329,7 @@ test('generateCompositeWaveform', async (t) => {
         const wf = generateCompositeWaveform({
             stack: makeStack([clip]), stackDuration: 4 * Q,
             effectiveQ: Q, canvasWidth: 100, livePeaks,
-            cache: new Map(), epochSamples: 0
+            cache: new Map(), frameZero: 0
         });
         assert.equal(wf[20], 1, 'wrapped tail (segment 2) before the origin');
         assert.equal(wf[70], 0.5, 'pass starts at origin with segment 1');
@@ -410,7 +410,7 @@ test('generateCompositeWaveform', async (t) => {
         assert.equal(result1, result2, 'group window edit must not regenerate');
     });
 
-    await t.test('RAW mode: whole takes from 0, windows/epoch ignored, stable across a re-trim', () => {
+    await t.test('RAW mode: whole takes from 0, windows/zero ignored, stable across a re-trim', () => {
         // Two mics, one take: 4Q long, with a commit-time sub-window
         // [0, 2Q) on each (a survived Q can leave one) — the definer
         // trim view must still draw the WHOLE take, from 0.
@@ -421,18 +421,18 @@ test('generateCompositeWaveform', async (t) => {
         const livePeaks = new Map([['m1', peaks], ['m2', peaks]]);
         const cache = new Map();
         const args = { stack, stackDuration: 4 * Q, effectiveQ: Q, canvasWidth: 8,
-                       livePeaks, cache, epochSamples: 3 * Q, raw: true };
+                       livePeaks, cache, frameZero: 3 * Q, raw: true };
         const raw = generateCompositeWaveform(args);
         // 16 slots over 8 px; each peak covers 2 slots, in order, from 0.
         for (let i = 0; i < 8; i++) {
             assert.ok(Math.abs(raw[2 * i] - peaks[i]) < 1e-9, `slot ${2 * i} = peak ${i}`);
             assert.ok(Math.abs(raw[2 * i + 1] - peaks[i]) < 1e-9, `slot ${2 * i + 1} = peak ${i}`);
         }
-        // A re-trim moves the window, epoch and (for the heard mixdown)
+        // A re-trim moves the window, zero and (for the heard mixdown)
         // the tiling: the raw picture is the SAME array.
         stack.loopStart = Q; stack.loopEnd = 3 * Q;
         stack.nodes.forEach(c => { c.loopEnd = 3 * Q; c.origin = 11 * Q; });
-        const again = generateCompositeWaveform({ ...args, epochSamples: 5 * Q });
+        const again = generateCompositeWaveform({ ...args, frameZero: 5 * Q });
         assert.equal(again, raw, 'raw composite stable across a re-trim');
         // Whereas the heard mixdown of the same state is a different picture.
         const heard = generateCompositeWaveform({ ...args, raw: false, cache: new Map() });

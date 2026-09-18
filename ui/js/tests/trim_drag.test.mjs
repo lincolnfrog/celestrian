@@ -5,7 +5,7 @@
  * there is a weird thing in the middle that looks like a split but I
  * never split" — was the heard view of a window whose loop top rested
  * MID-PHASE: [6Q, 10Q) on a take that began at 1Q loops 4Q, and with
- * the epoch parked at the take's origin its top sat at cycle phase 2Q,
+ * the zero parked at the take's origin its top sat at cycle phase 2Q,
  * so the end grip and the start grip met mid-lane and the waveform
  * wrapped there. The owner's follow-up ("if my first track is 1Q, why
  * the mid-lane split?") is answered by the frame's SEATING (docs/frame.md):
@@ -71,7 +71,7 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     // nothing, so the shaped 4Q loop starts at the left edge — the view
     // seats it there; the island zero itself never moves. No mid-lane
     // pair, no "split". Audio untouched: origin unchanged.
-    const zero0 = (getState().islandEpoch || 0) / Q;
+    const zero0 = (getState().islandZero || 0) / Q;
     assert.equal((n.origin || 0) / Q, 1, 'origin untouched (audio)');
     let vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
@@ -96,7 +96,7 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     assert.equal(n.loopEnd / Q, 9);
 
     // A 3Q loop from the same top: cycle 3Q, the zero stays as always.
-    assert.equal((getState().islandEpoch || 0) / Q, zero0, 'the zero never moves');
+    assert.equal((getState().islandZero || 0) / Q, zero0, 'the zero never moves');
     vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
     assert.equal(vm.cycleQ, 3);
@@ -109,7 +109,7 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     // honestly shows 0.4Q into the frame, its end/start pair mid-lane
     // under the "↺ loop top" chip.
     await callNative('setSegments', c2, [Math.round(6.4 * Q), Math.round(9.4 * Q)]);
-    assert.equal((getState().islandEpoch || 0) / Q, zero0, 'off-grid top: the zero never moves');
+    assert.equal((getState().islandZero || 0) / Q, zero0, 'off-grid top: the zero never moves');
     vm = deriveViewModel(getState(), opts);
     lane = laneOf(vm, c2);
     assert.equal(vm.cycleQ, 3);
@@ -119,9 +119,9 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
     // A third take of 6Q makes the cycle 6Q (lcm 1, 3, 6); trimming
     // clip 2 to [6Q, 8Q) moves no island fact either way.
     await recordTake('', 6 * Q);
-    const epochBefore = getState().islandEpoch || 0;
+    const zeroBefore = getState().islandZero || 0;
     await callNative('setSegments', c2, [6 * Q, 8 * Q]);
-    assert.equal(getState().islandEpoch || 0, epochBefore,
+    assert.equal(getState().islandZero || 0, zeroBefore,
         'a map edit never moves the zero');
     vm = deriveViewModel(getState(), opts);
     assert.equal(vm.cycleQ, 6);

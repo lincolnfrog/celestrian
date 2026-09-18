@@ -6,9 +6,9 @@
  * Pins:
  *
  *   - the first take: ⌘Z strips the clip back to empty AND reverts the
- *     island grid (Q, epoch) it established; redo reinstalls the content
+ *     island grid (Q, zero) it established; redo reinstalls the content
  *     bit-identically with the grid;
- *   - take 2: undo restores the pre-take epoch (growth re-base undone);
+ *   - take 2: undo restores the pre-take zero (growth re-base undone);
  *   - a Q7 GROUP take is ONE undo step (one performance);
  *   - undo/redo of a take is REFUSED (entry kept) while a take is live;
  *   - the log ORDERS a take before later edits (rename after take: the
@@ -66,7 +66,7 @@ int64_t islandQ(AudioEngine& engine) {
   return (int64_t)(double)engine.getGraphState().getProperty("quantum", 0.0);
 }
 int64_t islandEp(AudioEngine& engine) {
-  return (int64_t)(double)engine.getGraphState().getProperty("islandEpoch",
+  return (int64_t)(double)engine.getGraphState().getProperty("islandZero",
                                                              0.0);
 }
 juce::String rootId(AudioEngine& engine) {
@@ -136,7 +136,7 @@ class TakeUndoTests : public juce::UnitTest {
       expect(islandQ(engine) > 0, "a fresh first take establishes Q again");
     }
 
-    beginTest("take 2: undo restores the pre-take epoch; take + rename order");
+    beginTest("take 2: undo restores the pre-take zero; take + rename order");
     {
       AudioEngine engine;
       auto process = makeProcess(engine);
@@ -157,7 +157,7 @@ class TakeUndoTests : public juce::UnitTest {
                    "first undo was the rename; take 2 stands");
       engine.undo();
       expectEquals(propOf(engine, c2, "duration"), 0.0, "take 2 stripped");
-      expectEquals(islandEp(engine), ep0, "epoch back to its pre-take value");
+      expectEquals(islandEp(engine), ep0, "zero back to its pre-take value");
       expectEquals(islandQ(engine), q, "Q untouched (take 1 still defines it)");
       engine.redo();
       expectEquals((int64_t)propOf(engine, c2, "duration"), (int64_t)(2 * q),

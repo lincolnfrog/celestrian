@@ -18,7 +18,7 @@ const hot = n => !!(n && (n.isRecording || n.isPendingStart || n.isAwaitingStop)
 function takePerCell(L, id, cells, origin) {
     const out = new Array(cells).fill(null);
     for (const f of L.frames) {
-        const rel = mod(L.epoch + f.pos - origin, cells * L.quantum);
+        const rel = mod(L.zero + f.pos - origin, cells * L.quantum);
         const cell = Math.floor(rel / L.quantum);
         const h = f.heard.find(x => x.id === id);
         if (h && out[cell] === null && rel % L.quantum > L.frame && rel % L.quantum < L.quantum - L.frame)

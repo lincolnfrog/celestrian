@@ -21,7 +21,7 @@ export const state = {
     nodes: [],
     nextId: 1,
     masterPos: 0,     // the raw monotonic clock, in samples
-    islandEpoch: 0,   // the island frame origin (P0-3 stored fact)
+    islandZero: 0,   // the island frame origin (P0-3 stored fact)
     islandQ: 0,       // the STORED island quantum (0 = unestablished)
     masterGain: 1,    // the root output stage — the master fader
     // The synthetic root's rack holder ('mock-root' is not in `nodes`):
@@ -39,7 +39,7 @@ export const state = {
  * while a song anchors it, else the island zero. The cursor fold, the
  * recording view base and a seek measure from here. */
 export function rootFrameTop() {
-    return state.rootAnchored ? (state.rootOrigin || 0) : (state.islandEpoch || 0);
+    return state.rootAnchored ? (state.rootOrigin || 0) : (state.islandZero || 0);
 }
 
 // Generate unique IDs
@@ -204,7 +204,7 @@ export function isQ13DefinerStack(node) {
  * clip children are the island's ONLY committed content and were
  * recorded as ONE take (identical origin and duration), two or more of
  * them (a single committed clip keeps the clip-definer path). Its
- * window re-establishes (Q, epoch) exactly as a sole clip's does.
+ * window re-establishes (Q, zero) exactly as a sole clip's does.
  * Walks from the root's child list; returns the stack node or null.
  */
 export function definerStackNode(nodes = state.nodes, owner = null) {
@@ -354,15 +354,15 @@ export function isAnchored(node) {
 }
 
 /** The RECEIVED cycle top of `node`'s frame (engine AudioEngine::
- * cycleTopOf): the island epoch, mapped down through every enclosing
+ * cycleTopOf): the island zero, mapped down through every enclosing
  * active map — each mapping ancestor's child frame tops at
  * O + mapOffset(0), O being its own origin once anchored, else the top
  * it received. The mock's root is synthetic (no node): its frame is
- * the epoch, through the root's step audition when one is on. */
+ * the zero, through the root's step audition when one is on. */
 export function cycleTopOf(node) {
     const parent = findParent(node.id);
     if (!parent) {
-        const top = state.islandEpoch || 0;
+        const top = state.islandZero || 0;
         const m = rootActiveMap();
         return m ? top + mapOffset(m, 0) : top;
     }
@@ -506,7 +506,7 @@ export function effectiveQuantumForState() {
  * shared form behind undo snapshots AND the in-memory saved session.
  */
 export function serializeGraph() {
-    return JSON.stringify({ nodes: state.nodes, islandEpoch: state.islandEpoch,
+    return JSON.stringify({ nodes: state.nodes, islandZero: state.islandZero,
                             islandQ: state.islandQ,
                             // The root's sequence (docs/sequencer.md) —
                             // node-level sequences ride state.nodes.
@@ -539,7 +539,7 @@ export function restoreGraph(snap) {
     });
     settle(o.nodes);
     state.nodes = o.nodes;
-    state.islandEpoch = o.islandEpoch;
+    state.islandZero = o.islandZero;
     state.islandQ = o.islandQ || 0;
     state.rootSequence = o.rootSequence || null;
     state.rootSequenceBypassed = !!o.rootSequenceBypassed;

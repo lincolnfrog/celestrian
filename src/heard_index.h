@@ -30,9 +30,9 @@ using timing::posMod;
 
 /** What a node receives besides the clock: the frame it is measured
  * from and the cycle a one-shot rests against (ProcessContext's
- * cycle_epoch / context_cycle / quantum). */
+ * frame_top / context_cycle / quantum). */
 struct Scope {
-  int64_t cycle_epoch = 0;
+  int64_t frame_top = 0;
   int64_t context_cycle = 0;
   int64_t quantum = 0;
 };
@@ -54,7 +54,7 @@ inline timing::TimeMap effectiveMap(const AudioNode& node) {
  * own origin once anchored — a clip always is — else the received
  * cycle top (an empty stack). */
 inline int64_t frameOriginOf(const AudioNode& node, const Scope& scope) {
-  return node.isAnchored() ? node.origin_samples.load() : scope.cycle_epoch;
+  return node.isAnchored() ? node.origin_samples.load() : scope.frame_top;
 }
 
 /** THE NODE EQUATION at the node's RECEIVED clock: for a clip, the
@@ -78,7 +78,7 @@ inline Scope childScopeOf(const StackNode& stack, const Scope& scope,
                           int64_t O, const timing::TimeMap& map) {
   Scope child = scope;
   if (map.active()) {
-    child.cycle_epoch = O + map.mapOffset(0);
+    child.frame_top = O + map.mapOffset(0);
     child.context_cycle = map.period();
     return child;
   }
@@ -162,7 +162,7 @@ inline Received receivedAt(const AudioNode& node, int64_t t,
       const int k = seq->visitAt(srel);
       if (seq->cueOfVisit(k)) {
         clock = O + (srel - seq->bounds[k]);
-        child.cycle_epoch = O;
+        child.frame_top = O;
       }
     }
     r.clock = clock;

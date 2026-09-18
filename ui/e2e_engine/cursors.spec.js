@@ -56,7 +56,7 @@ test('the region panel\'s amber cursor sits at the heard moment inside the kept 
         const st = await state(page);
         const s = await engine(page, 'status');
         const n = findNode(st, c2);
-        const at = innerAt(st.islandEpoch + s.islandPos, n.origin,
+        const at = innerAt(st.islandZero + s.islandPos, n.origin,
                            { segs: [[Q, 3 * Q]] }, 2 * Q);
         // The raw frame is the whole 4Q take: the cursor at the inner
         // position of the heard moment.

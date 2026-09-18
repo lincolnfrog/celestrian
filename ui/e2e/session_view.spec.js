@@ -1390,11 +1390,11 @@ test.describe('Creation menu (Q17)', () => {
         // handle to 6Q and let go, then try to drag the right handle to
         // 9Q — the right handle is gone and there is a weird thing in
         // the middle that looks like a split." The window [6, 10) on a
-        // take performed from 1Q loops 4Q; with the epoch parked at the
+        // take performed from 1Q loops 4Q; with the zero parked at the
         // take's origin its top sat at cycle phase 2Q, so the loop's end
         // and start grips MET mid-lane. CYCLE-TOP RULE (owner follow-up,
         // same day): the loop that defines the cycle puts its top at
-        // the frame top — epoch := 7Q — so the heard view shows the 4Q
+        // the frame top — zero := 7Q — so the heard view shows the 4Q
         // loop from its top with the grips at the frame edges, and the
         // right handle is exactly where a right handle should be.
         // Real mouse input throughout (hit-tested).
@@ -1442,7 +1442,7 @@ test.describe('Creation menu (Q17)', () => {
         // edit. BOTH grips exist at the frame EDGES — no mid-lane pair,
         // no loop-top chip, nothing that looks like a cut band.
         await expect.poll(async () => (await page.evaluate(async () =>
-            (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q)
+            (await window.__celestrianTest.callNative('getGraphState')).islandZero)) / Q)
             .toBe(0);
         const start = body.locator('.trim-grip.start');
         const end = body.locator('.trim-grip.end');
@@ -1460,7 +1460,7 @@ test.describe('Creation menu (Q17)', () => {
         // the raw take at the lane's own px-per-Q with the grip glued
         // to the pointer, so dragging LEFT by 1.2 frame-Q proposes the
         // raw bound 8.8Q → period 2.8Q → snaps to 3Q → bound 9Q. Same
-        // top → the epoch stays.
+        // top → the zero stays.
         await body.hover();
         const ebox = await end.boundingBox();
         const gx = ebox.x + ebox.width / 2;
@@ -1488,10 +1488,10 @@ test.describe('Creation menu (Q17)', () => {
         await expect(body.locator('.loop-top-chip')).toHaveCount(0);
         await expect(body.locator('.win-chip')).toHaveText(/3Q/);
         expect((await page.evaluate(async () =>
-            (await window.__celestrianTest.callNative('getGraphState')).islandEpoch)) / Q).toBe(0);
+            (await window.__celestrianTest.callNative('getGraphState')).islandZero)) / Q).toBe(0);
 
         // The mid-lane pair DOES exist for an off-grid loop: an ⌥-style
-        // fractional slide ([6.4Q, 9.4Q)) leaves the epoch (the grid
+        // fractional slide ([6.4Q, 9.4Q)) leaves the zero (the grid
         // never moves), so the loop shows 0.4Q in, its end/start grips
         // meet mid-lane, named by the chip and 16 px apart.
         await page.evaluate(async ({ id, Q }) => {
@@ -1509,7 +1509,8 @@ test.describe('Creation menu (Q17)', () => {
 // Ruler scrub (owner ruling 2026-08-27): the ruler is the transport's
 // seek surface — click teleports, drag scrubs, clamped into the
 // audible loop; refused while a take is live or armed. Runs through
-// the REAL mock backend (seekTransport re-bases the epoch).
+// the REAL mock backend (seekTransport advances the phase by moving the
+// island's zero and every origin, docs/frame.md).
 test.describe('Ruler scrub (seek)', () => {
 
     test.beforeEach(async ({ page }) => {
@@ -1741,7 +1742,7 @@ test.describe('Q-definer trim on a group take', () => {
     // [1Q, 1.42Q) while the end bracket sat at 1.42Q (dims and brackets
     // disagreed) — and the composite regenerated (cross-fade flicker,
     // re-shaped) on every release because its cache key carried the
-    // window and the epoch. Pins both: the dims are exactly the
+    // window and the zero. Pins both: the dims are exactly the
     // selection's complement, and the composite canvas is untouched
     // across a re-trim.
     test('dims match the brackets on a fractional frame; the composite does not redraw on a re-trim', async ({ page }) => {

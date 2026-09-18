@@ -10,7 +10,7 @@
  *  - re-anchoring a node re-anchors its SUBTREE (seek, the definer trim,
  *    lock-collapse) — no per-member origin riders;
  *  - the definer-stack trim is the sole-clip path applied to the stack:
- *    origin' = t0 − pT, epoch := origin' + start, Q := len;
+ *    origin' = t0 − pT, zero := origin' + start, Q := len;
  *  - a stack may be a ONE-SHOT (periodSource = context): it fires once
  *    per context cycle from its origin and contributes nothing to any
  *    period fold;
@@ -75,7 +75,7 @@ test('a stack is unanchored until its first take, then anchored at the take orig
     assert.equal(find(stackId).origin, takeOrigin, 'at the take origin');
     assert.equal(find(outer).anchored, true, 'and its parent');
     assert.equal(find(outer).origin, takeOrigin);
-    assert.equal(getState().islandEpoch, takeOrigin, 'first commit: epoch = origin');
+    assert.equal(getState().islandZero, takeOrigin, 'first commit: zero = origin');
 
     // UNTAKE (undo of the performance) un-anchors — the snapshot the
     // take undoes to predates the anchoring.
@@ -167,28 +167,30 @@ test('scenario fixtures anchor their stacks from content on load (session-load p
 /* Subtree re-anchoring (I11)                                          */
 /* ------------------------------------------------------------------ */
 
-test('seek shifts stack origins with the epoch (placement invariant)', async () => {
+test('seek shifts stack origins with the zero (placement invariant)', async () => {
     loadScenario('empty');
     const { stackId, ids } = await recordGroupTake(2, 2);
     advanceBy(Q / 3);
     const before = getState();
     const O = find(stackId).origin;
-    const placement = O - before.islandEpoch;
+    const placement = O - before.islandZero;
 
-    assert.equal(await callNative('seekTransport', Math.round(1.5 * Q)), true);
+    // The engine takes a phase ADVANCE (docs/frame.md): to 1.5Q from here.
+    const target = Math.round(1.5 * Q);
+    assert.ok(await callNative('seekTransport', target - before.masterPos));
     const after = getState();
-    const delta = after.islandEpoch - before.islandEpoch;
-    assert.notEqual(delta, 0, 'the seek moved the epoch');
+    const delta = after.islandZero - before.islandZero;
+    assert.notEqual(delta, 0, 'the seek moved the zero');
     assert.equal(find(stackId).origin, O + delta, 'stack origin rode the delta');
-    assert.equal(find(stackId).origin - after.islandEpoch, placement,
-        'placement (origin − epoch) invariant');
+    assert.equal(find(stackId).origin - after.islandZero, placement,
+        'placement (origin − zero) invariant');
     for (const id of ids) {
         assert.equal(find(id).origin, O + delta, 'members rode too (one shift)');
     }
-    assert.equal(after.masterPos, Math.round(1.5 * Q), 'landed at the requested phase');
+    assert.equal(after.masterPos, target, 'landed at the requested phase');
 });
 
-test('definer-stack trim: ONE shift for the subtree, epoch = origin\' + start, phase-preserving', async () => {
+test('definer-stack trim: ONE shift for the subtree, zero = origin\' + start, phase-preserving', async () => {
     loadScenario('empty');
     const { stackId, ids } = await recordGroupTake(2, 4);
     const D = getState().quantum;
@@ -211,7 +213,7 @@ test('definer-stack trim: ONE shift for the subtree, epoch = origin\' + start, p
             'members moved WITH the stack — no per-member riders');
     }
     assert.equal(getState().quantum, len, 'Q := len');
-    assert.equal(getState().islandEpoch, s.origin + start, 'epoch := origin\' + start');
+    assert.equal(getState().islandZero, s.origin + start, 'zero := origin\' + start');
     // Render check (composition.md G-1): the sample that was sounding
     // keeps sounding — inner(t0) under the new window equals pT.
     const innerNow = start + mod(t0 - s.origin - start, len);
@@ -223,11 +225,11 @@ test('definer-stack trim: ONE shift for the subtree, epoch = origin\' + start, p
     for (const id of ids) assert.equal(find(id).origin, O0);
     assert.equal(find(stackId).anchored, true);
 
-    // The multi-segment twin: epoch := origin' + mapOffset(0).
+    // The multi-segment twin: zero := origin' + mapOffset(0).
     await callNative('setSegments', stackId, [D / 8, 3 * D / 8, D / 2, 3 * D / 4]);
     const s2 = find(stackId);
     for (const id of ids) assert.equal(find(id).origin, s2.origin, 'subtree shift');
-    assert.equal(getState().islandEpoch, s2.origin + D / 8, 'epoch = origin\' + a0');
+    assert.equal(getState().islandZero, s2.origin + D / 8, 'zero = origin\' + a0');
 });
 
 test('trim view: brackets are INNER positions == buffer positions (stack origin == members\')', async () => {
@@ -254,8 +256,8 @@ test('group lock-collapse shifts the stack + members by the window start; re-ope
     const start = D / 4;
     await callNative('setLoopPoints', stackId, start, (3 * D) / 4);
     const O1 = find(stackId).origin;
-    const epoch1 = getState().islandEpoch;
-    assert.equal(epoch1, O1 + start);
+    const zero1 = getState().islandZero;
+    assert.equal(zero1, O1 + start);
 
     // Take 2 on a new top-level track: its ARM lock-collapses the group.
     const t2 = await callNative('createNode', 'clip', '');
@@ -265,8 +267,8 @@ test('group lock-collapse shifts the stack + members by the window start; re-ope
         assert.equal(find(id).origin, O1 + start, 'members shifted with it (one delta)');
         assert.equal(find(id).duration, D / 2, 'collapsed to the window');
     }
-    assert.equal(find(stackId).origin, epoch1,
-        'the collapsed take sits at the epoch — an ordinary whole-Q looper (G-1)');
+    assert.equal(find(stackId).origin, zero1,
+        'the collapsed take sits at the zero — an ordinary whole-Q looper (G-1)');
     assert.ok(!(find(stackId).loopEnd > find(stackId).loopStart), 'window consumed');
     advanceBy(D / 2);
     await callNative('stopRecordingInNode', t2);
@@ -286,14 +288,14 @@ test('group lock-collapse shifts the stack + members by the window start; re-ope
 
 test('through-map arm: heard anchor = stack origin + a0; inner origin = stack origin + mapOffset', async () => {
     loadScenario('empty');
-    await recordTake('', Q, { stopEarly: 0, settle: 0 });   // Q, epoch 0; clock at 1Q
+    await recordTake('', Q, { stopEarly: 0, settle: 0 });   // Q, zero at 0; clock at 1Q
     advanceBy(3 * Q);                                        // clock at 4Q
     // A 1Q group take cycles later: the group anchors at 4Q while the
-    // epoch stays at 0 (no cycle growth) — origin ≠ epoch.
+    // zero stays at 0 (no cycle growth) — origin ≠ zero.
     const { stackId } = await recordGroupTake(2, 1, '', { stopEarly: 100, settle: 100 });
     const O = find(stackId).origin;
     assert.equal(O, 4 * Q, 'group anchored at its own take');
-    assert.equal(getState().islandEpoch, 0, 'epoch unchanged');
+    assert.equal(getState().islandZero, 0, 'zero unchanged');
     // Window the group to its second half: a0 = Q/2, period Q/2.
     await callNative('setLoopPoints', stackId, Q / 2, Q);
     const map = { segs: [[Q / 2, Q]] };
@@ -305,7 +307,7 @@ test('through-map arm: heard anchor = stack origin + a0; inner origin = stack or
     const tRel = armTarget(raw - heardAnchor, Q, Q / 2);
     assert.equal(find(c).isPendingStart, true);
     assert.equal(find(c).pendingStartAt, heardAnchor + tRel,
-        'the arm grid runs from the stack\'s origin + a0, not the epoch');
+        'the arm grid runs from the stack\'s origin + a0, not the zero');
     advanceBy(find(c).pendingStartAt - raw);
     advanceBy(Q / 2);   // one full map pass: the cap commits
     assert.equal(find(c).isRecording, false);
@@ -354,11 +356,11 @@ test('VM: an anchored group lane gets a take mark; brackets/bands are inner posi
         loopStart: 0.5 * SCENE_Q, loopEnd: 1.5 * SCENE_Q,
         windowActive: false, loopBypassed: true,
     });
-    const vm = deriveViewModel(scene([clip(4), grp], { islandEpoch: 0, perf: PERF }));
+    const vm = deriveViewModel(scene([clip(4), grp], { islandZero: 0, perf: PERF }));
     assert.equal(vm.cycleQ, 4);
     const g = vm.lanes.find(l => l.kind === 'group');
     assert.equal(g.anchored, true);
-    assert.equal(g.takeStartQ, 2, '(origin − epoch) mod frame, in Q');
+    assert.equal(g.takeStartQ, 2, '(origin − zero) mod frame, in Q');
     assert.deepEqual(g.reps.map(r => [r.startQ, r.endQ, r.ghost]),
         [[0, 2, true], [2, 4, false]], 'the take tile sits at the mark');
     assert.deepEqual([g.window.startQ, g.window.endQ], [0.5, 1.5],
@@ -373,7 +375,7 @@ test('VM: an anchored group lane gets a take mark; brackets/bands are inner posi
     const empty = stack(mics(), { origin: O,
         loopStart: 0.5 * SCENE_Q, loopEnd: 1.5 * SCENE_Q,
         windowActive: false, loopBypassed: true });
-    const vm2 = deriveViewModel(scene([clip(4), empty], { islandEpoch: 0, perf: PERF }));
+    const vm2 = deriveViewModel(scene([clip(4), empty], { islandZero: 0, perf: PERF }));
     const g2 = vm2.lanes.find(l => l.kind === 'group');
     assert.equal(g2.anchored, false);
     assert.equal(g2.takeStartQ, 0, 'unanchored: the empty case, mark 0');
@@ -385,7 +387,7 @@ test('VM: the heard view of a windowed group anchors at origin + a0', () => {
         anchored: true, origin: O,
         loopStart: 0.5 * SCENE_Q, loopEnd: 1.5 * SCENE_Q, windowActive: true,
     });
-    const vm = deriveViewModel(scene([clip(4), grp], { islandEpoch: 0, perf: PERF }));
+    const vm = deriveViewModel(scene([clip(4), grp], { islandZero: 0, perf: PERF }));
     const g = vm.lanes.find(l => l.kind === 'group');
     assert.equal(g.periodQ, 1, 'the window is the part');
     // Window content start sounds at origin + a0 = 2.5Q → heard top
@@ -400,13 +402,13 @@ test('VM: a one-shot group renders like a one-shot clip — dashed tile at its m
     const O = 2 * SCENE_Q;
     const mics = () => [clip(2, { origin: O }), clip(2, { origin: O })];
     const loop = stack(mics(), { anchored: true, origin: O });
-    let vm = deriveViewModel(scene([clip(4), loop], { islandEpoch: 0, perf: PERF }));
+    let vm = deriveViewModel(scene([clip(4), loop], { islandZero: 0, perf: PERF }));
     let g = vm.lanes.find(l => l.kind === 'group');
     assert.equal(g.oneShot, false);
     assert.equal(g.reps.filter(r => r.ghost).length, 1, 'looping: a ghost repetition');
 
     const shot = stack(mics(), { anchored: true, origin: O, periodSource: 'context' });
-    vm = deriveViewModel(scene([clip(4), shot], { islandEpoch: 0, perf: PERF }));
+    vm = deriveViewModel(scene([clip(4), shot], { islandZero: 0, perf: PERF }));
     g = vm.lanes.find(l => l.kind === 'group');
     assert.equal(g.oneShot, true, 'the dashed styling rides lane.oneShot');
     assert.deepEqual(g.reps.map(r => [r.startQ, r.endQ, r.ghost]), [[2, 4, false]],

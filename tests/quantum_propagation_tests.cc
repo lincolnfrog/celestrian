@@ -63,7 +63,7 @@ class QuantumPropagationTests : public juce::UnitTest {
       c1->process(inputs, nullptr, 1, 0, ctx);
       c1->stopRecording();  // first clip -> immediate commit, Q = 1000
       expectEquals(root.getQuantum(), (int64_t)1000);
-      expectEquals(root.getEpoch(), (int64_t)0);
+      expectEquals(root.getZero(), (int64_t)0);
 
       // A short overdub snapping to the Q/2 subdivision (480 -> 500)
       // must NOT halve Q (the old min-derivation did exactly that).

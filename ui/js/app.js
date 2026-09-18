@@ -27,6 +27,7 @@ import { foldedStacks, toggleFolded, migrateFolds } from './view_prefs.js';
 import { DEBUG } from './debug_flags.js';
 import { notePlayStart, notePlayStartTransport, togglePlayFromStart }
     from './play_start.js';
+import { seekDelta, seekApplied } from './seek.js';
 
 const dbg = m => { if (DEBUG) log(m); };
 
@@ -302,10 +303,13 @@ function indexNodes(nodes, map = new Map()) {
 
 let lastNodesById = new Map(); // refreshed every poll, used by arm handlers
 let lastRootId = '';           // island root uuid (move-to-top target)
-// The frame zero the view last SEATED (docs/frame.md), absolute
-// samples: a song authored on the root anchors the root there, so the
-// song's top is where the picture already starts (setSequence's `zero`).
-let lastSeatedZero = null;
+// The frame facts the view last SEATED (docs/frame.md), all absolute
+// samples: `zero` (a song authored on the root anchors the root there;
+// an import lands whole Qs from it; the song bounces from it), the raw
+// transport it was polled with (`rawClock`), the audible loop's length
+// and Q — what every seek and placement is computed against, since the
+// engine reads no frame. Null before a frame exists.
+let lastFrame = null;
 let auditionOwner = null;      // the stack whose step is looping (Esc target)
 
 /* ---------- record & arm (Q7: arm targets emptiness) ---------- */
@@ -713,13 +717,18 @@ async function startPolling() {
                       pinFrameQ: mapDragPinQ(),
                       pinFoldQ: mapDragPinFoldQ(),
                       pinZero: mapDragPinZero() });
-                lastSeatedZero = vm.qEstablished && Number.isFinite(vm.epochSamples)
-                    ? vm.epochSamples : null;
+                lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
+                    Number.isFinite(state.islandPos)
+                    ? { zero: vm.frameZero,
+                        rawClock: state.islandPos + (state.islandZero ?? 0),
+                        loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum,
+                        quantum: vm.quantum }
+                    : null;
                 const lanesById = new Map(vm.lanes.map(l =>
                     [l.id, Object.assign({ quantum: vm.quantum }, l)]));
                 refreshPeaks(state.nodes,
                     (state.perf && state.perf.sampleRate) || 44100, lanesById);
-                notePlayStartTransport(state.isPlaying, vm.qEstablished);
+                notePlayStartTransport(state.isPlaying, vm.qEstablished, lastFrame);
                 settlePendingPause(state);
                 // Committed clips whose real waveform hasn't landed yet:
                 // composites must not blend their live meter peaks
@@ -741,8 +750,8 @@ async function startPolling() {
                     nodesById: lastNodesById,
                     vmQuantum: vm.quantum,
                     // Composite offsets are cycle projections of origin —
-                    // computed in the island-epoch frame (one-frame rule)
-                    epochSamples: vm.epochSamples,
+                    // computed in the island frame (one-frame rule)
+                    frameZero: vm.frameZero,
                     sampleRate: state.perf ? state.perf.sampleRate : 0,
                 });
                 patchCalibrateButton(state);
@@ -792,8 +801,9 @@ async function startPolling() {
 
 /* ---------- init ---------- */
 /* ---------- Audio file import (docs/import.md) ----------
- * A WAV/AIFF/FLAC becomes a committed take on the nearest Q boundary
- * to `atQ` (a QTime [num, den] in the epoch frame). Two entry points:
+ * A WAV/AIFF/FLAC becomes a committed take at an absolute origin the
+ * view computes — whole Qs from the frame zero it seated (docs/frame.md;
+ * the engine snaps it to the Q grid). Two entry points:
  * the native chooser (the + menu, the project menu, a drop the page
  * cannot name — see import_drop.js on the WebView path limit) and the
  * direct verb for a drop whose File exposes a filesystem path. Both
@@ -809,11 +819,18 @@ function importVerdict(result, what) {
         'tracks (WAV, AIFF, FLAC)';
 }
 
+/** The absolute origin for a placement `q` whole Qs into the frame the
+ * view seats (docs/frame.md); 0 before a frame exists, when the engine
+ * takes the clock instead (the first-take rule). */
+function importOriginAt(q) {
+    return lastFrame ? lastFrame.zero + q * lastFrame.quantum : 0;
+}
+
 /** The native chooser, placed at `q` (whole Q of the frame). */
 function importWithDialog(targetId, q) {
     const id = targetId || lastRootId;
     if (!id) return Promise.resolve(false);
-    return call('importAudioWithDialog', [id, [q, 1]],
+    return call('importAudioWithDialog', [id, importOriginAt(q)],
         r => importVerdict(r, q > 0 ? `at Q${q}` : ''));
 }
 
@@ -827,7 +844,7 @@ function onImportDrop(laneId, q, files) {
     const file = files && files[0];
     const path = filePathOf(file);
     if (!path) return importWithDialog(laneId, q);
-    return call('importAudio', [laneId, path, [q, 1]],
+    return call('importAudio', [laneId, path, importOriginAt(q)],
         r => importVerdict(r, `${file.name} at Q${q}`));
 }
 
@@ -961,10 +978,16 @@ function buildProjectMenu(menu) {
         : [...lastNodesById.values()].some(isHotClip)
             ? 'Bounce refused — a take is live'
             : 'Bounce cancelled';
-    const bounceTo = id => call('bounceWithDialog', [id], bounceVerdict);
+    // The song bounces from the frame zero the view has SEATED, so the
+    // file starts where the picture starts (docs/frame.md); a single
+    // lane bounces from its own top (the engine's default).
+    const bounceTo = (id, start = null) =>
+        call('bounceWithDialog', start === null ? [id] : [id, start], bounceVerdict);
     const songHasContent = lastRootId &&
         [...lastNodesById.values()].some(hasCommittedClip);
-    item('Bounce song…', () => bounceTo(lastRootId), !songHasContent);
+    item('Bounce song…',
+         () => bounceTo(lastRootId, lastFrame ? lastFrame.zero : null),
+         !songHasContent);
     if (selection.size === 1) {
         const sel = lastNodesById.get(activeSelectedId());
         if (sel) item('Bounce selected…', () => bounceTo(sel.id),
@@ -1104,8 +1127,19 @@ function initApp() {
         // mid-take (the UI locks the gesture too). A landed seek is
         // also the new play start (play_start.js).
         onSeek: async samples => {
-            if (await callNative('seekTransport', samples))
-                notePlayStart(projectInfo.id, samples);
+            // The ruler names a target PHASE; the engine takes a phase
+            // ADVANCE computed against the latest poll's frame facts
+            // (seek.js) — the view seats the frame's zero, the engine
+            // reads no frame (docs/frame.md).
+            const delta = seekDelta(samples, lastFrame);
+            if (delta === null) return;
+            const result = await callNative('seekTransport', delta, lastFrame.rawClock);
+            if (!result) return;
+            // A scrub streams seeks faster than the poll: fold the applied
+            // seek into the frame facts so the next one is computed
+            // against the truth, not the pre-seek picture.
+            lastFrame = seekApplied(lastFrame, result);
+            notePlayStart(projectInfo.id, samples);
         },
         // Fold is UI-local (I6b): never a bridge call. The next poll
         // re-derives the view from the folded set.
@@ -1215,8 +1249,8 @@ function initApp() {
         // anchors there (docs/frame.md §4), so authoring moves nothing.
         onSetSequence: (id, payload) =>
             call('setSequence',
-                payload && id === lastRootId && lastSeatedZero !== null
-                    ? [id, payload, lastSeatedZero] : [id, payload],
+                payload && id === lastRootId && lastFrame
+                    ? [id, payload, lastFrame.zero] : [id, payload],
                 payload ? 'sequence updated (⌘Z to undo)'
                         : 'sequence cleared (⌘Z to undo)'),
         onToggleSequenceBypass: id =>

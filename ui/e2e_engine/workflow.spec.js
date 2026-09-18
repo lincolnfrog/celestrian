@@ -4,7 +4,7 @@
  *   1. a 5-track drum group from a template, recorded as ONE take
  *      (five mics, five input channels) — the first take defines Q;
  *   2. the loop region pulled in FROM BOTH SIDES on that first clip
- *      (the definer's trim: Q := the window, epoch := its top);
+ *      (the definer's trim: Q := the window, zero := its top);
  *   3. a bass track, a guitar track, a keys track;
  *   4. the scratch drums replaced: a NEW, much longer drum take from
  *      the same template, then edited heavily — bars cut out, an
@@ -85,14 +85,14 @@ test('drums template → trim both sides → bass, guitar, keys → a long drum 
 
     // --- 2. Pull the loop region in from BOTH sides on the first clip ---
     // The definer stack's trim (Q13 for groups): [0.5 s, 1.5 s) → Q := 1 s,
-    // epoch := origin + 0.5 s. The lanes show the raw take with the
+    // zero := origin + 0.5 s. The lanes show the raw take with the
     // selection over it; the playhead maps into the brackets.
     await engine(page, 'advance', { samples: 12345 });
     await call(page, 'setLoopPoints', scratch, L0 / 4, (3 * L0) / 4);
     st = await state(page);
     const Q = st.quantum;
     expect(Q).toBe(RATE);
-    expect(st.islandEpoch).toBe(findNode(st, scratch).origin + L0 / 4);
+    expect(st.islandZero).toBe(findNode(st, scratch).origin + L0 / 4);
     expect((await engine(page, 'status')).cycle).toBe(Q);
     await verifyHeard(page);
 

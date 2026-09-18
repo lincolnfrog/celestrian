@@ -8,10 +8,12 @@
  *  - refused while any take is live or armed, on a MIDI track, on a
  *    full take list, or on a path the mock cannot "read" (see below);
  *  - a STACK target gains a fresh clip child named after the file;
- *  - an EMPTY clip takes a FIRST TAKE: origin = epoch + the nearest
- *    whole Q to `atQ`, length through the hysteresis law
- *    (snapCommittedDuration); a pre-Q island takes the clock as the
- *    origin and the file's length as Q (a first recorded take);
+ *  - an EMPTY clip takes a FIRST TAKE at the origin the view names
+ *    (absolute samples, computed from the frame zero it seated —
+ *    docs/frame.md), snapped to the nearest Q boundary of the island
+ *    grid; length through the hysteresis law (snapCommittedDuration);
+ *    a pre-Q island takes the clock as the origin and the file's
+ *    length as Q (a first recorded take);
  *  - a COMMITTED clip takes a NEW TAKE of the slot (the file cut or
  *    padded to the period — the slot's facts stand), active on arrival.
  * Undoable: the dispatch snapshot (UNDOABLE in mock/undo.js);
@@ -35,15 +37,6 @@ export const DIALOG_PATH = '<dialog>';
 /** The take list bound (engine parity ClipNode::kMaxTakes). */
 const MAX_TAKES = 32;
 
-/** The nearest whole Q to a QTime ([num, den] or a bare number). */
-export function nearestWholeQ(atQ) {
-    if (Array.isArray(atQ)) {
-        const den = Number(atQ[1]) || 1;
-        return Math.round(Number(atQ[0]) / den);
-    }
-    return Math.round(Number(atQ) || 0);
-}
-
 /** The length the mock decodes for `path` (see the module comment). */
 export function decodedLength(path) {
     const m = /#len=(\d+)/.exec(String(path || ''));
@@ -58,7 +51,15 @@ function refuse(why) {
     return false;
 }
 
-export function importAudio(uuid, path, atQ) {
+/** The Q-grid boundary nearest an absolute sample (Q11): the island's
+ * zero is the grid's phase. */
+function snapToGrid(originSamples, Q) {
+    const zero = state.islandZero || 0;
+    const o = Math.round(Number(originSamples) || 0);
+    return zero + Math.round((o - zero) / Q) * Q;
+}
+
+export function importAudio(uuid, path, originSamples) {
     if (anyNodeRecording()) return refuse('a take is live');
     if (/\.missing$/.test(String(path || ''))) return refuse('unreadable file ' + path);
     let node = uuid === 'mock-root' ? { id: 'mock-root', type: 'stack' } : findNode(uuid);
@@ -83,14 +84,14 @@ export function importAudio(uuid, path, atQ) {
         takes.push({ seed, imported: path });
         node.takes = takes;
         node.activeTake = takes.length - 1;
-        state.lastImport = { uuid, path, atQ, form: 'take', targetId: node.id };
+        state.lastImport = { uuid, path, origin: originSamples, form: 'take', targetId: node.id };
         console.log('[MockBackend] imported', path, 'as take', node.activeTake, 'of', node.id);
         return true;
     }
 
     // THE FIRST FORM: a first take of an empty clip.
     const snap = snapCommittedDuration(length, Q);
-    const origin = Q > 0 ? state.islandEpoch + nearestWholeQ(atQ) * Q : state.masterPos;
+    const origin = Q > 0 ? snapToGrid(originSamples, Q) : state.masterPos;
     node.duration = snap.duration;
     node.loopStart = 0;
     node.loopEnd = snap.loopEnd;
@@ -102,26 +103,26 @@ export function importAudio(uuid, path, atQ) {
     node.takes = [{ seed: 1, imported: path }];
     node.activeTake = 0;
     if (!(Q > 0)) {
-        // A pre-Q island: the import is the first take — (Q, epoch)
+        // A pre-Q island: the import is the first take — (Q, zero)
         // establish together (engine parity establishIsland).
         state.islandQ = snap.duration;
-        state.islandEpoch = origin;
+        state.islandZero = origin;
         node.effectiveQuantum = snap.duration;
         console.log('[MockBackend] import establishes Q =', snap.duration);
     }
     settleAnchors();
-    state.lastImport = { uuid, path, atQ, form: 'first', targetId: node.id };
+    state.lastImport = { uuid, path, origin: originSamples, form: 'first', targetId: node.id };
     console.log('[MockBackend] imported', path, 'into', node.id, '— origin', origin,
         'duration', snap.duration);
     return true;
 }
 
-export function importAudioWithDialog(uuid, atQ) {
-    return importAudio(uuid, DIALOG_PATH, atQ);
+export function importAudioWithDialog(uuid, originSamples) {
+    return importAudio(uuid, DIALOG_PATH, originSamples);
 }
 
-/** The last accepted import request ({uuid, path, atQ, form, targetId}),
- * or null. */
+/** The last accepted import request ({uuid, path, origin, form,
+ * targetId}), or null. */
 export function getLastImport() {
     return state.lastImport || null;
 }

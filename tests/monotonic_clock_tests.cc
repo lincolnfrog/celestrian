@@ -4,8 +4,8 @@
  *
  * Pins the two behaviors that replaced the deleted clock mutations:
  *  1. First clip recorded at t > 0: the arm moment becomes the island
- *     EPOCH (data), the clock is untouched, and the view/alignment are
- *     epoch-relative from that moment on.
+ *     ZERO (data), the clock is untouched, and the view/alignment are
+ *     zero-relative from that moment on.
  *  2. Stop/play is pause/resume: stopping freezes the cycle view where
  *     it is; playing resumes from the same phase.
  */
@@ -42,7 +42,7 @@ class MonotonicClockTests : public juce::UnitTest {
           ->getProperty("masterPos");
     };
 
-    beginTest("First clip at t > 0: epoch captured as data, clock untouched");
+    beginTest("First clip at t > 0: zero captured as data, clock untouched");
     {
       AudioEngine engine;
       auto process = makeDriver(engine);
@@ -61,20 +61,20 @@ class MonotonicClockTests : public juce::UnitTest {
 
       auto state = engine.getGraphState();
       auto* root = state.getDynamicObject();
-      const int64_t epoch = (int64_t)(double)root->getProperty("islandEpoch");
-      expectEquals((juce::int64)epoch, (juce::int64)t0,
-                   "island epoch is the arm moment, not 0");
+      const int64_t zero = (int64_t)(double)root->getProperty("islandZero");
+      expectEquals((juce::int64)zero, (juce::int64)t0,
+                   "island zero is the arm moment, not 0");
 
       auto clip = (*root->getProperty("nodes").getArray())[0];
       expectEquals(
           (juce::int64)(double)clip.getDynamicObject()->getProperty("origin"),
-          (juce::int64)t0, "first clip origin equals the epoch");
+          (juce::int64)t0, "first clip origin equals the zero");
 
-      // The cycle view is epoch-relative: one block after commit the
+      // The cycle view is zero-relative: one block after commit the
       // cursor is at 512, not at t0 + Q + 512.
       process(BLOCK_SIZE);
       expectEquals((juce::int64)masterPos(engine), (juce::int64)BLOCK_SIZE,
-                   "masterPos view derives from (t - epoch) mod cycle");
+                   "masterPos view derives from (t - zero) mod cycle");
     }
 
     beginTest("Stop/play is pause/resume (view freezes, phase continues)");
@@ -84,7 +84,7 @@ class MonotonicClockTests : public juce::UnitTest {
       engine.createNode("clip");
       const juce::String id = firstClipId(engine);
 
-      engine.startRecordingInNode(id);  // auto-plays; epoch = 0
+      engine.startRecordingInNode(id);  // auto-plays; zero = 0
       process(Q);
       engine.stopRecordingInNode(id);  // immediate commit: 1Q clip
 

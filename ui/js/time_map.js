@@ -61,7 +61,7 @@ export function mapPeriod(map) {
 /**
  * walk_segments: a HEARD offset (any integer — folded mod period,
  * negatives included) → the inner-time offset it selects. The caller
- * re-bases into absolute time by adding the received cycle epoch.
+ * re-bases into absolute time by adding the received frame top.
  */
 export function mapOffset(map, heardOff) {
     const p = mapPeriod(map);

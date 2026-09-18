@@ -3,7 +3,7 @@
  *
  * Render-level pins of the one anchoring law on STACKS: a group is
  * anchored at its first content's origin; its window selects inner
- * positions from that origin; an epoch-only move (a cycle-growth
+ * positions from that origin; a zero-only move (a cycle-growth
  * re-base) never re-selects its content; a seek moves the group's origin
  * with the island; a one-shot group fires from its origin and rests;
  * Combine anchors at the earliest member; a session round trip keeps
@@ -158,7 +158,7 @@ class StackOriginTests : public juce::UnitTest {
     driveRamp(engine, take_len, clock, true, nullptr);
     engine.stopRecordingInNode(stack_id);
     settle(engine, clock, ids, /*silent=*/true);
-    clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+    clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
     return stack_id;
   }
 
@@ -204,8 +204,8 @@ class StackOriginTests : public juce::UnitTest {
       // replaced, or undo of the take leaves the rewritten geometry.
       AudioEngine engine;
       int64_t clock = 0;
-      // A solo take first: Q = 1Q, epoch 0 — so the group's later take
-      // lands at a NON-ZERO phase from the epoch (shift != 0).
+      // A solo take first: Q = 1Q, zero at 0 — so the group's later take
+      // lands at a NON-ZERO phase from the zero (shift != 0).
       engine.createNode("clip");
       const juce::String solo = lastTopLevelId(engine);
       {
@@ -231,7 +231,7 @@ class StackOriginTests : public juce::UnitTest {
                    "window authored on the empty group");
       expect(!deepBool(engine, stack_id, "anchored"), "still unanchored");
 
-      // Arm at a later phase so the take's origin is off the epoch.
+      // Arm at a later phase so the take's origin is off the zero.
       driveRamp(engine, Q + Q / 2, clock, true, nullptr);
       engine.startRecordingInNode(stack_id);
       driveRamp(engine, 2 * Q, clock, true, nullptr);
@@ -240,7 +240,7 @@ class StackOriginTests : public juce::UnitTest {
       expect(deepBool(engine, stack_id, "anchored"), "group anchored");
       const int64_t origin = (int64_t)deepProp(engine, stack_id, "origin");
       const int64_t inner = (int64_t)deepProp(engine, ids[0], "duration");
-      expect(origin > 0 && inner > 0, "take placed off the epoch");
+      expect(origin > 0 && inner > 0, "take placed off the zero");
       const int64_t ls = (int64_t)deepProp(engine, stack_id, "loopStart");
       const int64_t le = (int64_t)deepProp(engine, stack_id, "loopEnd");
       expect(!(ls == ws && le == we),
@@ -302,12 +302,12 @@ class StackOriginTests : public juce::UnitTest {
                    }),
                    0, "inner(t) = mapOffset((t - origin - a0) mod P)");
 
-      // EPOCH-ONLY MOVE: a longer top-level take grows the cycle and
-      // re-bases the island epoch by whole old cycles. Under the old
-      // epoch-anchored stack law this re-tiled the window (the reason
+      // ZERO-ONLY MOVE: a longer top-level take grows the cycle and
+      // re-bases the island zero by whole old cycles. Under the old
+      // zero-anchored stack law this re-tiled the window (the reason
       // epochViewStep existed); under Q18 nothing selects content by
-      // the epoch, so the group keeps its material.
-      const int64_t epoch_before = rootProp(engine, "islandEpoch");
+      // the zero, so the group keeps its material.
+      const int64_t zero_before = rootProp(engine, "islandZero");
       engine.createNode("clip");
       const juce::String c = lastTopLevelId(engine);
       engine.startRecordingInNode(c);
@@ -318,10 +318,10 @@ class StackOriginTests : public juce::UnitTest {
         cid.add(c);
         settle(engine, clock, cid, true);
       }
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
-      juce::ignoreUnused(epoch_before);
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
+      juce::ignoreUnused(zero_before);
       expectEquals((int64_t)deepProp(engine, stack_id, "origin"), O1,
-                   "a cycle-growth re-base moves the epoch only");
+                   "a cycle-growth re-base moves the zero only");
       out.clear();
       driveRamp(engine, 2 * len, clock, true, &out, true);
       expectEquals(mismatches(out, table, [&](int64_t t) {
@@ -330,10 +330,10 @@ class StackOriginTests : public juce::UnitTest {
                    0, "the window still selects buffer [ws, we)");
 
       // SEEK: the island phase jumps; every origin — the stack's too —
-      // rides the epoch delta, so the selection is invariant.
-      const int64_t e0 = rootProp(engine, "islandEpoch");
+      // rides the zero delta, so the selection is invariant.
+      const int64_t e0 = rootProp(engine, "islandZero");
       expect(engine.seekTransport((double)(Q / 3)), "seek accepted");
-      const int64_t delta = rootProp(engine, "islandEpoch") - e0;
+      const int64_t delta = rootProp(engine, "islandZero") - e0;
       const int64_t O2 = (int64_t)deepProp(engine, stack_id, "origin");
       expectEquals(O2, O1 + delta, "the stack's origin rode the seek");
       for (const auto& id : ids) {
@@ -402,7 +402,7 @@ class StackOriginTests : public juce::UnitTest {
       // Outer stack > inner stack > 2 mics (the island's only content):
       // the inner stack is the definer; a trim re-anchors it AND the
       // outer stack (anchored because of it), so the frame every
-      // ancestor measures from stays congruent with the epoch.
+      // ancestor measures from stays congruent with the zero.
       AudioEngine engine;
       int64_t clock = 0;
       engine.createNode("stack");
@@ -430,7 +430,7 @@ class StackOriginTests : public juce::UnitTest {
              "both groups anchored");
       expectEquals((int64_t)deepProp(engine, outer, "origin"), O,
                    "the outer anchored at the same content");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       driveRamp(engine, 3 * BLOCK, clock, true, nullptr, true);
       const int64_t ws = Q / 4, we = (3 * Q) / 4;
       engine.setLoopPoints(inner, ws, we);
@@ -440,8 +440,8 @@ class StackOriginTests : public juce::UnitTest {
                    "the outer's origin followed the definer's shift");
       expectEquals((int64_t)deepProp(engine, ids[0], "origin"), O1,
                    "the members followed too");
-      expectEquals(rootProp(engine, "islandEpoch"), O1 + ws,
-                   "epoch == origin + start");
+      expectEquals(rootProp(engine, "islandZero"), O1 + ws,
+                   "zero == origin + start");
       engine.undo();
       expectEquals((int64_t)deepProp(engine, outer, "origin"), O,
                    "undo: the outer's origin is back");
@@ -488,7 +488,7 @@ class StackOriginTests : public juce::UnitTest {
       juce::StringArray ids;
       const juce::String stack_id = buildIsland(engine, clock, Q, Q, ids);
       const int64_t O = (int64_t)deepProp(engine, stack_id, "origin");
-      const int64_t epoch = rootProp(engine, "islandEpoch");
+      const int64_t zero = rootProp(engine, "islandZero");
       const juce::File dir =
           juce::File::getSpecialLocation(juce::File::tempDirectory)
               .getChildFile("celestrian_q18_" + juce::Uuid().toString());
@@ -497,8 +497,8 @@ class StackOriginTests : public juce::UnitTest {
       expect(engine2.loadSession(dir.getFullPathName()), "loaded");
       expect(deepBool(engine2, stack_id, "anchored"), "anchored after load");
       expectEquals((int64_t)deepProp(engine2, stack_id, "origin") -
-                       rootProp(engine2, "islandEpoch"),
-                   O - epoch, "origin - epoch (placement) survives the round trip");
+                       rootProp(engine2, "islandZero"),
+                   O - zero, "origin - zero (placement) survives the round trip");
       dir.deleteRecursively();
     }
   }

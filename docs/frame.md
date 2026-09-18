@@ -5,8 +5,8 @@
 > view seats it from the lanes, in the order they are shown, every time
 > the picture is drawn. The engine keeps one island fact besides Q —
 > the island zero, the first take's origin — and nothing moves it for a
-> commit or a map edit. The word "epoch" in code names that zero and
-> nothing more (rename pending, §7).
+> commit or a map edit. The code names it `islandZero` and nothing
+> more (the "epoch" rename, §7, landed 2026-09-17).
 
 ---
 
@@ -96,10 +96,10 @@ A — so the zero moves 2Q, B lands at 0, and A's picture is unchanged.
 | Commit growth re-base by whole old cycles | the new take is the last lane; the rule *is* the re-base |
 | The cycle-top rule and the free-move law | a later loop lands at 0 the moment its top is a whole cycle-so-far off the zero; an earlier lane is never moved by a later one |
 | Two-anchor continuity's frame ride | nothing to ride: the origin re-anchor while playing stays (it is audio), and `Z` re-derives; the drag pin holds `Z` for a gesture |
-| Q13 definer re-trim: epoch := origin + a0 | the definer is the first lane; its top is 0 (the island zero is re-set with Q, §4) |
+| Q13 definer re-trim: zero := origin + a0 | the definer is the first lane; its top is 0 (the island zero is re-set with Q, §4) |
 | The frame on every undo entry | the lanes go back, so `Z` goes back |
 | The recording-frame shift in the view | the pending take seats last by its arm target |
-| The mock's epoch writes and the engine's, kept in parity | one derivation in the view model |
+| The mock's zero writes and the engine's, kept in parity | one derivation in the view model |
 
 ## 4. What the engine keeps
 
@@ -145,9 +145,23 @@ Everything else is the picture the old rules produced, now derived.
   mock parity test in `ui/js/tests/sequence.test.mjs` and the engine
   e2e journey in `see_vs_hear.spec.js`. A root **window** (engine API
   only; the UI authors none) still folds from the island zero.
-- **Bounce, import and seek** still take positions in the engine's
-  zero-relative frame; the view converts. Moving them to absolute
-  positions removes the last engine reads of the frame.
-- **The name.** `islandEpoch` / `epoch_samples_` name the island zero;
-  a rename to `islandZero` across engine, mock, tests and the bundle key
-  is mechanical and pending.
+- ~~**Bounce, import and seek** take positions in the engine's
+  zero-relative frame.~~ **Built 2026-09-17:** the engine reads no
+  frame for any of them. A seek is a phase ADVANCE the view computes
+  against the zero it seated (`seek.js`; the engine corrects for the
+  clock since the poll); an import lands at an absolute origin the view
+  computes (the engine snaps it to the Q grid); a bounce takes an
+  absolute start, and the app bounces the song from the seated zero so
+  the file starts where the picture starts. Before this the ruler seek
+  landed the cursor off the click whenever the seated zero sat a
+  non-cycle amount past the island zero.
+- ~~**The name.** `islandEpoch` / `epoch_samples_` name the island
+  zero; a rename is mechanical and pending.~~ **Renamed 2026-09-17:**
+  `islandZero` / `zero_samples_` across engine, mock, tests, docs and
+  the fixtures; the published state and the headless status carry
+  `islandZero`; the bundle key is `zero` (session version 3 — a
+  bundle's legacy `epoch` key still loads). The received frame top a
+  stack hands its children (`frame_top`, was `cycle_epoch`) and the
+  map's heard top (`map_heard_top`) are named for what they are. The
+  RCU reclamation epoch in `AudioEngine::retire` is a different thing
+  and keeps its name.

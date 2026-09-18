@@ -28,15 +28,19 @@ export function bounceSpanOf(uuid) {
     return node ? effectivePeriodOf(node) : 0;
 }
 
-export function bounce(uuid, path) {
+/** `start` (optional, absolute samples) is the render's start the app
+ * names — the frame zero the view seated, for the root (docs/frame.md);
+ * absent, the node's own top. Recorded, not rendered. */
+export function bounce(uuid, path, start) {
     if (takeIsLive()) return false;
     if (bounceSpanOf(uuid) > kMaxTakeSamples) return false;
-    state.lastBounce = { uuid, path };
+    state.lastBounce = { uuid, path,
+                         start: Number.isFinite(start) ? Math.round(start) : null };
     return true;
 }
 
-export function bounceWithDialog(uuid) {
-    return bounce(uuid, DIALOG_PATH);
+export function bounceWithDialog(uuid, start) {
+    return bounce(uuid, DIALOG_PATH, start);
 }
 
 /** The last accepted bounce request ({uuid, path}), or null. */

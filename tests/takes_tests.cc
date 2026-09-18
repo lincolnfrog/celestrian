@@ -146,7 +146,7 @@ juce::String recordFirst(AudioEngine& engine, int64_t& clock, int64_t D,
   driveRamp(engine, D, clock);
   engine.stopRecordingInNode(id);
   driveRamp(engine, BLOCK, clock);
-  clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+  clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
   return id;
 }
 
@@ -530,7 +530,7 @@ class TakesTests : public juce::UnitTest {
       driveRamp(engine, D, clock);
       engine.stopRecordingInNode(stack_id);
       driveRamp(engine, BLOCK, clock);
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       engine.getGraphState();
       const int64_t origin = (int64_t)deepProp(engine, ids[0], "origin");
       auto* a = clipOf(engine, ids[0]);
@@ -600,7 +600,7 @@ class TakesTests : public juce::UnitTest {
         expect(err < 1e-6f, "take " + juce::String(k) + " audio round-trips");
       }
       // The loaded session renders the comp: take 1 throughout.
-      int64_t lclock = rootProp(loaded, "islandPos") + rootProp(loaded, "islandEpoch");
+      int64_t lclock = rootProp(loaded, "islandPos") + rootProp(loaded, "islandZero");
       loaded.togglePlayback();
       Trace out;
       driveRamp(loaded, D + BLOCK, lclock, &out);

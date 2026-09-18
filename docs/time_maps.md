@@ -73,7 +73,7 @@ node has an origin, and the map anchors at `origin + a0`.
   state.
 - **Segments select buffer coordinates.** A window `[ws, we)` selects
   buffer samples `[ws, we)`; a multi-segment map walks its segments in
-  buffer coordinates. Nothing selects content by the epoch, so an epoch
+  buffer coordinates. Nothing selects content by the zero, so a zero
   move on its own never re-selects a windowed group's material. Pinned
   by `tests/content_frame_tests.cc` — which buffer sample is audible,
   not which phase is published.
@@ -294,7 +294,7 @@ mod-Q invariant.
 
 While the island's only committed content is the Q-defining clip (or
 definer stack), a segments re-trim re-establishes `Q := period`,
-`epoch := origin' + a0`, with the phase-preserving origin re-anchor
+`zero := origin' + a0`, with the phase-preserving origin re-anchor
 generalized through the map inverse (`heardOffsetOf`). Lock-collapse of
 a multi-segment definer is a **splice copy** — kept cells into an
 exact-size buffer — and the edit inverse owns the pre-splice buffer and
@@ -408,7 +408,7 @@ under the pointer and pans at the edge).
 
 - **Context.** `ProcessContext` carries `island_pos` (the invariant
   monotonic clock — the folded `master_pos` cannot drive arm triggers),
-  the innermost active `map`, its heard grid anchor (`map_heard_epoch`),
+  the innermost active `map`, its heard grid anchor (`map_heard_top`),
   and `map_count`. A mapping stack publishes them in `childContext` and
   sets `context_loop = period`.
 - **Capture.** `timing::throughMapDest` folds destinations through the
@@ -447,7 +447,7 @@ map's excluded regions as dims (`parentMapSegs`).
 | Kernel + capture | `tests/time_map_record_tests.cc` (context plumbing, fold/cap/commit, I1 round trip, I9 degradation round trip, multi-segment node fold, bypassed == plain, gates) |
 | Content frame | `tests/content_frame_tests.cc` (which buffer sample is audible) |
 | Definer + splice | `tests/qtime_lock_tests.cc` |
-| Frame/epoch rules | `tests/regression_tests.cc`, `ui/e2e_engine/loop_edits.spec.js` |
+| Frame/zero rules | `tests/regression_tests.cc`, `ui/e2e_engine/loop_edits.spec.js` |
 | Persistence | `tests/session_io_tests.cc` |
 | Editor algebra | `ui/js/tests/map_edit.test.mjs`, `ui/js/tests/map_core.test.mjs`, `ui/js/tests/trim_drag.test.mjs` |
 | Gestures end-to-end | `ui/e2e/region_panel.spec.js`, `ui/e2e/session_view.spec.js` ("trim a long take") |
@@ -555,25 +555,25 @@ phase 3 and **rejected** in favour of making maps fractal — owner:
 "probably a UX nightmare." Through-map takes commit as one dense,
 zero-initialized buffer with literal silence in unvisited regions (§3).
 
-**The epoch-anchored map frame** (pre-Q18). Stacks anchored their map at
-the RECEIVED epoch (`m(t) = cycle_epoch + walk_segments((t −
-cycle_epoch) mod period)`), so a stack window selected *epoch-relative*
+**The zero-anchored map frame** (pre-Q18). Stacks anchored their map at
+the RECEIVED zero (`m(t) = frame_top + walk_segments((t −
+frame_top) mod period)`), so a stack window selected *zero-relative*
 view positions while clips read their buffers origin-relative. The two
-frames agreed only while `epoch ≡ origin (mod D)`, which forced a
+frames agreed only while `zero ≡ origin (mod D)`, which forced a
 "content-selecting frames move together" law: definer re-trims carried
-`Edit::origins` riders, seeks carried every origin by the epoch delta,
+`Edit::origins` riders, seeks carried every origin by the zero delta,
 and map-edit riders had to move in `AudioEngine::epochViewStep` steps.
 **Superseded by Q18** (composition.md §0, §8): every node has its own
 origin, maps anchor at `origin + a0` for clips and stacks alike, and
-nothing selects content by the epoch — so `epochViewStep` and both rider
+nothing selects content by the zero — so `epochViewStep` and both rider
 branches are deleted. The hazard the old frame created is worth keeping:
-a map that emits epoch-stripped small values shifts every child whose
+a map that emits zero-stripped small values shifts every child whose
 origin ≢ 0 (mod its duration) — the 2026-07-09 field bug where a 2Q clip
 looped its Q2 under a Q1 window, still pinned by "Stack window selects
 view positions" in `tests/pre_record_tests.cc`.
 
 **A stored frame zero, moved by rules** (2026-07-19 → 2026-09-16). The
-frame's left edge was the island "epoch", a stored absolute sample the
+frame's left edge was the island "zero", a stored absolute sample the
 engine moved for display reasons: at commit by whole old cycles (the
 growth re-base, Q14b), on a window edit to the shaped loop's top (the
 cycle-top rule, 2026-08-18; later gated to the loop that *defined* the

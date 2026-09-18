@@ -7,8 +7,11 @@
  *
  * UI policy composed from the engine's two primitives — togglePlayback
  * (a pure pause/resume, which the engine's own flows and tests rely on)
- * and seekTransport (a whole-island phase jump). Positions are
- * seekTransport targets: published-masterPos samples.
+ * and seekTransport (a whole-island phase advance). The play start is
+ * a PHASE: samples into the audible loop as the ruler draws it. Each
+ * return turns it into the advance that lands it against the latest
+ * poll's frame facts (seek.js; docs/frame.md — the view seats the
+ * frame's zero, the engine reads no frame).
  *
  * Per project and not persisted: a gesture of this session, so a
  * project switch (id change) falls back to the top. Pre-Q there is no
@@ -16,10 +19,12 @@
  * (a take live or armed) leaves the playhead where it is.
  */
 
-const start = { projectId: '', samples: 0 };
-const transport = { isPlaying: false, seekable: false };
+import { seekDelta, seekApplied } from './seek.js';
 
-/** A ruler seek landed: its target becomes the play start. */
+const start = { projectId: '', samples: 0 };
+const transport = { isPlaying: false, seekable: false, frame: null };
+
+/** A ruler seek landed: its target phase becomes the play start. */
 export function notePlayStart(projectId, samples) {
     start.projectId = projectId;
     start.samples = samples;
@@ -31,14 +36,23 @@ export function playStartFor(projectId) {
     return start.projectId === projectId ? start.samples : 0;
 }
 
-/** Poll feed: whether the transport runs and a frame exists to seek in. */
-export function notePlayStartTransport(isPlaying, qEstablished) {
+/** Poll feed: whether the transport runs, and the frame facts a seek
+ * is computed against ({rawClock, zero, loopSamples}; null before a
+ * frame exists — then no seek is sent). */
+export function notePlayStartTransport(isPlaying, qEstablished, frame = null) {
     transport.isPlaying = !!isPlaying;
-    transport.seekable = !!qEstablished;
+    transport.frame = qEstablished && frame ? frame : null;
+    transport.seekable = transport.frame !== null;
 }
 
 async function returnToStart(call, projectId) {
-    if (transport.seekable) await call('seekTransport', playStartFor(projectId));
+    if (!transport.seekable) return;
+    const delta = seekDelta(playStartFor(projectId), transport.frame);
+    if (delta === null) return;
+    const result = await call('seekTransport', delta, transport.frame.rawClock);
+    // Fold the applied seek into the frame facts (the next poll will
+    // replace them; until then a second seek must not double-apply).
+    transport.frame = seekApplied(transport.frame, result);
 }
 
 /**

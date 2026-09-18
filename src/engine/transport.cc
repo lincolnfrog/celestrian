@@ -27,7 +27,9 @@ void AudioEngine::togglePlayback() {
   is_playing_global = !is_playing_global.load();
 }
 
-bool AudioEngine::seekTransport(double pos_samples) {
+bool AudioEngine::seekTransport(double delta_samples,
+                                std::optional<int64_t> at_clock,
+                                SeekResult* applied) {
   // Refused while any take is live or armed: takes place audio by
   // this clock (arm targets, origins, commit boundaries all read it),
   // so a mid-take phase jump would corrupt the take's placement. The
@@ -36,56 +38,52 @@ bool AudioEngine::seekTransport(double pos_samples) {
   if (root_node == nullptr) return false;
   // Settle any take the audio thread committed since the last poll
   // FIRST: shiftHistoryAbsolutes below re-frames the log, and a take
-  // that has not entered it yet would carry a pre-seek epoch into its
+  // that has not entered it yet would carry a pre-seek zero into its
   // later Untake entry (record/undo/redo reconcile the same way).
   reconcileTakes();
   if (root_node->hasActiveTake() || root_node->isArmedOrRecording()) {
     return false;
   }
 
-  // The target arrives in the published-masterPos domain: epoch-
-  // relative, folded on the audible cycle (E-C — under a root
-  // audition that cycle IS the step, since the derived window is an
-  // active map and getEffectivePeriod lets maps win). Fold
-  // defensively so an out-of-range target lands where the playhead
-  // would show it rather than teleporting the phase off-cycle.
-  const int64_t cycle = calculateEffectiveCycleLength();
-  int64_t pos = (int64_t)std::llround(pos_samples);
-  if (cycle > 0) {
-    pos = celestrian::timing::posMod(pos, cycle);
-  } else if (pos < 0) {
-    pos = 0;
-  }
-
-  // The seek itself: the island's zero moves so that the root's frame
-  // top lands at t − pos (the top IS the epoch without a root song;
-  // under one it is the root's origin, which rides the same delta
-  // below), so masterPos reads as exactly the requested phase from
-  // the next block/poll on. The monotonic clock is untouched
-  // (kernel.md); islandPos teleports with the epoch, and the UI's
+  // THE SEEK IS A PHASE ADVANCE (docs/frame.md): the engine reads no
+  // frame — only the view knows where the frame's zero is seated — so
+  // the view sends how far the playing phase should move, computed
+  // against the transport reading it last polled (`at_clock`). The
+  // clock has moved since that poll; correcting for it lands the phase
+  // the view meant, exactly, stopped or playing. Advancing the phase
+  // by `advance` is moving the island's zero — and every origin with
+  // it — BACK by `advance`. The monotonic clock is untouched
+  // (kernel.md); islandPos teleports with the zero, and the UI's
   // dead-reckoner classifies the jump as a TELEPORT, never velocity
-  // (playhead_clock.js).
+  // (playhead_clock.js). A zero advance is an accepted no-op.
   const int64_t t = global_transport_pos.load();
-  const int64_t epoch_old = root_node->getEpoch();
-  const int64_t epoch_new = epoch_old + ((t - pos) - rootFrameTop());
+  int64_t advance = (int64_t)std::llround(delta_samples);
+  if (at_clock.has_value()) advance -= t - *at_clock;
+  if (applied != nullptr) {
+    applied->advance = advance;
+    applied->clock = t;
+  }
+  const int64_t delta = -advance;
+  if (delta == 0) return true;
+  const int64_t zero_old = root_node->getZero();
+  const int64_t zero_new = zero_old + delta;
   const uint32_t gen = root_node->nextIslandGeneration();
   // THE CONTENT-FRAME LAW (time_maps.md; pinned by
   // tests/content_frame_tests.cc): clips read their buffers
-  // ORIGIN-relative on the monotonic clock, so moving the epoch alone
+  // ORIGIN-relative on the monotonic clock, so moving the zero alone
   // would move the cursor and NOT the audio. A seek is a phase jump of
-  // the whole island: every origin rides the epoch delta, so each
-  // clip's placement on the grid (origin − epoch) is unchanged and
+  // the whole island: every origin rides the zero's delta, so each
+  // clip's placement on the grid (origin − zero) is unchanged and
   // playback lands at the requested phase. Not undoable, like the seek
   // itself.
-  const int64_t delta = epoch_new - epoch_old;
-  // Every origin — clips AND stacks (Q18) — rides the delta: the
-  // recursive shift is the one primitive (composition.md §5).
-  if (delta != 0) shiftOriginsGated(*root_node, delta, gen);
-  // Origins first (gated), then the epoch with the generation: one
+  // Every origin — clips AND stacks (Q18), the root's too — rides the
+  // delta: the recursive shift is the one primitive (composition.md §5).
+  shiftOriginsGated(*root_node, delta, gen);
+  // Origins first (gated), then the zero with the generation: one
   // block top adopts both or neither.
-  root_node->seekEpochTo(epoch_new, gen);
+  root_node->seekZeroTo(zero_new, gen);
   // THE HISTORY RIDES TOO: the undo/redo logs store ABSOLUTE origins
-  // and epochs, and a seek re-frames every absolute in the session. An
+  // and zeros, and a seek re-frames every absolute in the session. An
   // inverse restoring pre-seek absolutes for a SUBSET of clips (a
   // continuity rider, a take payload) would shift that subset against
   // everything else — undo would audibly move a clip the edit never
@@ -108,11 +106,11 @@ void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
           shiftSubtree(child.get());
       };
   auto shiftEdit = [&](celestrian::Edit& e) {
-    // setsIsland's iepoch is a real epoch on every kind that sets it.
+    // setsIsland's izero is a real zero on every kind that sets it.
     // A Collapse inverse's facts (shift, old_duration, the window) are
     // RELATIVE; its splice form's pre-splice origin rides `iorg` under
     // setsOrigin and shifts below like every absolute.
-    if (e.setsIsland) e.iepoch += delta;
+    if (e.setsIsland) e.izero += delta;
     if (e.setsOrigin) e.iorg += delta;
     for (auto& r : e.anchors) r.origin += delta;
     for (auto& r : e.seq_riders) r.origin += delta;  // the root's anchor
@@ -154,11 +152,11 @@ juce::var AudioEngine::getGraphState() {
     const int64_t rel = t - rootFrameTop();
     master_view = (double)celestrian::timing::posMod(rel, cycle);
   }
-  // The RAW island clock (epoch-relative, unwrapped): masterPos above is
+  // The RAW island clock (zero-relative, unwrapped): masterPos above is
   // folded on the CURRENT audible cycle, so its fold point jumps when a
   // live map edit changes that cycle mid-gesture. The UI folds this
   // invariant clock on its own (pinned) frame for a continuous cursor.
-  const double island_view = (double)(t - islandEpoch());
+  const double island_view = (double)(t - islandZero());
 
   if (root_node) {
     auto metadata = root_node->getMetadata();
@@ -185,11 +183,11 @@ void AudioEngine::attachTransportState(juce::DynamicObject& state,
   state.setProperty("isPlaying", (bool)is_playing_global.load());
   state.setProperty("masterPos", master_view);
   state.setProperty("islandPos", island_view);
-  // The island epoch is the UI's frame origin for every cycle-relative
+  // The island zero is the UI's frame origin for every cycle-relative
   // projection (kernel.md one-frame rule). It is NOT the root node's
-  // `origin` metadata — commit re-bases the epoch (StackNode::takeCommitted),
+  // `origin` metadata — commit re-bases the zero (StackNode::takeCommitted),
   // and the UI marking take-vs-ghost tiles needs the re-based value.
-  state.setProperty("islandEpoch", (double)islandEpoch());
+  state.setProperty("islandZero", (double)islandZero());
   // THE DEFINER, published: the sole committed
   // clip, or the definer stack, whose window re-establishes Q — the UI
   // reads this instead of re-deriving it with its own (drifting)

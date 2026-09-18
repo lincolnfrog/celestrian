@@ -99,7 +99,7 @@ class UiContractTests : public juce::UnitTest {
       lastDur = dur;
     }
 
-    const int64_t epochBefore = islandEpoch(engine);
+    const int64_t zeroBefore = islandZero(engine);
     engine.stopRecordingInNode(clipB);
     poll("stop-requested");
     // CONTRACT (learned from this harness's first run): the engine has
@@ -126,8 +126,8 @@ class UiContractTests : public juce::UnitTest {
                  "stop pads forward to the next boundary (no snap-down)");
     // No commit moves the island zero (docs/frame.md): the JS replay
     // seats the new take from the lanes.
-    const int64_t epochAfter = islandEpoch(engine);
-    expectEquals(epochAfter, epochBefore, "the zero stays through growth");
+    const int64_t zeroAfter = islandZero(engine);
+    expectEquals(zeroAfter, zeroBefore, "the zero stays through growth");
 
     // --- Dump the capture for the JS replay ---
     auto outFile = repoFile("shared/ui_contract_capture.json");
@@ -181,10 +181,10 @@ class UiContractTests : public juce::UnitTest {
         "masterPos");
   }
 
-  int64_t islandEpoch(AudioEngine& engine) {
+  int64_t islandZero(AudioEngine& engine) {
     return (int64_t)(double)engine.getGraphState()
         .getDynamicObject()
-        ->getProperty("islandEpoch");
+        ->getProperty("islandZero");
   }
 
   int64_t childOrigin(AudioEngine& engine, int index) {

@@ -106,18 +106,11 @@ std::unique_ptr<juce::AudioBuffer<float>> decodeAudioFile(
   return out;
 }
 
-/** The nearest whole Q to a QTime rational (0 when the denominator is
- * degenerate). */
-int64_t nearestWholeQ(int64_t num, int64_t den) {
-  if (den == 0) return 0;
-  return (int64_t)std::llround((double)num / (double)den);
-}
-
 }  // namespace
 
 bool AudioEngine::importAudio(const juce::String& uuid,
-                              const juce::String& path, int64_t at_q_num,
-                              int64_t at_q_den) {
+                              const juce::String& path,
+                              int64_t origin_samples) {
   if (root_node == nullptr) return false;
   if (root_node->hasActiveTake() || root_node->isArmedOrRecording()) {
     juce::Logger::writeToLog("AudioEngine: import refused - a take is live");
@@ -165,7 +158,7 @@ bool AudioEngine::importAudio(const juce::String& uuid,
   }
 
   const int64_t q = root_node->getQuantum();
-  const int64_t epoch = root_node->getEpoch();
+  const int64_t zero = root_node->getZero();
 
   if (stack != nullptr) {
     // A stack target gains a fresh clip child named after the file —
@@ -211,7 +204,7 @@ bool AudioEngine::importAudio(const juce::String& uuid,
     inv.takes.push_back(std::move(tp));
     inv.setsIsland = true;
     inv.iq = q;
-    inv.iepoch = epoch;
+    inv.izero = zero;
     reconcileTakes();  // log order: settled takes enter BEFORE this entry
     pushUndo(std::move(inv));
     clearRedo();
@@ -221,10 +214,13 @@ bool AudioEngine::importAudio(const juce::String& uuid,
     return true;
   }
 
-  // THE FIRST FORM: a first take of an empty clip. Placement is the
-  // nearest Q boundary to the drop (Q11: arm targets are Q boundaries)
-  // in the epoch frame; a pre-Q island takes the clock as the origin
-  // and the file's length as Q, exactly as a first recorded take.
+  // THE FIRST FORM: a first take of an empty clip. The view names the
+  // origin in absolute samples — computed from the frame zero it seated
+  // (docs/frame.md); the engine reads no frame — and the engine snaps
+  // it to the nearest Q boundary of the island grid, whose phase is the
+  // island zero (Q11: arm targets are Q boundaries). A pre-Q island
+  // takes the clock as the origin and the file's length as Q, exactly
+  // as a first recorded take.
   const int64_t length = audio->getNumSamples();
   int64_t duration = length;
   // Like a recorded commit (audit D4-7) no map is authored on the take;
@@ -249,8 +245,11 @@ bool AudioEngine::importAudio(const juce::String& uuid,
     }
     audio = std::move(padded);
   }
-  const int64_t origin = q > 0 ? epoch + nearestWholeQ(at_q_num, at_q_den) * q
-                               : global_transport_pos.load();
+  const int64_t origin =
+      q > 0 ? zero + (int64_t)std::llround((double)(origin_samples - zero) /
+                                            (double)q) *
+                          q
+            : global_transport_pos.load();
   const int64_t context_cycle = q > 0 ? calculateEffectiveCycleLength() : 0;
 
   // Commit like a take: the island snapshots its pre-take cycles
@@ -270,7 +269,7 @@ bool AudioEngine::importAudio(const juce::String& uuid,
   inv.takes.push_back(std::move(tp));
   inv.setsIsland = true;
   inv.iq = q;
-  inv.iepoch = epoch;
+  inv.izero = zero;
   settleAnchors(inv);
   reconcileTakes();  // log order: settled takes enter BEFORE this entry
   pushUndo(std::move(inv));

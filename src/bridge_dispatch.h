@@ -85,8 +85,4 @@ Method valueMethod(const char* name, int min_args, Fn fn,
 /** The GUI-free protocol surface. */
 std::vector<Method> engineMethods(Services s);
 
-/** A QTime rational from a bridge argument: a [num, den] array, or a
- * bare number taken as whole Qs. */
-std::pair<int64_t, int64_t> qtimeArg(const juce::var& v);
-
 }  // namespace celestrian::bridge

@@ -96,7 +96,7 @@ test('the definer trim (Q13): Q := the window; lock-collapse is audio-neutral; d
     await call(page, 'setLoopPoints', c1, Q, 2 * Q);
     let st = await state(page);
     expect(st.quantum).toBe(Q);
-    expect(st.islandEpoch).toBe(findNode(st, c1).origin + Q);
+    expect(st.islandZero).toBe(findNode(st, c1).origin + Q);
     expect(findNode(st, c1).duration).toBe(4 * Q);
     expect((await engine(page, 'status')).cycle).toBe(Q);
     await verifyHeard(page);
@@ -231,12 +231,12 @@ test('a shaped loop never moves an untouched lane, even when it owns the cycle',
         // an engine field: the engine publishes origins, the view seats.
         return { takeStartQ: lane.takeStartQ,
                  firstBright: (lane.reps.find(r => !r.ghost) || {}).startQ,
-                 epoch: vm.epochSamples };
+                 zero: vm.frameZero };
     };
     const a0 = await laneOf(a);
-    const epoch0 = a0.epoch;
+    const zero0 = a0.zero;
     const originB = findNode(await state(page), b).origin;
-    const inQ = mod(originB - epoch0, 4 * Q) / Q;  // B's origin, Qs into the frame
+    const inQ = mod(originB - zero0, 4 * Q) / Q;  // B's origin, Qs into the frame
     expect(inQ % 2, 'setup: B lands an odd number of Qs in').toBe(1);
     const stuck = 2 * Q;                  // start (inQ + 2) Qs off: odd, not free
     const free = inQ === 1 ? Q : 3 * Q;   // start (inQ + 1 or 3) Qs off: 2Q or 6Q, free
@@ -245,7 +245,7 @@ test('a shaped loop never moves an untouched lane, even when it owns the cycle',
     const a1 = await laneOf(a);
     // No free move reaches B's new top: the zero may still move by whole
     // cycles of A (invisible to A), but never by less.
-    expect(mod(a1.epoch - epoch0, 2 * Q), 'the zero moves only by whole cycles of A').toBe(0);
+    expect(mod(a1.zero - zero0, 2 * Q), 'the zero moves only by whole cycles of A').toBe(0);
     expect([a1.takeStartQ, a1.firstBright], 'A holds still').toEqual([a0.takeStartQ, a0.firstBright]);
     // The seating pulls the zero forward by whole cycles of A (2Q) until
     // B's top lies inside one, so B sits at its offset MOD 2Q.
@@ -253,7 +253,7 @@ test('a shaped loop never moves an untouched lane, even when it owns the cycle',
 
     await call(page, 'setLoopPoints', b, free, free + 4 * Q);
     const a2 = await laneOf(a);
-    expect(a2.epoch, 'free move: the frame moves to B\'s start').toBe(originB + free);
+    expect(a2.zero, 'free move: the frame moves to B\'s start').toBe(originB + free);
     expect([a2.takeStartQ, a2.firstBright], 'A reads as before').toEqual([a0.takeStartQ, a0.firstBright]);
     expect((await laneOf(b)).takeStartQ, 'B starts at the frame edge').toBe(0);
 

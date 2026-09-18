@@ -6,15 +6,18 @@
  *      seekTransport target, clamped into the audible loop's span
  *      (one rule for plain playback, trim view, and auditions).
  *   2. The mock's seekTransport (mock/transport.js, engine parity):
- *      a seek RE-BASES islandEpoch — the monotonic clock is never
- *      touched (kernel.md) — folds out-of-range targets on the
- *      audible cycle, and is REFUSED while any take is live or armed.
+ *      a PHASE ADVANCE (docs/frame.md) — the island's zero and every
+ *      origin move back by it; the monotonic clock is never touched
+ *      (kernel.md) — corrected for the clock since the poll it was
+ *      computed against (`atClock`), and REFUSED while any take is
+ *      live or armed. seek.js turns the ruler's target phase into it.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { seekTargetFromFrac } from '../session_view/ruler_seek.js';
+import { seekDelta } from '../seek.js';
 import {
     callNative, getState, loadScenario, advanceBy,
 } from '../mock_backend.js';
@@ -68,31 +71,59 @@ test('no frame yet → no target', () => {
 
 /* ---------- 2. the mock backend (engine parity) ---------- */
 
-test('seek re-bases the epoch; the monotonic clock never moves', async () => {
+test('a seek advances the phase by moving the zero and every origin; the monotonic clock never moves', async () => {
     loadScenario('example-1q-4q'); // committed island, cycle 4Q
     // The raw monotonic clock, reconstructed from the published pair
-    // (islandPos = raw − epoch, so raw = islandPos + epoch).
+    // (islandPos = raw − zero, so raw = islandPos + zero).
     const s0 = getState();
-    const rawBefore = s0.islandPos + s0.islandEpoch;
-    const ok = await callNative('seekTransport', 2.5 * Q);
-    assert.equal(ok, true);
+    const rawBefore = s0.islandPos + s0.islandZero;
+    const origins0 = s0.nodes.map(n => n.origin);
+    // The view's arithmetic (seek.js): the advance that lands 2.5Q.
+    const frame = { rawClock: rawBefore, zero: s0.islandZero, loopSamples: 4 * Q };
+    const delta = seekDelta(2.5 * Q, frame);
+    const ok = await callNative('seekTransport', delta, rawBefore);
+    assert.deepEqual(ok, { advance: delta, clock: rawBefore },
+        'the backend answers what it applied, and when');
     const s = getState();
     near(s.masterPos, 2.5 * Q, 'published view reads the seek');
-    near(s.islandPos, 2.5 * Q, 'islandPos teleports with the epoch');
-    near(s.islandPos + s.islandEpoch, rawBefore,
+    near(s.islandPos + s.islandZero, rawBefore,
         'the monotonic clock itself never moved (kernel.md)');
+    near(s.islandZero - s0.islandZero, -delta, 'the zero moved back by the advance');
+    s.nodes.forEach((n, i) => near(n.origin - origins0[i], -delta,
+        'every origin rode the zero (placement invariant)'));
 
     // Playback continues FROM the seek (phase, not a reset)
     advanceBy(Q);
     near(getState().masterPos, 3.5 * Q, 'advance rides the new phase');
 });
 
-test('out-of-range targets fold on the audible cycle', async () => {
+test('the advance corrects for the clock since the poll (atClock)', async () => {
     loadScenario('example-1q-4q'); // cycle 4Q
-    assert.equal(await callNative('seekTransport', 5 * Q), true);
-    near(getState().masterPos, 1 * Q, '5Q folds to 1Q on a 4Q cycle');
-    assert.equal(await callNative('seekTransport', -Q), true);
-    near(getState().masterPos, 3 * Q, 'negative folds from the end');
+    const s0 = getState();
+    const raw0 = s0.islandPos + s0.islandZero;
+    const frame = { rawClock: raw0, zero: s0.islandZero, loopSamples: 4 * Q };
+    const delta = seekDelta(Q, frame);
+    // The clock runs on between the poll and the seek…
+    advanceBy(Q / 3);
+    const applied = await callNative('seekTransport', delta, raw0);
+    near(getState().masterPos, Q, '…and the phase still lands where the view meant');
+    near(applied.advance, delta - Q / 3, 'the answer is the corrected advance');
+    // Without atClock the advance is taken as of now.
+    assert.ok(await callNative('seekTransport', Q));
+    near(getState().masterPos, 2 * Q, 'a bare advance moves the phase from where it is');
+});
+
+test('any advance folds on the audible cycle; a zero advance is a no-op', async () => {
+    loadScenario('example-1q-4q'); // cycle 4Q
+    const p0 = getState().masterPos;
+    assert.ok(await callNative('seekTransport', 5 * Q));
+    near(getState().masterPos, (p0 + Q) % (4 * Q), '5Q advances one Q on a 4Q cycle');
+    assert.ok(await callNative('seekTransport', -Q));
+    near(getState().masterPos, p0, 'a negative advance moves back');
+    const z = getState().islandZero;
+    assert.deepEqual(await callNative('seekTransport', 0),
+        { advance: 0, clock: getState().islandPos + z }, 'zero advance: answered');
+    assert.equal(getState().islandZero, z, 'zero advance: nothing moves');
 });
 
 test('refused while a take is live or armed (engine rule)', async () => {
@@ -104,6 +135,6 @@ test('refused while a take is live or armed (engine rule)', async () => {
         'live take: seek refused');
     advanceBy(Q);
     await callNative('stopRecordingInNode', clip);
-    assert.equal(await callNative('seekTransport', 0), true,
+    assert.ok(await callNative('seekTransport', 0),
         'take settled: seek allowed again');
 });

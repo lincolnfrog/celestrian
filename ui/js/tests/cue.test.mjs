@@ -46,7 +46,7 @@ async function seedCuedSong() {
 }
 
 /** Song rel of the mock transport on the 4Q song. `islandPos` is the
- * RAW epoch-relative clock (published masterPos is a view - it folds
+ * RAW zero-relative clock (published masterPos is a view - it folds
  * under active windows and froze one of these assertions). */
 function songRel(Q) {
     const st = getState();
@@ -104,7 +104,7 @@ test('record INTO a cued step lands at the SONG TOP, auto-gated', async () => {
     const clip = nodeById(id, getState().nodes);
     assert.ok(!clip.isRecording, 'committed');
     assert.equal(clip.duration, 2 * Q, 'a step-sized part (S18)');
-    const rel = ((clip.origin - getState().islandEpoch) % (4 * Q) + 4 * Q)
+    const rel = ((clip.origin - getState().islandZero) % (4 * Q) + 4 * Q)
         % (4 * Q);
     assert.ok(rel < 2 * Q && rel % Q === 0,
         'anchored at the SONG TOP - where cue playback reads it: ' + rel);

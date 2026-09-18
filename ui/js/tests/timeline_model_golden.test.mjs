@@ -68,11 +68,11 @@ test('golden: snapCommittedDuration', () => {
 
 test('golden: originQ (D-T3 physical/musical boundary projection)', () => {
     for (const c of golden.qtime_origin_cases) {
-        const q = originQ(c.origin, c.epoch, c.qSamples);
+        const q = originQ(c.origin, c.zero, c.qSamples);
         check(q.num, c.expectedNum, `originQ num: ${c.name}`);
         check(q.den, c.expectedDen, `originQ den: ${c.name}`);
         // Lossless at the same exchange rate: Q → samples lands exactly (I1).
-        check(toSamples(q, c.qSamples), c.origin - c.epoch,
+        check(toSamples(q, c.qSamples), c.origin - c.zero,
             `originQ round-trip: ${c.name}`);
     }
 });

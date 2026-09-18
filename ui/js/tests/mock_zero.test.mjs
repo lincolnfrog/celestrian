@@ -29,18 +29,18 @@ test('the island zero is the first take\'s origin and no commit moves it (engine
     await callNative('startRecordingInNode', a); // resets transport to 0
     advanceBy(Q);
     await callNative('stopRecordingInNode', a);
-    assert.equal(getState().islandEpoch, 0);
+    assert.equal(getState().islandZero, 0);
 
     // Loop a while, then take 2 grows the cycle 1Q → 4Q (simple
     // extension): the zero stays — the view seats the take at its own
     // top (docs/frame.md), nothing in the backend moves
     advanceBy(4 * Q);
     await recordTake(stackId, 4 * Q);
-    assert.equal(getState().islandEpoch, 0);
+    assert.equal(getState().islandZero, 0);
 
     // Take 3 fits inside the 4Q cycle (no growth): still nothing moves
     await recordTake(stackId, Q);
-    assert.equal(getState().islandEpoch, 0);
+    assert.equal(getState().islandZero, 0);
 
     // The awaiting-stop path committed exact lengths
     const clips = getState().nodes[0].nodes;

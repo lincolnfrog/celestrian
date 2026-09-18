@@ -59,23 +59,23 @@ test('setSegments: publish, validation, delegation, undo', async () => {
 
 test('cell map shortens the audible cycle; record-through-cells parity', async () => {
     const { groupId } = await buildGroup();
-    const epoch = getState().islandEpoch;
+    const zero = getState().islandZero;
 
     await callNative('setSegments', groupId, [0, 1000, 2000, 3000]);
     // A map edit moves no island fact (docs/frame.md): the zero is take
     // A's origin, 0, before and after.
-    assert.equal(getState().islandEpoch, epoch, 'a map edit never moves the zero');
+    assert.equal(getState().islandZero, zero, 'a map edit never moves the zero');
     // Audible cycle = lcm(Q=1000, period 2000) = 2000: published
     // masterPos wraps on it, from the zero.
-    setMasterPos(epoch + 4500);
-    assert.equal(getState().masterPos, ((epoch + 4500 - getState().islandEpoch) % 2000 + 2000) % 2000,
+    setMasterPos(zero + 4500);
+    assert.equal(getState().masterPos, ((zero + 4500 - getState().islandZero) % 2000 + 2000) % 2000,
         'view wraps on the cell period');
 
     // Record C through the cells: heard pend, one-period cap, dense C.
     const cId = await callNative('createNode', 'clip', groupId);
     await callNative('startRecordingInNode', cId);
     assert.equal(nodeById(cId).isPendingStart, true, 'pends in heard time');
-    assert.equal(nodeById(cId).pendingStartAt, epoch + 5000,
+    assert.equal(nodeById(cId).pendingStartAt, zero + 5000,
         'heard target on the period grid');
     advanceBy(500);
     advanceBy(2000);  // one full period → cap commits
@@ -97,7 +97,7 @@ test('cell map shortens the audible cycle; record-through-cells parity', async (
 
 test('view model: multi-segment group lane — dims data, chip, no brackets', () => {
     const state = {
-        quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 1000, islandZero: 0, masterPos: 0, perf,
         nodes: [{
             id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
@@ -137,7 +137,7 @@ test('view model: multi-segment group lane — dims data, chip, no brackets', ()
 
 test('view model: multi-segment CLIP lane rests in heard time (srcSegs)', () => {
     const state = {
-        quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 1000, islandZero: 0, masterPos: 0, perf,
         nodes: [
             { id: 'c', name: 'C', type: 'clip', duration: 4000, origin: 0,
               windowActive: true, loopBypassed: false,
@@ -156,7 +156,7 @@ test('view model: multi-segment CLIP lane rests in heard time (srcSegs)', () => 
         'reps carry the concatenated content slices');
     // Recording cue threads the map context from the segments too.
     const state2 = {
-        quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 1000, islandZero: 0, masterPos: 0, perf,
         nodes: [{
             id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
@@ -187,7 +187,7 @@ test('view model: periodQ is EXACT for fractional-bound maps (fp)', () => {
     // lengths sum to exactly 1Q. It carries its own `quantum` and so
     // is independent of the mock's rate.
     const state = {
-        quantum: 44100, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 44100, islandZero: 0, masterPos: 0, perf,
         nodes: [
             { id: 'c', name: 'C', type: 'clip', duration: 132300, origin: 0,
               windowActive: true, loopBypassed: false,
@@ -209,7 +209,7 @@ test('view model: cut-band fields (design A, 2026-07-22)', () => {
     // Group with a cell map: bands editable in place over the intrinsic
     // cycle; the covered set rides bandSegs.
     const groupState = (extraKids = []) => ({
-        quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 1000, islandZero: 0, masterPos: 0, perf,
         nodes: [{
             id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
@@ -238,7 +238,7 @@ test('view model: cut-band fields (design A, 2026-07-22)', () => {
     // A heard-view clip lane (active map) has NO in-place bands — its
     // raw truth lives in the edit view.
     const state3 = {
-        quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 1000, islandZero: 0, masterPos: 0, perf,
         nodes: [
             { id: 'c', name: 'C', type: 'clip', duration: 4000, origin: 0,
               windowActive: true, loopBypassed: false, loopStart: 0,
@@ -265,7 +265,7 @@ test('view model: cut-band fields (design A, 2026-07-22)', () => {
 
 test('view model: enclosing map projects excluded regions onto children', () => {
     const state = {
-        quantum: 1000, islandEpoch: 0, masterPos: 0, perf,
+        quantum: 1000, islandZero: 0, masterPos: 0, perf,
         nodes: [{
             id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopBypassed: false,
@@ -300,7 +300,7 @@ test('view model: enclosing map projects excluded regions onto children', () => 
     assert.equal(aB.periodQ, 4);
 });
 
-test('multi-segment definer re-trim: Q := period, epoch := origin\' + mapOffset(0)', async () => {
+test('multi-segment definer re-trim: Q := period, zero := origin\' + mapOffset(0)', async () => {
     loadScenario('empty');
     const aId = await recordTake('', 4000, { stopEarly: 0, settle: 0 });
     assert.equal(getState().quantum, 4000, 'Q established by the sole take');
@@ -308,8 +308,8 @@ test('multi-segment definer re-trim: Q := period, epoch := origin\' + mapOffset(
     // Punch Q2 out: cells {[0,1000),[2000,4000)} → period 3000.
     await callNative('setSegments', aId, [0, 1000, 2000, 4000]);
     assert.equal(getState().quantum, 3000, 'Q := the map period');
-    assert.equal(getState().islandEpoch, nodeById(aId).origin,
-        'epoch = origin\' + mapOffset(0) (first cell at 0)');
+    assert.equal(getState().islandZero, nodeById(aId).origin,
+        'zero = origin\' + mapOffset(0) (first cell at 0)');
 
     await callNative('undo');
     assert.equal(getState().quantum, 4000, 'undo restores the grid');

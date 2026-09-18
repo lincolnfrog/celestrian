@@ -45,7 +45,7 @@ Three definitions and two equations.
 **Time.** One monotonic clock `t` per engine — the same clock the
 pre-record ring is built on. It never wraps, never resets, and is never
 mutated by musical events. Everything cyclic is a *derived view*:
-`phase(t, period, epoch) = (t − epoch) mod period`.
+`phase(t, period, zero) = (t − zero) mod period`.
 
 **Node.** Every node is `(content, period, origin)`:
 
@@ -102,7 +102,7 @@ That is the whole kernel. Everything else is a projection of it:
 | one-shot vs loop | `period := context cycle` vs `period := length` — a knob, not a formula |
 | loop window | `period := window_len`, content offset by `window_start` |
 | stored Q | `island.Q`, one field at the island root |
-| "island" | the scope sharing `(Q, epoch)` |
+| "island" | the scope sharing `(Q, zero)` |
 
 Every alignment invariant (I1–I4, I6) is true **by construction**.
 
@@ -110,11 +110,11 @@ Every alignment invariant (I1–I4, I6) is true **by construction**.
 
 Every cycle-relative projection — the UI view AND the clip arm/commit
 math (anchors, slots, effective positions) — is computed relative to
-`getIslandEpoch()`. Mixing absolute-frame math with the epoch-rebased
+`getIslandZero()`. Mixing absolute-frame math with the zero-rebased
 view re-splits audio from visuals.
 
-A bonus of the epoch frame: every committed sibling's phase is simply
-`rel mod duration`, because committed origins are ≡ epoch mod their
+A bonus of the island frame: every committed sibling's phase is simply
+`rel mod duration`, because committed origins are ≡ zero mod their
 durations. That deleted the arm-path sibling launch-point scans and the
 playback offsets entirely.
 
@@ -130,7 +130,7 @@ itself is never wrapped, reset, or snapped — pinned by
 
 **The island zero is data, not the clock.** The first arm stores its
 moment provisionally and the first commit makes the take's origin the
-island zero (`islandEpoch` in code); stop freezes the view and play
+island zero (`islandZero` in code); stop freezes the view and play
 resumes the phase. No commit moves it (`StackNode::takeCommitted`):
 where a new take sits on screen is the view's seating from the lanes
 (frame.md), which puts it in the cycle it started in without anything
@@ -146,7 +146,7 @@ Idle → Armed(origin) → Capturing → PendingStop(boundary) → Committed
 ```
 
 The arm-target math is pure in `timing.h` (`armTarget`,
-`inAnticipatoryWindow` — both golden-vectored, both epoch-frame), and
+`inAnticipatoryWindow` — both golden-vectored, both zero-frame), and
 stop boundaries are chosen by the audio thread from its own write
 position. The commit event carries `origin` + `length` and nothing
 else. recording.md's scenario tables map 1:1 onto golden vectors for
@@ -171,19 +171,19 @@ it.
 
 - **Save/Load:** the persistent state per clip is
   `{origin, length, period-source, window, buffer}` plus island
-  `{Q, epoch}`. The serialization format writes itself.
+  `{Q, zero}`. The serialization format writes itself.
 - **Warp:** a rate-changing time-map `m(t) = origin + r·(t − origin)` —
   the same primitive, not a new subsystem. Q12's rational `QTime`
   removed its blocker.
 - **Connections:** serial composition is a time-map that re-bases
-  epochs per traversal, and branch-with-chance is choosing which
+  zeros per traversal, and branch-with-chance is choosing which
   child's map is active this cycle. Both shipped as cue steps and
   successor graphs (sequencer.md §13, §14). Parallel and serial share
   one algebra.
 - **Multi-range loops:** a piecewise time-map over the window list
   (time_maps.md). Conservation-of-loop-length is a constraint on the
   pieces, checked in one place.
-- **Islands:** an island is literally `(Q, epoch)` at a subtree root.
+- **Islands:** an island is literally `(Q, zero)` at a subtree root.
 - **The view model:** `deriveViewModel` is a direct transcription of
   §2's table — the UI never invents timing.
 
@@ -195,7 +195,7 @@ All four steps complete; the estimated end-state deletions all landed.
 
 | Step | What it did |
 |---|---|
-| 1 ✅ 2026-07-07 | **Q + epoch stored at the island root** (`StackNode::quantum_samples_` / `epoch_samples_`), set once at first commit and never derived again. Q survives its creator: a Q/2-snapped overdub no longer halves Q, and deleting the establishing clip leaves Q intact. Composite duration corrected from min-of-children to LCM-of-children. |
+| 1 ✅ 2026-07-07 | **Q + zero stored at the island root** (`StackNode::quantum_samples_` / `zero_samples_`), set once at first commit and never derived again. Q survives its creator: a Q/2-snapped overdub no longer halves Q, and deleting the establishing clip leaves Q intact. Composite duration corrected from min-of-children to LCM-of-children. |
 | 2 ✅ 2026-07-07 | **`origin` introduced**, playback deriving launch per block via `timing::launchPointFor(origin, dur)`; rotation deleted entirely. Consolidation completed 2026-07-16: `launch_point_samples`, `anchor_phase_samples` and `trigger_master_position` deleted, `launchPoint` derived at read time, the pixel x/slot math out of C++ entirely. **One stored `origin` per clip**, as §2 specifies. |
 | 3 ✅ 2026-07-07 | **Monotonic master** — the LCM wrap, LCM-growth snap, polyrhythm suppression, first-clip-snap and the `lcm_before_recording_` / `last_recording_duration_` bookkeeping all deleted (~90 lines from the callback). Completed 2026-07-16: the last two clock mutations went, so §2's "never wraps, never resets, never mutated" holds without exception. |
 | 4 ✅ 2026-07-09/21/22 | **Time-maps** — phase 1 (loop windows, `internal_transport_` deleted), phase 2 (recording through an active map on the reified `TimeMap`), phase 3 (multi-segment maps, fully fractal). See time_maps.md. |
@@ -247,7 +247,7 @@ mutable global time:
 | `last_recording_duration_` guess | reconstruct "where were we" after mutation | `t` is never mutated; there is nothing to reconstruct |
 
 **The once-per-island first-clip clock reset.** Retained through step 3
-as "it IS the epoch capture". **Replaced 2026-07-16** by actual epoch
+as "it IS the zero capture". **Replaced 2026-07-16** by actual zero
 capture — the first arm stores its moment as data, the clock untouched
 — and the stop-reset in `togglePlayback` by pause/resume.
 
@@ -259,7 +259,7 @@ were ever wanted *in the engine*, it would be a root time-map — the
 same primitive as everything else that transforms time — not a second
 clock mutation.
 
-**Polyrhythmic expansions keeping the old epoch** ("the cursor sails
+**Polyrhythmic expansions keeping the old zero** ("the cursor sails
 on"). **Refined 2026-07-16** after the field report that a 5Q take
 teleported to 12Q of an exploded 20Q frame: every cycle growth moved
 the stored zero to the take's heard top. **Superseded 2026-09-16:** the
@@ -270,7 +270,7 @@ it is the watched cursor that sails on.
 **Loop-on-collapse as the playback equation's map.** The original §2
 keyed `m` to whether a stack was collapsed. **Convicted by I6b**
 (2026-07-09): a view action must not change the sound. Activation
-became data. The epoch-anchored stack form that replaced it was itself
+became data. The zero-anchored stack form that replaced it was itself
 **retired by Q18** (2026-09-01) — a stack now stores an origin like a
 clip, so there is one anchoring law (time_maps.md §8 carries that
 entry).
@@ -278,8 +278,8 @@ entry).
 **Risks that resolved.** Q9, "store origins in Q-rationals or warp
 breaks sample-anchors", gated step 2 until **Q12** adopted rational
 `QTime` (2026-07-16) and nothing gated the migration. "Deleting the
-first clip orphans the epoch" resolved under Q1/Q13 — Q and epoch
+first clip orphans the zero" resolved under Q1/Q13 — Q and zero
 survive their creating clip, and re-open when the island falls back to
 one committed clip. int64 monotonic time at 48 kHz overflows after ~6
 million years; no action required, though wrap-view math uses the
-epoch-relative form to keep intermediates small.
+zero-relative form to keep intermediates small.

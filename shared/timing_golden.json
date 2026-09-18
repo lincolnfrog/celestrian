@@ -86,12 +86,12 @@
   ],
 
   "qtime_origin_cases": [
-    { "name": "origin AT epoch -> 0Q", "origin": 44100, "epoch": 44100, "qSamples": 44100, "expectedNum": 0, "expectedDen": 1 },
-    { "name": "2Q past epoch @44100", "origin": 132300, "epoch": 44100, "qSamples": 44100, "expectedNum": 2, "expectedDen": 1 },
-    { "name": "half-Q offset from epoch 0", "origin": 22050, "epoch": 0, "qSamples": 44100, "expectedNum": 1, "expectedDen": 2 },
-    { "name": "3Q offset @48000 (device-rate independence)", "origin": 144000, "epoch": 0, "qSamples": 48000, "expectedNum": 3, "expectedDen": 1 },
-    { "name": "unsnapped offset stays exact rational (D-T5)", "origin": 30000, "epoch": 0, "qSamples": 44100, "expectedNum": 100, "expectedDen": 147 },
-    { "name": "origin before epoch -> negative offset", "origin": 0, "epoch": 22050, "qSamples": 44100, "expectedNum": -1, "expectedDen": 2 }
+    { "name": "origin AT zero -> 0Q", "origin": 44100, "zero": 44100, "qSamples": 44100, "expectedNum": 0, "expectedDen": 1 },
+    { "name": "2Q past zero @44100", "origin": 132300, "zero": 44100, "qSamples": 44100, "expectedNum": 2, "expectedDen": 1 },
+    { "name": "half-Q offset from zero at 0", "origin": 22050, "zero": 0, "qSamples": 44100, "expectedNum": 1, "expectedDen": 2 },
+    { "name": "3Q offset @48000 (device-rate independence)", "origin": 144000, "zero": 0, "qSamples": 48000, "expectedNum": 3, "expectedDen": 1 },
+    { "name": "unsnapped offset stays exact rational (D-T5)", "origin": 30000, "zero": 0, "qSamples": 44100, "expectedNum": 100, "expectedDen": 147 },
+    { "name": "origin before zero -> negative offset", "origin": 0, "zero": 22050, "qSamples": 44100, "expectedNum": -1, "expectedDen": 2 }
   ],
 
   "snap_cases": [

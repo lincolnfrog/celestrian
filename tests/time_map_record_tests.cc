@@ -17,7 +17,7 @@ using test_utils::NodeContext;
  * Recording through an active time-map (docs/time_maps.md phase 2).
  *
  * Stage 2 (context plumbing): a mapping stack publishes the time-map
- * facts — the map itself, the heard grid anchor (`map_heard_epoch`),
+ * facts — the map itself, the heard grid anchor (`map_heard_top`),
  * the nesting count — to its whole subtree, while the invariant island
  * clock (`island_pos`) passes through unfolded. These are the facts the
  * through-map arm/capture math consumes.
@@ -54,7 +54,7 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       NodeContext nc = contextFor(stack, 16, 7500);
       nc.ctx.is_playing = true;
-      nc.ctx.cycle_epoch = 7000;
+      nc.ctx.frame_top = 7000;
       stack.control(nullptr, 0, nc.ctx);
 
       expect(p->called, "probe reached");
@@ -64,7 +64,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       // Q18: the heard grid anchor is O + a0 (the map's inner start
       // sounds at its own moment); O = the received top for an
       // unanchored stack, and map_origin carries O itself.
-      expectEquals((juce::int64)p->seen.map_heard_epoch, (juce::int64)8000,
+      expectEquals((juce::int64)p->seen.map_heard_top, (juce::int64)8000,
                    "heard grid anchor = O + mapOffset(0)");
       expectEquals((juce::int64)p->seen.map_origin, (juce::int64)7000,
                    "map_origin = the mapping stack's frame origin");
@@ -72,8 +72,8 @@ class TimeMapRecordTests : public juce::UnitTest {
       // rel = (7500 − 7000) mod 1000 = 500 → folded clock 7000+1000+500.
       expectEquals((juce::int64)p->seen.master_pos, (juce::int64)8500,
                    "master_pos folded through the map");
-      expectEquals((juce::int64)p->seen.cycle_epoch, (juce::int64)8000,
-                   "cycle_epoch re-based to the map's heard-0 position");
+      expectEquals((juce::int64)p->seen.frame_top, (juce::int64)8000,
+                   "frame_top re-based to the map's heard-0 position");
       expectEquals((juce::int64)p->seen.island_pos, (juce::int64)7500,
                    "island_pos passes through UNFOLDED");
     }
@@ -89,7 +89,7 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       NodeContext nc = contextFor(stack, 16, 7500);
       nc.ctx.is_playing = true;
-      nc.ctx.cycle_epoch = 7000;
+      nc.ctx.frame_top = 7000;
       stack.control(nullptr, 0, nc.ctx);
 
       expect(!p->seen.map.active(), "no map delivered");
@@ -110,7 +110,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       outer.addChild(std::move(inner));
       outer.setLoopPoints(1000, 2000);
 
-      NodeContext nc = contextFor(outer, 16, 2500);  // cycle_epoch 0
+      NodeContext nc = contextFor(outer, 16, 2500);  // frame_top 0
       nc.ctx.is_playing = true;
       outer.control(nullptr, 0, nc.ctx);
 
@@ -118,9 +118,9 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "composed maps counted (recording refuses > 1)");
       expectEquals((juce::int64)p->seen.map.period(), (juce::int64)300,
                    "innermost map delivered");
-      // Outer folds 2500 → child time 1500, child epoch 1000; the inner
-      // stack's RECEIVED epoch is therefore the outer window top.
-      expectEquals((juce::int64)p->seen.map_heard_epoch, (juce::int64)1000,
+      // Outer folds 2500 → child time 1500, child zero 1000; the inner
+      // stack's RECEIVED zero is therefore the outer window top.
+      expectEquals((juce::int64)p->seen.map_heard_top, (juce::int64)1000,
                    "heard anchor = inner stack's received cycle top");
       expectEquals((juce::int64)p->seen.island_pos, (juce::int64)2500,
                    "island_pos still unfolded through two maps");
@@ -137,7 +137,7 @@ class TimeMapRecordTests : public juce::UnitTest {
 
     // Drive control in fixed blocks over [t, until) with the island
     // facts a mapping-root graph receives from the engine (the root
-    // holds Q = 1000, epoch 0).
+    // holds Q = 1000, zero at 0).
     auto driveControl = [&](StackNode& root, int64_t& t, int64_t until,
                             int block) {
       NodeContext nc = contextFor(root, block);
@@ -174,7 +174,7 @@ class TimeMapRecordTests : public juce::UnitTest {
         "dense silence + origin + commit)");
     {
       StackNode root("Root");
-      root.establishIsland(1000, 0);  // Q = 1000, epoch = 0
+      root.establishIsland(1000, 0);  // Q = 1000, zero = 0
       root.addChild(makeCommittedSibling());
       root.setLoopPoints(1000, 3000);  // window [1Q, 3Q): period 2000
 
@@ -206,7 +206,7 @@ class TimeMapRecordTests : public juce::UnitTest {
                    "heard length = one map period");
       expectEquals((juce::int64)take->contextCycle(), (juce::int64)2000,
                    "heard frame at arm = effective cycle (window length)");
-      expectEquals((juce::int64)root.getIslandEpoch(), (juce::int64)0,
+      expectEquals((juce::int64)root.getIslandZero(), (juce::int64)0,
                    "no island fact moves at commit");
       expectEquals((juce::int64)root.getIntrinsicDuration(), (juce::int64)4000,
                    "island cycle unchanged");
@@ -400,7 +400,7 @@ class TimeMapRecordTests : public juce::UnitTest {
         ctx.is_playing = true;
         ctx.quantum = 1000;
         ctx.map = cells;
-        ctx.map_heard_epoch = 0;
+        ctx.map_heard_top = 0;
         ctx.map_count = 1;
         ctx.prerecord_ring = ringPtrs;
         ctx.prerecord_ring_len = (int)ring.size();
@@ -973,17 +973,17 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // TWO-ANCHOR CONTINUITY (owner ruling 2026-08-09): the sounding
       // sample keeps sounding (origin re-anchor, exactly the
-      // 2026-07-25h algebra) AND the island epoch rides the SAME
+      // 2026-07-25h algebra) AND the island zero rides the SAME
       // whole-Q delta, so the edited clip's frame position — the
       // timeline the user drew — never changes. The fold, not the
       // clip, absorbs the difference ("the master transport is an
       // implementation detail").
-      auto islandEpoch = [&]() {
+      auto islandZero = [&]() {
         return (int64_t)(double)engine.getGraphState()
             .getDynamicObject()
-            ->getProperty("islandEpoch");
+            ->getProperty("islandZero");
       };
-      const int64_t ep0 = islandEpoch();
+      const int64_t ep0 = islandZero();
 
       // A cut that KEEPS p0's region: {[0, 1Q), [2Q, 3Q)}.
       timing::TimeMap m1;
@@ -992,7 +992,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       m1.segs[1] = {2 * dA, 3 * dA};
       engine.setSegments(bId, m1);
       const int64_t orgB1 = nodeProp(bId, "origin");
-      const int64_t ep1 = islandEpoch();
+      const int64_t ep1 = islandZero();
       expectEquals((juce::int64)p0Of(orgB1, m1), (juce::int64)p0,
                    "covered position keeps sounding across the edit");
       // The island zero does not ride the re-anchor (docs/frame.md):
@@ -1017,7 +1017,7 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.setSegments(bId, m2, /*live=*/true);
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB1,
                    "removed sounding region: origin stays put");
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)ep1,
+      expectEquals((juce::int64)islandZero(), (juce::int64)ep1,
                    "a map edit never moves the zero");
 
       // ONE undo restores both anchors: consecutive Segments edits
@@ -1026,23 +1026,23 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.undo();
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
                    "undo restores the pre-edit origin");
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)ep0,
-                   "undo restores the pre-edit epoch");
+      expectEquals((juce::int64)islandZero(), (juce::int64)ep0,
+                   "undo restores the pre-edit zero");
 
       // SEPARATE GESTURES ARE SEPARATE UNDO STEPS (owner ruling
       // 2026-09-10): the same two maps as two gestures (no `live`) —
       // one undo takes back m2 alone, leaving m1's anchors standing.
       engine.setSegments(bId, m1);
       const int64_t orgG1 = nodeProp(bId, "origin");
-      const int64_t epG1 = islandEpoch();
+      const int64_t epG1 = islandZero();
       engine.setSegments(bId, m2);
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)epG1,
+      expectEquals((juce::int64)islandZero(), (juce::int64)epG1,
                    "gesture 2: the zero still never moves");
       engine.undo();
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgG1,
                    "one undo: back to gesture 1's origin, not before it");
-      expectEquals((juce::int64)islandEpoch(), (juce::int64)epG1,
-                   "one undo: back to gesture 1's epoch");
+      expectEquals((juce::int64)islandZero(), (juce::int64)epG1,
+                   "one undo: back to gesture 1's zero");
       engine.undo();
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
                    "the second undo takes back gesture 1");

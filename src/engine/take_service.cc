@@ -240,10 +240,10 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
       if (sq->any_cue && sq->total > 0) {
         // The song position THIS stack reads (audit D15-1): its received
         // clock — through every ancestor's map, fold and cue — measured
-        // from its own frame origin (a group's Q18 origin; the epoch for
+        // from its own frame origin (a group's Q18 origin; the zero for
         // the never-anchored root), exactly as the audio thread's
         // childContext looks the step up. The raw clock from the island
-        // epoch is that position only for a plain root song.
+        // zero is that position only for a plain root song.
         const int64_t rel = celestrian::heard::songPositionAt(
             *s, celestrian::heard::receivedAt(*s, global_transport_pos.load(),
                                               rootScope()));
@@ -325,7 +325,7 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
   }
 
   // The clock is NEVER reset (kernel.md §2) — not even for the first
-  // clip: the island epoch (epoch := arm moment) is captured as data in
+  // clip: the island zero (zero := arm moment) is captured as data in
   // ClipNode's first-clip arm path and the clock is untouched.
   // ONE PERFORMANCE, ONE ARM MOMENT: reserve every member's take buffer
   // first (slow on eager-commit platforms), THEN publish the Armed
@@ -363,7 +363,7 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
     PendingTake p;
     for (auto* target : targets) p.uuids.push_back(target->getUuid());
     p.q_before = root_node->getQuantum();
-    p.epoch_before = root_node->getEpoch();
+    p.zero_before = root_node->getZero();
     // Aimed at a looping step? The nearest auditioning ancestor that is
     // the DIRECT parent of a target (§11.5) names the auto-gate.
     for (auto* target : targets) {
@@ -445,7 +445,7 @@ void AudioEngine::newTake(const juce::String& uuid) {
   PendingTake p;
   p.retake = true;
   p.q_before = root_node->getQuantum();
-  p.epoch_before = root_node->getEpoch();
+  p.zero_before = root_node->getZero();
   std::vector<celestrian::ClipNode*> prepared;
   for (auto* t : targets) {
     const int prev = t->activeTake();
@@ -708,7 +708,7 @@ void AudioEngine::reconcileTakes() {
     }
     inv.setsIsland = true;
     inv.iq = done.q_before;
-    inv.iepoch = done.epoch_before;
+    inv.izero = done.zero_before;
     if (done.retake) {
       for (auto* clip : committed) {
         if (clip->reservedStorage() != nullptr) compactClipToHeap(*clip);

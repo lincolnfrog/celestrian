@@ -5,11 +5,11 @@
  * (Q18, composition.md §0/§8; the anchoring law, time_maps.md §5): a
  * window or segment map on a clip or a stack picks material by buffer
  * position, anchored at the node's own origin, so nothing selects
- * content through the island epoch and an epoch move on its own never
+ * content through the island zero and a zero move on its own never
  * changes what sounds. These tests pin that at the audio output:
  *   - a definer stack's re-trim selects buffer samples [start, end)
  *     (multi-segment: the buffer segments), moving the definer's
- *     origin — and its members' — together with the epoch;
+ *     origin — and its members' — together with the zero;
  *   - the group lock-collapse is audio-neutral;
  *   - heard_index.h, the message-thread solver every phase-preserving
  *     edit reads, equals the render;
@@ -152,7 +152,7 @@ class ContentFrameTests : public juce::UnitTest {
       expectEquals(rootProp(engine, "quantum"), D, "Q := D");
       const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
       // Mirror the engine clock exactly from here on.
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
 
       // Trim the group to [ws, we): Q := len. Phase-preserving: the
@@ -185,7 +185,7 @@ class ContentFrameTests : public juce::UnitTest {
       const int64_t t1 = clock;
       const int64_t org1 = (int64_t)deepProp(engine, ids[0], "origin");
       // Heard index right before the second edit, by the FIRST window's law.
-      const int64_t q0 = ws + mod(t1 - rootProp(engine, "islandEpoch"), len);
+      const int64_t q0 = ws + mod(t1 - rootProp(engine, "islandZero"), len);
       juce::ignoreUnused(org1);
       const int64_t qT = ws2 + mod(q0 - ws2, len2);
       engine.setLoopPoints(stack_id, ws2, we2);
@@ -206,7 +206,7 @@ class ContentFrameTests : public juce::UnitTest {
       expectEquals((int64_t)deepProp(engine, stack_id, "loopStart"), ws,
                    "undo: first window back");
       const int64_t t2 = clock;
-      const int64_t r0 = ws + mod(t2 - rootProp(engine, "islandEpoch"), len);
+      const int64_t r0 = ws + mod(t2 - rootProp(engine, "islandZero"), len);
       out.clear();
       driveRamp(engine, len, clock, true, &out);
       const int bad3 = mismatches(out, table, [&](int64_t t) {
@@ -237,7 +237,7 @@ class ContentFrameTests : public juce::UnitTest {
       engine.stopRecordingInNode(stack_id);
       driveRamp(engine, BLOCK, clock, true, nullptr);
       const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
 
       celestrian::timing::TimeMap m;
@@ -247,13 +247,13 @@ class ContentFrameTests : public juce::UnitTest {
       const int64_t P = 20000;
       engine.setSegments(stack_id, m);
       expectEquals(rootProp(engine, "quantum"), P, "Q := the map period");
-      const int64_t epoch1 = rootProp(engine, "islandEpoch");
+      const int64_t zero1 = rootProp(engine, "islandZero");
       for (const auto& id : ids) {
         // Q18: the map anchors at the stack's origin + mapOffset(0); the
         // members moved with their group (origin == the stack's).
         expectEquals((int64_t)deepProp(engine, id, "origin"),
-                     epoch1 - m.segs[0].start,
-                     "members' origins == stack origin == epoch - a0");
+                     zero1 - m.segs[0].start,
+                     "members' origins == stack origin == zero - a0");
         expectEquals((int64_t)deepProp(engine, stack_id, "origin"),
                      (int64_t)deepProp(engine, id, "origin"),
                      "the stack carries the same origin");
@@ -263,7 +263,7 @@ class ContentFrameTests : public juce::UnitTest {
       std::vector<std::pair<int64_t, float>> out;
       driveRamp(engine, 2 * P, clock, true, &out);
       const int bad = mismatches(out, table, [&](int64_t t) {
-        const int64_t h = mod(t - epoch1, P);
+        const int64_t h = mod(t - zero1, P);
         return h < 10000 ? 5000 + h : 20000 + (h - 10000);
       });
       expectEquals(bad, 0, "heard walks the segments in buffer coordinates");
@@ -289,7 +289,7 @@ class ContentFrameTests : public juce::UnitTest {
       engine.stopRecordingInNode(stack_id);
       driveRamp(engine, BLOCK, clock, true, nullptr);
       const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
       const int64_t ws = D / 4, we = (3 * D) / 4, len = we - ws;
       engine.setLoopPoints(stack_id, ws, we);
@@ -298,7 +298,7 @@ class ContentFrameTests : public juce::UnitTest {
       engine.createNode("clip");
       const juce::String t2 = lastTopLevelId(engine);
       const int64_t tA = clock;
-      const int64_t hA = ws + mod(tA - rootProp(engine, "islandEpoch"), len);
+      const int64_t hA = ws + mod(tA - rootProp(engine, "islandZero"), len);
       engine.startRecordingInNode(t2);
       expectEquals((int64_t)deepProp(engine, ids[0], "duration"), len,
                    "members collapsed at arm");
@@ -326,7 +326,7 @@ class ContentFrameTests : public juce::UnitTest {
       engine.stopRecordingInNode(c);
       driveRamp(engine, BLOCK, clock, true, nullptr);
       const int64_t origin0 = (int64_t)deepProp(engine, c, "origin");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
       engine.setLoopPoints(c, D / 5, (4 * D) / 5);
       auto* clip = dynamic_cast<celestrian::ClipNode*>(engine.findNodeByUuidForTest(c));
@@ -358,7 +358,7 @@ class ContentFrameTests : public juce::UnitTest {
       engine.stopRecordingInNode(stack_id);
       driveRamp(engine, BLOCK, clock, true, nullptr);
       const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
       engine.setLoopPoints(stack_id, D / 3, (2 * D) / 3);
       auto* stack = dynamic_cast<celestrian::StackNode*>(engine.findNodeByUuidForTest(stack_id));
@@ -389,11 +389,12 @@ class ContentFrameTests : public juce::UnitTest {
       engine.stopRecordingInNode(id);
       driveRamp(engine, BLOCK, clock, true, nullptr);
       const int64_t origin0 = (int64_t)deepProp(engine, id, "origin");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
 
       const int64_t target = D / 3;
-      expect(engine.seekTransport((double)target), "seek accepted");
+      expect(engine.seekTransport((double)(target - rootProp(engine, "masterPos"))),
+             "seek accepted");
       const int64_t t0 = clock;
       expectEquals(rootProp(engine, "masterPos"), target, "published phase = target");
       std::vector<std::pair<int64_t, float>> out;
@@ -422,14 +423,15 @@ class ContentFrameTests : public juce::UnitTest {
       engine.stopRecordingInNode(stack_id);
       driveRamp(engine, BLOCK, clock, true, nullptr);
       const int64_t origin0 = (int64_t)deepProp(engine, ids[0], "origin");
-      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandEpoch");
+      clock = rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
       const std::vector<float> table = buildTable(engine, clock, origin0, D);
       const int64_t ws = D / 4, we = (3 * D) / 4, len = we - ws;
       engine.setLoopPoints(stack_id, ws, we);
       driveRamp(engine, len, clock, true, nullptr);
       // Seek to window phase len/3: heard = ws + len/3 from here.
       const int64_t target = len / 3;
-      expect(engine.seekTransport((double)target), "seek accepted");
+      expect(engine.seekTransport((double)(target - rootProp(engine, "masterPos"))),
+             "seek accepted");
       const int64_t t0 = clock;
       std::vector<std::pair<int64_t, float>> out;
       driveRamp(engine, len, clock, true, &out);

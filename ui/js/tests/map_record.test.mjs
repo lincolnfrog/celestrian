@@ -32,8 +32,8 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     // boundary and commits.
     const bId = await recordTake(groupId, 4000, { stopEarly: 100, settle: 200 });
     assert.equal(nodeById(bId).duration, 4000, 'take B committed at 4Q');
-    const epoch = getState().islandEpoch;
-    assert.equal(epoch, 0, 'the zero stays at take A\'s origin');
+    const zero = getState().islandZero;
+    assert.equal(zero, 0, 'the zero stays at take A\'s origin');
 
     // Window the group: [1Q, 3Q) → map period 2000, C = 4000.
     await callNative('setLoopPoints', groupId, 1000, 3000);
@@ -42,10 +42,10 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     // (next Q on the period grid). Q18 (composition.md §2, engine
     // clip_node.cc through-map arm): the map's inner positions are
     // offsets from the mapping STACK's origin (anchored at take A's
-    // origin, 0 — not the epoch, 1000): the heard grid anchor is
-    // origin + a0 = 1000 (≡ the epoch here), and the anchor's inner
+    // origin, 0 — not the zero, 1000): the heard grid anchor is
+    // origin + a0 = 1000 (≡ the zero here), and the anchor's inner
     // position is origin + mapOffset(1000) = 0 + 2000 = 2000.
-    // (Pre-Q18 the stack map anchored at the epoch, giving 3000.)
+    // (Pre-Q18 the stack map anchored at the zero, giving 3000.)
     const stackOrigin = nodeById(groupId).origin;
     assert.equal(stackOrigin, 0, 'the group anchored at take A\'s origin');
     assert.equal(nodeById(groupId).anchored, true);
@@ -83,7 +83,7 @@ test('through-map record: heard arm, one-period cap, dense C commit', async () =
     assert.equal(c.origin, stackOrigin + 2000,
         'origin = stack origin + mapOffset(heard offset) (Q18)');
     assert.equal(c.contextCycle, 2000, 'heard frame = the map period cycle');
-    assert.equal(getState().islandEpoch, epoch,
+    assert.equal(getState().islandZero, zero,
         'no island fact moves at commit');
 
     // Gate lifts after commit.
@@ -143,7 +143,7 @@ const mappedGroup = (extra = {}) => ({
 
 test('view model: recording lane under an active map carries the cue', () => {
     const state = {
-        quantum: 1000, islandEpoch: 0, masterPos: 5500, perf,
+        quantum: 1000, islandZero: 0, masterPos: 5500, perf,
         nodes: [mappedGroup({ children: [
             { id: 'c', name: 'C', type: 'clip', isRecording: true, duration: 500 },
         ] })],
@@ -159,7 +159,7 @@ test('view model: recording lane under an active map carries the cue', () => {
 
 test('view model: bypassed map → no cue', () => {
     const state = {
-        quantum: 1000, islandEpoch: 0, masterPos: 5500, perf,
+        quantum: 1000, islandZero: 0, masterPos: 5500, perf,
         nodes: [mappedGroup({
             group: { windowActive: false, loopBypassed: true },
             children: [
@@ -181,7 +181,7 @@ test('view model: a windowed group is the frame; the ONE playhead sweeps it', ()
     // position — no remap, no second cursor.
     // (Two committed clips so the Q13 provisional view stays out.)
     const state = {
-        quantum: 1000, islandEpoch: 0, masterPos: 500, isPlaying: true, perf,
+        quantum: 1000, islandZero: 0, masterPos: 500, isPlaying: true, perf,
         nodes: [mappedGroup({ children: [
             { id: 'b', name: 'B', type: 'clip', duration: 2000, origin: 0,
               loopStart: 0, loopEnd: 0, isRecording: false },
@@ -208,9 +208,9 @@ test('view model: a windowed group is the frame; the ONE playhead sweeps it', ()
 
 test('view model: committed through-map take tiles at its inner anchor', () => {
     // The stage-4 engine shape: C committed duration 4000 (= the inner
-    // cycle), origin 3000 with epoch 1000 → tile offset 2Q in a 4Q lane.
+    // cycle), origin 3000 with zero 1000 → tile offset 2Q in a 4Q lane.
     const state = {
-        quantum: 1000, islandEpoch: 1000, masterPos: 0, perf,
+        quantum: 1000, islandZero: 1000, masterPos: 0, perf,
         nodes: [{
             id: 'g', name: 'G', type: 'stack',
             windowActive: true, loopStart: 1000, loopEnd: 3000, loopBypassed: false,

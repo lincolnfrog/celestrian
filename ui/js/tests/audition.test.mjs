@@ -124,7 +124,7 @@ test('S18: a take into a looping step is a step-sized part at the step top', asy
     assert.ok(!clip.isRecording, 'committed');
     assert.equal(clip.duration, 4 * Q,
         'C = the step length (a PART, not a song-length clip with silence)');
-    const rel = ((clip.origin - getState().islandEpoch) % (8 * Q) + 8 * Q) % (8 * Q);
+    const rel = ((clip.origin - getState().islandZero) % (8 * Q) + 8 * Q) % (8 * Q);
     assert.ok(rel >= 2 * Q && rel < 6 * Q && rel % Q === 0,
         'anchored on a Q boundary inside the step, in song coordinates: ' + rel);
     assert.equal(getState().sequence.auditionStep, 1, 'the loop stays on after commit');

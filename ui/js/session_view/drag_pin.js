@@ -16,7 +16,7 @@ let dragPinFoldQ = null;  // audible-cycle fold pinned with the frame
 let dragPinZero = null;   // the frame zero pinned with the frame
 let lastFrameQ = 0;  // vm.cycleQ as of the latest patch (pin source)
 let lastFoldQ = 0;   // vm.loopCycleQ ditto — the cursor's fold cycle
-let lastZero = null; // vm.epochSamples ditto — the seated frame zero
+let lastZero = null; // vm.frameZero ditto — the seated frame zero
 
 export function mapDragPinQ() { return dragPinQ; }
 export function mapDragPinFoldQ() { return dragPinFoldQ; }

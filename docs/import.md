@@ -9,17 +9,20 @@ every take fact (docs/takes.md) holds for imported material.
 
 | Verb | Does |
 |---|---|
-| `importAudio(uuid, path, atQ)` | the direct form: `atQ` is a QTime `[num, den]` in the epoch frame |
-| `importAudioWithDialog(uuid, atQ)` | picks the file natively, then the same; `false` when cancelled |
+| `importAudio(uuid, path, originSamples)` | the direct form: the origin in absolute samples, which the view computes from the frame zero it seated (frame.md); the engine snaps it to the Q grid |
+| `importAudioWithDialog(uuid, originSamples)` | picks the file natively, then the same; `false` when cancelled |
 
 Refused (`false`) while any take is live or armed, on a MIDI track, on a
 full take list, or for an unreadable file.
 
 ## Placement and length
 
-- **Nearest Q boundary.** The import lands on `epoch + round(atQ) · Q`.
-  A drop's `atQ` is the pointer's fraction of the lane body over the
-  lane's frame cycle (`import_drop.dropFrameQ`); the menus import at 0.
+- **Nearest Q boundary.** The view names the origin in absolute
+  samples — the frame zero it seated plus whole Qs (frame.md; a drop's
+  Q is the pointer's fraction of the lane body over the lane's frame
+  cycle, `import_drop.dropFrameQ`; the menus import at the zero) — and
+  the engine snaps it to the nearest boundary of the island's Q grid,
+  whose phase is the island zero (Q11).
 - **The hysteresis length law** (`timing::snapCommittedDuration`): the
   file's length snaps to the nearest of {the floor multiple of Q, the
   next multiple, Q/2, Q/4, Q/8} when that candidate is within 15 % of Q;

@@ -187,9 +187,9 @@ class MonitorTests : public juce::UnitTest {
       // chip off, the next with it on — the content is periodic in D,
       // so the difference is the ramp alone, through the output stage.
       engine.setMonitor(id, false);
-      const int64_t epoch = rootProp(engine, "islandEpoch");
-      const int64_t master = rootProp(engine, "islandPos") + epoch;
-      driveLive(engine, mod(epoch - master, D), clock, true);
+      const int64_t zero = rootProp(engine, "islandZero");
+      const int64_t master = rootProp(engine, "islandPos") + zero;
+      driveLive(engine, mod(zero - master, D), clock, true);
       std::vector<float> off_l, off_r;
       driveLive(engine, D, clock, true, &off_l, &off_r);
       engine.setMonitor(id, true);

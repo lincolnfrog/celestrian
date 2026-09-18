@@ -77,20 +77,20 @@ test('take marking: performed PHASE is kept; whole cycles fold away', () => {
 });
 
 test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', () => {
-    // The 4-clip flow: 1Q, 4Q (epoch definer), 2Q performed at heard 2Q,
+    // The 4-clip flow: 1Q, 4Q (zero definer), 2Q performed at heard 2Q,
     // then 5Q performed at a heard cycle TOP three old cycles later. The
-    // frame explodes to 20Q and the engine re-bases the epoch to clip
+    // frame explodes to 20Q and the engine re-bases the zero to clip
     // 4's heard top (whole old cycles — phase-neutral). Each committed
     // take carries `contextCycle` (its heard frame): the bright tile
     // marks at the heard PHASE — clip 4 at [0,5), clip 3 STILL at
     // [2,4) even though its rel is now negative.
-    const E = 13 * Q; // epoch after clip 4's commit (= clip 4's origin)
+    const E = 13 * Q; // zero after clip 4's commit (= clip 4's origin)
     const vm = deriveViewModel(state([
-        clip(1, { origin: 0 }),                          // pre-epoch, ctx 0
+        clip(1, { origin: 0 }),                          // pre-zero, ctx 0
         clip(4, { origin: 1 * Q, contextCycle: 1 * Q }), // rel −12
         clip(2, { origin: 7 * Q, contextCycle: 4 * Q }), // rel −6, heard 2Q
         clip(5, { origin: 13 * Q, contextCycle: 4 * Q }),// rel 0, heard top
-    ], { islandEpoch: E, masterPos: 5.5 * Q }));
+    ], { islandZero: E, masterPos: 5.5 * Q }));
     assert.equal(vm.cycleQ, 20);
     const [c1, c2, c3, c4] = vm.lanes;
 
@@ -105,7 +105,7 @@ test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', (
     assert.equal(c2.reps.find(r => !r.ghost).startQ, 0,
         'clip 2 (heard frame 1Q) marks at the top');
     assert.equal(c1.reps.find(r => !r.ghost).startQ, 0,
-        'pre-epoch, no ctx: first full repetition');
+        'pre-zero, no ctx: first full repetition');
     vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
 
     // takeStartQ: the lane's content-frame origin — window brackets/dims
@@ -183,12 +183,12 @@ test('FIELD 2026-07-16: a 2Q take performed at heard 2Q marks at 2Q, not 0', () 
     // 0Q–2Q at commit (its origin mod its own 2Q period is 0). The audio
     // is identical either way (a 2Q loop sounds at 0 AND 2Q); the take
     // tile must mark where it was PERFORMED.
-    const E = 100 * Q; // nonzero epoch (re-based to clip 2's origin)
+    const E = 100 * Q; // nonzero island zero (re-based to clip 2's origin)
     const vm = deriveViewModel(state([
-        clip(1, { origin: 0 }),                    // pre-epoch take
-        clip(4, { origin: E }),                    // the epoch definer
+        clip(1, { origin: 0 }),                    // pre-zero take
+        clip(4, { origin: E }),                    // the zero definer
         clip(2, { origin: E + (2 * 4 + 2) * Q }),  // heard 2Q, 2 cycles later
-    ], { islandEpoch: E }));
+    ], { islandZero: E }));
     assert.equal(vm.cycleQ, 4);
     const [c1, c2, c3] = vm.lanes;
 
@@ -199,7 +199,7 @@ test('FIELD 2026-07-16: a 2Q take performed at heard 2Q marks at 2Q, not 0', () 
 
     // Whole-cycle counts still fold away (the 2 extra cycles above)
     assert.equal(c2.reps.find(r => !r.ghost).startQ, 0);
-    // Pre-epoch takes have no honest performed position in this frame:
+    // Pre-zero takes have no honest performed position in this frame:
     // first full repetition (the 2026-07-10 behavior survives for them)
     assert.equal(c1.reps.find(r => !r.ghost).startQ, 0);
     vm.lanes.forEach(l => assertTilesCycle(l, vm.cycleQ));
@@ -212,7 +212,7 @@ test('a take recorded 3Q in is ONE solid tile, not 3Q of ghost (field bug)', () 
     // as [0,3) ghost + [3,4) take.
     const s = state(
         [clip(1, { origin: 0 }), clip(4, { origin: 3 * Q })],
-        { origin: 0, islandEpoch: 3 * Q, masterPos: 1.1 * Q },
+        { origin: 0, islandZero: 3 * Q, masterPos: 1.1 * Q },
     );
     const vm = deriveViewModel(s);
     assert.equal(vm.cycleQ, 4);
@@ -221,17 +221,17 @@ test('a take recorded 3Q in is ONE solid tile, not 3Q of ghost (field bug)', () 
     assert.deepEqual(lane4Q.reps, [{ startQ: 0, endQ: 4, ghost: false, wrapped: false }]);
 });
 
-test('nonzero island epoch: tile origins are epoch-relative', () => {
-    // Island re-based: epoch at 300000 samples; clip origin 2Q after
-    // epoch. masterPos arrives as the engine's epoch-corrected VIEW.
-    const epoch = 300000;
+test('nonzero island zero: tile origins are zero-relative', () => {
+    // Island re-based: zero at 300000 samples; clip origin 2Q after
+    // zero. masterPos arrives as the engine's zero-corrected VIEW.
+    const zero = 300000;
     const s = state(
-        [clip(4, { origin: epoch }), clip(4, { origin: epoch + 2 * Q })],
-        { origin: epoch, masterPos: 1.5 * Q },
+        [clip(4, { origin: zero }), clip(4, { origin: zero + 2 * Q })],
+        { origin: zero, masterPos: 1.5 * Q },
     );
     const vm = deriveViewModel(s);
     assert.equal(vm.playheadQ, 1.5);
-    // The phase-shifted 4Q clip's grid runs ≡ 2 (mod 4) — epoch-relative
+    // The phase-shifted 4Q clip's grid runs ≡ 2 (mod 4) — zero-relative
     const take = vm.lanes[1].reps.find(r => !r.ghost);
     assert.equal(take.startQ, 2);
 });

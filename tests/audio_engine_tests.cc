@@ -432,18 +432,18 @@ class AudioEngineTests : public juce::UnitTest {
       // Post-kernel expectation (kernel.md): the clock is monotonic and
       // never snaps. Every block since the first arm advanced it: 1Q +
       // 4Q + 1Q + 3Q of samples driven. The UI sees it in two parts —
-      // islandEpoch (the island zero, the first take's origin — no
+      // islandZero (the island zero, the first take's origin — no
       // commit moves it) plus islandPos (the zero-relative clock) —
       // whose sum is the raw transport position.
       const auto state3 = engine.getGraphState();
-      const int64_t epoch =
-          (juce::int64)state3.getDynamicObject()->getProperty("islandEpoch");
+      const int64_t zero =
+          (juce::int64)state3.getDynamicObject()->getProperty("islandZero");
       const int64_t island_pos =
           (juce::int64)state3.getDynamicObject()->getProperty("islandPos");
-      expectEquals(epoch + island_pos, (int64_t)(9 * Q),
+      expectEquals(zero + island_pos, (int64_t)(9 * Q),
                    "transport = samples driven since t=0 (no snap, no wrap)");
       expectGreaterOrEqual(island_pos, (int64_t)0,
-                           "the island clock never runs ahead of its epoch");
+                           "the island clock never runs ahead of its zero");
     }
 
     // REGRESSION TEST: Bug fix for nested stack LCM calculation

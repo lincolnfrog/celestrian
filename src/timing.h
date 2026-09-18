@@ -140,11 +140,11 @@ inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
 
 // === The physical/musical boundary (Q12) ===
 //
-// PHYSICAL facts stay in samples: the monotonic clock t, the epoch (a
+// PHYSICAL facts stay in samples: the monotonic clock t, the zero (a
 // clock timestamp), pre-record ring indices, buffer lengths, the
 // calibration constant C, and the island exchange rate `q_samples`
 // (samples per 1Q) itself. MUSICAL facts are QTime rationals of Q — a
-// clip's origin as an OFFSET FROM THE EPOCH, its period, its window
+// clip's origin as an OFFSET FROM THE ZERO, its period, its window
 // segments, arm targets, and Q subdivisions.
 //
 // The RT hot path stores the musical facts as sample atomics; the
@@ -155,16 +155,16 @@ inline int64_t subdivisionSamples(int64_t quantum, int denominator) {
 // bare `x / quantum`, which silently floors.
 
 /**
- * A clip's origin as a musical offset from the island epoch.
+ * A clip's origin as a musical offset from the island zero.
  * `origin_samples` is stored ABSOLUTE (performance-clock frame); the
- * musical fact is (origin − epoch) / q_samples · Q. Exact by
+ * musical fact is (origin − zero) / q_samples · Q. Exact by
  * construction (fromSamples never rounds). An unsnapped or
  * context-relative origin yields an ugly-but-exact rational — that is
  * correct, not a defect: QTime says where content BELONGS.
  */
-inline QTime originQ(int64_t origin_samples, int64_t epoch_samples,
+inline QTime originQ(int64_t origin_samples, int64_t zero_samples,
                      int64_t q_samples) {
-  return fromSamples(origin_samples - epoch_samples, q_samples);
+  return fromSamples(origin_samples - zero_samples, q_samples);
 }
 
 /** A period / duration as musical time. */
@@ -201,7 +201,7 @@ inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
 
 /**
  * The arm target (Q11 ruling): the next Q boundary at/after the
- * epoch-relative position `rel` (a position exactly ON a boundary is its
+ * zero-relative position `rel` (a position exactly ON a boundary is its
  * own target). Boundaries live on the CONTEXT loop's grid — the grid the
  * performer hears restarts at each context top, so when the context is
  * not a Q multiple (unsnapped takes) the boundary set is

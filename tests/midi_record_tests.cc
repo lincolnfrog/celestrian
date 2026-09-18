@@ -462,7 +462,7 @@ class MidiRecordTests : public juce::UnitTest {
       map.segs[0] = {100, 200};
       map.segs[1] = {500, 600};
       ctx.map = map;
-      ctx.map_heard_epoch = 0;
+      ctx.map_heard_top = 0;
       ctx.map_count = 1;
       // Heard clock at a boundary: rel 0 → target 0, anchor 0, origin =
       // mapOffset(0) = 100 (inner). Capture begins this block.
@@ -563,11 +563,11 @@ class MidiRecordTests : public juce::UnitTest {
     beginTest("session_io: MIDI positions round-trip exactly (QTime)");
     {
       const int64_t Q = 48000;
-      const int64_t epoch = 777;
+      const int64_t zero = 777;
       StackNode root("SessionRoot");
-      root.setQuantum(Q, epoch);
+      root.setQuantum(Q, zero);
       auto clip = std::make_unique<ClipNode>("Keys", (double)Q);
-      clip->origin_samples.store(epoch + Q);
+      clip->origin_samples.store(zero + Q);
       clip->duration_samples.store(2 * Q);
       clip->setLoopPoints(0, 2 * Q);
       std::vector<MidiEvent> events;

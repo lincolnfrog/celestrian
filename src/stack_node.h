@@ -137,40 +137,40 @@ class StackNode : public AudioNode {
 
   // --- Island quantum (kernel.md) ---
   /**
-   * Sets the island's quantum and cycle epoch. Called when the first
+   * Sets the island's quantum and zero. Called when the first
    * committed clip establishes the island, and again whenever a
    * message-thread edit re-establishes the grid: a definer re-trim, a
    * revert to empty, a geometry scrub, a seek, a session load. Q survives
    * its creator otherwise (Q1, design_language.md): muting or deleting
    * the establishing clip does not change it.
    */
-  void setQuantum(int64_t quantum, int64_t epoch) {
-    setIslandFacts(quantum, epoch, island_generation_.load());
+  void setQuantum(int64_t quantum, int64_t zero) {
+    setIslandFacts(quantum, zero, island_generation_.load());
   }
-  /** SEQLOCK'D TRIPLE: the audio thread reads (Q, epoch, generation) as
+  /** SEQLOCK'D TRIPLE: the audio thread reads (Q, zero, generation) as
    * ONE fact (readIslandFacts) — three separate loads would let a
    * re-trim land between them and hand one block a mixed pair. The
    * generation gates the clips' rendering origins
    * (ClipNode::setOriginGated): a writer that moves origins with the
-   * epoch names a new generation, so a block adopts the new origins
-   * iff it read the new epoch. Single writer at a time: the message
+   * zero names a new generation, so a block adopts the new origins
+   * iff it read the new zero. Single writer at a time: the message
    * thread, or the audio-thread first-take establishment —
    * message-thread fact writers are refused under a live take. */
-  void setIslandFacts(int64_t quantum, int64_t epoch, uint32_t generation) {
+  void setIslandFacts(int64_t quantum, int64_t zero, uint32_t generation) {
     island_lock_.write([&] {
       quantum_samples_.store(quantum);
-      epoch_samples_.store(epoch);
+      zero_samples_.store(zero);
       island_generation_.store(generation);
     });
   }
   int64_t getQuantum() const { return quantum_samples_.load(); }
-  int64_t getEpoch() const { return epoch_samples_.load(); }
+  int64_t getZero() const { return zero_samples_.load(); }
   struct IslandFacts {
     int64_t quantum = 0;
-    int64_t epoch = 0;
+    int64_t zero = 0;
     uint32_t generation = 0;
   };
-  /** (Q, epoch) read consistently — never a mixed pair. Audio-thread
+  /** (Q, zero) read consistently — never a mixed pair. Audio-thread
    * safe: the writer's critical section is two stores, so the bounded
    * retry never spins for real; after the bound it takes what it has
    * (a write storm that long does not exist on the message thread). */
@@ -178,7 +178,7 @@ class StackNode : public AudioNode {
     IslandFacts f;
     island_lock_.read([&] {
       f.quantum = quantum_samples_.load();
-      f.epoch = epoch_samples_.load();
+      f.zero = zero_samples_.load();
       f.generation = island_generation_.load();
     });
     return f;
@@ -186,14 +186,14 @@ class StackNode : public AudioNode {
 
   /**
    * Transport seek (AudioEngine::seekTransport): re-base the cycle
-   * epoch so the monotonic clock reads as a chosen phase. The clock
-   * itself is never reset (kernel.md); moving the epoch is how the
+   * zero so the monotonic clock reads as a chosen phase. The clock
+   * itself is never reset (kernel.md); moving the zero is how the
    * island's phase moves — the same lever takeCommitted's re-base
    * uses. Message thread only; the audio thread picks it up at the
-   * next block top (pc.cycle_epoch = islandEpoch()).
+   * next block top (pc.frame_top = islandZero()).
    */
-  void seekEpochTo(int64_t epoch, uint32_t generation) {
-    setIslandFacts(quantum_samples_.load(), epoch, generation);
+  void seekZeroTo(int64_t zero, uint32_t generation) {
+    setIslandFacts(quantum_samples_.load(), zero, generation);
   }
 
   /** Group-stop generation (ProcessContext::stop_generation): the
@@ -202,17 +202,17 @@ class StackNode : public AudioNode {
   uint32_t nextStopGeneration() { return stop_generation_.load() + 1; }
   /** Island generation (ProcessContext::island_generation): a writer
    * names the next one, gates the origins on it, then writes it with
-   * the epoch in ONE setIslandFacts. */
+   * the zero in ONE setIslandFacts. */
   uint32_t nextIslandGeneration() { return island_generation_.load() + 1; }
   uint32_t islandGeneration() const { return island_generation_.load(); }
   void publishStopGeneration(uint32_t g) { stop_generation_.store(g); }
   uint32_t stopGeneration() const { return stop_generation_.load(); }
 
-  /** Establish (Q, epoch) once; q == 0 sets a provisional epoch only
+  /** Establish (Q, zero) once; q == 0 sets a provisional zero only
    * (first-clip arm). No-op once Q is locked. */
-  void establishIsland(int64_t quantum, int64_t epoch) override {
+  void establishIsland(int64_t quantum, int64_t zero) override {
     if (quantum_samples_.load() != 0) return;
-    setQuantum(quantum > 0 ? quantum : 0, epoch);
+    setQuantum(quantum > 0 ? quantum : 0, zero);
   }
 
   // --- Take lifecycle (commit as an EVENT, unification_audit.md §1.5).
@@ -230,16 +230,16 @@ class StackNode : public AudioNode {
     return lcm_before_take_.load();
   }
 
-  int64_t getIslandEpoch() const override {
-    if (quantum_samples_.load() > 0) return epoch_samples_.load();
-    if (auto* p = parent.load()) return p->getIslandEpoch();
+  int64_t getIslandZero() const override {
+    if (quantum_samples_.load() > 0) return zero_samples_.load();
+    if (auto* p = parent.load()) return p->getIslandZero();
     return 0;
   }
 
   // Loop window state lives on AudioNode (fractal, I5): bypass flag,
   // isLoopWindowActive(), and the metadata publish are shared with
   // ClipNode. Window phase derives from the received clock
-  // ((t − cycle_epoch) mod len) — no private counter, no dependence on
+  // ((t − frame_top) mod len) — no private counter, no dependence on
   // when the user collapsed anything.
 
   /**
@@ -506,8 +506,8 @@ class StackNode : public AudioNode {
   std::atomic<int64_t> quantum_samples_{0};
   std::atomic<uint32_t> stop_generation_{0};
   std::atomic<uint32_t> island_generation_{0};
-  SeqLock island_lock_;  // seqlock for (Q, epoch, generation)
-  std::atomic<int64_t> epoch_samples_{0};
+  SeqLock island_lock_;  // seqlock for (Q, zero, generation)
+  std::atomic<int64_t> zero_samples_{0};
 
   // The sequence (docs/sequencer.md): immutable object behind ONE
   // atomic pointer (the FxChain discipline — message thread swaps +

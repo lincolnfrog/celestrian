@@ -7,6 +7,15 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { deriveViewModel } from '../js/view_model.js';
+
+/** The absolute origin the app names for a placement `q` whole Qs into
+ * the frame the view seats (docs/frame.md), from the page's own state. */
+async function originAtQ(page, q) {
+    const st = await page.evaluate(() => window.__celestrianTest.callNative('getGraphState'));
+    const vm = deriveViewModel(st);
+    return vm.frameZero + q * vm.quantum;
+}
 
 /** Drop `file` on the lane body at `xFrac` of its width; answers the
  *  whole Q the lane maps that x to (lane_build.js's own law). */
@@ -44,9 +53,10 @@ test.describe('Audio file import (B6)', () => {
         const item = page.locator('#project-menu .pm-item:has-text("Import audio…")');
         await expect(item).toBeEnabled();
         await item.click();
+        const origin = await originAtQ(page, 0);
         await expect.poll(() => page.evaluate(
             () => window.__celestrianTest.getLastImport())).toMatchObject({
-                uuid: 'mock-root', path: '<dialog>', atQ: [0, 1], form: 'first' });
+                uuid: 'mock-root', path: '<dialog>', origin, form: 'first' });
         await expect(page.locator('#log-line')).toHaveText('Imported — ⌘Z to undo');
         // The new clip (named after the dialog placeholder) joins the grid.
         await expect(page.locator('.lane[data-kind="clip"]')).toHaveCount(4);
@@ -57,9 +67,10 @@ test.describe('Audio file import (B6)', () => {
             { name: 'kick.wav', path: '/tmp/kick.wav' });
         expect(lit).toBe(true);     // dragover outlined the body…
         expect(unlit).toBe(true);   // …and the drop cleared it
+        const origin = await originAtQ(page, q);
         await expect.poll(() => page.evaluate(
             () => window.__celestrianTest.getLastImport())).toEqual({
-                uuid: 'clip-1', path: '/tmp/kick.wav', atQ: [q, 1],
+                uuid: 'clip-1', path: '/tmp/kick.wav', origin,
                 form: 'take', targetId: 'clip-1' });
         await expect(page.locator('#log-line'))
             .toHaveText(`Imported kick.wav at Q${q} — ⌘Z to undo`);
@@ -68,8 +79,9 @@ test.describe('Audio file import (B6)', () => {
 
     test('a drop without a path falls back to the chooser at the same Q', async ({ page }) => {
         const { q } = await dropFile(page, 'clip-2', 0.7, { name: 'snare.wav' });
+        const origin = await originAtQ(page, q);
         await expect.poll(() => page.evaluate(
             () => window.__celestrianTest.getLastImport())).toMatchObject({
-                uuid: 'clip-2', path: '<dialog>', atQ: [q, 1], form: 'take' });
+                uuid: 'clip-2', path: '<dialog>', origin, form: 'take' });
     });
 });

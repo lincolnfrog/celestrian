@@ -107,10 +107,10 @@ function readSuccessors(step, stepCount) {
 function anchorRootForSong(installing, zero) {
     const Q = state.islandQ;
     if (installing && !state.rootAnchored && Q > 0) {
-        const epoch = state.islandEpoch || 0;
-        const z = Number.isFinite(zero) ? Math.round(zero) : epoch;
+        const islandZero = state.islandZero || 0;
+        const z = Number.isFinite(zero) ? Math.round(zero) : islandZero;
         state.rootAnchored = true;
-        state.rootOrigin = z - posMod(z - epoch, Q);
+        state.rootOrigin = z - posMod(z - islandZero, Q);
     } else if (!installing && state.rootAnchored) {
         state.rootAnchored = false;
         state.rootOrigin = 0;

@@ -67,7 +67,7 @@ struct Sequence {
     juce::String name;
     // CUE (S11, docs/sequencer.md §3 — the Q6 serial primitive): a cued
     // step re-bases the subtree's received frame to the visit top —
-    // children hear t' = epoch + (songRel - visitStart), so a cued
+    // children hear t' = zero + (songRel - visitStart), so a cued
     // child starts from its own top on every entrance (verse-box then
     // chorus-box; the radio's song-after-song). Playback-only here:
     // the envelope below treats cued-visit edges as hard cuts (S20);
@@ -281,7 +281,7 @@ struct Sequence {
   /**
    * THE CUE MAP (docs/sequencer.md §3): song position -> content
    * position. Identity on plain visits; a cued visit selects the song
-   * TOP span [0, len) — the per-visit epoch re-base (Q6: a serial group
+   * TOP span [0, len) — the per-visit zero re-base (Q6: a serial group
    * is a composite whose time-map routes each child a sub-range of the
    * cycle). `rel` is folded internally.
    */

@@ -34,7 +34,7 @@ build → save-as-date) into three rules.
 Same bundle format, stored in `~/Music/Celestrian/Templates/<name>/`.
 "Save as template" keeps STRUCTURE — track names, order, groups, input
 assignments, mute, fx settings — and strips every PERFORMANCE fact:
-audio, durations, origins, windows, and (Q, epoch). Since Q is born
+audio, durations, origins, windows, and (Q, zero). Since Q is born
 from the first take, **a template is pre-Q by construction** — loading
 one drops you exactly at the top of the ritual: play the seed on
 whichever instrument wants to start, Q is born, build.

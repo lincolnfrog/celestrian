@@ -2,9 +2,10 @@
  * Ruler scrub: the ruler is the transport's
  * seek surface. Click teleports the playhead; press-and-drag scrubs
  * continuously (no Q snap — the pointer is the truth). The gesture
- * sends `seekTransport` targets in the published-masterPos domain
- * (epoch-relative samples, folded on the audible cycle), which is the
- * one inverse of the display mapping below.
+ * hands the app a target PHASE — samples into the audible loop as the
+ * ruler draws it, the one inverse of the display mapping below — and
+ * the app turns it into the phase advance `seekTransport` takes
+ * (seek.js; the engine reads no frame, docs/frame.md).
  *
  * DISPLAY → ENGINE DOMAIN (the inverse of view_model.js's playhead
  * mapping, one rule for every view): the audible loop occupies

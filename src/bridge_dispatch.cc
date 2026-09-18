@@ -88,14 +88,6 @@ void logCall(const char* name) {
 #endif
 }
 
-std::pair<int64_t, int64_t> qtimeArg(const juce::var& v) {
-  if (auto* arr = v.getArray(); arr != nullptr && arr->size() >= 2) {
-    const int64_t den = (int64_t)(double)(*arr)[1];
-    return {(int64_t)(double)(*arr)[0], den == 0 ? 1 : den};
-  }
-  return {(int64_t)std::llround((double)v), 1};
-}
-
 std::vector<Method> engineMethods(Services s) {
   AudioEngine& engine = s.engine;
   ProjectManager& projects = s.projects;
@@ -107,11 +99,28 @@ std::vector<Method> engineMethods(Services s) {
       valueMethod("ping", 0, [](const auto&) { return "pong"; }),
       // Transport
       voidMethod("togglePlayback", 0, [e](const auto&) { e->togglePlayback(); }),
-      // Ruler scrub: target in the published-masterPos domain, samples.
-      // Returns false when refused (a take is live or armed).
+      // Ruler scrub: a phase ADVANCE in samples (the view computes it
+      // against the frame zero it seated, docs/frame.md), optionally
+      // with the transport reading it was computed against. Answers
+      // {advance, clock} — what was applied, and when — so the view
+      // keeps its frame facts exact between polls; false when refused
+      // (a take is live or armed).
       valueMethod(
           "seekTransport", 1,
-          [e](const auto& args) { return e->seekTransport((double)args[0]); },
+          [e](const auto& args) -> juce::var {
+            std::optional<int64_t> at_clock;
+            if (args.size() > 1 && !args[1].isVoid()) {
+              at_clock = (int64_t)(double)args[1];
+            }
+            AudioEngine::SeekResult applied;
+            if (!e->seekTransport((double)args[0], at_clock, &applied)) {
+              return juce::var(false);
+            }
+            auto* o = new juce::DynamicObject();
+            o->setProperty("advance", (double)applied.advance);
+            o->setProperty("clock", (double)applied.clock);
+            return juce::var(o);
+          },
           juce::var(false)),
       // Recording
       voidMethod("startRecordingInNode", 1,
@@ -205,20 +214,27 @@ std::vector<Method> engineMethods(Services s) {
             return path.isNotEmpty() ? p->openProject(juce::File(path)) : false;
           },
           juce::var(false)),
-      // Bounce (Q19, docs/bounce.md): the direct verb takes a path.
+      // Bounce (Q19, docs/bounce.md): the direct verb takes a path and,
+      // optionally, the render's start in absolute samples (the frame
+      // zero the view seated, docs/frame.md); absent, the node's top.
       valueMethod(
           "bounce", 2,
           [e](const auto& args) {
-            return e->bounce(args[0].toString(), args[1].toString());
+            std::optional<int64_t> start;
+            if (args.size() > 2 && !args[2].isVoid()) {
+              start = (int64_t)(double)args[2];
+            }
+            return e->bounce(args[0].toString(), args[1].toString(), start);
           },
           false),
-      // Import (docs/import.md): a path + a QTime placement.
+      // Import (docs/import.md): a path + the origin in absolute
+      // samples (the view computes it from the frame zero it seated;
+      // the engine snaps it to the Q grid, Q11).
       valueMethod(
           "importAudio", 3,
           [e](const auto& args) {
-            const auto at = qtimeArg(args[2]);
-            return e->importAudio(args[0].toString(), args[1].toString(), at.first,
-                                  at.second);
+            return e->importAudio(args[0].toString(), args[1].toString(),
+                                  (int64_t)(double)args[2]);
           },
           false),
       // MIDI lane rendering (docs/vst3.md §11): notes on demand.

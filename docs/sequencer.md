@@ -155,8 +155,8 @@ competing designs. Both are built.
   derives from the clock as always; entrances land in-phase for free.
   Right for tracks inside a song.
 - **Cue (§13).** The step re-bases the child's received frame to the
-  step top, so the child hears `t' = childEpoch + (t − stepStart)` — a
-  per-step epoch re-base, which is to say **a time-map**, the object
+  step top, so the child hears `t' = childZero + (t − stepStart)` — a
+  per-step zero re-base, which is to say **a time-map**, the object
   Q6's ruling names ("a serial group is a composite whose time-map
   routes each child a sub-range of the cycle"). A cued child starts
   from its own top on every entrance. Right for chaining boxes
@@ -423,7 +423,7 @@ never copied, retired through the reclaimer like every displaced
 buffer; `ClipNode::stripTake()` / `restoreTake()`.
 
 Commit is an audio-thread event, so the engine registers a
-**PendingTake** at arm (uuids, the pre-take Q/epoch, the auto-gate
+**PendingTake** at arm (uuids, the pre-take Q/zero, the auto-gate
 target) and `reconcileTakes()` logs it — at the top of every
 `getGraphState` poll and before any log operation — once every member
 has settled. A Q7 group take is ONE entry; a cancelled performance logs
@@ -551,10 +551,10 @@ the S9 composition law: the map selects SONG positions, and the cue
 maps song positions to CONTENT positions:
 
 ```text
-t' = receivedEpoch + content(fold(childPos − receivedEpoch))
+t' = receivedZero + content(fold(childPos − receivedZero))
 ```
 
-The child frame's cycle top returns to the received epoch, so a nested
+The child frame's cycle top returns to the received zero, so a nested
 song-stack restarts from its own top on every entrance.
 `forEachSeamRun` already splits blocks at step bounds, so the step is
 constant within any one run.

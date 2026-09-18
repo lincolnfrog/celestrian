@@ -64,20 +64,20 @@ export function deleteNode(id) {
     }
     removeNodeFromParent(id);
     // Q13 revert (engine parity, applyEdit Remove): deleting the last
-    // committed content leaves nothing defining Q — (Q, epoch) revert to
+    // committed content leaves nothing defining Q — (Q, zero) revert to
     // unestablished. Undo restores them via the snapshot. A 2→1 delete
     // touches nothing (mutability is derived from the count).
     if (state.islandQ > 0 && committedClipCount() === 0) {
         retimeSequences(state.islandQ, 0);  // sequences track Q: cleared
         state.islandQ = 0;
-        state.islandEpoch = 0;
-        console.log('[MockBackend] Q13 revert: island (Q, epoch) → unestablished');
+        state.islandZero = 0;
+        console.log('[MockBackend] Q13 revert: island (Q, zero) → unestablished');
     }
     // RE-OPEN ⟹ UNCOLLAPSE (engine parity): back down to the sole take
     // with a lock-collapse behind it — restore the full material with
     // the pre-collapse trim as the window, so it can be trimmed LONGER
     // again.
-    // Audio-neutral; Q/epoch untouched. Undo snapshot covers.
+    // Audio-neutral; Q/zero untouched. Undo snapshot covers.
     if (committedClipCount() === 1) {
         const survivor = findSoleCommittedClip();
         if (survivor && survivor._precollapse) {

@@ -50,7 +50,7 @@ const definerClip = () => ({
 });
 
 test('provisional definer frames the full buffer, loop as selection', () => {
-    const vm = deriveViewModel({ nodes: [definerClip()], islandEpoch: 0, masterPos: 0, perf });
+    const vm = deriveViewModel({ nodes: [definerClip()], islandZero: 0, masterPos: 0, perf });
     assert.equal(vm.provisionalDefiner, true, 'provisional');
     // Frame = full buffer: cycleQ = duration/quantum = 200/100.
     assert.equal(vm.cycleQ, 2, 'frame spans the whole recorded buffer');
@@ -69,7 +69,7 @@ test('provisional trim view: the ONE playhead maps into the selection', () => {
     // maps island phase into the selection: selStart + islandPos —
     // it sweeps the selected loop region and never the dead air (the
     // "two cursors" field bug, 2026-07-19).
-    const vm = deriveViewModel({ nodes: [definerClip()], islandEpoch: 20,
+    const vm = deriveViewModel({ nodes: [definerClip()], islandZero: 20,
                                  masterPos: 30, perf });
     // Q = 100 (loop [20, 120)); island pos = 30 → 0.3Q; the selection
     // starts 0.2Q into the buffer frame.
@@ -83,7 +83,7 @@ test('provisional trim view: the ONE playhead maps into the selection', () => {
 test('a 2nd committed clip LOCKS: definer collapses to normal rendering', () => {
     const c2 = { id: 'c2', type: 'clip', name: 'B', duration: 100,
                  effectiveQuantum: 100, loopStart: 0, loopEnd: 0, isRecording: false };
-    const vm = deriveViewModel({ nodes: [definerClip(), c2], islandEpoch: 0, masterPos: 0, perf });
+    const vm = deriveViewModel({ nodes: [definerClip(), c2], islandZero: 0, masterPos: 0, perf });
     assert.equal(vm.provisionalDefiner, false, 'locked with 2 committed clips');
     assert.equal(vm.soleQDefinerId, null, 'no sole definer');
 });
@@ -178,7 +178,7 @@ test('an ARMED 2nd take suspends the provisional trim view', () => {
     const armed = { id: 'c2', type: 'clip', name: 'B', duration: 0,
                     isPendingStart: true, isRecording: false };
     const vm = deriveViewModel({ nodes: [definerClip(), armed],
-                                 islandEpoch: 0, masterPos: 0, perf });
+                                 islandZero: 0, masterPos: 0, perf });
     assert.equal(vm.provisionalDefiner, false, 'suspended while armed');
 });
 
@@ -194,7 +194,7 @@ test('locked trimmed definer: the frame stays whole-Q (no LCM explosion)', () =>
     const take2 = { id: 'c2', type: 'clip', name: 'B', duration: 160,
                     loopStart: 0, loopEnd: 160, isRecording: false };
     const vm = deriveViewModel({ nodes: [definer, take2], quantum: 40,
-                                 islandEpoch: 20, masterPos: 0, perf });
+                                 islandZero: 20, masterPos: 0, perf });
     assert.equal(vm.cycleQ, 4, 'frame = lcm(window 1Q, take2 4Q), not lcm(190, 160)');
     assert.ok(vm.lanes.find(l => l.id === 'c1').reps.length > 0,
         'definer lane still tiles (maxTiles guard not tripped)');
@@ -211,7 +211,7 @@ test('locked trimmed definer: the frame stays whole-Q (no LCM explosion)', () =>
 test('a clip RECORDING (armed 2nd take) suspends the provisional view', () => {
     const rec = { id: 'c2', type: 'clip', name: 'B', duration: 0,
                   effectiveQuantum: 0, isRecording: true };
-    const vm = deriveViewModel({ nodes: [definerClip(), rec], islandEpoch: 0, masterPos: 0, perf });
+    const vm = deriveViewModel({ nodes: [definerClip(), rec], islandZero: 0, masterPos: 0, perf });
     // c1 is still the sole COMMITTED clip, but recording suspends the
     // full-buffer view (we're transitioning to locked).
     assert.equal(vm.soleQDefinerId, 'c1', 'c1 still the sole committed clip');
@@ -222,7 +222,7 @@ test('a clip RECORDING (armed 2nd take) suspends the provisional view', () => {
  * The fractal twin of the sole-clip definer: a stack whose direct clip
  * children are the island's only committed content and were recorded as
  * ONE take (N mics) is the DEFINER STACK. Its window re-establishes (Q,
- * epoch) like a sole clip's; the window stays on the stack (it IS the
+ * zero) like a sole clip's; the window stays on the stack (it IS the
  * part under the window law), the children stay whole, and the view
  * model renders the same trim view. Field origin: "started with drums"
  * — a first take recorded as a group could not be trimmed at all. */
@@ -274,15 +274,15 @@ test('GROUPS: a first group take is the Q-definer — its window re-defines Q', 
             'children untouched (whole takes)');
         // Q18 (composition.md §5, G-1): the trim re-anchors the STACK
         // and its subtree by one delta — the members' origins equal the
-        // stack's — and epoch := origin' + start. (Pre-Q18 the members
-        // rode with the epoch, epoch == member origin: the
-        // epoch-anchored stack map, retired.)
+        // stack's — and zero := origin' + start. (Pre-Q18 the members
+        // rode with the zero, zero == member origin: the
+        // zero-anchored stack map, retired.)
         assert.equal(find(id).origin, s.origin,
             'members ride with their stack (no per-member riders)');
     }
     assert.equal(s.anchored, true, 'the definer stack is anchored');
-    assert.equal(getState().islandEpoch, s.origin + D / 4,
-        'epoch = stack origin + window start (composition.md §5)');
+    assert.equal(getState().islandZero, s.origin + D / 4,
+        'zero = stack origin + window start (composition.md §5)');
     // The frame: the whole take is now 2Q; the selection is the 1Q
     // part [0.5Q, 1.5Q).
     vm = deriveViewModel(getState());
@@ -298,13 +298,13 @@ test('GROUPS: the definer trim is phase-preserving (sounding inner position hold
     const D = getState().quantum;
     setMasterPos(D * 0.65);
     const mod = (a, m) => ((a % m) + m) % m;
-    // Heard inner position before: (t0 − epoch) mod D.
+    // Heard inner position before: (t0 − zero) mod D.
     const s0 = getState();
-    const p0 = mod(s0.masterPos - (s0.islandEpoch || 0), D);
+    const p0 = mod(s0.masterPos - (s0.islandZero || 0), D);
     const ls = D / 4, len = D / 2;
     await callNative('setLoopPoints', stackId, ls, ls + len);
     const s1 = getState();
-    // After: start + ((t0 − epoch') mod len) — the VM's definer mapping.
+    // After: start + ((t0 − zero') mod len) — the VM's definer mapping.
     const p1 = ls + mod(s1.masterPos, len);
     assert.ok(Math.abs(p1 - (ls + mod(p0 - ls, len))) < 1e-9,
         'position continuous (folded into the new window)');
@@ -401,15 +401,15 @@ test('GROUPS: a multi-segment map on the definer stack re-establishes Q (the pun
     const P = (3 * D) / 8 - D / 8 + (3 * D) / 4 - D / 2;
     assert.equal(getState().quantum, P, 'Q := the map period');
     // Q18 (composition.md §5): the members ride with their STACK, and
-    // epoch := origin' + mapOffset(0) — the first cell's start.
-    // (Pre-Q18: members' origin == epoch, the epoch-anchored stack map.)
+    // zero := origin' + mapOffset(0) — the first cell's start.
+    // (Pre-Q18: members' origin == zero, the zero-anchored stack map.)
     for (const id of ids) {
         assert.equal(find(id).origin, find(stackId).origin,
             'members ride with their stack (subtree anchoring)');
         assert.deepEqual([find(id).loopStart, find(id).loopEnd], [0, D], 'members whole');
     }
-    assert.equal(getState().islandEpoch, find(stackId).origin + D / 8,
-        'epoch = stack origin + mapOffset(0)');
+    assert.equal(getState().islandZero, find(stackId).origin + D / 8,
+        'zero = stack origin + mapOffset(0)');
     const segs = find(stackId).segments;
     assert.deepEqual(segs, [D / 8, 3 * D / 8, D / 2, 3 * D / 4], 'map on the stack');
 });

@@ -106,7 +106,7 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
   // Q13 — re-trim before lock, ONE PATH for clips and stacks (Q18,
   // composition.md §5): while the definer's geometry is the island's
   // only content, adjusting its loop region re-establishes the island
-  // (Q, epoch): Q := window length, epoch := origin' + window start
+  // (Q, zero): Q := window length, zero := origin' + window start
   // (the performance moment of the trimmed loop's top), PHASE-
   // PRESERVING — the inner position sounding RIGHT NOW keeps sounding:
   // origin' = t0 − pT, and for a STACK
@@ -154,16 +154,16 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
       }
       e.setsIsland = true;
       e.iq = len;
-      e.iepoch = origin1 + start;
+      e.izero = origin1 + start;
     } else if (definer && D > 0) {
       // WINDOW CLEAR RE-ESTABLISHES THE BASE FACTS: the definer's
       // window was Q — clearing it restores the
       // whole take (or the group's whole inner cycle) as the part, so
-      // Q := D and epoch := origin (the content-frame identity, exactly
+      // Q := D and zero := origin (the content-frame identity, exactly
       // as first commit established them).
       e.setsIsland = true;
       e.iq = D;
-      e.iepoch = anchored ? target->origin_samples.load() : root_node->getEpoch();
+      e.izero = anchored ? target->origin_samples.load() : root_node->getZero();
     } else if (D > 0 && !root_node->hasActiveTake()) {
       // THE CONTINUITY rider (see attachMapEditRiders) — clips and
       // stacks alike since Q18.
@@ -287,7 +287,7 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // Q13 — multi-segment re-trim before lock (the punch/cell twin of
   // the provisional window trim): while the island's ONLY committed
   // content is this clip, the map re-establishes (Q := period,
-  // epoch := origin' + mapOffset(0)), with the phase-preserving origin
+  // zero := origin' + mapOffset(0)), with the phase-preserving origin
   // re-anchor generalized through the map: the buffer position
   // sounding RIGHT NOW keeps sounding (inverse-mapped when still
   // covered; the old heard phase folds into the new period when the
@@ -328,7 +328,7 @@ void AudioEngine::setSegments(const juce::String& uuid,
       }
       e.setsIsland = true;
       e.iq = period;
-      e.iepoch = origin_new + a0;
+      e.izero = origin_new + a0;
       if (stack != nullptr) {
         // MEMBERS WHOLE (the definer invariant): any member window or
         // override goes whole with the same edit.
@@ -491,12 +491,12 @@ void AudioEngine::setSequence(const juce::String& uuid,
     const int64_t q = root_node->getQuantum();
     const bool anchored = root_node->isAnchored();
     if (e.seq && !anchored && q > 0) {
-      const int64_t epoch = root_node->getEpoch();
-      const int64_t z = zero.value_or(epoch);
+      const int64_t island_zero = root_node->getZero();
+      const int64_t z = zero.value_or(island_zero);
       celestrian::Edit::AnchorRider r;
       r.uuid = uuid;
       r.anchored = true;
-      r.origin = z - celestrian::timing::posMod(z - epoch, q);
+      r.origin = z - celestrian::timing::posMod(z - island_zero, q);
       e.anchors.push_back(std::move(r));
     } else if (!e.seq && anchored) {
       celestrian::Edit::AnchorRider r;

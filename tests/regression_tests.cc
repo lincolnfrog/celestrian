@@ -1053,7 +1053,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
     // uncalibrated case). Two engine facts must hold: the origin lands
     // on the HEARD 2Q boundary (the anticipatory-window deferral used
     // to overshoot to 3Q when latency ≈ 0), and clip 3's commit must
-    // not re-base the island epoch (the cycle did not grow). The
+    // not re-base the island zero (the cycle did not grow). The
     // display half of the bug (take tile folded to 0 by the clip's own
     // period) is pinned in ui/js/tests/view_model.test.mjs.
     beginTest("FIELD: mid-cycle 2Q take anchors at its heard 2Q boundary");
@@ -1102,10 +1102,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Simple extension: no commit moves the island zero (docs/frame.md)
       // — it stays at clip 1's origin (0). The 4Q loop's own top is clip
       // 2's origin (1Q): heard phases below are facts of that loop.
-      const int64_t epoch = (int64_t)(double)engine.getGraphState()
+      const int64_t zero = (int64_t)(double)engine.getGraphState()
                                 .getDynamicObject()
-                                ->getProperty("islandEpoch");
-      expectEquals(epoch, (int64_t)0, "the zero stays at clip 1's origin");
+                                ->getProperty("islandZero");
+      expectEquals(zero, (int64_t)0, "the zero stays at clip 1's origin");
       const int64_t origin2 = clipProp(1, "origin");
       expectEquals(origin2, Q, "clip 2's loop top is its origin, 1Q");
 
@@ -1131,8 +1131,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // And its commit must not move the frame (cycle didn't grow).
       expectEquals((int64_t)(double)engine.getGraphState()
                        .getDynamicObject()
-                       ->getProperty("islandEpoch"),
-                   epoch, "clip 3's commit must not re-base the epoch");
+                       ->getProperty("islandZero"),
+                   zero, "clip 3's commit must not re-base the zero");
 
       // Clip 3's heard frame was the 4Q cycle — published for display
       // take-marking (Q14).
@@ -1142,10 +1142,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // 4) FIELD REPRO part 2 (2026-07-16b): clip 4, 5Q, armed at a
       // HEARD cycle top some cycles later. The cycle explodes to
       // LCM(4Q, 5Q) = 20Q. The user watched the take grow from the top
-      // of the frame; at commit the epoch must move to the heard top
+      // of the frame; at commit the zero must move to the heard top
       // the take was performed against (origin floored to whole old
       // cycles) so the watched frame persists — the old
-      // "polyrhythmic expansions keep the epoch" rule teleported the
+      // "polyrhythmic expansions keep the zero" rule teleported the
       // take to 12Q–17Q of the exploded frame.
       // t is 11Q − 100 (heard rel 10Q − 100). Advance so heard rel is
       // 12Q − 500: 500 before the heard cycle top at rel 12Q — inside
@@ -1171,8 +1171,8 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // engine's zero stays the first take's origin.
       expectEquals((int64_t)(double)engine.getGraphState()
                        .getDynamicObject()
-                       ->getProperty("islandEpoch"),
-                   epoch, "clip 4's commit moves no island fact");
+                       ->getProperty("islandZero"),
+                   zero, "clip 4's commit moves no island fact");
 
       // Clip 3's heard phase is a fact about clip 2's loop, not the
       // frame: (origin3 − origin2) mod 4Q is 2Q.
@@ -1229,10 +1229,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       process(4 * Q - 200);
       engine.stopRecordingInNode(nthClipId(1));
       process(400);
-      const int64_t epoch = (int64_t)(double)engine.getGraphState()
+      const int64_t zero = (int64_t)(double)engine.getGraphState()
                                 .getDynamicObject()
-                                ->getProperty("islandEpoch");
-      expectEquals(epoch, (int64_t)0, "the zero stays at clip 1's origin");
+                                ->getProperty("islandZero");
+      expectEquals(zero, (int64_t)0, "the zero stays at clip 1's origin");
       const int64_t origin2 = clipProp(1, "origin");
       expectEquals(origin2, Q, "clip 2's loop top is its origin, 1Q");
 
@@ -1268,9 +1268,9 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // (I4).
       expectEquals((int64_t)(double)engine.getGraphState()
                        .getDynamicObject()
-                       ->getProperty("islandEpoch"),
-                   epoch, "no epoch move (cycle did not grow)");
-      expectEquals(((clipProp(1, "origin") - epoch) % Q + Q) % Q, (int64_t)0,
+                       ->getProperty("islandZero"),
+                   zero, "no zero move (cycle did not grow)");
+      expectEquals(((clipProp(1, "origin") - zero) % Q + Q) % Q, (int64_t)0,
                    "clip 2's anchor keeps its grid phase");
     }
 
@@ -1307,10 +1307,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
         return (int64_t)(double)(*nodes)[n].getDynamicObject()->getProperty(
             prop);
       };
-      auto epochNow = [&]() {
+      auto zeroNow = [&]() {
         return (int64_t)(double)engine.getGraphState()
             .getDynamicObject()
-            ->getProperty("islandEpoch");
+            ->getProperty("islandZero");
       };
 
       engine.createNode("clip");
@@ -1324,7 +1324,7 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       process(400);
       expectEquals(clipProp(1, "duration"), 10 * Q, "a 10Q take");
       const int64_t origin2 = clipProp(1, "origin");
-      const int64_t zero = epochNow();
+      const int64_t zero = zeroNow();
       expectEquals(zero, clipProp(0, "origin"),
                    "the zero is the first take's origin; clip 2's commit left it");
       // Stopped, like the field: no continuity re-anchor is in play.
@@ -1333,16 +1333,16 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       // Left handle to 6Q: [6Q, 10Q) — a 4Q loop.
       engine.setLoopPoints(nthClipId(1), 6 * Q, 10 * Q);
       expectEquals(clipProp(1, "origin"), origin2, "audio: origin untouched");
-      expectEquals(epochNow(), zero, "a window edit moves no island fact");
+      expectEquals(zeroNow(), zero, "a window edit moves no island fact");
 
       // Right handle to 9Q: [6Q, 9Q).
       engine.setLoopPoints(nthClipId(1), 6 * Q, 9 * Q);
-      expectEquals(epochNow(), zero, "nor does the next");
+      expectEquals(zeroNow(), zero, "nor does the next");
 
       // Undo both: nothing to restore but the window.
       engine.undo();
       engine.undo();
-      expectEquals(epochNow(), zero, "undo moves nothing either");
+      expectEquals(zeroNow(), zero, "undo moves nothing either");
       expectEquals(clipProp(1, "loopEnd") - clipProp(1, "loopStart"),
                    (int64_t)0, "undo restores the whole take (no window)");
 
@@ -1355,10 +1355,10 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       engine.stopRecordingInNode(nthClipId(2));
       process(2 * Q);
       expectEquals(clipProp(2, "duration"), 8 * Q, "an 8Q take");
-      expectEquals(epochNow(), zero, "a growing commit moves no island fact");
+      expectEquals(zeroNow(), zero, "a growing commit moves no island fact");
       engine.togglePlayback();
       engine.setLoopPoints(nthClipId(1), 6 * Q, 8 * Q);
-      expectEquals(epochNow(), zero, "a sub-loop trim moves no island fact");
+      expectEquals(zeroNow(), zero, "a sub-loop trim moves no island fact");
       expectEquals(clipProp(1, "origin"), origin2, "audio: origin untouched");
     }
 

@@ -31,17 +31,17 @@ class SessionIoTests : public juce::UnitTest {
 
   void runTest() override {
     const int64_t Q = 48000;      // 48 kHz island
-    const int64_t epoch = 12345;  // physical epoch timestamp
+    const int64_t zero = 12345;  // island zero, absolute samples
 
     beginTest("round-trip preserves the canonical clip facts + audio");
     {
       // Build a graph by hand: a committed clip + a nested stack.
       StackNode root("SessionRoot");
-      root.setQuantum(Q, epoch);
+      root.setQuantum(Q, zero);
       root.is_muted.store(false);
 
       auto clip = std::make_unique<ClipNode>("Guitar", (double)Q);
-      clip->origin_samples.store(epoch + 2 * Q);  // performed at heard 2Q
+      clip->origin_samples.store(zero + 2 * Q);  // performed at heard 2Q
       clip->duration_samples.store(4 * Q);
       clip->setLoopPoints(Q, 3 * Q);  // window [1Q, 3Q)
       clip->setLoopWindowBypassed(false);
@@ -99,14 +99,14 @@ class SessionIoTests : public juce::UnitTest {
       auto loaded = session_io::load(dir, (double)Q);
       expect(loaded.ok, "load ok");
       expectEquals((juce::int64)loaded.q_samples, (juce::int64)Q, "qSamples");
-      expectEquals((juce::int64)loaded.epoch, (juce::int64)epoch, "epoch");
+      expectEquals((juce::int64)loaded.zero, (juce::int64)zero, "zero");
       expectEquals(loaded.children.size(), (size_t)2, "two top-level nodes");
 
       auto* c = dynamic_cast<ClipNode*>(loaded.children[0].get());
       expect(c != nullptr, "first child is the clip");
       expect(c->getUuid() == clipUuid, "clip uuid preserved");
       expectEquals((juce::int64)c->origin_samples.load(),
-                   (juce::int64)(epoch + 2 * Q), "origin restored");
+                   (juce::int64)(zero + 2 * Q), "origin restored");
       expectEquals((juce::int64)c->getIntrinsicDuration(), (juce::int64)(4 * Q),
                    "duration restored");
       expectEquals((juce::int64)c->getLoopStart(), (juce::int64)Q,
@@ -168,11 +168,11 @@ class SessionIoTests : public juce::UnitTest {
         "strip them");
     {
       StackNode root("SegRoot");
-      root.setQuantum(Q, epoch);
+      root.setQuantum(Q, zero);
 
       // A committed clip carrying a cell map, and a mapped nested stack.
       auto clip = std::make_unique<ClipNode>("Cells", (double)Q);
-      clip->origin_samples.store(epoch);
+      clip->origin_samples.store(zero);
       clip->duration_samples.store(4 * Q);
       juce::AudioBuffer<float> audio(1, (int)(4 * Q));
       audio.clear();
@@ -223,7 +223,7 @@ class SessionIoTests : public juce::UnitTest {
       // Save→load→save stability: the re-saved bundle loads identically.
       auto dir2 = freshTempDir("segments2");
       StackNode root2("SegRoot2");
-      root2.setQuantum(Q, epoch);
+      root2.setQuantum(Q, zero);
       for (auto& ch : loaded.children) root2.addChild(std::move(ch));
       expect(session_io::save(root2, (double)Q, dir2), "re-save");
       auto loaded2 = session_io::load(dir2, (double)Q);
@@ -245,9 +245,9 @@ class SessionIoTests : public juce::UnitTest {
         "different-rate load");
     {
       StackNode root("SessionRoot");
-      root.setQuantum(Q, epoch);
+      root.setQuantum(Q, zero);
       auto clip = std::make_unique<ClipNode>("Clip", (double)Q);
-      clip->origin_samples.store(epoch + 2 * Q);
+      clip->origin_samples.store(zero + 2 * Q);
       clip->duration_samples.store(Q);
       root.addChild(std::move(clip));
 
@@ -259,7 +259,7 @@ class SessionIoTests : public juce::UnitTest {
       auto loaded = session_io::load(dir, 44100.0);
       expect(loaded.ok, "load ok");
       auto* c = dynamic_cast<ClipNode*>(loaded.children[0].get());
-      const auto oq = timing::originQ(c->origin_samples.load(), loaded.epoch,
+      const auto oq = timing::originQ(c->origin_samples.load(), loaded.zero,
                                       loaded.q_samples);
       expectEquals((juce::int64)oq.num, (juce::int64)2, "origin still 2Q");
       expectEquals((juce::int64)oq.den, (juce::int64)1,
@@ -270,9 +270,9 @@ class SessionIoTests : public juce::UnitTest {
     {
       // Build a source bundle from a hand graph, load it into an engine.
       StackNode src("SessionRoot");
-      src.setQuantum(Q, epoch);
+      src.setQuantum(Q, zero);
       auto clip = std::make_unique<ClipNode>("Bass", (double)Q);
-      clip->origin_samples.store(epoch);
+      clip->origin_samples.store(zero);
       clip->duration_samples.store(2 * Q);
       juce::AudioBuffer<float> audio(1, (int)(2 * Q));
       for (int i = 0; i < audio.getNumSamples(); ++i)
@@ -292,8 +292,8 @@ class SessionIoTests : public juce::UnitTest {
              "clip name loaded");
       expectEquals((juce::int64)(double)state.getProperty("quantum", 0),
                    (juce::int64)Q, "island quantum loaded");
-      expectEquals((juce::int64)(double)state.getProperty("epoch", 0),
-                   (juce::int64)epoch, "island epoch loaded");
+      expectEquals((juce::int64)(double)state.getProperty("zero", 0),
+                   (juce::int64)zero, "island zero loaded");
 
       // Re-save from the engine and reload into a second engine: stable.
       auto dir2 = freshTempDir("engine2");
@@ -316,7 +316,7 @@ class SessionIoTests : public juce::UnitTest {
       // root — the root used to write only its stage, rack and song
       // through a second, bundle-level path, and lost the rest.
       StackNode root("MasterRoot");
-      root.setQuantum(Q, epoch);
+      root.setQuantum(Q, zero);
       root.gain.store(0.5f);
       root.pan.store(-0.25f);
       root.is_muted.store(true);
@@ -358,13 +358,13 @@ class SessionIoTests : public juce::UnitTest {
       {
         const juce::var top = juce::JSON::parse(
             dir.getChildFile("session.json").loadFileAsString());
-        expect(top.hasProperty("qSamples") && top.hasProperty("epoch"),
+        expect(top.hasProperty("qSamples") && top.hasProperty("zero"),
                "island facts at bundle level");
         expect(!top.hasProperty("nodes") && !top.hasProperty("rootGain") &&
                    !top.hasProperty("rootSequence"),
                "no second root path in a version-2 bundle");
         expectEquals((int)top.getProperty("version", 0),
-                     session_io::kSessionVersion, "version 2");
+                     session_io::kSessionVersion, "current version");
       }
 
       // Through the engine: the LIVE root takes the record's facts.
@@ -433,7 +433,7 @@ class SessionIoTests : public juce::UnitTest {
       legacy.createDirectory();
       const juce::String v1 =
           "{\"version\":1,\"qSamples\":" + juce::String(Q) +
-          ",\"epoch\":0,\"rootMuted\":true,\"rootGain\":0.5,\"rootPan\":-0.25,"
+          ",\"epoch\":12345,\"rootMuted\":true,\"rootGain\":0.5,\"rootPan\":-0.25,"
           "\"rootSequence\":{\"steps\":[{\"name\":\"a\",\"lenQ\":{\"num\":2,"
           "\"den\":1}},{\"name\":\"b\",\"lenQ\":{\"num\":2,\"den\":1},"
           "\"cue\":true}],\"gates\":{}},\"nodes\":[]}";
@@ -442,6 +442,10 @@ class SessionIoTests : public juce::UnitTest {
       AudioEngine engine;
       expect(engine.loadSession(legacy.getFullPathName()), "v1 loads");
       auto state = engine.getGraphState();
+      // The island zero's key was `epoch` before version 3 (frame.md
+      // §7): the legacy key loads as the zero, not as 0.
+      expectEquals((juce::int64)(double)state.getProperty("zero", 0),
+                   (juce::int64)12345, "a legacy `epoch` key loads as the zero");
       expectWithinAbsoluteError((double)state.getProperty("gain", 1.0), 0.5,
                                 1e-6, "v1 rootGain");
       expectWithinAbsoluteError((double)state.getProperty("pan", 0.0), -0.25,

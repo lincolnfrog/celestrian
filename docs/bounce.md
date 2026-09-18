@@ -13,13 +13,17 @@ bounced the same way. No N-cycles dialog, no selection-dependent scope.
 
 ## The span
 
-- **The top — one law for every node (audit D15-1, 2026-09-10):** the
+- **The start — one law for every node (audit D15-1, 2026-09-10):** the
   node's frame top, `origin + a0` (a0 = the active map's first segment
   start; an unanchored stack's frame is the island frame, so its top is
-  the epoch — the root's too, unless a song anchors it at the zero the
-  song was authored on (frame.md §4); so a root bounce starts at its
-  frame top `+ a0`: the moment its song or window starts, not the
-  moment the island cycle wraps).
+  the island zero — the root's too, unless a song anchors it at the
+  zero the song was authored on (frame.md §4); so a root bounce starts
+  at its frame top `+ a0`: the moment its song or window starts, not
+  the moment the island cycle wraps). The caller may name the start
+  outright (`bounce(uuid, path, start)`, absolute samples): the app
+  bounces the song from the frame zero the view has seated, so the
+  file starts where the picture starts (frame.md, 2026-09-17) — the
+  engine reads no frame of its own.
 - **The span — root:** one effective cycle
   (`calculateEffectiveCycleLength`; Q19 — the cycle the transport wraps
   on, so a root window shorter than Q repeats within it).

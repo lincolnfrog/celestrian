@@ -116,11 +116,11 @@ void AudioEngine::retire(std::function<void()> deleter) {
   for (auto& free_fn : ready) free_fn();
 }
 
-int64_t AudioEngine::islandEpoch() const { return root_node->getEpoch(); }
+int64_t AudioEngine::islandZero() const { return root_node->getZero(); }
 
 int64_t AudioEngine::rootFrameTop() const {
   return root_node->isAnchored() ? root_node->origin_samples.load()
-                                 : root_node->getEpoch();
+                                 : root_node->getZero();
 }
 
 void AudioEngine::flushGraveyard() {
@@ -164,7 +164,7 @@ bool AudioEngine::loadSession(const juce::String& path) {
 
   // The island facts are the persisted ones (attaching content never
   // establishes any — audit D14-1).
-  root_node->setQuantum(loaded.q_samples, loaded.epoch);
+  root_node->setQuantum(loaded.q_samples, loaded.zero);
   // THE ROOT'S ANCHOR (docs/frame.md §4): a root that carried a song
   // was anchored at the zero the song was authored on; the loader
   // resolved it from the root's record (absent = unanchored). Never

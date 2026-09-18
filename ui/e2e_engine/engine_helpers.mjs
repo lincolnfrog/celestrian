@@ -101,13 +101,13 @@ export function stackPeriod(stack) {
  * { t, rest } — rest when an ancestor one-shot is between firings.
  */
 export function receivedClock(st, id, t, contextCycle, half = 0) {
-    let epoch = st.islandEpoch;
+    let zero = st.islandZero;
     let near = false;
     for (const s of ancestorsOf(st, id)) {
         const map = activeMapOf(s);
         const oneShot = s.periodSource === 'context';
         if (!map && !oneShot) continue;
-        const O = s.anchored ? s.origin : epoch;
+        const O = s.anchored ? s.origin : zero;
         const shot = map ? mapPeriod(map) : stackPeriod(s);
         const eff = map || singleSegment(0, shot);
         const at = innerAt(t, O, eff, oneShot ? contextCycle : mapPeriod(eff));
@@ -116,7 +116,7 @@ export function receivedClock(st, id, t, contextCycle, half = 0) {
         // two capture moments of every member — skip it for them.
         if (half > 0 && (at.run < half || nearSeam(eff, at.h, half))) near = true;
         t = O + at.inner;
-        if (map) epoch = O + mapOffset(map, 0);
+        if (map) zero = O + mapOffset(map, 0);
     }
     return { t, rest: false, near };
 }
@@ -227,7 +227,7 @@ export async function verifyHeard(page, {
     const underMap = id => ancestorsOf(st, id).some(s => s.periodSource === 'context');
     let checked = 0;
     for (const f of L.frames) {
-        const t = L.epoch + f.pos;          // absolute clock of the frame centre
+        const t = L.zero + f.pos;          // absolute clock of the frame centre
         const phaseQ = f.phase / Q;
         for (const c of clips) {
             const gate = silent(c.id, phaseQ);
@@ -261,11 +261,11 @@ export async function verifyHeard(page, {
                 .toBeLessThan(tolQ);
             // …and the lane draws that very content there.
             // The lane-frame x of this instant: the view model SEATS the
-            // frame zero from the lanes (docs/frame.md; vm.epochSamples),
+            // frame zero from the lanes (docs/frame.md; vm.frameZero),
             // so the frame's x is the absolute clock folded from that
             // zero — never the engine's phase — except the sole definer's
             // RAW frame, where the cursor is mapped into the trim brackets.
-            const zeroQ = vm.epochSamples / Q;
+            const zeroQ = vm.frameZero / Q;
             const laneQ = vm.provisionalDefiner
                 ? (vm.loopStartQ || 0) + mod(t / Q - zeroQ, vm.loopCycleQ || vm.cycleQ)
                 : mod(t / Q - zeroQ, vm.cycleQ);
@@ -275,7 +275,7 @@ export async function verifyHeard(page, {
                 if (diff >= tolQ) {
                     const lane = vm.lanes.find(l => l.id === c.id);
                     const tile = (lane.reps || []).find(r => laneQ >= r.startQ && laneQ < r.endQ) || lane.reps?.[0];
-                    console.log(`DISPLAY MISMATCH ${label}\n  node: origin−epoch ${(c.origin - st.islandEpoch) / Q}Q loop [${c.loopStart / Q}, ${c.loopEnd / Q}) active ${c.windowActive} ancestors ${JSON.stringify(ancestorsOf(st, c.id).map(a => ({ id: a.id.slice(0, 6), anchored: a.anchored, originQ: (a.origin - st.islandEpoch) / Q, loop: [a.loopStart / Q, a.loopEnd / Q], active: a.windowActive })))}\n  lane: periodQ ${lane.periodQ} takeStartQ ${lane.takeStartQ} underMap ${!!lane.underMap} tile ${JSON.stringify(tile)}\n  vm: cycleQ ${vm.cycleQ} epochQ ${vm.epochSamples / Q}`);
+                    console.log(`DISPLAY MISMATCH ${label}\n  node: origin−zero ${(c.origin - st.islandZero) / Q}Q loop [${c.loopStart / Q}, ${c.loopEnd / Q}) active ${c.windowActive} ancestors ${JSON.stringify(ancestorsOf(st, c.id).map(a => ({ id: a.id.slice(0, 6), anchored: a.anchored, originQ: (a.origin - st.islandZero) / Q, loop: [a.loopStart / Q, a.loopEnd / Q], active: a.windowActive })))}\n  lane: periodQ ${lane.periodQ} takeStartQ ${lane.takeStartQ} underMap ${!!lane.underMap} tile ${JSON.stringify(tile)}\n  vm: cycleQ ${vm.cycleQ} zeroQ ${vm.frameZero / Q}`);
                 }
                 expect(diff, `${label}: lane draws content[${d.innerQ.toFixed(3)}Q], engine sounds content[${(nearest.inner / Q).toFixed(3)}Q]`)
                     .toBeLessThan(tolQ);
@@ -358,7 +358,7 @@ export async function advanceUntil(page, pred, maxSamples = 30 * 44100) {
  */
 export async function driveToPhase(page, atPhase) {
     const s = await engine(page, 'status');
-    // islandPos is published EPOCH-RELATIVE (unwrapped): the phase
+    // islandPos is published ZERO-RELATIVE (unwrapped): the phase
     // is its fold on the cycle.
     const ph = mod(s.islandPos, s.cycle);
     const need = mod(atPhase - 100 - ph, s.cycle);

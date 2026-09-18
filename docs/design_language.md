@@ -28,13 +28,13 @@ one-line definitions.
 | **Cycle (LCM)** | The period after which *every* member of a scope returns to phase 0 simultaneously: LCM of member periods. **A derived legibility device, not a modeling principle** — it exists to make I1 visible, never to constrain it (owner ruling, Q2). |
 | **Launch point** | Derived: the playback offset that makes a clip honor its origin. `launch = (−origin) mod period`. |
 | **Ghost** | The visual unrolling of a loop across the cycle: its AUDIBLE repetitions, drawn in the cool **echo tone** (Q14c: warm hues are reserved for material — the take tile, the live bar, the composite). For a windowed clip, ghosts echo the WINDOW segment (what sounds), never raw take material. Whole cycle-counts fold away; the performed phase is kept (Q14). |
-| **Heard frame (`contextCycle`)** | The EFFECTIVE island cycle a take was performed against (E-C: active windows shorten it), recorded per take at capture start. The modulus that folds "which cycle" out of a take's display anchor (Q14) and the audible-equivalence step for the origin fold (Q15) — it makes take marks stable across frame growth and epoch re-bases. |
+| **Heard frame (`contextCycle`)** | The EFFECTIVE island cycle a take was performed against (E-C: active windows shorten it), recorded per take at capture start. The modulus that folds "which cycle" out of a take's display anchor (Q14) and the audible-equivalence step for the origin fold (Q15) — it makes take marks stable across frame growth and zero re-bases. |
 | **Echo** | A ghost tile's rendering: the audible repetition of a take (or of its window segment), in the echo tone. Full-take echoes are quiet (they duplicate the adjacent bright take); window echoes are more present (they are the only visible representation of what sounds there). |
 | **One-shot** | A clip that sounds once per context cycle instead of looping at its own length. *(See Q5 — the current formula in design.md/recording.md is garbled.)* |
 | **Composite** | A stack seen from outside: a virtual clip whose content is the sum of its children and whose period is their LCM. |
 | **Loop window** | A `[start, end)` restriction on a node's cycle — a one-segment time-map. Active iff valid and not bypassed; independent of view state (time_maps.md, implemented 2026-07-09). |
-| **Time-map** | THE mechanism that transforms time: an ordered segment list over a node's inner timeline, anchored at the node's own origin: `inner(t) = mapOffset((t − origin − a0) mod period)` (composition.md §2; the epoch-anchored stack form was retired by Q18). Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md). |
-| **Hysteresis snap** | Gesture quantization with tolerance. ARM: the target is always the next Q boundary in the HEARD (latency-compensated, epoch-relative) frame — so ANY click before a boundary means that boundary; the old 25%-window deferral mechanism was deleted 2026-07-16 (it overshot by a full Q when compensation was small — Q14). STOP — **owner ruling 2026-07-10: always forward** — a stop request records on to the NEXT boundary (`nextStopBoundary`, computed by the audio thread; the UI shows "finishing…" via `isAwaitingStop`). The snap-BACK idea ("I hit stop a bit late" → keep the whole take, auto-add a loop window ending at the previous boundary) is deliberately deferred: *"too complicated — keep it simple for now; the user can post-hoc fix it by moving the boundary. Explore later if I hit it in practice."* |
+| **Time-map** | THE mechanism that transforms time: an ordered segment list over a node's inner timeline, anchored at the node's own origin: `inner(t) = mapOffset((t − origin − a0) mod period)` (composition.md §2; the zero-anchored stack form was retired by Q18). Loop windows, non-contiguous selections, and (future) warp and serial connections are all instances (time_maps.md). |
+| **Hysteresis snap** | Gesture quantization with tolerance. ARM: the target is always the next Q boundary in the HEARD (latency-compensated, zero-relative) frame — so ANY click before a boundary means that boundary; the old 25%-window deferral mechanism was deleted 2026-07-16 (it overshot by a full Q when compensation was small — Q14). STOP — **owner ruling 2026-07-10: always forward** — a stop request records on to the NEXT boundary (`nextStopBoundary`, computed by the audio thread; the UI shows "finishing…" via `isAwaitingStop`). The snap-BACK idea ("I hit stop a bit late" → keep the whole take, auto-add a loop window ending at the previous boundary) is deliberately deferred: *"too complicated — keep it simple for now; the user can post-hoc fix it by moving the boundary. Explore later if I hit it in practice."* |
 | **Fractality** | The law that any subtree, collapsed, obeys exactly the laws of a clip. If a rule doesn't hold recursively, it isn't a rule yet. |
 
 Convention proposal: **samples are the only engine unit; Q is the only
@@ -64,7 +64,7 @@ several already are.
 - **I2 — Simultaneity.** Two sounds that play simultaneously must draw at
   the same x, and vice versa. *(The 2026-07-07 waveform-scale bug was an
   I2 violation; no invariant test exists yet — it should.)*
-- **I3 — Cycle Reset.** At any time `t` with `t ≡ epoch (mod LCM)`, every
+- **I3 — Cycle Reset.** At any time `t` with `t ≡ zero (mod LCM)`, every
   member of the scope is at phase 0. No member ever "jumps ahead."
 - **I4 — Commit Stability.** Committing a take never audibly or visually
   moves any *other* clip. Ghost extents may grow; nothing shifts.
@@ -161,15 +161,15 @@ Same stack as E-B, collapsed, window `[2Q, 4Q)`:
 Windowed:   ▒▒▒▒[░░ active 2Q ░░]▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒
                  ↑2Q        ↑4Q       (dim = outside window)
 Playhead cycles 2Q → 4Q → 2Q ...
-Children hear: child_t = epoch + 2Q + ((t − epoch) mod 2Q)
+Children hear: child_t = zero + 2Q + ((t − zero) mod 2Q)
                (frame preserved — see time_maps.md §2 warning)
 ```
 
 Exercises: loop windows change *period* (a windowed composite behaves as
-a 2Q clip in its parent's LCM!), and the window-epoch time-map.
+a 2Q clip in its parent's LCM!), and the window-zero time-map.
 ✅ **Implemented per Q4's ruling (2026-07-09)**: activation is an
 explicit active/bypassed state (⟳ toggle), independent of collapse;
-phase is `(t − cycle_epoch) mod len` with the window re-basing the epoch
+phase is `(t − frame_top) mod len` with the window re-basing the zero
 for its children (time_maps.md phase 1). Note the consequence: an
 active window changes the parent cycle from 12Q to LCM(4Q, 2Q) = 4Q —
 by data, never by view.
@@ -319,7 +319,7 @@ in the doc that owns its feature, but each has a pointer here.
   untouched; only the picture's zero moved out of the kernel.
   frame.md is the spec, with the pictures; pinned by
   `ui/js/tests/under_map_slice.test.mjs`, `trim_drag.test.mjs`,
-  `mock_epoch.test.mjs`, `tests/regression_tests.cc` ("MAP EDITS MOVE
+  `mock_zero.test.mjs`, `tests/regression_tests.cc` ("MAP EDITS MOVE
   NO ISLAND FACT") and the engine e2e journeys in `rebase.spec.js` and
   `loop_edits.spec.js`.
 - **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
@@ -354,10 +354,10 @@ in the doc that owns its feature, but each has a pointer here.
   step grid folds from its OWNER'S frame origin, and the display draws
   it from the same place. CONTENT NEVER ANCHORS THE ROOT — without a
   song its inner timeline is the island timeline, whose zero is the
-  EPOCH, the ruler every root window and tile is drawn on
+  ZERO, the ruler every root window and tile is drawn on
   (`settleAnchors` skips the root; `frameOrigin` falls through to the
-  epoch). Anchoring the root at its first take's origin had parted the
-  two on every growth re-base (the epoch moves by whole old cycles, the
+  zero). Anchoring the root at its first take's origin had parted the
+  two on every growth re-base (the zero moves by whole old cycles, the
   origin stayed) — the gates landed whole cycles off the grid on
   screen. *Since 2026-09-17 the root IS anchored while it carries a
   song — at the zero the view had seated when the song was authored,
@@ -388,7 +388,7 @@ in the doc that owns its feature, but each has a pointer here.
   a0) mod P)`); re-anchoring a node re-anchors its subtree; a stack can
   be a one-shot. Owner: *"I agree, groups should be able to be
   anchored. I could imagine recording drums (a group of 5 clips) as a
-  one-shot for example."* Deletes the epoch-anchored stack law, the
+  one-shot for example."* Deletes the zero-anchored stack law, the
   origin riders, `epochViewStep`, and the definer-stack twins of the
   Q13 paths (composition.md §8). Invariants I10–I16 are numbered there.
 - **Q19 — what a bounce renders** (2026-09-01): the island ROOT for one
@@ -438,7 +438,7 @@ that. You can imagine muting the original quantum track after recording
 a bass and drum loop over it. **The DNA of the original scratch track
 remains.**" Consequences: (a) no Q re-seating feature; (b) **Q survives
 its creator** — muting or even deleting the first clip must not change
-Q. This settles the P0-3 policy question: Q (and the island epoch) is
+Q. This settles the P0-3 policy question: Q (and the island zero) is
 stored at the island root, not derived from surviving clips. Today's
 derived-min behavior, where deleting/shortening a clip silently changes
 Q, is confirmed as a bug, not a feature.
@@ -564,10 +564,10 @@ sub-range of the cycle — same primitive as everything else.
 **RESOLVED (2026-07-09).** Owner: "if you hit record mid-Q, the
 recording should start at the next Q (or Q0 if you are in the middle of
 the final Q of the LCM sequence)." Canon: **the arm target is always the
-next Q boundary in the epoch frame** — the cycle top is not special; it
+next Q boundary in the island frame** — the cycle top is not special; it
 is simply the next boundary when you click within the cycle's final Q.
 (Matches recording.md Example 4. Mechanism note 2026-07-16: the target
-is computed in the HEARD — latency-compensated, epoch-relative — frame
+is computed in the HEARD — latency-compensated, zero-relative — frame
 via `timing::armTarget`, which makes "clicking just before a boundary
 means that boundary" true with no extra tolerance machinery; the old
 25% deferral window is deleted, Q14.)
@@ -581,8 +581,8 @@ contradicts my first sentence"* — acknowledged as undefined), then
 transition (e.g. crossfade) between songs. Ruling for now: **focus on
 nailing a single island; the kernel must merely not make multiple
 islands impossible.** The kernel satisfies this: an island is a subtree
-with its own `(Q, epoch)`; concurrent islands are subtrees with
-different epochs on the same monotonic clock — nothing global assumes
+with its own `(Q, zero)`; concurrent islands are subtrees with
+different zeros on the same monotonic clock — nothing global assumes
 one Q. Cross-island transitions remain far-future (tasks.md).
 
 ### Third review round (2026-07-16)
@@ -600,9 +600,9 @@ fixed PPQ ticks (free lengths don't lie on a grid), not float beats
 engineering defaults from the same audit section:
 
 - **D-T3 — the sample/QTime boundary:** physical facts stay samples
-  (monotonic clock `t`, epoch timestamps, pre-record ring, buffer
+  (monotonic clock `t`, island zeros, pre-record ring, buffer
   lengths, calibration C); musical facts become QTime (origin as
-  offset from epoch, period, window segments, arm targets, Q
+  offset from zero, period, window segments, arm targets, Q
   subdivisions). The island owns the exchange rate `Q_samples`
   (established at first commit, as today); warp later = a
   time-varying rate, nested tempi = per-subtree rates — the time-map
@@ -630,7 +630,7 @@ Once you start recording new tracks, Q becomes locked."* Canon:
 
 - While the island's only committed content is the Q-defining clip,
   adjusting that clip's loop region **re-establishes the island's
-  (Q, epoch)**: `Q_samples := window length`, `epoch := origin +
+  (Q, zero)**: `Q_samples := window length`, `zero := origin +
   window start` (the performance moment of the trimmed loop's top).
 - **Lock is DERIVED, not sticky (owner ruling 2026-07-16):** Q is
   mutable ⟺ the island has **exactly one committed clip**; it is locked
@@ -639,15 +639,15 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   **re-opens** (and whatever clip is now the sole survivor can redefine
   it). `setQuantum` becomes "re-settable while provisional"; the UI
   reflects the locked/unlocked state on the sole clip's loop handles.
-- **Deleting the sole committed clip reverts (Q, epoch)** to
+- **Deleting the sole committed clip reverts (Q, zero)** to
   unestablished — nothing defines Q anymore, so the next take
   establishes it fresh (companion to the re-open above; both are the
   count==1 boundary).
 - All three transitions (re-trim, revert, re-open) ride the undo log:
-  the LoopPoints / Remove edits carry the island `(Q, epoch)` so undo
+  the LoopPoints / Remove edits carry the island `(Q, zero)` so undo
   restores the grid, not just the clip or window.
 - **Amendments (2026-07-19, from the two-cursors field bug):**
-  (a) the epoch contract is now enforced in PLAYBACK — clip windows
+  (a) the zero contract is now enforced in PLAYBACK — clip windows
   anchor at `origin + loopStart`, so island phase 0 audibly IS the
   trimmed loop's top (see time_maps.md phase-1-extension note; without
   this a sub-Q trim put the arm grid mid-loop). (b) In the trim view
@@ -662,20 +662,20 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   children are the island's ONLY committed content and were recorded
   as ONE take (identical origin and duration — N mics, ≥ 2 of them; a
   single clip keeps the clip path wherever it lives) is the island's
-  **definer stack**, and its window re-establishes (Q, epoch) exactly
+  **definer stack**, and its window re-establishes (Q, zero) exactly
   as a sole clip's does (`AudioEngine definerStack`; mock
   `definerStackNode`; VM `definerStackOf`). Differences forced by the
   structure, not the law: the window lives on the STACK (it IS the
   part under the window law, session_view.md law 13) and the children
-  stay whole. The members' ORIGINS re-anchor together with the epoch
-  (`origin' := t0 − (pT − start)` for every member, `epoch := origin'`
-  — the sole-clip math made fractal. Solving the epoch alone — the
+  stay whole. The members' ORIGINS re-anchor together with the zero
+  (`origin' := t0 − (pT − start)` for every member, `zero := origin'`
+  — the sole-clip math made fractal. Solving the zero alone — the
   2026-08-21 form — made the trimmed loop jump by `start` on every
-  release, because a stack window then selected EPOCH-relative view
+  release, because a stack window then selected ZERO-relative view
   positions while its members read origin-relative. **That two-frame
   split is gone since Q18** (composition.md §0/§8): every node has its
   own origin, maps select buffer coordinates, and nothing selects
-  content by the epoch — so `epochViewStep` and the `Edit::origins`
+  content by the zero — so `epochViewStep` and the `Edit::origins`
   riders are deleted. time_maps.md §8 keeps the superseded frame). **Lock-collapse (audit 2026-08-30 §3.5,
   reversing the 2026-08-21 "no collapse" line; ONE law since audit
   D6-1, 2026-09-08):** at the second arm the definer — clip or stack —
@@ -708,7 +708,7 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   establishes; at establishment, `scrubIncoherentGeometry` clears
   whatever the new grid cannot carry, with a log. Windows also clear
   by re-establishing: emptying the definer's window restores Q := the
-  whole take and epoch := origin (the base facts), instead of leaving
+  whole take and zero := origin (the base facts), instead of leaving
   the trimmed Q under a full-length loop.
   - **Members whole is an invariant, kept by the engine (2026-08-30,
     field video/dump 2026-08-29):** a group take committed against a
@@ -720,12 +720,12 @@ Once you start recording new tracks, Q becomes locked."* Canon:
     as `Edit::windows`). A definer re-trim carries the same rider for
     members that still hold a window (pre-lift states). The trim view
     draws the RAW mixdown (composite `raw` mode: whole takes from 0,
-    no window/epoch tiling) — the picture under the selection is
+    no window/zero tiling) — the picture under the selection is
     exactly what the mics show beneath, and it never regenerates on a
     release. The VM's selection falls back to the members' common
     window when the stack has none, so an old state still reads what
     the ear hears.
-  - **One island, one owner of (Q, epoch):** only the session root
+  - **One island, one owner of (Q, zero):** only the session root
     holds island facts. A stack assembled DETACHED (Combine builds the
     new stack before inserting it) was its own `rootNode()`, so
     `addChild`'s establishment stamped the first committed child's
@@ -735,20 +735,20 @@ Once you start recording new tracks, Q becomes locked."* Canon:
     2026-08-29 dump: children `[0, Q_stale/2)`, root Q = 0, UI and
     engine disagreeing on Q from then on). Since 2026-09-10 (audit
     D14-1 stage 1) attaching a child writes no island facts at all —
-    only a commit or an import establishes (Q, epoch), on the island
+    only a commit or an import establishes (Q, zero), on the island
     root — so the invariant holds by construction and the structural
     scrub is gone. Pinned by the NESTED FACTS test
     (tests/qtime_lock_tests.cc).
 - **LOCK-COLLAPSE (owner ruling 2026-07-19b — the unifying
   simplification):** the trim is a PRE-LOCK affordance, nothing more.
   The moment a second take ARMS, the definer's window **becomes the
-  take** — `duration := Q`, `origin := the window top (= epoch)`,
+  take** — `duration := Q`, `origin := the window top (= zero)`,
   window consumed, content base shifted (`Edit::CollapseTake`,
   undoable) — *"as if the trimmed clip is the only content there, like
   I recorded it perfectly and didn't need to edit."* After lock the
   looper is an ORDINARY whole-Q looper: no incommensurate buffer
   survives to poison arm boundaries, context loops, heard/intrinsic
-  cycle snapshots, or LCMs (field: take 2 anchored at origin − epoch =
+  cycle snapshots, or LCMs (field: take 2 anchored at origin − zero =
   56298 ∉ Q·Z; frame exploded to 142336Q). The dead air is undo-only
   state — ⌘Z restores the full buffer and the trim; session save
   writes the collapsed take. The pre-Q-lock state is therefore the
@@ -762,7 +762,7 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   via a uuid2 rider). (b) **PHASE-PRESERVING TRIM** — a provisional
   re-trim re-anchors the clip's origin so the buffer position sounding
   at the edit moment does not move (folded into the new window if cut
-  off): `origin' := t0 − p_target`, epoch := origin' + start as ever.
+  off): `origin' := t0 − p_target`, zero := origin' + start as ever.
   The audio and the cursor flow continuously while the handles are
   nudged; the bar line re-derives silently. Legitimate because the
   provisional grid is free — nothing else depends on it yet.
@@ -774,7 +774,7 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   window bounds are sample-exact physical facts (D-T5); they *define*
   the exchange rate rather than being expressed in it. Its period is
   exactly 1Q by definition before and after the trim, so a re-trim
-  changes `Q_samples` and the epoch, never any stored QTime fact.
+  changes `Q_samples` and the zero, never any stored QTime fact.
 
 **Q14. Where does the take tile draw for a mid-cycle take?**
 **RESOLVED (2026-07-16) — performed phase is kept; whole cycles fold
@@ -817,9 +817,9 @@ leaking back in once the fold modulus grew). Canon, completing Q14:
   the era/pre-frame split; takes with no contextCycle keep
   first-full-rep).
 - **A take shows in the cycle it started in.** Ruled here as "every
-  cycle growth re-bases the island epoch to the take's heard top";
+  cycle growth re-bases the island zero to the take's heard top";
   since 2026-09-16 the same picture is the view's seating (frame.md)
-  and no island fact moves at commit. The polyrhythmic keep-the-epoch
+  and no island fact moves at commit. The polyrhythmic keep-the-zero
   rule that preceded both teleported the take at commit. "The cursor
   sails on" refers to the WATCHED cursor, continuous through commit by
   construction.
@@ -855,7 +855,7 @@ of the intrinsic 4Q frame the performer could neither hear nor see —
 instead!"* Analysis: the heard world is exactly heard-cycle-periodic
 (E-C is exact), so every anchor in `origin − k·heardCycle` is **audibly
 identical**; the engine was die-rolling among equivalents and surfacing
-the roll. Re-basing the epoch instead would rotate other lanes
+the roll. Re-basing the zero instead would rotate other lanes
 (violates I4: whole-INTRINSIC-cycle moves are the only phase-neutral
 ones); waiting for the 0-mod-intrinsic boundary would stall recording
 up to a full frame (violates Q11 responsiveness). Canon: **capture
@@ -866,7 +866,7 @@ the take anchors where the cursor actually sweeps. I1 holds exactly
 (playback shifts by whole heard cycles); nothing else moves; a no-op
 whenever heard == intrinsic (the windowless mainline). The island
 snapshots BOTH cycles at arm: intrinsic (`lcm_before_take_` — re-base
-baseline and fold frame; windows must not leak into epoch permanence)
+baseline and fold frame; windows must not leak into zero permanence)
 and heard (`heard_cycle_at_arm_` — the fold step, and now the true
 source of each take's `contextCycle`).
 **REVERSED (2026-09-09, owner — see §5 "NO ORIGIN FOLD").** The

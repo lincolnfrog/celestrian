@@ -16,7 +16,7 @@ test('a 1Q take at 3Q becomes a one-shot: fires once per cycle, rests, no ghosts
     await rec(page, 4 * Q);
     const c3 = await rec(page, Q, { atPhase: 3 * Q });
     const st = await state(page);
-    expect(mod(findNode(st, c3).origin - st.islandEpoch, 4 * Q)).toBe(3 * Q);
+    expect(mod(findNode(st, c3).origin - st.islandZero, 4 * Q)).toBe(3 * Q);
     const lane = page.locator(`.lane[data-id="${c3}"]`);
     await expect(lane.locator('.rep')).toHaveCount(4);   // 1Q loop: 4 tiles in 4Q
 

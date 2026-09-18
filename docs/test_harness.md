@@ -140,7 +140,7 @@ real UI runs on the real engine (`backend.js` mode ENGINE →
 **The control surface** (`POST /control {op}`; in the page,
 `window.__celestrianTest.engine(op, params)`) makes runs deterministic:
 `pause` / `resume` the clock, `advance {samples}` by an exact count,
-`input {kind, freq, gain}`, `status` (quantum, epoch, islandPos,
+`input {kind, freq, gain}`, `status` (quantum, zero, islandPos,
 cycle by the period law, paused, clock), `reset` (an empty project),
 `truth` — THE AUDIBLE TRUTH: the engine solos each clip and listens
 one island cycle, answering per Q cell whether it sounds. The
@@ -182,7 +182,7 @@ field report needs reproducing (script the flow, `listen`, compare the
 DOM). `npm test` and `npm run test:playwright` stay the every-change
 gates; `npm run test:all` is the deep pass and includes it. The specs
 are JOURNEYS through the catalog's families, not one-for-one mirrors
-of the 32 scenarios: the owner's chain, growth and the epoch,
+of the 32 scenarios: the owner's chain, growth and the zero,
 one-shots, takes and comps, the sequencer's gates and cues, loop-region
 edits (moved, bypassed, cleared, while playing and stopped; the definer
 trim and lock-collapse by fingerprint; undo/redo chains; "editing lane
@@ -199,7 +199,7 @@ of a four-section song, a cued step and a bypass. The server runs
 
 **What it has found** (2026-09-09, its first day): three see-vs-hear
 bugs in the members of a windowed group — the slice was measured from
-the epoch instead of the group's origin (Q18), the members lacked the
+the zero instead of the group's origin (Q18), the members lacked the
 group's heard-top rotation, and a member's own window inside a group
 window was drawn ignoring the group's map — plus one engine-side rule
 misfire: clearing a window (an edit that changes nothing audible)
@@ -232,10 +232,10 @@ serves the run, so specs are serial and start with `reset`.
 
 Gotchas:
 
-13. **`islandPos` is published EPOCH-RELATIVE and unwrapped**
+13. **`islandPos` is published ZERO-RELATIVE and unwrapped**
    (`AudioEngine::getGraphState`): the island phase is
-   `islandPos mod cycle`, never `islandPos − epoch`. The first
-   see-vs-hear run subtracted the epoch twice and armed a Q late.
+   `islandPos mod cycle`, never `islandPos − zero`. The first
+   see-vs-hear run subtracted the zero twice and armed a Q late.
 14. **The server pumps the message loop by hand.** A console tool has
    no NSApplication, and on macOS `runDispatchLoop()` is `[NSApp run]`
    — it returns at once. The loop is `runDispatchLoopUntil(50)` (needs
@@ -284,10 +284,12 @@ field bug so far in one glance.
 - After a definer trim, the composite should NOT change shape, the loop
   should NOT jump, and undo should return exactly the previous window
   and its sound.
-- Ruler seek: the audio must jump with the cursor. If it sounds like it
-  did before (cursor moves, music doesn't), the seek epoch re-base has
-  regressed (`seekTransport` carrying origins — time_maps.md
-  content-frame law).
+- Ruler seek: the audio must jump with the cursor, and the cursor must
+  land ON the click. If it sounds like it did before (cursor moves,
+  music doesn't), `seekTransport` has stopped carrying the origins with
+  the zero (time_maps.md content-frame law); if it lands off the click,
+  the view's phase-advance arithmetic (`seek.js`, frame.md) has parted
+  from the seated zero.
 - Five-mic group takes: `dumpState` and check every member's `origin`
   and `duration` are identical; if not, send the dump (the
   members-whole invariant, design_language.md Q13-for-groups).
@@ -312,7 +314,7 @@ exercises; a dump (📦) after each take is the evidence.
    trim). Q reads the trimmed length.
 3. + → Drums (a 5-mic group template); ● on the group. All five mics
    commit with ONE origin and ONE duration (Q7, I2). Trim the group's
-   window: the mics stay one take and the epoch is origin + start (Q18).
+   window: the mics stay one take and the zero is origin + start (Q18).
 4. Record bass over it; the drum trim is locked (Q13 lock-collapse); the
    bass anchors on the grid.
 5. Toggle the drums to a one-shot (↺/1×): they fire once per cycle from

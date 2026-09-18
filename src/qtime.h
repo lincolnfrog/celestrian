@@ -13,8 +13,8 @@
  * QTime — exact rational musical time in units of the island quantum Q.
  *
  * Q12 (design_language.md §5): musical facts — origins as offsets from the
- * island epoch, periods, window segments, arm targets, Q subdivisions —
- * are exact rationals of Q. Physical facts — the monotonic clock, epoch
+ * island zero, periods, window segments, arm targets, Q subdivisions —
+ * are exact rationals of Q. Physical facts — the monotonic clock, zero
  * timestamps, ring indices, buffer lengths, the calibration constant —
  * stay in samples. The island owns the exchange rate `q_samples`
  * (samples per 1Q, established at first commit; a Q re-trim before lock

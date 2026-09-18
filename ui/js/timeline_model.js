@@ -41,17 +41,17 @@ export function throughMapDest(heardI, anchorOff, map, commitCycle) {
 
 // === The physical/musical boundary (Q12 / D-T3), JS mirror of timing.h ===
 // Musical facts project onto the island's Q frame through the one law
-// (qtime.js fromSamples); physical facts (clock, epoch, buffer lengths,
+// (qtime.js fromSamples); physical facts (clock, zero, buffer lengths,
 // q_samples) stay in samples. These back the device-independent metadata
 // the save format serializes.
 
 /**
- * A clip's origin as a musical offset from the island epoch (D-T3):
- * (origin − epoch) / qSamples · Q. Exact; unsnapped origins yield an
+ * A clip's origin as a musical offset from the island zero (D-T3):
+ * (origin − zero) / qSamples · Q. Exact; unsnapped origins yield an
  * ugly-but-exact rational (D-T5). Mirrors timing::originQ.
  */
-export function originQ(originSamples, epochSamples, qSamples) {
-    return fromSamples(originSamples - epochSamples, qSamples);
+export function originQ(originSamples, frameZero, qSamples) {
+    return fromSamples(originSamples - frameZero, qSamples);
 }
 
 /** A period / duration as musical time (D-T3). Mirrors timing::periodQ. */
@@ -77,7 +77,7 @@ export const SUBDIVISIONS = [2, 4, 8];
 
 /**
  * The arm target (Q11 ruling): the next Q boundary at/after the HEARD
- * (latency-compensated) epoch-relative position `rel`, on the CONTEXT
+ * (latency-compensated) zero-relative position `rel`, on the CONTEXT
  * loop's grid. Mirrors timing::armTarget — see its header comment for
  * why no anticipatory-deferral window exists on top of this.
  */
