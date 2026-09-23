@@ -5,7 +5,8 @@
  * A heard-view lane shows only what sounds; the whole raw take and the
  * map's structure need a home that never rescales the lane. The panel
  * is that home: a viewport-wide strip pinned under the selected
- * clip/group, drawing the ENTIRE raw take (waveform), the excluded
+ * clip/group, drawing the ENTIRE raw take (waveform, or a MIDI clip's
+ * piano roll over its velocity lane), the excluded
  * material dimmed, the kept region as a bright box with bracket
  * handles, every inner cut as a band, and the amber sound cursor in raw
  * coordinates. It appears when the track is selected — the affordance
@@ -33,7 +34,8 @@ import { ctx } from './context.js';
 import { el, pct, fmtQ, setText, setStyle, snapThenAnimate } from './sv_util.js';
 import { isOverlayFrozen, isDragging } from './gesture.js';
 import { selectOnly, activeSelectedId } from './selection.js';
-import { drawWaveform } from '../canvas_renderer.js';
+import { drawWaveform, drawMidiTile, MIDI_VELOCITY_LANE } from '../canvas_renderer.js';
+import { sliceNotesToTile } from '../midi_notes.js';
 import { dimComplementInto } from './dims.js';
 import { innerCuts, slideSegs } from '../map_edit.js';
 import { bandState, coveredSegs, laneMapActive, rawCursorQ, commitBandSegs,
@@ -136,8 +138,11 @@ export function patchRegionPanel(row, lane, vm, aux, peaks) {
             : 'This track loops its whole take: drag a bracket in to make a ' +
               'loop region, double-click to cut';
 
-    // The raw waveform: the whole take across the strip.
-    drawStripWave(row._regionStrip, peaks, lane.kind === 'group');
+    // The raw take across the strip: the waveform, or a MIDI clip's
+    // piano roll + velocity lane (the lane tiles' picture, unsliced).
+    const midi = lane.isMidi && aux && aux.midiNotes
+        ? aux.midiNotes.get(lane.id) || null : null;
+    drawStripWave(row._regionStrip, peaks, lane.kind === 'group', midi, totalQ);
 
     // Creation (dblclick) reads per-patch state; must refresh before
     // any early return.
@@ -212,24 +217,36 @@ function rawQAtStrip(strip, clientX, totalQ) {
     return r.width > 0 ? ((clientX - r.left) / r.width) * totalQ : 0;
 }
 
-/** Draw the whole take's waveform across the strip (redraws only when
- * the peaks identity or the strip width changes). */
-function drawStripWave(strip, peaks, isComposite) {
+/** Draw the whole take across the strip — its waveform, or with `midi`
+ * ({notes, range}, Q units over `totalQ`) the note bars over a
+ * velocity lane. Redraws only when the content identity or the strip
+ * size changes. */
+function drawStripWave(strip, peaks, isComposite, midi = null, totalQ = 0) {
     const wave = strip.querySelector('.region-wave');
     const canvas = wave.firstElementChild;
     const w = strip.clientWidth;
     const h = strip.clientHeight - STRIP_V_INSET_PX;
-    if (!peaks || !peaks.length || !(w > 0)) {
+    const notes = midi && midi.notes && midi.notes.length ? midi.notes : null;
+    const content = notes || peaks;
+    if (!content || !content.length || !(w > 0)) {
         if (canvas.style.display !== 'none') canvas.style.display = 'none';
         return;
     }
     if (canvas.style.display !== '') canvas.style.display = '';
-    const key = peaks.length + ':' + w + ':' + h + ':' + isComposite;
-    if (wave._peaksRef === peaks && wave._dk === key) return;
-    wave._peaksRef = peaks;
+    const key = content.length + ':' + w + ':' + h + ':' + isComposite +
+        (notes ? ':m' + midi.range.lo + '-' + midi.range.hi + ':' +
+            totalQ.toFixed(4) : '');
+    if (wave._peaksRef === content && wave._dk === key) return;
+    wave._peaksRef = content;
     wave._dk = key;
     canvas.style.width = w + 'px';
-    drawWaveform(canvas, peaks, { cssWidth: w, cssHeight: h, isComposite });
+    if (notes) {
+        drawMidiTile(canvas, sliceNotesToTile(notes, totalQ, null),
+            { cssWidth: w, cssHeight: h, range: midi.range,
+              velocityLane: MIDI_VELOCITY_LANE });
+    } else {
+        drawWaveform(canvas, peaks, { cssWidth: w, cssHeight: h, isComposite });
+    }
 }
 
 /** The amber sound cursor in raw coordinates (per poll; glides with the

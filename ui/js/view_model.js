@@ -2005,6 +2005,9 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
         depth,
         periodQ: lanePeriodQ,
         intrinsicQ,
+        // The raw take the srcSegs index — heardFields replaces
+        // intrinsicQ with the heard period but never this.
+        contentQ: intrinsicQ,
         reps,
         // The take tile's frame position: the CONTENT-frame origin of
         // this lane. Window brackets/dims/cursor (content-relative
@@ -2149,8 +2152,10 @@ function pushLane(node, depth, mapCtx, ctx) {
  *     'clip' | 'group': laneCommon fields (id, name, muted, soloed,
  *        recording, awaitingStop, armed, effects, fxCount, hasInstrument,
  *        midiArmed, isMidi, pan, gain, oneShot, inputChannelR, channels)
- *        + depth, periodQ, intrinsicQ, reps: [{ startQ, endQ, ghost,
- *        wrapped, srcSegs?, srcTopFrac? }], window | null, windowChipQ,
+ *        + depth, periodQ, intrinsicQ, contentQ (clips: the raw take
+ *        extent a rep's srcSegs fractions index — intrinsicQ is the
+ *        window/map period on heard lanes), reps: [{ startQ, endQ,
+ *        ghost, wrapped, srcSegs?, srcTopFrac? }], window | null, windowChipQ,
  *        mapMulti, mapSegs, mapBypassed, mapSuspended, bandSegs,
  *        bandTotalQ, bandHeard, bandEditable, throughMap, underMap,
  *        armable + armMode (clips: 'stop'|'record'|'retake'|null),

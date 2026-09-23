@@ -86,13 +86,29 @@ export function fitPitchRange(notes) {
 }
 
 /**
+ * Re-express notes read at quantum `fromQ` (samples per Q) on quantum
+ * `toQ`: the rows are Q units, so a Q change (trimming the tempo-
+ * setting take) rescales every position by fromQ / toQ. Returns the
+ * input array itself when nothing changes (identity-tracked by the
+ * tile cache).
+ */
+export function rescaleNotes(notes, fromQ, toQ) {
+    if (!(fromQ > 0) || !(toQ > 0) || fromQ === toQ || !notes) return notes;
+    const k = fromQ / toQ;
+    return notes.map(n => ({ ...n, posQ: n.posQ * k, lenQ: n.lenQ * k }));
+}
+
+/**
  * Slice a take's notes into ONE rep tile, in tile fractions [0, 1):
  * the audio tile's rules exactly — `src` is the list of [f0, f1]
  * content ranges (fractions of `intrinsicQ`) the tile concatenates
  * (null = the whole take), `rotFrac` rotates the loop's heard top to
  * that fraction of the tile. A note is clipped to the ranges it
  * overlaps (a note crossing a cut is cut). Returns [{f0, f1, note,
- * vel}] with f1 > f0.
+ * vel, onset}] with f1 > f0; `onset` is false on a piece that
+ * continues a note begun elsewhere (clipped by a range start, or the
+ * tail of a bar split by rotation) — the velocity lane draws one stem
+ * per note, at its onset.
  */
 export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0) {
     if (!(intrinsicQ > 0) || !notes || !notes.length) return [];
@@ -109,6 +125,7 @@ export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0) {
             const c0 = Math.max(n0, a);
             const c1 = Math.min(n1, b);
             if (c1 <= c0) continue;
+            const onset = c0 === n0;
             let f0 = (acc + (c0 - a)) / total;
             let f1 = (acc + (c1 - a)) / total;
             const rot = ((rotFrac || 0) % 1 + 1) % 1;
@@ -119,12 +136,13 @@ export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0) {
                 f1 = (f1 + rot);
                 if (f0 >= 1) { f0 -= 1; f1 -= 1; }
                 if (f1 > 1) {
-                    out.push({ f0, f1: 1, note: n.note, vel: n.vel });
-                    out.push({ f0: 0, f1: f1 - 1, note: n.note, vel: n.vel });
+                    out.push({ f0, f1: 1, note: n.note, vel: n.vel, onset });
+                    out.push({ f0: 0, f1: f1 - 1, note: n.note, vel: n.vel,
+                               onset: false });
                     continue;
                 }
             }
-            out.push({ f0, f1, note: n.note, vel: n.vel });
+            out.push({ f0, f1, note: n.note, vel: n.vel, onset });
         }
         acc += w;
     }

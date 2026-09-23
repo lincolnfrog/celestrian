@@ -12,12 +12,12 @@ import { callNative, log, getState } from './backend.js';
 import { deriveViewModel, findNodeInTree, armMode, hasInstrument }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
-         mapDragPinZero, activeSelectedId, selection }
+         mapDragPinZero, activeSelectedId, selection, selectWhenPresent }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { initPreferences } from './preferences.js';
 import { initPluginPanel } from './plugin_panel.js';
-import { notesFromRows, fitPitchRange } from './midi_notes.js';
+import { notesFromRows, fitPitchRange, rescaleNotes } from './midi_notes.js';
 import { filePathOf } from './import_drop.js';
 import { updateMasterVU, initMasterMeters, initMasterFader,
          updateMasterFader }
@@ -165,6 +165,32 @@ async function call(method, args = [], okMsg, failMsg) {
     return result;
 }
 
+/** The first node (depth-first, so a created group before its
+ * members) in `nodes` whose id `before` doesn't hold. */
+function firstNewNodeId(nodes, before) {
+    for (const n of nodes || []) {
+        if (!before.has(n.id)) return n.id;
+        const inner = firstNewNodeId(n.nodes, before);
+        if (inner) return inner;
+    }
+    return null;
+}
+
+/**
+ * Run a creation verb and SELECT what it made: a new track is selected
+ * by default (it's the one you're about to arm, play or name). The
+ * bridge's createNode answers no id, so the new node is found by
+ * diffing the tree around the call. Returns the verb's result.
+ */
+async function createAndSelect(create) {
+    const beforeState = await callNative('getGraphState');
+    const before = indexNodes(beforeState && beforeState.nodes);
+    const result = await create();
+    const after = await callNative('getGraphState');
+    selectWhenPresent(firstNewNodeId(after && after.nodes, before));
+    return result;
+}
+
 /* ---------- waveform peaks ---------- */
 /** The identity of a clip's ACTIVE content: getWaveform answers for
  * the active take, so a selection or a renumbering delete (docs/
@@ -302,21 +328,23 @@ function trackRetakes(prev, next) {
  * getMidiNotes for a MIDI lane's tiles, fetched on demand like
  * waveform peaks and cached by the clip's `midiEvents` count + active
  * take + take count (a new take, a selection or a renumbering delete
- * all change what the readout answers). The patch layer reads
- * `midiNotes` (id → {notes, range}) through aux. */
-const midiNotes = new Map();      // clip id → {notes (Q units), range}
+ * all change what the readout answers) + the quantum (the rows are Q
+ * units — trimming the tempo-setting take moves Q under them). The
+ * patch layer reads `midiNotes` (id → {notes, range}) through aux. */
+const midiNotes = new Map();      // clip id → {notes (Q units), range, quantum}
 const midiKeys = new Map();       // clip id → midiKey the notes were fetched at
 const midiFetches = new Map();    // clip id → in-flight fetch promise
-const midiKey = n =>
-    (n.midiEvents || 0) + ':' + (n.activeTake || 0) + ':' + (n.takes || 0);
+const midiKey = (n, quantum) =>
+    (n.midiEvents || 0) + ':' + (n.activeTake || 0) + ':' + (n.takes || 0) +
+    ':' + quantum;
 
-function fetchMidiNotes(id, key) {
+function fetchMidiNotes(id, key, quantum) {
     if (midiFetches.has(id)) return;
     const p = (async () => {
         try {
             const rows = await callNative('getMidiNotes', id);
             const notes = notesFromRows(rows);
-            midiNotes.set(id, { notes, range: fitPitchRange(notes) });
+            midiNotes.set(id, { notes, range: fitPitchRange(notes), quantum });
             midiKeys.set(id, key);
             dbg(`Fetched ${notes.length} MIDI notes for ${id}`);
         } catch (err) {
@@ -329,12 +357,22 @@ function fetchMidiNotes(id, key) {
 }
 
 /** Refetch the notes of every committed, idle MIDI clip whose key
- * moved; a hot clip's stale notes stay until its take commits. */
-function refreshMidiNotes(nodesById) {
+ * moved; a hot clip's stale notes stay until its take commits. Cached
+ * notes read at another Q are rescaled NOW, so a live trim of the
+ * tempo-setting take never draws them at the stale scale while the
+ * refetch is in flight. */
+function refreshMidiNotes(nodesById, quantum) {
+    for (const [id, m] of midiNotes) {
+        if (m.quantum !== quantum) {
+            midiNotes.set(id, { notes: rescaleNotes(m.notes, m.quantum, quantum),
+                                range: m.range, quantum });
+        }
+    }
     for (const n of nodesById.values()) {
         if (n.type !== 'clip' || n.contentKind !== 'midi') continue;
         if (isHotClip(n) || !(n.duration > 0)) continue;
-        if (midiKeys.get(n.id) !== midiKey(n)) fetchMidiNotes(n.id, midiKey(n));
+        const key = midiKey(n, quantum);
+        if (midiKeys.get(n.id) !== key) fetchMidiNotes(n.id, key, quantum);
     }
 }
 
@@ -757,13 +795,13 @@ async function startPolling() {
                 lastNodesById = nodesById;
                 lastRootId = state.id || '';
                 invalidateTakePeaks(lastNodesById);
-                refreshMidiNotes(lastNodesById);
                 const vm = deriveViewModel(state,
                     { folded: foldedStacks(projectInfo.id),
                       fxOpen, seqOpen, compMode, retakes,
                       pinFrameQ: mapDragPinQ(),
                       pinFoldQ: mapDragPinFoldQ(),
                       pinZero: mapDragPinZero() });
+                refreshMidiNotes(lastNodesById, vm.quantum);
                 lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
                     Number.isFinite(state.islandPos)
                     ? { zero: vm.frameZero,
@@ -877,8 +915,8 @@ function importOriginAt(q) {
 function importWithDialog(targetId, q) {
     const id = targetId || lastRootId;
     if (!id) return Promise.resolve(false);
-    return call('importAudioWithDialog', [id, importOriginAt(q)],
-        r => importVerdict(r, q > 0 ? `at Q${q}` : ''));
+    return createAndSelect(() => call('importAudioWithDialog', [id, importOriginAt(q)],
+        r => importVerdict(r, q > 0 ? `at Q${q}` : '')));
 }
 
 /**
@@ -891,8 +929,8 @@ function onImportDrop(laneId, q, files) {
     const file = files && files[0];
     const path = filePathOf(file);
     if (!path) return importWithDialog(laneId, q);
-    return call('importAudio', [laneId, path, importOriginAt(q)],
-        r => importVerdict(r, `${file.name} at Q${q}`));
+    return createAndSelect(() => call('importAudio', [laneId, path, importOriginAt(q)],
+        r => importVerdict(r, `${file.name} at Q${q}`)));
 }
 
 /* ---------- The project model (docs/projects.md) ----------
@@ -1193,12 +1231,13 @@ function initApp() {
         onFold: id => toggleFolded(projectInfo.id, id),
         onMute: id => callNative('toggleMute', id),
         onSolo: id => callNative('toggleSolo', id),
-        onAddTrack: () => callNative('createNode', 'clip', ''),
+        onAddTrack: () => createAndSelect(() => callNative('createNode', 'clip', '')),
         onDropLane,
         onGroupSelection,
         onMoveToTop,
         onUngroup,
-        onAddClip: groupId => callNative('createNode', 'clip', groupId),
+        onAddClip: groupId =>
+            createAndSelect(() => callNative('createNode', 'clip', groupId)),
         // Track templates (Q17): the creation menu's data + verbs. The
         // list is fetched per menu-open (the input-menu pattern — a
         // fresh save appears without a reload).
@@ -1208,10 +1247,10 @@ function initApp() {
         // per open, like the templates — session_view never touches
         // the backend itself.
         getKnownPlugins: async () => await callNative('getKnownPlugins') || [],
-        onCreateFromTemplate: (name, groupId) =>
+        onCreateFromTemplate: (name, groupId) => createAndSelect(() =>
             call('createFromTrackTemplate', [name, groupId || ''],
                 `"${name}" added — named and routed (⌘Z undoes it whole)`,
-                `Template "${name}" failed to load`),
+                `Template "${name}" failed to load`)),
         onSaveTemplate: (id, name) =>
             call('saveTrackTemplate', [id, name],
                 `Template "${name}" saved — it's on every + menu now`,

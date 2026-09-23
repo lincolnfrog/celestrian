@@ -11,8 +11,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { pairMidiEvents, notesFromRows, fitPitchRange, sliceNotesToTile,
-         MIN_PITCH_SPAN } from '../midi_notes.js';
-import { callNative, loadScenario } from '../mock_backend.js';
+         MIN_PITCH_SPAN, rescaleNotes } from '../midi_notes.js';
+import { callNative, loadScenario, getState } from '../mock_backend.js';
+import { deriveViewModel } from '../view_model.js';
 import { MOCK_Q } from './helpers.mjs';
 
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) <= eps, `${a} ≉ ${b}`);
@@ -116,4 +117,46 @@ test('the mock readout: the midi-clip scenario answers four paired notes as QTim
     assert.deepEqual(rows[0].slice(0, 2), [0, 1]);
     assert.deepEqual(await callNative('getMidiNotes', 'seed'), [], 'audio clip → none');
     assert.equal(MOCK_Q > 0, true);
+});
+
+test('rescaleNotes: a Q change re-expresses the same samples in the new Q', () => {
+    const notes = [{ posQ: 0.5, lenQ: 0.25, note: 60, vel: 100 }];
+    // Q halves (the tempo-setting take trimmed to half): 0.5Q → 1Q
+    const out = rescaleNotes(notes, 2000, 1000);
+    near(out[0].posQ, 1); near(out[0].lenQ, 0.5);
+    assert.equal(out[0].note, 60);
+    near(notes[0].posQ, 0.5);   // input untouched
+    assert.equal(rescaleNotes(notes, 1000, 1000), notes, 'same Q → same array');
+    assert.equal(rescaleNotes(notes, 0, 1000), notes, 'unknown Q → as-is');
+});
+
+test('a windowed MIDI lane slices its notes on the RAW take (contentQ), not the heard period', async () => {
+    // Keys is 2Q; window [1Q, 2Q) — the heard lane's intrinsicQ is the
+    // 1Q period, but the reps' srcSegs are fractions of the 2Q take.
+    loadScenario('midi-clip');
+    await callNative('setLoopPoints', 'midi-1', MOCK_Q, 2 * MOCK_Q);
+    const lane = deriveViewModel(getState()).lanes.find(l => l.id === 'midi-1');
+    near(lane.intrinsicQ, 1);
+    near(lane.contentQ, 2);
+    const notes = notesFromRows(await callNative('getMidiNotes', 'midi-1'));
+    const out = sliceNotesToTile(notes, lane.contentQ, lane.reps[0].srcSegs);
+    // The held G (0.5Q..1.25Q) sounds for the window's first 0.25Q; the
+    // open C5 (1.5Q..2Q) fills its second half. C4 and E4 are cut away.
+    assert.deepEqual(out.map(n => n.note), [67, 72]);
+    near(out[0].f0, 0); near(out[0].f1, 0.25);
+    near(out[1].f0, 0.5); near(out[1].f1, 1);
+});
+
+test('sliceNotesToTile: `onset` marks the piece a note starts in (one velocity stem per note)', () => {
+    const notes = [{ posQ: 0.5, lenQ: 1, note: 60, vel: 100 }];   // crosses the cut at 1Q
+    // [0,1Q) then [3Q,4Q) of a 4Q take — the note starts inside
+    const inside = sliceNotesToTile(notes, 4, [[0, 0.25], [0.75, 1]]);
+    assert.equal(inside[0].onset, true);
+    // A window starting at 1Q cuts its head away: no onset in the tile
+    const clipped = sliceNotesToTile(notes, 4, [[0.25, 0.5]]);
+    assert.equal(clipped.length, 1);
+    assert.equal(clipped[0].onset, false);
+    // A bar split by rotation: only the first piece carries the onset
+    const split = sliceNotesToTile([{ posQ: 1.5, lenQ: 1, note: 60, vel: 1 }], 4, null, 0.5);
+    assert.deepEqual(split.map(n => n.onset), [true, false]);
 });

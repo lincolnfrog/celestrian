@@ -211,6 +211,18 @@ export function drawWaveform(canvas, peaks, opts = {}) {
 const MIDI_BAR_ROW_FRAC = 0.8;
 const MIDI_BAR_MIN_PX = 1.5;
 const MIDI_ALPHA_FLOOR = 0.35;
+/* The velocity lane under the piano roll: a hairline gap, then one
+ * stem per note onset whose height is its velocity, capped by a small
+ * head so a soft note still reads as a note. */
+const MIDI_VEL_GAP_PX = 2;
+const MIDI_VEL_STEM_PX = 1.5;
+const MIDI_VEL_HEAD_PX = 3;
+const MIDI_VEL_BASE_ALPHA = 0.18;
+/* Below this lane height the stems are noise: the roll takes it all. */
+const MIDI_VEL_MIN_PX = 8;
+/* The share of a MIDI tile the velocity lane takes (lane tiles and the
+ * region panel alike, so the two read as one picture). */
+export const MIDI_VELOCITY_LANE = 0.28;
 
 /**
  * @typedef {Object} DrawMidiTileOptions
@@ -221,12 +233,16 @@ const MIDI_ALPHA_FLOOR = 0.35;
  * @property {{lo: number, hi: number}} range the pitch range the tile
  *     maps over its height (midi_notes.fitPitchRange of the WHOLE take,
  *     so every rep of one take shares one vertical scale)
+ * @property {number} [velocityLane] fraction of the height given to a
+ *     velocity lane under the roll (0 / omitted = roll only)
  */
 
 /**
  * Draw a MIDI clip's tile: one bar per note — pitch → row over the
  * tile's height (the compact range fit), length → width, velocity →
- * alpha — in the tape hue (echo tone for ghosts). `notes` are already
+ * alpha — in the tape hue (echo tone for ghosts). With `velocityLane`
+ * the roll yields the bottom of the tile to a velocity lane (one stem
+ * per onset, height = velocity). `notes` are already
  * sliced into tile fractions (midi_notes.sliceNotesToTile): the audio
  * tile's srcSegs/rotation rules ran before this, so windows, cuts and
  * comps apply here exactly as they do to peaks.
@@ -250,20 +266,42 @@ export function drawMidiTile(canvas, notes, opts = {}) {
         ctx.globalAlpha = 1;
         return;
     }
+    // Two lanes: the piano roll on top, velocity stems beneath.
+    let velH = Math.floor(cssH * Math.max(0, Math.min(0.5, opts.velocityLane || 0)));
+    if (velH < MIDI_VEL_MIN_PX) velH = 0;
+    const rollH = velH ? cssH - velH - MIDI_VEL_GAP_PX : cssH;
     const range = opts.range || { lo: 54, hi: 66 };
     const rows = Math.max(1, range.hi - range.lo + 1);
-    const rowH = cssH / rows;
+    const rowH = rollH / rows;
     const barH = Math.max(MIDI_BAR_MIN_PX, rowH * MIDI_BAR_ROW_FRAC);
     ctx.fillStyle = tone.mid;
     for (const n of notes) {
         const x0 = n.f0 * cssW;
         const x1 = Math.max(x0 + 1, n.f1 * cssW);
-        // Row `note - lo` counts up from the bottom edge.
-        const rowTop = cssH - (n.note - range.lo + 1) * rowH;
+        // Row `note - lo` counts up from the roll's bottom edge.
+        const rowTop = rollH - (n.note - range.lo + 1) * rowH;
         const y = rowTop + (rowH - barH) / 2;
-        const vel = Math.max(0, Math.min(127, n.vel || 0)) / 127;
-        ctx.globalAlpha = MIDI_ALPHA_FLOOR + (1 - MIDI_ALPHA_FLOOR) * vel;
+        ctx.globalAlpha = MIDI_ALPHA_FLOOR + (1 - MIDI_ALPHA_FLOOR) * velFrac(n);
         ctx.fillRect(x0, y, x1 - x0, barH);
     }
+    if (velH) {
+        const base = cssH;  // stems stand on the bottom edge
+        ctx.globalAlpha = MIDI_VEL_BASE_ALPHA;
+        ctx.fillRect(0, cssH - velH - MIDI_VEL_GAP_PX / 2 - 0.5, cssW, 1);
+        ctx.globalAlpha = 1;
+        for (const n of notes) {
+            if (n.onset === false) continue;  // one stem per note, at its onset
+            const x = n.f0 * cssW;
+            const h = Math.max(MIDI_VEL_HEAD_PX, velFrac(n) * velH);
+            ctx.fillRect(x, base - h, MIDI_VEL_STEM_PX, h);
+            ctx.fillRect(x - (MIDI_VEL_HEAD_PX - MIDI_VEL_STEM_PX) / 2, base - h,
+                         MIDI_VEL_HEAD_PX, MIDI_VEL_HEAD_PX);
+        }
+    }
     ctx.globalAlpha = 1;
+}
+
+/** A note's velocity as [0, 1]. */
+function velFrac(n) {
+    return Math.max(0, Math.min(127, n.vel || 0)) / 127;
 }

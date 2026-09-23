@@ -109,8 +109,14 @@
     --line: #3a3e44;      /* hairline borders (chips, menus, bar buttons) */
     /* the foot row must fit the live take length ("12.3Q…") beside the
        full control set — narrower, the Q slot squeezes to a sliver
-       while recording */
-    --rail-w: 230px;
+       while recording, and the chips spill past the rail's edge. The
+       widest set is a group's (sub · ● M S fx seq·NQ +) or an audio
+       clip's (… fx in mon). Nested rails indent INTO the column, so
+       it widens one indent per level present (patch.js sets
+       --rail-depth) — every rail keeps --rail-base of room. */
+    --rail-base: 272px;
+    --rail-indent: 22px;
+    --rail-w: calc(var(--rail-base) + var(--rail-indent) * var(--rail-depth, 0));
 
     font-size: 16px;
 }
@@ -766,8 +772,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent);
             mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent);
 }
-.lane[data-depth="1"] .lane-rail { margin-left: 22px; }
-.lane[data-depth="2"] .lane-rail { margin-left: 44px; }
+.lane[data-depth="1"] .lane-rail { margin-left: var(--rail-indent); }
+.lane[data-depth="2"] .lane-rail { margin-left: calc(2 * var(--rail-indent)); }
 .lane[data-depth="1"] .lane-rail, .lane[data-depth="2"] .lane-rail { min-height: 56px; }
 
 /* Group header rows pin to the top while their children scroll, so

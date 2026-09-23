@@ -92,6 +92,20 @@ export function patchSessionView(vm, aux) {
 
     patchRuler(vm);
 
+    // The rail column grows one indent per nesting level PRESENT, so a
+    // nested rail keeps the full control set's width instead of paying
+    // for its indent (the rows would spill past the rail's edge).
+    let railDepth = 0;
+    for (const l of vm.lanes) {
+        if (l.kind === 'clip' || l.kind === 'group') {
+            railDepth = Math.max(railDepth, Math.min(l.depth || 0, 2));
+        }
+    }
+    const rootStyle = document.documentElement.style;
+    if (rootStyle.getPropertyValue('--rail-depth') !== String(railDepth)) {
+        rootStyle.setProperty('--rail-depth', String(railDepth));
+    }
+
     // Lanes: keyed reconciliation in VM order
     const seen = new Set();
     let prev = null;

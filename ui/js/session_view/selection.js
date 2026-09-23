@@ -13,6 +13,11 @@ export const selection = new Set();
 // the sole selection); reset by any select. While it holds, the default
 // selection does not re-assert itself.
 let userCleared = false;
+// A just-created track waiting for its lane (selectWhenPresent): taken
+// by the first patch that lists it; any explicit select or clear, or
+// PENDING_SELECT_MS without the lane appearing, drops it.
+let pendingSelect = null;   // { id, t }
+const PENDING_SELECT_MS = 3000;
 
 function updateSelectionBar() {
     const bar = document.getElementById('selection-bar');
@@ -24,6 +29,7 @@ function updateSelectionBar() {
 }
 
 export function clearSelection() {
+    pendingSelect = null;
     selection.clear();
     userCleared = true;  // an explicit clear sticks (see ensureDefaultSelection)
     document.querySelectorAll('.lane-rail.selected')
@@ -49,6 +55,7 @@ export function paintSelection() {
 /** Programmatic single-select: grabbing a loop handle claims the track,
  * which is what arms the [ ] teleport. */
 export function selectOnly(id) {
+    pendingSelect = null;
     if (selection.size === 1 && selection.has(id)) return;
     selection.clear();
     selection.add(id);
@@ -62,6 +69,7 @@ export function selectOnly(id) {
  * Escape / a canvas click clear); ⌘/Ctrl/Shift-click
  * toggles the row in and out of the additive set. */
 export function toggleSelect(row, additive) {
+    pendingSelect = null;
     const id = row._lane.id;
     if (!additive) {
         selection.clear();
@@ -86,6 +94,15 @@ export function toggleSelect(row, additive) {
  * user's). Returns true when it changed the selection.
  */
 export function ensureDefaultSelection(laneIds) {
+    if (pendingSelect) {
+        if (laneIds.includes(pendingSelect.id)) {
+            selectOnly(pendingSelect.id);  // clears pendingSelect
+            return true;
+        }
+        if (performance.now() - pendingSelect.t > PENDING_SELECT_MS) {
+            pendingSelect = null;
+        }
+    }
     let pruned = false;
     for (const id of [...selection]) {
         if (!laneIds.includes(id)) { selection.delete(id); pruned = true; }
@@ -102,6 +119,15 @@ export function ensureDefaultSelection(laneIds) {
     }
     selectOnly(laneIds[0]);
     return true;
+}
+
+/** Select a lane that may not be rendered yet: a NEW track is selected
+ * by default. Selecting it directly could lose a race — a poll already
+ * in flight still lists the old tree, and its patch would prune an id
+ * it doesn't list — so the next patch that lists it selects it. */
+export function selectWhenPresent(id) {
+    if (id == null) return;
+    pendingSelect = { id, t: performance.now() };
 }
 
 /** The [ / ] target: the most recently selected lane id (Set keeps

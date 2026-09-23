@@ -15,7 +15,7 @@
 
 import { ctx } from './context.js';
 import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ, tickSetSig } from './sv_util.js';
-import { drawWaveform, drawMidiTile } from '../canvas_renderer.js';
+import { drawWaveform, drawMidiTile, MIDI_VELOCITY_LANE } from '../canvas_renderer.js';
 import { sliceNotesToTile } from '../midi_notes.js';
 import { generateCompositeWaveform } from '../composite_waveform.js';
 import { calculateStackLCM } from '../timeline_model.js';
@@ -156,7 +156,8 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
         // rotation) the envelope gets, then bars instead of peaks.
         drawMidiTile(canvas,
             sliceNotesToTile(midi.notes, midi.intrinsicQ, src, rotFrac || 0),
-            { cssWidth, cssHeight, isEcho: !!isGhost, range: midi.range });
+            { cssWidth, cssHeight, isEcho: !!isGhost, range: midi.range,
+              velocityLane: MIDI_VELOCITY_LANE });
     } else {
         if (div._liveBoost !== undefined) delete div._liveBoost;
         // Pinned, like the live bar: the div's transition reveals/clips
@@ -363,8 +364,10 @@ export function patchLaneBody(row, lane, vm, aux) {
             src: rep.srcSegs || null,
             isGhost: !!rep.ghost,
             rotFrac: rep.srcTopFrac || 0,
+            // Notes slice on the RAW take (srcSegs are fractions of it),
+            // not the heard period a windowed lane's intrinsicQ carries
             midi: midi ? { notes: midi.notes, range: midi.range,
-                           intrinsicQ: lane.intrinsicQ || 0 } : null,
+                           intrinsicQ: lane.contentQ || lane.intrinsicQ || 0 } : null,
         });
 
         // MORPH ONLY PURE MOVES; SNAP RE-LAYOUTS. When the canvas was
