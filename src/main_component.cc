@@ -203,7 +203,19 @@ MainComponent::MainComponent() : web_browser(browserOptions()) {
 
   addAndMakeVisible(web_browser);
 
-  web_browser.goToURL(juce::WebBrowserComponent::getResourceProviderRoot());
+  // DEBUG UI (--debug-ui): sets ?debug=true on the page, which turns on
+  // debug_flags.js — the verbose log line and the map-gesture flight
+  // recorder (window.__mapDbg, plus the commit trace that names which
+  // writer touched a loop region). Off by default; the recorder is too
+  // chatty for normal runs. getResource strips the query back off.
+  juce::String url = juce::WebBrowserComponent::getResourceProviderRoot();
+  if (auto* app = juce::JUCEApplication::getInstance();
+      app != nullptr && app->getCommandLineParameterArray().contains("--debug-ui")) {
+    if (!url.endsWithChar('/')) url << "/";
+    url << "?debug=true";
+    juce::Logger::writeToLog("Debug UI enabled: " + url);
+  }
+  web_browser.goToURL(url);
 
   setSize(800, 600);
 
@@ -403,6 +415,12 @@ void MainComponent::resized() { web_browser.setBounds(getLocalBounds()); }
 std::optional<juce::WebBrowserComponent::Resource> MainComponent::getResource(
     const juce::String& path) {
   juce::String cleanPath = path;
+  // The document request carries the page's query string / fragment
+  // (?debug=true — see the goToURL below). Resources resolve by PATH
+  // only: leaving the query on would send "index.html?debug=true" to
+  // the filesystem, miss, and hand WebView2 nothing — a blank window.
+  cleanPath = cleanPath.upToFirstOccurrenceOf("?", false, false);
+  cleanPath = cleanPath.upToFirstOccurrenceOf("#", false, false);
   if (cleanPath.startsWith("/")) cleanPath = cleanPath.substring(1);
   if (cleanPath.isEmpty()) cleanPath = "index.html";
 

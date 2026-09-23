@@ -65,6 +65,52 @@ function setLogLine(msg) {
     if (line) line.textContent = msg;
 }
 
+/* ---------- loop-region commit trace (--debug-ui) ----------
+ * The loop region has TWO writers: the lane's brackets (window_edit.js
+ * → onSetWindow → setLoopPoints) and the overview panel
+ * (region_panel/map_core → onSetSegments → setSegments, which the
+ * engine folds back into setLoopPoints for a single window). When they
+ * disagree the region oscillates, and neither writer's own log shows
+ * the other. This records every commit WITH ITS CALLER, interleaved
+ * with what the engine reports back on the next poll, into
+ * celestrian_debug.log. Silent unless --debug-ui. */
+const traceSeen = new Map();  // node id → last observed [start, end]
+
+/** The first non-app.js frame above the callback — names the writer. */
+function traceCaller() {
+    const frames = (new Error().stack || '').split('\n').slice(2);
+    for (const f of frames) {
+        const m = f.match(/([A-Za-z_]+\.js):(\d+)/);
+        if (m && m[1] !== 'app.js' && m[1] !== 'backend.js')
+            return `${m[1]}:${m[2]}`;
+    }
+    return '?';
+}
+
+function traceCommit(kind, id, startS, endS, live) {
+    if (!DEBUG) return;
+    log(`[trace] ${kind} id=${String(id).slice(0, 6)} ` +
+        `${startS}..${endS} len=${endS - startS} live=${live ? 1 : 0} ` +
+        `from=${traceCaller()}`);
+}
+
+/** Log the engine's answer whenever a node's window actually moves, so
+ * the trace reads commit → answer → commit and the fight is visible. */
+function traceObserved(nodesById) {
+    if (!DEBUG) return;
+    nodesById.forEach((n, id) => {
+        if (typeof n.loopStart !== 'number' ||
+            typeof n.loopEnd !== 'number') return;
+        const prev = traceSeen.get(id);
+        if (prev && prev[0] === n.loopStart && prev[1] === n.loopEnd) return;
+        if (prev) {
+            log(`[trace] observed id=${String(id).slice(0, 6)} ` +
+                `${n.loopStart}..${n.loopEnd} len=${n.loopEnd - n.loopStart}`);
+        }
+        traceSeen.set(id, [n.loopStart, n.loopEnd]);
+    });
+}
+
 /* ---------- landed-state verification --------
  * The engine refuses window/map edits silently behind several guards
  * (coherence, mid-take, non-definer bounds, wrapper warps); announcing
@@ -706,6 +752,7 @@ async function startPolling() {
             const state = isMock ? getState() : await callNative('getGraphState');
             if (state) {
                 const nodesById = indexNodes(state.nodes);
+                traceObserved(nodesById);
                 trackRetakes(lastNodesById, nodesById);
                 lastNodesById = nodesById;
                 lastRootId = state.id || '';
@@ -1176,6 +1223,7 @@ function initApp() {
         // Loop windows (time_maps.md): the region is data (setLoopPoints),
         // activation is a toggle between active and bypassed
         onSetWindow: async (id, startSamples, endSamples, live = false) => {
+            traceCommit('setWindow  ', id, startSamples, endSamples, live);
             const r = await callNative('setLoopPoints', id, startSamples,
                                        endSamples, live);
             scheduleVerify(id, n => windowLanded(n, startSamples, endSamples),
@@ -1189,6 +1237,8 @@ function initApp() {
         // `live`: a mid-gesture commit (coalesces into the gesture's
         // undo entry, owner ruling 2026-09-10).
         onSetSegments: async (id, flatSegments, live = false) => {
+            traceCommit('setSegments', id, flatSegments[0],
+                        flatSegments[flatSegments.length - 1], live);
             const r = await callNative('setSegments', id, flatSegments, live);
             scheduleVerify(id, n => {
                 if (flatSegments.length >= 4) {
