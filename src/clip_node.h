@@ -600,6 +600,25 @@ class ClipNode : public AudioNode {
   /** Peaks of take k over the committed span (the take-list view). */
   juce::var getTakeWaveform(int k, int num_peaks) const;
 
+  /** THE PEAK BUCKET (navigation N7, 2026-09-22): peak `i` of `n` over
+   * `total` samples covers the base-relative span [start, end) =
+   * [⌊i·total/n⌋, ⌊(i+1)·total/n⌋) — proportional bounds, so the last
+   * bucket reaches the end of the take and no peak drifts early (the
+   * floor-divided window it replaces dropped the `total mod n` tail and
+   * slid peak i up to n samples early — harmless at 800 peaks, large at
+   * the densities zoom asks for). Never empty: when n > total a bucket
+   * holds one sample. One statement for audioPeaks and midiPeaks; JS
+   * twin ui/js/mock/waveform.js peakBucket. */
+  struct PeakBucket {
+    int64_t start = 0;
+    int64_t end = 0;
+  };
+  static PeakBucket peakBucket(int i, int64_t total, int n) {
+    if (n <= 0 || total <= 0) return {};
+    const int64_t start = (int64_t)i * total / n;
+    return {start, std::max(start + 1, (int64_t)(i + 1) * total / n)};
+  }
+
   /**
    * Restore a committed take on session load (session_io): copies `audio`
    * into the buffer, marks it playable, and sets the recorded facts that

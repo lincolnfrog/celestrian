@@ -191,6 +191,17 @@ namespace {
 // on either side is its full-span form. The Q13 sole-definer riders
 // keep their own algebra (island re-establish included) and win when
 // they apply.
+// THE LEAST MOVE (seam-model SM-4 / release-jump F4, 2026-09-23): the
+// solve answers the MOST RECENT pass — the old origin plus every whole
+// pass played since, so a pure slide (which keeps the sounding sample's
+// heard phase) came back O + m·P. Audibly the same, but the view seats
+// the frame from absolute tops (frame.md), so the seat flipped with the
+// parity of m, a group's composite re-keyed, and bypass played the take
+// away from where it was performed. The origin is therefore the
+// representative NEAREST the old one modulo the node's fold (the
+// equation's own modulus): a slide returns O exactly, and a trim moves
+// by the least whole-Q amount (the fold is a multiple or a divisor of
+// Q, so the congruence class of a whole-Q solve stays whole-Q).
 // Q18: one implementation for clips and stacks — the node's inner
 // position now (heard::nodeInner) re-anchored under the new map. For a
 // stack the returned origin moves its whole subtree (applySetsOrigin).
@@ -204,19 +215,17 @@ int64_t continuityOrigin(const celestrian::AudioNode& node,
   };
   const TimeMap oldm = effective(node.activeTimeMap());
   const TimeMap newm = effective(new_map);
-  const int64_t period = newm.period();
   // The node's RECEIVED clock and scope (heard_index.h: the ancestors'
-  // maps composed) — the frame its origin lives in.
+  // maps composed) — the frame its origin lives in. The algebra (the
+  // position sounding now under the old map and fold, re-anchored
+  // under the new one, nearest the old origin) is the pure
+  // heard::continuityOriginFor, golden-pinned against the mock twin.
   const celestrian::heard::Received rec =
       celestrian::heard::receivedAt(node, t0, root);
-  const int64_t old_org = celestrian::heard::frameOriginOf(node, rec.scope);
-  if (period <= 0 || oldm.period() <= 0) return old_org;
-  const celestrian::timing::InnerAt at =
-      celestrian::heard::ownInnerAt(node, rec.clock, rec.scope);
-  if (at.rest) return old_org;  // a one-shot resting: nothing to keep
-  const int64_t p0 = at.inner;
-  if (newm.heardOffsetOf(p0) < 0) return old_org;  // region removed: stay put
-  return celestrian::heard::originForHeard(newm, rec.clock, p0, 0);
+  return celestrian::heard::continuityOriginFor(
+      oldm, newm, celestrian::heard::frameOriginOf(node, rec.scope), rec.clock,
+      celestrian::heard::ownFold(node, oldm, rec.scope),
+      celestrian::heard::ownFold(node, newm, rec.scope));
 }
 }  // namespace
 

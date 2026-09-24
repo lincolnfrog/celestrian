@@ -406,8 +406,9 @@ ramp reaches zero, so there is no pop; a muted instrument keeps being fed.
 A MIDI lane's tiles paint note bars from `getMidiNotes` (fetched on
 demand, cached by `midiEvents` plus active take): pitch → row over a
 compact range fit, length → width, velocity → alpha, sliced per rep tile
-by the audio tile's `srcSegs`/rotation rules so windows, cuts, and comps
-apply (`ui/js/midi_notes.js`, `canvas_renderer.drawMidiTile`).
+by the audio tile's exact mapping (`srcSegs`, rotation, the tile's window
+onto its period — session_view.md display law 16) so windows, cuts, and
+comps apply (`ui/js/midi_notes.js`, `canvas_renderer.drawMidiTile`).
 
 ### 8.6 Known limits
 

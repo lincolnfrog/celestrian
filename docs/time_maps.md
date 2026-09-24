@@ -218,7 +218,11 @@ segment src); the display frame is the audible cycle; the one white
 cursor is honest on every lane. Heard tiles sit on the frame grid with
 the loop's phase baked in as content rotation (`srcTopFrac`) — a loop
 that fills the frame is ALL material, so there are no wrap slivers and
-no false ghosts, and cross-lane phase alignment (I2) is preserved. The
+no false ghosts, and cross-lane phase alignment (I2) is preserved.
+Tiles are painted per pixel column through the same mapping (each
+column's heard phase → `mapOffset` → its fractional raw range), so a
+slide repaints only the strip its seams sweep — session_view.md
+display law 16. The
 loop top is a marked `↺` point carrying the paired trim grips, separated
 16 px so the end grip cannot hide behind the start.
 
@@ -280,15 +284,35 @@ mock in lockstep) keeps the sounding sample sounding:
   the anchor's grid phase (mod Q) is exactly preserved. Which cell
   aligns re-derives from the edit instant — the looper's
   launch-quantized feel.
+- **The least move (seam-model SM-4, 2026-09-23).** Every origin
+  congruent modulo the node's fold (its period; a one-shot's context
+  cycle) sounds the same sample, and the solve `t0 − heard phase`
+  answers the MOST RECENT pass — the old origin plus every whole pass
+  played since. The origin is therefore the representative **nearest
+  the old one** (`heard::nearestRepresentative`): a trim moves it by
+  the least whole-Q amount, and **a pure slide never re-anchors** —
+  moving the window (length held) leaves the sounding sample's heard
+  phase where it was, so the old origin is itself the answer. Before
+  this the pass count leaked out: the view seats from absolute tops
+  (frame.md), so the same slide re-seated the frame or not with the
+  parity of the pass count, a group's composite re-keyed, and bypass
+  played the take away from where it was performed (the Degradation
+  Contract). The fold, not lcm(fold, Q): the fold is a multiple or a
+  divisor of Q, so a whole-Q solve stays whole-Q either way, and for a
+  sub-Q loop only the fold is free of the pass count.
 - **Playing only.** Idle edits keep the deterministic fixed-origin
   layout.
 
 Net behaviour for the origin: a cut AFTER the playing point causes no
-re-anchor and no jump; BEFORE it, a whole-Q re-anchor and no jump; AT
-it, no re-anchor and one expected jump. Where the loop then sits on
-screen is the view's seating (frame.md), in every case. Engine-level continuity test in
-`tests/time_map_record_tests.cc`; the I4 regression pin asserts the
-mod-Q invariant.
+re-anchor and no jump; BEFORE it, the least whole-Q re-anchor and no
+jump; AT it, no re-anchor and one expected jump; a slide, none at all.
+Where the loop then sits on screen is the view's seating (frame.md),
+in every case. The algebra is `heard::continuityOriginFor` (mock twin
+`mock/maps.js continuityOriginFor`), golden-pinned by
+`continuity_origin_cases`; engine-level continuity tests in
+`tests/time_map_record_tests.cc`, scenario S40, the mock journeys in
+`ui/js/tests/continuity_origin.test.mjs`; the I4 regression pin asserts
+the mod-Q invariant and that a playing slide keeps the origin.
 
 ### Q13: the definer's re-trim
 
@@ -326,7 +350,11 @@ lane's **own** px-per-Q (`map_bands.js runRevealDrag`).
   pointer; nothing rescales.
 - **Edge panning.** Dragging into a visible edge (36 px, clipped by the
   viewport) pans the raw take under the hand (`PAN_MAX_PX_PER_S`), the
-  bound following.
+  bound following. The rule is **direction-aware** and shared with the
+  region panel's drags (`edge_pan.js`, 2026-09-23): a drag pans toward
+  an edge only once the pointer is *outward of where it grabbed* (past
+  a 4 px slop). A grip resting at the lane's edge starts inside the
+  zone, and the old rule ran the loop outward on a fine inward move.
 - **The frame stays pinned** for the whole gesture; live commits stream
   and are audible; release commits and the lane relaxes.
 - **Cursors.** The white playhead is masked over a `.revealing` body
@@ -336,23 +364,55 @@ lane's **own** px-per-Q (`map_bands.js runRevealDrag`).
 
 ### The region panel
 
-The selected clip or group grows a 52 px row under its lane
-(`.lane-region`, grid column 2) with a viewport-pinned panel
-(`region_panel.js`): a label ("loop 4Q · 52Q take"), then a strip
-drawing the WHOLE raw take (clip peaks; a group's map mixdown — the same
-array the heard tiles slice).
+The selected clip or group grows a 68 px row under its lane
+(`.lane-region`), spanning the **whole row** (under the rail too — its
+cell there is empty). The panel (`region_panel.js`) is pinned to the
+viewport at a **constant width** (the viewport minus `#session`'s
+padding), whatever the main zoom and scroll. It holds a label ("loop 4Q
+· 52Q take") and a column of two strips (2026-09-23, zoomable):
+
+- the **overview**, 12 px: the WHOLE raw take (clip peaks; a group's map
+  mixdown — the same array the heard tiles slice), the kept segments
+  tinted, each inner cut notched, the amber cursor, and the detail view
+  as an outlined box;
+- the **detail** strip, the editing surface: the take drawn through the
+  panel's own **view** `{q0, spanQ}`.
 
 | Element | Gesture |
 |---|---|
 | The kept region (`.region-kept`) | drag = **slide** by whole Qs; ⌥ = any amount (`slideMoveFn`) |
-| Bracket handles | drag = **trim** (`trimMoveFn`); ⌥ slides |
+| Bracket handles | drag = **trim** (`trimMoveFn`; the period snaps to whole Qs); ⌥ slides |
 | Inner cuts (bands) | slide by their chip; resize by their handles |
-| The strip | double-click = a 1Q cell cut |
+| The detail strip | double-click = a 1Q cell cut on the take's own Q grid (`cellCutAt`) |
+| A box or bracket drag near the strip's edge | pans the view under the hand (`edge_pan.js`, the reveal's rule; cut-chip and cut-handle drags do not pan yet) |
+| Ctrl/⌘+wheel or a pinch over the panel | **zoom the panel** about the Q under the pointer — through the view on the detail strip, through the whole take on the overview (inside the view box; elsewhere the view's middle). The main view does not zoom |
+| Shift+wheel or a horizontal swipe | pan the panel; a plain wheel scrolls the page |
+| The overview's box | drag = pan, drag down/up = zoom in/out; its edges set the span |
+| The overview elsewhere | click = centre the view there; double-click = the whole take |
+| The label's "loop NQ" / "NQ take" | fit the region / the whole take (`Z` / `⇧Z`) |
 
 Excluded material is dimmed, the kept region a bright box, and the amber
-raw-time cursor runs across it. The strip is a band host with
-`cycleQ = totalQ` and anchor 0, so it reuses the lane's raw-frame band
-code verbatim.
+raw-time cursor runs across both strips (hidden when outside the view;
+it lives outside the keyed overlay, so a rebuild never shows it at raw
+0). The detail strip is a band host framed through the view
+(`cycleQ = spanQ`, anchor `−q0`), so it reuses the lane's raw-frame band
+code verbatim. Gridlines are **whole Qs only**, thinned to 1, 2, 4 … Q
+so they stay ≥ 7 px apart and numbered from 40 px/Q (owner ruling
+2026-09-23: a sub-Q grid is arbitrary relative to the music; slides
+snap to whole Qs, ⌥ is free). Every slice is drawn at **one gain per
+take** (`peaksBoost`), so zooming or panning never changes the
+waveform's apparent loudness.
+
+**The view** (`panel_view.js`) is per lane, in the panel's module state
+(never the view model — a poll must not undo a zoom), remembered for the
+session, and reset when the take's length changes. It opens at **fit
+region**: the loop fills ~55% of the strip, centred and clamped to the
+take, or the whole take when that span would be ≥ 80% of it. After that
+**only explicit input zooms**. Commits and nudges only **pan**, the
+least that keeps the region in view (8% margin). While a panel drag is
+live or its commit is held, the view holds still (wheel ignored), apart
+from the drag's own edge pan. Narrow kept boxes (< 78 px) wear their
+brackets outside, so the box's whole width stays grabbable for a slide.
 
 **Shown** for the most recently selected lane with a ≥ 2Q take. **Not
 shown** for the Q-definer (its trim law SETS Q), a pinned inspector (the
@@ -369,14 +429,29 @@ Escape, a click on empty canvas, or a click on the top bar's empty space
 (`#transport`, controls excluded).
 
 **Keyboard:** `←` / `→` slide the selected region by 1Q (⇧ 4Q, ⌥ ⅛Q),
-length held, one undo step per press (`nudgeRegion`). `[` / `]` walk the
-viewport through the selected track's handles; `{` / `}` jump to the
-outer loop bounds.
+length held, one undo step per press (`nudgeRegion`). A **chain** of
+nudges (presses within 800 ms) is one pinned gesture: the first press
+pins the frame (`drag_pin.js`), and the pin drops once the chain window
+has passed the last press and its commit has settled, so the frame
+never re-seats per press (`makeChainPin`). The panel's view pans to keep
+the nudged region in sight. `Z` / `⇧Z` fit the panel to the loop / the
+whole take, only while a panel is shown (plain `z` is otherwise
+unbound). `[` / `]` walk the viewport through the selected track's
+**lane** handles, never the panel's (`isTransientHandle` skips
+`.lane-region`: the viewport-pinned panel cannot be centred, and the
+walk used to stick on its cut handles); `{` / `}` jump to the outer
+loop bounds.
 
-Pinned by `ui/js/tests/map_core.test.mjs` (the three move laws) and
-`ui/e2e/region_panel.spec.js` (panel on select / off on top-bar click
-and Escape; panel trim, slide, cut; nudges; the reveal keeps the grip
-under the pointer and pans at the edge).
+Pinned by `ui/js/tests/map_core.test.mjs` (the three move laws),
+`panel_view.test.mjs` (fit, clamp, zoom, pan, keep-in-view, the
+whole-Q grid, the wheel and overview-box laws, one gain per take),
+`edge_pan.test.mjs` (the direction-aware pan),
+`region_panel_keys.test.mjs` (the nudge chain's pin, the teleport
+filter), `ui/e2e/region_panel.spec.js` (panel on select / off on
+top-bar click and Escape; panel trim, slide, cut; nudges; the reveal
+keeps the grip under the pointer, never pans on an inward move, and
+pans outward at the edge) and `ui/e2e/region_panel_view.spec.js` (the
+view's navigation and every gesture under zoom, real mouse input).
 
 ---
 
@@ -426,8 +501,17 @@ under the pointer and pans at the edge).
 
 - Nested ACTIVE ancestor maps refuse the arm — their composition is a
   map product, not yet designed.
-- A window edit on a node whose subtree holds a live take is refused
-  until commit; siblings stay editable.
+- **The UI refuses every map edit while any take records or is pending**
+  (owner ruling 2026-09-23: simplicity over a per-subtree gate). The
+  view model's `anyTakeActive` locks every lane (`bandGate`:
+  `bandEditable` false, `bandLocked` true where the chrome would be
+  live), so lane grips, seam handles and cut bands, the region panel's
+  box, brackets and bands, double-click cuts and ←/→ nudges all do
+  nothing; the chrome that shows the loop (seams, the ↺ loop top, the
+  panel's box) stays drawn, inert — no grab cursor, no hover reveal.
+  The engine refuses them too, as defense in depth: the global
+  live-take gate (`refusedUnderLiveTake`) and the per-subtree refusal
+  of a window edit on a node whose subtree holds a live take.
 - A mapped cycle too large for a dense buffer refuses with a log.
 
 ### UI cues
@@ -539,8 +623,22 @@ readout + bypass toggle like every other chip. *`windowEditLane`
 survives only as comp mode's raw lane (takes.md §6).*
 
 **The handle nav dock** and its ticks/viewport box. **Replaced** by the
-region panel (§6), which shows the same overview in the lane's own
-column and is editable. The `[` `]` `{` `}` teleport keys survive.
+region panel (§6), which shows the same overview under the lane and is
+editable. The `[` `]` `{` `}` teleport keys survive.
+
+Three navigations for the zoomable region panel were **rejected** when
+it gained its own view (2026-09-23, §6):
+
+- **A fisheye (focus + context) strip.** Pointer speed would change
+  across the lens edge, and the lens would have to follow the region,
+  moving under the hand. The overview strip keeps the context instead.
+- **Tying the panel's scale to the main zoom.** A 5Q frame at lane scale
+  cannot show a 56Q take, and a panel whose px/Q moved with the main
+  zoom and scroll ran off-screen (diagnosis N3). The panel has its own
+  view at a constant width.
+- **An automatic re-fit after a commit.** The box would rescale right
+  after release, the "jump" the owner already dislikes. Commits only
+  pan; only explicit input zooms.
 
 **The double-click flash-expand.** A ~0.9 s expansion so a new cut was
 seen landing in raw context. **Gone:** the cut now lands in raw context

@@ -11,6 +11,8 @@
  * code never talks to it directly.
  */
 
+import { QUIET_POLLS } from './protocol.js';
+
 const pendingCalls = new Map();
 let resultIdCounter = 0;
 
@@ -60,7 +62,13 @@ export async function callNative(name, ...args) {
     try {
         if (b && b.backend && typeof b.backend[name] === 'function') {
             const res = await b.backend[name](...args);
-            console.log(`Direct call [${name}] result:`, res);
+            // The heartbeat polls stay quiet (protocol.js QUIET_POLLS,
+            // the C++ bridge and the mock do the same): logging the
+            // whole graph state 20×/s kept every object alive in the
+            // WebView console — memory growth and GC pauses (F12).
+            if (!QUIET_POLLS.has(name)) {
+                console.log(`Direct call [${name}] result:`, res);
+            }
             return res;
         }
     } catch (e) {

@@ -15,6 +15,7 @@ import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
          mapDragPinZero, activeSelectedId, selection, selectWhenPresent }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
+import { peakCountFor } from './peak_density.js';
 import { initPreferences } from './preferences.js';
 import { initPluginPanel } from './plugin_panel.js';
 import { notesFromRows, fitPitchRange, rescaleNotes } from './midi_notes.js';
@@ -34,7 +35,6 @@ const dbg = m => { if (DEBUG) log(m); };
 /* ---------- tuning constants ---------- */
 const POLL_MS = 50;                 // graph-state poll cadence
 const PROJECT_POLL_MS = 2000;       // project birth/rename follow the mirror
-const PEAK_COUNT = 800;             // waveform peaks requested per clip
 const RECENTS_CAP = 6;              // recent projects shown in the menu
 const CALIBRATION_POLL_TRIES = 40;  // latency calibration: poll attempts…
 const CALIBRATION_POLL_MS = 250;    // …every this many ms (10 s ceiling)
@@ -198,6 +198,16 @@ async function createAndSelect(create) {
 const peakKey = n =>
     (n.duration || 0) + ':' + (n.activeTake || 0) + ':' + (n.takes || 0);
 
+/** How many peaks to ask for clip `id` — by its take's LENGTH, not a
+ * flat count (peak_density.js; navigation N7). Every take of a slot
+ * shares the slot's duration, so one count serves getWaveform and
+ * getTakeWaveform. The rate is the last poll's (refreshPeaks). */
+let peakSampleRate = 44100;
+function peakCountOf(id) {
+    const n = lastNodesById.get(id);
+    return peakCountFor(n ? n.duration : 0, peakSampleRate);
+}
+
 const peakFetches = new Map(); // clip id → in-flight fetch promise
 async function fetchWaveform(id, key) {
     // Per-id in-flight guard: concurrent fetches for DIFFERENT clips may
@@ -206,7 +216,7 @@ async function fetchWaveform(id, key) {
     if (peakFetches.has(id)) return;
     const p = (async () => {
         try {
-            const peaks = await callNative('getWaveform', id, PEAK_COUNT);
+            const peaks = await callNative('getWaveform', id, peakCountOf(id));
             if (peaks && peaks.length > 0) {
                 livePeaks.set(id, peaks);
                 peakKeys.set(id, key);
@@ -233,6 +243,7 @@ const LIVE = 'live'; // peakKeys marker: array holds live recording peaks
  * length the view model computes (lane.recordingLengthQ).
  */
 function refreshPeaks(nodes, sampleRate, lanesById) {
+    if (sampleRate > 0) peakSampleRate = sampleRate;
     (nodes || []).forEach(n => {
         if (n.type === 'stack') return refreshPeaks(n.nodes, sampleRate, lanesById);
         if (n.type !== 'clip') return;
@@ -276,7 +287,7 @@ function fetchTakePeaks(id, k) {
     if (takePeakFetches.has(key)) return takePeakFetches.get(key);
     const p = (async () => {
         try {
-            const peaks = await callNative('getTakeWaveform', id, k, PEAK_COUNT);
+            const peaks = await callNative('getTakeWaveform', id, k, peakCountOf(id));
             if (peaks && peaks.length > 0) takePeakCache.set(key, peaks);
             return peaks || [];
         } catch (err) {

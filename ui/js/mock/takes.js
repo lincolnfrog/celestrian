@@ -11,6 +11,7 @@
 import { findNode, anyNodeRecording, effectiveQuantumForState } from './state.js';
 import { popUndoForRefusal } from './undo.js';
 import { takesOf } from './recording.js';
+import { takePeaks } from './waveform.js';
 
 export function selectTake(id, index) {
     const node = findNode(id);
@@ -85,19 +86,8 @@ export function setComp(id, cells) {
     console.log('[MockBackend] setComp', id, next);
 }
 
-/** Deterministic peaks for take `index` (the seed shifts the phase, so
- * takes draw differently and stably). */
-export function takePeaks(node, index, numPeaks = 100) {
-    const takes = takesOf(node);
-    if (!(index >= 0 && index < takes.length)) return [];
-    const seed = takes[index].seed || 0;
-    const peaks = [];
-    for (let i = 0; i < numPeaks; i++) {
-        peaks.push(0.5 + 0.4 * Math.sin((i / numPeaks) * Math.PI * 4 + seed));
-    }
-    return peaks;
-}
-
+// Take k's peaks: waveform.js takePeaks (the one peak synthesis, with
+// the engine's proportional buckets).
 export function getTakeWaveform(id, index, numPeaks = 100) {
     const node = findNode(id);
     if (!node || node.type === 'stack') return [];

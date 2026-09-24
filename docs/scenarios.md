@@ -1,7 +1,8 @@
 # Scenarios — the canonical examples, fleshed out
 
 > Status: **shipped 2026-09-08**, field repros S30–S32 + the display
-> contract added 2026-09-09, gap-fill S33–S38 added 2026-09-10 —
+> contract added 2026-09-09, gap-fill S33–S38 added 2026-09-10, S40
+> (the playing slide, seam-model SM-4) added 2026-09-23 —
 > tests/scenario_tests.cc (38 scenarios, all green) over the harness in
 > tests/scenario_utils.h. Run alone with
 > `CelestrianTests --category=Scenarios` (the display-contract capture
@@ -89,6 +90,7 @@ island's Q, not the group's.
 | S36 | seek over maps and groups | cut bands + a windowed clip + a windowed group; seek 5Q | the same phase renders the same samples after the seek |
 | S37 | rich round trip | cut bands, a windowed clip, an anchored windowed group, a one-shot, a gated root song; save; load in a fresh engine | every fact (segments, windows, anchors, period source, song) and the render survive |
 | S38 | multi-mic group take | 1Q, 4Q; a 3-mic 4Q kit at 2Q; window the kit; delete a mic; undo | one origin per performance; every mic reads the mapped clock; the rest hold their phase |
+| S40 | a playing slide keeps origin, bypass alignment and the seat (SM-4) | 1Q, 2Q, a 10Q take windowed [0,5Q); park 2.5Q into a pass after an odd, then an even, pass count; slide +1Q, then ⌥ +0.3Q; bypass | the origin stays the capture boundary (the re-anchor answers the nearest representative, not the most recent pass); the zero stays; the slid window sounds from the performed origin; bypassed, the take plays where it was performed |
 
 ## 2. Open questions (expectations the owner must confirm)
 

@@ -1,17 +1,39 @@
 /**
- * THE REGION PANEL (owner-ruled 2026-09-11) — the loop region's
- * overview + coarse editor, shown under the SELECTED lane.
+ * THE REGION PANEL (owner-ruled 2026-09-11; ZOOMABLE since loop-region
+ * phase 1, 2026-09-23) — the loop region's overview + editor, shown
+ * under the SELECTED lane.
  *
  * A heard-view lane shows only what sounds; the whole raw take and the
  * map's structure need a home that never rescales the lane. The panel
- * is that home: a viewport-wide strip pinned under the selected
- * clip/group, drawing the ENTIRE raw take (waveform, or a MIDI clip's
- * piano roll over its velocity lane), the excluded
- * material dimmed, the kept region as a bright box with bracket
- * handles, every inner cut as a band, and the amber sound cursor in raw
- * coordinates. It appears when the track is selected — the affordance
- * IS the selection — and goes away with it (Escape, a click on empty
- * canvas, or a click on the top bar's empty space).
+ * is that home: a full-row, viewport-pinned panel under the selected
+ * clip/group with
+ *   - an OVERVIEW strip: the whole raw take (fixed gain), the kept
+ *     region tinted, the cuts notched, the amber cursor, and the
+ *     detail view as an outlined box — drag the box = pan (vertically
+ *     = zoom, Ableton's clip-view selector), drag its edges = set the
+ *     span, click elsewhere = centre there, double-click = the whole
+ *     take;
+ *   - a zoomable DETAIL strip: the raw take (waveform, or a MIDI
+ *     clip's piano roll over its velocity lane) through the panel's
+ *     own view {q0, spanQ} (panel_view.js), the excluded material
+ *     dimmed, the kept region as a bright box with bracket handles,
+ *     every inner cut as a band, whole-Q gridlines (numbered when
+ *     there is room), and the amber sound cursor in raw coordinates.
+ * It appears when the track is selected — the affordance IS the
+ * selection — and goes away with it (Escape, a click on empty canvas,
+ * or a click on the top bar's empty space).
+ *
+ * THE VIEW (panel_view.js): per lane, in THIS module's state (never
+ * the view model — the 50 ms poll must not undo a zoom), remembered
+ * for the session, reset when the take's length changes. First show =
+ * FIT REGION. After that only explicit input zooms: Ctrl/⌘+wheel or a
+ * pinch over the panel (about the pointer — the MAIN view no longer
+ * zooms under the panel, diagnosis N2), Z / ⇧Z (init.js), the label's
+ * "loop NQ" / "NQ take" terms, the overview box. Shift+wheel or a
+ * horizontal swipe pans; a plain wheel scrolls the page. Commits and
+ * nudges only PAN (keepInView). v1: the view holds still while a
+ * panel drag is live or its commit is held — except the drag's own
+ * edge pan (edge_pan.js).
  *
  * Gestures (one law with the lane, map_core.js):
  *   - drag a bracket        TRIM (period snaps to whole Qs; ⌥ = slide)
@@ -19,36 +41,61 @@
  *                           (⌥ = any amount), length held
  *   - drag a cut's chip     slide the cut; its handles resize it;
  *                           right-click / double-click heals
- *   - double-click material a 1Q cell cut there
- * The strip is a raw-framed band host (cycleQ = totalQ, anchor 0), so
- * the cut bands and dblclick creation are the lane's own code. Live
- * commits stream while dragging; the lane above renders the audible
- * result as it changes — overview and detail, both live.
+ *   - double-click material a 1Q cell cut there (the take's own grid)
+ *   - a drag near the strip's edge pans the view under the hand
+ * The strip is a raw-framed band host through the view (cycleQ =
+ * spanQ, anchored at −q0), so the cut bands and dblclick creation are
+ * the lane's own code. Live commits stream while dragging; the lane
+ * above renders the audible result as it changes — overview and
+ * detail, both live.
  *
- * Positioning: the panel row spans the zoomed grid width; the panel
- * itself is pinned to the VIEWPORT by JS (patch + scroll), like the
- * nav dock it replaces (horizontal sticky misplaced in the webview).
+ * Positioning: the panel row spans the whole lane row (under the rail
+ * too); the panel is pinned to the VIEWPORT by JS (patch + scroll) at a
+ * constant width, independent of the main zoom and scroll (N3).
  */
 
 import { ctx } from './context.js';
 import { el, pct, fmtQ, setText, setStyle, snapThenAnimate } from './sv_util.js';
-import { isOverlayFrozen, isDragging } from './gesture.js';
+import { isOverlayFrozen, isDragging, beginGesture, afterSettled } from './gesture.js';
 import { selectOnly, activeSelectedId } from './selection.js';
-import { drawWaveform, drawMidiTile, MIDI_VELOCITY_LANE } from '../canvas_renderer.js';
+import { drawWaveform, drawEnvelope, drawMidiTile, MIDI_VELOCITY_LANE, peaksBoost }
+    from '../canvas_renderer.js';
 import { sliceNotesToTile } from '../midi_notes.js';
 import { dimComplementInto } from './dims.js';
 import { innerCuts, slideSegs } from '../map_edit.js';
 import { bandState, coveredSegs, laneMapActive, rawCursorQ, commitBandSegs,
-         newGesture, runRawDrag, trimMoveFn, slideMoveFn } from './map_core.js';
-import { wireBandCreate, appendCutBands } from './map_bands.js';
+         newGesture, runRawDrag, trimMoveFn, slideMoveFn, viewPct,
+         COMMIT_HOLD_MAX_MS } from './map_core.js';
+import { wireBandCreate, appendCutBands, revealColumns } from './map_bands.js';
+import { pinFrame, unpinFrame } from './drag_pin.js';
+import { makeEdgePanner, canPanView } from './edge_pan.js';
+import { clampView, fitRegion, fitTake, zoomAbout, panBy, centerOn,
+         keepInView, regionBounds, gridStep, gridLines, qAt, xOf,
+         wheelZoomFactor, wheelPanQ, boxDragView, boxEdgeView, sameView,
+         Q_LABEL_MIN_PX_PER_Q } from './panel_view.js';
 
-/* The panel's inset from the viewport's edges (px). */
+/* The panel's inset from the viewport's edges when #session has no
+ * padding to read (px). Normally the inset IS #session's horizontal
+ * padding, so at zoom 1 the panel lines up with the lanes above. */
 const PANEL_MARGIN_PX = 12;
-/* Waveform vertical inset inside the strip (px). */
+/* Waveform vertical inset inside the strips (px). */
 const STRIP_V_INSET_PX = 4;
 /* Arrow-key nudges within this window chain off the last target sent
- * (the poll that would refresh the band state may not have run). */
-const NUDGE_CHAIN_MS = 800;
+ * (the poll that would refresh the band state may not have run) — and
+ * share ONE frame pin (the nudge chain is one gesture). */
+export const NUDGE_CHAIN_MS = 800;
+/* A kept box narrower than three bracket hit zones (26 px each) gets
+ * its brackets OUTSIDE it (N4): the box's whole width stays a slide. */
+const NARROW_BOX_PX = 78;
+/* A whole-Q number needs this much strip right of its line (px). */
+const Q_LABEL_EDGE_PX = 16;
+/* The cursor glides with the lane cursors' transition; a backward jump
+ * larger than this fraction of the strip is a wrap — snap. */
+const CURSOR_WRAP_FRAC = 0.02;
+
+/* The per-lane panel views: laneId → { totalQ, view, segsKey }.
+ * `segsKey` is the committed region the view last kept in view. */
+const views = new Map();
 
 /** Build the panel row once per lane (lane_build). Hidden until the
  * lane is selected and has a take to show. */
@@ -58,18 +105,53 @@ export function buildRegionPanel(row) {
     const panel = el('div', 'region-panel');
     // A press in the panel must never fall through to the lane below.
     panel.addEventListener('pointerdown', e => e.stopPropagation());
+    // The label's two terms are the two zoom stops.
     const label = el('div', 'region-label mono');
+    const termLoop = el('span', 'region-term loop',
+        { title: 'Fit the loop region in the panel (Z)' });
+    const termTake = el('span', 'region-term take',
+        { title: 'Show the whole take in the panel (⇧Z)' });
+    const termCuts = el('span', 'region-term-cuts');
+    label.append(termLoop, document.createTextNode(' · '), termTake, termCuts);
+    termLoop.addEventListener('click', () => fitPanel(row, 'region'));
+    termTake.addEventListener('click', () => fitPanel(row, 'take'));
+    const col = el('div', 'region-col');
+    // The OVERVIEW: the whole take, always.
+    const overview = el('div', 'region-overview', {
+        title: 'The whole take — drag the box to move the view (up/down ' +
+            'zooms), its edges to set the span; click to jump there; ' +
+            'double-click for the whole take' });
+    overview.appendChild(document.createElement('canvas'));
+    const ovMarks = el('div', 'region-ov-marks');
+    const ovCursor = el('div', 'region-ov-cursor');
+    const viewbox = el('div', 'region-viewbox');
+    viewbox.append(el('div', 'region-viewbox-edge start'),
+                   el('div', 'region-viewbox-edge end'));
+    overview.append(ovMarks, ovCursor, viewbox);
+    // The DETAIL strip: the take through the panel's view.
     const strip = el('div', 'region-strip');
+    const grid = el('div', 'region-grid');
     const wave = el('div', 'region-wave');
     wave.appendChild(document.createElement('canvas'));
     const overlay = el('div', 'region-overlay overlay-layer');
-    strip.append(wave, overlay);
-    panel.append(label, strip);
+    strip.append(grid, wave, overlay);
+    col.append(overview, strip);
+    panel.append(label, col);
     nav.appendChild(panel);
     row._regionPanel = panel;
     row._regionStrip = strip;
     row._regionOverlay = overlay;
     row._regionLabel = label;
+    row._regionTerms = { loop: termLoop, take: termTake, cuts: termCuts };
+    row._regionOverview = overview;
+    // Wheel over ANY part of the panel: zoom / pan the panel's view.
+    panel.addEventListener('wheel', ev => onPanelWheel(row, ev), { passive: false });
+    wireOverview(row);
+    // TEST HOOK (the reveal's body._reveal.view twin): a copy of the
+    // live view, read by the e2e specs.
+    Object.defineProperty(strip, '_view', {
+        get: () => { const e = entryOf(row); return e ? { ...e.view } : null; },
+    });
     return nav;
 }
 
@@ -89,19 +171,48 @@ function wantPanel(row, lane) {
 }
 
 /** The lane the strip's band code edits: the same take, framed RAW
- * (cycleQ = totalQ, anchored at 0). */
-function stripLane(lane) {
+ * through the view — the strip's frame is the view's span, and the
+ * take starts q0 before the strip's left edge. */
+function stripLane(lane, view) {
     return {
         id: lane.id, kind: lane.kind,
         bandSegs: lane.bandSegs, bandTotalQ: lane.bandTotalQ,
         bandEditable: lane.bandEditable, bandHeard: false,
-        bandPeriodQ: 0, takeStartQ: 0,
+        bandPeriodQ: 0, takeStartQ: -view.q0,
         intrinsicQ: lane.bandTotalQ,
     };
 }
 
+/** The row's view entry (null before its first show). */
+const entryOf = row => (row._regionCtx ? views.get(row._regionCtx.lane.id) : null) || null;
+
+/** The lane's view entry — created at FIT REGION on first show, and
+ * again whenever the take's length changes (a new take). */
+function ensureView(lane) {
+    const totalQ = lane.bandTotalQ;
+    let e = views.get(lane.id);
+    if (!e || Math.abs(e.totalQ - totalQ) > 1e-9) {
+        e = { totalQ, view: fitRegion(lane.bandSegs, totalQ),
+              segsKey: JSON.stringify(lane.bandSegs) };
+        views.set(lane.id, e);
+    }
+    return e;
+}
+
+/** COMMITS ONLY PAN: when the committed region changed since the view
+ * last saw it, pan (never zoom) to keep it in view. Not under a live
+ * panel drag or its held commit — the gesture owns the view then; the
+ * first patch after it settles catches up. */
+function followRegion(row, lane, e) {
+    const key = JSON.stringify(lane.bandSegs);
+    if (e.segsKey === key || isOverlayFrozen(row._regionStrip)) return;
+    e.segsKey = key;
+    const [a, b] = regionBounds(lane.bandSegs, e.totalQ);
+    e.view = keepInView(e.view, a, b, e.totalQ);
+}
+
 /** Patch one lane's panel per poll: visibility, viewport pinning, the
- * raw waveform, the region chrome (keyed), the cursor. */
+ * view's upkeep, then the paint. */
 export function patchRegionPanel(row, lane, vm, aux, peaks) {
     const nav = row.querySelector(':scope > .lane-region');
     if (!nav) return;
@@ -115,20 +226,68 @@ export function patchRegionPanel(row, lane, vm, aux, peaks) {
     }
     if (nav.style.display !== '') nav.style.display = '';
     pinToViewport(row, nav);
+    row._regionCtx = { lane, vm, aux, peaks };
+    followRegion(row, lane, ensureView(lane));
+    paintPanel(row);
+}
 
-    const totalQ = lane.bandTotalQ;
-    const sl = stripLane(lane);
-    const st = bandState(sl, vm, totalQ);
+/** Change the row's view (clamped) and repaint with the last patch's
+ * state. The one writer every navigation input goes through. */
+function setView(row, v) {
+    const e = entryOf(row);
+    if (!e) return;
+    const next = clampView(v, e.totalQ);
+    if (sameView(e.view, next)) return;
+    e.view = next;
+    paintPanel(row);
+}
+
+/** Fit the row's panel to its loop region ('region') or the whole take
+ * ('take'). No-op while a panel drag or its commit holds the view. */
+function fitPanel(row, kind) {
+    const c = row._regionCtx;
+    const e = entryOf(row);
+    if (!c || !e || isOverlayFrozen(row._regionStrip)) return;
+    setView(row, kind === 'take' ? fitTake(e.totalQ)
+                                 : fitRegion(c.lane.bandSegs, e.totalQ));
+}
+
+/** Z / ⇧Z (init.js): fit the SELECTED track's panel to its loop or the
+ * whole take. False (the key falls through) when no panel is shown. */
+export function fitSelectedPanel(kind) {
+    const id = activeSelectedId();
+    const row = id === null ? null : ctx.laneEls.get(id);
+    const nav = row && row.querySelector(':scope > .lane-region');
+    if (!nav || nav.style.display === 'none' || !row._regionCtx) return false;
+    fitPanel(row, kind);
+    return true;
+}
+
+/** Paint the panel from the last patch's state through the current
+ * view: label, both strips, gridlines, cursors, then the chrome
+ * (keyed — a stable view and map mean zero DOM churn). */
+function paintPanel(row) {
+    const c = row._regionCtx;
+    const e = entryOf(row);
+    if (!c || !e) return;
+    const { lane, vm, aux, peaks } = c;
+    const v = e.view;
+    const totalQ = e.totalQ;
+    const strip = row._regionStrip;
+    const sl = stripLane(lane, v);
+    const st = bandState(sl, vm, v.spanQ);
     const segs = coveredSegs(st);
     const periodQ = segs.reduce((n, [a, b]) => n + (b - a), 0);
     const active = laneMapActive(lane);
     const bypassed = !!(lane.window && lane.window.bypassed);
-    // The label names the region: what is kept of what exists.
-    setText(row._regionLabel,
-        (active ? 'loop ' + fmtQ(periodQ) + 'Q'
-            : bypassed ? 'bypassed ' + fmtQ(periodQ) + 'Q' : 'whole take') +
-        ' · ' + fmtQ(totalQ) + 'Q take' +
-        (lane.mapMulti || innerCuts(st.segs, totalQ).length ? ' · cuts' : ''));
+    const cuts = !!(lane.mapMulti || innerCuts(st.segs, totalQ).length);
+    // The label names the region: what is kept of what exists. Its
+    // two terms double as the fit-region / fit-take buttons.
+    const terms = row._regionTerms;
+    setText(terms.loop, active ? 'loop ' + fmtQ(periodQ) + 'Q'
+        : bypassed ? 'bypassed ' + fmtQ(periodQ) + 'Q' : 'whole take');
+    setText(terms.take, fmtQ(totalQ) + 'Q take');
+    setText(terms.cuts, cuts ? ' · cuts' : '');
     row._regionLabel.title = active
         ? 'The kept region of this track\'s take: drag the box to slide ' +
           'it, its brackets to trim, double-click to cut'
@@ -138,158 +297,429 @@ export function patchRegionPanel(row, lane, vm, aux, peaks) {
             : 'This track loops its whole take: drag a bracket in to make a ' +
               'loop region, double-click to cut';
 
-    // The raw take across the strip: the waveform, or a MIDI clip's
-    // piano roll + velocity lane (the lane tiles' picture, unsliced).
+    // The raw take: the detail strip's visible slice, the overview's
+    // whole — the waveform, or a MIDI clip's piano roll.
     const midi = lane.isMidi && aux && aux.midiNotes
         ? aux.midiNotes.get(lane.id) || null : null;
-    drawStripWave(row._regionStrip, peaks, lane.kind === 'group', midi, totalQ);
+    const isGroup = lane.kind === 'group';
+    drawStripWave(strip, peaks, isGroup, midi, totalQ, v);
+    drawOverviewWave(row._regionOverview, peaks, isGroup, midi, totalQ);
+    paintOverviewMarks(row._regionOverview, segs, active, totalQ);
+    paintViewBox(row._regionOverview, v, totalQ);
+    paintGrid(strip, v, totalQ);
 
-    // Creation (dblclick) reads per-patch state; must refresh before
+    // Creation (dblclick) reads per-paint state; must refresh before
     // any early return.
-    wireBandCreate(strip, sl, vm, totalQ);
-    patchCursor(row._regionOverlay, lane, vm, aux);
+    wireBandCreate(strip, sl, vm, v.spanQ);
+    patchCursors(row, lane, vm, aux, v);
     if (isOverlayFrozen(strip)) return;
+    const a = segs[0][0];
+    const b = segs[segs.length - 1][1];
+    const narrow = xOf(b, v, strip.clientWidth) - xOf(a, v, strip.clientWidth)
+        < NARROW_BOX_PX;
     const key = JSON.stringify(['region', lane.bandSegs, totalQ, active,
-                                lane.bandEditable, vm.quantum]);
+                                lane.bandEditable, vm.quantum, v.q0, v.spanQ,
+                                narrow]);
     const o = row._regionOverlay;
     if (o._key === key) return;
     o._key = key;
     o.textContent = '';
-    o.appendChild(el('div', 'region-cursor'));
     // The panel's chrome carries its OWN class vocabulary (region-*):
     // lane-row-scoped queries for a lane's brackets/dims — tests, the
     // [ ] teleport walk — must never find the panel's.
-    if (active) dimComplementInto(o, totalQ, segs, 0, totalQ, 'region-dim');
+    if (active) dimComplementInto(o, v.spanQ, segs, -v.q0, totalQ, 'region-dim');
     // The kept box: the span from the first kept sample to the last —
     // grab it to SLIDE the region (bands and handles sit above it).
-    const a = segs[0][0];
-    const b = segs[segs.length - 1][1];
     const kept = el('div', 'region-kept' + (active ? '' : ' whole'), {
         title: st.editable
             ? 'Drag to slide the loop region (whole Qs; ⌥ = any amount)'
             : '' });
-    kept.style.left = pct(a, totalQ);
-    kept.style.width = pct(b - a, totalQ);
+    kept.style.left = viewPct(a, v);
+    kept.style.width = pct(b - a, v.spanQ);
     o.appendChild(kept);
     if (!st.editable) return;
     kept.addEventListener('pointerdown', ev => {
-        if (isDragging(strip)) return;
-        selectOnly(lane.id);
-        const grabQ = rawQAtStrip(strip, ev.clientX, totalQ);
-        runRawDrag(ev, o, st, {
-            rawQAt: x => rawQAtStrip(strip, x, totalQ),
-            view: () => ({ q0: 0, spanQ: totalQ }),
-            onMove: slideMoveFn(st, segs, grabQ),
-            freeze: [strip],
-            engage: true,
-        });
+        const grabQ = rawQAtStrip(strip, ev.clientX, entryOf(row).view);
+        startPanelDrag(row, ev, st, slideMoveFn(st, segs, grabQ));
     });
-    // The brackets: trim (period-snapped), ⌥ slides.
+    // The brackets: trim (period-snapped), ⌥ slides. A NARROW box
+    // wears them outside (N4) so its whole width stays a slide.
     for (const edge of ['start', 'end']) {
         const bound0 = edge === 'start' ? a : b;
         const br = el('div', 'region-bracket ' + edge +
-            (active ? '' : ' latent'), {
+            (active ? '' : ' latent') + (narrow ? ' narrow' : ''), {
             title: (edge === 'start'
                 ? 'Loop START — drag to trim (whole-Q snap)'
                 : 'Loop END — drag to trim (whole-Q snap)') +
                 ' · ⌥-drag slides the region (length held)' });
-        br.style.left = pct(bound0, totalQ);
-        br.addEventListener('pointerdown', ev => {
-            if (isDragging(strip)) return;
-            selectOnly(lane.id);
-            runRawDrag(ev, o, st, {
-                rawQAt: x => rawQAtStrip(strip, x, totalQ),
-                view: () => ({ q0: 0, spanQ: totalQ }),
-                onMove: trimMoveFn(st, segs, edge, bound0),
-                freeze: [strip],
-                engage: true,
-            });
-        });
+        br.style.left = viewPct(bound0, v);
+        br.addEventListener('pointerdown', ev =>
+            startPanelDrag(row, ev, st, trimMoveFn(st, segs, edge, bound0)));
         o.appendChild(br);
     }
-    // Inner cuts as bands (the lane's raw-frame band code, unchanged).
-    appendCutBands(o, sl, vm, strip, totalQ);
+    // Inner cuts as bands (the lane's raw-frame band code, unchanged —
+    // framed through the view by stripLane).
+    appendCutBands(o, sl, vm, strip, v.spanQ);
 }
 
-/** Pointer x → raw Q on the strip (unclamped; the runner clamps). */
-function rawQAtStrip(strip, clientX, totalQ) {
+/** One panel drag (the kept box's slide, a bracket's trim) through the
+ * shared raw-frame runner, in the panel's view — which the drag's EDGE
+ * PAN may move under a still hand (edge_pan.js, the reveal's rule). */
+function startPanelDrag(row, ev, st, onMove) {
+    const strip = row._regionStrip;
+    if (isDragging(strip)) return;
+    const e = entryOf(row);
+    if (!e) return;
+    selectOnly(st.laneId);
+    const pan = makeEdgePanner({
+        rect: () => strip.getBoundingClientRect(),
+        grabX: ev.clientX,
+        canPan: dir => canPanView(dir, e.view.q0, e.view.spanQ, e.totalQ),
+        pxPerQ: () => strip.clientWidth / e.view.spanQ,
+        onPan: dq => {
+            setView(row, panBy(e.view, dq, e.totalQ));
+            run.reapply();
+        },
+    });
+    const run = runRawDrag(ev, row._regionOverlay, st, {
+        rawQAt: x => rawQAtStrip(strip, x, e.view),
+        view: () => e.view,
+        onMove,
+        freeze: [strip],
+        engage: true,
+        onPointer: mv => pan.update(mv.clientX),
+        onRelease: () => pan.stop(),
+    });
+}
+
+/** Pointer x → raw Q on the detail strip through `view` (unclamped;
+ * the runner clamps). */
+function rawQAtStrip(strip, clientX, view) {
     const r = strip.getBoundingClientRect();
-    return r.width > 0 ? ((clientX - r.left) / r.width) * totalQ : 0;
+    return r.width > 0 ? qAt(clientX - r.left, view, r.width) : view.q0;
 }
 
-/** Draw the whole take across the strip — its waveform, or with `midi`
- * ({notes, range}, Q units over `totalQ`) the note bars over a
- * velocity lane. Redraws only when the content identity or the strip
- * size changes. */
-function drawStripWave(strip, peaks, isComposite, midi = null, totalQ = 0) {
+/** The take's content for a strip: MIDI notes when the clip has them,
+ * else the peaks; null when there is nothing to draw. */
+function stripContent(peaks, midi) {
+    const notes = midi && midi.notes && midi.notes.length ? midi.notes : null;
+    const content = notes || peaks;
+    return content && content.length ? { notes, content } : null;
+}
+
+/** Draw the VISIBLE slice of the take in the detail strip — its
+ * waveform at ONE gain per take (peaksBoost: a slice never rescales
+ * against its own loudest peak, N8), or with `midi` ({notes, range},
+ * Q units over `totalQ`) the note bars over a velocity lane. The peak
+ * slice is drawn at its exact raw position (a canvas wider than the
+ * strip, translated), so a pan GLIDES: it only translates until the
+ * slice gains or drops a peak. */
+function drawStripWave(strip, peaks, isComposite, midi, totalQ, v) {
     const wave = strip.querySelector('.region-wave');
     const canvas = wave.firstElementChild;
     const w = strip.clientWidth;
     const h = strip.clientHeight - STRIP_V_INSET_PX;
-    const notes = midi && midi.notes && midi.notes.length ? midi.notes : null;
-    const content = notes || peaks;
-    if (!content || !content.length || !(w > 0)) {
+    const c = stripContent(peaks, midi);
+    if (!c || !(w > 0) || !(totalQ > 0)) {
         if (canvas.style.display !== 'none') canvas.style.display = 'none';
         return;
     }
     if (canvas.style.display !== '') canvas.style.display = '';
-    const key = content.length + ':' + w + ':' + h + ':' + isComposite +
-        (notes ? ':m' + midi.range.lo + '-' + midi.range.hi + ':' +
-            totalQ.toFixed(4) : '');
-    if (wave._peaksRef === content && wave._dk === key) return;
-    wave._peaksRef = content;
-    wave._dk = key;
-    canvas.style.width = w + 'px';
-    if (notes) {
-        drawMidiTile(canvas, sliceNotesToTile(notes, totalQ, null),
+    if (c.notes) {
+        const key = 'm:' + w + ':' + h + ':' + midi.range.lo + '-' +
+            midi.range.hi + ':' + totalQ.toFixed(4) + ':' + v.q0 + ':' + v.spanQ;
+        setStyle(canvas, 'transform', '');
+        if (wave._peaksRef === c.content && wave._dk === key) return;
+        wave._peaksRef = c.content;
+        wave._dk = key;
+        canvas.style.width = w + 'px';
+        drawMidiTile(canvas, sliceNotesToTile(c.notes, totalQ,
+            [[v.q0 / totalQ, (v.q0 + v.spanQ) / totalQ]]),
             { cssWidth: w, cssHeight: h, range: midi.range,
               velocityLane: MIDI_VELOCITY_LANE });
+        return;
+    }
+    // The visible raw range through the SAME exact per-column sampler the
+    // lane's reveal draws with (map_bands revealColumns → mappedColumns,
+    // one gain per take) — no whole-peak slicing, so the two raw surfaces
+    // can never drift apart and a pan or zoom never re-quantizes the
+    // picture (review 2026-09-23: one implementation, not two).
+    setStyle(canvas, 'transform', '');
+    const key = 'p:' + v.q0 + ':' + v.spanQ + ':' + w + ':' + h + ':' + isComposite;
+    if (wave._peaksRef === peaks && wave._dk === key) return;
+    wave._peaksRef = peaks;
+    wave._dk = key;
+    canvas.style.width = w + 'px';
+    const { cols, boost } = revealColumns(peaks, totalQ, v.q0, v.q0 + v.spanQ, w);
+    drawEnvelope(canvas, cols, { cssWidth: w, cssHeight: h, isComposite,
+                                 fixedBoost: boost });
+}
+
+/** Draw the WHOLE take in the overview strip (same fixed gain as the
+ * detail — one picture at two scales). */
+function drawOverviewWave(ov, peaks, isComposite, midi, totalQ) {
+    const canvas = ov.firstElementChild;
+    const w = ov.clientWidth;
+    const h = ov.clientHeight;
+    const c = stripContent(peaks, midi);
+    if (!c || !(w > 0) || !(h > 0)) {
+        if (canvas.style.display !== 'none') canvas.style.display = 'none';
+        return;
+    }
+    if (canvas.style.display !== '') canvas.style.display = '';
+    const key = c.content.length + ':' + w + ':' + h + ':' + isComposite +
+        (c.notes ? ':m' + midi.range.lo + '-' + midi.range.hi + ':' +
+            totalQ.toFixed(4) : '');
+    if (ov._peaksRef === c.content && ov._dk === key) return;
+    ov._peaksRef = c.content;
+    ov._dk = key;
+    canvas.style.width = w + 'px';
+    if (c.notes) {
+        drawMidiTile(canvas, sliceNotesToTile(c.notes, totalQ, null),
+            { cssWidth: w, cssHeight: h, range: midi.range });
     } else {
-        drawWaveform(canvas, peaks, { cssWidth: w, cssHeight: h, isComposite });
+        drawWaveform(canvas, peaks,
+            { cssWidth: w, cssHeight: h, isComposite, fixedBoost: peaksBoost(peaks) });
     }
 }
 
-/** The amber sound cursor in raw coordinates (per poll; glides with the
- * same transition the lane cursors use, snaps on a wrap). */
-function patchCursor(o, lane, vm, aux) {
-    const cur = o.querySelector(':scope > .region-cursor');
-    if (!cur) return;
-    const show = vm.isPlaying;
-    setStyle(cur, 'display', show ? '' : 'none');
-    if (!show) return;
-    const node = aux && aux.nodesById ? aux.nodesById.get(lane.id) : null;
-    const rawQ = rawCursorQ(lane, vm, node);
-    if (rawQ === null) return;
-    const frac = rawQ / lane.bandTotalQ;
-    if (cur._frac !== undefined && frac < cur._frac - 0.02) snapThenAnimate(cur);
-    cur._frac = frac;
-    setStyle(cur, 'left', (frac * 100) + '%');
+/** The overview's region marks (keyed): the kept segments tinted, each
+ * inner cut notched. */
+function paintOverviewMarks(ov, segs, active, totalQ) {
+    const marks = ov.querySelector('.region-ov-marks');
+    const key = JSON.stringify([segs, active, totalQ]);
+    if (marks._key === key) return;
+    marks._key = key;
+    marks.textContent = '';
+    for (const [s, e] of segs) {
+        const k = el('div', 'region-ov-kept' + (active ? '' : ' whole'));
+        k.style.left = pct(s, totalQ);
+        k.style.width = pct(e - s, totalQ);
+        marks.appendChild(k);
+    }
+    for (const [s, e] of innerCuts(segs, totalQ)) {
+        const n = el('div', 'region-ov-cut');
+        n.style.left = pct(s, totalQ);
+        n.style.width = pct(e - s, totalQ);
+        marks.appendChild(n);
+    }
 }
 
-/** Pin the panel to the viewport horizontally: the row spans the
- * zoomed grid; the panel sits at (viewport left + margin) with the
- * viewport's width minus margins. */
+/** The detail view as a box on the overview. */
+function paintViewBox(ov, v, totalQ) {
+    const box = ov.querySelector('.region-viewbox');
+    setStyle(box, 'left', pct(v.q0, totalQ));
+    setStyle(box, 'width', pct(v.spanQ, totalQ));
+}
+
+/** Whole-Q gridlines (thinned to ≥ GRID_MIN_PX apart; no sub-Q grid —
+ * owner ruling 2026-09-23) and, from Q_LABEL_MIN_PX_PER_Q up, small
+ * whole-Q numbers. Keyed on the view and width. */
+function paintGrid(strip, v, totalQ) {
+    const grid = strip.querySelector('.region-grid');
+    const w = strip.clientWidth;
+    const key = v.q0 + ':' + v.spanQ + ':' + w + ':' + totalQ;
+    if (grid._key === key) return;
+    grid._key = key;
+    grid.textContent = '';
+    if (!(w > 0)) return;
+    const pxPerQ = w / v.spanQ;
+    const labels = pxPerQ >= Q_LABEL_MIN_PX_PER_Q;
+    for (const { q, major } of gridLines(v, gridStep(pxPerQ), totalQ)) {
+        const line = el('div', 'region-gridline' + (major ? ' major' : ''));
+        line.style.left = viewPct(q, v);
+        grid.appendChild(line);
+        // (No number where it would clip at the strip's right edge.)
+        if (labels && xOf(q, v, w) < w - Q_LABEL_EDGE_PX) {
+            const t = el('div', 'region-qlabel mono', { textContent: String(q) });
+            t.style.left = viewPct(q, v);
+            grid.appendChild(t);
+        }
+    }
+}
+
+/** Position one cursor at fraction `f` of its host (glide; snap on a
+ * wrap, on reappearing, or when `viewKey` says the scale changed). */
+function placeCursor(cur, f, viewKey) {
+    const show = f !== null && f >= 0 && f <= 1;
+    setStyle(cur, 'display', show ? '' : 'none');
+    if (!show) { cur._frac = undefined; return; }
+    if (cur._frac === undefined || cur._vk !== viewKey ||
+        f < cur._frac - CURSOR_WRAP_FRAC) snapThenAnimate(cur);
+    cur._frac = f;
+    cur._vk = viewKey;
+    setStyle(cur, 'left', (f * 100) + '%');
+}
+
+/** The amber sound cursors in raw coordinates (per paint): the
+ * overview's over the whole take; the detail's through the view —
+ * hidden outside it. The detail cursor is made ONCE and lives outside
+ * the keyed overlay, so a rebuild can never leave a fresh, unplaced
+ * cursor at raw 0 (flash-chrome F5 / N6), and a panel drag's
+ * `.drag-live` never hides it. */
+function patchCursors(row, lane, vm, aux, v) {
+    const strip = row._regionStrip;
+    let cur = strip.querySelector(':scope > .region-cursor');
+    if (!cur) {
+        cur = el('div', 'region-cursor');
+        cur.style.display = 'none';
+        strip.appendChild(cur);
+    }
+    const ovCur = row._regionOverview.querySelector('.region-ov-cursor');
+    const node = aux && aux.nodesById ? aux.nodesById.get(lane.id) : null;
+    const rawQ = vm.isPlaying ? rawCursorQ(lane, vm, node) : null;
+    const totalQ = lane.bandTotalQ;
+    placeCursor(ovCur, rawQ === null ? null : rawQ / totalQ, '');
+    placeCursor(cur, rawQ === null ? null : (rawQ - v.q0) / v.spanQ,
+        v.q0 + ':' + v.spanQ);
+}
+
+/* ---------- navigation input ---------- */
+
+/** Wheel over the panel (N2): Ctrl/⌘+wheel or a pinch zooms the
+ * PANEL about the pointer; Shift+wheel or a horizontal swipe pans it;
+ * both stop here, so the main view never zooms or scrolls under the
+ * panel. A plain vertical wheel falls through (page scroll). v1: the
+ * view holds still while a panel drag is live or its commit is held —
+ * the event is still swallowed. */
+function onPanelWheel(row, ev) {
+    const e = entryOf(row);
+    if (!e) return;
+    const strip = row._regionStrip;
+    const r = strip.getBoundingClientRect();
+    const zoom = ev.ctrlKey || ev.metaKey;
+    const panQ = zoom ? 0 : wheelPanQ(ev, e.view, r.width);
+    if (!zoom && !panQ) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (isOverlayFrozen(strip)) return;
+    if (zoom) {
+        // Zoom about the Q UNDER THE POINTER (review 2026-09-23: the
+        // overview used the detail strip's fraction). On the detail strip
+        // that Q reads through the view. On the OVERVIEW it reads through
+        // the whole take, and the view box scales about it — when it lies
+        // inside the box; outside the box (or over the label) there is no
+        // point to hold still, so the view scales about its middle.
+        const ov = row._regionOverview;
+        const or = ov ? ov.getBoundingClientRect() : null;
+        const mid = e.view.q0 + e.view.spanQ / 2;
+        let anchor = mid;
+        if (or && or.width > 0 && ov.contains(ev.target)) {
+            const q = Math.max(0, Math.min(1, (ev.clientX - or.left) / or.width)) * e.totalQ;
+            if (q >= e.view.q0 && q <= e.view.q0 + e.view.spanQ) anchor = q;
+        } else if (r.width > 0 && ev.clientX >= r.left && ev.clientX <= r.right) {
+            anchor = e.view.q0 + ((ev.clientX - r.left) / r.width) * e.view.spanQ;
+        }
+        setView(row, zoomAbout(e.view, anchor,
+            wheelZoomFactor(ev.deltaY, ev.deltaMode), e.totalQ));
+    } else {
+        setView(row, panBy(e.view, panQ, e.totalQ));
+    }
+}
+
+/** The overview's pointer verbs: drag the view box = pan (vertical =
+ * zoom), drag its edge = set the span, press elsewhere = centre the
+ * view there and keep dragging to pan; double-click = the whole take.
+ * One gesture (gesture.js): Escape / a lost capture restores the view
+ * the press began on. */
+function wireOverview(row) {
+    const ov = row._regionOverview;
+    ov.addEventListener('pointerdown', ev => {
+        if (ev.button !== 0) return;
+        const e = entryOf(row);
+        if (!e || isOverlayFrozen(row._regionStrip)) return;
+        const r = ov.getBoundingClientRect();
+        if (!(r.width > 0)) return;
+        const qPerPx = e.totalQ / r.width;
+        const edgeEl = ev.target.closest('.region-viewbox-edge');
+        const edge = edgeEl
+            ? (edgeEl.classList.contains('start') ? 'start' : 'end') : null;
+        const inBox = !!ev.target.closest('.region-viewbox');
+        const vStart = e.view;
+        let v0 = vStart;  // the view the drag moves from
+        const g = beginGesture(ev, {
+            node: ov,
+            stop: true,
+            onMove: mv => {
+                const dq = (mv.clientX - ev.clientX) * qPerPx;
+                setView(row, edge ? boxEdgeView(v0, edge, dq, e.totalQ)
+                    : inBox ? boxDragView(v0, dq, mv.clientY - ev.clientY, e.totalQ)
+                    : panBy(v0, dq, e.totalQ));
+            },
+            onEnd: committed => { if (!committed) setView(row, vStart); },
+        });
+        if (!g.live()) return;
+        if (!inBox) {
+            setView(row, centerOn(e.view, (ev.clientX - r.left) * qPerPx, e.totalQ));
+            v0 = e.view;
+        }
+    });
+    ov.addEventListener('dblclick', () => fitPanel(row, 'take'));
+}
+
+/** Pin the panel to the viewport horizontally at a CONSTANT width (N3):
+ * the row spans the zoomed grid; the panel sits at the viewport's
+ * content left (#session's padding in) with the viewport's content
+ * width — the same at every main zoom and scroll. Returns true when
+ * the width changed (the caller repaints). */
 function pinToViewport(row, nav) {
     const panel = row._regionPanel;
     const session = ctx.els.session;
-    if (!panel || !session) return;
+    if (!panel || !session) return false;
     const sr = session.getBoundingClientRect();
     const nr = nav.getBoundingClientRect();
-    if (!(sr.width > 0) || !(nr.width > 0)) return;
-    const left = Math.max(0, Math.round(sr.left + PANEL_MARGIN_PX - nr.left));
-    const width = Math.max(120, Math.round(Math.min(
-        sr.width - 2 * PANEL_MARGIN_PX, nr.right - (nr.left + left))));
-    const l = left + 'px';
-    const w = width + 'px';
+    if (!(sr.width > 0) || !(nr.width > 0)) return false;
+    const pad = parseFloat(getComputedStyle(session).paddingLeft);
+    const m = pad > 0 ? pad : PANEL_MARGIN_PX;
+    const l = Math.round(sr.left + session.clientLeft + m - nr.left) + 'px';
+    const w = Math.max(120, Math.round(session.clientWidth - 2 * m)) + 'px';
     if (panel.style.left !== l) panel.style.left = l;
-    if (panel.style.width !== w) panel.style.width = w;
+    if (panel.style.width === w) return false;
+    panel.style.width = w;
+    return true;
 }
+
+/* ---------- the nudge keys ---------- */
+
+/**
+ * THE NUDGE CHAIN IS ONE PINNED GESTURE (release-jump F3): a nudge
+ * commits with no drag, so each press used to re-seat the frame — a
+ * ⌥← from a grid-aligned loop shifted every lane and the cursor 1Q.
+ * The first press of a chain pins the frame (drag_pin.js, the drag's
+ * pin); every press within `windowMs` extends the chain; the pin drops
+ * once the window elapses after the LAST press and that press's commit
+ * has settled (capped at `capMs`, the overlay hold's cap). Timers are
+ * injectable for tests. Returns press(commitPromise).
+ */
+export function makeChainPin({ pin = pinFrame, unpin = unpinFrame,
+                               windowMs = NUDGE_CHAIN_MS,
+                               capMs = COMMIT_HOLD_MAX_MS,
+                               setTimer = setTimeout,
+                               clearTimer = clearTimeout } = {}) {
+    let chain = null;  // { timer, seq }
+    return function press(p) {
+        if (!chain) { pin(); chain = { timer: 0, seq: 0 }; }
+        const mine = chain;
+        const seq = ++mine.seq;
+        clearTimer(mine.timer);
+        mine.timer = setTimer(() => afterSettled(p, () => {
+            // A press that landed while this one settled owns the
+            // chain now; only the LAST press releases it.
+            if (chain !== mine || mine.seq !== seq) return;
+            chain = null;
+            unpin();
+        }, { capMs, setTimer, clearTimer }), windowMs);
+    };
+}
+const nudgePin = makeChainPin();
 
 /** ← / → (init.js): slide the selected track's loop region by
  * `deltaQ` (length held, clamped to the take — slideSegs). Reads the
  * strip's per-patch band state, so it works exactly when the panel
- * does. One undo step per press. Returns false when nothing applies
- * (no panel, not editable, nothing to slide) so the key falls through. */
+ * does. One undo step per press; the chain holds the frame still
+ * (makeChainPin) and the view pans to keep the region in sight.
+ * Returns false when nothing applies (no panel, not editable, nothing
+ * to slide) so the key falls through. */
 export function nudgeRegion(deltaQ) {
     const id = activeSelectedId();
     if (id === null) return false;
@@ -311,12 +741,18 @@ export function nudgeRegion(deltaQ) {
     if (Math.abs(moved) < 1e-9) return true;  // at the take's edge: consumed, no-op
     strip._nudge = { segs, t: performance.now() };
     newGesture();
-    commitBandSegs(st, segs, true);
+    nudgePin(commitBandSegs(st, segs, true));
+    const e = entryOf(row);
+    if (e) {
+        const [a, b] = regionBounds(segs, e.totalQ);
+        setView(row, keepInView(e.view, a, b, e.totalQ));
+    }
     return true;
 }
 
 /** The panels track horizontal scroll live (the 50ms patch would lag
- * a flick); rAF-coalesced. */
+ * a flick); rAF-coalesced. A width change (the viewport resized, a
+ * scrollbar came or went) repaints at once. */
 export function wireRegionScroll() {
     let raf = 0;
     ctx.els.session.addEventListener('scroll', () => {
@@ -325,7 +761,8 @@ export function wireRegionScroll() {
             raf = 0;
             ctx.laneEls.forEach(row => {
                 const nav = row.querySelector(':scope > .lane-region');
-                if (nav && nav.style.display !== 'none') pinToViewport(row, nav);
+                if (nav && nav.style.display !== 'none' &&
+                    pinToViewport(row, nav)) paintPanel(row);
             });
         });
     }, { passive: true });

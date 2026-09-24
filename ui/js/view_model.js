@@ -738,6 +738,25 @@ function subtreeRec(n) {
 }
 
 /**
+ * THE RECORDING GATE (time_maps.md §7 "Gates and refusals"): while any
+ * take records or waits to start (anyTakeActive), no loop region is
+ * editable anywhere — the engine refuses every map edit under a live
+ * take, so a grip that grabbed would preview geometry that never
+ * lands. `bandEditable` is the one editability fact every map surface
+ * reads (grips, seams, bands, the region panel, dblclick cuts, ←/→
+ * nudges); `bandLocked` marks a lane whose chrome WOULD be live, so it
+ * draws inert instead of vanishing mid-take.
+ *
+ * @param {boolean} editable  the lane's own editability (Q, extent, …)
+ * @param {boolean} locked    ctx.mapEditsLocked
+ * @returns {{bandEditable: boolean, bandLocked: boolean}}
+ */
+function bandGate(editable, locked) {
+    return { bandEditable: !!editable && !locked,
+             bandLocked: !!editable && !!locked };
+}
+
+/**
  * The island quantum for a state.
  *
  * The island quantum is a STORED fact published top-level by the
@@ -1066,8 +1085,17 @@ function effectivePeriod(node) {
  * current cycle, so it lands at the left edge whenever a whole
  * cycle-so-far reaches it and otherwise at its offset, wrap ghosted.
  *
- *   Z₁ = ⌊top₁⌋grid      Zₖ = Zₖ₋₁ + Cₖ₋₁·⌊(topₖ − Zₖ₋₁) / Cₖ₋₁⌋
+ *   Z₁ = [top₁]grid      Zₖ = Zₖ₋₁ + Cₖ₋₁·⌊([topₖ]grid − Zₖ₋₁) / Cₖ₋₁⌋
  *   Cₖ = lcm(Cₖ₋₁, periodₖ)      top = origin + a0 (the map's first start)
+ *   [x]grid = the grid line NEAREST x
+ *
+ * NEAREST, not floor: a map drag pins the zero, and its release must
+ * show the picture the pin showed. Floored, a top a hair BEFORE a grid
+ * line would re-seat the whole frame 1Q earlier when the pin drops —
+ * every lane and the cursor jump a Q — while the same slide a hair
+ * after it moves nothing. Rounded, a top within ½Q of a grid line seats
+ * on it from either side, so any sub-½Q slide releases in place
+ * (docs/frame.md §1; pinned by ui/js/tests/seat_nearest.test.mjs).
  *
  * The root seats first when it carries a song — the song owns the
  * frame, and its length is the first cycle-so-far. A group with a
@@ -1115,11 +1143,13 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
     });
     visit(nodes);
     if (!seats.length) return null;
-    const grid = x => gridPhase + Math.floor((x - gridPhase) / quantum) * quantum;
+    const grid = x => gridPhase + Math.round((x - gridPhase) / quantum) * quantum;
     let zero = grid(seats[0].top);
     let cycle = quantum;
     seats.forEach((s, i) => {
-        if (i > 0) zero += cycle * Math.floor((s.top - zero) / cycle);
+        // The zero and every cycle-so-far are on the Q grid, so pulling
+        // by the lane's NEAREST grid top keeps the zero there too.
+        if (i > 0) zero += cycle * Math.floor((grid(s.top) - zero) / cycle);
         const p = Math.round(s.period || 0);
         if (p > 0) cycle = lcm(cycle, p);
     });
@@ -1484,7 +1514,7 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
         lane = Object.assign(laneCommon(node, state), groupFields,
             heardViewFields({ win: gwin, lanePeriodQ: periodQ, intrinsicQ,
                               heardTopQ, cycleQ, qEstablished,
-                              editable }));
+                              editable, locked: ctx.mapEditsLocked }));
         if (oneShot) {
             lane.reps = oneShotReps(lane.reps, periodQ, ctx.scopeCycleQ || 0,
                                     cycleQ);
@@ -1534,8 +1564,7 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
             // (geometry survives bypass; the chip says so).
             bandSegs: gwin ? gwin.segs : null,
             bandTotalQ: intrinsicQ,
-            bandEditable: editable,
-        });
+        }, bandGate(editable, ctx.mapEditsLocked));
     }
     // The SEQUENCER (docs/sequencer.md): the rail chip's facts, and the
     // grid row when expanded (view state, the fx-row pattern).
@@ -1743,7 +1772,7 @@ function windowEditLane(node, win, intrinsicQ, ctx) {
         // leading/trailing exclusions.
         bandSegs: win ? win.segs : null,
         bandTotalQ: intrinsicQ,
-        bandEditable: intrinsicQ >= 2,
+        ...bandGate(intrinsicQ >= 2, ctx.mapEditsLocked),
         armable: false,
         armMode: null,
         inputChannel: node.inputChannel ?? -1,
@@ -1828,9 +1857,10 @@ function childSrcSegsUnderMap(segsQ, offsetQ, periodQ, intrinsicQ, childMap = nu
  * @param {number} o.cycleQ       the display frame
  * @param {boolean} o.qEstablished
  * @param {boolean} o.editable    whether the cut/trim chrome is live
+ * @param {boolean} o.locked      the recording gate (bandGate)
  */
 function heardViewFields({ win, lanePeriodQ, intrinsicQ, heardTopQ, cycleQ,
-                           qEstablished, editable }) {
+                           qEstablished, editable, locked }) {
     let reps = qEstablished
         ? unrollReps({ periodQ: lanePeriodQ, offsetQ: 0, cycleQ, takeQ: 0 })
         : [];
@@ -1851,7 +1881,7 @@ function heardViewFields({ win, lanePeriodQ, intrinsicQ, heardTopQ, cycleQ,
     if (lanePeriodQ >= cycleQ - EPS) {
         reps = reps.map(r => Object.assign({}, r, { ghost: false }));
     }
-    return {
+    return Object.assign({
         periodQ: lanePeriodQ,
         // The lane's material IS the window content, so its extent is
         // the window length (drag/dim math included).
@@ -1869,9 +1899,8 @@ function heardViewFields({ win, lanePeriodQ, intrinsicQ, heardTopQ, cycleQ,
         bandTotalQ: intrinsicQ,
         bandHeard: true,
         bandPeriodQ: win.periodQ,
-        bandEditable: !!editable,
         windowPhase: 0,
-    };
+    }, bandGate(editable, locked));
 }
 
 /**
@@ -1927,11 +1956,12 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
     } else if (relQ >= 0 && lcmQ > 0) {
         takeQ = posMod(laneOffsetQ, lcmQ);
     }
+    // The lane's own editability, before the recording gate (bandGate).
+    const rawEditable = qEstablished && intrinsicQ >= 2 && !node.isRecording;
     let heardFields = heard
         ? heardViewFields({ win, lanePeriodQ, intrinsicQ, heardTopQ, cycleQ,
-                            qEstablished,
-                            editable: qEstablished && intrinsicQ >= 2 &&
-                                !node.isRecording })
+                            qEstablished, editable: rawEditable,
+                            locked: ctx.mapEditsLocked })
         : null;
     // UNDER AN ENCLOSING ACTIVE MAP (no map of its own): the lane shows
     // the slice the parent's map selects of it — the child heard
@@ -1978,7 +2008,8 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
                 // is frame-independent); the parent owns the rest.
                 windowChipQ: heard ? win.periodQ : 0, mapMulti: false,
                 bandSegs: null, bandTotalQ: mapPeriodQ, bandHeard: false,
-                bandPeriodQ: 0, bandEditable: false, windowPhase: 0,
+                bandPeriodQ: 0, bandEditable: false, bandLocked: false,
+                windowPhase: 0,
                 underMap: true,
             };
             underMap = true;
@@ -2025,8 +2056,7 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
         bandTotalQ: intrinsicQ,
         bandHeard: false,
         bandPeriodQ: 0,
-        bandEditable: qEstablished && intrinsicQ >= 2 &&
-            !node.isRecording,
+        ...bandGate(rawEditable, ctx.mapEditsLocked),
         windowPhase: node.windowActive ? (node.playhead || 0) : 0,
     // HEARD VIEW (the shared function, I5): overrides the raw-framed
     // fields above — period, extent, reps, chip, seams.
@@ -2142,6 +2172,7 @@ function pushLane(node, depth, mapCtx, ctx) {
  *   frameExtended, playheadQ,
  *   armAtQ,          // next Q boundary (Q11); cycleQ ≡ 0 (↺)
  *   soleQDefinerId, provisionalDefiner,   // Q13
+ *   mapEditsLocked,  // the recording gate: every loop region display-only
  *   ruler: { cycleQ, ticks: [{ q, major }] },
  *   rootId,          // setSequence/toggleSequence target
  *   rootGain,        // the master fader (root output stage), 0..1
@@ -2157,7 +2188,8 @@ function pushLane(node, depth, mapCtx, ctx) {
  *        window/map period on heard lanes), reps: [{ startQ, endQ,
  *        ghost, wrapped, srcSegs?, srcTopFrac? }], window | null, windowChipQ,
  *        mapMulti, mapSegs, mapBypassed, mapSuspended, bandSegs,
- *        bandTotalQ, bandHeard, bandEditable, throughMap, underMap,
+ *        bandTotalQ, bandHeard, bandEditable, bandLocked (bandGate),
+ *        throughMap, underMap,
  *        armable + armMode (clips: 'stop'|'record'|'retake'|null),
  *        takes / activeTake / comp / compCells / compMode (clips —
  *        docs/takes.md), recordingLengthQ + retake + armAtQ (recording
@@ -2342,6 +2374,9 @@ export function deriveViewModel(state, opts = {}) {
         state, lanes, maxDepth, fxOpen, quantum,
         frameZero, qEstablished, cycleQ, lcmQ,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
+        // THE RECORDING GATE (bandGate): a live or pending take locks
+        // every loop region.
+        mapEditsLocked: anyTakeActive,
         // Stacks whose sequencer grid is expanded (view state, the
         // fxOpen pattern — docs/sequencer.md §9 S15).
         seqOpen: opts.seqOpen || null,
@@ -2419,6 +2454,9 @@ export function deriveViewModel(state, opts = {}) {
         qEstablished,
         soleQDefinerId,  // Q13: the sole committed clip (provisional Q), or null
         provisionalDefiner,  // Q13: framing the full buffer to trim the loop
+        // THE RECORDING GATE (bandGate, time_maps.md §7): a take is
+        // recording or pending, so every loop region is display-only.
+        mapEditsLocked: anyTakeActive,
         sampleRate: (state.perf && state.perf.sampleRate) || 44100,
         // Software input monitoring (Q20): the calibrated round trip
         // the monitored signal carries, in ms at the device rate —

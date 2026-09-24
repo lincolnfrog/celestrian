@@ -404,7 +404,13 @@ regardless.
    long take stalling the message thread (a UI hitch, never audio).
    Incremental peak buckets during capture (the audio thread appends one
    max per N samples into a preallocated array) would remove it; only
-   when takes get long enough to notice.
+   when takes get long enough to notice. The scan's cost is the take's
+   length, not the peak count; the count is **by duration** since
+   2026-09-22 (`ui/js/peak_density.js`: 200 per second of take, clamped
+   [800, 32768], so zoom has transients to show) and the buckets are
+   proportional (`ClipNode::peakBucket`: the tail is covered, no
+   drift), so the one variable cost is the bridge payload — at most
+   32768 floats of JSON per take, once per commit.
 5. **Stack summing** clears `mix_buffer` and adds it per child (plus
    `fx_accum_` when the stack's own chain is live); a single-child stack
    could pass through. Micro; only bother if profiling says so.

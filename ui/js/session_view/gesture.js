@@ -21,6 +21,20 @@
  *     holdOverlay(body) / releaseOverlay(body), used by commit sites.
  * Renderers ask ONE question: isOverlayFrozen(body).
  *
+ * THE RELEASE OUTLIVES THE POINTER. A gesture's final commit is in
+ * flight when the pointer lets go, so two of its effects end when that
+ * commit SETTLES (afterSettled, capped at COMMIT_HOLD_MAX_MS), not at
+ * pointerup:
+ *   - the FRAME PIN: onEnd returns the final commit's promise and the
+ *     pin (g.pin) holds until it settles — a poll between the release
+ *     and the engine's answer must not seat an unpinned frame from the
+ *     last LIVE geometry (docs/frame.md §1);
+ *   - the PREVIEW: deferTeardown(key, hosts, fn) keeps a finished
+ *     gesture's preview up until the first patch after its hosts are
+ *     released, which runs fn (flushTeardowns) in the same frame as
+ *     the rebuild from committed state — so the held overlay never
+ *     shows the pre-drag chrome, and nothing shows in between.
+ *
  * ONE LIVE GESTURE: two simultaneous pointers (touch + mouse, or a
  * second button mid-drag) must not run two lifecycles against the same
  * latches and commit twice. The runner is a singleton: while one
@@ -42,6 +56,10 @@ import { capturePointer, guardGesture } from './sv_util.js';
 import { selectOnly } from './selection.js';
 import { pinFrame, unpinFrame } from './drag_pin.js';
 
+/* Post-commit cap: a hold — or a pin held past release — waiting on a
+ * bridge that never answers lets go after this long. */
+export const COMMIT_HOLD_MAX_MS = 1500;
+
 const frozen = new WeakMap();  // body → live-drag freeze count
 const held = new WeakMap();    // body → post-commit hold count
 
@@ -59,6 +77,56 @@ export const isDragging = body => frozen.has(body);
  * holdOverlay needs its releaseOverlay (settle paths already pair). */
 export const holdOverlay = body => bump(held, body);
 export const releaseOverlay = body => drop(held, body);
+
+/** Run `fn` exactly once: when `p` settles (resolved or rejected) or
+ * after `capMs` (COMMIT_HOLD_MAX_MS), whichever comes first. The timer
+ * pair is injectable for DOM-free tests (the nudge chain's). */
+export function afterSettled(p, fn, { capMs = COMMIT_HOLD_MAX_MS,
+                                      setTimer = setTimeout,
+                                      clearTimer = clearTimeout } = {}) {
+    let done = false;
+    let cap = 0;
+    const once = () => {
+        if (done) return;
+        done = true;
+        clearTimer(cap);
+        fn();
+    };
+    cap = setTimer(once, capMs);
+    Promise.resolve(p).then(once, once);
+}
+
+/* Finished gestures' previews awaiting their hosts' next rebuild:
+ * key (the preview's overlay) → { hosts, fn }. */
+const teardowns = new Map();
+
+/** Keep a finished gesture's preview up until the first patch after
+ * every host is released (neither frozen nor held); `fn` then tears it
+ * down in that patch, after the hosts rebuilt from committed state
+ * (flushTeardowns). A newer gesture on the same key runs the pending
+ * teardown first (runTeardown). */
+export function deferTeardown(key, hosts, fn) {
+    runTeardown(key);
+    teardowns.set(key, { hosts, fn });
+}
+
+/** Tear `key`'s pending preview down NOW (a newer gesture takes it). */
+export function runTeardown(key) {
+    const t = teardowns.get(key);
+    if (!t) return;
+    teardowns.delete(key);
+    t.fn();
+}
+
+/** patchSessionView, once every lane body and panel has reconciled:
+ * tear down the previews whose hosts are released — the rebuild this
+ * patch just made is what shows next, with no frame in between. */
+export function flushTeardowns() {
+    for (const [key, t] of [...teardowns]) {
+        if (t.hosts.some(isOverlayFrozen)) continue;
+        runTeardown(key);
+    }
+}
 
 let activeGesture = null;  // the singleton
 
@@ -83,7 +151,10 @@ const INERT = Object.freeze({
  *     onEnd,     (committed, g) — EXACTLY once, however the gesture
  *                ends: pointerup → true; pointercancel, lost capture,
  *                window blur, Escape → false. Runs after the automatic
- *                cleanup (freeze/pin/defers released).
+ *                cleanup (freeze/defers released). May return the
+ *                promise of the commit it sent: the frame pin then
+ *                holds until that settles (afterSettled); otherwise,
+ *                and if onEnd throws, the pin releases right after it.
  *   }) → g   (INERT — g.live() false — if another gesture is live)
  */
 export function beginGesture(ev, { node = ev.target, claim = null,
@@ -111,6 +182,7 @@ export function beginGesture(ev, { node = ev.target, claim = null,
 
     let live = true;
     const cleanups = [];
+    let pins = 0;  // g.pin() holds, released after onEnd (see end)
     const g = {
         live: () => live,
         freeze(body) {
@@ -119,7 +191,7 @@ export function beginGesture(ev, { node = ev.target, claim = null,
         },
         pin() {
             pinFrame();
-            cleanups.push(unpinFrame);
+            pins++;
         },
         defer(fn) { cleanups.push(fn); },
         end(commit) { end(commit, null); },
@@ -153,7 +225,22 @@ export function beginGesture(ev, { node = ev.target, claim = null,
             }
         } catch (_) { /* synthetic pointers */ }
         for (const fn of cleanups.splice(0).reverse()) fn();
-        if (onEnd) onEnd(commit, g);
+        // THE PIN OUTLIVES THE POINTER: the frame stays pinned until
+        // the final commit onEnd hands back settles — never on a path
+        // that could leave it pinned (a throw, no commit: at once).
+        let settles;
+        try {
+            settles = onEnd ? onEnd(commit, g) : undefined;
+        } finally {
+            const n = pins;
+            pins = 0;
+            const unpin = () => { for (let i = 0; i < n; i++) unpinFrame(); };
+            if (n && settles && typeof settles.then === 'function') {
+                afterSettled(settles, unpin);
+            } else {
+                unpin();
+            }
+        }
     }
 
     window.addEventListener('keydown', onKey, true);

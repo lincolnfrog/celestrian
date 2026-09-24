@@ -7,7 +7,7 @@
  */
 
 import { posMod } from '../math_utils.js';
-import { mapPeriod, mapOffset, mapActive, heardOffsetOf } from '../time_map.js';
+import { mapPeriod, mapOffset, mapActive, heardOffsetOf, innerAt } from '../time_map.js';
 import {
     state, findNode, nodeMap, intrinsicOfNode, subtreeRecording,
     anyNodeRecording, isQ13SoleDefiner, isQ13DefinerStack,
@@ -33,7 +33,16 @@ import { activeSeqLen, retimeSequences } from './sequence.js';
  * position now (the node equation, state.innerUnder) re-anchored under
  * the new map. For a stack the returned origin moves its whole subtree
  * (the caller's shiftOrigins); an unanchored stack measures from its
- * received cycle top and nothing moves. */
+ * received cycle top and nothing moves.
+ *
+ * THE LEAST MOVE (engine parity, seam-model SM-4, 2026-09-23): the
+ * solve answers the most recent pass (O + m·P for a pure slide), so the
+ * origin is reduced to the representative NEAREST the old one modulo
+ * the period — a slide keeps O exactly (no parity-dependent re-seat, no
+ * composite re-key, bypass stays where the take was performed), and a
+ * trim moves by the least whole-Q amount. (The mock's node equation
+ * folds on the map period — both folds below are the periods; the
+ * engine's one-shot context fold is not modelled here, as before.) */
 function continuityOrigin(node, oldMap, newMap) {
     const dur = intrinsicOfNode(node);
     const eff = m => (m && mapActive(m) && mapPeriod(m) > 0)
@@ -41,12 +50,35 @@ function continuityOrigin(node, oldMap, newMap) {
     const org = frameOriginOf(node);
     if (!(dur > 0)) return org;
     const o = eff(oldMap), nm = eff(newMap);
-    const period = mapPeriod(nm);
-    if (!(period > 0) || !(mapPeriod(o) > 0)) return org;
-    const t0 = state.masterPos;
-    const p0 = innerUnder(o, org, t0);
-    if (heardOffsetOf(nm, p0) < 0) return org;  // sounding region removed
-    return originForHeard(nm, t0, p0, 0);
+    return continuityOriginFor(o, nm, org, state.masterPos,
+        mapPeriod(o), mapPeriod(nm));
+}
+
+/** THE NEAREST REPRESENTATIVE (engine twin heard::nearestRepresentative,
+ * time_maps.md §5): the member of `x`'s residue class modulo `m`
+ * nearest `ref` — a tie resolves below `ref`, so the result lies in
+ * [ref − ⌊m/2⌋, ref + m − ⌊m/2⌋). Identity when m ≤ 0. */
+export function nearestRepresentative(x, ref, m) {
+    if (!(m > 0)) return x;
+    let r = posMod(x - ref, m);  // [0, m)
+    if (r >= m - Math.floor(m / 2)) r -= m;
+    return ref + r;
+}
+
+/** THE CONTINUITY RE-ANCHOR as pure algebra (engine twin
+ * heard::continuityOriginFor; golden `continuity_origin_cases`): the
+ * origin at which the inner position sounding at `t0` under `oldMap`
+ * (anchored at `origin`, folding on `oldFold`) keeps sounding under
+ * `newMap` (folding on `newFold`), nearest `origin`. The origin stays
+ * when the new map drops that position, when a one-shot rests, or when
+ * either map is empty. */
+export function continuityOriginFor(oldMap, newMap, origin, t0, oldFold, newFold) {
+    if (!(mapPeriod(oldMap) > 0) || !(mapPeriod(newMap) > 0)) return origin;
+    const at = innerAt(t0, origin, oldMap, oldFold);
+    if (at.rest) return origin;
+    if (heardOffsetOf(newMap, at.inner) < 0) return origin;  // removed: stay put
+    return nearestRepresentative(originForHeard(newMap, t0, at.inner, 0), origin,
+        Math.max(newFold, mapPeriod(newMap)));
 }
 
 /** The island's audible period WITHOUT `skip` (engine parity:

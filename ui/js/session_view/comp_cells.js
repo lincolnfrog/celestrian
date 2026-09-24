@@ -22,8 +22,8 @@ const CELL_V_INSET_PX = 3;
 /* Cells never render thinner than this (px). */
 const MIN_CELL_PX = 2;
 /* A committed-but-unpublished comp is the base for the next click for
- * at most this long (a refusal never publishes it; window_edit's
- * COMMIT_HOLD_MAX_MS twin). */
+ * at most this long (a refusal never publishes it; the twin of
+ * gesture.js's COMMIT_HOLD_MAX_MS). */
 const PENDING_MAX_MS = 1500;
 
 const sameCells = (a, b) => Array.isArray(a) && Array.isArray(b) &&

@@ -11,7 +11,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildCacheKey, generateCompositeWaveform } from '../composite_waveform.js';
+import { buildCacheKey, generateCompositeWaveform, skippedInComposite }
+    from '../composite_waveform.js';
 import { MOCK_Q as Q } from './helpers.mjs';
 
 // Lengths below are multiples of Q — the mock's quantum, i.e. 1 s of
@@ -465,5 +466,78 @@ test('generateCompositeWaveform', async (t) => {
         const key2 = cache.get('stack-1').key;
 
         assert.notEqual(key1, key2, 'Adding child should invalidate cache');
+    });
+
+    // flash-chrome F8 (2026-09-22): the continuity re-anchor moves a
+    // playing group's WHOLE subtree (the stack origin, which lanePeaks
+    // passes as frameZero, and every member by the same delta). Keyed on
+    // absolute origins the composite regenerated — a new array, a 240 ms
+    // cross-fade on every group tile — although nothing moved relative
+    // to the frame. Keyed on origin − frameZero it is the same array.
+    await t.test('a whole-subtree origin shift keeps the key and the array', () => {
+        const kids = [
+            { id: 'm1', type: 'clip', duration: 4 * Q, origin: 7 * Q },
+            { id: 'm2', type: 'clip', duration: 2 * Q, origin: 8 * Q,
+              loopStart: 0, loopEnd: Q, windowActive: true },
+        ];
+        const stack = makeStack(kids);
+        const livePeaks = new Map([['m1', [0.2, 0.9, 0.4, 0.6]], ['m2', [0.7, 0.3]]]);
+        const cache = new Map();
+        const args = { stack, stackDuration: 4 * Q, effectiveQ: Q,
+                       canvasWidth: 64, livePeaks, cache, frameZero: 7 * Q };
+        const before = generateCompositeWaveform(args);
+        const keyBefore = cache.get('stack-1').key;
+        // The re-anchor: +23Q on the stack and its subtree alike.
+        kids.forEach(k => { k.origin += 23 * Q; });
+        const after = generateCompositeWaveform({ ...args, frameZero: 30 * Q });
+        assert.equal(cache.get('stack-1').key, keyBefore, 'same key');
+        assert.equal(after, before, 'same array identity (no cross-fade)');
+        // …whereas a member moving against the frame IS a new picture.
+        kids[1].origin += Q;
+        const moved = generateCompositeWaveform({ ...args, frameZero: 30 * Q });
+        assert.notEqual(moved, before, 'a relative move regenerates');
+    });
+
+    // flash-chrome F11 (2026-09-22): a recording child is out of the
+    // mixdown, but its GROWING duration was still in the key — the
+    // group's composite re-keyed and cross-faded on every poll (20/s).
+    await t.test('a growing recording (or armed) child does not re-key', () => {
+        const done = { id: 'c1', type: 'clip', duration: 4 * Q, origin: 0 };
+        const live = { id: 'c2', type: 'clip', duration: Q / 3, origin: Q,
+                       isRecording: true };
+        const stack = makeStack([done, live]);
+        const livePeaks = new Map([['c1', [0.5, 0.8, 0.3, 0.9]], ['c2', [0.4]]]);
+        const cache = new Map();
+        const args = { stack, stackDuration: 4 * Q, effectiveQ: Q,
+                       canvasWidth: 64, livePeaks, cache, frameZero: 0 };
+        const first = generateCompositeWaveform(args);
+        for (const grown of [Q / 2, Q, 5 * Q / 2]) {
+            live.duration = grown;
+            livePeaks.set('c2', new Array(Math.round(grown / Q * 50)).fill(0.4));
+            assert.equal(generateCompositeWaveform(args), first,
+                `still the same array at ${grown / Q}Q captured`);
+        }
+        // Armed (pending start) is hot too: out of key and mixdown alike.
+        live.isRecording = false;
+        live.isPendingStart = true;
+        live.duration = 0;
+        assert.equal(generateCompositeWaveform(args), first, 'armed: same array');
+        // The commit brings it in: a new picture.
+        live.isPendingStart = false;
+        live.duration = 4 * Q;
+        livePeaks.set('c2', [0.1, 0.2, 0.3, 0.4]);
+        assert.notEqual(generateCompositeWaveform(args), first, 'committed: regenerates');
+    });
+
+    await t.test('skippedInComposite: one membership rule for key, sig and mixdown', () => {
+        assert.equal(skippedInComposite({ id: 'a' }), false);
+        assert.equal(skippedInComposite({ id: 'a', isRecording: true }), true);
+        assert.equal(skippedInComposite({ id: 'a', isPendingStart: true }), true);
+        assert.equal(skippedInComposite({ id: 'a' }, new Set(['a'])), true);
+        assert.equal(skippedInComposite({ id: 'b' }, new Set(['a'])), false);
+        // Keyed as skipped: a skipped child's own facts never reach the key.
+        const s1 = { nodes: [{ id: 'r', type: 'clip', duration: Q, origin: 0, isRecording: true }] };
+        const s2 = { nodes: [{ id: 'r', type: 'clip', duration: 3 * Q, origin: 5 * Q, isRecording: true }] };
+        assert.equal(buildCacheKey(s1, 400), buildCacheKey(s2, 400));
     });
 });

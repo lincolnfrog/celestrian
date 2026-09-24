@@ -35,6 +35,11 @@ test('⌥→plain mixed bracket drag lands a whole-Q window', async ({ page }) =
     await clip3Q.locator('.rail-name').click();
     const start = clip3Q.locator('.region-bracket.start');
     await expect(start).toBeVisible();
+    // The panel opens FIT TO THE LOOP (2026-09-23); ⇧Z shows the whole
+    // take, the geometry this spec measures in.
+    await page.keyboard.press('Shift+Z');
+    await expect.poll(() => clip3Q.locator('.region-strip')
+        .evaluate(s => s._view.spanQ)).toBe(3);
 
     const st0 = await page.evaluate(() =>
         window.celestrian.getState().nodes.find(n => n.type === 'stack')

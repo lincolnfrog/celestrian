@@ -1492,6 +1492,58 @@ class ScenarioTests : public juce::UnitTest {
       is.engine.undo();
       expectOutput(is, 8 * Q, law(mics), "the mic returns in phase");
     }
+
+    // ------------------------------------------------------------------
+    beginTest("S40: a playing slide keeps the origin, the bypass alignment "
+              "and the seat (seam-model SM-4, 2026-09-23) — 1Q, 2Q, a 10Q "
+              "take windowed to 5Q, slid +1Q and then freely +0.3Q after an "
+              "odd and an even number of passes");
+    {
+      // The continuity re-anchor answers the representative NEAREST the
+      // old origin (time_maps.md §5): for a slide that is the origin
+      // itself. It used to answer the most recent pass, O + m·5Q — the
+      // same heard audio, but the view seats from absolute tops (the 2Q
+      // loop before the 5Q one does not divide an odd m·5Q, so the seat
+      // flipped with the pass count), and BYPASSED the take played 5Q
+      // away from where it was performed (the Degradation Contract).
+      for (int parity : {1, 0}) {
+        const juce::String tag = parity ? " (odd passes)" : " (even passes)";
+        Island is;
+        const juce::String c1 = is.record(Q);
+        const juce::String c2 = is.record(2 * Q);
+        const juce::String b = is.record(10 * Q);
+        const int64_t cap = is.captured.at(b);
+        expectEquals(is.origin(b), cap, "the stored origin is the capture boundary" + tag);
+        is.window(b, 0, 5 * Q);
+        // Park 2.5Q into a pass of the window, m passes on (m of the
+        // requested parity): the sounding sample survives both slides.
+        const int64_t now = is.islandPos() + is.zero();
+        int64_t m = (now - cap - 5 * Q / 2 + 5 * Q - 1) / (5 * Q);
+        if ((m & 1) != parity) ++m;
+        is.drive(cap + 5 * Q / 2 + m * 5 * Q - now);
+        const int64_t zero0 = is.zero();
+        const int64_t rel0 = is.origin(b) - zero0;
+        is.window(b, Q, 6 * Q);
+        is.window(b, Q + 3 * Q / 10, 6 * Q + 3 * Q / 10);
+        const int64_t ws = Q + 3 * Q / 10, len = 5 * Q;
+        expectEquals(is.origin(b), cap, "the origin stays through both slides" + tag);
+        // THE SEAT'S INPUTS: the view seats the frame from the lanes'
+        // tops against the zero — neither moved beyond the slide itself.
+        expectEquals(is.zero(), zero0, "the zero stays" + tag);
+        expectEquals(is.origin(b) - is.zero(), rel0, "the lane's origin against the zero holds" + tag);
+        // The window law from the PERFORMED origin (not the cached one:
+        // the capture boundary is the claim).
+        expectOutput(is, 10 * Q, [&](int64_t t) {
+          return is.loopVal(c1, t) + is.loopVal(c2, t) +
+                 is.val(b, ws + posmod(t - cap - ws, len));
+        }, "the slid window sounds from the performed origin" + tag);
+        // BYPASSED: the whole take, where it was performed.
+        is.engine.toggleLoopWindow(b);
+        expectOutput(is, 10 * Q, [&](int64_t t) {
+          return is.loopVal(c1, t) + is.loopVal(c2, t) + is.val(b, posmod(t - cap, 10 * Q));
+        }, "bypassed: the take plays where it was performed" + tag);
+      }
+    }
   }
 };
 

@@ -3,7 +3,10 @@
  * display frame is PINNED: live commits change the audible cycle, and
  * letting the frame follow would re-scale every lane + the ruler under
  * the pointer mid-drag (the world must not squirm while you hold it).
- * The frame settles once, on release.
+ * The frame settles once, when the gesture's FINAL commit settles
+ * (gesture.js — the pin outlives the pointer): released at pointerup,
+ * a poll answered before the engine applied that commit would seat
+ * the frame from the last live geometry and re-seat it a poll later.
  *
  * app.js reads the pins each poll (mapDragPinQ / mapDragPinFoldQ) and
  * feeds them to the view model; patchSessionView records the latest
@@ -45,7 +48,8 @@ export function pinFrame() {
 }
 
 /** Release the pin — the frame settles once, when the LAST holder lets
- * go (paired with pinFrame; the gesture runner pairs them for you). */
+ * go (paired with pinFrame; the gesture runner pairs them for you,
+ * releasing after the final commit settles). */
 export function unpinFrame() {
     if (pins > 0 && --pins === 0) {
         dragPinQ = null;

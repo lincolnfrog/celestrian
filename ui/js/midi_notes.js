@@ -3,9 +3,12 @@
  * between the bridge's `getMidiNotes` rows and the piano-roll tile —
  * event pairing (the mock's twin of AudioEngine::getMidiNotes), the
  * bridge-row decode, the compact pitch-range fit, and the slice of a
- * take's notes into ONE rep tile (the same `srcSegs` / rotation rules
- * the audio tile applies to its peaks). No DOM, no canvas.
+ * take's notes into ONE rep tile (the same `srcSegs` / rotation /
+ * tile-window mapping the audio tile samples its peaks through). No
+ * DOM, no canvas.
  */
+
+import { posMod } from './math_utils.js';
 
 /** The smallest pitch span a tile fits (semitones): one note still
  * reads as a bar, not a line. */
@@ -98,24 +101,35 @@ export function rescaleNotes(notes, fromQ, toQ) {
     return notes.map(n => ({ ...n, posQ: n.posQ * k, lenQ: n.lenQ * k }));
 }
 
+/* A note piece thinner than this (tile fractions) is float noise at a
+ * window edge, not a note: dropped (drawMidiTile would still paint it
+ * a whole pixel wide). */
+const NOTE_PIECE_EPS = 1e-9;
+
 /**
  * Slice a take's notes into ONE rep tile, in tile fractions [0, 1):
- * the audio tile's rules exactly — `src` is the list of [f0, f1]
- * content ranges (fractions of `intrinsicQ`) the tile concatenates
- * (null = the whole take), `rotFrac` rotates the loop's heard top to
- * that fraction of the tile. A note is clipped to the ranges it
- * overlaps (a note crossing a cut is cut). Returns [{f0, f1, note,
- * vel, onset}] with f1 > f0; `onset` is false on a piece that
- * continues a note begun elsewhere (clipped by a range start, or the
+ * the audio tile's mapping exactly (canvas_renderer.mappedColumns —
+ * exact fractions, nothing rounded to peaks) — `src` is the list of
+ * [f0, f1] content ranges (fractions of `intrinsicQ`) the tile
+ * concatenates (null = the whole take), `rotFrac` rotates the loop's
+ * heard top to that fraction of the period, and `win` ({u0, u1},
+ * lane_body.tileSpan) is the tile's window onto the period: the
+ * default {0, 1} is one whole period; a tile the frame clips shows
+ * only the leading part of its period, never the whole period
+ * squeezed in. A note is clipped to the ranges it overlaps (a note
+ * crossing a cut is cut). Returns [{f0, f1, note, vel, onset}] with
+ * f1 > f0; `onset` is false on a piece that continues a note begun
+ * elsewhere (clipped by a range start or the tile's window, or the
  * tail of a bar split by rotation) — the velocity lane draws one stem
  * per note, at its onset.
  */
-export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0) {
+export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0,
+                                 win = undefined) {
     if (!(intrinsicQ > 0) || !notes || !notes.length) return [];
     const ranges = src && src.length ? src : [[0, 1]];
     const total = ranges.reduce((n, [a, b]) => n + (b - a), 0);
     if (!(total > 0)) return [];
-    const out = [];
+    const pieces = [];
     let acc = 0;
     for (const [a, b] of ranges) {
         const w = b - a;
@@ -128,7 +142,7 @@ export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0) {
             const onset = c0 === n0;
             let f0 = (acc + (c0 - a)) / total;
             let f1 = (acc + (c1 - a)) / total;
-            const rot = ((rotFrac || 0) % 1 + 1) % 1;
+            const rot = posMod(rotFrac || 0, 1);
             if (rot > 0) {
                 // Rotation: the tile shows the content from its heard
                 // top; a bar straddling the seam splits in two.
@@ -136,15 +150,44 @@ export function sliceNotesToTile(notes, intrinsicQ, src, rotFrac = 0) {
                 f1 = (f1 + rot);
                 if (f0 >= 1) { f0 -= 1; f1 -= 1; }
                 if (f1 > 1) {
-                    out.push({ f0, f1: 1, note: n.note, vel: n.vel, onset });
-                    out.push({ f0: 0, f1: f1 - 1, note: n.note, vel: n.vel,
-                               onset: false });
+                    pieces.push({ f0, f1: 1, note: n.note, vel: n.vel, onset });
+                    pieces.push({ f0: 0, f1: f1 - 1, note: n.note, vel: n.vel,
+                                  onset: false });
                     continue;
                 }
             }
-            out.push({ f0, f1, note: n.note, vel: n.vel, onset });
+            pieces.push({ f0, f1, note: n.note, vel: n.vel, onset });
         }
         acc += w;
+    }
+    return windowPieces(pieces, win);
+}
+
+/**
+ * Project period-fraction pieces onto a tile's window {u0, u1} of the
+ * period (u0 may carry whole periods — only its phase matters): every
+ * repeat of a piece that overlaps [phase, phase + span) lands at
+ * (x − phase) / span. The default window is one whole period
+ * (identity).
+ */
+function windowPieces(pieces, win) {
+    const u0 = win && Number.isFinite(win.u0) ? win.u0 : 0;
+    const u1 = win && Number.isFinite(win.u1) ? win.u1 : u0 + 1;
+    const span = u1 - u0;
+    if (!(span > 0)) return [];
+    const phase = posMod(u0, 1);
+    if (phase === 0 && span === 1) return pieces;  // one whole period
+    const out = [];
+    const reps = Math.ceil(phase + span);
+    for (const p of pieces) {
+        for (let m = 0; m < reps; m++) {
+            const a = Math.max(p.f0 + m, phase);
+            const b = Math.min(p.f1 + m, phase + span);
+            if (b - a <= NOTE_PIECE_EPS * span) continue;
+            out.push({ f0: (a - phase) / span, f1: (b - phase) / span,
+                       note: p.note, vel: p.vel,
+                       onset: p.onset && a === p.f0 + m });
+        }
     }
     return out;
 }

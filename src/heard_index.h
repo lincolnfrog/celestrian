@@ -57,18 +57,27 @@ inline int64_t frameOriginOf(const AudioNode& node, const Scope& scope) {
   return node.isAnchored() ? node.origin_samples.load() : scope.frame_top;
 }
 
+/** THE FOLD a node's phase repeats on under map `m` (timing::innerAt's
+ * modulus): the map period for a looping node; for a one-shot the
+ * scope's context cycle, never shorter than the shot (innerAt's clamp).
+ * Two origins congruent modulo this sound identically. */
+inline int64_t ownFold(const AudioNode& node, const timing::TimeMap& m,
+                       const Scope& scope) {
+  const int64_t shot = m.period();
+  return node.periodFromContext() ? std::max(scope.context_cycle, shot) : shot;
+}
+
 /** THE NODE EQUATION at the node's RECEIVED clock: for a clip, the
  * content index that sounds; for a stack, the offset of the child clock
  * from the stack's origin. A one-shot folds on the scope's context
- * cycle (innerAt clamps a cycle no longer than the shot to the shot). */
+ * cycle (ownFold). */
 inline timing::InnerAt ownInnerAt(const AudioNode& node,
                                   int64_t received_clock,
                                   const Scope& scope) {
   const timing::TimeMap m = effectiveMap(node);
   if (m.period() <= 0) return {};
-  const int64_t fold =
-      node.periodFromContext() ? scope.context_cycle : m.period();
-  return timing::innerAt(received_clock, frameOriginOf(node, scope), m, fold);
+  return timing::innerAt(received_clock, frameOriginOf(node, scope), m,
+                         ownFold(node, m, scope));
 }
 
 /** The scope a stack hands its children — StackNode::childContext's
@@ -206,6 +215,44 @@ inline int64_t originForHeard(const timing::TimeMap& m, int64_t t0, int64_t p,
   int64_t h = m.heardOffsetOf(p);
   if (h < 0) h = period > 0 ? posMod(fallback_h, period) : 0;
   return t0 - m.mapOffset(0) - h;
+}
+
+/** THE NEAREST REPRESENTATIVE (time_maps.md §5, the continuity
+ * re-anchor): the member of `x`'s residue class modulo `m` nearest
+ * `ref` — x − m·round((x − ref)/m), a tie resolving below `ref` — so
+ * the result lies in [ref − ⌊m/2⌋, ref + m − ⌊m/2⌋). originForHeard
+ * answers the MOST RECENT pass (t0 − heard phase), i.e. the old origin
+ * plus however many whole passes have played; every origin congruent
+ * to it modulo the node's fold sounds the same sample, and this picks
+ * the one that moves the least (seam-model SM-4, 2026-09-23). Identity
+ * when m <= 0. JS twin: ui/js/mock/maps.js nearestRepresentative. */
+inline int64_t nearestRepresentative(int64_t x, int64_t ref, int64_t m) {
+  if (m <= 0) return x;
+  int64_t r = posMod(x - ref, m);  // [0, m)
+  if (r >= m - m / 2) r -= m;
+  return ref + r;
+}
+
+/** THE CONTINUITY RE-ANCHOR, as pure algebra (time_maps.md §5): the
+ * origin at which the inner position sounding at `t0` under `oldm`
+ * (anchored at `origin`, folding on `old_fold`) keeps sounding under
+ * `newm` (folding on `new_fold`) — the representative nearest `origin`,
+ * so a pure slide returns `origin` itself. The origin stays when the
+ * new map no longer covers that position (you deleted what you were
+ * hearing), when a one-shot rests (nothing to keep), or when either map
+ * is empty. `t0` is the node's RECEIVED clock. Engine caller:
+ * continuityOrigin (engine/island_geometry.cc); JS twin: ui/js/mock/
+ * maps.js continuityOriginFor; golden: `continuity_origin_cases`. */
+inline int64_t continuityOriginFor(const timing::TimeMap& oldm,
+                                   const timing::TimeMap& newm, int64_t origin,
+                                   int64_t t0, int64_t old_fold,
+                                   int64_t new_fold) {
+  if (oldm.period() <= 0 || newm.period() <= 0) return origin;
+  const timing::InnerAt at = timing::innerAt(t0, origin, oldm, old_fold);
+  if (at.rest) return origin;
+  if (newm.heardOffsetOf(at.inner) < 0) return origin;  // removed: stay put
+  return nearestRepresentative(originForHeard(newm, t0, at.inner, 0), origin,
+                               std::max(new_fold, newm.period()));
 }
 
 }  // namespace celestrian::heard

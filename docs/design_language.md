@@ -322,6 +322,32 @@ in the doc that owns its feature, but each has a pointer here.
   `mock_zero.test.mjs`, `tests/regression_tests.cc` ("MAP EDITS MOVE
   NO ISLAND FACT") and the engine e2e journeys in `rebase.spec.js` and
   `loop_edits.spec.js`.
+- **LOOP-REGION PHASE 1 (owner, 2026-09-23):** (a) a lane's top seats
+  on its NEAREST Q grid line, not the one below (frame.md §1), so an
+  ⌥-slide within ±½Q releases with the picture the drag pin showed —
+  the field video's −0.15Q slide no longer jumps every lane a Q; the
+  drag pin and the held preview last until the final commit settles.
+  Pinned by `ui/js/tests/seat_nearest.test.mjs` and
+  `release_lifecycle.test.mjs`. (b) Loop-region edits are disabled
+  while any take records or is pending — simplicity over the
+  per-subtree refusal (time_maps.md §7); pinned by
+  `ui/js/tests/record_gate.test.mjs` and `ui/e2e/release_chrome.spec.js`.
+  (c) The region panel is a full-row, constant-width panel with a
+  whole-take overview strip over a zoomable detail strip that opens
+  fit-to-loop; slides snap to WHOLE Q (⌥ = free), trims keep the
+  whole-Q period snap, and there is no sub-Q grid — the grid is
+  arbitrary relative to the music (a meter-aware snap is a MAYBE in
+  tasks.md). time_maps.md §6; pinned by `panel_view.test.mjs`,
+  `edge_pan.test.mjs`, `region_panel_keys.test.mjs` and
+  `ui/e2e/region_panel_view.spec.js`. (d) Heard tiles are sampled per
+  column through the map at ONE gain per take (session_view.md law
+  16): a slide redraws only the swept sliver; pinned by
+  `heard_tile_sampler.test.mjs` and `ui/e2e/heard_tiles.spec.js`.
+  (e) The continuity re-anchor keeps the NEAREST origin — a playing
+  slide never moves the origin (time_maps.md §5 "The least move");
+  pinned by the golden `continuity_origin_cases` and scenario S40.
+  The whole system, with worked examples, the Phase 2 roadmap and the
+  pending top model: loop_selection.md.
 - **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
   2026-09-17; frame.md §4):** a song authored on the root anchors the
   root — Q18 at depth 0 — at the zero the view had seated when the

@@ -12,7 +12,8 @@
  * trim it, hit the other bracket key, trim that. No selection → no-op.
  * (The keydown wiring itself lives in init.js' unified dispatcher.
  * The mouse face of these keys used to be a per-lane nav dock; the
- * region panel — region_panel.js — replaced it 2026-09-11.)
+ * region panel — region_panel.js — replaced it 2026-09-11, and has its
+ * own navigation: Z / ⇧Z and the wheel zoom its view.)
  */
 
 import { ctx } from './context.js';
@@ -22,10 +23,16 @@ import { activeSelectedId } from './selection.js';
 const HANDLE_SELECTOR =
     '.win-bracket.start, .win-bracket.end, .cut-handle, .seam-handle';
 
-/** Preview clones and drag layers are transient — never targets. */
-const isTransientHandle = node =>
+/** Preview clones and drag layers are transient — never targets. Nor
+ * is anything in the REGION PANEL (diagnosis N5, 2026-09-23): its cut
+ * bands are the lane's band code (.cut-handle), but the panel is
+ * pinned to the viewport, so centring one of its handles can never
+ * converge — `]` got stuck re-targeting it, creeping the main view
+ * ~45 px per press. The walk is the LANE's handles. */
+export const isTransientHandle = node =>
     node.classList.contains('snap-ghost') ||
-    !!node.closest('.drag-preview-layer');
+    !!node.closest('.drag-preview-layer') ||
+    !!node.closest('.lane-region');
 
 /* How long the landing handle stays force-visible after a teleport. */
 const TELEPORT_FLASH_MS = 900;

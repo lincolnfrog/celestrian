@@ -129,17 +129,37 @@ class AuditRegressionTests : public juce::UnitTest {
       expect((int64_t)deepProp(engine, b, "duration") > 0, "take 2 committed");
       expect(!engine.hasActiveTake(), "island idle");
 
-      // Let the clock run well past the origins so the continuity
-      // re-anchor produces a non-zero whole-D delta.
+      // Let the clock run well past the origins, then park A's sounding
+      // position 5D/8 into its take — inside the second kept cell of
+      // the cut below.
       driveEngine(engine, 3 * D);
+      {
+        const int64_t t =
+            rootProp(engine, "islandPos") + rootProp(engine, "islandZero");
+        const int64_t org = (int64_t)deepProp(engine, a, "origin");
+        const int64_t p = ((t - org) % D + D) % D;
+        driveEngine(engine, ((5 * D / 8 - p) % D + D) % D);
+      }
 
       const int64_t zero0 = rootProp(engine, "islandZero");
       const int64_t orgA0 = (int64_t)deepProp(engine, a, "origin");
       const int64_t orgB0 = (int64_t)deepProp(engine, b, "origin");
 
-      // Playing map edit on A: the continuity rider re-anchors A's
-      // origin; the island zero stays (docs/frame.md).
-      engine.setLoopPoints(a, 0, D / 2);
+      // Playing map edit on A that must carry the continuity rider: a
+      // cut keeping [0, D/4) + [D/2, 3D/4). The sounding 5D/8 moves
+      // from heard phase 5D/8 to 3D/8, so the origin re-anchors — by the
+      // least move, D/4 modulo the D/2 period (seam-model SM-4,
+      // 2026-09-23: a plain window [0, D/2) no longer re-anchors at
+      // all — D/2 divides the take, so the old origin already keeps the
+      // sounding sample, where the most-recent-pass solve used to move
+      // it by whole passes). The island zero stays (docs/frame.md).
+      {
+        celestrian::timing::TimeMap cut;
+        cut.n = 2;
+        cut.segs[0] = {0, D / 4};
+        cut.segs[1] = {D / 2, 3 * D / 4};
+        engine.setSegments(a, cut);
+      }
       const int64_t zero1 = rootProp(engine, "islandZero");
       const int64_t orgA1 = (int64_t)deepProp(engine, a, "origin");
       logMessage("trim delta: origin " + juce::String(orgA1 - orgA0) +

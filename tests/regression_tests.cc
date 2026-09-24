@@ -1272,6 +1272,32 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
                    zero, "no zero move (cycle did not grow)");
       expectEquals(((clipProp(1, "origin") - zero) % Q + Q) % Q, (int64_t)0,
                    "clip 2's anchor keeps its grid phase");
+
+      // I4 AS AMENDED (seam-model SM-4, 2026-09-23): when the sounding
+      // sample survives, the re-anchor moves the origin by the LEAST
+      // whole-Q amount that keeps it — and a pure slide keeps the
+      // sounding sample's heard phase, so it never re-anchors at all
+      // (it used to come back origin + m·P, the most recent pass). Widen
+      // clip 2's window to [1Q,3Q), park in its [2Q,3Q) half some
+      // passes on, slide the window +1Q: the origin stays exactly.
+      engine.setLoopPoints(nthClipId(1), Q, 3 * Q);
+      const int64_t org2w = clipProp(1, "origin");
+      auto rawClock = [&] {
+        const juce::var s = engine.getGraphState();
+        return (int64_t)(double)s.getProperty("islandPos", 0) +
+               (int64_t)(double)s.getProperty("islandZero", 0);
+      };
+      // inner = Q + ((t − origin − Q) mod 2Q): park at 1.5Q into the
+      // pass (content 2.5Q), at least three passes on.
+      const int64_t base = org2w + Q + 3 * Q / 2;
+      int64_t park = base;
+      while (park < rawClock() + 3 * 2 * Q) park += 2 * Q;
+      process(park - rawClock());
+      engine.setLoopPoints(nthClipId(1), 2 * Q, 4 * Q);
+      expectEquals(clipProp(1, "origin"), org2w,
+                   "a playing slide never re-anchors (the least move is 0)");
+      expectEquals(((clipProp(1, "origin") - zero) % Q + Q) % Q, (int64_t)0,
+                   "…and the grid phase holds");
     }
 
     beginTest("MAP EDITS MOVE NO ISLAND FACT: the zero is the first take's origin");

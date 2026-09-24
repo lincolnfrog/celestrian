@@ -1578,7 +1578,7 @@ juce::var ClipNode::midiPeaks(const MidiSequence& seq, int64_t base,
   // the renderer the audio lanes already use. Events before the
   // content base only prime the held state.
   juce::Array<juce::var> peaks;
-  const int window_size = std::max(1, total_samples / std::max(1, num_peaks));
+  peaks.ensureStorageAllocated(std::max(0, num_peaks));
   std::array<juce::uint8, 128> held{};
   held.fill(0);
   int cursor = 0;
@@ -1595,14 +1595,14 @@ juce::var ClipNode::midiPeaks(const MidiSequence& seq, int64_t base,
   };
   int dummy = 0;
   step(base, dummy);
+  // Proportional buckets (peakBucket): consecutive and gap-free, so the
+  // event cursor walks the take exactly once and the last bucket
+  // reaches its end.
   for (int i = 0; i < num_peaks; ++i) {
-    const int64_t start = base + (int64_t)i * window_size;
-    const int64_t end = std::max(
-        start + 1,
-        std::min(start + window_size, base + (int64_t)total_samples));
+    const PeakBucket b = peakBucket(i, total_samples, num_peaks);
     int cur = 0;
     for (const auto v : held) cur = std::max(cur, (int)v);
-    if (start < base + total_samples) step(end, cur);
+    step(base + b.end, cur);
     peaks.add((float)cur / 127.0f);
   }
   return peaks;
@@ -1612,25 +1612,23 @@ juce::var ClipNode::audioPeaks(const juce::AudioBuffer<float>& buffer,
                                int64_t base, int total_samples,
                                int num_peaks) {
   juce::Array<juce::var> peaks;
-  const int window_size = std::max(1, total_samples / std::max(1, num_peaks));
+  peaks.ensureStorageAllocated(std::max(0, num_peaks));
   const int64_t cap = buffer.getNumSamples();
   const int chans = buffer.getNumChannels();
 
   // Base-relative reads: the content IS the origin frame; the UI
   // positions it via the clip's origin (x), so no other remapping is
   // needed anywhere. Stereo content draws the per-window max of BOTH
-  // channels (one waveform per lane).
+  // channels (one waveform per lane). Proportional buckets
+  // (peakBucket): the whole committed span, tail included.
   for (int i = 0; i < num_peaks; ++i) {
-    int start = i * window_size;
-    int end = std::max(start + 1, std::min(start + window_size, total_samples));
+    const PeakBucket b = peakBucket(i, total_samples, num_peaks);
     float peak = 0.0f;
-    if (start < total_samples) {
-      for (int c = 0; c < chans; ++c) {
-        const float* data = buffer.getReadPointer(c);
-        for (int s = start; s < end; ++s) {
-          const int64_t idx = base + s;
-          if (idx < cap) peak = std::max(peak, std::abs(data[idx]));
-        }
+    for (int c = 0; c < chans; ++c) {
+      const float* data = buffer.getReadPointer(c);
+      for (int64_t s = b.start; s < b.end; ++s) {
+        const int64_t idx = base + s;
+        if (idx < cap) peak = std::max(peak, std::abs(data[idx]));
       }
     }
     peaks.add(peak);

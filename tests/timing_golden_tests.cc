@@ -3,13 +3,18 @@
  *
  * Runs src/timing.h against shared/timing_golden.json — the same vectors
  * ui/js/tests/timeline_model_golden.test.mjs runs against timeline_model.js.
- * If both suites pass, the C++ and JS timing math agree.
+ * If both suites pass, the C++ and JS timing math agree. The continuity
+ * re-anchor (heard_index.h) and the peak buckets (ClipNode::peakBucket)
+ * pin their mock twins the same way (ui/js/tests/continuity_origin
+ * .test.mjs, peak_density.test.mjs).
  */
 
 #include <juce_core/juce_core.h>
 
 #include <cmath>
 
+#include "../src/clip_node.h"
+#include "../src/heard_index.h"
 #include "../src/sequence.h"
 #include "../src/timing.h"
 #include "test_utils.h"
@@ -142,9 +147,10 @@ class TimingGoldenTests : public juce::UnitTest {
     }
 
     // Shared helper: build a TimeMap from a golden case's "segments".
-    auto mapFrom = [this](const juce::var& c, const juce::String& name) {
+    auto mapFrom = [this](const juce::var& c, const juce::String& name,
+                          const char* key = "segments") {
       TimeMap m;
-      if (auto* segs = c.getProperty("segments", {}).getArray()) {
+      if (auto* segs = c.getProperty(key, {}).getArray()) {
         for (auto& s : *segs) {
           auto* pair = s.getArray();
           expect(pair != nullptr && pair->size() == 2 &&
@@ -284,6 +290,61 @@ class TimingGoldenTests : public juce::UnitTest {
       int covered = 0;
       for (const auto& r : runs) covered += r.second;
       expectEquals(covered, 1000, "the runs cover the block exactly");
+    }
+
+    beginTest("the continuity re-anchor (nearest representative, SM-4)");
+    if (auto* cases =
+            root.getProperty("nearest_representative_cases", {}).getArray()) {
+      for (auto& c : *cases) {
+        const int64_t x = asInt64(c, "x"), ref = asInt64(c, "ref"),
+                      m = asInt64(c, "m");
+        expectEquals((juce::int64)celestrian::heard::nearestRepresentative(x, ref, m),
+                     (juce::int64)asInt64(c, "expected"),
+                     "nearestRepresentative(" + juce::String(x) + ", " +
+                         juce::String(ref) + ", " + juce::String(m) + ")");
+      }
+    }
+    if (auto* cases = root.getProperty("continuity_origin_cases", {}).getArray()) {
+      for (auto& c : *cases) {
+        const auto name = c.getProperty("name", "?").toString();
+        const TimeMap oldm = mapFrom(c, name, "oldSegments");
+        const TimeMap newm = mapFrom(c, name, "newSegments");
+        const int64_t got = celestrian::heard::continuityOriginFor(
+            oldm, newm, asInt64(c, "origin"), asInt64(c, "t0"),
+            asInt64(c, "oldFold"), asInt64(c, "newFold"));
+        expectEquals((juce::int64)got, (juce::int64)asInt64(c, "expected"), name);
+        // And the answer keeps the sounding sample sounding (or, when
+        // the origin stayed, the case says why).
+        const auto before = celestrian::timing::innerAt(
+            asInt64(c, "t0"), asInt64(c, "origin"), oldm, asInt64(c, "oldFold"));
+        const auto after = celestrian::timing::innerAt(
+            asInt64(c, "t0"), got, newm, asInt64(c, "newFold"));
+        if (!before.rest && newm.heardOffsetOf(before.inner) >= 0) {
+          expectEquals((juce::int64)after.inner, (juce::int64)before.inner,
+                       name + " (the sounding sample keeps sounding)");
+        }
+      }
+    }
+
+    beginTest("peak buckets (proportional bounds, N7)");
+    if (auto* cases = root.getProperty("peak_bucket_cases", {}).getArray()) {
+      for (auto& c : *cases) {
+        const int64_t total = asInt64(c, "total");
+        const int n = (int)asInt64(c, "n");
+        if (auto* buckets = c.getProperty("buckets", {}).getArray()) {
+          for (auto& b : *buckets) {
+            const int i = (int)(double)b[0];
+            const auto got = celestrian::ClipNode::peakBucket(i, total, n);
+            const juce::String name = "bucket " + juce::String(i) + " of " +
+                                      juce::String(n) + " over " +
+                                      juce::String(total);
+            expectEquals((juce::int64)got.start, (juce::int64)(double)b[1],
+                         name + " start");
+            expectEquals((juce::int64)got.end, (juce::int64)(double)b[2],
+                         name + " end");
+          }
+        }
+      }
     }
 
     beginTest("originQ (D-T3 physical/musical boundary projection)");

@@ -22,8 +22,10 @@ test.describe('Preferences (B8)', () => {
     test('gear opens; root shown; Change… calls the mock; Escape closes', async ({ page }) => {
         // A selected lane first: PANEL-scope Escape must close the
         // panel and leave the selection alone.
+        // Click the NAME: the rail's centre is a rail button, which
+        // swallows the click (the rail-click gotcha).
         const rail = page.locator('.lane[data-id="clip-1"] .lane-rail');
-        await rail.click();
+        await rail.locator('.rail-name').click();
         await expect(rail).toHaveClass(/selected/);
 
         const panel = page.locator('#prefs-panel');

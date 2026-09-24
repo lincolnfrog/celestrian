@@ -5,7 +5,9 @@
 
 #include "../src/audio_engine.h"
 #include "../src/clip_node.h"
+#include "../src/heard_index.h"
 #include "../src/stack_node.h"
+#include "scenario_utils.h"
 #include "test_utils.h"
 
 namespace celestrian {
@@ -1046,6 +1048,80 @@ class TimeMapRecordTests : public juce::UnitTest {
       engine.undo();
       expectEquals((juce::int64)nodeProp(bId, "origin"), (juce::int64)orgB,
                    "the second undo takes back gesture 1");
+    }
+
+    beginTest(
+        "ENGINE: the continuity re-anchor picks the NEAREST representative "
+        "- a playing slide never re-anchors, at any pass count (SM-4); a "
+        "trim moves by the least whole-Q amount; a group slide keeps its "
+        "subtree");
+    {
+      // seam-model SM-4 / release-jump F4 (2026-09-23): the solve
+      // answers the MOST RECENT pass, O + m·P for a pure slide, and the
+      // view seats from absolute tops — so the seat flipped with the
+      // parity of m. Mock twin: ui/js/tests/continuity_origin.test.mjs;
+      // the algebra is golden-pinned (continuity_origin_cases).
+      using scenario::Island;
+      using scenario::posmod;
+      constexpr int64_t Q = 20000;
+      // The raw transport clock (published: islandPos is zero-relative).
+      auto raw = [](Island& is) { return is.islandPos() + is.zero(); };
+      // Drive to O + a0 + h + m·P with m the next count ≥ now of the
+      // requested parity — the node equation's phase h, m passes on.
+      auto park = [&](Island& is, int64_t top, int64_t h, int64_t P,
+                      int parity) {
+        int64_t m = (raw(is) - top - h + P - 1) / P;
+        if (m < 0) m = 0;
+        if ((m & 1) != parity) ++m;
+        is.drive(top + h + m * P - raw(is));
+      };
+      auto sounding = [](Island& is, const juce::String& id) {
+        return heard::nodeInner(*is.nodePtr(id), is.islandPos() + is.zero(),
+                                is.engine.rootScope());
+      };
+      for (int parity : {1, 0}) {
+        const juce::String tag = parity ? " (odd passes)" : " (even passes)";
+        Island is;
+        is.record(Q);
+        is.record(2 * Q);
+        const juce::String b = is.record(10 * Q);
+        is.window(b, 0, 5 * Q);
+        const int64_t O = is.origin(b);
+        park(is, O, 5 * Q / 2, 5 * Q, parity);
+        const int64_t p0 = sounding(is, b);
+        expectEquals(p0, 5 * Q / 2, "parked at content 2.5Q" + tag);
+        is.window(b, Q, 6 * Q);  // a whole-Q slide
+        expectEquals(is.origin(b), O, "whole-Q slide: the origin stays" + tag);
+        expectEquals(sounding(is, b), p0, "…and the sounding sample sounds" + tag);
+        is.window(b, Q + 3 * Q / 10, 6 * Q + 3 * Q / 10);  // ⌥ free
+        expectEquals(is.origin(b), O, "free slide: the origin stays" + tag);
+        expectEquals(sounding(is, b), p0, "…and the sounding sample sounds" + tag);
+        // A head trim [1.3Q, 6.3Q) → [2.3Q, 6.3Q): the sounding sample
+        // is 1Q earlier in the pass. The least whole-Q move keeps it.
+        is.window(b, 2 * Q + 3 * Q / 10, 6 * Q + 3 * Q / 10);
+        const int64_t d = is.origin(b) - O;
+        expectEquals(posmod(d, Q), (int64_t)0, "trim: a whole number of Qs" + tag);
+        expect(std::abs(d) <= 2 * Q,
+               "trim: the least move (got " + juce::String(d / Q) + "Q)" + tag);
+        expectEquals(sounding(is, b), p0, "trim: the sounding sample sounds" + tag);
+      }
+      // A GROUP: the rider re-anchors the stack and moves its subtree
+      // (applySetsOrigin) — a slide of the stack's window moves nothing.
+      for (int parity : {1, 0}) {
+        const juce::String tag = parity ? " (odd passes)" : " (even passes)";
+        Island is;
+        is.record(Q);
+        const juce::String g = is.recordGroup(2, 4 * Q);
+        juce::StringArray mics;
+        is.clipIds(mics, g);
+        is.window(g, 0, 2 * Q);
+        const int64_t Og = is.iprop(g, "origin");
+        const int64_t Om = is.origin(mics[0]);
+        park(is, Og, 3 * Q / 2, 2 * Q, parity);
+        is.window(g, Q, 3 * Q);
+        expectEquals(is.iprop(g, "origin"), Og, "group slide: the stack stays" + tag);
+        expectEquals(is.origin(mics[0]), Om, "group slide: the members stay" + tag);
+      }
     }
 
     // === Phase 3, Stage 2: the fully-fractal clip kernel ===

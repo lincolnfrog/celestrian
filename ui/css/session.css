@@ -571,18 +571,21 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     gap: 6px 12px;
 }
 
-/* THE REGION PANEL (region_panel.js, 2026-09-11): the loop region's
-   overview + coarse editor, in its own grid row UNDER the SELECTED
-   clip/group. The whole raw take across the viewport's width: excluded
-   material dimmed, the kept region a bright box (drag = slide) with
-   bracket handles (drag = trim), inner cuts as bands, the amber sound
-   cursor in raw coordinates. Pinned to the VIEWPORT by JS (no
-   horizontal sticky — the webview lands a gutter inside the lane).
-   Unselected lanes have no panel and pay no space. */
+/* THE REGION PANEL (region_panel.js, 2026-09-11; zoomable since
+   2026-09-23): the loop region's overview + editor, in its own grid
+   row UNDER the SELECTED clip/group, spanning the WHOLE row (under the
+   rail too — its cell there is empty). Label | a column of the
+   whole-take OVERVIEW strip (the view as a box) over the zoomable
+   DETAIL strip: excluded material dimmed, the kept region a bright box
+   (drag = slide) with bracket handles (drag = trim), inner cuts as
+   bands, whole-Q gridlines, the amber sound cursor in raw coordinates.
+   Pinned to the VIEWPORT by JS at a constant width (no horizontal
+   sticky — the webview lands a gutter inside the lane). Unselected
+   lanes have no panel and pay no space. */
 .lane-region {
-    grid-column: 2;
+    grid-column: 1 / -1;
     position: relative;
-    height: 52px;
+    height: 68px;
     pointer-events: none;   /* only the panel itself is interactive */
     z-index: 4;
 }
@@ -614,6 +617,70 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     white-space: normal;
     overflow: hidden;
 }
+/* The label's two terms are the panel's two zoom stops: "loop NQ" =
+   fit the region (Z), "NQ take" = the whole take (⇧Z). */
+.region-term { cursor: pointer; border-radius: 3px; }
+.region-term:hover { color: var(--amber-bright); text-decoration: underline dotted; }
+.region-col {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+/* THE OVERVIEW: the whole take at the detail's gain, the kept region
+   tinted, cuts notched, the detail view as a draggable box. */
+.region-overview {
+    position: relative;
+    flex: 0 0 12px;
+    border-radius: 3px;
+    background: var(--lane-line);
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: none;
+}
+.region-overview canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: block;
+    opacity: 0.55;
+    pointer-events: none;
+}
+.region-ov-marks { position: absolute; inset: 0; pointer-events: none; }
+.region-ov-kept {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(243, 200, 119, 0.2);
+    box-shadow: inset 0 1px 0 var(--map-amber), inset 0 -1px 0 var(--map-amber);
+}
+.region-ov-kept.whole { background: rgba(243, 200, 119, 0.07); box-shadow: none; }
+.region-ov-cut {
+    position: absolute; top: 0; bottom: 0;
+    min-width: 2px;
+    background: rgba(12, 8, 5, 0.7);
+    box-shadow: inset 1px 0 0 var(--map-amber-40), inset -1px 0 0 var(--map-amber-40);
+}
+.region-ov-cursor {
+    position: absolute; top: 0; bottom: 0;
+    width: 1px;
+    background: var(--map-amber);
+    pointer-events: none;
+    transition: left 140ms linear;
+}
+.region-viewbox {
+    position: absolute; top: 0; bottom: 0;
+    min-width: 6px;
+    box-sizing: border-box;
+    border: 1px solid rgba(238, 242, 247, 0.75);
+    border-radius: 3px;
+    background: rgba(238, 242, 247, 0.07);
+    cursor: grab;
+}
+.region-viewbox:active { cursor: grabbing; }
+.region-viewbox-edge { position: absolute; top: 0; bottom: 0; width: 8px; cursor: ew-resize; }
+.region-viewbox-edge.start { left: -4px; }
+.region-viewbox-edge.end { right: -4px; }
+/* THE DETAIL strip: the take through the panel's own view. */
 .region-strip {
     position: relative;
     flex: 1 1 auto;
@@ -623,6 +690,24 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     overflow: hidden;
     touch-action: none;
 }
+/* Whole-Q gridlines (never finer — owner ruling 2026-09-23) and their
+   numbers once a Q is wide enough to carry one. */
+.region-grid { position: absolute; inset: 0; pointer-events: none; }
+.region-gridline {
+    position: absolute; top: 0; bottom: 0;
+    width: 1px;
+    background: var(--grid);
+}
+.region-gridline.major { background: var(--grid-q4); }
+.region-qlabel {
+    position: absolute;
+    top: 1px;
+    padding-left: 3px;
+    font-size: 8px;
+    line-height: 1;
+    color: var(--text-dim);
+    opacity: 0.8;
+}
 .region-wave {
     position: absolute;
     inset: 0;
@@ -630,7 +715,9 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     align-items: center;
     pointer-events: none;
 }
-.region-wave canvas { display: block; }
+/* flex: none — the visible slice's canvas is WIDER than the strip at
+   most zooms (whole peaks, translated to their exact raw position). */
+.region-wave canvas { display: block; flex: none; }
 .region-overlay {
     position: absolute;
     inset: 0;
@@ -669,11 +756,21 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .region-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
 .region-bracket.latent { opacity: 0.35; }
 .region-strip:hover .region-bracket.latent { opacity: 0.7; }
+/* A NARROW kept box (< 3 hit zones) wears its brackets OUTSIDE and
+   their hit zones grow outward only (N4): the box's whole width stays
+   grabbable for a slide. */
+.region-bracket.start.narrow { transform: translateX(-100%); border-radius: 4px 0 0 4px; }
+.region-bracket.end.narrow { transform: none; }
+.region-bracket.start.narrow::after { inset: -6px 0 -6px -14px; }
+.region-bracket.end.narrow::after { inset: -6px -14px -6px 0; }
 .region-dim {
     position: absolute; top: 0; bottom: 0;
     background: rgba(23, 19, 16, 0.62);
 }
-/* The raw-time sound cursor (amber, like every lane's heard cursor). */
+/* The raw-time sound cursor (amber, like every lane's heard cursor).
+   It lives in the strip, OUTSIDE the keyed overlay: made once, never
+   rebuilt (no unplaced cursor at raw 0) and never faded by a drag's
+   .drag-live — you hear the live splice, so you see where. */
 .region-cursor {
     position: absolute;
     top: 0;
@@ -1253,16 +1350,45 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     background: var(--map-amber-45);
     pointer-events: none;
 }
-/* EXPANDED MAP DRAG: while a handle drag has the lane opened to its
-   raw take, the stale heard chrome fades and the preview layer is the
-   ground truth. Opacity (never display): the grabbed handle must keep
-   its pointer capture. */
-.overlay-layer.drag-live > * { opacity: 0; }
-.overlay-layer.drag-live > .drag-preview-layer { opacity: 1; }
-/* …but the sound cursor lives through the gesture: you hear the live
-   splice, so you see where it is sounding. Above the preview layer's
-   dims. */
-.overlay-layer.drag-live > .win-cursor { opacity: 1; z-index: 3; }
+/* A MAP DRAG'S PREVIEW OWNS ITS OVERLAY (.drag-live, map_core.js):
+   the stale chrome under it hides and the preview layer is the ground
+   truth — from the grab until the held preview comes down with the
+   rebuild from the committed state. !important: the hover reveals (a
+   hovered lane's latent grips and loop-top chip, the paired grips at
+   rest, the panel's latent brackets) out-rank any plain rule here, and
+   the body under a drag is always hovered. Opacity (never display):
+   the grabbed handle must keep its pointer capture. At once, never
+   faded (a fading chip reads as a second one beside the preview). The
+   lane's sound cursor lives through the gesture: you hear the live
+   splice, so you see where it is sounding (the panel's .region-cursor
+   lives outside its overlay, so no rule here touches it). */
+.overlay-layer.drag-live > :not(.drag-preview-layer):not(.win-cursor) {
+    opacity: 0 !important;
+    transition: none !important;
+}
+/* The lane's heard cursor rides above the preview layer's dims. */
+.overlay-layer.drag-live > .win-cursor { z-index: 3; }
+/* After release (.drag-held) no capture is left to keep: neither the
+   hidden stale chrome nor the held preview takes a press. */
+.overlay-layer.drag-held * { pointer-events: none !important; }
+
+/* THE RECORDING GATE (view_model bandGate; time_maps.md §7): while any
+   take records or waits to start, every loop region is display-only.
+   The grips and seams the gate keeps drawing are .inert (map_bands);
+   the rest of the map chrome — window brackets, the heard chip's
+   bypass toggle, the panel's box and brackets — goes quiet under
+   #lanes.map-locked (patch.js). Nothing offers a grab. The .inert
+   grips/seams stay HOVERABLE (no listeners are attached) so their
+   "loop edits wait" tooltip can explain the gate; comp mode's "done"
+   chip is a view toggle, not a map edit, and stays live. */
+.overlay-layer > .inert { cursor: default !important; }
+#lanes.map-locked .overlay-layer > :is(.win-bracket,
+    .win-chip.toggle:not(.comp-done-chip),
+    .seam-handle, .cut-handle, .cut-chip, .cut-band, .region-kept,
+    .region-bracket):not(.inert) {
+    pointer-events: none !important;
+    cursor: default !important;
+}
 /* The preview draws RAW-frame geometry; on a lane it is only right
    once the lane shows raw material — its inspector view, or the
    same-scale REVEAL a drag opens (.revealing). Elsewhere (a heard lane
@@ -2212,6 +2338,11 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .loop-top-chip { opacity: 0.85; }
 .win-bracket.latent.trim-grip.paired { opacity: 0.55; }
 .lane-body:hover .win-bracket.latent.trim-grip.paired { opacity: 0.8; }
+/* An INERT grip (the recording gate) keeps its resting look but never
+   hover-reveals: a handle you cannot take must not offer itself. */
+.lane-body:hover .win-bracket.latent.trim-grip.inert { opacity: 0; }
+.win-bracket.latent.trim-grip.paired.inert,
+.lane-body:hover .win-bracket.latent.trim-grip.paired.inert { opacity: 0.55; }
 
 /* ===== 22. Sequencer (docs/sequencer.md - the fractal pad grid) ===== */
 /* The rail chip: ghost 'seq' until a sequence exists; lit map-amber

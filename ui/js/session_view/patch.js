@@ -15,6 +15,8 @@ import { patchRegionPanel } from './region_panel.js';
 import { animatorPoll, stopAnimator } from './animator.js';
 import { ensureDefaultSelection } from './selection.js';
 import { noteSeekVm } from './ruler_seek.js';
+import { flushTeardowns } from './gesture.js';
+import { maskPlayheadOverInspectors } from './playhead_mask.js';
 
 /* A recording playhead moving backwards by more than this many px is a
  * commit jump — snap, never sweep backwards. */
@@ -152,6 +154,14 @@ export function patchSessionView(vm, aux) {
         const body = row.querySelector(':scope > .lane-body');
         patchRegionPanel(row, lane, vm, aux, body ? body._peaks : null);
     });
+    // A finished map gesture's held preview comes down HERE — after its
+    // body / strip rebuilt from the committed state above, in the same
+    // frame, so nothing shows in between (gesture.js deferTeardown).
+    flushTeardowns();
+    // THE RECORDING GATE (view_model bandGate): while a take is live or
+    // pending every loop region is display-only; the lanes' map chrome
+    // takes no presses and shows no grab cursor (session.css).
+    ctx.els.lanes.classList.toggle('map-locked', !!vm.mapEditsLocked);
 
     ctx.els.emptyState.style.display = vm.lanes.length ? 'none' : 'block';
     // The ruler row measures LANES — with zero lanes it would be a
@@ -219,54 +229,11 @@ export function patchSessionView(vm, aux) {
             const hpx = h + 'px';
             if (ctx.els.playhead.style.height !== hpx) ctx.els.playhead.style.height = hpx;
         }
+        // The white line never crosses a row on another time axis: an
+        // inspector, a revealing lane, the region panel (playhead_mask).
         maskPlayheadOverInspectors();
     } else {
         stopAnimator();
         ctx.els.playhead.style.display = 'none';
-    }
-}
-
-/* Suppression of the white playhead over INSPECTOR lanes, made
- * paint-order-independent: the z-index scheme (.inspecting body z 7
- * over playhead z 6) relies on the lane painting OPAQUELY above the
- * line, and the webview compositor lets the line bleed through in
- * stray frames mid-drag. A vertical mask carves the
- * inspecting lanes' bands out of the line itself — no stacking, no
- * compositor, no bleed. */
-function maskPlayheadOverInspectors() {
-    const ph = ctx.els.playhead;
-    // Revealing lanes (the same-scale reveal, map_bands.js) run raw
-    // coordinates for the gesture's duration — masked the same way.
-    const bodies = document.querySelectorAll(
-        '.lane-body.inspecting, .lane-body.revealing');
-    if (!bodies.length) {
-        if (ph._masked) {
-            ph._masked = false;
-            ph.style.webkitMaskImage = '';
-            ph.style.maskImage = '';
-        }
-        return;
-    }
-    const pr = ph.getBoundingClientRect();
-    if (!(pr.height > 0)) return;
-    const bands = [...bodies].map(b => b.getBoundingClientRect())
-        .map(r => [Math.max(0, (r.top - pr.top) / pr.height * 100),
-                   Math.min(100, (r.bottom - pr.top) / pr.height * 100)])
-        .filter(([a, b]) => b > a)
-        .sort((x, y) => x[0] - y[0]);
-    let prevPct = 0;
-    const stops = [];
-    for (const [a, b] of bands) {
-        stops.push('black ' + prevPct + '%, black ' + a + '%, ' +
-                   'transparent ' + a + '%, transparent ' + b + '%');
-        prevPct = b;
-    }
-    stops.push('black ' + prevPct + '%, black 100%');
-    const img = 'linear-gradient(to bottom, ' + stops.join(', ') + ')';
-    if (ph._maskImg !== img) {
-        ph._maskImg = img;
-        ph._masked = true;
-        ph.style.webkitMaskImage = img;
-        ph.style.maskImage = img;
     }
 }

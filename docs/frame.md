@@ -29,12 +29,14 @@ from*.
 Take the lanes in the order they are shown. The first lane's top is
 the top. Each next lane pulls the zero forward by whole cycles-so-far
 until its own top lies inside the current cycle: it lands at the left
-edge when it can, and otherwise at its offset, wrap ghosted.
+edge when it can, and otherwise at its offset, wrap ghosted. A top is
+read on the Q grid line **nearest** it.
 
 ```text
-Z₁ = top₁                                   (on the Q grid)
-Zₖ = Zₖ₋₁ + Cₖ₋₁ · ⌊(topₖ − Zₖ₋₁) / Cₖ₋₁⌋   Cₖ₋₁ = lcm(Q, periods of lanes 1..k−1)
-topₖ = originₖ + a0ₖ;  a lane's offset in the frame = (topₖ − Z) mod periodₖ
+Z₁ = ⟦top₁⟧
+Zₖ = Zₖ₋₁ + Cₖ₋₁ · ⌊(⟦topₖ⟧ − Zₖ₋₁) / Cₖ₋₁⌋   Cₖ₋₁ = lcm(Q, periods of lanes 1..k−1)
+topₖ = originₖ + a0ₖ;  ⟦x⟧ = the Q grid line nearest x
+a lane's offset in the frame = (topₖ − Z) mod periodₖ
 ```
 
 - A group with a window or a song seats as **one** lane (its pass is
@@ -56,7 +58,25 @@ topₖ = originₖ + a0ₖ;  a lane's offset in the frame = (topₖ − Z) mod p
 
 The view model does this (`seatFrameZero`, `ui/js/view_model.js`) once,
 for the mock and the engine alike. The map-gesture pin holds the zero
-for the length of a drag, as it holds the frame width.
+for the length of a drag, as it holds the frame width — and past the
+release until the gesture's final commit settles (capped at the
+commit hold, `COMMIT_HOLD_MAX_MS`), so no poll between the release
+and the engine's answer seats an unpinned frame from the last *live*
+geometry.
+
+**Why nearest (2026-09-23).** A map drag pins the zero, and its
+release must show the picture the pin showed. Read by *floor*, a top a
+hair before a grid line re-seated the whole frame one Q earlier the
+moment the pin dropped — every lane and the cursor jumped a Q — while
+the same slide a hair after the line moved nothing (the field video's
+−0.15Q ⌥-slide). Read by the nearest line, any slide within **±½Q**
+releases in place: only the edited loop's seam moves. The boundary is
+now at ½Q either way: a top more than ½Q past a line seats on the
+*next* line, so the loop's first stretch shows as a short pickup at
+the lane's right end instead of a long wrap tail at its left — and a
+seating lane slid ½–1Q late re-seats at release (the accepted trade
+until an edit hold lands). The §2 pictures have every top on the grid
+and are unchanged. Pinned by `ui/js/tests/seat_nearest.test.mjs`.
 
 ## 2. Pictures
 
@@ -136,6 +156,7 @@ Everything else is the picture the old rules produced, now derived.
 | "Editing one lane never moves the others" (2026-09-10) | kept for earlier lanes; later lanes follow (§5) |
 | "The grid you see is the grid you hear" (2026-09-09) | kept: a song owns the frame, and its zero is the island zero on both threads |
 | Q1 / S11 "Q survives its creator" | kept: Q and its zero are the island's, not a lane's |
+| A top seats on its nearest grid line, not the one below (2026-09-23, loop-region phase 1) | §1: a sub-½Q slide releases in place |
 
 ## 7. Pending
 

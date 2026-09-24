@@ -15,20 +15,23 @@
 
 import { ctx } from './context.js';
 import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ, tickSetSig } from './sv_util.js';
-import { drawWaveform, drawMidiTile, MIDI_VELOCITY_LANE } from '../canvas_renderer.js';
+import { drawWaveform, drawEnvelope, drawMidiTile, mappedColumns, peaksBoost,
+         canvasCssSize, MIDI_VELOCITY_LANE } from '../canvas_renderer.js';
 import { sliceNotesToTile } from '../midi_notes.js';
 import { generateCompositeWaveform } from '../composite_waveform.js';
 import { calculateStackLCM } from '../timeline_model.js';
 import { oneTakeDuration } from '../view_model.js';
 import { liveBoost, PEAKS_PER_SECOND } from '../live_peaks.js';
 import { mapOffset } from '../time_map.js';
+import { posMod } from '../math_utils.js';
 import { correctPosition } from '../playhead_clock.js';
 import { isAnimRunning } from './animator.js';
 import { buildWindowDims, dimComplementInto } from './dims.js';
 import { wireBandCreate, appendCutBands, appendTrimGrips, patchRevealCursor }
     from './map_bands.js';
 import { wireWindow } from './window_edit.js';
-import { isOverlayFrozen } from './gesture.js';
+import { isOverlayFrozen, isGestureLive } from './gesture.js';
+import { mapDragPinQ } from './drag_pin.js';
 import { appendCompCells, patchCompCanvases, compKey } from './comp_cells.js';
 
 /* Surplus rep tiles fade out over this long before removal (instant
@@ -39,6 +42,13 @@ const EXIT_FADE_MS = 220;
  * the exit fade — it covers a re-render of the SAME audio. */
 const CROSSFADE_MS = 240;
 const CROSSFADE_REMOVE_MS = 320;
+/* After the last sign of a map edit (mapEditInFlight) its re-layouts
+ * keep arriving for a poll or two — the release commit's answer, the
+ * frame settling on unpin — and still swap in place (≈ 8 polls). */
+const EDIT_SETTLE_MS = 400;
+/* A heard tile's edge within this many periods of a whole period IS
+ * that period boundary (startQ / P carries float noise). */
+const SPAN_SNAP = 1e-9;
 /* Waveform draw height fallback / vertical inset (px). */
 const BODY_H_FALLBACK_PX = 58;
 const BODY_V_INSET_PX = 6;
@@ -79,27 +89,32 @@ function layersOf(body) {
  *   live        — the recording bar: fixed px-per-slot scale + the
  *                 ratcheting liveBoost normalization
  *   pxPerSlot   — live mode's fixed px per peak slot (0 = fit)
- *   src         — window echoes: a LIST of [startFrac, endFrac]
- *                 content ranges to concatenate (phase 3: a
- *                 multi-segment map concatenates its slices, the
- *                 heard-time picture). Sliced only on redraw; identity
- *                 tracking stays on the ORIGINAL peaks array so polls
- *                 don't churn.
+ *   map         — a heard tile's mapping (tileMap): `src`, the LIST of
+ *                 [startFrac, endFrac] content ranges it plays in heard
+ *                 order (phase 3: a multi-segment map concatenates its
+ *                 slices, the heard-time picture); `rotFrac`, where the
+ *                 loop's heard top sits in the period (heard tiles sit
+ *                 on the frame grid); `u0`/`u1`, the tile's window onto
+ *                 its period. Sampled only on redraw; identity tracking
+ *                 stays on the ORIGINAL peaks array so polls don't
+ *                 churn. Null = the whole take.
  *   isGhost     — EVERY ghost tile is an audible repetition ("ghosts
  *                 show what sounds") and draws in the cool ECHO tone —
  *                 warm hues are reserved for material (the take tile /
  *                 the live bar).
- *   rotFrac     — phase rotation: where the loop's heard top sits
- *                 within the tile (heard tiles sit on the frame grid).
+ *   crossfade   — false while a map edit is in flight
+ *                 (mapEditInFlight): a new peaks identity then swaps in
+ *                 place instead of fading the old canvas over it.
  *   midi        — a MIDI lane's notes (docs/vst3.md §11): {notes (Q
  *                 units, midi_notes.notesFromRows), range (the take's
  *                 pitch fit), intrinsicQ}. The tile paints note bars
- *                 instead of the envelope; `src` and `rotFrac` slice
- *                 the notes exactly as they slice peaks. Identity-
- *                 tracked on the notes array like peaks.
+ *                 instead of the envelope; `map` places the notes
+ *                 exactly as it samples peaks. Identity-tracked on the
+ *                 notes array like peaks.
  */
 function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
-                              live, pxPerSlot, src, isGhost, rotFrac, midi }) {
+                              live, pxPerSlot, map, isGhost,
+                              crossfade = true, midi }) {
     let canvas = div.firstElementChild;
     if (midi && midi.notes && midi.notes.length) peaks = midi.notes;
     if (!peaks || !peaks.length) {
@@ -115,22 +130,28 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
         div.appendChild(canvas);
     }
     // Peaks arrays are replaced on refetch (new ref) and mutated in place
-    // while recording (same ref, growing length) — both covered here
+    // while recording (same ref, growing length) — both covered here.
+    // The map inputs key at FULL precision: the sampler is exact, so a
+    // rounded key would leave a sub-1e-4 edit drawn stale.
     const dk = peaks.length + ':' + Math.round(cssWidth) + ':' +
         Math.round(cssHeight) + ':' + isComposite + ':' + !!live + ':' +
         Math.round((pxPerSlot || 0) * 1000) + ':' +
-        (src ? src.map(r => r[0].toFixed(4) + '-' + r[1].toFixed(4)).join(',') : '') +
-        ':' + !!isGhost + ':' + ((rotFrac || 0).toFixed(4)) +
+        (map ? JSON.stringify(map) : '') +
+        ':' + !!isGhost +
         (midi ? ':m' + midi.range.lo + '-' + midi.range.hi + ':' +
-            (midi.intrinsicQ || 0).toFixed(4) : '');
+            (midi.intrinsicQ || 0) : '');
     if (div._peaksRef === peaks && div._dk === dk) return false;
 
     // CONTENT SWAP → CROSS-FADE: a new peaks array replacing an old one
     // (live meter peaks → fetched waveform at commit; composite regen)
     // is a re-rendering of the same audio with features shifted a few
     // px — a hard swap reads as squish/stretch. The old canvas fades
-    // out over the new one.
-    if (!live && div._peaksRef && div._peaksRef !== peaks && canvas.width > 0) {
+    // out over the new one. NOT under a map edit (crossfade false):
+    // there the new identity is the edit itself (a member's splice
+    // regenerating its group's composite), and a fading old canvas is
+    // a double image on every live commit (flash-chrome F9).
+    if (wantsCrossfade({ live, crossfade, prev: div._peaksRef, peaks,
+                         drawn: canvas.width > 0 })) {
         const old = canvas;
         old.style.transition = 'opacity ' + CROSSFADE_MS + 'ms linear';
         requestAnimationFrame(() => { old.style.opacity = '0'; });
@@ -140,59 +161,235 @@ function drawRepCanvas(div, { peaks, cssWidth, cssHeight, isComposite,
     }
     div._peaksRef = peaks;
     div._dk = dk;
+    // Pinned, like the live bar: the div's transition reveals/clips
+    // the canvas — stretching it mid-morph would distort the content
+    canvas.style.width = Math.round(cssWidth) + 'px';
     if (live) {
         // Smoothed ratcheting normalization (live_peaks.liveBoost):
         // converges to the committed boost, so commit doesn't pop. The
         // FIXED px-per-slot scale pins every drawn peak to its slot's
         // pixels for the life of the take (poolColumns fixed mode).
         div._liveBoost = liveBoost(div._liveBoost, peaks);
-        canvas.style.width = Math.round(cssWidth) + 'px';
         drawWaveform(canvas, peaks, { cssWidth, cssHeight,
             fixedBoost: div._liveBoost, pxPerPeak: pxPerSlot || undefined });
-    } else if (midi) {
-        if (div._liveBoost !== undefined) delete div._liveBoost;
-        canvas.style.width = Math.round(cssWidth) + 'px';
-        // The piano-roll tile: the same content slicing (srcSegs,
-        // rotation) the envelope gets, then bars instead of peaks.
+        return true;
+    }
+    if (div._liveBoost !== undefined) delete div._liveBoost;
+    if (midi) {
+        // The piano-roll tile: the envelope's exact mapping (srcSegs,
+        // rotation, the tile's window onto its period), then bars
+        // instead of peaks.
         drawMidiTile(canvas,
-            sliceNotesToTile(midi.notes, midi.intrinsicQ, src, rotFrac || 0),
+            map ? sliceNotesToTile(midi.notes, midi.intrinsicQ, map.src,
+                                   map.rotFrac, map)
+                : sliceNotesToTile(midi.notes, midi.intrinsicQ, null),
             { cssWidth, cssHeight, isEcho: !!isGhost, range: midi.range,
               velocityLane: MIDI_VELOCITY_LANE });
+        return true;
+    }
+    // Tone follows GHOSTNESS, not segment-ness: a heard-view lane's
+    // bright tile carries a map (it draws the window segment) but is
+    // the sounding material — warm tape, not the cool echo tone. ONE
+    // GAIN PER TAKE (peaksBoost): every committed tile of a take —
+    // whole, heard slice, repeat — draws at the whole take's boost, so
+    // a loud hit entering or leaving a loop never rescales the lane.
+    const opts = { cssWidth, cssHeight, isComposite, isEcho: !!isGhost,
+                   fixedBoost: peaksBoost(peaks) };
+    if (map) {
+        // Map content draws only its segment(s), sampled PER COLUMN
+        // through the map (mappedColumns — exact, never whole-peak
+        // slices rotated and refit to the tile).
+        drawEnvelope(canvas,
+            sharedTileColumns(peaks, canvasCssSize(canvas, opts).cssW, map),
+            opts);
     } else {
-        if (div._liveBoost !== undefined) delete div._liveBoost;
-        // Pinned, like the live bar: the div's transition reveals/clips
-        // the canvas — stretching it mid-morph would distort the content
-        canvas.style.width = Math.round(cssWidth) + 'px';
-        // Map content draws only its segment(s) — `src` is a LIST of
-        // content ranges (phase 3: a multi-segment map concatenates its
-        // slices, the heard-time picture); all ghosts draw in the echo
-        // tone (audible repetitions — warm is for material).
-        let drawPeaks = peaks;
-        if (src) {
-            const n = peaks.length;
-            drawPeaks = [];
-            for (const [f0, f1] of src) {
-                const a = Math.max(0, Math.floor(f0 * n));
-                const b = Math.min(n, Math.max(a + 1, Math.ceil(f1 * n)));
-                for (let i = a; i < b; i++) drawPeaks.push(peaks[i]);
-            }
-            // Phase rotation (heard tiles sit on the frame grid; the
-            // loop's top appears at rotFrac of the tile — every sample
-            // stays at its true island phase with no wrap sliver).
-            const m = drawPeaks.length;
-            const rotN = Math.round(((rotFrac || 0) % 1) * m);
-            if (rotN > 0 && m > 1) {
-                drawPeaks = drawPeaks.slice(m - rotN)
-                    .concat(drawPeaks.slice(0, m - rotN));
-            }
-        }
-        // Tone follows GHOSTNESS, not segment-ness: a heard-view lane's
-        // bright tile carries `src` (it draws the window segment) but is
-        // the sounding material — warm tape, not the cool echo tone.
-        drawWaveform(canvas, drawPeaks,
-            { cssWidth, cssHeight, isComposite, isEcho: !!isGhost });
+        drawWaveform(canvas, peaks, opts);
     }
     return true; // redrew
+}
+
+/* The last heard tile's columns: the full repeats of one lane draw the
+ * same columns (their windows differ by whole periods only), so a
+ * lane of twenty repeats samples once per redraw, not twenty times. */
+let columnMemo = null;
+
+/** mappedColumns, shared across tiles whose window onto the period
+ * has the same phase and span (drawEnvelope never mutates columns). */
+function sharedTileColumns(peaks, cssW, map) {
+    // peaks.length: an array growing in place keeps its identity.
+    const key = cssW + ':' + peaks.length + ':' + JSON.stringify([map.src,
+        map.rotFrac, posMod(map.u0, 1), map.u1 - map.u0]);
+    if (columnMemo && columnMemo.peaks === peaks && columnMemo.key === key) {
+        return columnMemo.cols;
+    }
+    const cols = mappedColumns(peaks, cssW, map);
+    columnMemo = { peaks, key, cols };
+    return cols;
+}
+
+/**
+ * Should a content swap cross-fade? Only a committed tile whose PEAKS
+ * IDENTITY changed under an already-drawn canvas, and never while a
+ * map edit is in flight (`crossfade` false). Pure; exported for the
+ * tests.
+ */
+export function wantsCrossfade({ live, crossfade, prev, peaks, drawn }) {
+    return !live && crossfade !== false && !!prev && prev !== peaks && !!drawn;
+}
+
+/**
+ * A heard tile's window onto its loop's period: [startQ, endQ) / P.
+ * Heard tiles tile from the frame's 0 at the heard period
+ * (heardViewFields: unrollReps with offsetQ 0), and srcTopFrac is
+ * measured on that same grid, so a full tile spans exactly one period
+ * and a tile the frame clips (a pinned frame mid-trim) shows the
+ * LEADING part of its period — never the whole period squeezed into
+ * the clipped width, which the old whole-array stretch drew. Edges
+ * within SPAN_SNAP of a whole period snap to it (startQ / P carries
+ * float noise that would otherwise read as a sliver of the previous
+ * period). Exported for the tests.
+ *
+ * @param {{startQ: number, endQ: number}} rep
+ * @param {number} periodQ the heard period (lane.periodQ); ≤ 0 falls
+ *     back to the tile's own length (one full period)
+ * @returns {{u0: number, u1: number}}
+ */
+export function tileSpan(rep, periodQ) {
+    const P = periodQ > 0 ? periodQ : rep.endQ - rep.startQ;
+    if (!(P > 0)) return { u0: 0, u1: 1 };
+    const snap = u => {
+        const k = Math.round(u);
+        return Math.abs(u - k) < SPAN_SNAP ? k : u;
+    };
+    return { u0: snap(rep.startQ / P), u1: snap(rep.endQ / P) };
+}
+
+/**
+ * The tile's CSS width (px) as patchLaneBody lays it out: its share of
+ * the body, never thinner than MIN_TILE_PX. With canvasCssSize this is
+ * the column count the tile's sampler fills. Exported for the tests.
+ */
+export function tileCssWidth(bodyW, rep, cycleQ) {
+    return Math.max(MIN_TILE_PX, bodyW * (rep.endQ - rep.startQ) / cycleQ);
+}
+
+/**
+ * A rep's MAPPING for the samplers (mappedColumns / sliceNotesToTile):
+ * its content slices (`srcSegs`), the loop top's rotation
+ * (`srcTopFrac`) and its window onto the heard period (tileSpan) — or
+ * null for a tile that draws the whole take.
+ *
+ * @param {Object} rep a view-model rep
+ * @param {number} periodQ the lane's heard period (lane.periodQ)
+ * @returns {?{src: Array<[number, number]>, rotFrac: number, u0: number, u1: number}}
+ */
+export function tileMap(rep, periodQ) {
+    if (!rep.srcSegs) return null;
+    return { src: rep.srcSegs, rotFrac: rep.srcTopFrac || 0,
+             ...tileSpan(rep, periodQ) };
+}
+
+/**
+ * The pooled column amplitudes a committed HEARD tile draws (before
+ * the take's boost and the envelope shaping) — drawRepCanvas's own
+ * path (tileMap → the shared mappedColumns), exported so the invariant
+ * test (heard_tile_sampler.test.mjs) measures exactly what the lane
+ * paints.
+ */
+export function heardTileColumns(peaks, rep, periodQ, cssW) {
+    return sharedTileColumns(peaks, cssW, tileMap(rep, periodQ));
+}
+
+/* Each lane's map geometry at the last patch (mapGeometry, by lane id)
+ * and the performance.now() of the last sign of a map edit. Module
+ * state, not per-body: a group's map edit re-lays its MEMBERS' tiles
+ * too, and their rows see no freeze or hold of their own. */
+let lastGeometry = null;
+let editSeenAt = -Infinity;
+const vmsSeen = new WeakSet();
+
+/** lane id → its map geometry (what a map edit changes). */
+function mapGeometry(vm) {
+    const out = new Map();
+    for (const l of vm.lanes || []) {
+        out.set(l.id, JSON.stringify([l.bandSegs || null, l.mapSegs || null]));
+    }
+    return out;
+}
+
+/** Did any lane present in both views change its map geometry? Lanes
+ * appearing or leaving (a new track, a fold, a delete) are not map
+ * edits — their re-lays keep the settle fade. */
+function geometryChanged(prev, next) {
+    for (const [id, g] of next) {
+        if (prev.has(id) && prev.get(id) !== g) return true;
+    }
+    return false;
+}
+
+/**
+ * IS A MAP EDIT IN FLIGHT? (flash-chrome F9, 2026-09-23.) True while
+ * any map/window gesture is live (gesture.js — every beginGesture site
+ * is one), the frame pin is held (drag_pin.js), this lane's overlay or
+ * its region panel's strip is frozen or held for a commit, or the map
+ * geometry of any lane changed since the last patch (a ← / → nudge, an
+ * undo, the release commit landing) — and for EDIT_SETTLE_MS after
+ * the last such sign. While true, patchLaneBody removes surplus tiles
+ * at once and content swaps skip the cross-fade: each live splice
+ * re-lays the heard tiles, and a fading copy of the old layout over
+ * the new one is a double image on every whole-Q trim step.
+ *
+ * @param {?Element} row the lane row (its region panel's strip is read)
+ * @param {?Element} body the lane body
+ * @param {?Object} vm the view model being patched (its lanes' map
+ *     geometry is compared once per view model)
+ * @param {number} [now] performance.now() (injectable for the tests)
+ * @returns {boolean}
+ */
+export function mapEditInFlight(row, body, vm, now = performance.now()) {
+    if (vm && !vmsSeen.has(vm)) {
+        vmsSeen.add(vm);
+        const geometry = mapGeometry(vm);
+        if (lastGeometry && geometryChanged(lastGeometry, geometry)) {
+            editSeenAt = now;
+        }
+        lastGeometry = geometry;
+    }
+    const strip = row && row._regionStrip;
+    if (isGestureLive() || mapDragPinQ() !== null ||
+        (body && isOverlayFrozen(body)) || (strip && isOverlayFrozen(strip))) {
+        editSeenAt = now;
+    }
+    return now - editSeenAt < EDIT_SETTLE_MS;
+}
+
+/**
+ * Retire the surplus rep divs past the first `keep` live ones: FADE
+ * them out through the settle (instant removal while the surviving
+ * tile is still mid-morph leaves a momentary gap — the group lane's
+ * "squish" at commit, a DOM-layer effect, not a state one) — or, while
+ * a map edit is in flight (`instant`), remove them at once (the fade
+ * is a double image of the old layout over each live re-layout).
+ * Returns the kept divs. Exported for the tests.
+ */
+export function retireSurplusTiles(repsL, keep, instant) {
+    const live = [...repsL.children].filter(d => !d._exiting);
+    for (let i = live.length - 1; i >= keep; i--) {
+        const d = live[i];
+        if (instant) {
+            d.remove();
+            continue;
+        }
+        d._exiting = true;
+        d.style.opacity = '0';
+        setTimeout(() => d.remove(), EXIT_FADE_MS);
+    }
+    // A fade begun just before the edit goes now too (its timer's
+    // remove() of a detached node is a no-op).
+    if (instant) {
+        for (const d of [...repsL.children]) if (d._exiting) d.remove();
+    }
+    return live.slice(0, keep);
 }
 
 /** Keep `container`'s children to exactly the built descriptors. */
@@ -299,18 +496,12 @@ export function patchLaneBody(row, lane, vm, aux) {
         }]
         : lane.reps;
 
-    // Surplus tiles FADE OUT through the settle instead of vanishing:
-    // instant removal while the surviving tile is still mid-morph
-    // leaves a momentary gap (the group lane's "squish" at commit — a
-    // DOM-layer effect, not a state one).
-    const live = [...repsL.children].filter(d => !d._exiting);
-    for (let i = live.length - 1; i >= tiles.length; i--) {
-        const d = live[i];
-        d._exiting = true;
-        d.style.opacity = '0';
-        setTimeout(() => d.remove(), EXIT_FADE_MS);
-    }
-    const rows = live.slice(0, tiles.length);
+    // Surplus tiles FADE OUT through the settle instead of vanishing —
+    // except under a map edit, where they go at once and content swaps
+    // skip the cross-fade (mapEditInFlight: each live splice re-lays
+    // the tiles, and a fade is a double image of the old layout).
+    const editing = mapEditInFlight(row, body, vm);
+    const rows = retireSurplusTiles(repsL, tiles.length, editing);
     tiles.forEach((rep, i) => {
         let div = rows[i];
         if (!div) {
@@ -350,8 +541,7 @@ export function patchLaneBody(row, lane, vm, aux) {
         // poll and the bar would vibrate (worst after a frame extension
         // shrinks the scale). The bar div's edge still advances
         // smoothly, ≤1 slot ahead of the canvas.
-        let cssW = Math.max(MIN_TILE_PX,
-            bodyW * (rep.endQ - rep.startQ) / cycleQ);
+        let cssW = tileCssWidth(bodyW, rep, cycleQ);
         let pxPerSlot = 0;
         if (rep.bar && peaks && aux.sampleRate) {
             const slotQ = aux.sampleRate / (PEAKS_PER_SECOND * aux.vmQuantum);
@@ -361,9 +551,11 @@ export function patchLaneBody(row, lane, vm, aux) {
         const redrew = drawRepCanvas(div, {
             peaks: tilePeaks, cssWidth: cssW, cssHeight: bodyH,
             isComposite: lane.kind === 'group', live: !!rep.bar, pxPerSlot,
-            src: rep.srcSegs || null,
+            // The heard period (lane.periodQ) frames the tile's window
+            // onto it — a frame-clipped tile shows its leading part.
+            map: tileMap(rep, lane.periodQ),
             isGhost: !!rep.ghost,
-            rotFrac: rep.srcTopFrac || 0,
+            crossfade: !editing,
             // Notes slice on the RAW take (srcSegs are fractions of it),
             // not the heard period a windowed lane's intrinsicQ carries
             midi: midi ? { notes: midi.notes, range: midi.range,

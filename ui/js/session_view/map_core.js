@@ -6,8 +6,9 @@
  *   - the LANE (map_bands.js): trim grips and seam handles on the
  *     heard view, dragged at the lane's own scale (the same-scale
  *     reveal, 2026-09-11);
- *   - the REGION PANEL (region_panel.js): the whole raw take under the
- *     selected lane, with the kept region as a box you trim, slide,
+ *   - the REGION PANEL (region_panel.js): the raw take under the
+ *     selected lane through the panel's own zoomable view
+ *     (panel_view.js), with the kept region as a box you trim, slide,
  *     and cut.
  * Both build their gesture out of the pieces here: the `st` band
  * state, the whole-Q commit path (with the gesture-scoped undo latch),
@@ -18,7 +19,8 @@
 
 import { ctx } from './context.js';
 import { el, pct, fmtQ } from './sv_util.js';
-import { beginGesture, holdOverlay, releaseOverlay } from './gesture.js';
+import { beginGesture, holdOverlay, releaseOverlay, afterSettled,
+         deferTeardown, runTeardown } from './gesture.js';
 import { buildWindowDims } from './dims.js';
 import { applyCut, healCut, resizeCutTarget, slideCutTarget, segsPeriod,
          trimBoundTo, trimBoundForPeriod, slideSegs } from '../map_edit.js';
@@ -45,10 +47,11 @@ export const CUT_HANDLE_W_PX = 14;
 const BADGE_EDGE_FRAC = 0.15;
 /* The smallest cut a resize preview may show (Q). */
 export const MIN_CUT_Q = 0.05;
-/* Post-commit overlay hold cap (window_edit.js twin): a poll in flight
- * at release still carries the pre-commit map and would snap the seams
+/* Post-commit overlay hold cap (window_edit.js twin; the gesture
+ * runner owns it — the frame pin shares it): a poll in flight at
+ * release still carries the pre-commit map and would snap the seams
  * back for a tick on a slow bridge. */
-export const COMMIT_HOLD_MAX_MS = 1500;
+export { COMMIT_HOLD_MAX_MS } from './gesture.js';
 /* The engage gate: a press becomes a drag after this much travel or
  * this long a hold — a sloppy grab-release must not edit. */
 export const ENGAGE_SLOP_PX = 4;
@@ -57,10 +60,7 @@ export const ENGAGE_HOLD_MS = 160;
 /** Hold an overlay until a final commit settles (or the cap). */
 export function holdUntilSettled(host, p) {
     holdOverlay(host);
-    let done = false;
-    const settle = () => { if (done) return; done = true; releaseOverlay(host); };
-    Promise.resolve(p).then(settle, settle);
-    setTimeout(settle, COMMIT_HOLD_MAX_MS);
+    afterSettled(p, () => releaseOverlay(host));
 }
 
 /** Cut-length chip content: whole-Q lengths print bare, fractional
@@ -89,7 +89,10 @@ export const makeHealMenu = (st, cut) => ev => {
  *   segs     — covered set (Q, raw-take coords); null = full span
  *   totalQ   — raw take extent (Q)
  *   anchorQ  — the lane's content-frame origin (take tile start)
- *   editable — cuts/trims allowed (Q established, not recording)
+ *   editable — cuts/trims allowed (Q established, no take live — the
+ *              recording gate, view_model bandGate)
+ *   locked   — editable but for the recording gate: the chrome draws
+ *              INERT (visible, never grabbable)
  *   heard    — lane frames HEARD time (cuts render as seams, the
  *              pointer maps through the segments)
  *   periodQ  — audible period (Q): the published bandPeriodQ, or the
@@ -105,6 +108,7 @@ export function bandState(lane, vm, cycleQ) {
         totalQ,
         anchorQ: lane.takeStartQ || 0,
         editable: !!lane.bandEditable,
+        locked: !!lane.bandLocked,
         heard: !!lane.bandHeard,
         periodQ: lane.bandPeriodQ ||
             ((lane.bandSegs && lane.bandSegs.length)
@@ -204,8 +208,8 @@ export function mapDbg(a, rec) {
 /* ---------- the raw-frame preview ---------- */
 
 /** Percent position of raw Q `q` inside a view {q0, spanQ}: the panel
- * views the whole take ({0, totalQ}); the lane reveal views a
- * frame-sized slice of it at the lane's own scale. */
+ * views its own zoomable slice of the take (panel_view.js); the lane
+ * reveal views a frame-sized slice of it at the lane's own scale. */
 export const viewPct = (q, view) => pct(q - view.q0, view.spanQ);
 
 /** The raw-frame drag preview — TWO-LAYER FEEDBACK (the bracket law):
@@ -301,11 +305,11 @@ export function renderRawPreview(o, st, segsPreview, active, follow, view) {
     }
 }
 
-/** Tear the preview down (gesture end). */
+/** Tear the preview down (its gesture's teardown — see runRawDrag). */
 export function clearRawPreview(o) {
     const layer = o.querySelector(':scope > .drag-preview-layer');
     if (layer) layer.remove();
-    o.classList.remove('drag-live');
+    o.classList.remove('drag-live', 'drag-held');
 }
 
 /* ---------- the three move laws ----------
@@ -476,7 +480,9 @@ export function slideMoveFn(st, segs, grabQ) {
  *               geometry under both clicks. false: engaged at once.
  *     onEngage, () called once when the gesture becomes real
  *     onPointer,(mv) every move after engage (autoscroll hooks)
- *     onRelease,(committed) after the preview is torn down
+ *     onRelease,(committed, engaged) at the pointer's end, once the
+ *               final commit is sent (the preview may still be up)
+ *     onTeardown,() when the preview comes down: see THE HELD PICTURE
  *   }) → { live, reapply }
  *
  * Live commits stream (throttled, audible) while dragging; release
@@ -485,10 +491,19 @@ export function slideMoveFn(st, segs, grabQ) {
  * reached the engine, so doing nothing would keep the preview.
  * `reapply()` re-evaluates the pointer's last position against the
  * CURRENT view (the reveal calls it while it pans under a still hand).
+ *
+ * THE HELD PICTURE: after release the preview STAYS — redrawn at the
+ * geometry just sent, still .drag-live over the stale chrome — until
+ * the commit settles and the next patch rebuilds the hosts from the
+ * committed state; that patch tears it down (gesture.js deferTeardown)
+ * in the same frame. Torn down at pointerup, the held overlay would
+ * show the PRE-drag chrome for a round trip, then jump. The frame pin
+ * holds for the same span (onEnd hands the gesture its commit).
  */
 export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
                                         engage = true, onEngage = null,
-                                        onPointer = null, onRelease = null }) {
+                                        onPointer = null, onRelease = null,
+                                        onTeardown = null }) {
     const downX = ev.clientX;
     let engaged = false;
     let last = null;
@@ -515,6 +530,8 @@ export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
         if (engaged || !o.isConnected || !g.live()) return;
         engaged = true;
         mapDbg('engage', {});
+        // An earlier gesture's held preview on this overlay gives way.
+        runTeardown(o);
         for (const host of freeze) g.freeze(host);
         g.pin();  // freeze the SHARED frame + fold (drag_pin.js)
         if (onEngage) onEngage();
@@ -541,23 +558,38 @@ export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
         },
         onEnd: committed => {
             clearTimeout(holdT);
-            if (!engaged) { if (onRelease) onRelease(false, false); return; }
-            mapDbg('up', {});
-            clearRawPreview(o);
-            // HONOR THE END KIND.
-            const hosts = freeze.length ? freeze : [o];
-            if (committed) {
-                if (last && last.segs) {
-                    const p = commitBandSegs(st, last.segs, true);
-                    hosts.forEach(h => holdUntilSettled(h, p));
-                }
-            } else if (last && last.segs) {
-                const p = commitBandSegs(st,
-                    st.segs ? st.segs.map(sg => sg.slice()) : [[0, st.totalQ]],
-                    true);
-                hosts.forEach(h => holdUntilSettled(h, p));
+            if (!engaged) {
+                if (onRelease) onRelease(false, false);
+                if (onTeardown) onTeardown();
+                return undefined;
             }
+            mapDbg('up', {});
+            // HONOR THE END KIND: a release commits the last preview; a
+            // cancel restores the map the gesture began on.
+            const segs = !(last && last.segs) ? null
+                : committed ? last.segs
+                : (st.segs ? st.segs.map(sg => sg.slice()) : [[0, st.totalQ]]);
+            const p = segs ? commitBandSegs(st, segs, true) : undefined;
+            const tearDown = () => {
+                clearRawPreview(o);
+                if (onTeardown) onTeardown();
+            };
+            if (!p) {
+                // Nothing sent: the chrome underneath is the truth.
+                if (onRelease) onRelease(committed, true);
+                tearDown();
+                return undefined;
+            }
+            // THE HELD PICTURE: the landing just sent, no pointer
+            // follow, no badge; the stale chrome under it stays hidden
+            // and takes no presses (.drag-held) until the teardown.
+            renderRawPreview(o, st, segs, null, null, view());
+            o.classList.add('drag-held');
+            const hosts = freeze.length ? freeze : [o];
+            hosts.forEach(h => holdUntilSettled(h, p));
+            deferTeardown(o, hosts, tearDown);
             if (onRelease) onRelease(committed, true);
+            return p;  // the gesture keeps the frame pinned until p settles
         },
     });
     if (!g.live()) { clearTimeout(holdT); return { live: false, reapply() {} }; }

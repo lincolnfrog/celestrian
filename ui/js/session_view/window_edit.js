@@ -14,7 +14,7 @@
 import { ctx } from './context.js';
 import { pct, setText } from './sv_util.js';
 import { selectOnly } from './selection.js';
-import { beginGesture, isDragging, holdOverlay, releaseOverlay }
+import { beginGesture, isDragging, holdOverlay, releaseOverlay, afterSettled }
     from './gesture.js';
 import { buildWindowDims } from './dims.js';
 import { windowDragTarget } from '../view_model.js';
@@ -24,12 +24,10 @@ import { windowDragTarget } from '../view_model.js';
  * smallest TEMPO the definer may set; that is the smallest CUT a
  * band may hold — different laws, different numbers.) */
 const Q_DEFINER_MIN_LEN_Q = 0.05;
-/* After a release the overlay is HELD at the previewed geometry until
+/* (After a release the overlay is HELD at the previewed geometry until
  * the engine has answered the commit — a state poll already in flight
- * at release still carries the pre-commit window and would rebuild the
- * brackets there for a tick (the snap-back on a slow bridge, WebView2).
- * This caps the hold if the bridge never answers. */
-const COMMIT_HOLD_MAX_MS = 1500;
+ * still carries the pre-commit window and would rebuild the brackets
+ * there for a tick. The cap lives in gesture.js: COMMIT_HOLD_MAX_MS.) */
 
 export function wireWindow(o, lane, vm, body, win) {
     // (Multi-segment maps never reach here: lane_body's mapSegs branch
@@ -190,20 +188,16 @@ export function wireWindow(o, lane, vm, body, win) {
                 const p = ctx.cb.onSetWindow(lane.id,
                     Math.round(cur.startQ * vm.quantum),
                     Math.round(cur.endQ * vm.quantum));
-                // HOLD until the engine answered (see COMMIT_HOLD_MAX_MS):
-                // the previewed brackets/dims already show the committed
-                // geometry; a rebuild from an in-flight pre-commit poll
-                // would snap them back for a tick.
+                // HOLD until the engine answered (afterSettled, capped at
+                // gesture.js's COMMIT_HOLD_MAX_MS): the previewed
+                // brackets/dims already show the committed geometry; a
+                // rebuild from an in-flight pre-commit poll would snap
+                // them back for a tick.
                 holdOverlay(body);
-                let done = false;
-                const settle = () => {
-                    if (done) return;
-                    done = true;
+                afterSettled(p, () => {
                     releaseOverlay(body);
                     o._key = ''; // rebuild from settled state on the next patch
-                };
-                Promise.resolve(p).then(settle, settle);
-                setTimeout(settle, COMMIT_HOLD_MAX_MS);
+                });
             } else {
                 o._key = ''; // rebuild from settled state on the next patch
             }

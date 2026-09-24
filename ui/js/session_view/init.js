@@ -1,8 +1,8 @@
 /**
  * One-time wiring: bind the callback table, hook the transport /
  * creation / selection chrome, and register the session view's
- * keyboard bindings (Escape, zoom, teleport, R) with the app-wide
- * dispatcher in keys.js.
+ * keyboard bindings (Escape, zoom, teleport, nudge, panel fit, R) with
+ * the app-wide dispatcher in keys.js.
  */
 
 import { isGestureLive } from './gesture.js';
@@ -12,7 +12,7 @@ import { registerKey, SCOPE, ANY_MODIFIERS } from '../keys.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle } from './teleport.js';
-import { wireRegionScroll, nudgeRegion } from './region_panel.js';
+import { wireRegionScroll, nudgeRegion, fitSelectedPanel } from './region_panel.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
 import { closeTakeMenus, wireTakeMenuDismiss } from './take_menu.js';
 import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
@@ -149,6 +149,20 @@ function wireKeyboard() {
     nudge(-1, 1, []);          nudge(1, 1, []);
     nudge(-1, 4, ['shift']);   nudge(1, 4, ['shift']);
     nudge(-1, 0.125, ['alt']); nudge(1, 0.125, ['alt']);
+    // Z / ⇧Z fit the selected track's REGION PANEL to its loop / to
+    // the whole take (Ableton's zoom-to-selection; loop-region phase 1,
+    // 2026-09-23). Only while a panel is shown — otherwise the key
+    // falls through and plain z stays unbound (undo is ⌘/Ctrl+Z, which
+    // these never match). +/− stay on the main view.
+    const fit = (mods, kind) => view({
+        key: 'z',
+        modifiers: mods,
+        handler: e => {
+            if (!fitSelectedPanel(kind)) return false;
+            e.preventDefault();
+        } });
+    fit([], 'region');
+    fit(['shift'], 'take');
     // R = the record key: press the selected track's (or group's) ●
     // — a group cascades per Q7 (arm every empty member). While
     // anything records, R stops it regardless of selection (the

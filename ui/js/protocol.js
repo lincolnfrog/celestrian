@@ -261,3 +261,11 @@ export const BRIDGE_METHODS = [
 ];
 
 export const BRIDGE_METHOD_NAMES = BRIDGE_METHODS.map(m => m.name);
+
+/** THE HEARTBEAT: the polls exempt from every invocation trace — the
+ * 50 ms graph poll and the 2 s project poll are not events, and tracing
+ * them buries every real call (and, in the WebView, retains every
+ * logged state object: flash-chrome F12, 2026-09-22). One list for the
+ * JS backends (bridge.js, mock_backend.js); the C++ bridge's twin is
+ * logCall in src/bridge_dispatch.cc. */
+export const QUIET_POLLS = new Set(['getGraphState', 'getProjectInfo']);

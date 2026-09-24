@@ -209,6 +209,14 @@ Nothing in Tier D is required for 1.0.
   stage.
 - [ ] **PhaseAligner** — crossfade synthesis at seams; zero-crossing
   micro-snap; seam audition.
+- [ ] **Meter-aware sub-Q snap — MAYBE, not decided.** Loop-region
+  slides snap to whole Q with ⌥ free (owner ruling 2026-09-23), because
+  a sub-Q grid is arbitrary relative to the music (a 3/4 phrase does not
+  divide into quarters of Q). If field use asks for finer snapping, one
+  option is an optional per-island meter: divide Q by its beat count,
+  then halve per zoom level (8ths, 16ths). It would bring back the time
+  signatures that Q21 ("no meter") deliberately leaves out, so do this
+  only if the need turns out to be real.
 - [ ] **Linux** build; **mono→stereo** recording upgrade path;
   **disable auto-quantize** toggle (revives Q3); **sharing** of
   projects and templates.

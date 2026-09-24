@@ -33,6 +33,7 @@
  */
 
 import { interceptUndoableCall, mockUndo, mockRedo } from './mock/undo.js';
+import { QUIET_POLLS } from './protocol.js';
 import {
     createNode, deleteNode, renameNode, reorderNode,
     combineNodes, toggleSolo, toggleMute,
@@ -204,10 +205,10 @@ export const handlers = {
  * Unknown methods warn and resolve to null.
  */
 // The POLLS are exempt from the invocation trace (C++ bridge parity —
-// logBridgeCall): the 50ms graph poll and the 2s project poll are the
+// logCall): the 50ms graph poll and the 2s project poll are the
 // heartbeat, not events; tracing them buries every real call.
-// Event-shaped methods all trace.
-const QUIET_POLLS = new Set(['getGraphState', 'getProjectInfo']);
+// Event-shaped methods all trace. The list is protocol.js's (shared
+// with bridge.js).
 
 // THE LIVE-TAKE GATE (engine parity AudioEngine::refusedUnderLiveTake,
 // owner ruling 2026-09-09): while any take is armed or capturing, every

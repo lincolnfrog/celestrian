@@ -202,7 +202,7 @@ relies on it only for where to draw the brackets, not for what sounds.
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
 | Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `zero := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
 | Lock-collapse at the second arm (clip or stack definer) | leaves under the node: `base += s`, `D := len`; `shiftOrigins(node, s)`; node window consumed. Audio-neutral (§2). Re-open reverses it. |
-| Map edit while playing (the continuity rider) | `shiftOrigins(node, O' − O)` with `O'` from `originForHeard`; the island zero stays (the view re-seats the frame, frame.md) |
+| Map edit while playing (the continuity rider) | `shiftOrigins(node, O' − O)` with `O'` = `originForHeard` reduced to the representative nearest `O` modulo the node's fold (`heard::continuityOriginFor`, time_maps.md §5 — a slide never re-anchors); the island zero stays (the view re-seats the frame, frame.md) |
 | Seek | `shiftOrigins(root, delta)`, `zero += delta`, history absolutes shifted |
 | Cycle growth at commit | nothing moves — the view seats the new take in the cycle it started in (frame.md) |
 

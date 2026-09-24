@@ -128,7 +128,11 @@ empty husks while a single active island pays nothing for it.
   back to the first full rep. A group has an origin and its lane carries
   a take mark like a clip's (Q18, composition.md §9).
 - **Waveforms are display-normalized to the clip's own peak.** Waveforms
-  show shape; meters show level.
+  show shape; meters show level. ONE gain per take (2026-09-23): every
+  committed tile of a take — whole, heard slice, repeat — draws at the
+  whole take's boost (`canvas_renderer.peaksBoost`), never at its own
+  slice's loudest peak, so a loud hit entering or leaving a loop never
+  rescales the lane (display law 16).
 - **Loop windows live on the lane.** Bracket overlay `[ ]`: drag to edit
   (Q-snapped), click the bracket body to toggle active/bypassed.
   Outside-window audio dims; brackets stay visible and editable when
@@ -401,7 +405,15 @@ nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
     is false motion — the composite visibly stretched at every growing
     commit until this. Since px-per-Q is preserved across a settle, the
     snap reads as content lighting up, not moving. Surplus tiles fade
-    out (220 ms) rather than vanish mid-morph.
+    out (220 ms) rather than vanish mid-morph — EXCEPT under a map edit
+    (`lane_body.mapEditInFlight`: a live map/window gesture, the frame
+    pin, a post-commit hold on the lane or its region panel, a lane's
+    map geometry changing between polls, and 400 ms after the last of
+    these). There surplus tiles go at once and a new peaks identity (a
+    member's splice regenerating its group's composite) swaps without
+    the content cross-fade: each live splice re-lays the tiles, and a
+    fading copy of the old layout is a double image on every whole-Q
+    trim step (loop-region diagnosis F9, 2026-09-23).
 12. **The mock speaks Q11 and awaiting-stop.** Arms PEND to the next
     boundary — origins always land on boundaries, and a mid-Q mock
     origin once poisoned the whole grid after re-base. Stops enter
@@ -484,6 +496,28 @@ nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
     seek in, so the toggle runs alone. A seek the engine refuses (a take
     live or armed, law 14) leaves the playhead where it is.
     `ui/js/play_start.js`, pinned by `play_start.test.mjs`.
+16. **Heard tiles are sampled per column, exactly** (loop-region phase
+    1, 2026-09-23 — the field video's "flashing waveforms"). Each pixel
+    column of a heard tile maps through the tile's `srcSegs` +
+    `srcTopFrac` — `mapOffset` of the column's heard phase, the heard
+    view's own mapping — to its fractional raw range, and max-pools the
+    peaks there (`canvas_renderer.mappedColumns`, one pooling kernel
+    with `poolColumns`, one envelope renderer `drawEnvelope`). A tile
+    the frame clips (a pinned frame mid-trim) shows the leading part of
+    its period (`lane_body.tileSpan`). The retired renderer sliced
+    `srcSegs` at whole peaks, rotated by a rounded peak count and refit
+    the result to the tile, so every sub-peak edit re-stretched the
+    tile and jittered every feature ½–1 peak (~11 px at 156 px/Q), and
+    each canvas normalized to its own loudest peak — every live commit
+    made the WHOLE lane lurch and breathe. THE INVARIANT: a map slide
+    changes only the columns its seams sweep, on every repeat; every
+    other column of every lane the map shapes is unchanged, and a loud
+    hit entering the loop changes no other column (one gain per take).
+    MIDI tiles place their notes through the same mapping
+    (`midi_notes.sliceNotesToTile`). Pinned by
+    `heard_tile_sampler.test.mjs` (with a reproduction of the old
+    slicer proving the gate catches it) and `e2e/heard_tiles.spec.js`
+    (the canvas pixels; no fading or cross-fading copy during a trim).
 
 ---
 

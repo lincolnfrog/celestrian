@@ -23,18 +23,48 @@ import { nodeWindowActive } from './time_map.js';
 const MAX_SEGMENT_TILES = 256;
 
 /**
+ * THE MIXDOWN'S MEMBERSHIP — one predicate for the cache key, the peaks
+ * signature and the mixdown itself: the composite is COMMITTED
+ * material, so a hot child (armed or capturing — its duration grows
+ * every poll) and a child whose real waveform has not landed yet
+ * (`excludeIds`: its live METER peaks use a different amplitude scale)
+ * are out. A key that still carried a skipped child's growing duration
+ * re-keyed the composite on every poll — a new array, and a 240 ms
+ * cross-fade on every group tile, 20 times a second (flash-chrome F11,
+ * 2026-09-22).
+ */
+export function skippedInComposite(child, excludeIds = null) {
+    return !!(child.isRecording || child.isPendingStart ||
+              (excludeIds && excludeIds.has(child.id)));
+}
+
+/**
  * Build a cache key from the stack's child state. The key invalidates
  * whenever any child property that affects the composite appearance changes.
  *
+ * POSITIONS ARE RELATIVE (flash-chrome F8, 2026-09-22): the mixdown
+ * places each child at `origin − frameZero` (the stack's own frame), so
+ * that difference — not the absolute origin, not the zero — is what the
+ * key carries. A whole-subtree origin shift (the continuity re-anchor
+ * moving a group, a seek) moves the stack origin and every member by
+ * the same delta: the picture is unchanged, and so is the key — the
+ * same array identity, no cross-fade.
+ *
  * @param {Object} stack - The stack node data
  * @param {number} targetPeaks - Number of target peaks for the composite
+ * @param {Object} [opts] - { raw, stackDuration, frameZero, excludeIds }
  * @returns {string} A cache key string
  */
 export function buildCacheKey(stack, targetPeaks, opts = {}) {
-    const { raw = false, stackDuration = 0, frameZero = 0 } = opts;
+    const { raw = false, stackDuration = 0, frameZero = 0, excludeIds = null } = opts;
     const cacheKeyParts = [];
     (stack.nodes || []).forEach(child => {
         if (child.type === 'clip') {
+            // Out of the mixdown = out of the key (skippedInComposite).
+            if (skippedInComposite(child, excludeIds)) {
+                cacheKeyParts.push(child.id + ':skip');
+                return;
+            }
             // RAW mode (the definer trim view): only the material's
             // identity matters — windows, origins and the zero are
             // deliberately NOT in the key, so a re-trim (which moves
@@ -50,7 +80,8 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
             cacheKeyParts.push([
                 child.id,
                 child.duration || 0,
-                child.origin || 0,
+                // Where the mixdown places it: relative to the frame.
+                (child.origin || 0) - frameZero,
                 child.loopStart || 0,
                 child.loopEnd || 0,
                 // Window ACTIVATION changes audibility without moving the
@@ -71,9 +102,11 @@ export function buildCacheKey(stack, targetPeaks, opts = {}) {
     // spans the stack's intrinsic extent; the lane's srcSegs/dims apply
     // the window over it) — it is not in the key either, so a window
     // edit on the group never regenerates the picture underneath. The
-    // tiling inputs that DO shape the picture (extent, island frame) are.
+    // tiling inputs that DO shape the picture are: the extent, and each
+    // child's frame-relative position above (the zero itself is not —
+    // only the differences place tiles).
     return `${targetPeaks}:${raw ? 'raw' : 'map'}:${stackDuration}:` +
-        `${raw ? 0 : frameZero}:${cacheKeyParts.join(',')}`;
+        `${cacheKeyParts.join(',')}`;
 }
 
 /**
@@ -128,19 +161,20 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
     // the live low-res peaks are replaced by the fetched waveform, and a
     // key without them would leave the composite stale until some
     // unrelated change invalidated it.
-    // RECORDING children are excluded entirely (sig + mixing): the
-    // composite is COMMITTED material — folding a growing take in would
-    // regenerate it every poll (visible glitching).
-    // Children whose REAL waveform hasn't been fetched yet (excludeIds)
-    // are excluded too: blending a just-committed clip's live METER
-    // peaks (different amplitude scale) would re-normalize the
-    // composite to near-zero until the fetch lands.
-    const skip = c => c.isRecording || (excludeIds && excludeIds.has(c.id));
+    // HOT children (armed or recording) are excluded entirely (key, sig
+    // and mixing): the composite is COMMITTED material — folding a
+    // growing take in would regenerate it every poll (visible
+    // glitching). Children whose REAL waveform hasn't been fetched yet
+    // (excludeIds) are excluded too: blending a just-committed clip's
+    // live METER peaks (different amplitude scale) would re-normalize
+    // the composite to near-zero until the fetch lands. One predicate
+    // for all three (skippedInComposite).
+    const skip = c => skippedInComposite(c, excludeIds);
     const peaksSig = (stack.nodes || [])
         .map(c => skip(c) ? 'r' : (livePeaks.get(c.id) || []).length)
         .join(',');
     const cacheKey = buildCacheKey(stack, targetPeaks,
-        { raw, stackDuration, frameZero }) + '|' + peaksSig;
+        { raw, stackDuration, frameZero, excludeIds }) + '|' + peaksSig;
 
     // Check cache
     const cached = cache.get(stack.id);

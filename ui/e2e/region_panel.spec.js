@@ -6,67 +6,21 @@
  * grab a handle and the track blows up to its full length I am very
  * confused about where the current selection is." The fix is two
  * surfaces under one law: the SELECTED lane grows a panel showing the
- * whole raw take with the kept region as a box (slide / trim / cut),
- * and a lane handle drags at the lane's OWN scale, the grip glued to
- * the pointer, panning at the edges. Real mouse input throughout —
+ * raw take with the kept region as a box (slide / trim / cut), and a
+ * lane handle drags at the lane's OWN scale, the grip glued to the
+ * pointer, panning at the edges. Real mouse input throughout —
  * synthetic dispatch bypasses hit-testing (the 2026-07-23c law).
+ *
+ * Since loop-region phase 1 (2026-09-23) the panel's detail strip has
+ * its own VIEW (fit-region by default): every strip x ↔ raw Q here goes
+ * through it (region_panel_helpers.js). The view's own navigation is
+ * pinned by region_panel_view.spec.js.
  */
 
 import { test, expect } from '@playwright/test';
-
-async function boot(page) {
-    // `/?mock=true` — the static server's redirect drops the query on
-    // `/index.html` (test_harness.md gotcha 10).
-    await page.goto('/?mock=true');
-    await page.waitForFunction(() => !!window.__celestrianTest, null,
-        { timeout: 5000 });
-    await page.evaluate(() => window.__celestrianTest.loadScenario('empty'));
-}
-
-const quantum = page => page.evaluate(async () =>
-    (await window.__celestrianTest.callNative('getGraphState')).perf.sampleRate);
-
-const node = (page, id) => page.evaluate(async id =>
-    (await window.__celestrianTest.callNative('getGraphState'))
-        .nodes.find(n => n.id === id), id);
-
-const loopOf = async (page, id, Q) => {
-    const n = await node(page, id);
-    return [n.loopStart / Q, n.loopEnd / Q].join(',');
-};
-
-/** A 1Q definer, then a `lenQ` take from 1Q (the owner's topology). */
-async function recordDefinerAndTake(page, Q, lenQ) {
-    const ids = await page.evaluate(async ({ Q, lenQ }) => {
-        const c = window.__celestrianTest.callNative;
-        const adv = window.__celestrianTest.advanceBy;
-        const id1 = await c('createNode', 'clip', '');
-        await c('startRecordingInNode', id1);
-        adv(Q);
-        await c('stopRecordingInNode', id1);
-        const id2 = await c('createNode', 'clip', '');
-        await c('startRecordingInNode', id2);
-        adv(lenQ * Q - 10);
-        await c('stopRecordingInNode', id2);
-        adv(20);
-        return { id1, id2 };
-    }, { Q, lenQ });
-    await expect.poll(async () => (await node(page, ids.id2)).duration).toBe(lenQ * Q);
-    return ids;
-}
-
-const setLoop = (page, id, a, b) => page.evaluate(
-    ({ id, a, b }) => window.__celestrianTest.callNative('setLoopPoints', id, a, b),
-    { id, a, b });
-
-const laneOf = (page, id) => page.locator(`.lane[data-id="${id}"]`);
-const panelOf = (page, id) => laneOf(page, id).locator('.lane-region');
-
-/** Raw Q → page x on the panel's strip. */
-async function stripX(page, id, q, totalQ) {
-    const s = await laneOf(page, id).locator('.region-strip').boundingBox();
-    return s.x + s.width * (q / totalQ);
-}
+import { boot, quantum, node, loopOf, segsOf, recordDefinerAndTake, setLoop,
+         laneOf, panelOf, stripOf, viewOf, stripX, selectLane, keptBoxAt }
+    from './region_panel_helpers.js';
 
 test.describe('Region panel', () => {
     test('follows selection: rail click shows it; top-bar click and Escape hide it', async ({ page }) => {
@@ -78,15 +32,15 @@ test.describe('Region panel', () => {
         // show); the long take's panel is hidden.
         await expect(panelOf(page, id1)).toBeHidden();
         await expect(panelOf(page, id2)).toBeHidden();
-        await laneOf(page, id2).locator('.rail-name').click();
-        await expect(panelOf(page, id2)).toBeVisible();
+        await selectLane(page, id2);
         await expect(laneOf(page, id2).locator('.region-label'))
             .toHaveText(/loop 4Q · 12Q take/);
-        // The kept box spans [6Q, 10Q) of the 12Q strip.
-        const strip = await laneOf(page, id2).locator('.region-strip').boundingBox();
-        const kept = await laneOf(page, id2).locator('.region-kept').boundingBox();
-        expect((kept.x - strip.x) / strip.width).toBeCloseTo(6 / 12, 2);
-        expect(kept.width / strip.width).toBeCloseTo(4 / 12, 2);
+        // FIT REGION: the kept box [6Q, 10Q) fills ~55% of the strip,
+        // centred.
+        const strip = await stripOf(page, id2).boundingBox();
+        const kept = await keptBoxAt(page, id2, 6, 10);
+        expect(kept.width / strip.width).toBeCloseTo(0.55, 2);
+        expect((kept.x + kept.width / 2 - strip.x) / strip.width).toBeCloseTo(0.5, 2);
         // DESELECT from the top bar: a click on the transport's empty
         // space clears the selection and the panel goes with it.
         const tb = await page.locator('#transport').boundingBox();
@@ -95,8 +49,7 @@ test.describe('Region panel', () => {
         await expect(page.locator('.lane.sel')).toHaveCount(0);
         await expect(panelOf(page, id2)).toBeHidden();
         // Escape does the same.
-        await laneOf(page, id2).locator('.rail-name').click();
-        await expect(panelOf(page, id2)).toBeVisible();
+        await selectLane(page, id2);
         await page.keyboard.press('Escape');
         await expect(panelOf(page, id2)).toBeHidden();
     });
@@ -106,50 +59,41 @@ test.describe('Region panel', () => {
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
         await setLoop(page, id2, 6 * Q, 10 * Q);
-        await laneOf(page, id2).locator('.rail-name').click();
+        await selectLane(page, id2);
         const lane = laneOf(page, id2);
-        await expect(panelOf(page, id2)).toBeVisible();
-        const strip = await lane.locator('.region-strip').boundingBox();
+        const strip = await stripOf(page, id2).boundingBox();
         const y = strip.y + strip.height / 2;
         // TRIM: the start bracket to 7.3Q — [7.3, 10) proposes a 2.7Q
         // period → 3Q → the bound lands at 7Q.
+        await keptBoxAt(page, id2, 6, 10);
         const sb = await lane.locator('.region-bracket.start').boundingBox();
         await page.mouse.move(sb.x + sb.width / 2, y);
         await page.mouse.down();
-        await page.mouse.move(await stripX(page, id2, 7.3, 12), y, { steps: 8 });
+        await page.mouse.move(await stripX(page, id2, 7.3), y, { steps: 8 });
         await page.mouse.up();
         await expect.poll(() => loopOf(page, id2, Q)).toBe('7,10');
         // The panel rebuilds once the commit settles: wait for the box
         // to show [7, 10) before grabbing it.
-        await expect.poll(async () => {
-            // (null for a tick while the overlay rebuilds — keep polling)
-            const k = await lane.locator('.region-kept').boundingBox();
-            return k ? (k.x - strip.x) / strip.width : -1;
-        }).toBeCloseTo(7 / 12, 2);
+        const kept = await keptBoxAt(page, id2, 7, 10);
         // SLIDE: grab the box and move it +1.3Q → whole-Q step +1.
-        const kept = await lane.locator('.region-kept').boundingBox();
+        const v = await viewOf(page, id2);
         await page.mouse.move(kept.x + kept.width / 2, y);
         await page.mouse.down();
-        await page.mouse.move(kept.x + kept.width / 2 + strip.width * (1.3 / 12), y,
+        await page.mouse.move(kept.x + kept.width / 2 + strip.width * (1.3 / v.spanQ), y,
             { steps: 8 });
         await page.mouse.up();
         await expect.poll(() => loopOf(page, id2, Q)).toBe('8,11');
         // The lane above re-tiled to the slid loop (overview → detail).
         await expect(lane.locator('.lane-body .win-chip')).toHaveText(/3Q/);
-        await expect.poll(async () => {
-            // (null for a tick while the overlay rebuilds — keep polling)
-            const k = await lane.locator('.region-kept').boundingBox();
-            return k ? (k.x - strip.x) / strip.width : -1;
-        }).toBeCloseTo(8 / 12, 2);
+        await keptBoxAt(page, id2, 8, 11);
         // CUT: double-click the kept material at 9.5Q → a 1Q cell cut
         // at [9, 10): the map is [8, 9) ∪ [10, 11).
-        await page.mouse.dblclick(await stripX(page, id2, 9.5, 12), y);
-        await expect.poll(async () => {
-            const n = await node(page, id2);
-            return (n.segments || []).map(s => s / Q).join(',');
-        }).toBe('8,9,10,11');
+        await page.mouse.dblclick(await stripX(page, id2, 9.5), y);
+        await expect.poll(() => segsOf(page, id2, Q)).toBe('8,9,10,11');
         await expect(lane.locator('.region-overlay .cut-band')).toHaveCount(1);
         await expect(lane.locator('.region-label')).toHaveText(/cuts/);
+        // The overview notches the cut too.
+        await expect(lane.locator('.region-overview .region-ov-cut')).toHaveCount(1);
         // HEAL: right-click the cut (its chip rides the band's center).
         await lane.locator('.region-overlay .cut-chip').click({ button: 'right' });
         await expect.poll(async () => {
@@ -163,29 +107,30 @@ test.describe('Region panel', () => {
         await boot(page);
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 4);
-        await laneOf(page, id2).locator('.rail-name').click();
+        await selectLane(page, id2);
         const lane = laneOf(page, id2);
-        await expect(panelOf(page, id2)).toBeVisible();
         await expect(lane.locator('.region-label')).toHaveText(/whole take · 4Q take/);
-        const strip = await lane.locator('.region-strip').boundingBox();
+        // No loop: the view is the whole take.
+        expect(await viewOf(page, id2)).toEqual({ q0: 0, spanQ: 4 });
+        const strip = await stripOf(page, id2).boundingBox();
         const y = strip.y + strip.height / 2;
         const eb = await lane.locator('.region-bracket.end').boundingBox();
         await page.mouse.move(eb.x + eb.width / 2, y);
         await page.mouse.down();
-        await page.mouse.move(await stripX(page, id2, 3.2, 4), y, { steps: 8 });
+        await page.mouse.move(await stripX(page, id2, 3.2), y, { steps: 8 });
         await page.mouse.up();
         await expect.poll(() => loopOf(page, id2, Q)).toBe('0,3');
         await expect.poll(async () => (await node(page, id2)).windowActive).toBe(true);
         await expect(lane.locator('.region-label')).toHaveText(/loop 3Q · 4Q take/);
     });
 
-    test('← / → nudge the selected region: 1Q, ⇧ 4Q, ⌥ ⅛Q; clamped to the take', async ({ page }) => {
+    test('← / → nudge the selected region: 1Q, ⇧ 4Q, ⌥ ⅛Q; clamped to the take; the view follows', async ({ page }) => {
         await boot(page);
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
         await setLoop(page, id2, 8 * Q, 11 * Q);
-        await laneOf(page, id2).locator('.rail-name').click();
-        await expect(panelOf(page, id2)).toBeVisible();
+        await selectLane(page, id2);
+        const v0 = await viewOf(page, id2);
         await page.keyboard.press('ArrowRight');
         await expect.poll(() => loopOf(page, id2, Q)).toBe('9,12');
         await page.keyboard.press('ArrowRight');           // at the end: no-op
@@ -193,6 +138,13 @@ test.describe('Region panel', () => {
         expect(await loopOf(page, id2, Q)).toBe('9,12');
         await page.keyboard.press('Shift+ArrowLeft');
         await expect.poll(() => loopOf(page, id2, Q)).toBe('5,8');
+        // KEEP IN VIEW: the nudged region stays on the strip — by a
+        // PAN, never a zoom.
+        await expect.poll(async () => {
+            const v = await viewOf(page, id2);
+            return v.q0 <= 5 && v.q0 + v.spanQ >= 8;
+        }).toBe(true);
+        expect((await viewOf(page, id2)).spanQ).toBeCloseTo(v0.spanQ, 9);
         // ⌥: an eighth of a Q (sample-rounded by the engine).
         await page.keyboard.press('Alt+ArrowRight');
         await expect.poll(async () => (await node(page, id2)).loopStart / Q)
@@ -250,22 +202,29 @@ test.describe('Same-scale reveal', () => {
         await expect(panelOf(page, id2)).toBeVisible();
         await expect(lane.locator('.region-label')).toHaveText(/loop 3Q · 12Q take/);
 
-        // EDGE PAN: the START grip (raw 6Q, at the frame's left edge)
-        // held just inside the lane's left edge — the raw take pans
-        // under the hand, so the bound walks earlier than the frame
-        // alone could reach.
+        // THE DIRECTION RULE (edge_pan.js; release-jump F5): the START
+        // grip rests at the frame's left edge, INSIDE the edge zone. A
+        // fine INWARD move must not pan (it used to run the loop
+        // outward by whole Qs)…
         await body.hover();
         const sb = await body.locator('.trim-grip.start').boundingBox();
         const sx = sb.x + sb.width / 2;
         await page.mouse.move(sx, gy);
         await page.mouse.down();
         await page.waitForTimeout(220);
-        await page.mouse.move(box.x + 12, gy, { steps: 4 });
+        await page.mouse.move(sx + 10, gy, { steps: 3 });
         await expect(body).toHaveClass(/revealing/);
+        const q0Inward = await body.evaluate(b => b._reveal.view.q0);
+        await page.waitForTimeout(500);
+        expect(await body.evaluate(b => b._reveal.view.q0)).toBeCloseTo(q0Inward, 9);
+        // …while moving OUTWARD past the grab (beyond the lane's left
+        // edge) pans the raw take under the hand, so the bound walks
+        // earlier than the frame alone could reach.
+        await page.mouse.move(box.x - 24, gy, { steps: 4 });
         // Panning (rAF-paced — poll rather than sleep, so a loaded
         // runner cannot starve the pan under a fixed wait).
         await expect.poll(() => body.evaluate(b => b._reveal ? b._reveal.view.q0 : 99),
-            { timeout: 4000 }).toBeLessThan(5.5);          // started at 6
+            { timeout: 4000 }).toBeLessThan(q0Inward - 0.5);
         await page.mouse.up();
         await expect.poll(async () => {
             const n = await node(page, id2);
