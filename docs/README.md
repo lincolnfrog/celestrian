@@ -15,13 +15,13 @@
 
 | Doc | Status | What it is |
 |---|---|---|
-| [design_language.md](design_language.md) | spec | The vocabulary (§1), the numbered invariants (I1–I9), worked examples with state tables, and the owner-ruling INDEX (§5: Q1–Q17 in full, plus one-line pointers to rulings recorded elsewhere). **Start here.** |
+| [design_language.md](design_language.md) | spec | The vocabulary (§1), the numbered invariants (I1–I9), worked examples with state tables, and the owner-ruling INDEX (§5: Q1–Q17 and Q22 in full, plus one-line pointers to rulings recorded elsewhere). **Start here.** |
 | [kernel.md](kernel.md) | spec — implemented | The cyclic kernel: one monotonic clock, per-node origins, time-maps. §2 is the kernel itself, §3 the transport + recording lifecycle, §5 the migration record. Appendix §6. |
 | [recording.md](recording.md) | spec | Recording math: quantum, origins, arm/stop snapping, the LCM cycle view, ghosts. The worked examples are the executable spec (golden vectors). |
 | [time_maps.md](time_maps.md) | spec | Loop windows and non-contiguous selections as time-maps; recording through a map; the seam theorem; anchoring (§5 — the anchoring law, the cycle-top rule, the continuity re-anchor, the content frame); the editing surfaces (§6 — the same-scale reveal and the region panel). Appendix §8. |
 | [loop_selection.md](loop_selection.md) | guide + proposal | Loop regions end to end, with worked examples: the anchoring law in pictures, what each edit does in heard time (a slide moves only the splice), seating and the drag pin, both editing surfaces, the field-video glitches and their Phase 1 fixes (2026-09-23), the top model (§9, pending the owner) and the Phase 2 roadmap (§10). Appendix §11. |
 | [sequencer.md](sequencer.md) | spec | The fractal Sequence primitive on stacks: the **period law** (§2 — a stack's effective period is window ▸ active sequence length ▸ LCM of children's effective periods), gate/cue entrances, record-into-a-step, cue steps, successor graphs + the seed (§14 — the PROGRAM, root-only radios), per-step fades. Rulings S1–S22 (§0, §9, §11, §13). Appendix §16. **Section numbers are cited by other docs — do not renumber.** |
-| [engine_lcm_guard.md](engine_lcm_guard.md) | spec | The Q-coherence ruling (2026-08-09): every map/window period is a whole multiple or exact divisor of Q, enforced categorically on both sides; free-length cuts abolished. |
+| [engine_lcm_guard.md](engine_lcm_guard.md) | spec | The Q-coherence ruling (2026-08-09): every map/window period is a whole multiple or exact divisor of Q, enforced categorically on both sides; free-length cuts abolished. When a Q hand-off (Q22) moves the grid under a recorded loop, that loop drifts and folds into no cycle. |
 | [performance.md](performance.md) | spec | The audio-thread contract (§1 is project law), latency model, calibration feature, perf backlog and instrumentation. |
 | [composition.md](composition.md) | spec | The recursive theory of time composition stated once: the node record, the one anchoring law for every node (Q18 — stacks have origins), the period/cycle consumer table, the zero's role, anchoring events, invariants I10–I16, worked group examples, and nesting in practice (§10 — the fractal principle, per-stack LCM, composites). **Read after design_language.md.** |
 
@@ -79,7 +79,7 @@ closed:
 
 ## Where the rulings live
 
-Q1–Q17 — design_language.md §5 · S1–S22 — sequencer.md §0/§9/§11/§13 ·
+Q1–Q17, Q22 — design_language.md §5 · S1–S22 — sequencer.md §0/§9/§11/§13 ·
 Q-V1–V5 — vst3.md §9 · map coherence — engine_lcm_guard.md · projects
 model — projects.md · display laws 13/14 — session_view.md §6.
 

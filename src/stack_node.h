@@ -215,6 +215,20 @@ class StackNode : public AudioNode {
     setQuantum(quantum > 0 ? quantum : 0, zero);
   }
 
+  // --- THE Q HAND-OFF (Q22, design_language.md §5) ---
+  /** The island's DESIGNATED Q-definer: the uuid the last `setDefiner`
+   * hand-off named, empty = none. engine_internal::definer answers it
+   * first while it names a valid definer target; a stale one (the node
+   * deleted, made a one-shot, …) is ignored but kept, so undoing what
+   * made it stale revives it. Island root only. MESSAGE THREAD ONLY —
+   * the audio thread never reads it (the grid it defines reaches the
+   * audio thread as (Q, zero)); changed only through Edit::Definer and
+   * a session load. */
+  const juce::String& definerDesignation() const { return definer_designation_; }
+  void setDefinerDesignation(const juce::String& uuid) {
+    definer_designation_ = uuid;
+  }
+
   // --- Take lifecycle (commit as an EVENT, unification_audit.md §1.5).
   // Clips report arm/cancel/commit to the island root; the engine does
   // no per-block edge detection. Counter drift on node removal is
@@ -508,6 +522,9 @@ class StackNode : public AudioNode {
   std::atomic<uint32_t> island_generation_{0};
   SeqLock island_lock_;  // seqlock for (Q, zero, generation)
   std::atomic<int64_t> zero_samples_{0};
+  // The Q hand-off's designation (definerDesignation): message thread
+  // only, a plain member.
+  juce::String definer_designation_;
 
   // The sequence (docs/sequencer.md): immutable object behind ONE
   // atomic pointer (the FxChain discipline — message thread swaps +

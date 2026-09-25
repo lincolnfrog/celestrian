@@ -1,6 +1,8 @@
 # Map coherence is categorical (owner ruling 2026-08-09)
 
-**Status: RULED AND IMPLEMENTED, both sides.**
+**Status: RULED AND IMPLEMENTED, both sides.** Extended 2026-09-24 by
+Q22: the definer may be a track Q was handed to, and a recorded loop the
+new grid cannot carry drifts (below).
 
 ## The ruling
 
@@ -54,10 +56,38 @@ Engine (refusal, mirrored in the mock for parity):
   island, no take in flight) or, since Q13-for-groups (design_language
   Q13, 2026-08-21), the definer STACK (its direct clip children are the
   island's only committed content, recorded as one take) — where the
-  edit *re-establishes* Q rather than fighting it. One-shots (`periodSource: context`) never contribute a
+  edit *re-establishes* Q rather than fighting it. Since Q22 the
+  definer may also be a track Q was HANDED to (`setDefiner`), beside
+  other tracks: it is "the Q-defining clip" of the ruling's own words.
+  One-shots (`periodSource: context`) never contribute a
   period to the LCM in the first place (Q5) and need no exception.
 - Mock parity: `mock_backend.js setSegments` / `setLoopPoints` refuse
   identically, so the harness cannot drift from the engine on this.
+
+## When Q moves under a recorded loop: drift (Q22, owner 2026-09-24)
+
+The guard keeps every EDIT on the grid. A Q hand-off (design_language
+Q22) moves the grid itself: hand Q to the drums, trim their loop to the
+drummer's bars, and the keyboard loop that set the old Q — recorded
+whole, never edited — is neither a multiple nor a divisor of the new Q.
+The owner's ruling: **it keeps playing exactly as recorded and DRIFTS**
+against the grid, each pass lining up differently (the rolling the
+drums were played against). Nothing refuses and nothing explodes, by
+one clause in the period law (`period_law.h`, `timeline_model.js`
+`periodDrifts`): a node whose own period is incoherent with Q
+contributes NOTHING to any fold, exactly like a one-shot — so the island
+cycle, the transport wrap, the heard cycle at arm and the display frame
+all stay on the coherent loops. The drifting lane is badged ↯ and draws
+the pass the playhead is in (session_view.md). Edits on a drifting loop
+still obey the guard: a region edit lands it back on the grid.
+
+The same clause settles a standing rounding hazard. A short take commits
+at a subdivision through THE rounding law (`subdivisionSamples`, Q12),
+so when Q does not divide exactly — Q/8 of 44100 is 5513 samples — its
+period is not an exact divisor: it drifts by a few samples per Q. Before
+the clause, `lcm(44100, 5513)` blew the island cycle up to hours; now it
+folds into nothing like any drifting loop, and the rail does not badge
+a drift that is only this rounding (`driftsByRoundingOnly`).
 
 ## Note for a future golden vector
 

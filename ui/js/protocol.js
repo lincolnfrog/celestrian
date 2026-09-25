@@ -218,6 +218,15 @@ export const BRIDGE_METHODS = [
     // UNDOABLE (a musical fact). State publishes as `periodSource`.
     { name: 'setPeriodSource', params: ['uuid', 'source'] },
 
+    // HAND Q TO A TRACK (Q22): the node becomes the island's Q-definer —
+    // Q := its loop, the zero := its loop top (nothing sounds different);
+    // its region trims then re-establish (Q, zero) like a first take's,
+    // until the next take records new content. Loops that no longer fit
+    // Q drift. A committed looping clip, or a group whose tracks are one
+    // take; refused under a live take. UNDOABLE. The definer publishes as
+    // `definerId`.
+    { name: 'setDefiner', params: ['uuid'] },
+
     // Audio device selection. On Windows a multi-channel interface only
     // appears whole under ASIO — its WDM driver splits the box into stereo
     // endpoints — so picking the driver TYPE matters as much as the device.

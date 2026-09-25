@@ -165,6 +165,10 @@ bool AudioEngine::loadSession(const juce::String& path) {
   // The island facts are the persisted ones (attaching content never
   // establishes any — audit D14-1).
   root_node->setQuantum(loaded.q_samples, loaded.zero);
+  // The Q hand-off's designation (Q22) — after the graph it names; one
+  // naming a missing node falls through (engine_internal::definer).
+  // Every load replaces it (absent = none).
+  root_node->setDefinerDesignation(loaded.definer);
   // THE ROOT'S ANCHOR (docs/frame.md §4): a root that carried a song
   // was anchored at the zero the song was authored on; the loader
   // resolved it from the root's record (absent = unanchored). Never

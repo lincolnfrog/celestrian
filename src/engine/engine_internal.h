@@ -84,16 +84,51 @@ bool hasActiveGeometryOutside(celestrian::AudioNode* node,
  * null when none is committed. */
 celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node);
 
+/** Committed clips (intrinsic > 0) in `node`'s subtree, `node` included. */
+int countCommittedClips(const celestrian::AudioNode* node);
+
 /**
- * THE Q13 DEFINER, stated once: the ONE node whose window re-establishes
- * (Q, zero) and lock-collapses at the next arm — the island's sole
- * committed clip, or its definer STACK (above) — and only while its
- * geometry is the island's ONLY geometry (hasActiveGeometryOutside),
- * no take is armed or capturing (a take performs against the current
- * grid), and no step audition overrides a stack's map (a monitoring
- * gesture is not a trim). Null otherwise. EVERY gate lives here: the
- * arm-time collapse, the map edits, the Remove re-open and the
- * published `definerId` all ask this and add nothing.
+ * A VALID DEFINER TARGET (Q22 — what a Q hand-off may name, and what a
+ * stored designation must still be to count):
+ *   - a CLIP: committed, not armed or recording, not a one-shot;
+ *   - a STACK: not a one-shot, no active sequence, not armed or
+ *     recording, and its committed DIRECT clip children are ONE take —
+ *     identical origin and duration, two or more, none a one-shot — with
+ *     no nested stack holding committed content (the definer stack's
+ *     shape, Q13 for groups, without "the island's only content");
+ *   - WARP GUARD: no ancestor strictly between it and `root` remaps
+ *     time — an active map, an active sequence or a one-shot fold (its
+ *     origin lives in the island clock's frame, so (Q, zero) can be read
+ *     off it).
+ * Never the root itself.
+ */
+bool isDefinerTarget(const celestrian::StackNode& root,
+                     const celestrian::AudioNode& node);
+
+/** SOLE: `node`'s subtree holds every committed clip of the island — the
+ * Q13 definer (derived, or a designated one with no company). */
+bool holdsAllCommittedContent(const celestrian::StackNode& root,
+                              const celestrian::AudioNode& node);
+
+/**
+ * THE Q-DEFINER, stated once: the ONE node whose window re-establishes
+ * (Q, zero) and lock-collapses at the next arm. Null while a take is
+ * armed or capturing (a take performs against the current grid). Then,
+ * in order:
+ *   1. the DESIGNATED definer (Q22 — the island root's
+ *      definerDesignation, set by a setDefiner hand-off) while it names
+ *      a valid definer target (isDefinerTarget; a stack not under a step
+ *      audition). No ONLY-GEOMETRY-WINS gate: other nodes' geometry
+ *      drifts under its re-establishments instead of being stranded
+ *      (Q22 ruling (a)). A stale designation falls through silently.
+ *   2. THE DERIVED Q13 RULE: the island's sole committed clip, or its
+ *      definer STACK (above), and only while its geometry is the
+ *      island's ONLY geometry (hasActiveGeometryOutside) and no step
+ *      audition overrides a stack's map (a monitoring gesture is not a
+ *      trim).
+ * Null otherwise. EVERY gate lives here: the arm-time collapse, the map
+ * edits, the Remove re-open, setTiming and the published `definerId`
+ * all ask this and add nothing.
  */
 celestrian::AudioNode* definer(celestrian::StackNode& root);
 

@@ -633,6 +633,11 @@ bool save(const StackNode& root, double device_sample_rate,
   // as LoadedSession::root_anchored). Its `nodes` are the session.
   top->setProperty("qSamples", (double)q);
   top->setProperty("zero", (double)zero);
+  // The Q hand-off's designation (Q22) is an island fact beside the zero:
+  // written only when set (absent = none), never on a template (pre-Q,
+  // nothing to designate).
+  if (!opts.strip_performances && root.definerDesignation().isNotEmpty())
+    top->setProperty("definer", root.definerDesignation());
   top->setProperty("root", serializeNode(root, q, zero, audioDir, opts));
 
   const auto json = juce::JSON::toString(juce::var(top), true);
@@ -665,6 +670,8 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   out.zero = (int64_t)(double)(o->hasProperty("zero")
                                    ? o->getProperty("zero")
                                    : o->getProperty("epoch"));
+  // The Q hand-off's designation (Q22): absent = none.
+  if (o->hasProperty("definer")) out.definer = o->getProperty("definer").toString();
   out.sample_rate = o->hasProperty("sampleRate")
                         ? (double)o->getProperty("sampleRate")
                         : device_sample_rate;

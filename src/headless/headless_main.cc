@@ -635,13 +635,14 @@ class Host {
   }
 
   /** The audible island cycle by THE PERIOD LAW over the live tree
-   * (message thread). */
+   * (message thread), judged against the island Q (drifting nodes
+   * extend nothing, Q22). */
   int64_t islandCycle(const juce::var& st) {
     auto* root = engine_.findNodeByUuidForTest(st.getProperty("id", "").toString());
     if (root == nullptr) return 0;
     const int64_t q = (int64_t)(double)st.getProperty("quantum", 0);
-    return celestrian::period_law::islandCycle(celestrian::period_law::TreeProvider{},
-                                               root, q, (int64_t)rate_);
+    return celestrian::period_law::islandCycle(
+        celestrian::period_law::TreeProvider{q}, root, q, (int64_t)rate_);
   }
   int64_t islandCycleOnMessageThread(const juce::var& st) {
     int64_t c = 0;

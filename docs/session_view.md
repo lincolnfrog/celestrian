@@ -331,6 +331,14 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
 - **Multi-select is level-scoped.** Shift/Cmd+click selects siblings
   only; selecting a group selects the whole group, not its contents;
   selection never spans nesting depths.
+- **The Q lamp** (Q13, Q22). The track that defines Q carries a LIT
+  teal "Q" lamp in its rail head while Q is provisional. Every other
+  track that could take Q (`lane.canDefine`: a committed looping clip,
+  or a one-take group, with no map, song or one-shot above it remapping
+  time, and no take live)
+  shows an UNLIT lamp on rail hover; clicking it hands Q to that track
+  (`setDefiner`) — it lights, and the lane opens the trim view. ⌘Z
+  undoes the hand-off in one step.
 
 The map-editing gestures — the heard lane's splice handles (swap) and
 ↺ (shift), the same-scale reveal (⇧ = length), the region panel and its
@@ -546,6 +554,25 @@ time_maps.md §6.
     — a glide in motion completes as the hand comes down.
     `prefers-reduced-motion` jumps. Pinned by `frame_hold.test.mjs`
     and `e2e/frame_settle.spec.js`.
+18. **A drifting loop shows the pass you hear** (Q22, 2026-09-24). A
+    loop whose length fits no whole number of Qs (Q was handed to
+    another track and re-trimmed, design_language Q22) lines up
+    differently every pass, so no fixed picture of it is honest. Its
+    lane is drawn from the PASS ZERO (`vm.passZero` — the island time at
+    the frame's left edge in the pass the cursor is in) and re-lines-up
+    at each wrap; it never seats the frame and never widens it
+    (`publishedNodeDrifts`); the rail's period reads `↯ 0.41Q` in the
+    echo tone, its tooltip saying why — unless the drift is only a
+    subdivision's sample rounding (`driftsByRoundingOnly`,
+    engine_lcm_guard.md). The Q13 trim view of a track Q
+    was handed to shares the screen the same way: its frame is the
+    definer's buffer, the cursor sweeps its selection (the loop IS Q),
+    every other lane is drawn from the pass zero of the current drum
+    pass and dimmed outside the selection (`lane.trimSel`,
+    `.trim-dims`). Pinned by `q_handoff.test.mjs`,
+    `e2e/q_handoff.spec.js` and, on the real engine, the spectral
+    listener's `e2e_engine/q_handoff.spec.js` (`verifyHeard` judges
+    each frame against the drawing derived at that frame's clock).
 
 ---
 

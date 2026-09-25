@@ -2,7 +2,8 @@
  * THE PERIOD LAW (src/period_law.h) against the `period_law_cases` tree
  * fixtures in shared/timing_golden.json — through BOTH providers: the
  * ownership tree (message thread) and the graph snapshot (audio
- * thread). ui/js/tests/period_law.test.mjs runs the same fixtures
+ * thread), each judging the drift clause (Q22) against the case's
+ * `quantum`. ui/js/tests/period_law.test.mjs runs the same fixtures
  * through the JS twin.
  */
 
@@ -46,6 +47,9 @@ class PeriodLawTests : public juce::UnitTest {
         seq->steps.push_back({asInt64(v, "sequenceLen"), "song"});
         seq->finalize();
         delete stack->exchangeSequence(seq);
+        // THE STEP AUDITION: its derived map is the step's span.
+        if (v.hasProperty("audition"))
+          stack->setAuditionStep((int)v.getProperty("audition", -1));
       }
       node = std::move(stack);
     }
@@ -82,13 +86,18 @@ class PeriodLawTests : public juce::UnitTest {
       by_id["root"] = &root;
       const int64_t quantum = asInt64(c, "quantum");
       const int64_t fallback = asInt64(c, "fallback");
+      // The island Q the drift clause judges against reaches the
+      // conveniences (ownPeriodOf / getEffectivePeriod) through the
+      // root, as in a live island.
+      root.setQuantum(quantum, 0);
       std::unique_ptr<GraphSnapshot> snap(buildGraphSnapshot(root));
       // Entry index of every node in the snapshot.
       std::map<const AudioNode*, int> entry_of;
       for (int i = 0; i < (int)snap->entries.size(); ++i) {
         entry_of[snap->entries[(size_t)i].node] = i;
       }
-      const SnapProvider sp{*snap};
+      const period_law::TreeProvider tp{quantum};
+      const SnapProvider sp{*snap, quantum};
 
       auto* expected = c.getProperty("expected", juce::var()).getDynamicObject();
       if (expected != nullptr) {
@@ -99,30 +108,49 @@ class PeriodLawTests : public juce::UnitTest {
           if (node == nullptr) continue;
           const int64_t want_own = asInt64(kv.value, "own");
           const int64_t want_contribution = asInt64(kv.value, "contribution");
-          expectEquals((juce::int64)period_law::ownPeriodOf(*node),
+          expectEquals((juce::int64)period_law::ownPeriod(tp, node),
                        (juce::int64)want_own, name + ": tree own(" + id + ")");
-          expectEquals((juce::int64)period_law::contributionOf(*node),
+          expectEquals((juce::int64)period_law::contribution(tp, node),
                        (juce::int64)want_contribution,
                        name + ": tree contribution(" + id + ")");
+          expectEquals((juce::int64)period_law::ownPeriodOf(*node),
+                       (juce::int64)want_own,
+                       name + ": ownPeriodOf(" + id + ") reads the island Q");
+          expectEquals((juce::int64)period_law::contributionOf(*node),
+                       (juce::int64)want_contribution,
+                       name + ": contributionOf(" + id + ") reads the island Q");
           const int idx = entry_of[node];
-          expectEquals((juce::int64)snapEffectivePeriod(*snap, idx),
+          expectEquals((juce::int64)period_law::ownPeriod(sp, idx),
                        (juce::int64)want_own, name + ": snap own(" + id + ")");
-          expectEquals((juce::int64)snapPeriodContribution(*snap, idx),
+          expectEquals((juce::int64)period_law::contribution(sp, idx),
                        (juce::int64)want_contribution,
                        name + ": snap contribution(" + id + ")");
+          expectEquals((juce::int64)snapEffectivePeriod(*snap, idx, quantum),
+                       (juce::int64)want_own,
+                       name + ": snapEffectivePeriod(" + id + ")");
+          expectEquals((juce::int64)snapPeriodContribution(*snap, idx, quantum),
+                       (juce::int64)want_contribution,
+                       name + ": snapPeriodContribution(" + id + ")");
           expectEquals((juce::int64)node->getEffectivePeriod(),
                        (juce::int64)want_own,
                        name + ": getEffectivePeriod(" + id + ") is own");
+          // THE DRIFT PREDICATE agrees on both providers: a node drifts
+          // iff it looped (not a one-shot, not skipped) yet contributes
+          // nothing while playing a period.
+          const bool want_drift = !node->periodFromContext() &&
+                                  want_own > 0 && want_contribution == 0;
+          expect(period_law::drifts(tp, node) == want_drift,
+                 name + ": tree drifts(" + id + ")");
+          expect(period_law::drifts(sp, idx) == want_drift,
+                 name + ": snap drifts(" + id + ")");
         }
       }
       const int64_t want_cycle = asInt64(c, "islandCycle");
       expectEquals(
-          (juce::int64)period_law::islandCycle(period_law::TreeProvider{},
-                                               &root, quantum, fallback),
+          (juce::int64)period_law::islandCycle(tp, &root, quantum, fallback),
           (juce::int64)want_cycle, name + ": tree island cycle");
       expectEquals((juce::int64)snapEffectiveCycle(*snap, quantum, fallback),
                    (juce::int64)want_cycle, name + ": snap island cycle");
-      juce::ignoreUnused(sp);
 
       if (c.hasProperty("skip")) {
         const AudioNode* skipped = by_id[c.getProperty("skip", "").toString()];

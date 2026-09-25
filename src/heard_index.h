@@ -96,8 +96,10 @@ inline Scope childScopeOf(const StackNode& stack, const Scope& scope,
     return child;
   }
   // The stack's own period by THE PERIOD LAW (no map, no song: the LCM
-  // of its looping children's contributions).
-  if (const int64_t own = period_law::ownPeriodOf(stack); own > 0) {
+  // of its looping children's contributions, drifting ones excluded —
+  // judged against the scope's Q, as childContext judges it).
+  if (const int64_t own = period_law::ownPeriodOf(stack, nullptr, scope.quantum);
+      own > 0) {
     child.context_cycle =
         scope.quantum > 0 ? timing::lcm(scope.quantum, own) : own;
   }

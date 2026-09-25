@@ -34,9 +34,25 @@ export function patchRail(row, lane, vm) {
     if (!row._renaming) setText(row.querySelector('.rail-name'), lane.name);
     const tempoChip = row.querySelector('.tempo-chip');
     if (tempoChip) {
-        const show = lane.isQDefiner ? '' : 'none';
+        // LIT on the definer; an unlit OFFER (hover-revealed) on a lane
+        // that could take Q (Q22, view_model canDefineNode).
+        const offer = !lane.isQDefiner && !!lane.canDefine;
+        const show = lane.isQDefiner || offer ? '' : 'none';
         if (tempoChip.style.display !== show) tempoChip.style.display = show;
+        tempoChip.classList.toggle('offer', offer);
+        setTitle(tempoChip, offer
+            ? 'Hand Q to this track: its loop becomes the tempo (Q) and ' +
+              'the grid moves to its top — nothing sounds different. Then ' +
+              'drag its brackets to trim it, like a first take. Tracks ' +
+              'whose length no longer fits drift (↯). Locks when you ' +
+              'record another track; ⌘Z undoes.'
+            : 'This track defines the loop length (Q — the tempo). Drag ' +
+              'its handles in the lane to trim. Locks when you record ' +
+              'another track.');
     }
+    // ↯ DRIFTING (Q22): the loop's length fits no whole number of Qs —
+    // it plays as recorded and lines up differently every pass.
+    row.classList.toggle('drifting', !!lane.drifting);
 
     const arm = row.querySelector('.arm-btn');
     arm.classList.toggle('recording', lane.recording);
@@ -111,6 +127,9 @@ export function patchRail(row, lane, vm) {
         // same no-reflow guarantee. It hands
         // over to the live length when audio starts flowing.
         setText(sub, 'armed');
+    } else if (lane.driftShown && lane.periodQ > 0) {
+        // ↯ DRIFTING (Q22): the period fits no whole number of Qs.
+        setText(sub, '↯ ' + fmtQ(lane.periodQ) + 'Q');
     } else if (lane.kind === 'group') {
         setText(sub, lane.periodQ > 0 ? fmtQ(lane.periodQ) + 'Q' : 'group');
     } else if (lane.periodQ > 0) {
@@ -119,6 +138,8 @@ export function patchRail(row, lane, vm) {
         setText(sub, 'empty');
     }
     sub.classList.toggle('recording', !!lane.recording || clipArmed);
+    const drifting = !!lane.driftShown && !lane.recording && !clipArmed;
+    sub.classList.toggle('drift', drifting);
     // THE FRAME-HEALTH BADGE (docs/sequencer.md §11.6), blowup face: this
     // lane's period is what explodes its scope's frame. Amber chip + a
     // tooltip naming the figure; the fix (if any) lives on the grid.
@@ -129,6 +150,11 @@ export function patchRail(row, lane, vm) {
             fmtQ(hb.othersQ) + 'Q makes the frame ' + fmtQ(hb.cycleQ) + 'Q (' +
             Math.round(hb.ratio) + '× the largest part)' +
             (hb.offerQ ? ' — snap to ' + fmtQ(hb.offerQ) + 'Q in the grid' : ''));
+    } else if (drifting) {
+        setTitle(sub, '↯ Drifting: this loop is ' + fmtQ(lane.periodQ) +
+            'Q long, which fits no whole number of Qs, so every pass ' +
+            'lines up a little differently against the grid. It plays ' +
+            'exactly as recorded; the lane shows the pass you hear.');
     } else if (sub.title) {
         setTitle(sub, '');
     }

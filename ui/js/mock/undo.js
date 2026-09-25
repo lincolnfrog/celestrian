@@ -22,6 +22,8 @@ const UNDOABLE = new Set([
     'createNode', 'deleteNode', 'renameNode', 'reorderNode', 'combineNodes',
     'toggleMute', 'setLoopPoints', 'toggleLoopWindow',
     'setSegments', 'setNodeInput', 'setNodeInputRight', 'setPeriodSource',
+    // Q22: handing Q to a track is one undo step (island facts ride it).
+    'setDefiner',
     // Chain STRUCTURE is undoable (docs/vst3.md §6); slot enable/params
     // stay non-undoable knobs like pan/gain.
     'moveChainSlot', 'addPluginToChain', 'removeChainSlot',

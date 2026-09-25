@@ -206,11 +206,21 @@ export function displayInnerQ(vm, id, q, durationQ) {
  */
 export async function verifyHeard(page, {
     silent = () => false, foldOf = () => 0, tolQ = 0.03, opts = {}, only = null,
+    samples = 0,
 } = {}) {
     const st = await state(page);
-    const L = await listen(page);
+    const L = await listen(page, { samples });
     const Q = L.quantum;
-    const vm = deriveViewModel(st, { fxOpen: new Set(), windowEdit: new Set(), ...opts });
+    const vmOpts = { fxOpen: new Set(), windowEdit: new Set(), ...opts };
+    const vm = deriveViewModel(st, vmOpts);
+    // A DRIFTING lane (Q22) — and every lane of a trim view with company
+    // — is drawn for the pass the cursor is in (vm.passZero), so the
+    // drawing to judge a frame by is the one derived AT that frame's
+    // clock: the same state, its raw clock moved to the frame.
+    const perPass = vm.trimCompany || vm.lanes.some(l => l.drifting);
+    const vmAt = t => (perPass
+        ? deriveViewModel({ ...st, islandPos: t - (st.islandZero || 0) }, vmOpts)
+        : vm);
     const clips = [];
     (function walk(n) {
         for (const c of n.nodes || []) {
@@ -263,19 +273,20 @@ export async function verifyHeard(page, {
             // The lane-frame x of this instant: the view model SEATS the
             // frame zero from the lanes (docs/frame.md; vm.frameZero),
             // so the frame's x is the absolute clock folded from that
-            // zero — never the engine's phase — except the sole definer's
+            // zero — never the engine's phase — except the definer's
             // RAW frame, where the cursor is mapped into the trim brackets.
-            const zeroQ = vm.frameZero / Q;
-            const laneQ = vm.provisionalDefiner
-                ? (vm.loopStartQ || 0) + mod(t / Q - zeroQ, vm.loopCycleQ || vm.cycleQ)
-                : mod(t / Q - zeroQ, vm.cycleQ);
-            const d = underMap(c.id) ? null : displayInnerQ(vm, c.id, laneQ, c.duration / Q);
+            const vmT = vmAt(t);
+            const zeroQ = vmT.frameZero / Q;
+            const laneQ = vmT.provisionalDefiner
+                ? (vmT.loopStartQ || 0) + mod(t / Q - zeroQ, vmT.loopCycleQ || vmT.cycleQ)
+                : mod(t / Q - zeroQ, vmT.cycleQ);
+            const d = underMap(c.id) ? null : displayInnerQ(vmT, c.id, laneQ, c.duration / Q);
             if (d && !d.rest) {
                 const diff = Math.abs(mod(d.innerQ - nearest.inner / Q + c.duration / Q / 2, c.duration / Q) - c.duration / Q / 2);
                 if (diff >= tolQ) {
-                    const lane = vm.lanes.find(l => l.id === c.id);
+                    const lane = vmT.lanes.find(l => l.id === c.id);
                     const tile = (lane.reps || []).find(r => laneQ >= r.startQ && laneQ < r.endQ) || lane.reps?.[0];
-                    console.log(`DISPLAY MISMATCH ${label}\n  node: origin−zero ${(c.origin - st.islandZero) / Q}Q loop [${c.loopStart / Q}, ${c.loopEnd / Q}) active ${c.windowActive} ancestors ${JSON.stringify(ancestorsOf(st, c.id).map(a => ({ id: a.id.slice(0, 6), anchored: a.anchored, originQ: (a.origin - st.islandZero) / Q, loop: [a.loopStart / Q, a.loopEnd / Q], active: a.windowActive })))}\n  lane: periodQ ${lane.periodQ} takeStartQ ${lane.takeStartQ} underMap ${!!lane.underMap} tile ${JSON.stringify(tile)}\n  vm: cycleQ ${vm.cycleQ} zeroQ ${vm.frameZero / Q}`);
+                    console.log(`DISPLAY MISMATCH ${label}\n  node: origin−zero ${(c.origin - st.islandZero) / Q}Q loop [${c.loopStart / Q}, ${c.loopEnd / Q}) active ${c.windowActive} ancestors ${JSON.stringify(ancestorsOf(st, c.id).map(a => ({ id: a.id.slice(0, 6), anchored: a.anchored, originQ: (a.origin - st.islandZero) / Q, loop: [a.loopStart / Q, a.loopEnd / Q], active: a.windowActive })))}\n  lane: periodQ ${lane.periodQ} takeStartQ ${lane.takeStartQ} underMap ${!!lane.underMap} drifting ${!!lane.drifting} tile ${JSON.stringify(tile)}\n  vm: cycleQ ${vmT.cycleQ} zeroQ ${vmT.frameZero / Q} passZeroQ ${vmT.passZero / Q}`);
                 }
                 expect(diff, `${label}: lane draws content[${d.innerQ.toFixed(3)}Q], engine sounds content[${(nearest.inner / Q).toFixed(3)}Q]`)
                     .toBeLessThan(tolQ);

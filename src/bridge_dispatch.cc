@@ -447,6 +447,10 @@ std::vector<Method> engineMethods(Services s) {
                    e->setTiming(args[0].toString(), std::llround(shift), top,
                                 args.size() > 3 && (bool)args[3]);
                  }),
+      // The Q hand-off (Q22): (uuid) — that node becomes the island's
+      // Q-definer.
+      voidMethod("setDefiner", 1,
+                 [e](const auto& args) { e->setDefiner(args[0].toString()); }),
       voidMethod("toggleLoopWindow", 1,
                  [e](const auto& args) { e->toggleLoopWindow(args[0].toString()); }),
       voidMethod("setSequence", 2,

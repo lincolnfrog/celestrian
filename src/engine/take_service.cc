@@ -216,6 +216,11 @@ void AudioEngine::startRecordingInNode(const juce::String& uuid) {
         " (arm targets emptiness, Q7; re-recording is the takes feature)");
     return;
   }
+  // Q22: recording new content — any arm set, even a new empty member
+  // inside a designated stack — ends a Q hand-off exactly as it ends a
+  // first take's trim (the collapse above still saw the designated node
+  // as the definer).
+  releaseDesignationAtArm(nullptr);
 
   // S21 AUTO-TARGET (docs/sequencer.md §3):
   // arming while the playhead is inside a CUED step becomes Mode-2
@@ -433,6 +438,9 @@ void AudioEngine::newTake(const juce::String& uuid) {
   // trimmed definer (clip or stack, one law) collapses to its window
   // first, so the new take's period IS the trimmed loop.
   collapseDefinerAtArm(nullptr);
+  // Q22: a new take of the designated definer itself (or its members)
+  // keeps the hand-off; a new take of any other slot ends it.
+  releaseDesignationAtArm(&targets);
 
   if (!is_playing_global.load()) {
     is_playing_global.store(true);

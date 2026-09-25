@@ -497,6 +497,11 @@ export function patchLaneBody(row, lane, vm, aux) {
     // pass. A dedicated layer, so the three overlay paths below stay
     // untouched by the sequencer entirely.
     patchSeqDims(body, lane, cycleQ);
+    // THE TRIM VIEW WITH COMPANY (Q22): outside the definer's selection
+    // no other lane plays against the definer's buffer this pass — dim
+    // it, as the definer's own dead air is. Its own layer, like the
+    // sequence dims.
+    patchTrimDims(body, lane, cycleQ);
 
     // Reps layer: RECONCILE — reuse divs, update geometry in place.
     // The bar anchors at its Q boundary; in the first-take frame there
@@ -950,6 +955,31 @@ function lanePeaks(lane, aux, bodyW = 0) {
         // trim release.
         raw: !!lane.isQDefiner,
     });
+}
+
+/**
+ * TRIM DIMS (Q22, the trim view with company): a lane drawn under a
+ * handed-Q definer's buffer frame (`lane.trimSel`, the selection in Q)
+ * dims everything outside the selection — only the selection sounds with
+ * the definer this pass. Keyed rebuild on its own layer.
+ */
+function patchTrimDims(body, lane, cycleQ) {
+    let layer = body.querySelector(':scope > .trim-dims');
+    const sel = lane.trimSel;
+    if (!sel || !(sel.endQ > sel.startQ)) {
+        if (layer) layer.remove();
+        return;
+    }
+    if (!layer) {
+        layer = el('div', 'trim-dims');
+        body.appendChild(layer);
+    }
+    const key = JSON.stringify([sel.startQ, sel.endQ, cycleQ]);
+    if (layer._key === key) return;
+    layer._key = key;
+    layer.textContent = '';
+    dimComplementInto(layer, cycleQ, [[sel.startQ, sel.endQ]], 0, cycleQ,
+        'win-dim trim-dim');
 }
 
 /**

@@ -110,16 +110,18 @@ export function armTarget(rel, quantum, contextLoop) {
  *
  *   own(node)          = map ▸ active sequence ▸ (clip: duration |
  *                        stack: LCM of the children's contributions)
- *   contribution(node) = (one-shot || skipped || recording) ? 0 : own
+ *   contribution(node) = (one-shot || skipped || recording || DRIFTS)
+ *                        ? 0 : own
  *   islandCycle        = lcm(quantum || fallback, own(root))
  *
  * `providers` adapt a node shape to the law — { mapPeriod(node) → the
  * ACTIVE map's period or 0, seqLen(node) → the ACTIVE sequence length
- * or 0, children(node) → the child list }. The view model and the
- * mock each pass their own (published state vs. mock state); the law
- * itself is stated here once. A recording clip contributes nothing (its
- * duration is not a period yet — engine parity: duration resets at
- * arm).
+ * or 0, children(node) → the child list, quantum → the island Q (a
+ * number or a function returning one; absent = no drift clause) }. The
+ * view model and the mock each pass their own (published state vs.
+ * mock state); the law itself is stated here once. A recording clip
+ * contributes nothing (its duration is not a period yet — engine
+ * parity: duration resets at arm).
  */
 export function ownPeriod(node, providers, skip = null) {
     const m = Math.round(providers.mapPeriod(node) || 0);
@@ -138,7 +140,52 @@ export function ownPeriod(node, providers, skip = null) {
 export function periodContribution(node, providers, skip = null) {
     if (node === skip || node.periodSource === 'context') return 0;
     if (node.isRecording) return 0;
-    return ownPeriod(node, providers, skip);
+    const own = ownPeriod(node, providers, skip);
+    return ownDrifts(node, providers, own) ? 0 : own;
+}
+
+/**
+ * THE DRIFT CLAUSE (Q22, design_language.md §5; composition.md §3): a
+ * period that is neither a whole multiple nor an exact divisor of the
+ * island Q cannot share a finite cycle with the grid. Such a node DRIFTS
+ * — it plays exactly as recorded (its render folds on its own period
+ * from its own origin) and each pass lines up differently against the
+ * grid — and it contributes NOTHING to any fold, so it never widens a
+ * cycle. It arises when Q is handed to another track (setDefiner) and
+ * the new definer is trimmed off the old grid. False with no Q.
+ */
+export function periodDrifts(period, quantum) {
+    const p = Math.round(period || 0);
+    const q = Math.round(quantum || 0);
+    return q > 0 && p > 0 && p % q !== 0 && q % p !== 0;
+}
+
+/** The island Q a provider set carries (a number, or a function of the
+ * live state — the mock's Q moves under it). 0 = no drift clause. */
+function providerQuantum(providers) {
+    const q = typeof providers.quantum === 'function'
+        ? providers.quantum() : providers.quantum;
+    return q > 0 ? q : 0;
+}
+
+/** Whether `node`'s own period `own` drifts. A node holding an active
+ * SONG is exempt, map or not (S10: free step lengths are a deliberate
+ * drifting pass, badged on the song itself — and a step audition's
+ * derived window is a step of that song): only a period that comes from
+ * a map or from content drifts. */
+function ownDrifts(node, providers, own) {
+    const q = providerQuantum(providers);
+    if (!(q > 0)) return false;
+    if (Math.round(providers.seqLen(node) || 0) > 0) return false;
+    return periodDrifts(own, q);
+}
+
+/** Does `node` DRIFT under the law's providers (which carry the island
+ * Q)? A one-shot or a live take never does — they contribute nothing
+ * for their own reasons. */
+export function nodeDrifts(node, providers) {
+    if (node.periodSource === 'context' || node.isRecording) return false;
+    return ownDrifts(node, providers, ownPeriod(node, providers));
 }
 
 export function islandCycle(root, providers, quantum, fallback) {
@@ -198,6 +245,51 @@ export function commensuratePeriod(node, effectiveQ) {
 }
 
 /**
+ * THE DRIFT CLAUSE over the PUBLISHED node shape (the view's reading of
+ * periodContribution's clause): the node's own period is its active map
+ * (nodeWindowActive — the segments' sum, else the single window, a
+ * clip's clamped to its take), else its content — a clip's take; a
+ * stack's composite coheres by construction, and a song holder is
+ * exempt (S10). Drifting nodes stay out of every frame fold the view
+ * makes, exactly as the law keeps them out of the engine's.
+ */
+export function publishedNodeDrifts(node, effectiveQ) {
+    if (!node || node.periodSource === 'context' || node.isRecording) return false;
+    if (!(Math.round(effectiveQ || 0) > 1)) return false;
+    if (activeSequenceSamples(node) > 0) return false;
+    return periodDrifts(publishedDriftPeriod(node), effectiveQ);
+}
+
+/** The period the drift clause judges on the published shape: the
+ * active map's (a clip's window clamped to its take), else a clip's
+ * take; 0 for a stack without a map (its composite coheres). */
+function publishedDriftPeriod(node) {
+    let p = 0;
+    if (nodeWindowActive(node)) {
+        p = Array.isArray(node.segments) && node.segments.length >= 4
+            ? flatSegPeriod(node.segments)
+            : (node.type === 'stack' ? (node.loopEnd || 0)
+                : Math.min(node.loopEnd || 0, node.duration || 0)) -
+              (node.loopStart || 0);
+    }
+    if (!(p > 0) && node.type !== 'stack') p = node.duration || 0;
+    return p;
+}
+
+/**
+ * Does a drifting node drift only by SAMPLE ROUNDING — its period is the
+ * grid's own subdivision (Q/2, Q/4, Q/8 through THE rounding law, the
+ * length a short take commits at) where Q does not divide exactly? It
+ * still drifts (a few samples per Q), so the law keeps it out of every
+ * fold, but it is no musical mismatch: the rail does not badge it.
+ */
+export function driftsByRoundingOnly(node, effectiveQ) {
+    const p = Math.round(publishedDriftPeriod(node));
+    const q = Math.round(effectiveQ || 0);
+    return q > 1 && p > 0 && SUBDIVISIONS.some(k => subdivisionSamples(q, k) === p);
+}
+
+/**
  * LCM for a stack's children (recursive for nested stacks).
  * A nested stack contributes its internal LCM as its composite duration.
  * Clip contributions are COMMENSURATE (see commensuratePeriod): the
@@ -212,6 +304,8 @@ export function calculateStackLCM(stackNodes, effectiveQ) {
         // One-shots excluded (Q5): period := context cycle — they adopt
         // the scope's cycle, never extend it (engine fold parity).
         if (child.periodSource === 'context') return;
+        // Drifting children excluded (Q22): they never widen a cycle.
+        if (publishedNodeDrifts(child, effectiveQ)) return;
 
         if (child.type === 'clip' && child.duration > 0) {
             const p = commensuratePeriod(child, effectiveQ);

@@ -110,18 +110,18 @@ export function buildLane(lane) {
     // Status word lives on the name row, right-aligned — it never
     // competes with the buttons row for width
     head.appendChild(el('span', 'rail-status armed-word mono'));
-    // The Q-DEFINER badge: while the island's tempo is still
-    // provisional, the track that defines it says so. Locked islands
-    // own their Q — the badge retires at the 2nd take. A LAMP, not a
-    // word: fixed-size, so it can never truncate on a crowded rail. A
-    // lit "Q" indicator in the deck's record-lamp vocabulary; the
-    // tooltip carries the explanation.
-    const tempo = el('span', 'tempo-chip mono', {
-        textContent: 'Q',
-        title: 'This take defines the loop length (Q — the tempo). ' +
-            'Drag its handles in the lane to trim. Locks when you record ' +
-            'another track.' });
+    // THE Q LAMP: while the island's tempo is provisional, the track
+    // that defines it says so — LIT (the badge retires when the next take
+    // locks it). On any other track that could take Q it is an UNLIT
+    // lamp, shown on rail hover: click it to HAND Q to this track (Q22).
+    // A LAMP, not a word: fixed-size, so it can never truncate on a
+    // crowded rail; the tooltip carries the explanation (patchRail).
+    const tempo = el('button', 'tempo-chip mono', { textContent: 'Q' });
     tempo.style.display = 'none';
+    tempo.addEventListener('click', () => {
+        const l = row._lane;
+        if (l && l.canDefine && ctx.cb.onSetDefiner) ctx.cb.onSetDefiner(l.id);
+    });
     head.appendChild(tempo);
     if (lane.kind === 'group') {
         // Ungroup: children move up to this group's slot; the shell

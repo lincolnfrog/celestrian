@@ -32,7 +32,8 @@ namespace celestrian::session_io {
  * CANONICAL (serialized): node type, uuid, name, child order,
  * inputChannel, mute, loop points + bypass, fx params, originQ/periodQ/
  * windowQ, contextCycle, a clip's top + re-time (loopTopQ/retimeQ,
- * additive), island quantum + zero. The ROOT is one node
+ * additive), island quantum + zero, the Q hand-off's designation
+ * (`definer`, additive — written only when set). The ROOT is one node
  * record like every stack (`root`, audit D7-3): the bundle level holds
  * only the island facts and the project identity.
  * DERIVED (never): launchPoint, anchors, cycle projections, clip x/y px.
@@ -75,6 +76,11 @@ struct LoadedSession {
   // 2026-09-17). Resolved here because the zero is a load-level fact.
   bool root_anchored = false;
   int64_t root_origin = 0;
+  // THE Q HAND-OFF'S DESIGNATION (Q22): the uuid the bundle's `definer`
+  // key names, empty when absent (none). An island fact beside the zero;
+  // applied after the graph (one naming a missing node falls through,
+  // engine_internal::definer).
+  juce::String definer;
   std::vector<std::unique_ptr<AudioNode>> children;
   juce::String display_name;  // project display name (docs/projects.md)
   juce::String created;       // creation stamp, echoed verbatim

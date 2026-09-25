@@ -7,7 +7,7 @@
  */
 
 import { state, someNode, findNode } from './state.js';
-import { effectiveCycle, effectivePeriodOf } from './cycles.js';
+import { effectiveCycle, ownPeriodOfNode } from './cycles.js';
 
 /** The path the dialog verb records in place of a chosen file. */
 export const DIALOG_PATH = '<dialog>';
@@ -21,11 +21,13 @@ export const kMaxTakeSamples = 2 ** 30;
 const takeIsLive = () => someNode(n => n.isRecording || n.isPendingStart);
 
 /** The span the engine would render (docs/bounce.md): the root's
- * effective island cycle, any other node's effective period. */
+ * effective island cycle, any other node's OWN period — what it plays
+ * (engine parity bounce.cc period_law::ownPeriodOf: a drifting loop,
+ * Q22, still bounces its own length). */
 export function bounceSpanOf(uuid) {
     if (uuid === state.root.id) return effectiveCycle(state.islandQ);
     const node = findNode(uuid);
-    return node ? effectivePeriodOf(node) : 0;
+    return node ? ownPeriodOfNode(node) : 0;
 }
 
 /** `start` (optional, absolute samples) is the render's start the app

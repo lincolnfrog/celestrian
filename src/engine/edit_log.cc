@@ -238,6 +238,22 @@ std::vector<celestrian::ClipNode*> collapseLeaves(celestrian::AudioNode& node) {
   }
   return {};
 }
+
+/** A Q HAND-OFF RE-OPENS a lock-collapsed node (Q22) exactly when its
+ * leaves carry the collapse marker and nothing was authored on the node
+ * or its leaves since (the collapse consumed every window): the re-open
+ * then plays the identical loop, audio-neutral. A node given new
+ * geometry after its lock keeps its collapse — re-opening would replace
+ * that geometry with the old trim. */
+bool reopensCollapsed(celestrian::AudioNode& node) {
+  const auto leaves = collapseLeaves(node);
+  if (leaves.empty() || !leaves[0]->isCollapsed()) return false;
+  if (node.storedMap().n > 0) return false;
+  for (auto* leaf : leaves) {
+    if (leaf->storedMap().n > 0) return false;
+  }
+  return true;
+}
 }  // namespace
 
 bool AudioEngine::collapseNode(celestrian::AudioNode& node, CollapseFacts& f) {
@@ -304,6 +320,36 @@ void AudioEngine::collapseDefinerAtArm(const celestrian::AudioNode* exclude) {
   celestrian::Edit e(celestrian::Edit::Kind::Collapse);
   e.uuid = d->getUuid();
   record(std::move(e));
+}
+
+void AudioEngine::releaseDesignationAtArm(
+    const std::vector<celestrian::ClipNode*>* retakes) {
+  // Q22 LOCK AT THE NEXT ARM (owner ruling (b)): recording new content
+  // ends a hand-off exactly as it ends a first take's trim — the
+  // designated definer was collapsed just before (collapseDefinerAtArm
+  // still saw it), and the designation clears as its own undoable step.
+  // A designation naming a node no longer in the island is left alone:
+  // only undoing past this arm can bring the node back, and then the
+  // designation it had is the right one.
+  const juce::String id = root_node->definerDesignation();
+  if (id.isEmpty()) return;
+  auto* designated = findNodeByUuid(root_node.get(), id);
+  if (designated == nullptr) return;
+  if (retakes != nullptr && !retakes->empty()) {
+    // A NEW TAKE of the designated node itself, or of its members,
+    // re-records the definer: the hand-off stands.
+    const bool all_inside = std::all_of(
+        retakes->begin(), retakes->end(), [designated](const auto* clip) {
+          for (const celestrian::AudioNode* n = clip; n != nullptr;
+               n = n->getParent()) {
+            if (n == designated) return true;
+          }
+          return false;
+        });
+    if (all_inside) return;
+  }
+  // The designation alone: no node, nothing else changes.
+  record(celestrian::Edit(celestrian::Edit::Kind::Definer));
 }
 
 celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
@@ -1050,6 +1096,63 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       }
       if (e.setsRetime) clip->setRetime(e.iretime);
       if (e.setsTop) clip->setStoredTop(e.itop);
+      return inv;
+    }
+    case K::Definer: {
+      // THE Q HAND-OFF (Q22, setDefiner) and the lock that ends it
+      // (releaseDesignationAtArm). The node half (`uuid`) re-opens a
+      // lock-collapsed definer so its region can grow again, or — the
+      // inverse — re-collapses it; the designation and the grid ride
+      // along, each captured into the inverse.
+      AudioNode* node = nullptr;
+      if (e.uuid.isNotEmpty()) {
+        node = find(e.uuid);
+        if (node == nullptr || node == root_node.get()) return {};
+      }
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
+      Edit inv(K::Definer);
+      inv.uuid = e.uuid;
+      // THE TOP (the definer's "1" is its region start, Q13): swapped on
+      // the take the re-open exposes, so it is read and restored in the
+      // re-opened content's coordinates.
+      const auto swapTop = [&] {
+        if (clip == nullptr || !e.setsTop) return;
+        inv.setsTop = true;
+        inv.itop = clip->storedTop();
+        clip->setStoredTop(e.itop);
+      };
+      if (node != nullptr && e.b1) {
+        // Undo of a re-opening hand-off: the top first, then the node
+        // re-collapses to the window the re-open restored (collapseNode's
+        // derivation — the Insert/uuid2 precedent); redo re-derives the
+        // re-open, so no payload rides back.
+        swapTop();
+        CollapseFacts f;
+        collapseNode(*node, f);
+      } else if (node != nullptr) {
+        // RE-OPEN ⟹ UNCOLLAPSE, exactly as the Remove re-open does: every
+        // collapse level unwinds from the markers, the full takes return
+        // with the old trim as the node's window (audio-neutral).
+        if (reopensCollapsed(*node)) {
+          const auto leaves = collapseLeaves(*node);
+          const int64_t unwound = leaves[0]->getContentBase();
+          uncollapseNode(*node, unwound, leaves[0]->collapsedFrom(), unwound,
+                         unwound + leaves[0]->getIntrinsicDuration());
+          inv.b1 = true;
+        }
+        swapTop();
+      }
+      inv.s1 = root_node->definerDesignation();
+      root_node->setDefinerDesignation(e.s1);
+      // The grid: no origin moves with it (the re-open's are ungated, as
+      // in the Remove re-open), so the facts publish on the current
+      // generation.
+      if (e.setsIsland) {
+        inv.setsIsland = true;
+        inv.iq = root_node->getQuantum();
+        inv.izero = root_node->getZero();
+        setIslandQuantum(e.iq, e.izero, inv);
+      }
       return inv;
     }
     case K::Nop:

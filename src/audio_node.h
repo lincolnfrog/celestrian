@@ -649,7 +649,8 @@ class AudioNode {
    * output is periodic in exactly the window length. THE PERIOD LAW is
    * stated once in period_law.h (own = map ▸ sequence ▸ content); this
    * is `period_law::ownPeriodOf(*this)` — the node's OWN period, one-
-   * shot or not. Message thread only (walks the ownership tree); the
+   * shot or not, judged against its island Q (a drifting child extends
+   * nothing, Q22). Message thread only (walks the ownership tree); the
    * audio thread uses the snapshot provider (snapEffectivePeriod).
    */
   int64_t getEffectivePeriod() const;

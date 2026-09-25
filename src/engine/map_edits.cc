@@ -45,8 +45,9 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
   // is refused — categorical, both sides (the UI snaps; the engine
   // enforces). One incoherent map period LCM-explodes the effective
   // cycle and blanks the timeline.
-  // The sole exception is the Q13 sole-definer re-trim below, where
-  // the window length *re-establishes* Q rather than fighting it.
+  // The sole exception is the DEFINER's re-trim below (the Q13 definer,
+  // or a designated one — Q22), where the window length *re-establishes*
+  // Q rather than fighting it.
   // Lengths are checked post-clamp (the same clamp the clip branch
   // applies), so the judged window is the one that would be stored.
   if (auto* target = findNodeByUuid(root_node.get(), uuid)) {
@@ -115,7 +116,9 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
   // PRESERVING — the inner position sounding RIGHT NOW keeps sounding:
   // origin' = t0 − pT, and for a STACK
   // that origin shift moves its whole subtree (applySetsOrigin), so
-  // the members follow their group with no per-member riders. The
+  // the members follow their group with no per-member riders. A
+  // DESIGNATED definer with company (Q22) re-establishes the same
+  // (Q, zero) but keeps its origin (zero := origin + window start). The
   // re-establishment rides the LoopPoints edit so it undoes atomically
   // with the window. hasActiveTake: an armed/capturing take is already
   // performing against the current grid — while a take is in flight
@@ -138,7 +141,21 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
     e.d2 = (double)end;
     const bool definer = clip_definer || stack_definer;
     const bool anchored = clip != nullptr || target->isAnchored();
-    if (definer && end > start && D > 0) {
+    if (definer && end > start && D > 0 &&
+        !celestrian::engine_internal::holdsAllCommittedContent(*root_node,
+                                                               *target)) {
+      // A DESIGNATED DEFINER WITH COMPANY (Q22) KEEPS ITS ORIGIN: other
+      // tracks play against it, and nothing re-times unless the user does
+      // it explicitly (loop_selection.md §9, P1). The window re-grids the
+      // island — Q := its length, zero := origin + start (the window's
+      // top, where the loop anchors) — and the company that no longer
+      // fits the grid drifts (the period law's drift clause).
+      e.setsIsland = true;
+      e.iq = end - start;
+      e.izero = (anchored ? target->origin_samples.load() : root_node->getZero()) +
+                start;
+    } else if (definer && end > start && D > 0) {
+      // SOLE (Q13): the definer is the island's only content.
       const int64_t len = end - start;
       // The inner position sounding NOW by the actual playback equation
       // (heard_index.h — one statement of the render, clip or stack,
@@ -282,9 +299,10 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // multiple of Q — categorical, both sides (the UI snaps; the engine
   // enforces). One incoherent period LCM-explodes the effective cycle
   // and blanks the timeline.
-  // The sole exception is the Q13 sole-definer re-trim below, where
-  // the period *re-establishes* Q rather than fighting it. (The n ≤ 1
-  // delegations above are guarded inside setLoopPoints.)
+  // The sole exception is the DEFINER's re-trim below (Q13, or a
+  // designated definer — Q22), where the period *re-establishes* Q
+  // rather than fighting it. (The n ≤ 1 delegations above are guarded
+  // inside setLoopPoints.)
   {
     // Clip or definer STACK alike (engine_internal::definer, every
     // gate inside): the definer's map re-establishes Q.
@@ -313,7 +331,8 @@ void AudioEngine::setSegments(const juce::String& uuid,
   // re-anchor generalized through the map: the buffer position
   // sounding RIGHT NOW keeps sounding (inverse-mapped when still
   // covered; the old heard phase folds into the new period when the
-  // cut removed it).
+  // cut removed it). A designated definer with company (Q22) keeps its
+  // origin instead (zero := origin + mapOffset(0)).
   // Q18: ONE path for the clip definer and the definer STACK — the
   // node's inner position sounding now re-anchors under the new map;
   // for a stack the origin shift moves its subtree (applySetsOrigin).
@@ -326,31 +345,43 @@ void AudioEngine::setSegments(const juce::String& uuid,
     const bool stack_definer =
         stack != nullptr && intrinsic > 0 && definer_node == stack;
     if (clip_definer || stack_definer) {
-      // The node's RECEIVED clock (heard_index.h: the ancestors' maps
-      // composed) — the frame its origin lives in.
-      const celestrian::heard::Received rec = celestrian::heard::receivedAt(
-          *target, global_transport_pos.load(), rootScope());
-      const int64_t t0 = rec.clock;
-      const TimeMap old_map = target->activeTimeMap();
       const int64_t period = map.period();
       const int64_t a0 = map.mapOffset(0);
-      int64_t origin_new = t0 - a0;  // no old map: heard phase 0 at t0
-      if (old_map.active() && old_map.period() > 0) {
-        // heard_index.h: the position sounding now, re-anchored under
-        // the new map (old heard phase folds in when the cut removed it).
-        const int64_t p0 =
-            celestrian::heard::ownInnerAt(*target, rec.clock, rec.scope).inner;
-        origin_new = celestrian::heard::originForHeard(
-            map, t0, p0, old_map.heardOffsetOf(p0));
+      const bool anchored = clip != nullptr || target->isAnchored();
+      if (!celestrian::engine_internal::holdsAllCommittedContent(*root_node,
+                                                                 *target)) {
+        // A DESIGNATED DEFINER WITH COMPANY (Q22) KEEPS ITS ORIGIN (the
+        // setLoopPoints rule): Q := the map's period, zero := origin + a0
+        // (the map's heard top); the company that no longer fits drifts.
+        e.setsIsland = true;
+        e.iq = period;
+        e.izero =
+            (anchored ? target->origin_samples.load() : root_node->getZero()) + a0;
+      } else {
+        // SOLE (Q13): the node's RECEIVED clock (heard_index.h: the
+        // ancestors' maps composed) — the frame its origin lives in.
+        const celestrian::heard::Received rec = celestrian::heard::receivedAt(
+            *target, global_transport_pos.load(), rootScope());
+        const int64_t t0 = rec.clock;
+        const TimeMap old_map = target->activeTimeMap();
+        int64_t origin_new = t0 - a0;  // no old map: heard phase 0 at t0
+        if (old_map.active() && old_map.period() > 0) {
+          // heard_index.h: the position sounding now, re-anchored under
+          // the new map (old heard phase folds in when the cut removed it).
+          const int64_t p0 =
+              celestrian::heard::ownInnerAt(*target, rec.clock, rec.scope).inner;
+          origin_new = celestrian::heard::originForHeard(
+              map, t0, p0, old_map.heardOffsetOf(p0));
+        }
+        if (anchored) {
+          e.setsOrigin = true;
+          e.iorg = origin_new;
+          e.liftsAncestors = true;  // the definer's ancestors follow (Q18)
+        }
+        e.setsIsland = true;
+        e.iq = period;
+        e.izero = origin_new + a0;
       }
-      if (clip != nullptr || target->isAnchored()) {
-        e.setsOrigin = true;
-        e.iorg = origin_new;
-        e.liftsAncestors = true;  // the definer's ancestors follow (Q18)
-      }
-      e.setsIsland = true;
-      e.iq = period;
-      e.izero = origin_new + a0;
       if (stack != nullptr) {
         // MEMBERS WHOLE (the definer invariant): any member window or
         // override goes whole with the same edit.

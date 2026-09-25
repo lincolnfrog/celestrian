@@ -555,6 +555,24 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setTiming(const juce::String& uuid, int64_t shift,
                  std::optional<int64_t> top = std::nullopt, bool live = false);
 
+  /**
+   * THE Q HAND-OFF (Q22): make node `uuid` the island's Q-definer — the
+   * DESIGNATED definer engine_internal::definer answers first (published
+   * as `definerId`). ONE undoable edit (Edit::Definer): a lock-collapsed
+   * node re-opens (full buffer back, its old trim as the window —
+   * audio-neutral), a clip's stored ↺ top clears, the designation is
+   * stored, and the grid is read off the node: Q := its own period (map
+   * ▸ content, on a grid of its own), zero := its origin + a0. Nothing
+   * moves; sequences rescale with Q as for any re-establishment. From
+   * then on its trims re-grid the island (keeping its origin while other
+   * content plays against it) until the next arm locks it. Refused
+   * (logged, nothing recorded) under a live take, before Q exists, for
+   * an unknown uuid or the root, for a node that is not a valid definer
+   * target (engine_internal::isDefinerTarget) or has no period, and for
+   * the node that already is the definer. Message thread.
+   */
+  void setDefiner(const juce::String& uuid);
+
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
       const float* const* input_channel_data, int num_input_channels,
@@ -934,6 +952,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * definer) before an arm, unless the definer IS `exclude`. A no-op
    * when there is no definer or nothing to collapse. */
   void collapseDefinerAtArm(const celestrian::AudioNode* exclude);
+  /** Q22 LOCK AT THE NEXT ARM: record a Definer edit clearing the
+   * island's designation — after collapseDefinerAtArm, which must still
+   * see the designated node as the definer. Nothing when no designation
+   * is stored or it names a node no longer in the island (kept for the
+   * undo that revives it), and nothing for a NEW TAKE whose `retakes`
+   * all lie in the designated node's subtree (the definer re-recording
+   * itself keeps its hand-off). */
+  void releaseDesignationAtArm(
+      const std::vector<celestrian::ClipNode*>* retakes);
   void shiftOriginsGated(celestrian::AudioNode& node, int64_t delta,
                          uint32_t gate);
   /** Apply an edit's setsOrigin/iorg to `node` as a subtree shift

@@ -92,12 +92,14 @@ bool AudioEngine::bounce(const juce::String& uuid,
   // cycle (Q19 — the cycle the transport wraps on; a root window
   // shorter than Q repeats within it); any other node spans its own
   // period by THE PERIOD LAW (map ▸ sequence ▸ content: a windowed
-  // one-shot bounces its window, a one-shot song its song).
+  // one-shot bounces its window, a one-shot song its song), judged
+  // against the island Q (a drifting member extends nothing, Q22).
   const bool is_root = target == root_node.get();
   const int64_t span =
       is_root ? (islandCommittedClipCount() > 0 ? calculateEffectiveCycleLength()
                                                 : 0)
-              : celestrian::period_law::ownPeriodOf(*target);
+              : celestrian::period_law::ownPeriodOf(*target, nullptr,
+                                                    root_node->getQuantum());
   const celestrian::timing::TimeMap map = target->activeTimeMap();
   const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
   // A CLIP starts at its ↺ TOP (loop_selection.md §9; owner, 2026-09-24):

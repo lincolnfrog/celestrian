@@ -62,6 +62,15 @@ seat. A stack stores no top: it seats from its region start.
   root's own origin — the zero the view had seated when the song was
   authored (§4) — so authoring a song moves nothing.
 - One-shots do not seat (their offset is their placement, Q5).
+- Drifting loops do not seat (Q22): a loop whose length fits no whole
+  number of Qs lands its top somewhere else every pass, so it has no top
+  that stays put. Its lane is drawn from the PASS ZERO instead — the
+  island time at the left edge in the pass the cursor is in
+  (`rawClock − playheadQ·Q`, `vm.passZero`) — so what the lane shows
+  under the cursor is what sounds. In the Q13 trim view of a track Q was
+  handed to, every other lane is drawn that way, under the definer's
+  buffer for the current pass of its loop, and dimmed outside the
+  selection.
 - A recording take seats by its top alone; its period is unknown until
   stop and must not move the lanes after it as it grows. So the frame
   during recording *is* the frame after commit.

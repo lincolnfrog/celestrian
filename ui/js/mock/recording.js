@@ -10,11 +10,11 @@
 import { posMod, lcm } from '../math_utils.js';
 import { launchPointFor, nextStopBoundary, armTarget } from '../timeline_model.js';
 import { mapPeriod, mapOffset, mapActive } from '../time_map.js';
-import { activeGeometryOutside,
+import {
     state, findNode, findParent, nodeMap, intrinsicOfNode, activeMapOf,
     rootActiveMap, auditionMapOf, serializeGraph,
-    committedClipCount, findSoleCommittedClip, anyNodeRecording,
-    effectiveQuantumForState, definerStackNode,
+    committedClipCount, anyNodeRecording, islandDefiner,
+    effectiveQuantumForState,
     shiftOrigins, settleAnchors, frameOriginOf, nodeInner, rootFrameTop,
 } from './state.js';
 import { pushUndo, pushUndoSnapshot, onHistoryCleared } from './undo.js';
@@ -98,6 +98,7 @@ export function startRecordingInNode(id) {
     }
 
     lockCollapseAtArm(targets.map(t => t.id));
+    endHandoffAtArm(targets.map(t => t.id), false);
 
     // The pending performance: its undo snapshot + the step auto-gate
     // target (the auditioning DIRECT parent, §11.5 — root included).
@@ -133,10 +134,13 @@ export function startRecordingInNode(id) {
  * restores.
  */
 function lockCollapseAtArm(excludeIds) {
-    if (committedClipCount() === 1) {
-        const definer = findSoleCommittedClip();
+    // THE DEFINER (state.islandDefiner — the sole clip or definer stack,
+    // or the node Q was handed to, Q22): one law for every kind.
+    const islandDef = islandDefiner();
+    {
+        const definer = islandDef && islandDef.type === 'clip' ? islandDef : null;
         if (definer && !excludeIds.includes(definer.id) &&
-            !definer.loopBypassed && !activeGeometryOutside(definer)) {
+            !definer.loopBypassed) {
             const ls = definer.loopStart || 0;
             const le = Math.min(definer.loopEnd || 0, definer.duration);
             const len = le - ls;
@@ -172,9 +176,8 @@ function lockCollapseAtArm(excludeIds) {
     // len) before == base s + ((t − (O + s)) mod len) after. Stack
     // window consumed.
     {
-        const ds = definerStackNode();
-        if (ds && !activeGeometryOutside(ds) &&
-            !anyNodeRecording() && !ds.loopBypassed &&
+        const ds = islandDef && islandDef.type === 'stack' ? islandDef : null;
+        if (ds && !ds.loopBypassed &&
             !(Array.isArray(ds.segments) && ds.segments.length >= 2)) {
             const members = (ds.nodes || []).filter(c =>
                 c.type === 'clip' && (c.duration || 0) > 0 && !c.isRecording);
@@ -203,6 +206,34 @@ function lockCollapseAtArm(excludeIds) {
             }
         }
     }
+}
+
+/**
+ * THE HAND-OFF LOCKS AT THE NEXT TAKE (Q22, engine parity: the Definer
+ * edit clearing the designation after collapseDefinerAtArm): a take that
+ * records NEW content anywhere ends the hand-off — the handed-Q definer
+ * is an ordinary track again, exactly as a first take's definer state
+ * ends at the second arm. A new take of the definer itself (`retake`
+ * with every target inside its subtree) keeps it. Its own undo step,
+ * after the collapse's.
+ */
+function endHandoffAtArm(targetIds, retake) {
+    if (!state.definerDesignation) return;
+    const d = findNode(state.definerDesignation);
+    // A designation naming a node no longer in the island is inert —
+    // clearing it would log an undo step that changes nothing, and an
+    // undo of the delete revives it (engine parity).
+    if (!d) return;
+    const inside = id => {
+        for (let n = findNode(id); n; n = findParent(n.id)) {
+            if (n === d) return true;
+        }
+        return false;
+    };
+    if (retake && d && targetIds.every(inside)) return;
+    pushUndo();
+    state.definerDesignation = '';
+    console.log('[MockBackend] hand-off locked at arm — Q stays', state.islandQ);
 }
 
 /**
@@ -246,6 +277,7 @@ export function newTake(id) {
         }
     }
     lockCollapseAtArm([]);
+    endHandoffAtArm(targets.map(t => t.id), true);
     const pending = { ids: targets.map(t => t.id), snap: serializeGraph(),
                       gateStack: null, gateStep: -1, retake: true };
     targets.forEach(armRetake);

@@ -10,12 +10,16 @@ import { lcm } from '../math_utils.js';
 import { state, activeMapOf, rootActiveMap } from './state.js';
 import { mapPeriod } from '../time_map.js';
 import { activeSeqLen } from './sequence.js';
-import { periodContribution, islandCycle } from '../timeline_model.js';
+import {
+    periodContribution, islandCycle, nodeDrifts, ownPeriod,
+} from '../timeline_model.js';
 
 /** THE PERIOD LAW's providers over the MOCK state shape: the active
  * map is audition-aware (activeMapOf; the root's via rootActiveMap),
- * the sequence is the holder's, children are `nodes`. The root is a
- * synthetic stack holder ('mock-root' is not in `nodes`). */
+ * the sequence is the holder's, children are `nodes`, and the island Q
+ * is read live (the drift clause, Q22 — a setDefiner or a definer trim
+ * moves it). The root is a synthetic stack holder ('mock-root' is not
+ * in `nodes`). */
 const rootHolder = () => ({
     type: 'stack', isRoot: true, nodes: state.nodes,
     sequence: state.rootSequence, sequenceBypassed: state.rootSequenceBypassed,
@@ -27,7 +31,29 @@ const providers = {
     },
     seqLen: n => activeSeqLen(n),
     children: n => n.nodes || [],
+    quantum: () => state.islandQ,
 };
+
+/** Does `node` DRIFT (Q22): its own period fits no whole number of Qs
+ * and no exact division of one — it plays as recorded and folds into
+ * nothing. Engine parity: period_law's drift clause. */
+export function driftsNow(node) {
+    return nodeDrifts(node, providers);
+}
+
+/** What `node` PLAYS (the period law's own period: map ▸ song ▸
+ * content) — a drifting node's too; a bounce's span (engine parity
+ * bounce.cc: the law with the island Q). */
+export function ownPeriodOfNode(node) {
+    return ownPeriod(node, providers);
+}
+
+/** The own period with NO drift clause — what setDefiner makes Q
+ * (engine parity: ownPeriodOf(node, nullptr, 0)): a group's members
+ * count whether or not they fit the Q about to be replaced. */
+export function rawPeriodOfNode(node) {
+    return ownPeriod(node, { ...providers, quantum: 0 });
+}
 
 /** LCM of committed clip durations (the engine's calculateTimelineLength). */
 export function committedCycle(Q) {

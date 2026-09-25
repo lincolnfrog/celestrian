@@ -27,7 +27,7 @@ import {
     lcm, calculateStackLCM, commensuratePeriod, computeEffectiveQuantum,
     nextStopBoundary, timelineLcm, stackEffectivePeriod, isAuditionWindow,
     activeSequenceSamples, sequenceProgram, sequenceTotalSamples,
-    periodContribution,
+    periodContribution, publishedNodeDrifts, driftsByRoundingOnly,
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
@@ -675,7 +675,7 @@ function fadeSegsOf(visits, stepsQ, startsQ, totalQ, bits, cued, steps,
 function scopeMembers(children, quantum) {
     return (children || []).map(c => ({
         id: c.id,
-        periodQ: effectivePeriod(c) / quantum,
+        periodQ: effectivePeriod(c, quantum) / quantum,
         knob: c.type === 'stack' && activeSeqSamples(c) > 0 ? 'sequence'
             : (c.windowActive ? 'window' : null),
     })).filter(m => m.periodQ > 0);
@@ -1032,6 +1032,7 @@ function computeCycleSamples(nodes, quantum, { audible = false } = {}) {
     nodes.forEach(n => {
         if (n.isRecording) return;
         if (n.periodSource === 'context') return;  // Q5: one-shots excluded
+        if (publishedNodeDrifts(n, quantum)) return;  // Q22: drifting excluded
         periods.push(n.type === 'stack'
             ? stackEffectivePeriod(n, quantum, { audible })
             : clipCycleContribution(n, quantum));
@@ -1078,10 +1079,10 @@ const vmPeriodProviders = {
     seqLen: activeSeqSamples,
     children: n => n.nodes || [],
 };
-function effectivePeriod(node) {
+function effectivePeriod(node, quantum) {
     // THE PERIOD LAW (timeline_model.periodContribution) over the
-    // published node shape.
-    return periodContribution(node, vmPeriodProviders);
+    // published node shape, with the island Q for the drift clause.
+    return periodContribution(node, { ...vmPeriodProviders, quantum });
 }
 
 /**
@@ -1172,7 +1173,8 @@ function topOf(n, authored) {
  * group is transparent — its members seat in the order shown, exactly
  * as top-level lanes do, so a take recorded into a group starts at the
  * left edge just as one recorded loose would. One-shots do not seat
- * (their offset IS their placement, Q5). A recording take seats by its
+ * (their offset IS their placement, Q5), nor do drifting loops (Q22:
+ * every pass lands their top somewhere else). A recording take seats by its
  * top alone: its period is unknown until stop and must not move the
  * lanes after it as it grows. An unanchored stack has no content and
  * no top. The zero is always on the Q grid, so the arm marker and
@@ -1193,6 +1195,9 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
     }
     const visit = ns => (ns || []).forEach(n => {
         if (n.periodSource === 'context') return;
+        // A DRIFTING loop (Q22) has no top that stays put in the frame —
+        // each pass lands it elsewhere — so it never seats.
+        if (publishedNodeDrifts(n, quantum)) return;
         const authored = mapAuthored(n, mapOf(n, quantum));
         if (n.type === 'stack') {
             if (!n.anchored) return;
@@ -1773,8 +1778,14 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
         ctx.oneShotShot = oneShot && !lane.windowEditing
             ? { startQ: lane.takeStartQ || 0, lenQ: lane.periodQ || 0 }
             : null;
+        // THE WARP GUARD (canDefineNode): beneath an active map, a song
+        // or a one-shot's fold, time is remapped — no member can take Q.
+        const prevWarp = ctx.underWarp;
+        ctx.underWarp = prevWarp || nodeWindowActive(node) ||
+            activeSeqSamples(node) > 0 || oneShot;
         (node.nodes || []).forEach(c =>
             pushLane(c, depth + 1, ownMap || mapCtx, ctx));
+        ctx.underWarp = prevWarp;
         ctx.oneShotShot = prevShot;
         ctx.scopeCycleQ = prevScope;
         // An ACTIVE sequence projects its gates onto the child lanes as
@@ -2266,6 +2277,89 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
  */
 function pushLane(node, depth, mapCtx, ctx) {
     if (depth > ctx.maxDepth) return;
+    const at = ctx.lanes.length;
+    const drifting = ctx.qEstablished && publishedNodeDrifts(node, ctx.quantum);
+    // THE LANE'S ZERO (Q22): a drifting loop — and, in the trim view
+    // with company, every lane but the definer — is drawn from the pass
+    // zero, so it shows the pass that sounds; everything else from the
+    // frame zero. The subtree inherits it (a group's members tile in the
+    // frame their group was drawn in).
+    const zero = laneZeroOf(node, ctx, drifting);
+    const outer = ctx.frameZero;
+    ctx.frameZero = zero;
+    try {
+        pushLaneFrom(node, depth, mapCtx, ctx);
+    } finally {
+        ctx.frameZero = outer;
+    }
+    const lane = ctx.lanes[at];
+    if (lane && lane.id === node.id) {
+        // ↯ DRIFTING (Q22): its own period fits no whole number of Qs,
+        // so each pass lines up differently; the rail says so — unless
+        // the only mismatch is a subdivision's sample rounding.
+        lane.drifting = drifting;
+        lane.driftShown = drifting && !driftsByRoundingOnly(node, ctx.quantum);
+        // THE Q LAMP'S OFFER (Q22, setDefiner): this lane could take Q.
+        lane.canDefine = canDefineNode(node, ctx);
+        // The trim view with company: outside the definer's selection
+        // this lane does not play against the definer's buffer this
+        // pass (lane_body dims it).
+        if (ctx.trimCompany && node.id !== ctx.soleQDefinerId) {
+            lane.trimSel = { startQ: ctx.defSelStartQ, endQ: ctx.defSelEndQ };
+        }
+    }
+}
+
+/** The zero a lane is drawn from (pushLane): the pass zero for a
+ * drifting loop and for every non-definer lane of the trim view with
+ * company, else the frame zero. */
+function laneZeroOf(node, ctx, drifting) {
+    if (ctx.trimCompany && node.id !== ctx.soleQDefinerId) return ctx.passZero;
+    return drifting ? ctx.passZero : ctx.frameZero;
+}
+
+/**
+ * May Q be handed to `node` (setDefiner, Q22)? The engine's target rules
+ * (engine_internal::definer), read off the published shape: Q exists and
+ * nothing is live; the node is not the definer already; a committed
+ * looping clip, or a group whose committed direct clips are ONE take
+ * (two or more, same origin and length, no nested content, no song);
+ * and no group above it remaps time (the warp guard).
+ */
+function canDefineNode(node, ctx) {
+    if (!ctx.definerIdle || ctx.underWarp) return false;
+    if (node.id === ctx.soleQDefinerId) return false;
+    if (node.periodSource === 'context' || node.isRecording || node.isPendingStart) {
+        return false;
+    }
+    if (node.type === 'clip') return (node.duration || 0) > 0;
+    if (node.type !== 'stack' || activeSeqSamples(node) > 0) return false;
+    if (!(oneTakeDuration(node) > 0)) return false;
+    let members = 0;
+    let origin = null;
+    for (const c of node.nodes || []) {
+        if (c.type !== 'clip' || c.isRecording || !(c.duration > 0)) continue;
+        if (origin === null) origin = c.origin || 0;
+        else if ((c.origin || 0) !== origin) return false;
+        members++;
+    }
+    return members >= 2;
+}
+
+/** Whether a committed clip lies outside the definer's subtree — the
+ * trim view then shares the screen (Q22: Q was handed to the definer). */
+function hasCompany(definer, committedClips) {
+    if (!definer) return false;
+    const inside = new Set();
+    (function visit(n) {
+        inside.add(n.id);
+        (n.nodes || []).forEach(visit);
+    })(definer);
+    return committedClips.some(c => !inside.has(c.id));
+}
+
+/** pushLane's body: the per-kind dispatch, drawn from ctx.frameZero. */
+function pushLaneFrom(node, depth, mapCtx, ctx) {
     // Tile offsets are measured from the seated frame zero (origins are
     // ABSOLUTE; seatFrameZero puts the zero on the Q grid, so tiles stay
     // Q-grid-true; mod-period tiling handles the wrap)
@@ -2673,6 +2767,14 @@ export function deriveViewModel(state, opts = {}) {
     if (provisionalDefiner && intrinsicPeriod(definerNode, quantum) > 0) {
         cycleSamples = intrinsicPeriod(definerNode, quantum);
     }
+    // THE TRIM VIEW'S CURSOR sweeps exactly the selection — the
+    // definer's loop, which IS Q. With company (Q handed to a track
+    // beside others, Q22) the island may cycle longer than Q, but the
+    // trim view is framed by the definer's buffer and shows one pass of
+    // its loop at a time.
+    if (provisionalDefiner) loopSamples = quantum;
+    const trimCompany = provisionalDefiner &&
+        hasCompany(definerNode, committedClips);
 
     // First-take frame: before any Q exists there is no cycle — the only
     // meaningful timeline is the growing take itself. Track it (+1 so the
@@ -2769,12 +2871,33 @@ export function deriveViewModel(state, opts = {}) {
     const armAtQ = loopStartQ - phiQ +
         (Math.ceil(relPosQ) === relPosQ ? relPosQ + 1 : Math.ceil(relPosQ));
 
+    // THE PASS ZERO: the island time at the frame's left edge in the pass
+    // the cursor is in — the raw clock minus the cursor's own position,
+    // so it holds for every fold the cursor takes (the island cycle, the
+    // pin, a take growing, the trim view's one loop). A DRIFTING loop
+    // (Q22) lines up differently each pass, so its lane is drawn from
+    // here: what sounds under the cursor is what the lane shows under
+    // it. Whole samples (the fold is whole); without a raw clock the
+    // frame's own zero stands in.
+    const passZero = rawClock !== null && qEstablished
+        ? Math.round(rawClock - playheadQ * quantum) : frameZero;
+
     const lanes = [];
     const ctx = {
         state, lanes, maxDepth, fxOpen, quantum,
         frameZero, qEstablished, cycleQ, lcmQ,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
         definerIds,
+        // Q22: drifting lanes draw from the pass zero; in the trim view
+        // WITH COMPANY every other lane does (laneZeroOf) — the lanes
+        // under the definer's buffer show what sounds with it this pass.
+        passZero,
+        trimCompany,
+        // May a lane take Q (canDefineNode): nothing live, Q exists.
+        definerIdle: qEstablished && !anyTakeActive,
+        // A group above remaps time (an active map or song): the warp
+        // guard — nothing beneath it can take Q.
+        underWarp: false,
         // THE RECORDING GATE (bandGate): a live or pending take locks
         // every loop region.
         mapEditsLocked: anyTakeActive,
@@ -2870,6 +2993,11 @@ export function deriveViewModel(state, opts = {}) {
         qEstablished,
         soleQDefinerId,  // Q13: the sole committed clip (provisional Q), or null
         provisionalDefiner,  // Q13: framing the full buffer to trim the loop
+        // Q22: the trim view holds the definer BESIDE other tracks (Q
+        // was handed to it); they are drawn for the pass that sounds.
+        trimCompany,
+        // Q22: the island time at the frame's left edge this pass.
+        passZero,
         // THE RECORDING GATE (bandGate, time_maps.md §7): a take is
         // recording or pending, so every loop region is display-only.
         mapEditsLocked: anyTakeActive,

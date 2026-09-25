@@ -120,10 +120,12 @@ struct Island {
   }
   int64_t dur(const juce::String& id) { return iprop(id, "duration"); }
   int64_t origin(const juce::String& id) { return iprop(id, "origin"); }
-  /** The audible island cycle by THE PERIOD LAW over the live tree. */
+  /** The audible island cycle by THE PERIOD LAW over the live tree,
+   * judged against the island Q (drifting nodes extend nothing, Q22). */
   int64_t cycle() {
     auto* root = engine.findNodeByUuidForTest(rootId());
-    return period_law::islandCycle(period_law::TreeProvider{}, root, Q(),
+    const int64_t q = Q();
+    return period_law::islandCycle(period_law::TreeProvider{q}, root, q,
                                    (int64_t)44100);
   }
   AudioNode* nodePtr(const juce::String& id) {

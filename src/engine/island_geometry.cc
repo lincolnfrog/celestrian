@@ -1,9 +1,10 @@
-// AudioEngine — the ISLAND GEOMETRY LAW: the definer (sole clip or
-// definer stack) and its re-establishment riders, the continuity rider
-// (attachMapEditRiders), Q18 origins and anchoring (settleAnchors,
-// applySetsOrigin), island (Q, zero) writes (setIslandQuantum) and the
-// scrub that keeps pre-Q geometry coherent. The FRAME is not placed
-// here: the view seats it from the lanes (docs/frame.md).
+// AudioEngine — the ISLAND GEOMETRY LAW: the definer (a designated one,
+// the sole clip or the definer stack) and the Q hand-off that designates
+// it (setDefiner, Q22), the continuity rider (attachMapEditRiders), Q18
+// origins and anchoring (settleAnchors, applySetsOrigin), island
+// (Q, zero) writes (setIslandQuantum) and the scrub that keeps pre-Q
+// geometry coherent. The FRAME is not placed here: the view seats it
+// from the lanes (docs/frame.md).
 // Only the island root ever holds (Q, zero): nothing writes them on a
 // nested stack (audit D14-1), so there is nothing to scrub there.
 // Message thread only.
@@ -37,7 +38,7 @@ celestrian::StackNode* AudioEngine::parentOf(celestrian::AudioNode* node,
   return parent;
 }
 
-namespace {
+namespace celestrian::engine_internal {
 int countCommittedClips(const celestrian::AudioNode* node) {
   if (node->getNodeType() == celestrian::NodeType::Clip)
     return node->getIntrinsicDuration() > 0 ? 1 : 0;
@@ -46,6 +47,37 @@ int countCommittedClips(const celestrian::AudioNode* node) {
   for (const auto& child : stack->ownedChildren())
     n += countCommittedClips(child.get());
   return n;
+}
+}  // namespace celestrian::engine_internal
+
+namespace {
+using celestrian::engine_internal::countCommittedClips;
+
+/** THE DEFINER STACK'S SHAPE on one stack (Q13 for groups): its
+ * committed DIRECT clip children are ONE take — identical origin and
+ * duration, two or more, none a one-shot (a one-shot member reads its
+ * period from context, Q5, so the stack is not one take looping as one
+ * part) — and no nested stack holds committed content. */
+bool isOneTakeStack(const celestrian::StackNode& stack) {
+  int direct = 0;
+  int64_t origin = 0, duration = 0;
+  for (const auto& child : stack.ownedChildren()) {
+    if (child->getNodeType() != celestrian::NodeType::Clip) {
+      if (countCommittedClips(child.get()) > 0) return false;
+      continue;
+    }
+    if (child->getIntrinsicDuration() <= 0) continue;
+    if (child->periodFromContext()) return false;
+    if (direct == 0) {
+      origin = child->origin_samples.load();
+      duration = child->getIntrinsicDuration();
+    } else if (child->origin_samples.load() != origin ||
+               child->getIntrinsicDuration() != duration) {
+      return false;  // two takes, not one
+    }
+    ++direct;
+  }
+  return direct >= 2;
 }
 
 /**
@@ -144,8 +176,53 @@ bool hasActiveGeometryOutside(celestrian::AudioNode* node,
   return false;
 }
 
+bool isDefinerTarget(const celestrian::StackNode& root,
+                     const celestrian::AudioNode& node) {
+  if (&node == &root) return false;
+  if (node.periodFromContext() || node.isArmedOrRecording()) return false;
+  if (node.getNodeType() == celestrian::NodeType::Clip) {
+    if (node.getIntrinsicDuration() <= 0) return false;
+  } else {
+    const auto* stack = dynamic_cast<const celestrian::StackNode*>(&node);
+    if (stack == nullptr || stack->activeSequence() != nullptr ||
+        !isOneTakeStack(*stack)) {
+      return false;
+    }
+  }
+  // THE WARP GUARD (the definer stack's wrapper guard, extended to songs
+  // and one-shot folds — every way a stack remaps its children's clock,
+  // heard::foldedClockAt): an ancestor below the root that remaps time
+  // sits between the island clock and the node, so its origin would not
+  // be a moment on the island's clock.
+  for (const celestrian::AudioNode* p = node.getParent();
+       p != nullptr && p != &root; p = p->getParent()) {
+    if (p->activeTimeMap().active() || p->activeSequenceLen() > 0 ||
+        p->periodFromContext()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool holdsAllCommittedContent(const celestrian::StackNode& root,
+                              const celestrian::AudioNode& node) {
+  const int inside = countCommittedClips(&node);
+  return inside > 0 && inside == countCommittedClips(&root);
+}
+
 celestrian::AudioNode* definer(celestrian::StackNode& root) {
   if (root.hasActiveTake()) return nullptr;
+  // THE DESIGNATED DEFINER FIRST (Q22): the node a hand-off named, while
+  // it is still a valid definer target. No only-geometry-wins gate —
+  // other nodes' geometry drifts under its re-establishments (ruling
+  // (a)). A stale designation falls through to the derived rule and
+  // stays stored, so the undo that un-stales it revives it.
+  if (const juce::String& id = root.definerDesignation(); id.isNotEmpty()) {
+    if (auto* d = root.findByUuid(id); d != nullptr && isDefinerTarget(root, *d)) {
+      const auto* stack = dynamic_cast<const celestrian::StackNode*>(d);
+      if (stack == nullptr || !stack->auditionActive()) return d;
+    }
+  }
   celestrian::AudioNode* node = nullptr;
   if (countCommittedClips(&root) == 1) {
     node = firstCommittedClip(&root);
@@ -171,6 +248,71 @@ celestrian::ClipNode* firstCommittedClip(celestrian::AudioNode* node) {
 }
 
 }  // namespace celestrian::engine_internal
+
+void AudioEngine::setDefiner(const juce::String& uuid) {
+  // THE Q HAND-OFF (Q22, owner ruling (b)): hand Q to another track —
+  // it becomes THE Q-definer (engine_internal::definer answers the
+  // designation first), re-grids the island on its own loop, and trims
+  // like a first take until the next arm locks it again. Nothing moves:
+  // every origin, map and render stays; only the grid (Q, zero) is read
+  // off the new definer. Amends Q1(a) by this explicit verb.
+  juce::Logger::writeToLog("AudioEngine::setDefiner: uuid=" + uuid);
+  const auto refuse = [](const juce::String& why) {
+    juce::Logger::writeToLog("AudioEngine::setDefiner refused - " + why);
+  };
+  if (refusedUnderLiveTake("setDefiner")) return;
+  if (root_node->getQuantum() <= 0) {
+    refuse("no Q is established (the first take defines it)");
+    return;
+  }
+  auto* node = findNodeByUuid(root_node.get(), uuid);
+  if (node == nullptr) {
+    refuse("no node " + uuid);
+    return;
+  }
+  if (node == root_node.get()) {
+    refuse("the island root is the grid, not a track on it");
+    return;
+  }
+  if (!celestrian::engine_internal::isDefinerTarget(*root_node, *node)) {
+    refuse(uuid +
+           " cannot define Q (a committed loop, or a group recorded as one "
+           "take, heard through no window or song above it)");
+    return;
+  }
+  // Q := the period the node plays on a grid of its OWN — no drift
+  // clause (quantum 0): it is judged against the Q this hand-off
+  // replaces. A lock-collapsed node re-opened below plays the same
+  // period from the same top (the re-open is audio-neutral), so the
+  // facts read here are the facts after it.
+  const int64_t own = celestrian::period_law::ownPeriodOf(*node, nullptr, 0);
+  if (own <= 0) {
+    refuse(uuid + " has no period");
+    return;
+  }
+  if (celestrian::engine_internal::definer(*root_node) == node) {
+    refuse(uuid + " already defines Q");
+    return;
+  }
+  // ONE undoable edit (edit_log.cc applies it): the re-open of a
+  // lock-collapsed node, the top reset, the designation and the grid.
+  // zero := the node's frame top — its origin + a0 (Q13: zero := origin
+  // + region start; a clip's origin, a stack's Q18 origin).
+  const celestrian::timing::TimeMap map = node->activeTimeMap();
+  celestrian::Edit e(celestrian::Edit::Kind::Definer);
+  e.uuid = uuid;
+  e.s1 = uuid;
+  e.setsIsland = true;
+  e.iq = own;
+  e.izero = node->origin_samples.load() + (map.active() ? map.mapOffset(0) : 0);
+  // THE DEFINER'S "1" IS ITS REGION START (Q13): a stored ↺ top
+  // (loop_selection.md §9) is cleared; the inverse restores it.
+  if (dynamic_cast<celestrian::ClipNode*>(node) != nullptr) {
+    e.setsTop = true;
+    e.itop = celestrian::timing::kNoTop;
+  }
+  record(std::move(e));
+}
 
 namespace {
 // THE CONTINUITY RE-ANCHOR (time_maps.md §5): "there is no such thing

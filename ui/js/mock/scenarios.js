@@ -57,6 +57,8 @@ const IDLE_FLAGS = { isRecording: false, isPlaying: false,
  *                                  one-shot drum kit (sequencer.md §12)
  *  - 'midi-clip'                 — a 1Q audio seed + a 2Q MIDI clip
  *                                  holding four notes (vst3.md §11)
+ *  - 'keys-then-drums'           — a 1Q keys loop that set Q and a 5Q
+ *                                  drum take over it (the Q22 hand-off)
  */
 export function loadScenario(name) {
     console.log('[MockBackend] Loading scenario:', name);
@@ -86,6 +88,7 @@ export function loadScenario(name) {
     state.rootAuditionStep = -1;
     state.rootAnchored = false;       // the root's anchor rides its song
     state.rootOrigin = 0;
+    state.definerDesignation = '';    // no handed-Q definer (Q22)
     // Loading a scenario is a fresh session — undo history does not carry
     // across it (test isolation + mirrors constructing a fresh engine).
     clearUndoHistory();
@@ -470,6 +473,27 @@ export function loadScenario(name) {
                         [Q / 2, 0x90, 67, 80], [1.25 * Q, 0x80, 67, 0],
                         [1.5 * Q, 0x90, 72, 110],
                     ],
+                }),
+            ];
+            state.nextId = 3;
+            break;
+
+        case 'keys-then-drums':
+            // THE Q HAND-OFF STORY (Q22): an arhythmic keyboard loop set
+            // Q (its take is the 1Q loop — lock-collapsed when the drums
+            // armed), and a long drum take recorded over five passes of
+            // it from 2Q. The drums are the track to hand Q to.
+            state.islandQ = Q;
+            state.nodes = [
+                makeClip({
+                    id: 'keys', name: 'Keys', duration: Q, origin: 0,
+                    effectiveQuantum: Q, ...IDLE_FLAGS, isPlaying: true,
+                    inputChannel: 0,
+                }),
+                makeClip({
+                    id: 'drums', name: 'Drums', duration: 5 * Q, origin: 2 * Q,
+                    effectiveQuantum: Q, ...IDLE_FLAGS, isPlaying: true,
+                    inputChannel: 1,
                 }),
             ];
             state.nextId = 3;

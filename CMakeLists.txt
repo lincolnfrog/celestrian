@@ -285,6 +285,7 @@ target_sources(CelestrianTests PRIVATE
     tests/undo_tests.cc
     tests/engine_bridge_tests.cc
     tests/qtime_lock_tests.cc
+    tests/definer_handoff_tests.cc
     tests/graph_snapshot_tests.cc
     tests/render_purity_tests.cc
     tests/project_manager_tests.cc

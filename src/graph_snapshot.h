@@ -107,9 +107,12 @@ inline int64_t snapIntrinsicDuration(const GraphSnapshot& s, int idx) {
 }
 
 /** THE PERIOD LAW's snapshot provider (period_law.h): handles are entry
- * indices, children come from the packed spans. Audio-thread safe. */
+ * indices, children come from the packed spans; `quantum` is the island
+ * Q the drift clause judges against (0 = no grid, nothing drifts).
+ * Audio-thread safe. */
 struct SnapProvider {
   const GraphSnapshot& s;
+  int64_t quantum = 0;
   using Handle = int;
   const AudioNode& node(Handle h) const { return *s.entries[(size_t)h].node; }
   template <typename F>
@@ -121,23 +124,27 @@ struct SnapProvider {
 
 /** The OWN period of the subtree at `idx` (period_law::ownPeriod over
  * the snapshot): an active map's period, else the song, else a clip's
- * duration or a stack's LCM of its children's contributions. */
-inline int64_t snapEffectivePeriod(const GraphSnapshot& s, int idx) {
-  return period_law::ownPeriod(SnapProvider{s}, idx);
+ * duration or a stack's LCM of its children's contributions — judged
+ * against the island `quantum` (a drifting child contributes nothing;
+ * 0 judges nothing). */
+inline int64_t snapEffectivePeriod(const GraphSnapshot& s, int idx,
+                                   int64_t quantum = 0) {
+  return period_law::ownPeriod(SnapProvider{s, quantum}, idx);
 }
 
-/** What the subtree at `idx` hands its parent's fold (0 for a
- * one-shot). */
-inline int64_t snapPeriodContribution(const GraphSnapshot& s, int idx) {
-  return period_law::contribution(SnapProvider{s}, idx);
+/** What the subtree at `idx` hands its parent's fold (0 for a one-shot,
+ * and for a node that drifts against the island `quantum`). */
+inline int64_t snapPeriodContribution(const GraphSnapshot& s, int idx,
+                                      int64_t quantum = 0) {
+  return period_law::contribution(SnapProvider{s, quantum}, idx);
 }
 
 /** The audible island cycle the transport wraps on (E-C):
  * lcm(quantum, own period of the root), `fallback` standing in for Q
- * before it exists. */
+ * before it exists. Drifting nodes extend nothing (Q22). */
 inline int64_t snapEffectiveCycle(const GraphSnapshot& s, int64_t quantum,
                                   int64_t fallback) {
-  return period_law::islandCycle(SnapProvider{s}, 0, quantum, fallback);
+  return period_law::islandCycle(SnapProvider{s, quantum}, 0, quantum, fallback);
 }
 
 /** Solo audibility (Q16 canon — island-wide, additive, fractal): is

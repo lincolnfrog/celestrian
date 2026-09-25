@@ -157,8 +157,9 @@ bool StackNode::oneShotFacts(const ProcessContext& context,
   // ▸ composite) — a one-shot group with a song fires its whole song
   // (D2-5 ruling (a)); `own_map` is that law's first rung, passed in
   // because the callers already hold it.
-  shot = own_map.active() ? own_map.period()
-                          : snapEffectivePeriod(*context.snap, context.self);
+  shot = own_map.active()
+             ? own_map.period()
+             : snapEffectivePeriod(*context.snap, context.self, context.quantum);
   cycle = context.context_cycle;
   return shot > 0 && cycle > shot;
 }
@@ -327,11 +328,14 @@ ProcessContext StackNode::childContext(const ProcessContext& context) const {
   // the song as their frame — docs/sequencer.md §4); else the LCM of
   // its LOOPING children's contributions — one-shots are excluded from
   // the fold (they adopt this very value; including them would be
-  // circular) — seeded with Q. A scope with no looping content falls
-  // back to the RECEIVED context cycle so a one-shot inside an all-one-
-  // shot group still sounds once per the enclosing cycle.
+  // circular) — seeded with Q; a child that DRIFTS against the island Q
+  // is excluded the same way (Q22: it never extends a cycle). A scope
+  // with no looping content falls back to the RECEIVED context cycle so
+  // a one-shot inside an all-one-shot group still sounds once per the
+  // enclosing cycle.
   {
-    const int64_t own = snapEffectivePeriod(*context.snap, context.self);
+    const int64_t own =
+        snapEffectivePeriod(*context.snap, context.self, context.quantum);
     if (map.active() || activeSequence() != nullptr) {
       child_context.context_cycle = own;
     } else if (own > 0) {

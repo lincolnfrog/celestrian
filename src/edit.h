@@ -121,6 +121,19 @@ struct Edit {
                      // the inverse is the same shape and a live drag's
                      // commits coalesce by dropping later inverses.
                      // Clips only.
+    Definer,         // THE Q HAND-OFF (Q22, setDefiner): `s1` = the
+                     // island's definer designation to store (empty =
+                     // none); (Q, zero) ride setsIsland. With `uuid`
+                     // (the handed-to node) the forward (b1 false)
+                     // RE-OPENS its lock-collapsed leaves exactly as the
+                     // Remove re-open does (derived from the collapse
+                     // markers — full buffer, old trim as the window;
+                     // the inverse gets b1) and then stores a clip's
+                     // top from setsTop/itop; the inverse (b1 true) puts
+                     // the top back FIRST, then RE-COLLAPSES the node
+                     // (collapseNode, derived from that window — the
+                     // Insert/uuid2 precedent). No `uuid`: the
+                     // designation alone (the lock at the next arm).
   };
   // Effect enable/param edits are NOT undoable (non-destructive knobs;
   // slider drags would flood the log without coalescing). Delete + all
@@ -134,7 +147,8 @@ struct Edit {
   int index = -1;            // structural: destination/source index
   int index2 = -1;           // Explode: second child's source index
 
-  juce::String s1;  // name (Rename) / fx slot id (chain edits)
+  juce::String s1;  // name (Rename) / fx slot id (chain edits) /
+                    // designation (Definer)
   double d1 = 0.0, d2 = 0.0;
   bool b1 = false;
 

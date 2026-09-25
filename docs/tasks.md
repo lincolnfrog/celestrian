@@ -279,6 +279,40 @@ Small, concrete, each a half-day or less unless marked. None blocks
   one feature per task with the suites run after each step is the
   cadence that worked (memory note).
 
+## Tier F: Q hand-off follow-ups (design_language Q22, 2026-09-24)
+
+The hand-off itself shipped 2026-09-24 (`setDefiner`, the Q lamp, the
+drift clause). What the owner asked for next, and the edges the build
+left open:
+
+- [ ] **Q as a SUBDIVISION of the definer's loop** (the owner's
+  companion ask). A long definer loop (8 drum bars, ~20 s) makes Q
+  20 s, so a stop that misses a boundary waits up to 20 s. Done means:
+  the definer's loop is k Qs (k a small whole number the owner picks —
+  a bar count), Q := loop / k, the grid and every arm/stop land on
+  bars, and the definer's trims keep k. Needs a ruling on the control
+  (a count on the definer's chip? on the Q lamp?) and on how k rides
+  the trim.
+- [ ] **Group composites with drifting members** draw a static mix; a
+  drifting group lane (all members drift) should draw its pass the way
+  a drifting clip lane does.
+- [ ] **A root song across a hand-off** keeps its anchor on the OLD
+  grid (the Q13 re-trim has the same edge): re-anchor it at the new
+  zero, or refuse the hand-off while the root carries a song — ruling.
+- [ ] **Bounce of a drifting song** renders one island cycle; the
+  drifting loops sound different on each pass, so a bounced loop does
+  not loop them seamlessly. Offer N cycles (the Bounce options item
+  above) and say so in the dialog.
+- [ ] **Short takes at rounded subdivisions** (Q/2, Q/4, Q/8 of a Q that
+  does not divide) now drift by a few samples per Q instead of blowing
+  the cycle up (engine_lcm_guard.md). Unbadged, but they still draw per
+  pass and do not seat. Decide whether a short take should commit at an
+  exact divisor instead (or render on a rational period, Q12).
+- [ ] **The Remove re-open overwrites a post-lock region**: deleting
+  down to a sole collapsed take re-opens it with the OLD trim even when
+  a region was drawn on it since the lock (setDefiner's re-open checks
+  for that and keeps the collapse; Remove predates it).
+
 ---
 
 ## Open Design Questions
@@ -305,6 +339,16 @@ rendering (Q14c → law 13 amended), the stack/clip anchoring asymmetry
 ---
 
 ## Archive: completed work (one line each)
+
+### 2026-09-24 — Q hand-off (Q22)
+
+- Hand Q to a track: `setDefiner` (engine, bridge, mock), the stored
+  definer designation (cleared by the next take that records new
+  content), keep-origin trims beside other tracks, the drift clause in
+  the period law (engine + JS twin + golden cases), drifting lanes drawn
+  per pass, the trim view with company, the rail's Q lamp offer, docs
+  (design_language Q22, composition §3/§5, engine_lcm_guard, frame.md,
+  session_view law 18).
 
 ### 2026-09-01 — foundation audit + Q18
 

@@ -14,6 +14,7 @@ import {
 import { popUndoForRefusal } from './undo.js';
 import { quantumSamples } from './rate.js';
 import { retimeSequences } from './sequence.js';
+import { uncollapseClip, uncollapseStack } from './definer.js';
 
 // createNode(type, parentId)
 export function createNode(type, parentId = null) {
@@ -78,46 +79,13 @@ export function deleteNode(id) {
     // the pre-collapse trim as the window, so it can be trimmed LONGER
     // again.
     // Audio-neutral; Q/zero untouched. Undo snapshot covers.
-    if (committedClipCount() === 1) {
-        const survivor = findSoleCommittedClip();
-        if (survivor && survivor._precollapse) {
-            const pre = survivor._precollapse;
-            survivor.duration = pre.dur;
-            survivor.loopStart = pre.ls;
-            survivor.loopEnd = pre.le;
-            survivor.origin = pre.origin;
-            // The top returns to the full take's coordinates (engine
-            // parity ClipNode::uncollapseContent).
-            if (survivor.storedTop != null) survivor.storedTop += pre.ls;
-            delete survivor._precollapse;
-            console.log('[MockBackend] Q13 re-open: uncollapsed', survivor.id);
-        }
-    }
+    if (committedClipCount() === 1) uncollapseClip(findSoleCommittedClip());
     // The GROUP twin (engine parity uncollapseGroupNow, Q18): back down
     // to a definer stack whose members were group-collapsed — full
     // takes back, the trim back on the stack, and the subtree's ORIGINS
     // unwound by the collapse shift (the group collapse shifted both
     // the buffer view and the origin, like the sole-clip collapse).
-    {
-        const ds = definerStackNode();
-        if (ds && ds._precollapse) {
-            const shift = ds._precollapse.shift || 0;
-            (ds.nodes || []).forEach(m => {
-                if (m.type !== 'clip' || !m._precollapse) return;
-                m.duration = m._precollapse.dur;
-                m.loopStart = 0;
-                m.loopEnd = 0;  // members whole (no window)
-                m.origin = (m.origin || 0) - shift;
-                if (m.storedTop != null) m.storedTop += shift;
-                delete m._precollapse;
-            });
-            ds.origin = (ds.origin || 0) - shift;
-            ds.loopStart = ds._precollapse.ls;
-            ds.loopEnd = ds._precollapse.le;
-            delete ds._precollapse;
-            console.log('[MockBackend] Q13 re-open: group uncollapsed', ds.id);
-        }
-    }
+    uncollapseStack(definerStackNode());
     // Q18: the last content leaving a stack un-anchors it (engine
     // parity applyEdit(Remove) → settleAnchors); undo's snapshot
     // restores the exact stored origin.

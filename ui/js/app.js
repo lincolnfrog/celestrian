@@ -135,7 +135,7 @@ function scheduleVerify(id, check, okMsg, refusedMsg) {
             // `children` (findNodeInTree walks the right key).
             const n = findNodeInTree(state.nodes, id);
             if (!n) return;  // node gone: a refusal message would lie
-            setLogLine(check(n) ? okMsg : refusedMsg);
+            setLogLine(check(n, state) ? okMsg : refusedMsg);
         } catch (_) { /* the poll will tell the story */ }
     }, 250));
 }
@@ -1440,6 +1440,17 @@ function initApp() {
         // Volume fader dial, 0..1 (unity default). Same streaming/
         // non-undoable contract as pan.
         onSetGain: (id, gain) => callNative('setNodeGain', id, gain),
+        // HAND Q TO A TRACK (Q22): the rail's Q lamp on an eligible
+        // lane. The engine answers through `definerId`.
+        onSetDefiner: async id => {
+            const target = lastState && findNodeInTree(lastState.nodes, id);
+            const name = (target && target.name) || 'This track';
+            await callNative('setDefiner', id);
+            scheduleVerify(id, (n, state) => state.definerId === id,
+                `"${name}" sets Q now — drag its brackets to trim the ` +
+                'tempo; it locks when you record the next track (⌘Z undoes)',
+                'Q not handed over — the engine refused');
+        },
         // Period-source knob (Q5): 'own' = loop, 'context' = one-shot.
         onSetPeriodSource: (id, source) => {
             callNative('setPeriodSource', id, source);

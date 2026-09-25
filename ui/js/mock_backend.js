@@ -46,6 +46,7 @@ import {
     saveTrackTemplate, listTrackTemplates, createFromTrackTemplate,
 } from './mock/track_templates.js';
 import { setLoopPoints, setSegments, setTiming, toggleLoopWindow } from './mock/maps.js';
+import { setDefiner } from './mock/definer.js';
 import { someNode, state } from './mock/state.js';
 import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
 import { startRecordingInNode, stopRecordingInNode, newTake } from './mock/recording.js';
@@ -153,6 +154,9 @@ export const handlers = {
     setNodePan,
     setNodeGain,
     setPeriodSource,
+    // Hand Q to a track (Q22): engine parity, undoable, the live-take
+    // gate below.
+    setDefiner,
     getAudioDeviceState,
     setAudioDevice,
     setSlotEnabled,
@@ -224,6 +228,7 @@ export const handlers = {
 const REFUSED_UNDER_LIVE_TAKE = new Set([
     'deleteNode', 'reorderNode', 'combineNodes', 'setLoopPoints',
     'toggleLoopWindow', 'setSegments', 'setTiming', 'setPeriodSource',
+    'setDefiner',
     'createFromTrackTemplate', 'setSequence', 'toggleSequence',
     'auditionStep', 'selectTake', 'deleteTake', 'setComp', 'importAudio',
     'undo', 'redo', 'togglePlayback', 'seekTransport',

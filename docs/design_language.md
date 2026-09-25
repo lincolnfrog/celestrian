@@ -501,7 +501,9 @@ in the doc that owns its feature, but each has a pointer here.
 spirit, it sets the groove and every subsequent take is done off of
 that. You can imagine muting the original quantum track after recording
 a bass and drum loop over it. **The DNA of the original scratch track
-remains.**" Consequences: (a) no Q re-seating feature; (b) **Q survives
+remains.**" Consequences: (a) no Q re-seating feature — amended by
+Q22 (2026-09-24): Q never re-seats by itself, but the owner can HAND it
+to another track explicitly; (b) **Q survives
 its creator** — muting or even deleting the first clip must not change
 Q. This settles the P0-3 policy question: Q (and the island zero) is
 stored at the island root, not derived from surviving clips. Today's
@@ -835,6 +837,9 @@ Once you start recording new tracks, Q becomes locked."* Canon:
   *locked* Q — the DNA that later takes were performed against. Before
   lock, no other performance depends on Q, so re-trimming breaks
   nothing (I1 is vacuous over an audience of one).
+- **Q22 re-opens this state on demand:** handing Q to a track makes it
+  the definer beside the others, with one stored fact (the designation)
+  that the next arm clears — see Q22.
 - **QTime interaction (Q12): none — by design.** The Q-definer's
   window bounds are sample-exact physical facts (D-T5); they *define*
   the exchange rate rather than being expressed in it. Its period is
@@ -1011,6 +1016,49 @@ template replays it. Canon:
 End-state journeys: scratch spark = launch → `R` → recording (one
 key); real music = + → Guitar → ● (three clicks, and the track is
 already named and routed).
+
+### Fifth review round (2026-09-24)
+
+**Q22. Can another track take over Q?**
+**RESOLVED (2026-09-24) — yes, by hand, and loops that no longer fit
+drift.** Owner, from the field: *"I recorded a keyboard part and set
+the loop region, established Q. It was sort of arhythmic … I recorded a
+drum track while listening to this loop … It sounds amazing but now I
+am stuck because the first track established the Q but I really want
+the amazing drum track to be the Q definer."* Two choices were put to
+the owner and both ruled the same day:
+
+- **Hand-off = re-open Q13 on that track.** The rail's Q lamp, unlit
+  and hover-revealed on any track that could take Q, hands Q to it
+  (`setDefiner`): it becomes THE definer — Q := its loop, the zero :=
+  its loop top, nothing sounds different — and trims exactly like a
+  first take (the trim view, cyan brackets, sub-Q, "sets tempo").
+  Recording the next track locks it again (the Q13 lock-collapse).
+  One undo step. Targets: a committed looping clip, or a group whose
+  tracks are one take (Q13 for groups); nothing above it may remap time
+  (an active map, a song or a one-shot's fold). A lock-collapsed target
+  uncollapses first (re-open ⟹ uncollapse), so its loop can grow again —
+  unless a region was drawn on it since the lock, which the old trim
+  would audibly replace.
+- **Beside other tracks the definer keeps its timing.** Its trims move
+  Q and the zero, never its origin (loop_selection.md §9 P1: nothing
+  re-times unless the user does it); only a definer holding all the
+  content re-anchors phase-preservingly (Q13).
+- **Loops that no longer fit DRIFT** (asked: drift / only allow fitting
+  loops / restart them each loop — ruled drift). A recorded loop whose
+  length is neither a multiple nor a divisor of the new Q keeps playing
+  exactly as recorded and lines up differently every pass — the rolling
+  the drums were played against. It folds into no cycle (the period
+  law's drift clause, composition.md §3; engine_lcm_guard.md), so no
+  frame explodes; its lane is badged ↯ and draws the pass that sounds;
+  it never seats the frame (frame.md). "Restart it every loop" remains
+  the ordinary one-shot (1×) knob.
+
+This amends Q1 (a) and the 2026-08-09 coherence ruling's carve-out
+("unless I am modifying the original Q-defining clip" — the handed-to
+track is that clip). The owner's companion ask, a Q that is a
+SUBDIVISION of the definer's loop (a long drum loop as 8 bars of Q, so a
+missed stop never waits 20 seconds), is the next feature (tasks.md).
 
 ---
 

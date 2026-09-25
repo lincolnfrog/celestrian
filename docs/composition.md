@@ -134,7 +134,7 @@ test so the solvers (§5) can never restate it by hand again.
 Two periods per node, three cycle notions per scope. This table is the
 authority. The effective-period row is stated ONCE in code
 (`src/period_law.h`: `own` = map ▸ sequence ▸ content, `contribution` =
-0 for a one-shot, `islandCycle` = lcm(Q, own(root))) and instantiated
+0 for a one-shot or a DRIFTING node, `islandCycle` = lcm(Q, own(root))) and instantiated
 over two providers — the ownership tree on the message thread and the
 graph snapshot on the audio thread; `ui/js/timeline_model.js` carries
 the JS twin and `period_law_cases` in `shared/timing_golden.json` pins
@@ -160,6 +160,14 @@ Rules:
   definer re-trim (§5), which re-establishes Q instead of fighting it.
 - **One-shot exclusion** (Q5): a one-shot node contributes nothing to
   any fold; it adopts the scope's cycle and never extends it.
+- **Drift exclusion** (Q22, design_language.md §5): a node whose own
+  period is neither `kQ` nor `Q/k` DRIFTS — it can only arise when Q is
+  handed to another track and re-trimmed off the old grid. It plays
+  exactly as recorded (its render folds on its own period from its own
+  origin) and contributes nothing to any fold, so no cycle ever widens
+  to `lcm(Q, P)`. A song holder is exempt (S10 owns a song's drift). The
+  clause is the same line in `period_law.h` and `timeline_model.js`
+  (`periodDrifts`), pinned by `period_law_cases`.
 - **Stochastic successors** (S12) have no period: root only.
 
 ---
@@ -182,7 +190,8 @@ machinery), and its consumers are exactly:
 Where the frame's left edge sits on screen is **not** stored anywhere:
 the view seats it from the lanes (frame.md). No commit and no map edit
 moves the zero; a Q13 re-trim re-sets it to the definer's new top with
-Q, and a seek shifts it with every origin (`shiftOrigins(root, delta)`
+Q, as does handing Q to a track (Q22: the zero := that track's loop
+top), and a seek shifts it with every origin (`shiftOrigins(root, delta)`
 plus `zero += delta`, so every placement `origin − zero` is invariant
 and the phase jumps, §5).
 
@@ -200,7 +209,8 @@ relies on it only for where to draw the brackets, not for what sounds.
 | A song is authored on the root (2026-09-17, frame.md §4) | `root.origin := the zero the view had seated` (snapped to the Q grid; the island zero when none is passed), anchored — Q18 at depth 0, so the song's top is where the picture already started. A root already anchored keeps its origin; clearing the song (or the island revert that clears every song) un-anchors. Rides the Sequence edit's inverse. |
 | Combine (post-hoc group) | `new.origin := min(member origins)`, anchored |
 | Committed content inserted into an unanchored stack (Insert, Move, undo) | `stack.origin := child.origin` |
-| Definer re-trim (Q13, clip or stack) | phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`; `zero := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
+| Definer re-trim (Q13, clip or stack) | while the definer holds ALL the island's content — phase-preserving: `p0 = inner-now`, `pT = fold(p0)`, `O' = t0 − pT`; `shiftOrigins(node, O' − O)`. Beside other tracks (a handed-Q definer, Q22) — nothing moves: `O' = O` (they play against it; nothing re-times unless the user does it, loop_selection.md §9). Then `zero := O' + start`; `Q := len`. **One implementation** for clips and stacks. |
+| Q handed to a track (Q22, `setDefiner`) | no origin moves (a lock-collapsed target uncollapses first — audio-neutral); `Q := own period`, `zero := O + a0`; the designation is stored on the root and cleared by the next take that records new content |
 | Lock-collapse at the second arm (clip or stack definer) | leaves under the node: `base += s`, `D := len`; `shiftOrigins(node, s)`; node window consumed. Audio-neutral (§2). Re-open reverses it. |
 | Map edit while playing (the continuity rider) | `shiftOrigins(node, O' − O)` with `O'` = `originForHeard` reduced to the representative nearest `O` modulo the node's fold (`heard::continuityOriginFor`, time_maps.md §5 — a slide never re-anchors); the island zero stays (the view re-seats the frame, frame.md) |
 | Seek | `shiftOrigins(root, delta)`, `zero += delta`, history absolutes shifted |
@@ -224,6 +234,9 @@ together or neither.
   ▸ intrinsic, and a parent composes only effective periods (§3).
 - **I13 — Q-coherence.** Every authored period is `kQ` or `Q/k`; the
   definer re-trim is the one edit that changes Q rather than obeying it.
+  When it changes Q under recorded loops that no longer fit (Q22), they
+  drift and fold into nothing (§3) — no LCM is ever taken over an
+  incoherent period.
 - **I14 — One owner of island facts.** Only the island root stores
   `(Q, zero)`; nested stacks never do.
 - **I15 — Encapsulation.** A parent sees a child as `(origin, effective

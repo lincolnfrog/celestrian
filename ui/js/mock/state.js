@@ -33,6 +33,11 @@ export const state = {
     // seated when the song was authored; its song folds from there.
     rootAnchored: false,
     rootOrigin: 0,
+    // THE HANDED-Q DEFINER (Q22, engine parity StackNode's definer
+    // designation): the node Q was handed to (setDefiner) — '' = none,
+    // the definer is then derived (Q13). Cleared when the next take
+    // records new content.
+    definerDesignation: '',
 };
 
 /** The ROOT'S FRAME TOP (engine AudioEngine::rootFrameTop): its origin
@@ -182,22 +187,6 @@ function committedClipCountIn(nodes) {
     return n;
 }
 
-/** True when `node` IS the island's definer stack and no take is in
- * flight — the state in which its window re-establishes Q. */
-export function isQ13DefinerStack(node) {
-    if (!node || node.type !== 'stack' || anyNodeRecording()) return false;
-    // A live step audition derives its own window over the stack — its
-    // geometry is not the definer's to re-establish (engine parity:
-    // !ds->auditionActive()).
-    if (typeof node.auditionStep === 'number' && node.auditionStep >= 0) {
-        return false;
-    }
-    const d = definerStackNode();
-    if (d !== node) return false;
-    // ONLY GEOMETRY WINS (engine parity: definerStack's outside scan).
-    return !activeGeometryOutside(node);
-}
-
 /**
  * Q13 FOR GROUPS (engine parity `definerStack`): the island's DEFINER
  * STACK — the stack whose direct
@@ -242,18 +231,95 @@ export function definerStackNode(nodes = state.nodes, owner = null) {
     return direct >= 2 ? owner : null;
 }
 
-/** THE DEFINER (engine parity engine_internal::definer): the sole
- * committed clip, or the definer stack — through the same gates the
- * edits use (the ancestor-warp walk, only geometry wins). Null when the
- * island has none. ONE answer for the published `definerId` and the
- * setTiming refusal, so the view's canRetime and the mock agree. */
+/** THE DEFINER (engine parity engine_internal::definer): the node Q was
+ * handed to (setDefiner, Q22) while it is still a valid target, else the
+ * sole committed clip or the definer stack — through the same gates the
+ * edits use (no take in flight, no step audition on a definer stack, the
+ * ancestor-warp walk, only geometry wins for the derived definer). Null
+ * when the island has none. ONE answer for the published `definerId`,
+ * the Q13 re-trims and the setTiming refusal, so the view and the mock
+ * agree. */
 export function islandDefiner() {
+    if (anyNodeRecording()) return null;
+    const designated = designatedDefiner();
+    if (designated) return designated;
     if (committedClipCount() === 1) {
         const c = findSoleCommittedClip();
         return c && isQ13SoleDefiner(c) ? c : null;
     }
     const ds = definerStackNode();
+    if (ds && typeof ds.auditionStep === 'number' && ds.auditionStep >= 0) return null;
     return ds && !activeGeometryOutside(ds) ? ds : null;
+}
+
+/** The node Q was handed to (Q22) when it is still a valid definer
+ * target — a stale designation (deleted, turned one-shot, grown a
+ * second take…) reads as none and stays stored, so an undo can revive
+ * it. A definer stack under a step audition is not the definer (the
+ * audition derives its own window over it). */
+export function designatedDefiner() {
+    const id = state.definerDesignation;
+    if (!id) return null;
+    const node = findNode(id);
+    if (!node || !validDefinerTarget(node)) return null;
+    if (node.type === 'stack' && typeof node.auditionStep === 'number' &&
+        node.auditionStep >= 0) return null;
+    return node;
+}
+
+/** An ACTIVE song on a holder (the sequence.js rule, restated here — the
+ * query layer imports nothing above it). */
+function hasActiveSong(n) {
+    return !!(n && !n.sequenceBypassed && n.sequence &&
+        (n.sequence.steps || []).some(s => s.len > 0));
+}
+
+/**
+ * May Q be handed to `node` (Q22, engine parity setDefiner's target
+ * rules): a committed looping clip that is not recording, or a stack
+ * whose committed DIRECT clips are ONE take (identical origin and
+ * duration, two or more, no one-shot among them, no nested content, no
+ * song, not itself a one-shot); and no stack between it and the root
+ * remaps time (an active map, a song or a one-shot — the warp guard).
+ */
+export function validDefinerTarget(node) {
+    if (!node || node.periodSource === 'context') return false;
+    if (node.type === 'clip') {
+        if (node.isRecording || node.isPendingStart || !((node.duration || 0) > 0)) {
+            return false;
+        }
+    } else {
+        if (hasActiveSong(node)) return false;
+        let direct = 0, origin = 0, duration = 0;
+        for (const c of node.nodes || []) {
+            if (c.type === 'stack') {
+                if (committedClipCountIn(c.nodes) > 0) return false;
+                continue;
+            }
+            if (c.isRecording || !((c.duration || 0) > 0)) continue;
+            if (c.periodSource === 'context') return false;
+            if (direct === 0) { origin = c.origin || 0; duration = c.duration; }
+            else if ((c.origin || 0) !== origin || c.duration !== duration) return false;
+            direct++;
+        }
+        if (direct < 2) return false;
+    }
+    // THE WARP GUARD: a stack between it and the root that remaps time —
+    // an active map, a song, or a one-shot's fold — puts the node's loop
+    // on a clock the island's grid does not run on.
+    for (let p = findParent(node.id); p; p = findParent(p.id)) {
+        if (activeMapOf(p) || hasActiveSong(p) || p.periodSource === 'context') {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Does `node`'s subtree hold EVERY committed clip of the island? The
+ * definer re-anchors its origin on a trim only then (Q13 phase-
+ * preserving); beside other tracks it keeps its timing (Q22). */
+export function holdsAllContent(node) {
+    return committedClipCountIn([node]) === committedClipCount();
 }
 
 // A node's RAW map geometry (phase 3): the multi-segment override when
@@ -530,7 +596,9 @@ export function serializeGraph() {
                             rootAnchored: !!state.rootAnchored,
                             rootOrigin: state.rootOrigin || 0,
                             // The root's rack (chain STRUCTURE is undoable).
-                            rootEffects: state.root.effects || null });
+                            rootEffects: state.root.effects || null,
+                            // The handed-Q definer (Q22) is an island fact.
+                            definerDesignation: state.definerDesignation || '' });
 }
 
 /** Restore a serializeGraph() string into the live state singleton. */
@@ -560,4 +628,5 @@ export function restoreGraph(snap) {
     state.rootAnchored = !!o.rootAnchored;
     state.rootOrigin = o.rootOrigin || 0;
     state.root.effects = o.rootEffects || null;
+    state.definerDesignation = o.definerDesignation || '';
 }
