@@ -242,6 +242,20 @@ export function definerStackNode(nodes = state.nodes, owner = null) {
     return direct >= 2 ? owner : null;
 }
 
+/** THE DEFINER (engine parity engine_internal::definer): the sole
+ * committed clip, or the definer stack — through the same gates the
+ * edits use (the ancestor-warp walk, only geometry wins). Null when the
+ * island has none. ONE answer for the published `definerId` and the
+ * setTiming refusal, so the view's canRetime and the mock agree. */
+export function islandDefiner() {
+    if (committedClipCount() === 1) {
+        const c = findSoleCommittedClip();
+        return c && isQ13SoleDefiner(c) ? c : null;
+    }
+    const ds = definerStackNode();
+    return ds && !activeGeometryOutside(ds) ? ds : null;
+}
+
 // A node's RAW map geometry (phase 3): the multi-segment override when
 // installed, else the single window. Callers gate on loopBypassed
 // themselves (parity with activeTimeMap's split responsibilities).

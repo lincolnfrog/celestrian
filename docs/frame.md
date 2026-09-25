@@ -6,7 +6,10 @@
 > the picture is drawn. The engine keeps one island fact besides Q —
 > the island zero, the first take's origin — and nothing moves it for a
 > commit or a map edit. The code names it `islandZero` and nothing
-> more (the "epoch" rename, §7, landed 2026-09-17).
+> more (the "epoch" rename, §7, landed 2026-09-17). Since 2026-09-24
+> (loop-region phase 2) the seat reads each lane's top at its ↺'s
+> moment, at or before it with a ¼Q pickup, and a selected lane's
+> edits are held: the seat takes over when the frame settles (§1).
 
 ---
 
@@ -29,15 +32,25 @@ from*.
 Take the lanes in the order they are shown. The first lane's top is
 the top. Each next lane pulls the zero forward by whole cycles-so-far
 until its own top lies inside the current cycle: it lands at the left
-edge when it can, and otherwise at its offset, wrap ghosted. A top is
-read on the Q grid line **nearest** it.
+edge when it can, and otherwise at its offset, wrap ghosted. So the
+zero lands on the first lane's bar lines (every Q under a 1Q scratch
+loop, every 4Q under a 4-bar bass). A top is its ↺'s **moment**
+(loop_selection.md §9.3), read on the Q grid line **at or before** it
+— a top up to **¼Q early** is a pickup to the next line.
 
 ```text
 Z₁ = ⟦top₁⟧
 Zₖ = Zₖ₋₁ + Cₖ₋₁ · ⌊(⟦topₖ⟧ − Zₖ₋₁) / Cₖ₋₁⌋   Cₖ₋₁ = lcm(Q, periods of lanes 1..k−1)
-topₖ = originₖ + a0ₖ;  ⟦x⟧ = the Q grid line nearest x
+topₖ = originₖ + a0ₖ + heardOffset(segsₖ, Tₖ)    (Tₖ: the effective top, `loopTop`)
+⟦x⟧ = gridPhase + ⌊(x − gridPhase)/Q + ¼⌋·Q      (at or before x; ¼Q pickup)
 a lane's offset in the frame = (topₖ − Z) mod periodₖ
 ```
+
+`T` is the engine's published effective top: the stored top while the
+kept set still plays it, else the region start. With no `loopTop` (an
+engine from before Phase 2), or one the kept set does not play, the
+top is the region start `a0`, and the seat is exactly the pre-Phase-2
+seat. A stack stores no top: it seats from its region start.
 
 - A group with a window or a song seats as **one** lane (its pass is
   what its members are heard through). A plain group is transparent:
@@ -53,30 +66,79 @@ a lane's offset in the frame = (topₖ − Z) mod periodₖ
   stop and must not move the lanes after it as it grows. So the frame
   during recording *is* the frame after commit.
 - An unanchored stack has no content and no top.
-- The zero is always on the Q grid, so the arm marker and every tile
-  stay grid-true whatever a ⌥-slid window start does.
+- The seat is always on the Q grid, so the arm marker and every tile
+  stay grid-true whatever a ⌥-slid window start or a free (sub-Q)
+  re-time does. Only a settle's glide (below) passes between grid
+  lines, for its 560 ms; the arm marker stays on the island's lines
+  through it, and so do the ruler's ticks and every lane's gridlines
+  (each line at `(line − zero) / Q`, `buildRulerTicks`), so the grid
+  scrolls with the tiles and the whole picture moves as one. A tick's
+  label names the line where the glide lands it (the prototype's
+  `drawRuler`): renamed as the glide begins, it then rides its line.
 
 The view model does this (`seatFrameZero`, `ui/js/view_model.js`) once,
-for the mock and the engine alike. The map-gesture pin holds the zero
-for the length of a drag, as it holds the frame width — and past the
-release until the gesture's final commit settles (capped at the
-commit hold, `COMMIT_HOLD_MAX_MS`), so no poll between the release
-and the engine's answer seats an unpinned frame from the last *live*
+for the mock and the engine alike, and publishes it as `vm.seatedZero`.
+The zero DRAWN is, by precedence, the drag pin, the settle, the edit
+hold, then the seat (`resolveFrameZero`). The map-gesture pin holds the
+zero for the length of a drag, as it holds the frame width — and past
+the release until the gesture's final commit settles (capped at the
+commit hold, `COMMIT_HOLD_MAX_MS`), so no poll between the release and
+the engine's answer seats an unpinned frame from the last *live*
 geometry.
 
-**Why nearest (2026-09-23).** A map drag pins the zero, and its
-release must show the picture the pin showed. Read by *floor*, a top a
-hair before a grid line re-seated the whole frame one Q earlier the
-moment the pin dropped — every lane and the cursor jumped a Q — while
-the same slide a hair after the line moved nothing (the field video's
-−0.15Q ⌥-slide). Read by the nearest line, any slide within **±½Q**
-releases in place: only the edited loop's seam moves. The boundary is
-now at ½Q either way: a top more than ½Q past a line seats on the
-*next* line, so the loop's first stretch shows as a short pickup at
-the lane's right end instead of a long wrap tail at its left — and a
-seating lane slid ½–1Q late re-seats at release (the accepted trade
-until an edit hold lands). The §2 pictures have every top on the grid
-and are unchanged. Pinned by `ui/js/tests/seat_nearest.test.mjs`.
+**The edit hold (2026-09-24, loop_selection.md P2.1).** While a lane is
+selected (the active selection) and no take is live or armed, the zero
+is HELD where it was on screen when the hold began. No edit re-seats
+it — a drag, a nudge, a cut, an undo each lands in a still picture in
+which only the edited loop's own material moves. The hold is stored
+relative to the root frame (the island zero), so a seek, which moves
+the island zero and every origin together, carries it along. It
+releases when the selection moves to another lane or clears (Escape, a
+canvas or top-bar click, the selected lane deleted), or when a take
+arms; it stays suspended while the take runs, because a take's frame
+is the seat's (the recording frame *is* the frame after commit). A new
+track is selected by default (a selection change), so adding one
+settles too. A hold that begins while a settle runs holds that
+settle's target.
+
+**The settle.** Each release settles the frame once: the zero glides
+from where it was to the seat — 560 ms, ease-in-out, the shortest way
+round the frame (every lane's period divides the frame, so the seat
+is reached by its representative nearest the start and lands exactly
+on the seat itself), driven by animation-frame re-derives from the
+last polled state, never extra polls. `prefers-reduced-motion` jumps.
+The frame never moves under a hand: a selection made by grabbing
+another lane's handle re-keys the hold instead of releasing it (the
+grab keeps the picture it grabbed; the settle waits for the next
+release), a release under a hand waits until it lifts, and a glide in
+motion when a hand comes down completes at once — the pin takes the
+glide's target, so every edit happens in a grid-true frame. The Q13
+trim view takes neither hold nor settle: its frame is the definer's
+buffer, and its cursor maps from the island zero each re-trim sets.
+(`ui/js/session_view/frame_hold.js`; the app's `deriveFrame`.)
+
+**Why floor, with a pickup (2026-09-24).** Phase 1 read a top on the
+*nearest* grid line, so that a map drag's release showed the picture
+the drag pin had shown: read by floor, a top a hair before a line
+re-seated every lane a Q earlier the moment the pin dropped (the field
+video's −0.15Q ⌥-slide), while the same slide a hair after moved
+nothing. The edit hold now guarantees that for every edit, so the
+seat takes over only when the frame SETTLES (or with nothing
+selected). What the settle should land on is a different question:
+the ↺ at the left edge when it sits on a bar line, a top a little
+late shown just *after* the edge, never wrapped to the right end.
+Nearest showed a top ½–1Q late as a pickup at the lane's right end.
+A top a *little* early is still a pickup:
+within ¼Q of the next line the take was pulled slightly early, and
+flooring it would throw the whole picture back a Q to show a long
+wrap tail. Consequences: a swapped part never moves on deselect (a
+swap keeps the origin, so the ↺ keeps its moment); a re-timed part
+stays visibly shifted against the lane that sets the bar lines —
+the honest picture of a re-time. The §2 pictures have every top on
+the grid and are unchanged. Pinned by
+`ui/js/tests/frame_seat.test.mjs` (the seat) and
+`frame_hold.test.mjs` (the hold and the settle), with
+`ui/e2e/frame_settle.spec.js` in the running app.
 
 ## 2. Pictures
 
@@ -115,7 +177,7 @@ A — so the zero moves 2Q, B lands at 0, and A's picture is unchanged.
 |---|---|
 | Commit growth re-base by whole old cycles | the new take is the last lane; the rule *is* the re-base |
 | The cycle-top rule and the free-move law | a later loop lands at 0 the moment its top is a whole cycle-so-far off the zero; an earlier lane is never moved by a later one |
-| Two-anchor continuity's frame ride | nothing to ride: the origin re-anchor while playing stays (it is audio), and `Z` re-derives; the drag pin holds `Z` for a gesture |
+| Two-anchor continuity's frame ride | nothing to ride: the origin re-anchor while playing stays (it is audio), and `Z` re-derives; the drag pin holds `Z` for a gesture, the edit hold for a selection |
 | Q13 definer re-trim: zero := origin + a0 | the definer is the first lane; its top is 0 (the island zero is re-set with Q, §4) |
 | The frame on every undo entry | the lanes go back, so `Z` goes back |
 | The recording-frame shift in the view | the pending take seats last by its arm target |
@@ -156,7 +218,9 @@ Everything else is the picture the old rules produced, now derived.
 | "Editing one lane never moves the others" (2026-09-10) | kept for earlier lanes; later lanes follow (§5) |
 | "The grid you see is the grid you hear" (2026-09-09) | kept: a song owns the frame, and its zero is the island zero on both threads |
 | Q1 / S11 "Q survives its creator" | kept: Q and its zero are the island's, not a lane's |
-| A top seats on its nearest grid line, not the one below (2026-09-23, loop-region phase 1) | §1: a sub-½Q slide releases in place |
+| A top seats on its nearest grid line, not the one below (2026-09-23, loop-region phase 1) | superseded 2026-09-24: the edit hold keeps every release in place |
+| A top is its ↺'s moment, `origin + a0 + heardOffset(T)`; it seats on the first lane's bar line at or before it, a top up to ¼Q early a pickup to the next (2026-09-24, loop-region phase 2, P2.7) | §1 |
+| While a lane is selected its edits never re-seat the zero; a selection change, a clear or an armed take releases the hold, and the frame settles once — 560 ms, the shortest way round, onto the seat (2026-09-24, P2.1) | §1 |
 
 ## 7. Pending
 

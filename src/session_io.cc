@@ -269,6 +269,16 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t zero,
     o->setProperty("contextCycleQ",
                    qvar(timing::fromSamples(
                        opts.strip_performances ? 0 : clip.contextCycle(), q)));
+    // THE TOP AND THE RE-TIME (loop_selection.md §9) — additive: absent
+    // = an unset top (the region start) and a take as played. Musical
+    // facts, QTime like originQ: the top is a raw content position, the
+    // re-time a signed offset of the origin. Stripped with performances.
+    if (!opts.strip_performances) {
+      if (const int64_t t = clip.storedTop(); t != timing::kNoTop)
+        o->setProperty("loopTopQ", qvar(timing::fromSamples(t, q)));
+      if (const int64_t r = clip.retime(); r != 0)
+        o->setProperty("retimeQ", qvar(timing::fromSamples(r, q)));
+    }
     // MIDI takes (Q-V4, docs/vst3.md §8): the note sequence lives
     // inline, positions as QTime on the island exchange
     // rate like every other musical fact: [[num, den, byte...], ...]
@@ -381,6 +391,16 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
     clip->setMonitoring((bool)o->getProperty("monitor"));
     clip->origin_samples.store(origin);
     clip->duration_samples.store(duration);
+    // The top and the re-time (loop_selection.md §9): absent keys (every
+    // bundle before 2026-09-24) load as an unset top and a take as
+    // played. Restored as saved — a load is not a map edit, nothing
+    // reconciles.
+    clip->setStoredTop(o->hasProperty("loopTopQ")
+                           ? timing::toSamples(qread(o->getProperty("loopTopQ")), q)
+                           : timing::kNoTop);
+    clip->setRetime(o->hasProperty("retimeQ")
+                        ? timing::toSamples(qread(o->getProperty("retimeQ")), q)
+                        : 0);
     // The take list (docs/takes.md): absent keys = one take. Take 0
     // loads as the active content, later takes append behind it, then
     // the saved selection and comp apply.

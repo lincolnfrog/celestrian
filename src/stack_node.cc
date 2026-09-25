@@ -67,6 +67,9 @@ juce::var StackNode::getMetadata() const {
     obj->setProperty("loopBypassed", false);
     obj->setProperty("windowActive", true);
     obj->removeProperty("segments");
+    // A stack keeps no top (Phase 2): its `loopTop` is the region
+    // start of the window it publishes — the derived one here.
+    obj->setProperty("loopTop", (double)a.segs[0].start);
   }
   // S16 (§11.8): the authored window's domain, and whether it is
   // suspended right now (sequence-domain, sequence off) — the UI draws

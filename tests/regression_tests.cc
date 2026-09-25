@@ -1386,6 +1386,28 @@ class AudioEngineWorkflowTests : public juce::UnitTest {
       engine.setLoopPoints(nthClipId(1), 6 * Q, 8 * Q);
       expectEquals(zeroNow(), zero, "a sub-loop trim moves no island fact");
       expectEquals(clipProp(1, "origin"), origin2, "audio: origin untouched");
+
+      // A RE-TIME (loop_selection.md §9) is the one edit that moves an
+      // origin on purpose, and by any amount (I4 as amended,
+      // 2026-09-24): exactly its own origin, no island fact, no other
+      // take; a swap after it keeps the re-timed origin.
+      const int64_t origin1 = clipProp(0, "origin");
+      const int64_t origin3 = clipProp(2, "origin");
+      engine.setTiming(nthClipId(1), -Q / 7);
+      expectEquals(clipProp(1, "origin"), origin2 - Q / 7,
+                   "the re-timed origin, off the grid");
+      expectEquals(clipProp(1, "retime"), -Q / 7, "…counted");
+      expectEquals(zeroNow(), zero, "a re-time moves no island fact");
+      expectEquals(clipProp(0, "origin"), origin1, "nor the first take");
+      expectEquals(clipProp(2, "origin"), origin3, "nor the third");
+      engine.setLoopPoints(nthClipId(1), 5 * Q, 7 * Q);  // a swap (slide)
+      expectEquals(clipProp(1, "origin"), origin2 - Q / 7,
+                   "a swap after it keeps the re-timed origin");
+      engine.undo();
+      engine.undo();
+      expectEquals(clipProp(1, "origin"), origin2, "undo: as played");
+      expectEquals(clipProp(1, "retime"), (int64_t)0, "…re-time 0");
+      expectEquals(zeroNow(), zero, "…and still no island fact moved");
     }
 
   }

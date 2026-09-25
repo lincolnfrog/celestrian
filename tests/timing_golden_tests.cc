@@ -4,9 +4,10 @@
  * Runs src/timing.h against shared/timing_golden.json — the same vectors
  * ui/js/tests/timeline_model_golden.test.mjs runs against timeline_model.js.
  * If both suites pass, the C++ and JS timing math agree. The continuity
- * re-anchor (heard_index.h) and the peak buckets (ClipNode::peakBucket)
- * pin their mock twins the same way (ui/js/tests/continuity_origin
- * .test.mjs, peak_density.test.mjs).
+ * re-anchor (heard_index.h), the peak buckets (ClipNode::peakBucket)
+ * and the top's reconcile rule (time_map.h) pin their JS twins the same
+ * way (ui/js/tests/continuity_origin.test.mjs, peak_density.test.mjs,
+ * set_timing.test.mjs).
  */
 
 #include <juce_core/juce_core.h>
@@ -322,6 +323,56 @@ class TimingGoldenTests : public juce::UnitTest {
         if (!before.rest && newm.heardOffsetOf(before.inner) >= 0) {
           expectEquals((juce::int64)after.inner, (juce::int64)before.inner,
                        name + " (the sounding sample keeps sounding)");
+        }
+      }
+    }
+
+    beginTest("the top: the reconcile rule and the effective top (§9)");
+    {
+      // null = unset (timing::kNoTop).
+      auto topOf = [](const juce::var& c, const char* key) {
+        const juce::var v = c.getProperty(key, {});
+        return v.isVoid() ? celestrian::timing::kNoTop : (int64_t)(double)v;
+      };
+      // windowActive defaults to a non-empty map (bypass is explicit).
+      auto activeOf = [](const juce::var& c, const TimeMap& m) {
+        return c.hasProperty("windowActive") ? (bool)c.getProperty("windowActive", false)
+                                             : m.n > 0;
+      };
+      // A chain of edits: each reconciles from the EFFECTIVE top before it.
+      if (auto* cases = root.getProperty("top_reconcile_cases", {}).getArray()) {
+        for (auto& c : *cases) {
+          const auto name = c.getProperty("name", "?").toString();
+          const int64_t duration = asInt64(c, "duration");
+          TimeMap m = mapFrom(c, name);
+          bool active = activeOf(c, m);
+          int64_t top = topOf(c, "top");
+          auto* edits = c.getProperty("edits", {}).getArray();
+          expect(edits != nullptr && !edits->isEmpty(), name + " (edits)");
+          if (edits == nullptr) continue;
+          for (int i = 0; i < edits->size(); ++i) {
+            const juce::var& ed = (*edits)[i];
+            const TimeMap m2 = mapFrom(ed, name);
+            const bool active2 = activeOf(ed, m2);
+            const int64_t before =
+                celestrian::timing::effectiveTop(m, active, duration, top);
+            top = celestrian::timing::reconcileTop(m2, active2, duration, before);
+            expectEquals((juce::int64)top, (juce::int64)topOf(ed, "expected"),
+                         name + " (edit " + juce::String(i + 1) + ")");
+            m = m2;
+            active = active2;
+          }
+        }
+      }
+      if (auto* cases = root.getProperty("effective_top_cases", {}).getArray()) {
+        for (auto& c : *cases) {
+          const auto name = c.getProperty("name", "?").toString();
+          const TimeMap m = mapFrom(c, name);
+          expectEquals(
+              (juce::int64)celestrian::timing::effectiveTop(
+                  m, (bool)c.getProperty("windowActive", false),
+                  asInt64(c, "duration"), topOf(c, "top")),
+              (juce::int64)asInt64(c, "expected"), name);
         }
       }
     }

@@ -152,6 +152,25 @@ export const BRIDGE_METHODS = [
     // entry. Omitted = a new undo step (separate gestures never merge).
     { name: 'setLoopPoints', params: ['uuid', 'startSamples', 'endSamples', 'live?'] },
     { name: 'setSegments', params: ['uuid', 'flatSegments', 'live?'] },
+    // THE RE-TIME (docs/loop_selection.md §9, owner 2026-09-24): a swap
+    // (every map verb above) changes WHAT plays and keeps the origin; a
+    // shift changes WHEN — this verb moves a clip's origin by
+    // `shiftSamples` (any amount, sub-Q included; never re-folded) and
+    // adds the same to its `retime` (the cumulative user shift, 0 = as
+    // played). A finite `topSamples` ≥ 0 also stores the loop's top
+    // (the ↺, a raw take position; it must lie in the clip's kept set or
+    // the whole call is refused). The lane ↺ drag sends a shift; the
+    // panel's start marker sends a top AND the compensating shift, so
+    // the ↺ keeps its moment; "timing as played" sends −retime. ONE
+    // undoable step (origin, retime, top together); `live?` coalesces
+    // like setSegments'. Refused for stacks, the Q-definer, an empty,
+    // recording or pending clip, and anything while a take is live.
+    // State publishes `loopTop` (the effective top: the stored one while
+    // the map plays it, else the region start) and `retime` per clip.
+    // Every map edit reconciles the top and STORES it (the effective top
+    // before the edit while the new region plays it, else the new region
+    // start — unset only on a take never edited); a bypass leaves it.
+    { name: 'setTiming', params: ['uuid', 'shiftSamples', 'topSamples?', 'live?'] },
     { name: 'warpPointer', params: ['x', 'y', 'viewportW', 'viewportH'] },
     // Loop window activation is data, not view state (docs/time_maps.md):
     // toggles a stack's window between active and bypassed.

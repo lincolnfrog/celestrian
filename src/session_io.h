@@ -31,7 +31,8 @@ namespace celestrian::session_io {
  *
  * CANONICAL (serialized): node type, uuid, name, child order,
  * inputChannel, mute, loop points + bypass, fx params, originQ/periodQ/
- * windowQ, contextCycle, island quantum + zero. The ROOT is one node
+ * windowQ, contextCycle, a clip's top + re-time (loopTopQ/retimeQ,
+ * additive), island quantum + zero. The ROOT is one node
  * record like every stack (`root`, audit D7-3): the bundle level holds
  * only the island facts and the project identity.
  * DERIVED (never): launchPoint, anchors, cycle projections, clip x/y px.

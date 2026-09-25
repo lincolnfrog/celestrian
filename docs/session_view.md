@@ -332,8 +332,10 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
   only; selecting a group selects the whole group, not its contents;
   selection never spans nesting depths.
 
-The map-editing gestures — the same-scale reveal, the region panel,
-nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
+The map-editing gestures — the heard lane's splice handles (swap) and
+↺ (shift), the same-scale reveal (⇧ = length), the region panel and its
+start marker, nudges, and the `[` `]` `{` `}` teleports — are
+time_maps.md §6.
 
 ---
 
@@ -431,8 +433,9 @@ nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
     way up).
 
     The raw extent lives on the REGION PANEL under the selected lane
-    and, mid-gesture, in the lane's same-scale reveal (time_maps.md §6);
-    the chip toggles bypass. Children under an active group map show the
+    and, mid-gesture, in the lane's same-scale reveal — a ⇧-drag at a
+    splice, a length change (time_maps.md §6); a plain splice drag is a
+    swap, previewed on the heard lane itself; the chip toggles bypass. Children under an active group map show the
     slice the map selects of them (`childSrcSegsUnderMap`) — no
     projection dims, no chrome; the parent owns the edit. Bypass
     restores the raw-framed lane with its brackets, and the frame
@@ -518,6 +521,31 @@ nudges, and the `[` `]` `{` `}` teleports — are time_maps.md §6.
     `heard_tile_sampler.test.mjs` (with a reproduction of the old
     slicer proving the gate catches it) and `e2e/heard_tiles.spec.js`
     (the canvas pixels; no fading or cross-fading copy during a trim).
+17. **The frame holds while you edit, and settles once** (loop-region
+    phase 2, 2026-09-24; frame.md §1). While a lane is selected no edit
+    re-seats the frame's zero — every loop edit lands in a still
+    picture. A selection change, a clear or an armed take releases the
+    hold, and the frame glides onto its seat once: 560 ms, the
+    shortest way round, landing exactly (`session_view/frame_hold.js`).
+    The glide is animation-frame RE-DERIVES from the last poll — the
+    same path a gesture's local preview takes between polls
+    (`requestRender`, `pending_edits.js`) — so four things must hold
+    on a re-render: the ruler's ticks and every lane's gridlines are
+    PLACED from the zero drawn (reused elements, never a keyed
+    rebuild), so the grid scrolls with the picture, each label naming
+    its line where the glide lands it (`buildRulerTicks`); tiles drop
+    their own morph while the zero glides
+    (`#lanes.frame-settling`), or they would trail it; the playhead's
+    dead-reckoner is shifted, on every patch, by how far the zero moved
+    against the island zero, and a re-render feeds it nothing else
+    (`animatorFrame`) — fed as a poll, a stale clock reads as a jump
+    back and stalls the sweep, and a poll that folded a glide into its
+    delta would read it as speed (a seek, which moves the island zero
+    with the frame, still reads as a teleport); and a hand on the frame (a live
+    gesture, or its pin until the commit settles) is never moved under
+    — a glide in motion completes as the hand comes down.
+    `prefers-reduced-motion` jumps. Pinned by `frame_hold.test.mjs`
+    and `e2e/frame_settle.spec.js`.
 
 ---
 

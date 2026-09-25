@@ -155,6 +155,38 @@ class ClipNode : public AudioNode {
   /** The take's heard frame (contextCycle) — a recorded fact that must
    * persist (session_io); 0 for the first take. */
   int64_t contextCycle() const { return take_context_cycle_.load(); }
+
+  // --- THE TOP AND THE RE-TIME (loop_selection.md §9; Phase 2) ---
+  // Two per-clip facts beside the origin. THE TOP (↺) is a raw content
+  // position — where the loop reads as starting — or timing::kNoTop on
+  // a take never edited, when the region start stands in. Map edits
+  // RECONCILE it and store the answer (timing::reconcileTop, inside
+  // every map edit's applier, so undo restores it with the map — the
+  // one way back to unset); a bypass toggle leaves it alone. THE
+  // RE-TIME is the cumulative USER shift of the origin in samples
+  // (0 = as played): only setTiming moves it, by exactly what it moved
+  // the origin — the continuity re-anchor, a Q13 re-trim, a collapse
+  // and a seek move the origin without counting — and a settled NEW
+  // TAKE resets it (it plays as performed, owner 2026-09-24: the
+  // re-time then describes the newest take; the older takes keep their
+  // shift, baked into the shared origin). Both are
+  // message-thread facts: the audio thread never reads them (the origin
+  // they pair with reaches it the usual gated way).
+  int64_t storedTop() const { return loop_top_.load(); }
+  void setStoredTop(int64_t t) { loop_top_.store(t); }
+  int64_t retime() const { return retime_.load(); }
+  void setRetime(int64_t r) { retime_.store(r); }
+  /** Whether the clip's stored map (or, with none, its take) plays raw
+   * position `t` — the kept set a top must lie in. */
+  bool keepsTop(int64_t t) const {
+    return timing::keepsTop(storedMap(), duration_samples.load(), t);
+  }
+  /** The published `loopTop`: the stored top when set and kept, else
+   * the region start. */
+  int64_t effectiveTop() const {
+    return timing::effectiveTop(storedMap(), isLoopWindowActive(),
+                                duration_samples.load(), loop_top_.load());
+  }
   // Clip-specific methods
   /**
    * Starts capturing hardware input into the internal buffer.
@@ -321,6 +353,14 @@ class ClipNode : public AudioNode {
     content_base_.store(content_base_.load() + shift);
     duration_samples.store(len);
     setLoopPoints(0, 0);  // the window is consumed: the take IS the window
+    // THE TOP rides the content view (loop_selection.md §9): a raw
+    // position, so the same sample is `shift` earlier in the collapsed
+    // take — and with the origin moving by `shift` too, the top keeps
+    // its moment. A plain shift, exactly invertible: a group member's
+    // top outside the consumed window stays stored (dormant, masked by
+    // effectiveTop) until the next map edit reconciles it.
+    if (const int64_t t = loop_top_.load(); t != timing::kNoTop)
+      loop_top_.store(t - shift);
     take_files_dirty_ = true;  // the mirrored WAV is the committed window
   }
   /** Inverse of collapseContent: restore the pre-collapse buffer view
@@ -332,6 +372,8 @@ class ClipNode : public AudioNode {
     content_base_.store(content_base_.load() - shift);
     duration_samples.store(old_duration);
     setLoopPoints(shift, shift + len);
+    if (const int64_t t = loop_top_.load(); t != timing::kNoTop)
+      loop_top_.store(t + shift);
     // Fully unwound (the content view is back at 0) → not collapsed.
     if (content_base_.load() == 0) collapsed_from_.store(0);
     take_files_dirty_ = true;
@@ -383,6 +425,17 @@ class ClipNode : public AudioNode {
     origin_samples.store(origin_samples.load() + m.mapOffset(0));
     duration_samples.store(period);
     setLoopPoints(0, period);
+    // THE TOP rides the splice: raw T lands at its heard offset in the
+    // spliced take (the kept cells concatenated), so with origin += a0
+    // it keeps its moment. A stored top the map does not play was not
+    // the effective one — the region start stood in, and the splice
+    // puts that at 0, where the top stays a fact (only a take never
+    // edited is unset: timing::kNoTop stays). The inverse carries the
+    // old one.
+    if (const int64_t t = loop_top_.load(); t != timing::kNoTop) {
+      const int64_t h = m.heardOffsetOf(t);
+      loop_top_.store(h >= 0 ? h : 0);
+    }
     content_base_.store(0);
     // The spliced buffer IS the take now: no trimmed-away material, so
     // no collapse marker (the inverse restores it with the old buffer).
@@ -394,15 +447,16 @@ class ClipNode : public AudioNode {
     content_.store(content_owned_.get());
     return old;
   }
-  /** Inverse of spliceToMap: reinstall the pre-splice buffer + facts.
-   * Returns the DISPLACED spliced buffer — the caller retires it (an
-   * in-flight render may still read it). Loop points restore to
-   * full-span: the reinstalled map override shadows them (the same
-   * documented looseness as LoopPoints-under-override). */
+  /** Inverse of spliceToMap: reinstall the pre-splice buffer + facts
+   * (the top included — a splice can drop it). Returns the DISPLACED
+   * spliced buffer — the caller retires it (an in-flight render may
+   * still read it). Loop points restore to full-span: the reinstalled
+   * map override shadows them (the same documented looseness as
+   * LoopPoints-under-override). */
   std::unique_ptr<juce::AudioBuffer<float>> unspliceFromMap(
       std::unique_ptr<juce::AudioBuffer<float>> old_buffer, int64_t old_origin,
       int64_t old_duration, int64_t old_base, int64_t old_recorded,
-      int64_t old_collapsed_from) {
+      int64_t old_collapsed_from, int64_t old_top) {
     std::unique_ptr<juce::AudioBuffer<float>> displaced =
         std::move(content_owned_);
     content_owned_ = std::move(old_buffer);
@@ -410,6 +464,7 @@ class ClipNode : public AudioNode {
     origin_samples.store(old_origin);
     duration_samples.store(old_duration);
     setLoopPoints(0, old_duration);
+    loop_top_.store(old_top);
     content_base_.store(old_base);
     collapsed_from_.store(old_collapsed_from);
     write_position.store((int)old_recorded);
@@ -429,6 +484,10 @@ class ClipNode : public AudioNode {
     int64_t origin = 0, duration = 0, base = 0, recorded = 0;
     int64_t context_cycle = 0, loop_start = 0, loop_end = 0;
     int64_t collapsed_from = 0;
+    // The slot's top and re-time (per clip, so only a WHOLE-clip strip
+    // carries them; a take-list record leaves them at rest).
+    int64_t top = timing::kNoTop;
+    int64_t retime = 0;
     int content_kind = 0;
     bool cap_hit = false;
   };
@@ -450,6 +509,8 @@ class ClipNode : public AudioNode {
     s.content_kind = content_kind_.load();
     s.cap_hit = cap_hit_.load();
     s.collapsed_from = collapsed_from_.load();
+    s.top = loop_top_.load();
+    s.retime = retime_.load();
     // Silence first (render reads duration/is_playing before content).
     is_playing.store(false);
     duration_samples.store(0);
@@ -472,6 +533,10 @@ class ClipNode : public AudioNode {
     cap_hit_.store(false);
     collapsed_from_.store(0);
     setLoopPoints(0, 0);
+    // An empty clip has no top and nothing re-timed: the next take
+    // starts as played.
+    loop_top_.store(timing::kNoTop);
+    retime_.store(0);
     rec_state_.store((int)RecState::Idle);
     // A strip is legal only on a single-take clip (the applier gates);
     // the list and comp go with the content.
@@ -507,6 +572,8 @@ class ClipNode : public AudioNode {
     collapsed_from_.store(s.collapsed_from);
     origin_samples.store(s.origin);
     setLoopPoints(s.loop_start, s.loop_end);
+    loop_top_.store(s.top);
+    retime_.store(s.retime);
     rec_state_.store((int)RecState::Idle);
     // Content last, then sound (the commit publication order).
     duration_samples.store(s.duration);
@@ -822,6 +889,11 @@ class ClipNode : public AudioNode {
   // (recording clips always have base 0).
   std::atomic<int64_t> content_base_{0};
   std::atomic<int64_t> collapsed_from_{0};  // pre-collapse duration; 0 = not collapsed
+
+  // The top and the re-time (see storedTop / retime): message-thread
+  // facts, atomic only so a cross-thread metadata read stays defined.
+  std::atomic<int64_t> loop_top_{timing::kNoTop};
+  std::atomic<int64_t> retime_{0};
 
   // Pre-record capture window (docs/performance.md §3). When the engine
   // provides a pre-record ring, capture does not copy "whatever input

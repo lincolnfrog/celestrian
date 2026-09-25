@@ -12,7 +12,7 @@ import { buildLane } from './lane_build.js';
 import { patchRail } from './rail.js';
 import { patchLaneBody } from './lane_body.js';
 import { patchRegionPanel } from './region_panel.js';
-import { animatorPoll, stopAnimator } from './animator.js';
+import { animatorPoll, animatorFrame, stopAnimator } from './animator.js';
 import { ensureDefaultSelection } from './selection.js';
 import { noteSeekVm } from './ruler_seek.js';
 import { flushTeardowns } from './gesture.js';
@@ -22,10 +22,19 @@ import { maskPlayheadOverInspectors } from './playhead_mask.js';
  * commit jump — snap, never sweep backwards. */
 const REC_SNAP_BACK_PX = 40;
 
+/**
+ * `aux.rerender`: a re-render between polls (app.js requestRender —
+ * the settle's glide, a gesture's pending preview), derived from the
+ * LAST poll's state: its clock is stale, so the playhead's
+ * dead-reckoner takes only the frame's own move (animatorFrame), never
+ * the stale clock as a poll.
+ */
 export function patchSessionView(vm, aux) {
-    // Pin source for map gestures (see drag_pin.js)
+    // Pin source for map gestures (see drag_pin.js): the zero AT REST —
+    // mid-settle, the glide's target.
     noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ,
-              vm.frameZero);
+              vm.frameSettling && Number.isFinite(vm.seatedZero)
+                  ? vm.seatedZero : vm.frameZero);
     // Transport (all writes idempotent — see the setText note)
     setText(ctx.els.playBtn, vm.isPlaying ? '⏸' : '▶');
     ctx.els.playBtn.classList.toggle('playing', vm.isPlaying);
@@ -107,6 +116,11 @@ export function patchSessionView(vm, aux) {
     if (rootStyle.getPropertyValue('--rail-depth') !== String(railDepth)) {
         rootStyle.setProperty('--rail-depth', String(railDepth));
     }
+
+    // THE SETTLE (frame.md §1): the zero glides by per-frame re-derives,
+    // so tiles must land where each derive puts them — a tile's own
+    // left/width transition would trail the glide (session.css).
+    ctx.els.lanes.classList.toggle('frame-settling', !!vm.frameSettling);
 
     // Lanes: keyed reconciliation in VM order
     const seen = new Set();
@@ -198,11 +212,14 @@ export function patchSessionView(vm, aux) {
             ctx.els.playhead.style.left = newLeft + 'px';
         } else if (!anyRecording && vm.qEstablished) {
             // Idle/playing: the animator draws at 60fps and wraps
-            // exactly at the audible cycle; the poll only corrects it
+            // exactly at the audible cycle; the poll only corrects it.
+            // The frame's own move comes first, on every patch — a
+            // re-render between polls carries nothing else.
             if (ctx.els.playhead.style.transition !== 'none') {
                 ctx.els.playhead.style.transition = 'none';
             }
-            animatorPoll(vm, aux);
+            animatorFrame(vm);
+            if (!aux.rerender) animatorPoll(vm, aux);
         } else {
             stopAnimator();
             if (ctx.els.playhead.style.transition === 'none') {

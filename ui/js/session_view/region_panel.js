@@ -42,6 +42,17 @@
  *   - drag a cut's chip     slide the cut; its handles resize it;
  *                           right-click / double-click heals
  *   - double-click material a 1Q cell cut there (the take's own grid)
+ *   - drag the ↺ by its tab THE START MARKER (loop_selection.md §9.3,
+ *                           Ableton's): the top moves onto another hit
+ *                           and the audio shifts so the ↺ keeps its
+ *                           moment — a re-time (setTiming with a top);
+ *                           whole Q, ⌥ fine, kept material only (a plain
+ *                           loop keeps its whole take). Its line never
+ *                           takes a press (it sits in the box). Not over
+ *                           a bypassed map: a top must lie in its stored
+ *                           region, and that is not what plays.
+ *   - "Timing as played"    puts every re-time back (setTiming −retime) —
+ *                           shown wherever the take is shifted, ↺ or not
  *   - a drag near the strip's edge pans the view under the hand
  * The strip is a raw-framed band host through the view (cycleQ =
  * spanQ, anchored at −q0), so the cut bands and dblclick creation are
@@ -55,7 +66,7 @@
  */
 
 import { ctx } from './context.js';
-import { el, pct, fmtQ, setText, setStyle, snapThenAnimate } from './sv_util.js';
+import { el, pct, fmtQ, setText, setTitle, setStyle, snapThenAnimate } from './sv_util.js';
 import { isOverlayFrozen, isDragging, beginGesture, afterSettled } from './gesture.js';
 import { selectOnly, activeSelectedId } from './selection.js';
 import { drawWaveform, drawEnvelope, drawMidiTile, MIDI_VELOCITY_LANE, peaksBoost }
@@ -63,9 +74,12 @@ import { drawWaveform, drawEnvelope, drawMidiTile, MIDI_VELOCITY_LANE, peaksBoos
 import { sliceNotesToTile } from '../midi_notes.js';
 import { dimComplementInto } from './dims.js';
 import { innerCuts, slideSegs } from '../map_edit.js';
+import { heardOffsetOf } from '../time_map.js';
 import { bandState, coveredSegs, laneMapActive, rawCursorQ, commitBandSegs,
-         newGesture, runRawDrag, trimMoveFn, slideMoveFn, viewPct,
+         commitTiming, newGesture, runRawDrag, trimMoveFn, slideMoveFn, viewPct,
+         timingText, fmtSignedQ, fmtFineQ, LOCKED_TITLE,
          COMMIT_HOLD_MAX_MS } from './map_core.js';
+import { previewer, wantsTopHandle, wantsLaneTop, isPlainLoop } from './splice_handles.js';
 import { wireBandCreate, appendCutBands, revealColumns } from './map_bands.js';
 import { pinFrame, unpinFrame } from './drag_pin.js';
 import { makeEdgePanner, canPanView } from './edge_pan.js';
@@ -92,6 +106,14 @@ const Q_LABEL_EDGE_PX = 16;
 /* The cursor glides with the lane cursors' transition; a backward jump
  * larger than this fraction of the strip is a wrap — snap. */
 const CURSOR_WRAP_FRAC = 0.02;
+/* The ↺ tab anchors inward within this many px of the strip's edges
+ * (the strip clips its overflow). */
+const TOP_TAB_EDGE_PX = 20;
+/* The start-marker drag's badge keeps this far inside the strip (px). */
+const BADGE_INSET_PX = 4;
+const TOP_TITLE = '↺ The loop\'s top — Ableton\'s start marker: drag it onto ' +
+    'the hit that should land on the one, and the audio shifts so it does ' +
+    '(a re-time). Whole Q; ⌥ = fine.';
 
 /* The per-lane panel views: laneId → { totalQ, view, segsKey }.
  * `segsKey` is the committed region the view last kept in view. */
@@ -112,9 +134,22 @@ export function buildRegionPanel(row) {
     const termTake = el('span', 'region-term take',
         { title: 'Show the whole take in the panel (⇧Z)' });
     const termCuts = el('span', 'region-term-cuts');
-    label.append(termLoop, document.createTextNode(' · '), termTake, termCuts);
+    // THE TIMING (loop_selection.md §9.2): how far a re-time has moved
+    // the take from where it was played, and the way back. Clips only
+    // (a group is never re-timed); gated like the rest of the chrome.
+    const timing = el('div', 'region-timing');
+    const timingRead = el('span', 'region-timing-read');
+    const timingReset = el('button', 'region-timing-reset', {
+        type: 'button',
+        textContent: 'Timing as played',
+        title: 'Undo every shift: put the audio back where it was played ' +
+            '(the ↺ and the audio move back together)' });
+    timing.append(timingRead, timingReset);
+    label.append(termLoop, document.createTextNode(' · '), termTake, termCuts,
+                 timing);
     termLoop.addEventListener('click', () => fitPanel(row, 'region'));
     termTake.addEventListener('click', () => fitPanel(row, 'take'));
+    timingReset.addEventListener('click', () => resetTiming(row));
     const col = el('div', 'region-col');
     // The OVERVIEW: the whole take, always.
     const overview = el('div', 'region-overview', {
@@ -124,10 +159,14 @@ export function buildRegionPanel(row) {
     overview.appendChild(document.createElement('canvas'));
     const ovMarks = el('div', 'region-ov-marks');
     const ovCursor = el('div', 'region-ov-cursor');
+    // The ↺'s tick over the whole take (placed per paint, so it follows
+    // a start-marker drag's preview).
+    const ovTop = el('div', 'region-ov-top');
+    ovTop.style.display = 'none';
     const viewbox = el('div', 'region-viewbox');
     viewbox.append(el('div', 'region-viewbox-edge start'),
                    el('div', 'region-viewbox-edge end'));
-    overview.append(ovMarks, ovCursor, viewbox);
+    overview.append(ovMarks, ovCursor, ovTop, viewbox);
     // The DETAIL strip: the take through the panel's view.
     const strip = el('div', 'region-strip');
     const grid = el('div', 'region-grid');
@@ -143,6 +182,7 @@ export function buildRegionPanel(row) {
     row._regionOverlay = overlay;
     row._regionLabel = label;
     row._regionTerms = { loop: termLoop, take: termTake, cuts: termCuts };
+    row._regionTiming = { block: timing, read: timingRead, reset: timingReset };
     row._regionOverview = overview;
     // Wheel over ANY part of the panel: zoom / pan the panel's view.
     panel.addEventListener('wheel', ev => onPanelWheel(row, ev), { passive: false });
@@ -280,6 +320,7 @@ function paintPanel(row) {
     const periodQ = segs.reduce((n, [a, b]) => n + (b - a), 0);
     const active = laneMapActive(lane);
     const bypassed = !!(lane.window && lane.window.bypassed);
+    const withTop = panelOffersTop(lane);
     const cuts = !!(lane.mapMulti || innerCuts(st.segs, totalQ).length);
     // The label names the region: what is kept of what exists. Its
     // two terms double as the fit-region / fit-take buttons.
@@ -305,8 +346,10 @@ function paintPanel(row) {
     drawStripWave(strip, peaks, isGroup, midi, totalQ, v);
     drawOverviewWave(row._regionOverview, peaks, isGroup, midi, totalQ);
     paintOverviewMarks(row._regionOverview, segs, active, totalQ);
+    paintOverviewTop(row._regionOverview, lane, withTop, totalQ);
     paintViewBox(row._regionOverview, v, totalQ);
     paintGrid(strip, v, totalQ);
+    paintTiming(row, lane, vm);
 
     // Creation (dblclick) reads per-paint state; must refresh before
     // any early return.
@@ -319,7 +362,8 @@ function paintPanel(row) {
         < NARROW_BOX_PX;
     const key = JSON.stringify(['region', lane.bandSegs, totalQ, active,
                                 lane.bandEditable, vm.quantum, v.q0, v.spanQ,
-                                narrow]);
+                                narrow, withTop && lane.topQ,
+                                !!lane.canRetime]);
     const o = row._regionOverlay;
     if (o._key === key) return;
     o._key = key;
@@ -337,6 +381,30 @@ function paintPanel(row) {
     kept.style.left = viewPct(a, v);
     kept.style.width = pct(b - a, v.spanQ);
     o.appendChild(kept);
+    // THE ↺ — Ableton's start marker — at the top's raw position, above
+    // the box. Its line never takes a press (it sits inside the box and
+    // must never steal a slide); only its TAB grabs. Inert under the
+    // recording gate.
+    if (withTop) {
+        const mark = el('div', 'region-top' + (lane.canRetime ? '' : ' inert'));
+        const tab = el('span', 'region-top-tab mono', {
+            textContent: '↺ top',
+            title: lane.canRetime ? TOP_TITLE : LOCKED_TITLE });
+        mark.appendChild(tab);
+        placeTopMark(mark, lane.topQ, v, strip.clientWidth);
+        o.appendChild(mark);
+        if (lane.canRetime) {
+            tab.addEventListener('pointerdown', ev => {
+                if (ev.button !== 0) return;
+                startPanelTopDrag(row, ev, st, mark);
+            });
+        }
+        // A double-click on the tab never cuts the cell under it.
+        tab.addEventListener('dblclick', ev => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        });
+    }
     if (!st.editable) return;
     kept.addEventListener('pointerdown', ev => {
         const grabQ = rawQAtStrip(strip, ev.clientX, entryOf(row).view);
@@ -390,6 +458,207 @@ function startPanelDrag(row, ev, st, onMove) {
         onPointer: mv => pan.update(mv.clientX),
         onRelease: () => pan.stop(),
     });
+}
+
+/** The ↺ mark at raw `q` through `v`, its tab anchored inward at the
+ * strip's edges. */
+function placeTopMark(mark, q, v, w) {
+    setStyle(mark, 'left', viewPct(q, v));
+    const x = w > 0 ? (q - v.q0) / v.spanQ * w : 0;
+    mark.classList.toggle('region-at-left', x < TOP_TAB_EDGE_PX);
+    mark.classList.toggle('region-at-right', x > w - TOP_TAB_EDGE_PX);
+}
+
+/** The ↺'s tick on the overview (per paint: it follows a start-marker
+ * drag's preview) — wherever the panel offers the ↺ (`withTop`). */
+function paintOverviewTop(ov, lane, withTop, totalQ) {
+    const tick = ov.querySelector('.region-ov-top');
+    const show = withTop && totalQ > 0 && Number.isFinite(lane.topQ);
+    setStyle(tick, 'display', show ? '' : 'none');
+    if (show) setStyle(tick, 'left', pct(lane.topQ, totalQ));
+}
+
+/** Does the panel offer the ↺ — the start marker? Where the clip has
+ * one (wantsTopHandle) over a kept set its drag can walk: an active
+ * map's, or a plain loop's whole take. Not over a bypassed map: a top
+ * must lie in its STORED region (setTiming refuses any other), and
+ * that is not what plays. Exported for the tests. */
+export function panelOffersTop(lane) {
+    return (laneMapActive(lane) || isPlainLoop(lane)) && wantsTopHandle(lane);
+}
+
+/** Has a re-time moved the take by a sample or more (the reset's
+ * reach)? */
+const isShifted = (lane, quantum) =>
+    Math.round(Math.abs(lane.retimeQ || 0) * quantum) >= 1;
+
+/** Does the label show the timing readout and its reset? On a clip a
+ * re-time can reach (a gated one's stay, the reset inert): where a ↺
+ * is offered — on the lane or here — and wherever the take IS shifted,
+ * ↺ or not, since "Timing as played" still puts back a bypassed map's.
+ * Hidden only where nothing can act on them. Exported for the tests. */
+export function showsTiming(lane, quantum) {
+    return wantsTopHandle(lane) && (panelOffersTop(lane) || wantsLaneTop(lane) ||
+                                    isShifted(lane, quantum));
+}
+
+/** The label's timing readout and its reset (showsTiming); the reset
+ * acts only where a re-time is offered now, on a shifted take. */
+function paintTiming(row, lane, vm) {
+    const t = row._regionTiming;
+    const q = vm.quantum;
+    const show = showsTiming(lane, q);
+    setStyle(t.block, 'display', show ? '' : 'none');
+    if (!show) return;
+    const r = lane.retimeQ || 0;
+    const msPerQ = vm.sampleRate > 0 && q > 0 ? q / vm.sampleRate * 1000 : 0;
+    setText(t.read, timingText(r, msPerQ));
+    t.block.classList.toggle('shifted', Math.abs(r) > 1e-9);
+    const off = !lane.canRetime || !isShifted(lane, q);
+    if (t.reset.disabled !== off) t.reset.disabled = off;
+    setTitle(t.reset, lane.canRetime
+        ? 'Undo every shift: put the audio back where it was played ' +
+          '(the ↺ and the audio move back together)'
+        : LOCKED_TITLE);
+}
+
+/** "Timing as played": one re-time by −retime (the preview the poll
+ * brought — or a drag's still in flight — is the retime to undo). */
+function resetTiming(row) {
+    const c = row._regionCtx;
+    if (!c || !c.lane.canRetime || isOverlayFrozen(row._regionStrip)) return;
+    const shift = -Math.round((c.lane.retimeQ || 0) * c.vm.quantum);
+    if (!shift) return;
+    selectOnly(c.lane.id);
+    commitTiming({ laneId: c.lane.id }, shift, null, false);  // its own undo step
+}
+
+/**
+ * THE START MARKER (loop_selection.md §9.3 — Ableton's): drag the ↺ by
+ * its tab onto another hit and the audio moves so that hit lands where
+ * the ↺ sounds. T′ = T0 + δ (whole Q from the grab, ⌥ free), clamped
+ * into the kept set and skipping its gaps; the compensating shift is
+ * heardOffset(T0) − heardOffset(T′), so the ↺ keeps its MOMENT and the
+ * take re-times under it (setTiming with the top). A plain loop's kept
+ * set is its whole take, [0, duration) (st.segs null): its heard offset
+ * is the raw position, so the shift is simply T0 − T′. The lane above
+ * previews it (pending_edits: the top and the shift together), live
+ * commits stream as one undo step, and the view edge-pans like a box
+ * drag. Samples throughout: the top must land inside the kept set.
+ */
+function startPanelTopDrag(row, ev, st, mark) {
+    const strip = row._regionStrip;
+    const c = row._regionCtx;
+    const e = entryOf(row);
+    if (!c || !e || isOverlayFrozen(strip)) return;
+    const lane = c.lane;
+    const q = st.quantum;
+    const segsS = coveredSegs(st).map(([a, b]) => [Math.round(a * q), Math.round(b * q)]);
+    const map = { segs: segsS };
+    const T0 = Math.round(lane.topQ * q);
+    const h0 = heardOffsetOf(map, T0);
+    if (h0 < 0) return;  // a top the region does not play: nothing to hold
+    selectOnly(lane.id);
+    const aS = segsS[0][0];
+    const bS = segsS[segsS.length - 1][1];
+    /** A top inside the kept set: clamped to its span, a gap skipped
+     * forward to the next kept sample. */
+    const keep = t => {
+        t = Math.max(aS, Math.min(bS - 1, t));
+        for (let i = 0; i + 1 < segsS.length; i++) {
+            if (t >= segsS[i][1] && t < segsS[i + 1][0]) return segsS[i + 1][0];
+        }
+        return t;
+    };
+    const grab0 = rawQAtStrip(strip, ev.clientX, e.view);
+    const pv = previewer(lane.id);
+    const o = row._regionOverlay;
+    let badge = null;
+    let sent = 0;           // samples of shift this gesture has committed
+    let sentTop = T0;       // the top it last sent
+    let lastP;              // its last commit
+    const pan = makeEdgePanner({
+        rect: () => strip.getBoundingClientRect(),
+        grabX: ev.clientX,
+        canPan: dir => canPanView(dir, e.view.q0, e.view.spanQ, e.totalQ),
+        pxPerQ: () => strip.clientWidth / e.view.spanQ,
+        onPan: dq => {
+            setView(row, panBy(e.view, dq, e.totalQ));
+            run.reapply();
+        },
+    });
+    const run = runRawDrag(ev, o, st, {
+        rawQAt: x => rawQAtStrip(strip, x, e.view),
+        clamp: false,
+        onMove: (rawQ, alt) => {
+            if (rawQ === null) return { T: T0, shift: 0, handQ: T0 / q, alt };
+            const free = rawQ - grab0;
+            const dq = alt ? free : Math.round(free);
+            const T = keep(T0 + Math.round(dq * q));
+            return { T, shift: h0 - heardOffsetOf(map, T), alt,
+                     handQ: Math.max(aS / q, Math.min(bS / q, T0 / q + free)) };
+        },
+        preview: res => {
+            // The tab rides the hand; the badge names the landing. The
+            // overlay rebuilds once the gesture lets go (its key is
+            // poisoned: the mark moved under it).
+            o._key = 'top-drag';
+            placeTopMark(mark, res.handQ, e.view, strip.clientWidth);
+            if (!badge) {
+                badge = el('div', 'region-badge mono');
+                o.appendChild(badge);
+            }
+            setText(badge, '↺ on ' + fmtFineQ(res.T / q) + 'Q · shift ' +
+                fmtSignedQ(res.shift / q) + 'Q' + (res.alt ? ' · fine' : ''));
+            // Centred on the landing, kept inside the strip (it clips).
+            const w = strip.clientWidth;
+            const bx = (res.T / q - e.view.q0) / e.view.spanQ * w;
+            const bw = badge.offsetWidth;
+            setStyle(badge, 'left', Math.max(BADGE_INSET_PX,
+                Math.min(w - bw - BADGE_INSET_PX, bx - bw / 2)) + 'px');
+            pv.show({ top: res.T, originShift: res.shift });
+        },
+        commit: res => {
+            if (res.shift === sent && res.T === sentTop) return lastP;
+            const delta = res.shift - sent;
+            sent = res.shift;
+            sentTop = res.T;
+            return (lastP = commitTiming(st, delta, res.T, true));
+        },
+        restore: () => {
+            if (!lastP) {
+                pv.restore(null);
+                return undefined;
+            }
+            // Put back the shift AND the top the gesture found — the
+            // effective one: a top never set comes back STORED at the
+            // same sample, as any map edit would leave it (the reconcile
+            // materializes), and it plays the same. The gesture's one
+            // undo step still restores the stored top exactly, unset
+            // included (the verb itself has no "unset").
+            const p = commitTiming(st, -sent, T0, true);
+            sent = 0;
+            sentTop = T0;
+            pv.restore({ top: T0, originShift: 0 });
+            return p;
+        },
+        held: res => {
+            // The landing, still the box's until the rebuild; no presses
+            // meanwhile (the stale chrome would take them).
+            placeTopMark(mark, (res ? res.T : T0) / q, e.view, strip.clientWidth);
+            if (badge) { badge.remove(); badge = null; }
+            o.classList.add('drag-held');
+        },
+        teardown: () => {
+            if (badge) { badge.remove(); badge = null; }
+            o.classList.remove('drag-held');
+        },
+        freeze: [strip],
+        engage: true,
+        onPointer: mv => pan.update(mv.clientX),
+        onRelease: () => pan.stop(),
+    });
+    if (!run.live) pan.stop();
 }
 
 /** Pointer x → raw Q on the detail strip through `view` (unclamped;

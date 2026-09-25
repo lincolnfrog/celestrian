@@ -41,7 +41,7 @@ An eight-agent diagnosis reproduced every one of these. Phase 1 fixed the glitch
 | **Frame `F`** | The shared visible cycle: the LCM of the lanes' periods. |
 | **Frame zero `Z`** | The island time of the frame's left edge. The view picks it ("seats" it, frame.md); the engine does not store it. |
 | **Splice (seam)** | A heard instant where the recording jumps. There is one at the **wrap** (the loop's end jumping back to its start) and one per **inner cut**. |
-| **Top `↺`** | The loop's one: where it reads as starting, and where the frame settles on deselect. Today it is always the region start. Phase 2 proposes a stored mark that region edits leave alone and whose drag **shifts** the audio in time (§9). |
+| **Top `↺`** | The loop's one: where it reads as starting, and where the frame settles on deselect. Phase 2 makes it a stored mark: region edits leave it put while they still play it (resetting it to the region start when they drop it), and its drag **shifts** the audio in time (§9). A take never edited reads its region start. |
 | **Swap / shift** | A swap changes *what* plays (region, splice, cut, trim); a shift changes *when* (the ↺ drag moves the take's origin). §9.2. |
 
 ---
@@ -215,7 +215,7 @@ Four workstreams, then integration and an adversarial review whose findings were
    - Nearest-grid seating.
    - The pin held until the commit settles; held previews.
    - The `drag-live` CSS; the playhead mask; the recording gate.
-   - Tests: `seat_nearest.test.mjs`, `release_lifecycle.test.mjs`, `record_gate.test.mjs`, `release_chrome.spec.js`.
+   - Tests: `seat_nearest.test.mjs` (now `frame_seat.test.mjs`, Phase 2's seat), `release_lifecycle.test.mjs`, `record_gate.test.mjs`, `release_chrome.spec.js`.
 2. **Panel navigation.**
    - Files: `panel_view.js`, `edge_pan.js`, `region_panel.js`.
    - The nudge chain is one pinned gesture; teleport keys skip the panel.
@@ -266,6 +266,8 @@ Both are real effects. A swap is subtle on a steady groove, because the swapped-
 
 **Modifiers** mean the same thing everywhere: a drag snaps by whole Q and keeps any fine offset set earlier, and ⌥ makes it free. So ⌥ on the ↺ is a fine re-time (for example, pulling a late take onto the grid), and no third key is needed. ⇧ on a splice changes the loop length there (§10, P2.4).
 
+**A new take plays as performed** (owner, 2026-09-24), so it resets the clip's `retime` to 0: the timing readout and "Timing as played" then describe the newest take, and the older takes keep their shift as a baked fact, which ⌘Z can still undo.
+
 ### 9.3 The ↺ and the splice are independent
 
 - **The ↺ is the loop's one.** It is a mark on the audio (a raw sample `T`), so it sounds at `O + a0 + heardOffsetOf(segs, T)`.
@@ -276,6 +278,8 @@ Both are real effects. A swap is subtle on a steady groove, because the swapped-
 **When a swap drops the ↺'s spot** (owner, 2026-09-24), the ↺ resets to the region's start, its leftmost kept sample, and so rejoins the splice. In the example above, the swap to bars 2–5 drops bar 1, so the ↺ moves to bar 2. While the region still holds the ↺'s spot, the ↺ stays put and only the splice moves. For example, after sliding to bars 3–6 the ↺ is on bar 3, and sliding back to bars 2–5 leaves it there.
 
 - **Rejected:** v9 tried "same beat, another pass". Bar 5 plays where bar 1 played, so the ↺ stayed still on the lane, but in the panel it jumped from 0 to 4 for a one-bar slide. The owner: "why wouldn't it be at 1Q?"
+- **The top is stored at every edit (2026-09-24, P2).** A map edit reconciles from the ↺ as it showed — the EFFECTIVE top, which on a take no edit has touched is its region start — and stores the answer: that top while the new region still plays it, else the new region start (`timing::reconcileTop`, engine and mock alike; the prototype's `st.top = segs1[0][0]`). So after the swap to bars 3–6 the ↺ is stored on bar 3, and sliding back to bars 2–5 leaves it there; a fresh loop's first slide left keeps its ↺ where it showed, and the splice comes apart. A top is unset only on a take never edited: a fresh take, a session saved before tops.
+- **Rejected:** Phase 2's first build left a reset top UNSET, with the region start standing in. An unset top rides the region start, so the slide back to bars 2–5 moved the ↺ to bar 2, and a fresh loop's leftward slide dragged its ↺ along. That is v5's "every slide moved the ↺" by the side door (§11), and it breaks P2.
 
 **Ghosts** (session_view.md §3). When a loop is shorter than the frame, one tile is the take and every other repeat is a faded print. The take tile starts at the first ↺ on screen.
 - The take tile carries the handles' tabs.
@@ -285,7 +289,7 @@ Both are real effects. A swap is subtle on a steady groove, because the swapped-
 
 ### 9.4 The deselect settle
 
-On deselect the frame settles, animated, onto the bar lines of the first lane (every Q for a 1Q loop, every 4Q for a 4-bar bass). The ↺ lands at the left edge when it sits on one of those lines. A top up to ¼Q early counts as a pickup to the next line, so a take pulled slightly early does not throw the picture back a whole Q. The consequences:
+On deselect the frame settles, animated, onto the bar lines of the first lane (every Q for a 1Q loop, every 4Q for a 4-bar bass). The ↺ lands at the left edge when it sits on one of those lines. A top up to ¼Q early counts as a pickup to the next line, so a take pulled slightly early does not throw the picture back a whole Q. The whole picture glides as one: tiles, handles, cursor, arm marker, and the ruler and gridlines too, each tick labelled where the glide lands it (built 2026-09-24; frame.md §1). The consequences:
 - A swapped part never moves on deselect.
 - A re-timed part stays visibly shifted against the lane that sets the bar lines. That is the honest picture of a re-time.
 
@@ -298,6 +302,45 @@ On deselect the frame settles, animated, onto the bar lines of the first lane (e
 ---
 
 ## 10. Phase 2 roadmap
+
+### Status: built 2026-09-24 (uncommitted on top of ec97ac7)
+
+Seven workstreams, then one review pass. The fixes the review confirmed are applied.
+- **A:** engine, bridge, mock and persistence.
+- **B:** view model and frame.
+- **C:** the lane and panel UI.
+- **D:** materialized tops and the ruler glide.
+- **E:** an identity first commit opens a gesture.
+- **F:** the ↺ on plain loops.
+- **G:** a new take resets the re-time, and identity `setSegments` records nothing.
+
+| Step | State | Where |
+|---|---|---|
+| P2.1 edit hold + settle | built | `session_view/frame_hold.js`, `animator.js`, `app.js`; frame.md §1; session_view.md law 17 |
+| P2.2 stored top + shift verb | built as ONE verb, `setTiming` | `src/time_map.h`, `clip_node.h`, `engine/map_edits.cc`, `edit_log.cc`, `session_io`; the mock twin; time_maps.md §7 |
+| P2.3 splice handles | built | `session_view/splice_handles.js`, the pluggable `runRawDrag`, `map_edit.js` `slideSeam`; time_maps.md §6 |
+| P2.4 ⇧-length at a splice | built, except the frame-length tween on release | `lengthAtSeam`, `runRevealDrag` |
+| P2.5 retire the grips and chip | done (one-shots keep their grips; the Q-definer keeps its brackets) | time_maps.md §8 |
+| P2.6 presentation | built: lane ↺ and splice tabs, ghosts, the glide, the panel ↺ tab, the timing readout, "Timing as played"; the ↺ also on plain unwindowed loops | `splice_handles.js`, `region_panel.js` |
+| P2.7 seat on the first lane's bar lines | built: floor with a ¼Q pickup, from the top's moment | `view_model.js` `seatFrameZero`; frame.md §1 |
+
+**Also decided or fixed on the way (2026-09-24):**
+- **A new take plays as performed** (owner) and resets the clip's `retime` (takes.md §4).
+- **"Bounce selected…" on a clip starts at its ↺** (owner; bounce.md).
+- **Every map edit stores a concrete top** (§9.3), so the ↺ never rides the region start.
+- **Undo steps:** the engine and the mock track the open gesture explicitly, so a drag whose first commit is an identity gets its own undo step.
+- **Live-commit throttles start at −∞.** `performance.now()` counts from page start.
+- **A bypassed map's region start is 0.** It plays whole.
+- **Group composites** place a windowed member at origin + region start.
+- **The recording bar** folds on the settle's landing, not on the seat.
+
+**Open:**
+- The frame-length tween when ⇧-length changes the frame (P2.4).
+- Group lanes have splice handles but no ↺, because stacks store no top in Phase 2. Group composites show no pending preview.
+- Cancelling a ↺ drag leaves a no-op undo step. The older map drags do the same.
+- An imported take does not reset `retime`.
+- An edit made while a map is bypassed that drops the top stores 0.
+- The carry-overs below.
 
 Each step ships on its own, with unit tests plus a real-mouse e2e spec. Steps are ordered by dependency.
 
@@ -312,11 +355,13 @@ Each step ships on its own, with unit tests plus a real-mouse e2e spec. Steps ar
   - Every map edit reconciles it by the §9.3 rule, deterministically, in the engine's map-edit path and the mock twin, pinned by goldens.
     - After the edit, `T′ = T` if the new map plays `T`, else `T′ = a0′` (the new region's start).
   - Seating reads the top's moment, `O + a0 + heardOffsetOf(segs, T)`, instead of the region start.
+  - **Engine side built 2026-09-24** as ONE verb, `setTiming(uuid, shiftSamples, topSamples?, live?)` (the shift and the start marker share it), with per-clip facts `loopTop` (effective) and `retime` (the cumulative user shift). Every map edit STORES its reconciled top, from the effective top before it (§9.3); a live drag reconciles every commit from the effective top its gesture started with. time_maps.md §7 "The top and the re-time".
 - **P2.3 The single splice handle.**
   - Add `slideSeam(segs, j, δ, totalQ)` to `map_edit.js`. A loop-top drag moves the outer bounds only; an inner seam slides its cut.
   - One handle on every repeat of every splice (knob at the lane's bottom edge; the chip keeps the top-right).
   - Drag = a heard-space slide with **locally rendered pending tiles**, no reveal. Whole-Q relative snap, ⌥ free. The swept tint shows during the drag.
   - Exclude the Q-definer, one-shots (they keep edge trims), and recording lanes (the gate).
+  - **P2.3–P2.6 built 2026-09-24** (`splice_handles.js`, the pluggable `runRawDrag`, `region_panel.js`; time_maps.md §6). The swap preview predicts the top the engine will store from the published effective top alone (§9.3: kept while the new region plays it, else the new start), so the ↺ never jumps at release.
 - **P2.4 ⇧-drag = length at a splice.**
   - Moves the end of the material before the splice: the loop's end at the wrap, the cut's start at a cut. Right = more material, left = less; whole Q; a cut shrunk to zero heals.
   - Goes through the reveal, anchored so the grabbed bound sits under the hand, and cross-fades in and out. The frame length tweens on release.
@@ -327,6 +372,7 @@ Each step ships on its own, with unit tests plus a real-mouse e2e spec. Steps ar
   - An instant edit that resets the ↺ (a cut, a nudge, a heal) glides it to its new place.
   - The panel's ↺, grabbed only by its tab inside the kept box.
   - A readout of the take's timing against how it was played, and a "timing as played" reset.
+  - **A plain loop** (no map, the commonest case: "my drum loop is 40 ms late") wears the ↺ alone, grabbed by its tab so the latent brackets keep their press, and the panel's ↺ walks its whole take. A bypassed map wears none; the reset still shows wherever the take is shifted (built 2026-09-24, review finding; time_maps.md §6).
 - **P2.7 The settle on the first lane's bar lines** (§9.4), replacing the plain floor seat of P2.1.
 - **Carry-overs:**
   - Group composites are still drawn at 800 px.
@@ -345,7 +391,7 @@ Each step ships on its own, with unit tests plus a real-mouse e2e spec. Steps ar
 - **Dragging a joined ↺ moves the splice too** (the same draft). The owner wants the ↺ and the splice independent (§9.3).
 - **Resetting an excluded top to the lane's far left** (my reading of "the far left", 2026-09-23). The owner meant the region's start (§9.3).
 - **Keeping an excluded top on "the same beat of another pass"** (v9). It stayed still on the lane but jumped by whole periods in the panel (§9.3).
-- **A top that rides the region start until "set"** (the v5 era). Every panel slide moved the ↺, including slides that still held it. The current rule resets to the start only when the region drops the top (§9.3).
+- **A top that rides the region start until "set"** (the v5 era). Every panel slide moved the ↺, including slides that still held it. The current rule resets to the start only when the region drops the top (§9.3). Phase 2's first build (2026-09-24) brought it back by the side door: a reset left the top unset, so it rode the start again. The reconcile now stores the reset (§9.3).
 - **Tabs on every repeat.** A 3Q loop in a 12Q frame showed twelve labels. Ghost repeats now carry faint lines only (§9.3).
 - **No handle rebuilds during a drag.** This hid the handles the live edit needed. Rule: create mid-gesture, remove only after.
 - **A shortest-way-round swept tint.** It lit the wrong side for |δ| ≥ S/2. The tint must use the signed drag distance.

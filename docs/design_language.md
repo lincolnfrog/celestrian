@@ -68,6 +68,18 @@ several already are.
   member of the scope is at phase 0. No member ever "jumps ahead."
 - **I4 — Commit Stability.** Committing a take never audibly or visually
   moves any *other* clip. Ghost extents may grow; nothing shifts.
+  *As amended for origins (time_maps.md §5):* no edit moves an origin
+  on the engine's own initiative except by whole Qs (whole folds for a
+  sub-Q loop) — the continuity re-anchor keeps the anchor's grid phase
+  exactly, and a swap (a slide, a cut, a trim) keeps the origin
+  outright. **Owner ruling (2026-09-24, loop_selection.md §9): an
+  EXPLICIT re-time may move an origin by any amount, sub-Q included.**
+  The ↺ drag and the panel's start marker (`setTiming`) are the one
+  gesture that re-times: they move exactly the dragged clip's origin —
+  whole Q by default, free with ⌥ — and count the move into its
+  `retime` so "timing as played" can take it back; no other clip and
+  no island fact moves. Pinned by `tests/time_map_record_tests.cc`
+  ("setTiming"), scenario S41 and `ui/js/tests/set_timing.test.mjs`.
 - **I5 — Fractality.** Every behavior specified for a clip must be
   specified (and equal) for a collapsed composite. A feature that only
   works at depth 0 is unfinished. *(Made true by construction for time
@@ -327,8 +339,10 @@ in the doc that owns its feature, but each has a pointer here.
   ⌥-slide within ±½Q releases with the picture the drag pin showed —
   the field video's −0.15Q slide no longer jumps every lane a Q; the
   drag pin and the held preview last until the final commit settles.
-  Pinned by `ui/js/tests/seat_nearest.test.mjs` and
-  `release_lifecycle.test.mjs`. (b) Loop-region edits are disabled
+  Pinned by `release_lifecycle.test.mjs` (and `seat_nearest.test.mjs`,
+  now `frame_seat.test.mjs`: the nearest rule was superseded on
+  2026-09-24 by the edit hold and a floor-with-pickup seat — frame.md
+  §1). (b) Loop-region edits are disabled
   while any take records or is pending — simplicity over the
   per-subtree refusal (time_maps.md §7); pinned by
   `ui/js/tests/record_gate.test.mjs` and `ui/e2e/release_chrome.spec.js`.
@@ -348,6 +362,31 @@ in the doc that owns its feature, but each has a pointer here.
   pinned by the golden `continuity_origin_cases` and scenario S40.
   The whole system, with worked examples, the Phase 2 roadmap and the
   pending top model: loop_selection.md.
+- **LOOP-REGION PHASE 2 (owner, 2026-09-24; built the same day):**
+  (a) SWAP vs SHIFT. A region edit — the panel's box and brackets, a
+  cut, a splice drag, a nudge — changes WHAT plays and keeps the
+  origin, so the groove never moves against the other tracks. The ↺
+  top is the ONE handle that re-times (`setTiming`: whole Q, ⌥ free;
+  I4 as amended above), and "Timing as played" takes the accumulated
+  shift back. The prototype's switch between keeping "the top" and
+  "the timing" was a false dichotomy (owner). (b) THE TOP is a stored
+  raw mark per clip. A map edit keeps it while the new region plays
+  it, else stores the new region start ("why wouldn't it be at 1Q?")
+  — a stored start, so the ↺ then stays put like any top, never an
+  unset top that rides the region start (the rejected v5 behaviour).
+  (c) The ↺ and the splice are INDEPENDENT handles — the lane's upper
+  and lower halves; tabs only on the take tile, ghost repeats faint;
+  the paired `] [` grips and the "↺ loop top" chip are retired, and
+  ⇧-drag on a splice changes the length there. (d) THE EDIT HOLD:
+  while a lane is selected its edits never re-seat the frame; on
+  deselect the frame settles, animated (560 ms), onto the first lane's
+  bar lines from the top's moment — floor, with a ¼Q pickup —
+  "for overall clarity of the composite". Spec loop_selection.md §9–
+  §10, frame.md §1, time_maps.md §6–§7; pinned by the goldens
+  `top_reconcile_cases` and `effective_top_cases`, scenario S41,
+  `frame_seat`, `frame_hold`, `pending_edits`, `top_fields`,
+  `set_timing` and `splice_handles` tests, and
+  `ui/e2e/splice_handles.spec.js` and `frame_settle.spec.js`.
 - **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
   2026-09-17; frame.md §4):** a song authored on the root anchors the
   root — Q18 at depth 0 — at the zero the view had seated when the

@@ -10,7 +10,107 @@ import {
     normalizeSegments, coveredSet, cutsOf, innerCuts, applyCut, healCut,
     cellCutAt, resizeCutTarget, slideCutTarget,
     segsPeriod, trimBoundTo, trimBoundForPeriod, cutBounds,
+    slideSeam, lengthAtSeam, SEAM_MIN_Q,
 } from '../map_edit.js';
+
+const near = (a, b) => Math.abs(a - b) < 1e-9;
+const sameSegs = (a, b) => a.length === b.length &&
+    a.every((s, i) => near(s[0], b[i][0]) && near(s[1], b[i][1]));
+
+/* THE SPLICE SWAP (loop_selection.md §4.1, P2.3): slideSeam slides one
+ * splice with the period held. */
+test('slideSeam: the WRAP on one segment IS the region slide, clamped to the take', () => {
+    let r = slideSeam([[6, 10]], 0, 1, 12);
+    assert.deepEqual(r.segs, [[7, 11]]);
+    assert.equal(r.deltaQ, 1);
+    r = slideSeam([[6, 10]], 0, -2.5, 12);
+    assert.deepEqual(r.segs, [[3.5, 7.5]], '⌥: any amount');
+    // Clamped to the take's two ends.
+    assert.equal(slideSeam([[6, 10]], 0, 5, 12).deltaQ, 2);
+    assert.equal(slideSeam([[6, 10]], 0, -9, 12).deltaQ, -6);
+    // A full-span "map" has nothing to slide against.
+    assert.equal(slideSeam(null, 0, 1, 12).deltaQ, 0);
+});
+
+test('slideSeam: the WRAP on a cut map moves only the outer bounds — the cuts hold', () => {
+    const segs = [[2, 5], [6, 10]];  // a 1Q cut at [5, 6); period 7
+    let r = slideSeam(segs, 0, 1, 12);
+    assert.deepEqual(r.segs, [[3, 5], [6, 11]], 'first start and last end together');
+    assert.equal(segsPeriod(r.segs, 12), 7, 'period held');
+    // The inner cut keeps its raw place — and so, by the anchoring law,
+    // its heard place (a0 + heard offset of the cut is unchanged).
+    const cutHeard = s => s[0][0] + (s[0][1] - s[0][0]);
+    assert.equal(cutHeard(r.segs), cutHeard(segs));
+    r = slideSeam(segs, 0, -1, 12);
+    assert.deepEqual(r.segs, [[1, 5], [6, 9]]);
+    // Clamps: the take bounds the last segment's end …
+    r = slideSeam(segs, 0, 10, 12);
+    assert.deepEqual(r.segs, [[4, 5], [6, 12]]);
+    // … and, on a longer take, the first segment keeps SEAM_MIN_Q.
+    r = slideSeam(segs, 0, 10, 20);
+    assert.ok(near(r.segs[0][1] - r.segs[0][0], SEAM_MIN_Q), 'first keeps the floor');
+    // … and the last keeps it sliding left (bounded by the take first).
+    r = slideSeam([[5, 8], [9, 10]], 0, -10, 12);
+    assert.ok(near(r.segs[1][1] - r.segs[1][0], SEAM_MIN_Q));
+    assert.ok(near(segsPeriod(r.segs, 12), 4));
+});
+
+test('slideSeam: an inner CUT slides between its neighbours, length held', () => {
+    const segs = [[2, 5], [6, 10]];
+    let r = slideSeam(segs, 1, 1, 12);
+    assert.deepEqual(r.segs, [[2, 6], [7, 10]]);
+    assert.equal(r.deltaQ, 1);
+    r = slideSeam(segs, 1, -0.25, 12);
+    assert.deepEqual(r.segs, [[2, 4.75], [5.75, 10]], '⌥: any amount');
+    // Neither neighbour shrinks below the floor.
+    r = slideSeam(segs, 1, 99, 12);
+    assert.ok(near(r.segs[1][1] - r.segs[1][0], SEAM_MIN_Q));
+    r = slideSeam(segs, 1, -99, 12);
+    assert.ok(near(r.segs[0][1] - r.segs[0][0], SEAM_MIN_Q));
+    // The cut's length never changes.
+    assert.ok(near(r.segs[1][0] - r.segs[0][1], 1));
+    // j past the last cut: nothing moves.
+    assert.deepEqual(slideSeam(segs, 2, 1, 12), { segs, deltaQ: 0 });
+});
+
+/* ⇧ AT A SPLICE = THE LENGTH THERE (P2.4). */
+test('lengthAtSeam: at the WRAP the loop end moves by whole Qs, right = more', () => {
+    let r = lengthAtSeam([[6, 10]], 0, 1.3, 12);
+    assert.deepEqual(r.segs, [[6, 11]]);
+    assert.equal(r.deltaQ, 1, 'whole Q');
+    r = lengthAtSeam([[6, 10]], 0, -2.6, 12);
+    assert.deepEqual(r.segs, [[6, 7]]);
+    // Never under 1Q, never past the take.
+    assert.deepEqual(lengthAtSeam([[6, 10]], 0, -9, 12).segs, [[6, 7]]);
+    assert.deepEqual(lengthAtSeam([[6, 10]], 0, 9, 12).segs, [[6, 12]]);
+    // A free-slid loop keeps its fractional start; the period stays whole.
+    r = lengthAtSeam([[6.4, 9.4]], 0, 1, 12);
+    assert.ok(sameSegs(r.segs, [[6.4, 10.4]]));
+    // Grown to the whole take: no map at all (healCut's full span).
+    assert.deepEqual(lengthAtSeam([[0, 10]], 0, 2, 12).segs, []);
+});
+
+test('lengthAtSeam: at a CUT the material before it grows or shrinks; to nothing heals', () => {
+    const segs = [[2, 5], [7, 10]];  // a 2Q cut at [5, 7); period 6
+    let r = lengthAtSeam(segs, 1, 1, 12);
+    assert.deepEqual(r.segs, [[2, 6], [7, 10]], 'more material: the cut shrinks');
+    assert.equal(segsPeriod(r.segs, 12), 7);
+    r = lengthAtSeam(segs, 1, -2, 12);
+    assert.deepEqual(r.segs, [[2, 3], [7, 10]], 'less material: the cut grows');
+    // The cut closes: the touching segments merge — healed.
+    r = lengthAtSeam(segs, 1, 2, 12);
+    assert.deepEqual(r.segs, [[2, 10]]);
+    assert.equal(r.deltaQ, 2);
+    assert.equal(lengthAtSeam(segs, 1, 5, 12).deltaQ, 2, 'no further than the cut');
+    // The segment before keeps some material (never emptied).
+    assert.deepEqual(lengthAtSeam(segs, 1, -9, 12).segs, [[2, 3], [7, 10]]);
+    // The WRAP of the same map moves the LAST segment's end.
+    assert.deepEqual(lengthAtSeam(segs, 0, 1, 12).segs, [[2, 5], [7, 11]]);
+});
+
+test('lengthAtSeam: a sub-Q period has no whole-Q length to change', () => {
+    assert.deepEqual(lengthAtSeam([[1, 1.5]], 0, 2, 12), { segs: [[1, 1.5]], deltaQ: 0 });
+});
 
 test('covered/cuts/inner helpers', () => {
     assert.deepEqual(normalizeSegments([[2, 3], [0, 1], [1, 2]]), [[0, 3]],

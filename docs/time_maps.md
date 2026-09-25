@@ -179,7 +179,8 @@ entirely in the editor.
   original "Conservation of Loop Length" linked-edge rule to modular
   arithmetic.
 - **Heal.** Double-click a cut, or right-click any seam handle, chip, or
-  cut band.
+  cut band; on a heard lane, double-click or right-click a cut's splice
+  — or ⇧-drag it until the material before it closes the cut (§6).
 
 The vocabulary splits cleanly: leading/trailing exclusions are the
 **window brackets'** domain; **bands** are only the INNER gaps. The two
@@ -222,9 +223,8 @@ no false ghosts, and cross-lane phase alignment (I2) is preserved.
 Tiles are painted per pixel column through the same mapping (each
 column's heard phase → `mapOffset` → its fractional raw range), so a
 slide repaints only the strip its seams sweep — session_view.md
-display law 16. The
-loop top is a marked `↺` point carrying the paired trim grips, separated
-16 px so the end grip cannot hide behind the start.
+display law 16. The loop's top is the `↺` handle and each splice its
+own handle (§6, 2026-09-24 — they replaced the paired trim grips).
 
 This is session_view.md law 13 as amended: law 13's original concern —
 content hidden with no way to see it — is answered by the editing
@@ -283,7 +283,11 @@ mock in lockstep) keeps the sounding sample sounding:
 - **I4 as amended:** for whole-Q maps origin moves by whole Qs only, so
   the anchor's grid phase (mod Q) is exactly preserved. Which cell
   aligns re-derives from the edit instant — the looper's
-  launch-quantized feel.
+  launch-quantized feel. The re-anchor preserves whatever phase the
+  origin HAS: a re-timed origin (§7, `setTiming`), which may sit
+  anywhere (owner, 2026-09-24: an explicit re-time moves an origin by
+  any amount), keeps its sub-Q offset through every map edit, and the
+  re-anchor never counts toward the clip's `retime`.
 - **The least move (seam-model SM-4, 2026-09-23).** Every origin
   congruent modulo the node's fold (its period; a one-shot's context
   cycle) sounds the same sample, and the solve `t0 − heard phase`
@@ -330,14 +334,78 @@ design_language.md.
 
 ## 6. The editing surfaces
 
-Two surfaces, one law (`ui/js/session_view/map_core.js`). Both edit in
-RAW coordinates, because cut and trim geometry *is* raw-frame data —
-the heard view is the right resting view and the wrong editing surface.
+Two surfaces, one law (`ui/js/session_view/map_core.js`). The **lane**
+edits in heard time where heard time is exact and in raw time where it
+is not: a SWAP (a splice slid, the period held) changes only the strip
+it sweeps (the anchoring law, loop_selection.md §4.1), so it is direct
+manipulation on the heard lane; a LENGTH change re-tiles every repeat
+and often the frame (§4.2 there), so it cannot be drawn in place and
+opens the raw take (the same-scale reveal). The **region panel** edits
+in raw time throughout. Both are one protocol: `setSegments` for the
+map, `setTiming` for the one gesture that re-times (the ↺, §7).
+
+### The lane: splices and the top (loop-region phase 2, 2026-09-24)
+
+A committed heard lane — clip or group, not a one-shot, not the
+Q-definer — wears two kinds of handle in their own layer
+(`splice_handles.js`, `.lr-*`), outside the keyed overlay: positioned on
+every patch, they move with a drag's local preview and glide. A **plain
+loop** — a clip with no map, its whole take looping — wears the ↺ alone:
+nothing to swap, so no splice, but its timing is the ↺'s to shift ("my
+drum loop is 40 ms late").
+
+| Element | Gesture |
+|---|---|
+| **Splice** handle on every heard repeat of the wrap (where the loop's end jumps back to its start) and of each inner cut; grabbed by the lane's LOWER half, its tab on the bottom edge ("splice", "‖ 1Q") | drag = **swap** (`slideSeam`: the wrap moves the first start and the last end together, a cut slides between its neighbours; whole Q from the grab, ⌥ free); ⇧-drag = **length** at that splice (`lengthAtSeam`, through the reveal below); a cut's splice: double-click / right-click = heal |
+| **↺ top** on every heard repeat of the loop's one, wherever the clip can be re-timed (`canRetime`, or inert under the recording gate — `retimeLocked`): a heard map, and a plain loop (at `topHeardQ + k·S`, S its take). Grabbed by the UPPER half, its tab "↺ top" on the top edge — on a plain loop by the tab only, since its line sits on the latent start bracket, which keeps its press. Never on a group (never re-timed in Phase 2), a one-shot, the Q-definer, a child under a parent's map, comp mode (the cells own the take tile) or a **bypassed map** (its raw-framed brackets own the lane; the panel's "Timing as played" still reaches it) | drag = **shift**: the origin moves with the hand (`setTiming`; whole Q, ⌥ fine) — the audio, the ↺ and the splices move together |
+| The lane body | double-click = a 1Q cell cut (§4) |
+| `[` / `]`, `{` / `}` | walk the viewport through the take tile's splices and ↺ / jump to the outermost |
+
+- **The swap is previewed locally.** Each move sets the lane's pending
+  edit (`pending_edits.js`: the segments, and the top the engine will
+  land on) and re-derives from the last poll at once (`requestRender`),
+  so the tiles change under the pointer with no round trip; live
+  commits stream at most every 90 ms under one undo step; a badge
+  names the swap, a dashed ghost marks the whole-Q landing, and the
+  swept strip is tinted by the SIGNED drag distance (never "the short
+  way round"). The ↺ stays put — unless the new region drops its
+  sample, when it resets to the region start (the reconcile rule, §7),
+  as the preview already shows. The shift previews the same way (the
+  origin moved locally).
+- **Independent handles.** The ↺ and a splice coincide on a fresh take
+  (an unset top IS the region start) and come apart on a swap; each
+  grabs by its own half, so either is always reachable.
+- **Ghosts** (session_view.md §3). On a loop shorter than the frame only
+  the take tile's handles wear tabs; a ghost repeat's is a faint line
+  whose tab shows on hover, still grabbable, and never a teleport stop.
+  A plain loop's take tile sits where it was performed, so its ↺ wears
+  the tab in the take's PASS — the tile, or the part the frame's end
+  clips, sounding at its start (`inTakePass`): a top moved into the take
+  can sound there, and its one ↺ must not be a tabless ghost.
+- **Created mid-gesture, removed after.** A repeat entering the frame
+  mid-drag gets its handle at once; nothing is removed until the
+  gesture ends (the grabbed handle holds the pointer capture), and the
+  grabbed handle keeps standing for the repeat nearest the hand.
+- **The glide.** An instant edit that resets the ↺ — a cut, heal, nudge,
+  undo or redo moving its raw sample and where it sounds — glides it
+  ~380 ms instead of jumping. Never under a hand, and never against
+  the frame's own settle: the glide gives way (`vm.frameSettling`).
+- **The recording gate** draws every handle inert (`.lr-inert`, the
+  gate's tooltip, no gesture). The ↺ reads the VM's own verdict,
+  `retimeLocked` (re-timeable but for the gate): the map chrome's
+  `bandLocked` needs a ≥ 2Q take, and a 1Q loop's ↺ would vanish.
+- **What else keeps its chrome.** A one-shot keeps its edge grips (trim
+  through the reveal) and seam handles — its offset IS its placement
+  (Q5), so it has no splice to swap and no ↺ to shift. The Q-definer
+  keeps its free brackets (Q13), and raw-framed lanes their brackets,
+  latent brackets and cut bands (a plain loop's under its ↺).
 
 ### The same-scale reveal
 
-A heard lane's trim grip or seam handle drags in raw coordinates at the
-lane's **own** px-per-Q (`map_bands.js runRevealDrag`).
+⇧ on a lane splice (and a one-shot's grip or seam) drags in raw
+coordinates at the lane's **own** px-per-Q (`map_bands.js
+runRevealDrag`). Since 2026-09-24 a plain splice drag is a heard-space
+swap (above), so on those lanes the reveal serves length changes only.
 
 - **Engage gate.** A real drag is > 4 px of travel or a 160 ms hold. A
   click never edits, so both clicks of a double-click land on the same
@@ -346,14 +414,18 @@ lane's **own** px-per-Q (`map_bands.js runRevealDrag`).
   thing: a reveal layer draws the visible raw slice (waveform + raw-Q
   gridlines) where the heard tiles were, the preview layer's
   dims/brackets/bands sit over it, and the view is placed so the grab
-  pixel IS the handle's raw position. The handle never leaves the
-  pointer; nothing rescales.
+  pixel IS the raw bound the drag moves — for ⇧ on a splice, the end of
+  the material before it (the loop's end bracket at the wrap; at a cut,
+  the band from the hand to the cut's end, closing to a heal). The
+  bound never leaves the pointer; nothing rescales. The heard handles
+  step aside meanwhile (opacity only: the grabbed one keeps its
+  capture).
 - **Edge panning.** Dragging into a visible edge (36 px, clipped by the
   viewport) pans the raw take under the hand (`PAN_MAX_PX_PER_S`), the
   bound following. The rule is **direction-aware** and shared with the
   region panel's drags (`edge_pan.js`, 2026-09-23): a drag pans toward
   an edge only once the pointer is *outward of where it grabbed* (past
-  a 4 px slop). A grip resting at the lane's edge starts inside the
+  a 4 px slop). A handle resting at the lane's edge starts inside the
   zone, and the old rule ran the loop outward on a fine inward move.
 - **The frame stays pinned** for the whole gesture; live commits stream
   and are audible; release commits and the lane relaxes.
@@ -373,8 +445,8 @@ padding), whatever the main zoom and scroll. It holds a label ("loop 4Q
 
 - the **overview**, 12 px: the WHOLE raw take (clip peaks; a group's map
   mixdown — the same array the heard tiles slice), the kept segments
-  tinted, each inner cut notched, the amber cursor, and the detail view
-  as an outlined box;
+  tinted, each inner cut notched, the ↺'s tick, the amber cursor, and
+  the detail view as an outlined box;
 - the **detail** strip, the editing surface: the take drawn through the
   panel's own **view** `{q0, spanQ}`.
 
@@ -383,6 +455,8 @@ padding), whatever the main zoom and scroll. It holds a label ("loop 4Q
 | The kept region (`.region-kept`) | drag = **slide** by whole Qs; ⌥ = any amount (`slideMoveFn`) |
 | Bracket handles | drag = **trim** (`trimMoveFn`; the period snaps to whole Qs); ⌥ slides |
 | Inner cuts (bands) | slide by their chip; resize by their handles |
+| The ↺ (`.region-top`, clips), grabbed ONLY by its tab — its line sits in the box and never steals a slide. Over an active map's kept set, or a plain loop's whole take `[0, duration)`; never a bypassed map's (a top must lie in its STORED region, which is not what plays) | drag = **the start marker** (Ableton's): the top `T′ = T0 + δ` (whole Q from the grab, ⌥ free, clamped into the kept set, gaps skipped) and the shift `heardOffset(T0) − heardOffset(T′)` — on a plain loop simply `T0 − T′` — in one `setTiming`, so the ↺ keeps its moment and the take re-times under it; the lane above previews it |
+| The label's timing readout and "Timing as played" (clips) | "timing: as played" / "shifted +1Q" / "shifted −0.025Q (40 ms earlier)"; the button re-times by `−retime` (disabled at 0). Shown where a ↺ is offered, and wherever the take is shifted, ↺ or not (a bypassed map's reset); hidden only where nothing can act on it |
 | The detail strip | double-click = a 1Q cell cut on the take's own Q grid (`cellCutAt`) |
 | A box or bracket drag near the strip's edge | pans the view under the hand (`edge_pan.js`, the reveal's rule; cut-chip and cut-handle drags do not pan yet) |
 | Ctrl/⌘+wheel or a pinch over the panel | **zoom the panel** about the Q under the pointer — through the view on the detail strip, through the whole take on the overview (inside the view box; elsewhere the view's middle). The main view does not zoom |
@@ -437,21 +511,39 @@ never re-seats per press (`makeChainPin`). The panel's view pans to keep
 the nudged region in sight. `Z` / `⇧Z` fit the panel to the loop / the
 whole take, only while a panel is shown (plain `z` is otherwise
 unbound). `[` / `]` walk the viewport through the selected track's
-**lane** handles, never the panel's (`isTransientHandle` skips
-`.lane-region`: the viewport-pinned panel cannot be centred, and the
-walk used to stick on its cut handles); `{` / `}` jump to the outer
-loop bounds.
+**lane** handles — a heard lane's take-tile splices and ↺ — never the
+panel's (`isTransientHandle` skips `.lane-region`: the viewport-pinned
+panel cannot be centred, and the walk used to stick on its cut
+handles) nor a ghost repeat's; `{` / `}` jump to the outermost handle.
 
-Pinned by `ui/js/tests/map_core.test.mjs` (the three move laws),
-`panel_view.test.mjs` (fit, clamp, zoom, pan, keep-in-view, the
-whole-Q grid, the wheel and overview-box laws, one gain per take),
-`edge_pan.test.mjs` (the direction-aware pan),
+Pinned by `ui/js/tests/map_edit.test.mjs` (`slideSeam`, `lengthAtSeam`),
+`map_core.test.mjs` (the move laws, the length law, the timing
+readout), `splice_handles.test.mjs` (where the splices and the ↺ sit,
+ghosts, the swap preview's top, the glide, the grabbed handle's
+pairing, who wears what — the plain loop's lone ↺ and its tab in the
+take's pass, none on a bypassed map, inert under the gate — the
+panel's start marker and when the timing shows), `top_fields.test.mjs`
+(`canRetime`, `retimeLocked`),
+`release_lifecycle.test.mjs` (the heard
+drags' pluggable preview and commit under the raw drag's lifecycle),
+`pending_edits.test.mjs`, `panel_view.test.mjs` (fit, clamp, zoom,
+pan, keep-in-view, the whole-Q grid, the wheel and overview-box laws,
+one gain per take), `edge_pan.test.mjs` (the direction-aware pan),
 `region_panel_keys.test.mjs` (the nudge chain's pin, the teleport
-filter), `ui/e2e/region_panel.spec.js` (panel on select / off on
-top-bar click and Escape; panel trim, slide, cut; nudges; the reveal
-keeps the grip under the pointer, never pans on an inward move, and
-pans outward at the edge) and `ui/e2e/region_panel_view.spec.js` (the
-view's navigation and every gesture under zoom, real mouse input).
+filter), `ui/e2e/splice_handles.spec.js` (the swap changes only the
+swept strip and keeps or resets the ↺; the shift, whole Q and ⌥;
+Escape puts both back; ⇧ length at the wrap and at a cut, to a heal;
+the start marker; "Timing as played"; ghosts; the glide and the
+settle; the ↺ clear of the chip; no grips or chip; a plain loop's ↺
+alone — its shift, its start marker over the whole take, its reset,
+inert under the gate, a 1Q loop's too),
+`ui/e2e/region_panel.spec.js` (panel on select / off on top-bar click
+and Escape; panel trim, slide, cut; nudges; the ⇧ reveal keeps the
+bound under the pointer, never pans on an inward move, and pans
+outward at the edge), `ui/e2e/release_chrome.spec.js` (the held
+release, the mask, the gate) and `ui/e2e/region_panel_view.spec.js`
+(the view's navigation and every gesture under zoom, real mouse
+input).
 
 ---
 
@@ -479,6 +571,86 @@ view's navigation and every gesture under zoom, real mouse input).
   mock); `segments` (flat samples) in metadata, `segmentsQ` (QTime
   pairs) in the save format (additive; templates strip it).
 
+### The top and the re-time (loop_selection.md §9; built 2026-09-24)
+
+A map edit is a **swap** — it changes what plays and keeps the origin.
+The one edit that changes **when** a take plays is the re-time: the
+lane's ↺ drag and the panel's start marker. Two per-clip facts carry
+it, beside the origin:
+
+- **The top** (`ClipNode::storedTop`): a RAW take position, the ↺ —
+  where the loop reads as starting — or unset (`timing::kNoTop`) on a
+  take no edit has touched (a fresh take, a session saved before tops),
+  when the region start stands in. It sounds at `origin + a0 +
+  heardOffsetOf(T)`, so a swap, which keeps the origin, never moves its
+  moment. Metadata publishes `loopTop`, the EFFECTIVE top: the stored
+  one while the stored map plays it, else the region start
+  (`segments[0]`; else `loopStart` while the single window is active;
+  else 0). Stacks keep no top in Phase 2 and publish their region start.
+- **The re-time** (`ClipNode::retime`): the cumulative USER shift of
+  the origin, samples; 0 = as played. Published as `retime` (clips
+  only). The continuity re-anchor, a Q13 re-trim, a lock-collapse and a
+  seek move the origin without counting.
+- **The verb** is `setTiming(uuid, shiftSamples, topSamples?, live?)`:
+  the origin moves by the shift — any amount, never re-folded (I4 as
+  amended, owner 2026-09-24) — the re-time counts it, and a finite
+  `topSamples ≥ 0` stores the top, which must lie in the clip's kept
+  set or the whole call is refused. The lane ↺ drag sends a shift; the
+  panel's start marker sends a top and the compensating shift, so the ↺
+  keeps its moment; "timing as played" sends `−retime`. One undoable
+  `Edit::Timing` carrying the three as ABSOLUTE values (the verb folds
+  the shift in; `iorg` rides `setsOrigin`, so a seek re-frames it like
+  every logged origin), so `live` commits coalesce by dropping later
+  inverses — Timing into Timing only, never into a map step (swap and
+  shift are different gestures). The origin reaches the audio thread
+  the continuity rider's way (a named island generation published with
+  the unchanged Q and zero); the top and the re-time never reach it.
+  Refused for stacks, an empty clip, the Q-definer (the published
+  `definerId` — its frame top IS the island zero), a recording or
+  pending clip, and anything under a live take.
+- **The reconcile rule** (owner, 2026-09-24) rides inside every map
+  edit's applier, so it is part of that edit's undo state:
+  `reconcileTopRider` after LoopPoints / Segments (setLoopPoints,
+  setSegments, clears, cell cuts and heals, the Q13 definer re-trim),
+  and the window riders' own copy. It starts from `T0`, the EFFECTIVE
+  top before the edit (`topBeforeEdit`, read before the geometry
+  moves — on a take never edited, its region start), and STORES `T0`
+  while the new kept set plays it, else the new region start
+  (`timing::reconcileTop`): never unset, so `kNoTop` means only "never
+  edited". The inverse restores the old stored top exactly, unset
+  included. **Why materialize** (P2, owner 2026-09-24: an existing ↺
+  stays put when the region moves, if it can): an unset top IS the
+  region start, so a reset left unset rode every later slide — bars
+  1–4 slid to 3–6 (the reset) and back to 2–5 carried the ↺ to bar 2,
+  and a fresh loop's first slide left dragged its ↺ along: v5's
+  rejected "every slide moved the ↺" (loop_selection.md §9.3, §11).
+  Stored, the reset stays on bar 3. A LIVE map commit reconciles from
+  the effective top its gesture STARTED with (the base the gesture's
+  first inverse records, `AudioEngine::record`), so a splice drag that
+  sweeps past the ↺ and back keeps it, as the drag previewed (the
+  preview predicts from the published effective top alone,
+  `splice_handles.js predictTop`). A bypass toggle leaves the top
+  alone. The lock-collapse re-expresses it (`T − s` in the collapsed
+  take; the splice maps it to its heard offset — one it drops to the
+  spliced take's start, 0 — and the un-splice puts the raw one back),
+  keeping its moment; a whole-clip take strip carries it with the take.
+- **Saved** as `loopTopQ` / `retimeQ` (QTime of Q like `originQ`;
+  additive — absent = unset / as played, every bundle before
+  2026-09-24; templates strip both).
+- **The mock twin** (`mock/maps.js setTiming`, `topBeforeEdit`,
+  `reconcileStoredTop`, `topBaseFor`) keeps `storedTop` private and
+  publishes the same two fields; the pure algebra is `ui/js/time_map.js
+  keepsTop / reconcileTop / regionStart / effectiveTop`, golden-pinned
+  against `src/time_map.h` (`top_reconcile_cases` — chains of edits,
+  each reconciled from the effective top before it — and
+  `effective_top_cases`).
+- **A new take plays as performed** (owner, 2026-09-24): armed at the
+  slot's own top (the current, possibly re-timed origin), it resets the
+  clip's `retime` to 0 when it settles, so the readout and "timing as
+  played" describe the newest take while the older takes keep their
+  shift as a baked fact, which ⌘Z can still undo (the re-time before the
+  take rides its `Untake`, `TakePayload::setsRetime`).
+
 ### Recording through a map
 
 - **Context.** `ProcessContext` carries `island_pos` (the invariant
@@ -505,10 +677,11 @@ view's navigation and every gesture under zoom, real mouse input).
   (owner ruling 2026-09-23: simplicity over a per-subtree gate). The
   view model's `anyTakeActive` locks every lane (`bandGate`:
   `bandEditable` false, `bandLocked` true where the chrome would be
-  live), so lane grips, seam handles and cut bands, the region panel's
-  box, brackets and bands, double-click cuts and ←/→ nudges all do
-  nothing; the chrome that shows the loop (seams, the ↺ loop top, the
-  panel's box) stays drawn, inert — no grab cursor, no hover reveal.
+  live), so the lane's splices and ↺ (and a one-shot's grips and seams),
+  cut bands, the region panel's box, brackets, bands and ↺, "Timing as
+  played", double-click cuts and ←/→ nudges all do nothing; the chrome
+  that shows the loop (the splices, the ↺, the panel's box) stays
+  drawn, inert — no grab cursor, no hover reveal, a tooltip saying why.
   The engine refuses them too, as defense in depth: the global
   live-take gate (`refusedUnderLiveTake`) and the per-subtree refusal
   of a window edit on a node whose subtree holds a live take.
@@ -528,13 +701,14 @@ map's excluded regions as dims (`parentMapSegs`).
 | Layer | Tests |
 |---|---|
 | Map algebra | `time_map_cases` / `map_inverse_cases` goldens, `ui/js/tests/segments.test.mjs` |
+| The top and the re-time | `top_reconcile_cases` / `effective_top_cases` goldens; `tests/time_map_record_tests.cc` ("setTiming", "the top rides every map edit", "an UNSET top … until the first map edit STORES it", the Q13 re-trim and collapse, the splice); scenario S41; `tests/session_io_tests.cc`; `ui/js/tests/set_timing.test.mjs` (mock parity) |
 | Kernel + capture | `tests/time_map_record_tests.cc` (context plumbing, fold/cap/commit, I1 round trip, I9 degradation round trip, multi-segment node fold, bypassed == plain, gates) |
 | Content frame | `tests/content_frame_tests.cc` (which buffer sample is audible) |
 | Definer + splice | `tests/qtime_lock_tests.cc` |
 | Frame/zero rules | `tests/regression_tests.cc`, `ui/e2e_engine/loop_edits.spec.js` |
 | Persistence | `tests/session_io_tests.cc` |
-| Editor algebra | `ui/js/tests/map_edit.test.mjs`, `ui/js/tests/map_core.test.mjs`, `ui/js/tests/trim_drag.test.mjs` |
-| Gestures end-to-end | `ui/e2e/region_panel.spec.js`, `ui/e2e/session_view.spec.js` ("trim a long take") |
+| Editor algebra | `ui/js/tests/map_edit.test.mjs`, `ui/js/tests/map_core.test.mjs`, `ui/js/tests/trim_drag.test.mjs`, `ui/js/tests/splice_handles.test.mjs` |
+| Gestures end-to-end | `ui/e2e/splice_handles.spec.js`, `ui/e2e/region_panel.spec.js`, `ui/e2e/session_view.spec.js` ("trim a long take") |
 
 ### What the map replaced
 
@@ -565,7 +739,39 @@ the heard lane, trim grips wrapping mod the frame. **Rejected:** cut and
 trim geometry is raw-frame data, and every heard-space scheme fought
 that fact — a cut has zero width in heard space, so the pointer is never
 "inside" it and heal could not match. Replaced by raw-coordinate editing
-(§6).
+(§6). *Revived for SWAPS only, 2026-09-24:* sliding a splice with the
+period held changes nothing but the strip it sweeps (the anchoring
+law), so a swap IS exact in heard time and the splice handle drags
+there; lengths stay raw (⇧ opens the reveal), and a cut heals by its
+splice handle, not by a pointer "inside" it.
+
+**The lane's edge trim grips, the `] [` pair and the "↺ loop top" chip**
+(retired 2026-09-24). Latent grips at the loop's heard
+bounds, dragged through the same-scale reveal (a plain drag trimmed,
+⌥ slid); when the loop's top rested mid-lane the two met as a `] [`
+pair, nudged 16 px apart and named by a "↺ loop top" chip. **Retired:**
+the owner's field video (2026-09-22, loop_selection.md §1) showed the
+pair reading as a cut the user never made, the chip doubling at
+release, and every grab swapping the lane to raw audio — and a grip
+conflated two different effects. Phase 2 splits them
+(loop_selection.md §9): a splice is one instant, so it gets ONE handle
+whose drag is a swap; the loop's one is a separate ↺ whose drag is a
+shift; and length is ⇧ on a splice (§6). One-shots keep their edge grips
+(their offset IS their placement, Q5), without the chip.
+
+**The plain-drag reveal on the lane** (2026-09-11 → 2026-09-24). Every
+lane handle drag unrolled the raw take. **Superseded** for swaps, which
+are exact in heard time and are now previewed there (a local pending
+edit, no round trip, no content swap under the hand); the reveal serves
+⇧ (a length change re-tiles the lane and cannot be drawn in place) and a
+one-shot's grips.
+
+**One grabbable seam per cut** (the take rep's `.seam-handle` + chip,
+passive ticks on the other repeats; retired 2026-09-24). A cut
+repeated across the frame was grabbable at only one of its places.
+**Replaced** by a splice handle on EVERY repeat — the take tile's with
+its tab, the ghosts' as faint lines with the tab on hover (a tab on
+every repeat buried a 3Q loop in a 12Q frame under twelve labels).
 
 **The expanded map drag** (2026-07-23 → 2026-09-11). Grabbing a map
 handle expanded the lane to its full raw take for the duration of the

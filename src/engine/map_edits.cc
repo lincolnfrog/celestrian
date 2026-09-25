@@ -1,9 +1,9 @@
 // AudioEngine — MAP + SEQUENCE EDITS: the loop-window and segment-map
 // verbs (setLoopPoints, setSegments, toggleLoopWindow) with their
 // mid-take gates, the coherence guard and the Q13 definer re-trim
-// riders; the sequencer verbs (setSequence, auditionStep,
-// toggleSequence). Each records an Edit; the edit log applies it.
-// Message thread only.
+// riders; the re-time verb (setTiming — the ↺ drag, loop_selection.md
+// §9); the sequencer verbs (setSequence, auditionStep, toggleSequence).
+// Each records an Edit; the edit log applies it. Message thread only.
 
 #include "../audio_engine.h"
 
@@ -22,6 +22,10 @@ void AudioEngine::setLoopPoints(const juce::String& uuid, int64_t start,
   juce::Logger::writeToLog("AudioEngine::setLoopPoints: uuid=" + uuid +
                            " start=" + juce::String(start) +
                            " end=" + juce::String(end));
+  // A GESTURE'S FIRST COMMIT opens it before any gate (edit_log.cc): an
+  // identity or a refusal records nothing, yet the drag's live commits
+  // must not join the previous gesture's entry.
+  if (!live) openGesture(uuid, celestrian::Edit::Kind::LoopPoints);
   // MID-TAKE MAP-EDIT GATE (time_maps.md phase 2): a take recording
   // THROUGH this node's map froze the map's geometry at arm (anchor,
   // seams, commit cycle) — editing the window under it would change
@@ -204,6 +208,8 @@ void AudioEngine::setSegments(const juce::String& uuid,
                               const celestrian::timing::TimeMap& map,
                               bool live) {
   using TimeMap = celestrian::timing::TimeMap;
+  // A gesture's first commit opens it before any gate (setLoopPoints).
+  if (!live) openGesture(uuid, celestrian::Edit::Kind::Segments);
   auto* target = findNodeByUuid(root_node.get(), uuid);
   if (target == nullptr) return;
 
@@ -254,6 +260,22 @@ void AudioEngine::setSegments(const juce::String& uuid,
   if (map.n == 1) {
     setLoopPoints(uuid, map.segs[0].start, map.segs[0].end, live);
     return;
+  }
+
+  // IDENTITY EDITS RECORD NOTHING (the setLoopPoints rule): re-committing
+  // the stored cell map — a splice drag's first commit before it crosses
+  // a whole Q, a live commit that dwells — would log a no-op undo step
+  // that also destroys the redo branch (and, on a definer, re-solve the
+  // origin). The gesture is open already (above), so the drag's live
+  // commits still form one step.
+  {
+    const TimeMap stored = target->storedMap();
+    bool same = stored.n == map.n;
+    for (int i = 0; same && i < map.n; ++i) {
+      same = stored.segs[i].start == map.segs[i].start &&
+             stored.segs[i].end == map.segs[i].end;
+    }
+    if (same) return;
   }
 
   // COHERENCE GUARD (time_maps.md §4): the map's PERIOD must be a whole
@@ -355,6 +377,77 @@ void AudioEngine::setSegments(const juce::String& uuid,
     }
   }
 
+  e.live = live;  // a mid-gesture update coalesces (edit_log.cc)
+  record(std::move(e));
+}
+
+void AudioEngine::setTiming(const juce::String& uuid, int64_t shift,
+                            std::optional<int64_t> top, bool live) {
+  // THE SHIFT (loop_selection.md §9.2, owner 2026-09-24): a swap changes
+  // WHAT plays and keeps the origin; a shift changes WHEN — it moves the
+  // take's origin, re-timing it against every other track. This verb is
+  // the only way that happens: the lane ↺ drag (a shift), the panel's
+  // start-marker drag (a new top plus the compensating shift, so the ↺
+  // keeps its moment), "timing as played" (shift = −retime). The origin
+  // moves by exactly `shift` — NOT a continuity re-anchor, never
+  // re-folded (a free, sub-Q shift is the point: I4 as amended) — and
+  // the re-time counts it.
+  // A gesture's first commit opens it before any gate (setLoopPoints) —
+  // a ↺ drag may open on a zero shift.
+  if (!live) openGesture(uuid, celestrian::Edit::Kind::Timing);
+  auto* clip = dynamic_cast<celestrian::ClipNode*>(
+      findNodeByUuid(root_node.get(), uuid));
+  if (clip == nullptr) {
+    // Stacks keep no timing in Phase 2 (their origin is their earliest
+    // content's, Q18); an unknown uuid lands here too.
+    juce::Logger::writeToLog("AudioEngine::setTiming refused - " + uuid +
+                             " is not a clip");
+    return;
+  }
+  // THE RECORDING GATE (Phase 1): nothing re-times while any take is
+  // armed or capturing — the performer is playing against this grid.
+  if (refusedUnderLiveTake("setTiming")) return;
+  if (clip->isArmedOrRecording()) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setTiming refused - a take is recording or pending here");
+    return;
+  }
+  if (clip->getIntrinsicDuration() <= 0) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setTiming refused - nothing committed here to re-time");
+    return;
+  }
+  // THE Q-DEFINER: its frame top IS the island zero — (Q, zero) derive
+  // from it (Q13), so moving it re-times nothing against anything; its
+  // own trims re-establish the grid instead. The same predicate the
+  // state publishes as `definerId`, so the view's canRetime agrees.
+  if (celestrian::engine_internal::definer(*root_node) == clip) {
+    juce::Logger::writeToLog(
+        "AudioEngine::setTiming refused - the Q-definer's origin is the "
+        "island zero");
+    return;
+  }
+  // A top must be one the region plays (the kept set) — refused whole
+  // otherwise: no half-applied shift.
+  if (top.has_value() && !clip->keepsTop(*top)) {
+    juce::Logger::writeToLog("AudioEngine::setTiming refused - top " +
+                             juce::String(*top) +
+                             " is outside the clip's kept set");
+    return;
+  }
+  // IDENTITY EDITS RECORD NOTHING (the setLoopPoints rule): a zero shift
+  // with no new top would log a no-op undo step and eat the redo branch.
+  if (shift == 0 && (!top.has_value() || *top == clip->storedTop())) return;
+  celestrian::Edit e(celestrian::Edit::Kind::Timing);
+  e.uuid = uuid;
+  e.setsOrigin = true;
+  e.iorg = clip->origin_samples.load() + shift;
+  e.setsRetime = true;
+  e.iretime = clip->retime() + shift;
+  if (top.has_value()) {
+    e.setsTop = true;
+    e.itop = *top;
+  }
   e.live = live;  // a mid-gesture update coalesces (edit_log.cc)
   record(std::move(e));
 }

@@ -157,6 +157,13 @@ test('drums template → trim both sides → bass, guitar, keys → a long drum 
     const beforeSong = await listenAtTop(page);
 
     // --- 6. Sequences: four sections over the 8Q cycle, several combos ---
+    // Nothing selected, so nothing HELD (the edit hold, docs/frame.md §1):
+    // the songs below are authored through the bridge directly, without
+    // the on-screen zero the UI's onSetSequence carries, so a held frame
+    // would keep drawing the pre-song zero. Deselect and let the settle
+    // land (SETTLE_MS 560) before the first song.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(800);
     st = await state(page);
     const root = st.id;
     const rows = { drums, bass, guitar, keys };

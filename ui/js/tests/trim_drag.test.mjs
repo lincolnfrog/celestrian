@@ -106,8 +106,8 @@ test('10Q take: left handle → 6Q, then right handle → 9Q (the recipe)', asyn
 
     // RULE BOUNDARY 1 — an off-grid ⌥-slide ([6.4Q, 9.4Q)): the top is
     // 0.4Q past the grid; the seating stays on the grid, so the loop
-    // honestly shows 0.4Q into the frame, its end/start pair mid-lane
-    // under the "↺ loop top" chip.
+    // honestly shows 0.4Q into the frame, its ↺ and splice mid-lane
+    // (the "] [" pair and its "↺ loop top" chip until 2026-09-24).
     await callNative('setSegments', c2, [Math.round(6.4 * Q), Math.round(9.4 * Q)]);
     assert.equal((getState().islandZero || 0) / Q, zero0, 'off-grid top: the zero never moves');
     vm = deriveViewModel(getState(), opts);

@@ -539,6 +539,22 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void setSegments(const juce::String& uuid,
                    const celestrian::timing::TimeMap& map, bool live = false);
 
+  /**
+   * THE RE-TIME (loop_selection.md §9.2, owner 2026-09-24): move clip
+   * `uuid`'s origin by `shift` samples — any amount, sub-Q included —
+   * and count the same amount into its re-time (the cumulative user
+   * shift, 0 = as played). With `top`, also store the clip's top (a raw
+   * content position; it must lie in the clip's kept set, or the whole
+   * call is refused). ONE undoable edit (Edit::Timing, origin + re-time
+   * + top together); `live` coalesces into the gesture's undo entry as
+   * for setSegments. Not a continuity re-anchor: nothing is re-folded
+   * and no island fact moves. Refused (logged) for stacks, an empty
+   * clip, the Q-definer, a recording or pending clip, and anything
+   * while a take is armed or capturing. Message thread.
+   */
+  void setTiming(const juce::String& uuid, int64_t shift,
+                 std::optional<int64_t> top = std::nullopt, bool live = false);
+
   // AudioIODeviceCallback methods
   void audioDeviceIOCallbackWithContext(
       const float* const* input_channel_data, int num_input_channels,
@@ -649,9 +665,15 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   celestrian::Edit applyEditImpl(celestrian::Edit e);
   /** Apply `forward`, push its inverse to the undo stack, clear redo. */
   void record(celestrian::Edit forward);
+  /** A NON-LIVE map or re-time commit opens its gesture (gesture_) as it
+   * arrives — setLoopPoints, setSegments and setTiming call this first,
+   * before any gate — so a first commit that records nothing (an
+   * identity, a refusal) still ends the previous gesture. */
+  void openGesture(const juce::String& uuid, celestrian::Edit::Kind kind);
   /** Push an inverse onto the undo stack, enforcing kUndoDepth (evicted
    * entries retire any owned subtree) and invalidating the redo branch.
-   * The tail shared by record() and combineNodes(). */
+   * Ends any open gesture. The tail shared by record() and
+   * combineNodes(). */
   void pushUndo(celestrian::Edit&& inverse);
   /** retire() an owned object with type intact: the graveyard's deleter
    * runs after the 2-callback grace like every other retirement. */
@@ -694,6 +716,18 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   std::vector<celestrian::Edit> undo_;
   std::vector<celestrian::Edit> redo_;
   static constexpr size_t kUndoDepth = 128;
+  // THE OPEN GESTURE (edit_log.cc): the drag whose live commits coalesce
+  // into ONE undo entry — its node, its kind (map kinds pair with map
+  // kinds, Timing with Timing; Nop = none open) and whether it has
+  // logged that entry yet (its first commit may have recorded nothing).
+  // While `logged`, the entry is the top of undo_: every other push, an
+  // undo, a redo and clearHistory end the gesture.
+  struct Gesture {
+    juce::String uuid;
+    celestrian::Edit::Kind kind = celestrian::Edit::Kind::Nop;
+    bool logged = false;
+  };
+  Gesture gesture_;
 
   // --- TAKES ARE UNDOABLE (docs/sequencer.md §11.5). Commit is an
   // AUDIO-thread event, so a take cannot be logged where it happens;

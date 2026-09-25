@@ -9,14 +9,15 @@
  * mouse input (synthetic dispatch bypasses hit-testing) and an
  * emulated bridge round trip on setSegments:
  *   1. after release the held overlay never shows the PRE-drag chrome
- *      (panel box / brackets; the lane's loop-top chip and grips) —
- *      sampled on every animation frame until the rebuild;
- *   2. during a lane drag, with the pointer over the lane, the stale
- *      heard chrome reads computed opacity 0 (the hover reveals lose);
+ *      (panel box / brackets; the lane's splice handles — its "↺ loop
+ *      top" chip and grips until they retired, 2026-09-24) — sampled on
+ *      every animation frame until the rebuild;
+ *   2. during a lane ⇧-length drag, with the pointer over the lane, the
+ *      heard handles read computed opacity 0 (the hover reveals lose);
  *   3. the playhead's mask carves out the region panel, and a revealing
  *      lane from the frame it engages to the frame it tears down;
- *   4. while a take is pending, a grip / box press, a double-click and
- *      ←/→ do nothing — no preview, no bridge call.
+ *   4. while a take is pending, a splice / ↺ / box press, a double-click
+ *      and ←/→ do nothing — no preview, no bridge call.
  */
 
 import { test, expect } from '@playwright/test';
@@ -120,29 +121,37 @@ test.describe('Release lifecycle', () => {
             .toBe(true);
     });
 
-    test('lane ⌥-slide: the loop-top chip never doubles, and hides while dragging', async ({ page }) => {
+    test('lane ⇧-length at a cut: the splices step aside, never show at the pre-drag spot, and the mask follows the reveal', async ({ page }) => {
+        // (Rewritten 2026-09-24: the lane's ⌥-slide grip and its "↺ loop
+        // top" chip retired — time_maps.md §8. The same three laws, for
+        // the chrome that replaced them.)
         await boot(page, { bridgeDelayMs: BRIDGE_MS });
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
-        // [6.4, 9.4): a 3Q loop whose top rests 0.4Q into the frame —
-        // the paired ][ grips and the "↺ loop top" chip mid-lane.
-        await setLoop(page, id2, Math.round(6.4 * Q), Math.round(9.4 * Q));
+        // [2, 5) ∪ [7, 10): a 2Q cut, a 6Q loop; its cut's splice sounds
+        // 3Q after the region start.
+        await page.evaluate(({ id, Q }) => window.__celestrianTest.callNative(
+            'setSegments', id, [2 * Q, 5 * Q, 7 * Q, 10 * Q]), { id: id2, Q });
+        await expect.poll(() => segsOf(page, id2, Q)).toBe('2,5,7,10');
         const lane = laneOf(page, id2);
         const body = lane.locator('.lane-body');
-        await expect(body.locator('.loop-top-chip')).toHaveCount(1);
-        const box = await body.boundingBox();
-        const qAt = x => (x - box.x) / box.width * 3;
-        const chip0 = await body.locator('.loop-top-chip').boundingBox();
-        expect(qAt(chip0.x + chip0.width / 2)).toBeCloseTo(0.4, 1);
+        const cutTab = body.locator('.lr-layer > .lr-cut:not(.lr-ghost) .lr-tab');
+        await expect(cutTab).toHaveCount(1);
+        const qOfCut = () => body.evaluate(b => {
+            const h = b.querySelector('.lr-layer > .lr-cut:not(.lr-ghost)');
+            const br = b.getBoundingClientRect();
+            const r = h.getBoundingClientRect();
+            return ((r.left + r.width / 2) - br.left) / br.width * b._cycleQ;
+        });
+        const cut0 = await qOfCut();
         await startSampler(page, id => {
             const lane = document.querySelector(`.lane[data-id="${id}"]`);
             const body = lane.querySelector('.lane-body');
             const o = body.querySelector(':scope > .overlay-layer');
+            const layer = body.querySelector(':scope > .lr-layer');
             const br = body.getBoundingClientRect();
-            const qOf = r => ((r.left + r.width / 2) - br.left) / br.width * 3;
-            const op = el => parseFloat(getComputedStyle(el).opacity);
-            const chips = [...o.querySelectorAll(':scope > .loop-top-chip')];
-            const grips = [...o.querySelectorAll(':scope > .trim-grip')];
+            const cut = layer.querySelector(':scope > .lr-cut:not(.lr-ghost)');
+            const r = cut ? cut.getBoundingClientRect() : null;
             // The white playhead's mask: does it carve this body out?
             const ph = document.getElementById('playhead');
             const pr = ph.getBoundingClientRect();
@@ -155,53 +164,46 @@ test.describe('Release lifecycle', () => {
                 live: o.classList.contains('drag-live'),
                 revealing: body.classList.contains('revealing'),
                 masked: bands.some(([a, b]) => a <= top + 0.5 && b >= bot - 0.5),
-                chips: chips.map(c => ({ q: qOf(c.getBoundingClientRect()), op: op(c) })),
-                gripOps: grips.map(op),
+                layerOp: parseFloat(getComputedStyle(layer).opacity),
+                cutQ: r && cut.style.display !== 'none'
+                    ? ((r.left + r.width / 2) - br.left) / br.width * body._cycleQ : null,
                 hovered: body.matches(':hover'),
             };
         }, id2);
-        // ⌥-drag the END grip (the "]" of the pair) left by 0.2Q:
-        // [6.2, 9.2) — the top moves to 0.2Q; no re-seat (±½Q).
-        const eb = await body.locator('.trim-grip.end').boundingBox();
-        const gx = eb.x + eb.width / 2;
-        const gy = eb.y + eb.height / 2;
+        // ⇧-drag the cut's splice right by 1.2Q: 1Q more material before
+        // it — [2, 6) ∪ [7, 10), the cut's splice now 4Q in.
+        const tb = await cutTab.boundingBox();
+        const gx = tb.x + tb.width / 2;
+        const gy = tb.y + tb.height / 2;
+        const pxq = await body.evaluate(b => b.getBoundingClientRect().width / b._cycleQ);
         await page.mouse.move(gx, gy);
-        await page.keyboard.down('Alt');
+        await page.keyboard.down('Shift');
         await page.mouse.down();
-        await page.mouse.move(gx - box.width * (0.2 / 3), gy, { steps: 10 });
+        await page.mouse.move(gx + 1.2 * pxq, gy, { steps: 10 });
         await expect(body).toHaveClass(/revealing/);
         await page.waitForTimeout(120);   // frames under a held, hovering pointer
         await releaseMarked(page);
-        await page.keyboard.up('Alt');
-        await expect.poll(async () => (await loopOf(page, id2, Q))
-            .split(',').map(v => (+v).toFixed(2)).join(',')).toBe('6.20,9.20');
+        await page.keyboard.up('Shift');
+        await expect.poll(() => segsOf(page, id2, Q)).toBe('2,6,7,10');
         await expect(body).not.toHaveClass(/revealing/);
-        await expect.poll(async () => {
-            const c = await body.locator('.loop-top-chip').boundingBox();
-            return c ? qAt(c.x + c.width / 2) : -1;
-        }).toBeCloseTo(0.2, 1);
+        await expect.poll(qOfCut).toBeCloseTo(cut0 + 1, 2);
         await page.waitForTimeout(100);
         const samples = await stopSampler(page);
 
-        // 2. STALE CHROME HIDDEN MID-DRAG, pointer over the lane.
-        const dragging = samples.filter(s => s.live && !s.up);
+        // 2. THE HEARD HANDLES STEP ASIDE MID-DRAG, pointer over the lane
+        // (the raw take is up — they would sit over the wrong time).
+        const dragging = samples.filter(s => s.revealing && !s.up);
         expect(dragging.length, 'frames sampled mid-drag').toBeGreaterThan(3);
         expect(dragging.some(s => s.hovered), 'the pointer is over the lane').toBe(true);
-        for (const s of dragging) {
-            for (const c of s.chips) expect(c.op, 'stale chip mid-drag').toBe(0);
-            for (const o of s.gripOps) expect(o, 'stale grip mid-drag').toBe(0);
-        }
-        // 1. NO DOUBLE CHIP: after release, no visible chip at the
-        // pre-drag 0.4Q — ever; the held frames show none, the rebuild
-        // shows the new one.
+        for (const s of dragging) expect(s.layerOp, 'splices hidden mid-drag').toBe(0);
+        // 1. NEVER AT THE PRE-DRAG SPOT after release: the held frames
+        // keep them hidden under the reveal; the rebuild shows the new.
         const after = samples.filter(s => s.up);
         expect(after.length).toBeGreaterThan(5);
         for (const s of after) {
-            for (const c of s.chips) {
-                if (c.op > 0.05) {
-                    expect(Math.abs(c.q - 0.4), `frame ${s.t.toFixed(0)}: chip at the pre-drag top`)
-                        .toBeGreaterThan(0.08);
-                }
+            if (s.layerOp > 0.05 && s.cutQ !== null) {
+                expect(Math.abs(s.cutQ - cut0), `frame ${s.t.toFixed(0)}: a splice at the pre-drag spot`)
+                    .toBeGreaterThan(0.5);
             }
         }
         expect(after.some(s => s.live), 'the preview is held past the release').toBe(true);
@@ -320,27 +322,52 @@ test.describe('Recording gate', () => {
         await lane.locator('.rail-name').click();   // the track keeps its panel
         await expect(panelOf(page, id2)).toBeVisible();
 
-        // A GRIP PRESS: the grips still draw (inert) and take no press.
-        // They stay HOVERABLE so their tooltip explains the gate (review
-        // 2026-09-23: a hit-test-transparent grip could never show it).
-        const grip = body.locator('.trim-grip.end');
+        // A SPLICE PRESS (and a ⇧ one, and the ↺): the handles still
+        // draw (inert) and take no press. They stay HOVERABLE so their
+        // tooltip explains the gate (review 2026-09-23: a hit-test-
+        // transparent handle could never show it). (The edge grips this
+        // used to press retired 2026-09-24.)
+        const grip = body.locator('.lr-layer > .lr-wrap:not(.lr-ghost)');
+        const top = body.locator('.lr-layer > .lr-top:not(.lr-ghost)');
         await expect(grip).toHaveCount(1);
-        await expect(grip).toHaveClass(/inert/);
-        const gb = await grip.boundingBox();
+        await expect(grip).toHaveClass(/lr-inert/);
+        await expect(top).toHaveClass(/lr-inert/);
+        const gb = await grip.locator('.lr-tab').boundingBox();
         const gx = gb.x + gb.width / 2;
         const gy = gb.y + gb.height / 2;
         expect(await grip.evaluate(g => getComputedStyle(g).cursor)).toBe('default');
         expect(await page.evaluate(({ x, y }) => {
-            const hit = document.elementFromPoint(x, y).closest('.trim-grip');
+            const hit = document.elementFromPoint(x, y).closest('.lr-splice');
             return hit ? hit.title : null;
         }, { x: gx, y: gy })).toMatch(/wait until the take finishes/i);
-        await page.mouse.move(gx, gy);
+        for (const mods of [[], ['Shift']]) {
+            await page.mouse.move(gx, gy);
+            for (const m of mods) await page.keyboard.down(m);
+            await page.mouse.down();
+            await page.waitForTimeout(220);
+            await page.mouse.move(gx + 80, gy, { steps: 6 });
+            await expect(body).not.toHaveClass(/revealing/);
+            await expect(page.locator('.drag-preview-layer')).toHaveCount(0);
+            await expect(body.locator('.lr-badge')).toHaveCount(0);
+            await page.mouse.up();
+            for (const m of mods) await page.keyboard.up(m);
+        }
+        const tt = await top.locator('.lr-tab').boundingBox();
+        expect(await page.evaluate(({ x, y }) => {
+            const hit = document.elementFromPoint(x, y).closest('.lr-top');
+            return hit ? hit.title : null;
+        }, { x: tt.x + tt.width / 2, y: tt.y + tt.height / 2 }))
+            .toMatch(/wait until the take finishes/i);
+        await page.mouse.move(tt.x + tt.width / 2, tt.y + tt.height / 2);
         await page.mouse.down();
-        await page.waitForTimeout(220);
-        await page.mouse.move(gx - 80, gy, { steps: 6 });
-        await expect(body).not.toHaveClass(/revealing/);
-        await expect(page.locator('.drag-preview-layer')).toHaveCount(0);
+        await page.mouse.move(tt.x + tt.width / 2 + 80, tt.y + tt.height / 2, { steps: 6 });
+        await expect(body.locator('.lr-badge')).toHaveCount(0);
         await page.mouse.up();
+        // THE PANEL'S ↺ and the timing reset: drawn, never grabbable.
+        await expect(lane.locator('.region-top')).toHaveClass(/inert/);
+        expect(await lane.locator('.region-top-tab').evaluate(t =>
+            getComputedStyle(t).pointerEvents)).toBe('none');
+        await expect(lane.locator('.region-timing-reset')).toBeDisabled();
         // THE PANEL BOX: drawn, not grabbable.
         const kept = await lane.locator('.region-kept').boundingBox();
         expect(await lane.locator('.region-kept').evaluate(k =>
@@ -362,14 +389,17 @@ test.describe('Recording gate', () => {
         expect(await loopOf(page, id2, Q)).toBe('6,10');
 
         // The take goes (the arm cancelled): the gate lifts — the same
-        // grip is live again.
+        // splice and ↺ are live again.
         await page.evaluate(id => window.__celestrianTest.callNative(
             'stopRecordingInNode', id), id3);
         await expect(page.locator('#lanes')).not.toHaveClass(/map-locked/);
-        await expect(grip).not.toHaveClass(/inert/);
+        await expect(grip).not.toHaveClass(/lr-inert/);
+        await expect(top).not.toHaveClass(/lr-inert/);
         await expect.poll(() => page.evaluate(({ x, y }) =>
-            !!document.elementFromPoint(x, y).closest('.trim-grip'), { x: gx, y: gy }))
+            !!document.elementFromPoint(x, y).closest('.lr-splice'), { x: gx, y: gy }))
             .toBe(true);
+        expect(await lane.locator('.region-top-tab').evaluate(t =>
+            getComputedStyle(t).pointerEvents)).toBe('auto');
     });
 
     test('comp mode\'s "done" chip still closes the comp editor under the gate', async ({ page }) => {

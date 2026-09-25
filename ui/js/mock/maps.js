@@ -2,18 +2,24 @@
  * mock/maps.js — the time-map edit surface: single-window loop points,
  * multi-segment overrides (phase 3), and the bypass toggle, with the
  * coherence guard, the Q13 sole-definer re-trims, and the continuity
- * re-anchor. Refusal paths drop the dispatch's pre-pushed undo
- * snapshot (popUndoForRefusal) — a refused edit records nothing.
+ * re-anchor; the top that rides every map edit and the re-time verb
+ * (setTiming, loop_selection.md §9). Refusal paths drop the dispatch's
+ * pre-pushed undo snapshot (popUndoForRefusal) — a refused edit records
+ * nothing.
  */
 
 import { posMod } from '../math_utils.js';
-import { mapPeriod, mapOffset, mapActive, heardOffsetOf, innerAt } from '../time_map.js';
+import {
+    mapPeriod, mapOffset, mapActive, heardOffsetOf, innerAt, keepsTop,
+    reconcileTop, effectiveTop,
+} from '../time_map.js';
 import {
     state, findNode, nodeMap, intrinsicOfNode, subtreeRecording,
     anyNodeRecording, isQ13SoleDefiner, isQ13DefinerStack,
     frameOriginOf, isAnchored, shiftOrigins, innerUnder, originForHeard,
+    islandDefiner,
 } from './state.js';
-import { popUndoForRefusal } from './undo.js';
+import { popUndoForRefusal, coalescedThisCall } from './undo.js';
 import { lcm } from '../math_utils.js';
 import { effectivePeriodOf } from './cycles.js';
 import { activeSeqLen, retimeSequences } from './sequence.js';
@@ -121,6 +127,53 @@ function applyMapEditRiders(node, oldMap, newMap) {
 }
 /** Alias under the name the tests import. */
 export const applyTwoAnchorContinuity = applyMapEditRiders;
+
+/** Whether a clip's map plays (engine parity AudioNode::
+ * isLoopWindowActive): a map, not bypassed. */
+const clipWindowActive = node => !node.loopBypassed && mapActive(nodeMap(node));
+
+/** THE TOP A MAP EDIT STARTS FROM (engine parity edit_log.cc
+ * topBeforeEdit): the clip's EFFECTIVE top — the stored one while its
+ * map plays it, else the region start — read BEFORE the edit moves the
+ * geometry, so a top never set (a fresh take, an old session)
+ * reconciles from where it showed. null for a stack (it keeps none). */
+function topBeforeEdit(node) {
+    if (node.type === 'stack') return null;
+    return effectiveTop(nodeMap(node), clipWindowActive(node),
+        node.duration || 0, node.storedTop ?? null);
+}
+
+/** THE GESTURE'S TOP (engine parity AudioEngine::record): the top a map
+ * commit reconciles from — `topBefore`, the node's effective top before
+ * this call, when it opens an undo step; the one its gesture STARTED
+ * with when a live commit coalesced into that step. A drag that sweeps
+ * past the ↺ and back keeps it, as the drag previewed; the gesture's
+ * one snapshot restores the old stored top. */
+let topGesture = null;  // { id, top } at the gesture's first commit
+function topBaseFor(node, topBefore) {
+    if (!coalescedThisCall() || !topGesture || topGesture.id !== node.id) {
+        topGesture = { id: node.id, top: topBefore };
+    }
+    return topGesture.top;
+}
+
+/** THE TOP RIDES THE MAP (loop_selection.md §9, owner 2026-09-24;
+ * engine parity edit_log.cc reconcileTopRider / applyWindowRiders): once
+ * a map edit has set the node's new geometry, STORE the top it leaves —
+ * `base` while the new kept set plays it, else the new region start
+ * (time_map.js reconcileTop): never unset. Stacks keep no top (Phase 2).
+ * Undo needs nothing more: the dispatch snapshot holds the old top. */
+function storeReconciledTop(node, base) {
+    if (node.type === 'stack') return;
+    node.storedTop = reconcileTop(nodeMap(node), clipWindowActive(node),
+        node.duration || 0, base);
+}
+
+/** The edit's own node: reconciled from its gesture's base. */
+function reconcileStoredTop(node, topBefore) {
+    if (node.type === 'stack') return;
+    storeReconciledTop(node, topBaseFor(node, topBefore));
+}
 
 /** A stack's INNER cycle (engine StackNode::getIntrinsicDuration): the
  * LCM of its children's INTRINSIC durations (a member's raw take, a
@@ -232,8 +285,10 @@ export function setLoopPoints(id, loopStart, loopEnd) {
         }
     }
     // The pre-edit MAP (window or override) — the continuity re-anchor
-    // below needs it before any mutation.
+    // below needs it before any mutation — and the top it shows (the
+    // reconcile's start).
     const oldMapPre = node.loopBypassed ? { segs: [] } : nodeMap(node);
+    const topBefore = topBeforeEdit(node);
     // Phase 3 (engine parity): an explicit single-window edit
     // supersedes a multi-segment override.
     delete node.segments;
@@ -310,8 +365,12 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             if (c.type !== 'clip' || !(c.duration > 0) || c.isRecording) continue;
             if (Array.isArray(c.segments) && c.segments.length >= 2) continue;
             if ((c.loopStart || 0) === 0 && (c.loopEnd || 0) >= c.duration) continue;
+            const memberTop = topBeforeEdit(c);
             c.loopStart = 0;
             c.loopEnd = c.duration;
+            // A member's top rides its geometry (engine parity
+            // applyWindowRiders): stored from the one it showed.
+            storeReconciledTop(c, memberTop);
         }
         const inner = stackInnerCycle(node);
         loopStart = Math.max(0, loopStart);
@@ -353,6 +412,7 @@ export function setLoopPoints(id, loopStart, loopEnd) {
             loopEnd > loopStart ? { segs: [[loopStart, loopEnd]] }
                                 : { segs: [] });
     }
+    reconcileStoredTop(node, topBefore);  // the top rides the map
     console.log('[MockBackend] Set loop points:', id, '→', loopStart, '-', loopEnd);
 }
 
@@ -366,11 +426,12 @@ export function setLoopPoints(id, loopStart, loopEnd) {
  *    empty / past the intrinsic cycle), and incoherent periods (the
  *    Σ of cell lengths must be a whole multiple or exact divisor of Q
  *    — sole exception: the Q13 definer re-trim, which re-establishes
- *    Q). Every refusal records nothing (popUndoForRefusal, which also
- *    breaks the live-drag coalescing chain).
+ *    Q). Every refusal records nothing (popUndoForRefusal; a refused
+ *    live commit keeps its drag's gesture — mock/undo.js).
  *  - n ≤ 1 delegates to the single-window path (which owns Q13 and
  *    clears the override itself — a refused delegation therefore
  *    leaves the existing override untouched).
+ *  - An identity (the stored cell map again) records nothing.
  *  - Q13 sole definer: Q := map period, zero := origin' + mapOffset(0),
  *    phase-preserving; otherwise the continuity re-anchor on a playing
  *    clip (no island fact moves).
@@ -383,7 +444,7 @@ export function setSegments(id, flat) {
         console.log('[MockBackend] setSegments refused —', why);
         // A refused edit records nothing: drop the snapshot only if the
         // dispatch pushed one for THIS call (coalesced calls didn't),
-        // and break the coalescing chain (nothing mutated).
+        // leaving the drag's gesture as the call found it.
         popUndoForRefusal();
     };
     const node = findNode(id);
@@ -426,6 +487,17 @@ export function setSegments(id, flat) {
         else setLoopPoints(id, 0, 0);
         return;
     }
+    // IDENTITY EDITS RECORD NOTHING (engine parity, the setLoopPoints
+    // rule): re-committing the stored cell map — a splice drag's first
+    // commit before it crosses a whole Q, a live commit that dwells —
+    // would stack a no-op undo step and destroy the redo branch. The
+    // dispatch opened the gesture already (mock/undo.js
+    // noteGestureCommit), so the drag's live commits still form one step.
+    if (Array.isArray(node.segments) && node.segments.length === segs.length &&
+        node.segments.every(([s, e], i) => s === segs[i][0] && e === segs[i][1])) {
+        popUndoForRefusal();  // a no-op records nothing
+        return;
+    }
     // COHERENCE GUARD: the map's PERIOD must be a whole multiple (or
     // exact divisor) of Q — categorical, both sides. One incoherent
     // period would LCM the effective cycle into the tens of thousands
@@ -447,8 +519,10 @@ export function setSegments(id, flat) {
         }
     }
     // Q13 multi-segment definer rider (engine parity): capture the OLD
-    // map before mutating for the phase-preserving re-anchor.
+    // map before mutating for the phase-preserving re-anchor — and the
+    // top it shows (the reconcile's start).
     const oldMap = node.loopBypassed ? { segs: [] } : nodeMap(node);
+    const topBefore = topBeforeEdit(node);
     node.segments = segs;
     stampWindowDomain(node);
     if (isQ13SoleDefiner(node)) {
@@ -498,9 +572,13 @@ export function setSegments(id, flat) {
             }
             if (isAnchored(node)) shiftOrigins(node, originNew - O);
             members.forEach(c => {
+                const memberTop = topBeforeEdit(c);
                 c.loopStart = 0;
                 c.loopEnd = c.duration;
                 delete c.segments;
+                // A member's top rides its geometry (engine parity
+                // applyWindowRiders).
+                storeReconciledTop(c, memberTop);
             });
             retimeSequences(state.islandQ, period);  // sequences track Q
             state.islandQ = period;
@@ -512,12 +590,63 @@ export function setSegments(id, flat) {
         // alike (Q18).
         applyMapEditRiders(node, oldMap, { segs });
     }
+    reconcileStoredTop(node, topBefore);  // the top rides the map
     console.log('[MockBackend] setSegments:', id, '→', JSON.stringify(segs));
+}
+
+/**
+ * THE RE-TIME (loop_selection.md §9.2, owner 2026-09-24; engine parity
+ * AudioEngine::setTiming): move clip `id`'s origin by `shiftSamples` —
+ * any amount, sub-Q included, never re-folded — and count the same into
+ * its re-time (`retime`, 0 = as played). A finite `topSamples` ≥ 0 also
+ * stores the top (`storedTop`, raw samples), and must lie in the clip's
+ * kept set or the whole call is refused. One undo step (the dispatch
+ * snapshot); the trailing `live` coalesces into the gesture's step in
+ * the dispatch (mock/undo.js interceptUndoableCall), as for setSegments.
+ * Refused (recording nothing) for an unknown node, a stack, an empty
+ * clip, a recording or pending clip, and the Q-definer; the live-take
+ * gate refuses it in the dispatch. A zero shift with no new top is an
+ * identity and records nothing.
+ */
+export function setTiming(id, shiftSamples, topSamples = null) {
+    const refuse = (why) => {
+        console.log('[MockBackend] setTiming refused —', why);
+        popUndoForRefusal();
+    };
+    const node = findNode(id);
+    if (!node) return refuse('no such node');
+    if (node.type === 'stack') return refuse('stacks keep no timing (Phase 2)');
+    if (node.isRecording || node.isPendingStart) {
+        return refuse('a take is recording or pending here');
+    }
+    if (!((node.duration || 0) > 0)) return refuse('nothing committed here to re-time');
+    if (islandDefiner() === node) {
+        return refuse("the Q-definer's origin is the island zero");
+    }
+    const shift = Number(shiftSamples);
+    if (!Number.isFinite(shift)) return refuse('the shift is not a number');
+    const s = Math.round(shift);
+    const top = typeof topSamples === 'number' && Number.isFinite(topSamples) &&
+        topSamples >= 0 ? Math.round(topSamples) : null;
+    if (top !== null && !keepsTop(nodeMap(node), node.duration, top)) {
+        return refuse('top ' + top + " is outside the clip's kept set");
+    }
+    if (s === 0 && (top === null || top === (node.storedTop ?? null))) {
+        popUndoForRefusal();  // an identity records nothing
+        return;
+    }
+    node.origin = (node.origin || 0) + s;
+    node.retime = (node.retime || 0) + s;
+    if (top !== null) node.storedTop = top;
+    console.log('[MockBackend] setTiming:', id, 'shift', s,
+        top !== null ? 'top ' + top : '', '→ retime', node.retime);
 }
 
 export function toggleLoopWindow(id) {
     // Fractal (I5, engine parity): clips toggle their single-segment
-    // window exactly like stacks toggle their time-map.
+    // window exactly like stacks toggle their time-map. The stored top
+    // stays (loop_selection.md §9): bypass toggles whether the region
+    // applies, not what it keeps.
     const node = findNode(id);
     if (!node) { popUndoForRefusal(); return; }  // unknown = refusal
     if (node) {

@@ -12,7 +12,9 @@ import { callNative, log, getState } from './backend.js';
 import { deriveViewModel, findNodeInTree, armMode, hasInstrument }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
-         mapDragPinZero, activeSelectedId, selection, selectWhenPresent }
+         mapDragPinZero, activeSelectedId, selection, selectWhenPresent,
+         frameHoldOptions, noteFrameShown, settleInMotion, pendingEditsFor,
+         setRenderer, isGestureLive }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { peakCountFor } from './peak_density.js';
@@ -779,6 +781,98 @@ function syncMidiTarget() {
     });
 }
 
+/* ---------- the render ---------- */
+/* The last POLLED state, and the patch inputs its poll built: a
+ * re-render between polls (requestRender — the settle's glide, a
+ * gesture's pending preview) derives from these, never from a poll of
+ * its own. */
+let lastState = null;
+let lastAux = null;
+let settleRaf = 0;          // the settle's pending animation frame
+
+/** prefers-reduced-motion: the settle jumps instead of gliding. */
+function prefersReducedMotion() {
+    try {
+        return !!(window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Derive the view model from `state` with everything the VIEW layers
+ * over the engine's facts: the fold / fx / sequencer / comp view
+ * state, the drag pin, the edit hold and its settle (frame_hold.js —
+ * keyed on the active selection, suspended while a take is live or
+ * armed, never moving under a hand), and a gesture's pending preview
+ * (pending_edits.js). Records the frame facts every seek and placement
+ * is computed against (lastFrame) — the zero ON SCREEN.
+ */
+function deriveFrame(state) {
+    const now = performance.now();
+    const rootFrame = state.islandZero ?? state.origin ?? 0;
+    const { hold, settle } = frameHoldOptions({
+        key: activeSelectedId(),
+        takeActive: [...lastNodesById.values()].some(isHotClip),
+        handDown: isGestureLive() || mapDragPinQ() !== null,
+        now,
+        reducedMotion: prefersReducedMotion(),
+        islandId: state.id || '',
+    });
+    const vm = deriveViewModel(state,
+        { folded: foldedStacks(projectInfo.id),
+          fxOpen, seqOpen, compMode, retakes,
+          pinFrameQ: mapDragPinQ(),
+          pinFoldQ: mapDragPinFoldQ(),
+          pinZero: mapDragPinZero(),
+          hold, settle,
+          pendingEdits: pendingEditsFor(id => lastNodesById.get(id),
+                                        rootFrame, now) });
+    noteFrameShown(vm, rootFrame, now);
+    lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
+        Number.isFinite(state.islandPos)
+        ? { zero: vm.frameZero,
+            rawClock: state.islandPos + (state.islandZero ?? 0),
+            loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum,
+            quantum: vm.quantum }
+        : null;
+    return vm;
+}
+
+/** Patch the view from `vm`; while the frame settles, re-derive and
+ * patch once per animation frame until the glide lands. */
+function patchFrame(vm, aux) {
+    patchSessionView(vm, Object.assign({}, aux, {
+        vmQuantum: vm.quantum,
+        // Composite offsets are cycle projections of origin —
+        // computed in the island frame (one-frame rule)
+        frameZero: vm.frameZero,
+    }));
+    if (settleInMotion() && !settleRaf) {
+        settleRaf = requestAnimationFrame(() => {
+            settleRaf = 0;
+            renderNow();
+        });
+    }
+}
+
+/**
+ * requestRender (session_view/render_request.js): re-derive from the
+ * LAST polled state — pins, hold, settle and pending edits as they are
+ * now — and patch at once, without a poll. The playhead's
+ * dead-reckoner takes the frame's move, never the stale clock
+ * (aux.rerender; animator.js animatorFrame).
+ */
+function renderNow() {
+    if (!lastState || !lastAux) return;
+    try {
+        patchFrame(deriveFrame(lastState), { ...lastAux, rerender: true });
+    } catch (err) {
+        console.error('Render error:', err);
+    }
+}
+
 /* ---------- polling ---------- */
 /**
  * The render loop: poll graph state every POLL_MS, derive the view
@@ -805,21 +899,10 @@ async function startPolling() {
                 trackRetakes(lastNodesById, nodesById);
                 lastNodesById = nodesById;
                 lastRootId = state.id || '';
+                lastState = state;
                 invalidateTakePeaks(lastNodesById);
-                const vm = deriveViewModel(state,
-                    { folded: foldedStacks(projectInfo.id),
-                      fxOpen, seqOpen, compMode, retakes,
-                      pinFrameQ: mapDragPinQ(),
-                      pinFoldQ: mapDragPinFoldQ(),
-                      pinZero: mapDragPinZero() });
+                const vm = deriveFrame(state);
                 refreshMidiNotes(lastNodesById, vm.quantum);
-                lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
-                    Number.isFinite(state.islandPos)
-                    ? { zero: vm.frameZero,
-                        rawClock: state.islandPos + (state.islandZero ?? 0),
-                        loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum,
-                        quantum: vm.quantum }
-                    : null;
                 const lanesById = new Map(vm.lanes.map(l =>
                     [l.id, Object.assign({ quantum: vm.quantum }, l)]));
                 refreshPeaks(state.nodes,
@@ -835,7 +918,7 @@ async function startPolling() {
                         pendingFetch.add(n.id);
                     }
                 }
-                patchSessionView(vm, {
+                lastAux = {
                     livePeaks,
                     pendingFetch,
                     // Per-take peaks for the comp cells and a retaking
@@ -844,12 +927,9 @@ async function startPolling() {
                     // A MIDI lane's notes for its tiles (cached above)
                     midiNotes,
                     nodesById: lastNodesById,
-                    vmQuantum: vm.quantum,
-                    // Composite offsets are cycle projections of origin —
-                    // computed in the island frame (one-frame rule)
-                    frameZero: vm.frameZero,
                     sampleRate: state.perf ? state.perf.sampleRate : 0,
-                });
+                };
+                patchFrame(vm, lastAux);
                 patchCalibrateButton(state);
                 syncMidiTarget();
                 // Master monitor (B5): the engine meters the device
@@ -1307,6 +1387,36 @@ function initApp() {
                'Map refused by the engine — unchanged');
             return r;
         },
+        // THE RE-TIME (docs/loop_selection.md §9): a SHIFT of the clip's
+        // origin by `shiftSamples` — the lane ↺ drag; the panel's start
+        // marker adds `topSamples`; "timing as played" sends −retime.
+        // Streams like onSetSegments (`live` coalesces into the gesture's
+        // undo entry). Shifts are relative, so the verdict tracks what
+        // the commits since the last verdict asked for: the re-time the
+        // last poll showed plus every shift sent, and the last top sent.
+        onSetTiming: (() => {
+            const asked = new Map();  // node id → {retime, top} to land on
+            return async (id, shiftSamples, topSamples = null, live = false) => {
+                const prev = asked.get(id);
+                const base = prev ? prev.retime
+                    : ((lastNodesById.get(id) || {}).retime || 0);
+                const want = {
+                    retime: base + Math.round(shiftSamples),
+                    top: topSamples ?? (prev ? prev.top : null),
+                };
+                asked.set(id, want);
+                const r = await callNative('setTiming', id, shiftSamples,
+                                           topSamples, live);
+                scheduleVerify(id, n => {
+                    asked.delete(id);
+                    return Math.abs((n.retime || 0) - want.retime) <= 1 &&
+                        (want.top === null ||
+                         Math.abs((n.loopTop ?? -1) - want.top) <= 1);
+                }, 'Timing shifted — ⌘Z to undo',
+                   'Re-time refused by the engine — timing unchanged');
+                return r;
+            };
+        })(),
         getInputs,
         onSetInput: (id, channelIndex) =>
             call('setNodeInput', [id, channelIndex],
@@ -1440,6 +1550,9 @@ function initApp() {
     }
     wireKeyboard();
     initProjectUI();
+    // requestRender (render_request.js): gestures and the settle's
+    // glide re-derive from the last poll through here.
+    setRenderer(renderNow);
     startPolling();
 }
 

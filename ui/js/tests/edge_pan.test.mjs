@@ -41,9 +41,10 @@ test('a grab mid-surface: the zone pans, speed ramps toward the edge', () => {
 });
 
 test('F5: a grip grabbed in the zone never pans on INWARD travel', () => {
-    // The loop top at the frame's left edge: the start grip sits 4 px
-    // inside the lane. Moving the hand right (a fine trim) must not
-    // run the loop left.
+    // The loop top at the frame's left edge: the handle grabbed there
+    // (a splice's ⇧-drag since 2026-09-24; the start grip before) sits
+    // 4 px inside the lane. Moving the hand right (a fine trim) must
+    // not run the loop left.
     const g = L + 4;
     for (const x of [L + 4, L + 6, L + 10, L + 20, L + 35]) {
         assert.equal(step(x, g).dir, 0, `x=${x}`);

@@ -425,6 +425,28 @@ std::vector<Method> engineMethods(Services s) {
                    e->setSegments(args[0].toString(), m,
                                   args.size() > 2 && (bool)args[2]);
                  }),
+      // The re-time (loop_selection.md §9): (uuid, shiftSamples,
+      // topSamples?, live?). A top that is not a finite number ≥ 0
+      // (null, absent) means "no new top"; a non-finite shift is
+      // refused. Samples round to the nearest.
+      voidMethod("setTiming", 2,
+                 [e](const auto& args) {
+                   const double shift = (double)args[1];
+                   if (!std::isfinite(shift)) {
+                     juce::Logger::writeToLog(
+                         "setTiming refused - the shift is not a number");
+                     return;
+                   }
+                   std::optional<int64_t> top;
+                   if (args.size() > 2 &&
+                       (args[2].isDouble() || args[2].isInt() ||
+                        args[2].isInt64())) {
+                     const double t = (double)args[2];
+                     if (std::isfinite(t) && t >= 0) top = std::llround(t);
+                   }
+                   e->setTiming(args[0].toString(), std::llround(shift), top,
+                                args.size() > 3 && (bool)args[3]);
+                 }),
       voidMethod("toggleLoopWindow", 1,
                  [e](const auto& args) { e->toggleLoopWindow(args[0].toString()); }),
       voidMethod("setSequence", 2,

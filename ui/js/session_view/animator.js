@@ -15,6 +15,7 @@
 import {
     forwardDelta, estimateVelocity, advancePosition, correctPosition,
 } from '../playhead_clock.js';
+import { posMod } from '../math_utils.js';
 import { ctx } from './context.js';
 
 /* A hidden tab delivers one giant rAF delta on refocus; clamping it
@@ -25,6 +26,7 @@ const anim = {
     raf: 0, running: false, posQ: 0, velQperMs: 0,
     loopQ: 0, loopStartQ: 0, cycleQ: 1, timelineW: 0, lastFrame: 0,
     lastPollQ: null, lastPollMs: 0,
+    zeroRelQ: null,  // the frame zero past the island zero, last patch (Q)
 };
 
 /** True while the 60fps dead-reckoner owns the playhead (and window
@@ -71,6 +73,36 @@ export function animatorPoll(vm, aux) {
         anim.lastFrame = now;
         anim.raf = requestAnimationFrame(animTick);
     }
+}
+
+/**
+ * THE FRAME MOVED, NOT THE CLOCK: called on every patch before any poll
+ * is fed (patch.js). The dead-reckoner's positions are measured from
+ * the frame's zero, and the zero moves on its own — the settle's glide,
+ * a hold beginning or releasing, the seat following an unheld edit
+ * (frame.md §1). Such a move is the zero moving RELATIVE TO THE ISLAND
+ * ZERO; shift the reckoned position and the poll history by exactly it
+ * (the shortest way round the loop), so a poll measures only the
+ * transport, and a re-render between polls (app.js requestRender, from
+ * the last poll's clock) needs nothing more — fed as a poll, its stale
+ * clock would read as a jump back, a teleport stalling the sweep on
+ * every frame of a glide. A seek moves the island zero WITH the frame,
+ * so it is no frame move: it still reads as the teleport it is
+ * (session_view.md law 14).
+ */
+export function animatorFrame(vm) {
+    const zRel = vm.quantum > 0 && Number.isFinite(vm.frameZero) &&
+        Number.isFinite(vm.rootFrame)
+        ? (vm.frameZero - vm.rootFrame) / vm.quantum : null;
+    const prev = anim.zeroRelQ;
+    anim.zeroRelQ = zRel;
+    if (!anim.running || anim.lastPollQ === null || prev === null ||
+        zRel === null || zRel === prev) return;
+    const L = vm.loopCycleQ;
+    let d = prev - zRel;  // the zero moved +x: the playhead −x
+    if (L > 0) d = posMod(d + L / 2, L) - L / 2;
+    anim.posQ = L > 0 ? posMod(anim.posQ + d, L) : anim.posQ + d;
+    anim.lastPollQ = L > 0 ? posMod(anim.lastPollQ + d, L) : anim.lastPollQ + d;
 }
 
 /** Halt the rAF loop and forget the poll history (recording/paused —

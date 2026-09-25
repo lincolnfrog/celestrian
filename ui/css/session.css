@@ -21,7 +21,7 @@
    10. Selection & drag-to-group
    11. Lane rail
    12. Lane body & reps
-   13. Map editor (cut bands, seam handles, loop-top, drag preview)
+   13. Map editor (cut bands, seam handles, splices + the ↺, drag preview)
    14. Lane body state accents (armed / recording)
    15. Effects panel
    16. Loop window brackets & chips
@@ -37,8 +37,8 @@
 /* Z-INDEX LAYERING SCALE (whole app):
      1–8   lane internals — snap-ghost 1, dragging bracket 2, drag-live
            win-cursor 3, cut-band / .lane-region 4, sticky group headers 5,
-           playhead / cut- & seam-handles 6, inspecting body / cut-chip /
-           loop-top-chip 7, cut-ghost 8
+           playhead / cut- & seam-handles / lr-splice 6, inspecting body /
+           cut-chip / lr-top / region-top 7, cut-ghost / lr-badge / lr-snap 8
      20    in-rail popups (rename editor layer, .input-menu)
      50    popovers (#project-menu, .audio-panel)
      60    #selection-bar
@@ -609,11 +609,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .region-label {
     flex: 0 0 auto;
     align-self: center;
-    width: 96px;
+    width: 164px;
+    max-height: 100%;
     font-size: 10px;
     line-height: 1.25;
     color: var(--map-amber);
-    /* Two lines ("loop 4Q" / "24Q take · cuts"), never an ellipsis. */
+    /* A line or two ("loop 4Q · 24Q take · cuts"), never an ellipsis;
+       a clip's timing readout and its reset under them. */
     white-space: normal;
     overflow: hidden;
 }
@@ -786,6 +788,97 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* The strip is a band host: the cut chip's pill is too tall for a 40px
    strip at its lane size — shrink it there. */
 .region-overlay .cut-chip { font-size: 9px; padding: 0 6px; }
+/* THE ↺ — Ableton's start marker (region_panel.js, 2026-09-24). Its
+   line sits inside the kept box and never takes a press (a box slide
+   must never be stolen); only its TAB grabs. */
+.region-top {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 16px;
+    margin-left: -8px;
+    pointer-events: none;
+    z-index: 7;
+}
+.region-top::before {
+    content: "";
+    position: absolute;
+    left: 7px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--amber-bright);
+    pointer-events: none;
+}
+.region-top-tab {
+    position: absolute;
+    top: 2px;
+    left: 8px;
+    transform: translateX(-50%);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    color: #17181b;
+    background: var(--amber-bright);
+    border-radius: 3px;
+    padding: 2px 4px;
+    white-space: nowrap;
+    pointer-events: auto;
+    cursor: ew-resize;
+    touch-action: none;
+}
+.region-top.region-at-left .region-top-tab { transform: none; left: 8px; }
+.region-top.region-at-right .region-top-tab { transform: translateX(-100%); left: 8px; }
+.region-top.inert .region-top-tab { cursor: default; opacity: 0.6; }
+.region-ov-top {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--amber-bright);
+    pointer-events: none;
+}
+/* The start-marker drag's badge. */
+.region-badge {
+    position: absolute;
+    top: 50%;
+    margin-top: -8px;
+    font-size: 9.5px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--amber-bright);
+    background: rgba(16, 17, 19, 0.94);
+    border: 1px solid var(--map-amber);
+    border-radius: 4px;
+    padding: 3px 6px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 8;
+}
+/* THE TIMING, under the label's terms: how far a re-time has moved the
+   take from how it was played (lit once shifted), and the way back. */
+.region-timing {
+    margin-top: 3px;
+    font-size: 9px;
+    line-height: 1.2;
+    color: var(--text-dim);
+}
+.region-timing.shifted .region-timing-read { color: var(--amber-bright); }
+.region-timing-read { display: block; }
+.region-timing-reset {
+    margin-top: 2px;
+    font: 600 9px/1 var(--font-mono);
+    color: var(--map-amber);
+    background: transparent;
+    border: 1px solid var(--map-amber-40);
+    border-radius: 3px;
+    padding: 1px 5px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.region-timing-reset:hover:not(:disabled) { border-color: var(--map-amber); color: var(--amber-bright); }
+.region-timing-reset:disabled { opacity: 0.35; cursor: default; }
 
 /* ===== 10. Selection & drag-to-group ===== */
 /* Selection: quiet identity on the rail; the bar carries the verb */
@@ -1219,6 +1312,14 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) {
     .reps-layer .rep { transition: none; }
 }
+/* THE SETTLE (frame.md §1): the frame's zero glides by per-frame
+   re-derives (patch.js toggles the class), so every tile must sit where
+   each frame puts it — a morph would trail the glide, and a tile div
+   re-used across a frame edge would sweep across the lane. The live
+   bar keeps its edge glide. */
+#lanes.frame-settling .reps-layer .rep:not(.recording-bar) {
+    transition: none;
+}
 /* Canvases stack absolutely so a content swap can CROSS-FADE: the
    live→fetched waveform replacement at commit swaps two different
    renderings of the same audio (features shift a few px) — a hard
@@ -1260,7 +1361,7 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     .rep.recording-bar { animation: none; }
 }
 
-/* ===== 13. Map editor (cut bands, seam handles, loop-top, drag preview) ===== */
+/* ===== 13. Map editor (cut bands, seam handles, splices + the ↺, drag preview) ===== */
 /* === CUT BANDS (phase 3 map editor, owner-chosen design A) === */
 /* A cut is a first-class object in the bracket vocabulary: dim band,
    two bracket-style handles, a sliding length chip. */
@@ -1385,7 +1486,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 #lanes.map-locked .overlay-layer > :is(.win-bracket,
     .win-chip.toggle:not(.comp-done-chip),
     .seam-handle, .cut-handle, .cut-chip, .cut-band, .region-kept,
-    .region-bracket):not(.inert) {
+    .region-bracket, .region-top):not(.inert),
+#lanes.map-locked .lr-layer > :is(.lr-splice, .lr-top):not(.lr-inert),
+#lanes.map-locked .region-top-tab,
+#lanes.map-locked .region-timing-reset {
     pointer-events: none !important;
     cursor: default !important;
 }
@@ -1438,26 +1542,152 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     transition: left 140ms linear;
 }
 
-/* The loop-top mark: where a mid-phase loop's end wraps to its start —
-   names the ][ grip pair so it reads as intentional. */
-.loop-top-chip {
+/* === THE SPLICE AND THE TOP (splice_handles.js; loop_selection.md §9,
+   2026-09-24) ===
+   A heard lane's loop handles (and a plain loop's lone ↺), in their
+   OWN layer outside the keyed overlay (positioned every patch; a
+   drag's preview moves them). Every
+   class here carries the lr- prefix: the lane-row-scoped queries for
+   brackets, seams and cut bands (tests, the teleport walk, wireWindow)
+   must never find these, and prototype v9's `wrap` handle class
+   collided with a page container. A SPLICE grabs by the lane's LOWER
+   half (its tab on the bottom edge), the ↺ TOP by the UPPER half (its
+   tab on the top edge): two handles, independent even where they
+   coincide. Each line spans the whole lane from its half. */
+.lr-layer { pointer-events: none; }
+.lr-splice,
+.lr-top {
     position: absolute;
-    top: -2px;
+    width: 18px;
+    margin-left: -9px;
+    cursor: ew-resize;
+    touch-action: none;
+    /* The layer is pointer-events:none — handles OPT IN (the
+       win-bracket rule; verify with real input). */
+    pointer-events: auto;
+    z-index: 6;
+}
+.lr-splice { top: 50%; bottom: 0; }
+.lr-top { top: 0; bottom: 50%; z-index: 7; }
+.lr-splice::before,
+.lr-top::before {
+    content: "";
+    position: absolute;
+    left: 8px;
+    width: 2px;
+    pointer-events: none;
+}
+.lr-splice::before {
+    top: -100%;
+    bottom: 0;
+    background: var(--map-amber);
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+/* A cut's splice: dashed, like the band it stands for. */
+.lr-cut::before {
+    background: repeating-linear-gradient(
+        to bottom, var(--map-amber) 0 6px, transparent 6px 9px);
+    box-shadow: none;
+}
+.lr-top::before {
+    top: 0;
+    bottom: -100%;
+    background: var(--amber-bright);
+    opacity: 0.9;
+}
+.lr-tab {
+    position: absolute;
+    left: 9px;
     transform: translateX(-50%);
     font-size: 10px;
-    color: var(--map-amber);
-    background: rgba(36, 26, 16, 0.85);
-    border: 1px solid var(--map-amber-40);
-    border-radius: 999px;
-    padding: 0 5px;
-    pointer-events: none;
-    z-index: 7;
-    /* Hover-revealed like the latent grips it labels — at rest the
-       lane stays quiet (the ↺+][ totem reads as clutter). */
-    opacity: 0;
-    transition: opacity 120ms ease;
+    font-weight: 600;
+    line-height: 1;
+    padding: 3px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
-.lane-body:hover .loop-top-chip { opacity: 1; }
+.lr-splice .lr-tab { bottom: 5px; color: #17181b; background: var(--map-amber); }
+/* The wrap reads "splice" in an outline: the ↺'s solid tab is the one. */
+.lr-wrap .lr-tab {
+    color: var(--map-amber);
+    background: #2b2e33;
+    border: 1px solid var(--map-amber);
+}
+.lr-top .lr-tab { top: 5px; color: #17181b; background: var(--amber-bright); }
+/* Keep clear of the heard chip in the lane's top-right corner: the tab
+   drops below it, and only the tab takes a press — the chip keeps its
+   click (the bypass toggle) over the ↺'s line. */
+.lr-top.lr-under-chip { pointer-events: none; }
+.lr-top.lr-under-chip .lr-tab { top: 25px; pointer-events: auto; }
+/* A PLAIN loop's ↺ (no map, so no splice) grabs by its tab only: its
+   line sits on the lane's latent brackets (drag an edge in to make a
+   region) and never steals their press — the panel's ↺ rule. */
+.lr-top.lr-tab-only { pointer-events: none; }
+.lr-top.lr-tab-only .lr-tab { pointer-events: auto; }
+/* The lane clips its overflow: tabs at its edges anchor inward. */
+.lr-at-left .lr-tab { transform: none; left: 9px; }
+.lr-at-right .lr-tab { transform: translateX(-100%); left: 9px; }
+.lr-splice:hover::before,
+.lr-splice.lr-active::before { width: 3px; background: var(--amber-bright); }
+.lr-splice:hover .lr-tab,
+.lr-splice.lr-active .lr-tab { background: var(--amber-bright); }
+.lr-wrap:hover .lr-tab,
+.lr-wrap.lr-active .lr-tab { color: #17181b; background: var(--map-amber); }
+.lr-top:hover::before,
+.lr-top.lr-active::before { width: 3px; opacity: 1; }
+/* GHOSTS: a repeat outside the take tile is a faint line whose tab
+   shows on hover — still grabbable. */
+.lr-ghost .lr-tab { opacity: 0; transition: opacity 120ms ease; }
+.lr-ghost::before { opacity: 0.3; }
+.lr-ghost:hover .lr-tab { opacity: 1; }
+.lr-ghost:hover::before { opacity: 1; }
+/* An unselected lane's handles rest quieter; hover brings them up. */
+.lane:not(.sel) .lr-layer { opacity: 0.55; }
+.lane:not(.sel) .lane-body:hover .lr-layer { opacity: 1; }
+/* The recording gate's INERT handles: drawn, hoverable (their tooltip
+   explains), never a grab cursor. */
+.lr-layer > .lr-inert { cursor: default !important; opacity: 0.6; }
+/* ⇧-drag's same-scale reveal shows the RAW take: the heard handles
+   step aside — opacity only; the grabbed one keeps its capture.
+   !important: the hover rules above out-rank a plain one, and the
+   body under a drag is always hovered. */
+.lane-body.revealing > .lr-layer { opacity: 0 !important; }
+/* A drag's chrome, made mid-gesture: the badge, the dashed snap ghost
+   at the landing, the swept strip's tint (lane drags only). */
+.lr-badge {
+    position: absolute;
+    font-size: 10.5px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--amber-bright);
+    background: rgba(16, 17, 19, 0.94);
+    border: 1px solid var(--map-amber);
+    border-radius: 4px;
+    padding: 3px 7px;
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 8;
+}
+/* Beside the dragged handle's own tab, clear of the other's. */
+.lr-badge.lr-badge-splice { bottom: 26px; }
+.lr-badge.lr-badge-top { top: 25px; }
+.lr-snap {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 0;
+    border-left: 1px dashed var(--amber-bright);
+    pointer-events: none;
+    z-index: 8;
+}
+.lr-tints { position: absolute; inset: 0; pointer-events: none; }
+.lr-tint {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: rgba(95, 201, 216, 0.16);
+}
 
 /* SEAM HANDLE art (frame shared with .cut-handle above) */
 .seam-handle::before {
@@ -2329,20 +2559,13 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     border-color: var(--tape);
 }
 
-/* --- Mid-phase loop top -------------------
-   A window performed mid-cycle loops with its top mid-lane: the end
-   grip and the start grip meet there ("] end · start [") and the wrap
-   seam in the waveform looks like a cut. Name it at rest — the chip
-   reads "↺ loop top" — and keep the paired grips visible so BOTH stay
-   findable (coincident grips would hide one behind the other). */
-.loop-top-chip { opacity: 0.85; }
-.win-bracket.latent.trim-grip.paired { opacity: 0.55; }
-.lane-body:hover .win-bracket.latent.trim-grip.paired { opacity: 0.8; }
-/* An INERT grip (the recording gate) keeps its resting look but never
-   hover-reveals: a handle you cannot take must not offer itself. */
+/* --- A one-shot's edge grips -------------------
+   (The mid-phase "] [" pair and its "↺ loop top" chip retired
+   2026-09-24 with the other lanes' grips: a splice handle and the ↺
+   say it now — splice_handles.js.) An INERT grip (the recording gate)
+   keeps its resting look but never hover-reveals: a handle you cannot
+   take must not offer itself. */
 .lane-body:hover .win-bracket.latent.trim-grip.inert { opacity: 0; }
-.win-bracket.latent.trim-grip.paired.inert,
-.lane-body:hover .win-bracket.latent.trim-grip.paired.inert { opacity: 0.55; }
 
 /* ===== 22. Sequencer (docs/sequencer.md - the fractal pad grid) ===== */
 /* The rail chip: ghost 'seq' until a sequence exists; lit map-amber

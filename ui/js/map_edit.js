@@ -230,3 +230,95 @@ export function slideSegs(segs, deltaQ, totalQ) {
     const d = Math.max(lo, Math.min(hi, deltaQ));
     return { segs: cov.map(([s, e]) => [s + d, e + d]), deltaQ: d };
 }
+
+/* A seam slide never shrinks a segment below this (Q): the prototype's
+ * floor — a sliver, but never an empty segment (which would heal a cut
+ * the swap meant to keep). */
+export const SEAM_MIN_Q = 1 / 64;
+
+/**
+ * THE SPLICE SWAP (loop_selection.md §4.1, P2.3): slide one splice of
+ * the covered set by `deltaQ`, the period HELD. By the anchoring law
+ * every sample outside the swept strip keeps its time — only the strip
+ * between the old and new splice changes what it plays.
+ *
+ *   j = 0  the WRAP (where the loop's end jumps back to its start): the
+ *          first segment's start and the last segment's end move
+ *          together, so the inner cuts keep their place on screen — on
+ *          one segment this IS slideSegs;
+ *   j > 0  inner cut j, between segment j−1 and segment j: segment j−1's
+ *          end and segment j's start move together (the cut slides,
+ *          its length held).
+ *
+ * Clamped to the take and so no segment shrinks below SEAM_MIN_Q (the
+ * prototype's slideTop / slideCut). Returns { segs, deltaQ } with the
+ * clamped delta actually applied; an out-of-range `j` is a no-op.
+ */
+export function slideSeam(segs, j, deltaQ, totalQ) {
+    const cov = coveredSet(segs, totalQ).map(s => s.slice());
+    const n = cov.length;
+    const len = i => cov[i][1] - cov[i][0];
+    let lo, hi;
+    if (j <= 0) {
+        lo = -cov[0][0];
+        hi = totalQ - cov[n - 1][1];
+        if (n > 1) {
+            // The first segment shrinks by d and the last grows by d
+            // (or the reverse): each keeps at least the floor.
+            lo = Math.max(lo, SEAM_MIN_Q - len(n - 1));
+            hi = Math.min(hi, len(0) - SEAM_MIN_Q);
+        }
+    } else if (j < n) {
+        lo = SEAM_MIN_Q - len(j - 1);
+        hi = len(j) - SEAM_MIN_Q;
+    } else {
+        return { segs: cov, deltaQ: 0 };
+    }
+    const d = lo > hi ? 0 : Math.max(lo, Math.min(hi, deltaQ));
+    if (j <= 0) {
+        cov[0][0] += d;
+        cov[n - 1][1] += d;
+    } else {
+        cov[j - 1][1] += d;
+        cov[j][0] += d;
+    }
+    return { segs: cov, deltaQ: d };
+}
+
+/**
+ * ⇧ AT A SPLICE = THE LENGTH THERE (loop_selection.md P2.4): move the
+ * END of the material just BEFORE splice `j` by whole Qs — the last
+ * segment's end at the wrap (j = 0), segment j−1's end at cut j. Right
+ * (+) = more material: a longer loop, or a smaller cut; left = less.
+ * Whole Q, so the period changes by whole Qs and stays coherent.
+ *
+ * Clamped so the moved segment keeps some material, the period stays
+ * ≥ 1Q, the wrap stays inside the take and a cut can only close — a
+ * cut shrunk to nothing HEALS (the touching segments merge). A loop
+ * grown to the whole take is no map at all ([], like healCut). A
+ * sub-Q period (an exact divisor of Q) has no whole-Q length to change:
+ * the delta is 0. Returns { segs, deltaQ } with the whole-Q delta
+ * actually applied.
+ */
+export function lengthAtSeam(segs, j, deltaQ, totalQ) {
+    const cov = coveredSet(segs, totalQ).map(s => s.slice());
+    const n = cov.length;
+    const cut = j > 0 && j < n;
+    const gi = cut ? j - 1 : n - 1;
+    const bound0 = cov[gi][1];
+    const S0 = cov.reduce((p, [a, b]) => p + (b - a), 0);
+    const room = cut ? cov[j][0] - bound0 : totalQ - bound0;
+    let k = 0;
+    if (S0 >= 1 - EPS) {
+        const kmin = Math.max(-(Math.ceil(cov[gi][1] - cov[gi][0] - EPS) - 1),
+                              1 - Math.round(S0));
+        const kmax = Math.floor(room + EPS);
+        k = Math.max(kmin, Math.min(kmax, Math.round(deltaQ)));
+    }
+    cov[gi][1] = bound0 + k;
+    const norm = normalizeSegments(cov);
+    if (norm.length === 1 && norm[0][0] <= EPS && norm[0][1] >= totalQ - EPS) {
+        return { segs: [], deltaQ: k };
+    }
+    return { segs: norm, deltaQ: k };
+}

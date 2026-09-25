@@ -1,8 +1,12 @@
 /**
- * CUT BANDS (time_maps.md §4, owner-chosen design A) + the lane-side
- * map gestures: seam handles and trim grips on the heard view, dragged
- * in place at the lane's own scale (THE SAME-SCALE REVEAL, owner-ruled
- * 2026-09-11 — supersedes the expanded map drag and its pointer warp).
+ * CUT BANDS (time_maps.md §4, owner-chosen design A) + THE SAME-SCALE
+ * REVEAL (owner-ruled 2026-09-11 — supersedes the expanded map drag and
+ * its pointer warp), which since loop-region phase 2 (2026-09-24)
+ * serves ⇧ on a lane splice — the LENGTH there (splice_handles.js) —
+ * and a one-shot lane's edge grips and seam handles. Every other heard
+ * lane's loop chrome is the splice layer's: the paired `] [` grips, the
+ * "↺ loop top" chip and the plain-drag trims are retired (time_maps.md
+ * §8).
  *
  * A cut is a first-class object in the bracket vocabulary: a dim band
  * with two bracket-style handles and a length chip. Double-click the
@@ -45,7 +49,7 @@ import { posMod } from '../math_utils.js';
 import { bandState, coveredSegs, commitBandSegs, newGesture,
          holdUntilSettled, cutChipLabel, makeHealMenu, runRawDrag,
          trimMoveFn, seamMoveFn, viewPct, rawCursorQ,
-         LIVE_COMMIT_THROTTLE_MS, CUT_HANDLE_W_PX } from './map_core.js';
+         LIVE_COMMIT_THROTTLE_MS, CUT_HANDLE_W_PX, LOCKED_TITLE } from './map_core.js';
 import { maskPlayheadOverInspectors } from './playhead_mask.js';
 import { makeEdgePanner, canPanView, panViewQ0 } from './edge_pan.js';
 
@@ -54,8 +58,8 @@ import { makeEdgePanner, canPanView, panViewQ0 } from './edge_pan.js';
 const SEAM_HIT_PX = 12;
 /* Seam handle glyph half-width (px offset baked into calc()). */
 const SEAM_HANDLE_HALF_PX = 7;
-/* Coincident trim grips nudge apart by this much ("loop end ][ loop
- * start"). */
+/* A one-shot's coincident edge grips (it fills its frame from mid-lane)
+ * nudge apart by this much, so both stay grabbable. */
 const GRIP_PAIR_NUDGE_PX = 8;
 /* Seam chip edge threshold (Q): keep the chip readable at the frame
  * edges. */
@@ -63,8 +67,6 @@ const CHIP_EDGE_Q = 0.4;
 /* (Reveal autoscroll: edge_pan.js owns the zone + speed constants.) */
 /* Waveform vertical inset inside the lane body (lane_body twin). */
 const BODY_V_INSET_PX = 6;
-/* The tooltip of map chrome the recording gate holds inert. */
-const LOCKED_TITLE = 'Loop edits wait until the take finishes';
 
 /** Pointer x → CONTENT Q (raw-take coordinates). On a heard lane the
  * pointer lives in heard time — hop through the map to the RAW
@@ -146,8 +148,9 @@ export function revealColumns(peaks, totalQ, a, b, cssW) {
 /** The reveal drag: a heard-lane handle grabbed at `anchorQ` (its raw
  * position) drags in raw coordinates at the lane's own scale. The view
  * is placed so the grab pixel IS anchorQ — the handle never leaves the
- * pointer — and pans when the hand reaches a visible edge. */
-function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
+ * pointer — and pans when the hand reaches a visible edge. (⇧ on a
+ * splice — splice_handles.js — and a one-shot's grips and seams.) */
+export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
     const r0 = body.getBoundingClientRect();
     const pxPerQ = r0.width / st.cycleQ;
     const view = { q0: anchorQ - (ev.clientX - r0.left) / pxPerQ, spanQ: st.cycleQ };
@@ -290,12 +293,14 @@ export function wireBandCreate(body, lane, vm, cycleQ) {
     });
 }
 
-/** The bands themselves, rebuilt per overlay reconcile. On heard-view
- * lanes a cut has ZERO width (it IS the splice), so it renders as a
+/** The bands themselves, rebuilt per overlay reconcile. On a ONE-SHOT's
+ * heard lane a cut has ZERO width (it IS the splice), so it renders as a
  * SEAM HANDLE: passive ticks on every rep, one grabbable handle + chip
  * per cut on the take rep — drag slides the cut freely (length held),
- * ⌥-drag resizes (whole-Q snap), double-click heals. Raw-framed hosts
- * (windowless lanes, inspectors, the region panel's strip) get BANDS. */
+ * ⌥-drag resizes (whole-Q snap), double-click heals. (Every other heard
+ * lane's cuts are splice handles — splice_handles.js; lane_body never
+ * calls this for them.) Raw-framed hosts (windowless lanes, inspectors,
+ * the region panel's strip) get BANDS. */
 export function appendCutBands(o, lane, vm, body, cycleQ) {
     const st = bandState(lane, vm, cycleQ);
     if (st.totalQ < 2) return;
@@ -396,7 +401,7 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                 // LIVE SPLICE (see the seam handles): audible preview
                 // while dragging, coalesced undo.
                 const now = performance.now();
-                if (target && now - (band._lastLive || 0) >
+                if (target && now - (band._lastLive ?? -Infinity) >
                         LIVE_COMMIT_THROTTLE_MS) {
                     band._lastLive = now;
                     let liveNext = healCut(st.segs, cut[0], cut[1], st.totalQ);
@@ -506,14 +511,17 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
     });
 }
 
-/** Live TRIM handles on a heard-view lane's outer edges (grips DRAG,
- * never open a mode). Dragging inward consumes kept time (whole-Q
- * snap); outward reveals more of the take — at the lane's own scale,
- * the grip glued to the pointer. One setSegments per release — the
- * single-window case delegates to setLoopPoints inside the engine,
- * preserving the existing semantics. While the recording gate locks the
- * lane (bandGate) the grips and the loop-top chip still draw — INERT:
- * no gesture, `.inert` (no hover reveal, no grab cursor). */
+/** A ONE-SHOT heard lane's live TRIM handles on its outer edges (a
+ * one-shot's offset IS its placement, Q5: it has no splice to swap and
+ * no ↺ to shift — splice_handles.js serves every other heard lane).
+ * Dragging inward consumes kept time (whole-Q snap); outward reveals
+ * more of the take — at the lane's own scale, the grip glued to the
+ * pointer. One setSegments per release — the single-window case
+ * delegates to setLoopPoints inside the engine, preserving the existing
+ * semantics. While the recording gate locks the lane (bandGate) the
+ * grips still draw — INERT: no gesture, `.inert` (no hover reveal, no
+ * grab cursor). (Retired 2026-09-24 with the other lanes' grips: the
+ * mid-lane "] [" pair's "↺ loop top" chip — time_maps.md §8.) */
 export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     const st = bandState(lane, vm, cycleQ);
     if (!(st.editable || st.locked) || st.totalQ < 2) return;
@@ -527,30 +535,16 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
     const endRaw = startPos + Math.min(periodQ, cycleQ);
     const endPos = endRaw <= cycleQ + 1e-9 ? Math.min(endRaw, cycleQ)
                                            : endRaw % cycleQ;
-    // The LOOP TOP: when the loop rests mid-phase its start/end meet
-    // mid-lane — mark the spot so the paired grips read as intentional
-    // ("loop end ][ loop start"), not noise.
-    const coincident = Math.abs(startPos - endPos) < 1e-6 ||
-        Math.abs(Math.abs(startPos - endPos) - cycleQ) < 1e-6;
-    // MID-LANE pair only: at the frame edges the two grips already sit
-    // apart (start at 0%, end at 100%) — no nudge, no chip.
-    const paired = coincident && startPos > 1e-6 && startPos < cycleQ - 1e-6;
-    if (paired) {
-        // Named, and visible at rest: a bare ][ pair mid-lane reads as
-        // a split the user never made — a loop whose top rests
-        // mid-phase must SAY so.
-        const top = el('div', 'loop-top-chip mono', {
-            textContent: '↺ loop top',
-            title: 'The loop\'s top: its END wraps to its START here — the ' +
-                'window was performed mid-cycle. Grips: ] end · start [' });
-        top.style.left = pct(startPos, cycleQ);
-        o.appendChild(top);
-    }
+    // A shot that fills its frame from mid-lane meets itself there:
+    // nudge the grips apart so the end cannot hide behind the start.
+    const coincident = (Math.abs(startPos - endPos) < 1e-6 ||
+        Math.abs(Math.abs(startPos - endPos) - cycleQ) < 1e-6) &&
+        startPos > 1e-6 && startPos < cycleQ - 1e-6;
     ['start', 'end'].forEach(edge => {
         const basePos = edge === 'start' ? startPos : endPos;
         const grip = el('div', 'win-bracket latent ' + edge + ' trim-grip' +
-            (paired ? ' paired' : '') + (inert ? ' inert' : ''));
-        grip.style.left = paired
+            (inert ? ' inert' : ''));
+        grip.style.left = coincident
             ? 'calc(' + pct(basePos, cycleQ) +
               (edge === 'start' ? ' + ' + GRIP_PAIR_NUDGE_PX + 'px)'
                                 : ' - ' + GRIP_PAIR_NUDGE_PX + 'px)')

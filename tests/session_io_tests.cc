@@ -565,6 +565,108 @@ class SessionIoTests : public juce::UnitTest {
       stampVersion(juce::var());
       expect(session_io::load(dir, (double)Q).ok, "unversioned bundle loads");
     }
+
+    beginTest(
+        "the top and the re-time round-trip as QTime facts (loopTopQ, "
+        "retimeQ); a bundle without them loads unset / as played; a "
+        "template strips them");
+    {
+      // loop_selection.md §9: the top is a raw content position, the
+      // re-time a signed origin offset — both musical, stored like
+      // originQ. A free (sub-Q) value must survive exactly.
+      StackNode root("TopRoot");
+      root.setQuantum(Q, zero);
+      auto clip = std::make_unique<ClipNode>("Keys", (double)Q);
+      clip->origin_samples.store(zero + 2 * Q - 777);  // re-timed, off the grid
+      clip->duration_samples.store(4 * Q);
+      clip->setLoopPoints(Q, 3 * Q);
+      clip->setStoredTop(2 * Q + 123);
+      clip->setRetime(-777);
+      juce::AudioBuffer<float> audio(1, (int)(4 * Q));
+      audio.clear();
+      clip->loadCommitted(audio, 0);
+      const juce::String uuid = clip->getUuid();
+      root.addChild(std::move(clip));
+      auto plain = std::make_unique<ClipNode>("Bass", (double)Q);
+      plain->origin_samples.store(zero);
+      plain->duration_samples.store(2 * Q);
+      juce::AudioBuffer<float> bass(1, (int)(2 * Q));
+      bass.clear();
+      plain->loadCommitted(bass, 0);
+      root.addChild(std::move(plain));
+
+      auto dir = freshTempDir("top_retime");
+      expect(session_io::save(root, (double)Q, dir), "save");
+      const juce::File jf = dir.getChildFile("session.json");
+      const juce::var json = juce::JSON::parse(jf.loadFileAsString());
+      const juce::var rec = (*json.getProperty("root", {})
+                                  .getProperty("nodes", {})
+                                  .getArray())[0];
+      // QTime in lowest terms: (2Q + 123)/Q = 32041/16000 at Q = 48000.
+      const auto qOf = [](const juce::var& v) {
+        return timing::qtime((int64_t)(double)v.getProperty("num", 0),
+                             (int64_t)(double)v.getProperty("den", 1));
+      };
+      const timing::QTime topQ = qOf(rec.getProperty("loopTopQ", {}));
+      expect(timing::qeq(topQ, timing::fromSamples(2 * Q + 123, Q)),
+             "loopTopQ is the top as a QTime of Q");
+      const timing::QTime retimeQ = qOf(rec.getProperty("retimeQ", {}));
+      expect(timing::qeq(retimeQ, timing::fromSamples(-777, Q)),
+             "retimeQ is the re-time as a (signed) QTime of Q");
+      const juce::var rec2 = (*json.getProperty("root", {})
+                                   .getProperty("nodes", {})
+                                   .getArray())[1];
+      expect(!rec2.hasProperty("loopTopQ") && !rec2.hasProperty("retimeQ"),
+             "additive: an unset top and an as-played take write nothing");
+
+      auto loaded = session_io::load(dir, (double)Q);
+      expect(loaded.ok, "load");
+      auto* c = dynamic_cast<ClipNode*>(loaded.children[0].get());
+      auto* p = dynamic_cast<ClipNode*>(loaded.children[1].get());
+      expect(c != nullptr && c->getUuid() == uuid, "the clip");
+      expectEquals((juce::int64)c->storedTop(), (juce::int64)(2 * Q + 123),
+                   "the top round-trips exactly");
+      expectEquals((juce::int64)c->retime(), (juce::int64)-777,
+                   "the re-time round-trips exactly");
+      expectEquals((juce::int64)c->origin_samples.load(),
+                   (juce::int64)(zero + 2 * Q - 777), "the re-timed origin too");
+      expectEquals((juce::int64)p->storedTop(), (juce::int64)timing::kNoTop,
+                   "an absent key: the top unset");
+      expectEquals((juce::int64)p->retime(), (juce::int64)0,
+                   "an absent key: as played");
+
+      // A bundle from before 2026-09-24 has neither key: it loads with
+      // the top unset and the take as played.
+      {
+        juce::var v = juce::JSON::parse(jf.loadFileAsString());
+        auto* first = (*v.getProperty("root", {}).getProperty("nodes", {})
+                            .getArray())[0].getDynamicObject();
+        first->removeProperty("loopTopQ");
+        first->removeProperty("retimeQ");
+        expect(jf.replaceWithText(juce::JSON::toString(v)), "rewrite json");
+        auto legacy = session_io::load(dir, (double)Q);
+        auto* lc = dynamic_cast<ClipNode*>(legacy.children[0].get());
+        expectEquals((juce::int64)lc->storedTop(), (juce::int64)timing::kNoTop,
+                     "legacy: top unset");
+        expectEquals((juce::int64)lc->retime(), (juce::int64)0,
+                     "legacy: as played");
+        expectEquals((juce::int64)lc->effectiveTop(), (juce::int64)Q,
+                     "legacy: the published top is the region start");
+      }
+
+      // A template keeps structure, never performances.
+      session_io::SaveOptions tpl;
+      tpl.strip_performances = true;
+      auto tdir = freshTempDir("top_retime_tpl");
+      expect(session_io::save(root, (double)Q, tdir, tpl), "template save");
+      const juce::var tjson =
+          juce::JSON::parse(tdir.getChildFile("session.json").loadFileAsString());
+      const juce::var trec = (*tjson.getProperty("root", {})
+                                   .getProperty("nodes", {})
+                                   .getArray())[0];
+      expect(!trec.hasProperty("loopTopQ") && !trec.hasProperty("retimeQ"),
+             "a template strips the top and the re-time");
+    }
   }
 };
 

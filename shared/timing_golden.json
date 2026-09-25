@@ -209,6 +209,35 @@
     { "x": 8, "ref": 0, "m": 5, "expected": -2 },
     { "x": -13, "ref": 4, "m": 0, "expected": -13 }
   ],
+  "top_cases_note": "THE TOP (↺, loop_selection.md §9; owner 2026-09-24): a raw take position stored per clip (null = unset: only a take never edited — a fresh take, an old session). top_reconcile_cases: every map edit STORES a top — T0, the EFFECTIVE top before it (effectiveTop of the geometry before), while the new kept set plays T0, else the new region start; never unset (owner's P2, 2026-09-24: an existing top stays put when the region moves, if it can — an unset top riding the region start was the rejected v5). Each case starts from `segments` ([] = none: the whole take plays) with the stored `top`, and applies `edits` in order, one edit each; every edit gives the stored map AFTER it and the stored top it `expected`s. `windowActive` (the case's and each edit's) defaults to a non-empty map. effective_top_cases: the published loopTop — the stored top when set and kept, else the region start: the map's first start while windowActive, else 0. src/time_map.h keepsTop/reconcileTop/regionStart/effectiveTop and ui/js/time_map.js must agree.",
+  "top_reconcile_cases": [
+    { "name": "a slide that still plays the stored top keeps it", "segments": [[1000, 3000]], "duration": 8000, "top": 2000, "edits": [{ "segments": [[1500, 3500]], "expected": 2000 }] },
+    { "name": "a slide that drops it: the new region start, stored", "segments": [[1000, 3000]], "duration": 8000, "top": 2000, "edits": [{ "segments": [[3000, 5000]], "expected": 3000 }] },
+    { "name": "a cut that removes the top's cell: the region start", "segments": [[1000, 5000]], "duration": 8000, "top": 3500, "edits": [{ "segments": [[1000, 3000], [4000, 5000]], "expected": 1000 }] },
+    { "name": "a top in the second segment is kept", "segments": [[1000, 5000]], "duration": 8000, "top": 4500, "edits": [{ "segments": [[1000, 3000], [4000, 5000]], "expected": 4500 }] },
+    { "name": "a heal that plays it keeps it", "segments": [[1000, 3000], [4000, 5000]], "duration": 8000, "top": 4500, "edits": [{ "segments": [[1000, 5000]], "expected": 4500 }] },
+    { "name": "a cleared map: the whole take plays every top", "segments": [[1000, 8000]], "duration": 8000, "top": 7000, "edits": [{ "segments": [], "expected": 7000 }] },
+    { "name": "a segment's start is kept", "segments": [[0, 2000]], "duration": 8000, "top": 1000, "edits": [{ "segments": [[1000, 3000]], "expected": 1000 }] },
+    { "name": "a segment's end is not", "segments": [[2000, 4000]], "duration": 8000, "top": 3000, "edits": [{ "segments": [[1000, 3000]], "expected": 1000 }] },
+    { "name": "unset, a left slide: kept at the old region start (the splice comes apart)", "segments": [[2000, 4000]], "duration": 8000, "top": null, "edits": [{ "segments": [[1000, 3000]], "expected": 2000 }] },
+    { "name": "unset, a right slide: the new region start", "segments": [[2000, 4000]], "duration": 8000, "top": null, "edits": [{ "segments": [[3000, 5000]], "expected": 3000 }] },
+    { "name": "a reset, then a slide back: kept (bars 1–4 → 3–6 → 2–5: the ↺ stays on bar 3)", "segments": [[0, 4000]], "duration": 8000, "top": null, "edits": [{ "segments": [[2000, 6000]], "expected": 2000 }, { "segments": [[1000, 5000]], "expected": 2000 }] },
+    { "name": "unset, no map: the first window reconciles from the take's start", "segments": [], "duration": 8000, "top": null, "edits": [{ "segments": [[2000, 4000]], "expected": 2000 }, { "segments": [], "expected": 2000 }] },
+    { "name": "unset, no map: a first window over the take's start keeps it", "segments": [], "duration": 8000, "top": null, "edits": [{ "segments": [[0, 2000]], "expected": 0 }] },
+    { "name": "a dormant top (outside the take): the region start that stood in", "segments": [], "duration": 4000, "top": -500, "edits": [{ "segments": [[0, 2000]], "expected": 0 }] },
+    { "name": "bypassed: a slide that still plays the top keeps it", "segments": [[1000, 3000]], "windowActive": false, "duration": 8000, "top": 2000, "edits": [{ "segments": [[1500, 3500]], "windowActive": false, "expected": 2000 }] },
+    { "name": "bypassed: a slide that drops it: the take's start, where a bypassed region reads", "segments": [[1000, 3000]], "windowActive": false, "duration": 8000, "top": 2000, "edits": [{ "segments": [[3000, 5000]], "windowActive": false, "expected": 0 }] }
+  ],
+  "effective_top_cases": [
+    { "name": "unset, no map: the take's start", "segments": [], "windowActive": false, "duration": 8000, "top": null, "expected": 0 },
+    { "name": "unset, an active window: its start", "segments": [[1000, 3000]], "windowActive": true, "duration": 8000, "top": null, "expected": 1000 },
+    { "name": "unset, a bypassed window: the take's start", "segments": [[1000, 3000]], "windowActive": false, "duration": 8000, "top": null, "expected": 0 },
+    { "name": "unset, a bypassed multi-segment map: the take's start (it plays whole)", "segments": [[1000, 2000], [3000, 4000]], "windowActive": false, "duration": 8000, "top": null, "expected": 0 },
+    { "name": "unset, an active multi-segment map: its first start", "segments": [[1000, 2000], [3000, 4000]], "windowActive": true, "duration": 8000, "top": null, "expected": 1000 },
+    { "name": "a stored top the map plays", "segments": [[1000, 3000]], "windowActive": true, "duration": 8000, "top": 2000, "expected": 2000 },
+    { "name": "a stored top under bypass: still the top (bypass never drops it)", "segments": [[1000, 3000]], "windowActive": false, "duration": 8000, "top": 2000, "expected": 2000 },
+    { "name": "a dormant top outside the kept set: the region start stands in", "segments": [[1000, 3000]], "windowActive": true, "duration": 8000, "top": 500, "expected": 1000 }
+  ],
   "peak_bucket_cases_note": "THE PEAK BUCKET (navigation N7, 2026-09-22): peak i of n over total samples covers [floor(i·total/n), floor((i+1)·total/n)), never empty (one sample when n > total). src/clip_node.h ClipNode::peakBucket and ui/js/mock/waveform.js peakBucket must agree. The 3.6M-sample case is the drift the floor-divided window caused: its last bucket ended 11904 samples short.",
   "peak_bucket_cases": [
     { "total": 1000, "n": 300, "buckets": [[0, 0, 3], [150, 500, 503], [299, 996, 1000]] },

@@ -24,6 +24,14 @@ bounced the same way. No N-cycles dialog, no selection-dependent scope.
   bounces the song from the frame zero the view has seated, so the
   file starts where the picture starts (frame.md, 2026-09-17) — the
   engine reads no frame of its own.
+- **A clip starts at its ↺ top (owner, 2026-09-24;
+  loop_selection.md §9):** "Bounce selected…" on a clip opens the file
+  on the loop's one — the top's moment, `origin + a0 + heardOffset(T)`
+  — not on the splice where the recording wraps; the two part after a
+  swap (the ↺ stays on bar 5, the splice moves to bar 2), and a file
+  starting at the splice would open mid-phrase. An unset top is the
+  region start, so a clip never re-topped bounces exactly as before; a
+  stack stores no top in Phase 2 and keeps its frame top.
 - **The span — root:** one effective cycle
   (`calculateEffectiveCycleLength`; Q19 — the cycle the transport wraps
   on, so a root window shorter than Q repeats within it).

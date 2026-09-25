@@ -4,12 +4,13 @@
  * Dialing in a drum loop means zooming way in on one loop marker — and
  * then being "far" from the other one. [ and ]
  * WALK the viewport left/right through the SELECTED track's handles in
- * order — loop start, every cut edge/seam, loop end — from wherever the
- * viewport currently is; on an unsplit clip that degenerates to "jump
- * to the start/end handle". Shift+[ / Shift+] go straight to the outer
- * loop bounds. Grabbing any handle selects its track (see selectOnly
- * callers), so the keys chain naturally with a drag: grab an edge,
- * trim it, hit the other bracket key, trim that. No selection → no-op.
+ * order — on a heard lane the take tile's splices and ↺ (the edge grips
+ * retired 2026-09-24), on a raw lane its brackets and every cut edge —
+ * from wherever the viewport currently is. Shift+[ / Shift+] go
+ * straight to the outermost handle. Grabbing any handle selects its
+ * track (see selectOnly callers), so the keys chain naturally with a
+ * drag: grab a splice, swap it, hit the bracket key, drag the next one.
+ * No selection → no-op.
  * (The keydown wiring itself lives in init.js' unified dispatcher.
  * The mouse face of these keys used to be a per-lane nav dock; the
  * region panel — region_panel.js — replaced it 2026-09-11, and has its
@@ -19,18 +20,24 @@
 import { ctx } from './context.js';
 import { activeSelectedId } from './selection.js';
 
-/** Every grabbable boundary class in a lane. */
+/** Every grabbable boundary class in a lane: window brackets (a raw
+ * lane's, a one-shot's grips), cut-band handles, a one-shot's seams,
+ * and a heard lane's splice handles and ↺ (splice_handles.js). */
 const HANDLE_SELECTOR =
-    '.win-bracket.start, .win-bracket.end, .cut-handle, .seam-handle';
+    '.win-bracket.start, .win-bracket.end, .cut-handle, .seam-handle, ' +
+    '.lr-splice, .lr-top';
 
 /** Preview clones and drag layers are transient — never targets. Nor
  * is anything in the REGION PANEL (diagnosis N5, 2026-09-23): its cut
  * bands are the lane's band code (.cut-handle), but the panel is
  * pinned to the viewport, so centring one of its handles can never
  * converge — `]` got stuck re-targeting it, creeping the main view
- * ~45 px per press. The walk is the LANE's handles. */
+ * ~45 px per press. The walk is the LANE's handles — the take tile's:
+ * a GHOST repeat's splice or ↺ (2026-09-24) is the same splice again,
+ * and a 3Q loop in a 12Q frame would walk it four times. */
 export const isTransientHandle = node =>
     node.classList.contains('snap-ghost') ||
+    node.classList.contains('lr-ghost') ||
     !!node.closest('.drag-preview-layer') ||
     !!node.closest('.lane-region');
 
@@ -41,10 +48,12 @@ const TELEPORT_FLASH_MS = 900;
 const CENTER_SLACK_PX = 4;
 
 /** Every grabbable boundary in the lane, sorted by screen x: window
- * brackets (loop bounds / trim grips), cut-band handles, seam handles. */
+ * brackets (loop bounds / trim grips), cut-band handles, seam handles,
+ * splices and the ↺ (a hidden one — a repeat parked mid-gesture — is
+ * not a place to go). */
 function laneHandleEls(row) {
     return [...row.querySelectorAll(HANDLE_SELECTOR)]
-        .filter(node => !isTransientHandle(node))
+        .filter(node => !isTransientHandle(node) && node.style.display !== 'none')
         .map(node => {
             const r = node.getBoundingClientRect();
             return { el: node, x: r.left + r.width / 2 };

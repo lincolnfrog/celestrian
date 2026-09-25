@@ -344,6 +344,11 @@ class AudioNode {
       }
       obj->setProperty("segments", segs);
     }
+    // THE TOP (↺, loop_selection.md §9): the raw inner position the
+    // loop reads as starting from. A node that keeps no top of its own
+    // publishes the region start — stacks in Phase 2; ClipNode
+    // publishes its effective top over this.
+    obj->setProperty("loopTop", (double)regionStart());
     // Effect chain state (fractal like windows): {chain: [...slots],
     // scope: {...}?} — the chain array doubles as the save format
     // (docs/vst3.md §6); scope telemetry only while a panel watches.
@@ -550,6 +555,12 @@ class AudioNode {
   }
   /** True when the geometry is a cell/punch map (n >= 2). */
   bool hasSegmentMap() const { return storedMap().n >= 2; }
+  /** THE REGION START (timing::regionStart): the map's first start while
+   * the map is active, else 0 — where an unset top reads
+   * (loop_selection.md §9). */
+  int64_t regionStart() const {
+    return timing::regionStart(storedMap(), isLoopWindowActive());
+  }
 
   // --- Loop window state (time_maps.md phase 1, fractal per I5) ---
   /**

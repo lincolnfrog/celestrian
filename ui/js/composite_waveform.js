@@ -262,18 +262,24 @@ export function generateCompositeWaveform({ stack, stackDuration, effectiveQ, ca
             }
         };
 
-        // The map sounds at positions ≡ its origin (mod its heard
-        // period), in the island frame — tiled across the WHOLE cycle,
-        // INCLUDING the wrapped predecessor before its first full
-        // repetition (forward-only tiling would leave everything before
-        // the offset blank for a non-zero origin). Within each pass the
-        // slices land back-to-back at their heard
-        // offsets, each keeping its true sample proportion — exactly
-        // mapOffset's segment walk, drawn.
+        // THE ANCHORING LAW (time_map.js innerAt): a map's pass begins
+        // where its first slice was performed — origin + a0, a0 the
+        // first slice's inner start — so the passes sit at positions
+        // ≡ origin + a0 (mod the heard period), in the island frame
+        // (loop-region phase 2 audit, 2026-09-24: anchored at the bare
+        // origin, a window whose start is not a whole number of periods
+        // drew the group a0 off its own member lane — and every region
+        // swap would have slid the composite under a still groove).
+        // Tiled across the WHOLE cycle, INCLUDING the wrapped
+        // predecessor before its first full repetition (forward-only
+        // tiling would leave everything before the offset blank for a
+        // non-zero origin). Within each pass the slices land
+        // back-to-back at their heard offsets, each keeping its true
+        // sample proportion — exactly mapOffset's segment walk, drawn.
         // RAW mode: the buffer sits at 0 — one tile, the trim view's
         // frame (the member lanes tile the same way: "one full tile
         // from 0 — the trim view ignores the zero").
-        const rel = raw ? 0 : (child.origin || 0) - frameZero;
+        const rel = raw ? 0 : (child.origin || 0) + slices[0][0] - frameZero;
         const first = posMod(rel, heardLen);
         for (let s = first - heardLen; s < stackDuration; s += heardLen) {
             let heardOff = 0;

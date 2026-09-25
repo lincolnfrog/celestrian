@@ -140,3 +140,45 @@ export function innerAt(t, origin, map, fold) {
     const run = seamDistance(map, h);
     return { h, inner: mapOffset(map, h), run: run > 0 ? run : 1, rest: false };
 }
+
+/* ---- THE TOP (↺, loop_selection.md §9; owner 2026-09-24) ----
+ * A loop's top is where it reads as starting: a RAW take position
+ * stored per clip, sounding at origin + a0 + heardOffsetOf(T); null =
+ * unset — only on a take never edited (a fresh take, an old session),
+ * whose region start stands in: every map edit STORES a top. The JS
+ * twins of src/time_map.h keepsTop / reconcileTop / regionStart /
+ * effectiveTop, pinned together by the `top_reconcile_cases` and
+ * `effective_top_cases` goldens. `map` is the STORED map ({segs},
+ * bypass ignored). */
+
+/** THE KEPT SET: whether raw position `t` is one the stored map plays —
+ * a segment holds it, or, with no map, the take (`duration`) does. */
+export function keepsTop(map, duration, t) {
+    if (t === null || t === undefined || !Number.isFinite(t)) return false;
+    if (mapActive(map)) return heardOffsetOf(map, t) >= 0;
+    return t >= 0 && t < duration;
+}
+
+/** THE REGION START: the map's first start while `windowActive` — one
+ * window or many segments alike — else 0, the take's own start (a
+ * bypassed map plays the whole take from its origin). */
+export function regionStart(map, windowActive) {
+    const segs = (map && map.segs) || [];
+    return windowActive && segs.length ? segs[0][0] : 0;
+}
+
+/** THE EFFECTIVE TOP (the published `loopTop`): the stored top when set
+ * and kept, else the region start. */
+export function effectiveTop(map, windowActive, duration, top) {
+    return keepsTop(map, duration, top) ? top : regionStart(map, windowActive);
+}
+
+/** THE RECONCILE RULE: after ANY map edit the top is STORED — `topBefore`,
+ * the EFFECTIVE top before the edit (or at a live gesture's start),
+ * while the new kept set (`map`, AFTER the edit) still plays it, else
+ * the new region start. Never unset (null): a top left to stand in as
+ * the region start would ride every later slide (the rejected v5), and
+ * the owner's P2 keeps an existing ↺ put while the region holds it. */
+export function reconcileTop(map, windowActive, duration, topBefore) {
+    return effectiveTop(map, windowActive, duration, topBefore);
+}

@@ -31,13 +31,20 @@ import {
 } from './timeline_model.js';
 import { posMod } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
-import { flatSegPeriod, nodeWindowActive, mapOffset, seamDistance } from './time_map.js';
+import { flatSegPeriod, nodeWindowActive, mapOffset, seamDistance,
+         heardOffsetOf } from './time_map.js';
 
 // Q-space float tolerance for exact-position comparisons (tile identity,
 // boundary snaps). Q values are small integers/rationals, so 1e-9 sits
 // far below any real musical distinction and far above accumulated fp
 // noise from the divisions in this file.
 const EPS = 1e-9;
+
+// THE PICKUP (docs/frame.md §1, loop_selection.md §9.4): a top up to
+// this much of a Q EARLY seats on the grid line after it — a take
+// pulled slightly early reads as a pickup into the bar, never as a
+// whole Q of wrap tail at the left edge.
+export const SEAT_PICKUP_Q = 0.25;
 
 // Degenerate-frame guard: a frame where cycle/period exceeds this must
 // never explode into thousands of tiles (e.g. Q not yet established).
@@ -1078,6 +1085,57 @@ function effectivePeriod(node) {
 }
 
 /**
+ * Is `n`'s map AUTHORED — active, not suspended by a sequence (S16),
+ * not a step audition's derived window (a monitoring loop, not a
+ * part)? The heard view, the seat and the top all read this one
+ * verdict. `m` is mapOf(n).
+ */
+function mapAuthored(n, m) {
+    return !!(m && m.active && !m.suspended && !isAuditionWindow(n));
+}
+
+/**
+ * The kept set a node PLAYS, as sample pairs: its authored map (the
+ * segments override, else the single window), else the whole take.
+ */
+function keptSegs(n, authored) {
+    if (!authored) return [[0, n.duration || 0]];
+    if (n.segments && n.segments.length >= 4) {
+        const segs = [];
+        for (let i = 0; i + 1 < n.segments.length; i += 2) {
+            segs.push([n.segments[i], n.segments[i + 1]]);
+        }
+        return segs;
+    }
+    return [[n.loopStart || 0, n.loopEnd || 0]];
+}
+
+/**
+ * THE TOP (loop_selection.md §9.3): the loop's one, a raw sample `T`
+ * of the take, which sounds at its MOMENT
+ *
+ *   origin + a0 + heardOffset(segs, T)        a0 = segs[0][0]
+ *
+ * `T` is the published EFFECTIVE top (`loopTop`, engine and mock):
+ * the stored top while the kept set still plays it, else the region
+ * start. An old engine publishes none, and a top outside the kept set
+ * (a preview the reconcile has not seen yet) cannot sound — both read
+ * as the region start, a0, which is where every top sat before
+ * Phase 2, so such a state derives exactly as it always did. Stacks
+ * store no top in Phase 2: theirs is the region start. In samples:
+ * { a0, top: T as read, heard: its heard offset, periodS: Σ segs }.
+ */
+function topOf(n, authored) {
+    const segs = keptSegs(n, authored);
+    const a0 = segs.length ? segs[0][0] : 0;
+    const periodS = segs.reduce((p, [s, e]) => p + (e - s), 0);
+    const T = n.type === 'stack' ? NaN : n.loopTop;
+    const heard = Number.isFinite(T) ? heardOffsetOf({ segs }, T) : -1;
+    return heard >= 0 ? { a0, top: T, heard, periodS }
+                      : { a0, top: a0, heard: 0, periodS };
+}
+
+/**
  * THE FRAME ZERO (docs/frame.md): the shared frame's left edge is not
  * a published fact — it is SEATED from the lanes in the order they are
  * shown. The first lane's top is the top; each next lane pulls the zero
@@ -1086,29 +1144,40 @@ function effectivePeriod(node) {
  * cycle-so-far reaches it and otherwise at its offset, wrap ghosted.
  *
  *   Z₁ = [top₁]grid      Zₖ = Zₖ₋₁ + Cₖ₋₁·⌊([topₖ]grid − Zₖ₋₁) / Cₖ₋₁⌋
- *   Cₖ = lcm(Cₖ₋₁, periodₖ)      top = origin + a0 (the map's first start)
- *   [x]grid = the grid line NEAREST x
+ *   Cₖ = lcm(Cₖ₋₁, periodₖ)
+ *   top = origin + a0 + heardOffset(segs, T)   (the ↺'s MOMENT, topOf)
+ *   [x]grid = gridPhase + ⌊(x − gridPhase)/Q + ¼⌋·Q
  *
- * NEAREST, not floor: a map drag pins the zero, and its release must
- * show the picture the pin showed. Floored, a top a hair BEFORE a grid
- * line would re-seat the whole frame 1Q earlier when the pin drops —
- * every lane and the cursor jump a Q — while the same slide a hair
- * after it moves nothing. Rounded, a top within ½Q of a grid line seats
- * on it from either side, so any sub-½Q slide releases in place
- * (docs/frame.md §1; pinned by ui/js/tests/seat_nearest.test.mjs).
+ * So the zero lands on the first lane's bar lines (every Q for a 1Q
+ * scratch loop, every 4Q under a 4-bar bass) at or just before the ↺:
+ * the line AT OR BEFORE a top, with a top up to ¼Q early a PICKUP to
+ * the next line (SEAT_PICKUP_Q). A take pulled a hair early does not
+ * throw the picture back a whole Q, and a take a little late shows its
+ * top just after the left edge — never wrapped to the right end.
+ *
+ * This replaced Phase 1's NEAREST line (2026-09-24). Nearest existed
+ * so a map drag's release showed the picture the drag pin showed; the
+ * EDIT HOLD now guarantees that for every edit (session_view/
+ * frame_hold.js — while a lane is selected the zero never re-seats),
+ * so the seat takes over only when the frame SETTLES — at deselect, at
+ * arm, on a selection change, animated — or with nothing selected. A
+ * seat that reads ½–1Q late as a pickup at the RIGHT end, as nearest
+ * did, is the wrong picture to settle on. Pinned by
+ * ui/js/tests/frame_seat.test.mjs.
  *
  * The root seats first when it carries a song — the song owns the
  * frame, and its length is the first cycle-so-far. A group with a
  * window or a song seats as ONE lane (its pass is what its members are
- * heard through); a plain group is transparent — its members seat in
- * the order shown, exactly as top-level lanes do, so a take recorded
- * into a group starts at the left edge just as one recorded loose
- * would. One-shots do not seat (their offset IS their placement, Q5).
- * A recording take seats by its top alone: its period is unknown until
- * stop and must not move the lanes after it as it grows. An unanchored
- * stack has no content and no top. The zero is always on the Q grid,
- * so the arm marker and every tile stay grid-true whatever a ⌥-slid
- * window start does.
+ * heard through) from its region start — stacks store no top; a plain
+ * group is transparent — its members seat in the order shown, exactly
+ * as top-level lanes do, so a take recorded into a group starts at the
+ * left edge just as one recorded loose would. One-shots do not seat
+ * (their offset IS their placement, Q5). A recording take seats by its
+ * top alone: its period is unknown until stop and must not move the
+ * lanes after it as it grows. An unanchored stack has no content and
+ * no top. The zero is always on the Q grid, so the arm marker and
+ * every tile stay grid-true whatever a ⌥-slid window start or a free
+ * re-time (a sub-Q origin) does.
  *
  * The growth re-base, the cycle-top rule and the free-move law are
  * this seating, read off the lanes; the mock and the engine share it
@@ -1124,36 +1193,66 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
     }
     const visit = ns => (ns || []).forEach(n => {
         if (n.periodSource === 'context') return;
-        const m = mapOf(n, quantum);
-        const authored = !!(m && m.active && !m.suspended && !isAuditionWindow(n));
-        const a0 = authored ? m.segs[0][0] * quantum : 0;
+        const authored = mapAuthored(n, mapOf(n, quantum));
         if (n.type === 'stack') {
             if (!n.anchored) return;
             if (authored || activeSeqSamples(n) > 0) {
-                seats.push({ top: (n.origin || 0) + a0,
+                seats.push({ top: (n.origin || 0) + topOf(n, authored).a0,
                              period: stackEffectivePeriod(n, quantum) });
             } else {
                 visit(n.nodes);
             }
         } else {
             if (!(n.duration > 0)) return;
-            seats.push({ top: (n.origin || 0) + a0,
+            const t = topOf(n, authored);
+            seats.push({ top: (n.origin || 0) + t.a0 + t.heard,
                          period: n.isRecording ? 0 : clipCycleContribution(n, quantum) });
         }
     });
     visit(nodes);
     if (!seats.length) return null;
-    const grid = x => gridPhase + Math.round((x - gridPhase) / quantum) * quantum;
+    const grid = x => gridPhase +
+        Math.floor((x - gridPhase) / quantum + SEAT_PICKUP_Q + EPS) * quantum;
     let zero = grid(seats[0].top);
     let cycle = quantum;
     seats.forEach((s, i) => {
         // The zero and every cycle-so-far are on the Q grid, so pulling
-        // by the lane's NEAREST grid top keeps the zero there too.
+        // by the lane's grid top keeps the zero there too.
         if (i > 0) zero += cycle * Math.floor((grid(s.top) - zero) / cycle);
         const p = Math.round(s.period || 0);
         if (p > 0) cycle = lcm(cycle, p);
     });
     return zero;
+}
+
+/**
+ * THE SETTLE's path (docs/frame.md §1): the frame zero at linear
+ * progress `t` ∈ [0, 1] of a glide from `from` to the seat `target`.
+ * The glide runs the SHORTEST WAY round the frame: to the
+ * representative of the target (mod the frame length `frameSamples`)
+ * nearest `from` — every lane's period divides the frame, so all
+ * representatives draw the same picture, and a settle never sweeps
+ * more than half a frame. easeInOut (cubic), and at t = 1 the zero is
+ * the seat itself, exactly. Exported for the tests.
+ */
+export function settleZero(from, target, frameSamples, t) {
+    if (!(t < 1)) return target;
+    const via = settleLanding(from, target, frameSamples);
+    return from + (via - from) * easeInOut(Math.max(0, t));
+}
+
+/** Where a settle from `from` lands: the representative of the seat
+ * `target` (mod the frame) nearest `from` — the glide's own end, whose
+ * picture is the seat's. The ruler names its lines from it. */
+export function settleLanding(from, target, frameSamples) {
+    return frameSamples > 0
+        ? from + posMod(target - from + frameSamples / 2, frameSamples) - frameSamples / 2
+        : target;
+}
+
+/** Cubic ease-in-out (the prototype's settle curve). */
+export function easeInOut(p) {
+    return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
 }
 
 /**
@@ -1180,14 +1279,21 @@ function rootSongTop(state) {
  * the cursor by exactly that compensation — truthful monitoring delay
  * (E-E). One rule for plain takes, takes through a map, takes inside a
  * group and new takes of a slot. Null when no take has captured audio.
+ *
+ * The fold is read against `restZero` — the zero the frame rests on,
+ * always on the Q grid — and the position against the zero drawn:
+ * they differ only while the frame SETTLES (a take arming releases the
+ * edit hold, frame.md §1), and a glide's fractional zero must slide the
+ * bar with the lanes, never tip it into another cycle.
  */
-function recordingHeadQ(nodes, rawClock, zero, quantum, lcmQ) {
+function recordingHeadQ(nodes, rawClock, zero, quantum, lcmQ, restZero = zero) {
     let head = null;
     const posQ = (rawClock - zero) / quantum;
+    const restQ = (rawClock - restZero) / quantum;
     const visit = ns => (ns || []).forEach(n => {
         if (n.type === 'stack') { visit(n.nodes); return; }
         if (!n.isRecording || !(n.duration > 0)) return;
-        const anchorQ = Math.round(posQ - n.duration / quantum);
+        const anchorQ = Math.round(restQ - n.duration / quantum);
         const foldQ = lcmQ > 0 ? Math.floor(anchorQ / lcmQ) * lcmQ : 0;
         const q = Math.max(0, posQ - foldQ);
         head = head === null ? q : Math.max(head, q);
@@ -1355,18 +1461,45 @@ function mapPlayheadToDisplay({ playheadQ, frameQ, anyRecording,
 }
 
 /**
- * Ruler tick marks: the Q grid, only when Q exists and stays drawable
- * (a first take's frame is cycleQ ≈ its sample count — no grid, and no
- * DOM explosion).
+ * Ruler tick marks — the ruler's and every lane's gridlines: the
+ * island's Q lines across the frame drawn, only when Q exists and stays
+ * drawable (a first take's frame is cycleQ ≈ its sample count — no
+ * grid, and no DOM explosion).
+ *
+ * THE GRID RIDES THE ZERO (loop_selection.md §9.4, 2026-09-24): a line
+ * sits at (line − zero) / Q, so while the frame SETTLES — its zero
+ * gliding between grid lines for 560 ms — the ruler and the gridlines
+ * scroll with the tiles, the cursor and the arm marker, and the whole
+ * picture moves as one (the prototype's drawFrameGrid). `offQ` is how
+ * far past a line the zero drawn sits (phiQ): 0 at rest, where the
+ * lines fall on whole Qs from the left edge as they always have.
+ *
+ * Each line is NAMED in the frame it lands in, the way the prototype's
+ * drawRuler labels from the settle's target: `toZeroQ` is the landing
+ * zero minus the zero drawn (0 at rest). `at` is where the line rests
+ * once the frame lands — its label and whether it is a major, every
+ * 4Q — and `end` marks the landing frame's wrap (the cycle-end label).
+ * A line keeps its name all the way through the glide: the numbers
+ * ride their lines instead of swapping under them.
  *
  * @param {boolean} qEstablished
- * @param {number} cycleQ  display frame length in Q
- * @returns {Array<{q: number, major: boolean}>}
+ * @param {number} cycleQ   display frame length in Q
+ * @param {number} [offQ]   the zero drawn past its grid line, Q in [0, 1)
+ * @param {number} [toZeroQ] the landing zero minus the zero drawn, Q
+ * @returns {Array<{q: number, major: boolean, at: number, end: boolean}>}
  */
-function buildRulerTicks(qEstablished, cycleQ) {
+export function buildRulerTicks(qEstablished, cycleQ, offQ = 0, toZeroQ = 0) {
     const ticks = [];
-    if (qEstablished && Number.isInteger(cycleQ) && cycleQ <= 64) {
-        for (let q = 0; q <= cycleQ; q++) ticks.push({ q, major: q % 4 === 0 });
+    if (qEstablished && Number.isInteger(cycleQ) && cycleQ > 0 && cycleQ <= 64) {
+        for (let k = offQ > 0 ? 1 : 0; k - offQ <= cycleQ + EPS; k++) {
+            const q = k - offQ;
+            // Lines and landing zeros are on the grid: a whole Q, up to
+            // fp noise.
+            const L = posMod(Math.round(q - toZeroQ), cycleQ);
+            const end = L === 0 && q > EPS;
+            const at = end ? cycleQ : L;
+            ticks.push({ q, major: at % 4 === 0, at, end });
+        }
     }
     return ticks;
 }
@@ -1450,6 +1583,9 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
             (node.nodes || []).forEach(c => {
                 if (c.type === 'clip' && !c.isRecording && c.duration > 0) {
                     const fullQ = intrinsicPeriodQ(c, quantum);
+                    // Whole takes in the buffer frame, like the definer
+                    // lane: a raw position IS the lane position.
+                    const topQ = topOf(c, mapAuthored(c, mapOf(c, quantum))).top / quantum;
                     lanes.push(Object.assign(laneCommon(c, state), {
                         kind: 'clip', depth: depth + 1,
                         periodQ: fullQ, intrinsicQ: fullQ,
@@ -1457,6 +1593,9 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
                         takeStartQ: 0, window: null, windowPhase: 0,
                         armable: false, bandEditable: false,
                         inputChannel: c.inputChannel ?? -1,
+                        topQ, topHeardQ: topQ,
+                        retimeQ: Number.isFinite(c.retime) ? c.retime / quantum : 0,
+                        canRetime: false,
                         definerMember: true,
                     }));
                     if (fxOpen && fxOpen.has(c.id)) lanes.push(fxRow(c, depth + 2));
@@ -1566,6 +1705,18 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
             bandTotalQ: intrinsicQ,
         }, bandGate(editable, ctx.mapEditsLocked));
     }
+    // THE TOP (topFields' group twin): a stack stores none in Phase 2 —
+    // its top is the region start, first heard at the lane's heard top
+    // (0 for an unanchored stack) — and a group is never re-timed.
+    {
+        const a0Q = mapAuthored(node, gwin) ? gwin.segs[0][0] : 0;
+        Object.assign(lane, {
+            topQ: a0Q,
+            topHeardQ: periodQ > 0 ? posMod(gOffsetQ + a0Q, periodQ) : 0,
+            retimeQ: 0,
+            canRetime: false,
+        });
+    }
     // The SEQUENCER (docs/sequencer.md): the rail chip's facts, and the
     // grid row when expanded (view state, the fx-row pattern).
     {
@@ -1661,6 +1812,10 @@ function pushDefinerLane(node, depth, ctx) {
     // A clip's buffer, or — Q13 for groups — the definer stack's inner
     // cycle (the composite of its one take).
     const fullQ = intrinsicPeriodQ(node, quantum);
+    // The top sits in the BUFFER frame this lane draws from 0, so its
+    // raw position IS its lane position. Never re-timed: the definer's
+    // origin is the island zero.
+    const topQ = topOf(node, mapAuthored(node, mapOf(node, quantum))).top / quantum;
     lanes.push(Object.assign(laneCommon(node, state), {
         kind: node.type === 'stack' ? 'group' : 'clip',
         depth,
@@ -1681,6 +1836,10 @@ function pushDefinerLane(node, depth, ctx) {
         armable: node.type === 'clip' ? isArmable(node) : false,
         armMode: node.type === 'clip' ? armMode(node) : null,
         inputChannel: node.inputChannel ?? -1,
+        topQ,
+        topHeardQ: topQ,
+        retimeQ: Number.isFinite(node.retime) ? node.retime / quantum : 0,
+        canRetime: false,
         isQDefiner: true,
         folded: node.type === 'stack' && isFolded(node, ctx),
         groupArm: node.type === 'stack' ? groupArmState(node) : undefined,
@@ -1743,7 +1902,9 @@ function pushRecordingLane(node, depth, mapCtx, ctx, offsetQ) {
         throughMap: !!mapCtx,
         mapPeriodQ: mapCtx ? mapCtx.periodQ : 0,
         mapStartQ: mapCtx ? mapCtx.startQ : 0,
-    }, retake ? takeFields(node, quantum, ctx) : {}));
+    }, retake ? takeFields(node, quantum, ctx) : {},
+    // A live take is never re-timed (the recording gate).
+    topFields(node, mapAuthored(node, mapOf(node, quantum)), ctx, false)));
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
 }
 
@@ -1776,7 +1937,10 @@ function windowEditLane(node, win, intrinsicQ, ctx) {
         armable: false,
         armMode: null,
         inputChannel: node.inputChannel ?? -1,
-    }, node.type === 'stack' ? {} : takeFields(node, ctx.quantum, ctx));
+    }, node.type === 'stack' ? {} : takeFields(node, ctx.quantum, ctx),
+    // The raw lane is comp mode's editor: no ↺ drag on it.
+    node.type === 'stack' ? {}
+        : topFields(node, !!(win && win.active), ctx, false));
 }
 
 
@@ -2060,7 +2224,12 @@ function pushHeardClipLane(node, depth, mapCtx, offsetQ, periodQ,
         windowPhase: node.windowActive ? (node.playhead || 0) : 0,
     // HEARD VIEW (the shared function, I5): overrides the raw-framed
     // fields above — period, extent, reps, chip, seams.
-    }, heardFields || {}, takeFields(node, quantum, ctx), {
+    }, heardFields || {}, takeFields(node, quantum, ctx),
+    // The ↺ and the timing (topFields): where the top sounds, and
+    // whether a ↺ drag may re-time it — or would, but for the
+    // recording gate (the ↺ draws inert).
+    topFields(node, heard, ctx, retimeable(node, ctx, underMap),
+              ctx.mapEditsLocked && retimeableOnceIdle(node, ctx, underMap)), {
         armable: isArmable(node),
         armMode: armMode(node),
         // Under an enclosing ACTIVE map: the map's excluded regions
@@ -2135,6 +2304,185 @@ function pushLane(node, depth, mapCtx, ctx) {
 }
 
 /**
+ * PENDING EDITS (session_view/pending_edits.js): a gesture's preview,
+ * applied to SHALLOW CLONES of the edited nodes before anything is
+ * derived, so tiles, seams, the seat and the lane fields follow the
+ * pointer on every move with no bridge round trip (app.js
+ * requestRender). Each override takes the shape the engine PUBLISHES
+ * once the edit lands (AudioNode::getMetadata; the mock's
+ * enrichNodes), so the preview and the landed state derive alike:
+ *
+ *   - `segments` (flat samples): two or more pairs publish `segments`
+ *     with the single-window fields at 0; one pair publishes loopStart
+ *     / loopEnd and no `segments`; none clears the map. windowActive
+ *     follows (a map, not bypassed — a stack's, not suspended either);
+ *   - `originShift` (samples) moves `origin` and `retime` together —
+ *     setTiming's effect;
+ *   - `top` (raw samples) sets `loopTop`.
+ *
+ * `edits` is a Map (or plain object) of lane id → override. The state
+ * and each node on an edited node's path are cloned; nothing else is
+ * touched, and with nothing to apply the state comes back as is.
+ * Exported for the app and the tests.
+ */
+export function applyPendingEdits(state, edits) {
+    const byId = edits instanceof Map ? edits
+        : new Map(Object.entries(edits || {}));
+    if (!byId.size) return state;
+    const walk = ns => {
+        let changed = false;
+        const out = (ns || []).map(n => {
+            let c = n;
+            if (n.type === 'stack' && Array.isArray(n.nodes)) {
+                const kids = walk(n.nodes);
+                if (kids !== n.nodes) c = { ...n, nodes: kids };
+            }
+            const e = byId.get(n.id);
+            if (e) c = withPendingEdit(c === n ? { ...n } : c, e);
+            if (c !== n) changed = true;
+            return c;
+        });
+        return changed ? out : ns;
+    };
+    const nodes = walk(state.nodes);
+    return nodes === state.nodes ? state : { ...state, nodes };
+}
+
+/** One override onto a node clone `c` (mutated and returned). */
+function withPendingEdit(c, e) {
+    if (Array.isArray(e.segments)) {
+        const n = Math.floor(e.segments.length / 2);
+        if (n >= 2) {
+            c.segments = e.segments.slice(0, 2 * n);
+            c.loopStart = 0;
+            c.loopEnd = 0;
+        } else {
+            delete c.segments;
+            c.loopStart = n === 1 ? e.segments[0] : 0;
+            c.loopEnd = n === 1 ? e.segments[1] : 0;
+        }
+        c.windowActive = n > 0 && !c.loopBypassed &&
+            !(c.type === 'stack' && c.windowSuspended);
+    }
+    if (Number.isFinite(e.originShift) && e.originShift !== 0) {
+        c.origin = (c.origin || 0) + e.originShift;
+        c.retime = (Number.isFinite(c.retime) ? c.retime : 0) + e.originShift;
+    }
+    if (Number.isFinite(e.top)) c.loopTop = e.top;
+    return c;
+}
+
+/**
+ * THE ZERO DRAWN (docs/frame.md §1), by precedence:
+ *
+ *   drag pin ?? settle ?? edit hold ?? seat ?? the root's frame
+ *
+ * - The DRAG PIN (drag_pin.js) holds the frame a gesture engaged on,
+ *   past its release until the final commit settles: a live commit
+ *   re-anchors the edited lane's origin, and the seating would follow
+ *   it under the pointer. Ignored while a take records (the frame
+ *   grows with it).
+ * - The SETTLE (opts.settle = { fromRel, t }): the frame gliding from
+ *   the zero it showed, `fromRel` samples past the root frame, to the
+ *   seat — t is the linear progress; settleZero eases it and takes the
+ *   shortest way round `frameSamples` (the island cycle).
+ * - The EDIT HOLD (opts.hold = { zeroRel, quantum }): while a lane is
+ *   selected, the zero shown when the hold began. Both it and the
+ *   settle's start are kept RELATIVE to the root frame (islandZero), so
+ *   a seek — which moves the island zero and every origin together —
+ *   moves them too. Suspended while any take is live or armed; void
+ *   across a Q change (the grid it sat on is gone).
+ *
+ * The Q13 TRIM VIEW takes neither a settle nor a hold: its frame is the
+ * definer's buffer, and the cursor it maps into the selection needs the
+ * island zero the re-trim sets (mapPlayheadToDisplay) — a zero held
+ * across a re-trim would sit on the old Q's grid.
+ *
+ * session_view/frame_hold.js decides when each applies; this only
+ * resolves them. Returns { zero, source: 'pin'|'settle'|'hold'|'seat'|
+ * 'root', settling }.
+ */
+function resolveFrameZero({ opts, seated, rootFrame, quantum, qEstablished,
+                            anyRecording, anyTakeActive, frameSamples,
+                            provisionalDefiner }) {
+    if (opts.pinFrameQ > 0 && qEstablished && !anyRecording &&
+        Number.isFinite(opts.pinZero)) {
+        return { zero: opts.pinZero, source: 'pin', settling: false };
+    }
+    const s = opts.settle;
+    if (s && seated !== null && !provisionalDefiner &&
+        Number.isFinite(s.fromRel) && Number.isFinite(s.t)) {
+        const from = rootFrame + s.fromRel;
+        return { zero: settleZero(from, seated, frameSamples, s.t),
+                 landing: settleLanding(from, seated, frameSamples),
+                 source: 'settle', settling: s.t < 1 };
+    }
+    const h = opts.hold;
+    if (h && qEstablished && !anyTakeActive && !provisionalDefiner &&
+        Number.isFinite(h.zeroRel) &&
+        (!(h.quantum > 0) || h.quantum === quantum)) {
+        return { zero: rootFrame + h.zeroRel, source: 'hold', settling: false };
+    }
+    return seated !== null
+        ? { zero: seated, source: 'seat', settling: false }
+        : { zero: rootFrame, source: 'root', settling: false };
+}
+
+/**
+ * THE TOP AND THE TIMING on a clip lane (loop_selection.md §9; the
+ * Phase 2 VM contract) — what the ↺ handle, the panel's start marker
+ * and the timing readout read:
+ *
+ *   topQ       the effective top T (topOf), raw Q of the take;
+ *   topHeardQ  the ↺'s first heard position from the frame zero, in
+ *              [0, S): posMod(origin + a0 + heardOffset(T) − zero, S)
+ *              with S the loop period (the kept set's length);
+ *   retimeQ    the cumulative user shift (`retime` ÷ Q): 0 = as played,
+ *              and on an engine that publishes none;
+ *   canRetime  the caller's verdict: a ↺ drag is offered here;
+ *   retimeLocked  it would be, but for the recording gate: the ↺ still
+ *              draws, INERT (splice_handles wantsTopHandle).
+ */
+function topFields(node, authored, ctx, canRetime, retimeLocked = false) {
+    const { quantum, frameZero } = ctx;
+    const t = topOf(node, authored);
+    return {
+        topQ: t.top / quantum,
+        topHeardQ: t.periodS > 0
+            ? posMod((node.origin || 0) + t.a0 + t.heard - frameZero, t.periodS) / quantum
+            : 0,
+        retimeQ: Number.isFinite(node.retime) ? node.retime / quantum : 0,
+        canRetime: !!canRetime,
+        retimeLocked: !canRetime && !!retimeLocked,
+    };
+}
+
+/**
+ * May the ↺ re-time this clip lane? A committed loop (not recording
+ * or armed, not a one-shot — its offset IS its placement, Q5), with Q
+ * established, not the Q-definer or a member of the definer stack (its
+ * origin is the island zero: the engine refuses), not shown through an
+ * enclosing map (the parent owns that lane's chrome, session_view.md
+ * law 13), not in comp mode (it edits takes, not time), and not under
+ * the recording gate (bandGate).
+ */
+function retimeable(node, ctx, underMap) {
+    return !ctx.mapEditsLocked && !node.isPendingStart &&
+        retimeableOnceIdle(node, ctx, underMap);
+}
+
+/** retimeable with the recording gate aside — an armed slot's own
+ * pending take is the gate too. What the gate alone holds keeps its ↺,
+ * drawn inert (retimeLocked): the gate's own proxy for map chrome,
+ * bandLocked, needs a ≥ 2Q take, and a 1Q loop's ↺ would vanish. */
+function retimeableOnceIdle(node, ctx, underMap) {
+    return !!(ctx.qEstablished && !underMap && !node.isRecording &&
+        node.duration > 0 && node.periodSource !== 'context' &&
+        !(ctx.compMode && ctx.compMode.has(node.id)) &&
+        !(ctx.definerIds && ctx.definerIds.has(node.id)));
+}
+
+/**
  * deriveViewModel(state[, opts])
  *
  * state: the getGraphState() shape as published by the engine (and the
@@ -2159,11 +2507,25 @@ function pushLane(node, depth, mapCtx, ctx) {
  *                  it — a committed clip that goes hot can only be
  *                  retaking, since the engine refuses a plain arm on
  *                  content.
- * opts.pinFrameQ / opts.pinFoldQ: the map-gesture frame pin (drag_pin).
+ * opts.pinFrameQ / opts.pinFoldQ / opts.pinZero: the map-gesture frame
+ *                  pin (drag_pin).
+ * opts.hold:       the EDIT HOLD, { zeroRel, quantum } — the held zero
+ *                  relative to the root frame (session_view/
+ *                  frame_hold.js; resolveFrameZero).
+ * opts.settle:     the SETTLE, { fromRel, t } — a glide from the zero
+ *                  shown to the seat at linear progress t (ditto).
+ * opts.pendingEdits: Map lane id → { segments?, originShift?, top? } —
+ *                  a gesture's preview (applyPendingEdits).
  *
  * Returns the Q-unit view model:
  * {
  *   quantum, frameZero, sampleRate, isPlaying, qEstablished,
+ *   seatedZero,      // the SEAT (samples) — the unpinned, unheld zero the
+ *                    // frame settles to; null with nothing to seat
+ *   frameZeroSource, // which rule drew frameZero: 'pin' | 'settle' |
+ *                    // 'hold' | 'seat' | 'root'
+ *   frameSettling,   // the zero is mid-glide (off the Q grid)
+ *   rootFrame,       // the island zero (the Q grid's phase), samples
  *   monitorLatencyMs, // Q20: the calibrated round trip (ms) or null
  *   cycleQ,          // the DISPLAY FRAME lanes tile
  *   lcmQ,            // the committed cycle (≤ cycleQ while a take grows)
@@ -2173,7 +2535,9 @@ function pushLane(node, depth, mapCtx, ctx) {
  *   armAtQ,          // next Q boundary (Q11); cycleQ ≡ 0 (↺)
  *   soleQDefinerId, provisionalDefiner,   // Q13
  *   mapEditsLocked,  // the recording gate: every loop region display-only
- *   ruler: { cycleQ, ticks: [{ q, major }] },
+ *   ruler: { cycleQ, ticks: [{ q, major, at, end }] },  // the island's Q
+ *                    // lines in the frame drawn, named where they land
+ *                    // (buildRulerTicks)
  *   rootId,          // setSequence/toggleSequence target
  *   rootGain,        // the master fader (root output stage), 0..1
  *   rootFxCount,     // enabled slots in the root's rack (master fx chip)
@@ -2191,6 +2555,9 @@ function pushLane(node, depth, mapCtx, ctx) {
  *        bandTotalQ, bandHeard, bandEditable, bandLocked (bandGate),
  *        throughMap, underMap,
  *        armable + armMode (clips: 'stop'|'record'|'retake'|null),
+ *        topQ / topHeardQ / retimeQ / canRetime / retimeLocked (the ↺
+ *        and the timing — topFields; a group's top is its region start,
+ *        never retimed),
  *        takes / activeTake / comp / compCells / compMode (clips —
  *        docs/takes.md), recordingLengthQ + retake + armAtQ (recording
  *        lanes; a retake's reps are `silent`), folded /
@@ -2209,6 +2576,9 @@ export function deriveViewModel(state, opts = {}) {
     // Lanes whose effects panel is expanded (pure view state, owned by
     // the app shell — like fold, but client-side only)
     const fxOpen = opts.fxOpen || null;
+    // A gesture's PREVIEW lands on clones of the edited nodes first:
+    // everything below — seat, tiles, lane fields — derives from it.
+    if (opts.pendingEdits) state = applyPendingEdits(state, opts.pendingEdits);
     const nodes = state.nodes || [];
     const quantum = resolveQuantum(state, nodes);
 
@@ -2220,6 +2590,16 @@ export function deriveViewModel(state, opts = {}) {
             defSelStartQ, defSelEndQ } =
         resolveProvisionalDefiner(committedClips, anyTakeActive, quantum,
                                   nodes, state.definerId);
+    // The definer's ids — the sole clip, or the definer stack and its
+    // mics: their origins are the island zero, so none is re-timed.
+    const definerIds = new Set();
+    if (soleQDefinerId) {
+        definerIds.add(soleQDefinerId);
+        const d = findNodeInTree(nodes, soleQDefinerId);
+        if (d && d.type === 'stack') {
+            (d.nodes || []).forEach(c => { if (c.type === 'clip') definerIds.add(c.id); });
+        }
+    }
 
     // THE FRAME ZERO is seated from the lanes (seatFrameZero, docs/frame.md)
     // — never read from the state. The state supplies two things only:
@@ -2227,18 +2607,15 @@ export function deriveViewModel(state, opts = {}) {
     // carries a song, and the Q grid's phase always: every committed
     // origin the plain arm lands is on it) and, through islandPos, the
     // raw clock. Pre-Q there is nothing to seat: the first take's own
-    // frame is the root's.
+    // frame is the root's. The zero DRAWN may be another — the drag pin,
+    // the settle, the edit hold (resolveFrameZero, below, once the
+    // island cycle it settles round is known).
     const rootFrame = state.islandZero ?? state.origin ?? 0;
     const qEstablished = quantum > 1;
+    const gridPhase = qEstablished ? posMod(rootFrame, quantum) : 0;
     const seated = qEstablished
-        ? seatFrameZero(state, nodes, quantum, posMod(rootFrame, quantum))
+        ? seatFrameZero(state, nodes, quantum, gridPhase)
         : null;
-    // The map-gesture pin holds the zero too (drag_pin): a live commit
-    // re-anchors the edited lane's origin and the seating would follow
-    // it under the pointer.
-    const zeroPinned = opts.pinFrameQ > 0 && qEstablished && !anyRecording &&
-        Number.isFinite(opts.pinZero);
-    const frameZero = zeroPinned ? opts.pinZero : (seated ?? rootFrame);
     // THE RAW CLOCK: islandPos is the unwrapped clock measured from the
     // root's frame; adding that frame back recovers the transport
     // sample itself. Absent (hand-built fixtures), the published
@@ -2270,6 +2647,14 @@ export function deriveViewModel(state, opts = {}) {
             ? lcm(quantum, rootSeqSamples) : rootSeqSamples;
         loopSamples = cycleSamples;
     }
+    // THE ZERO DRAWN: the drag pin, else the settle — gliding the
+    // shortest way round the island cycle just known — else the edit
+    // hold, else the seat (resolveFrameZero, frame.md §1).
+    const zeroOf = resolveFrameZero({
+        opts, seated, rootFrame, quantum, qEstablished, anyRecording,
+        anyTakeActive, frameSamples: cycleSamples, provisionalDefiner,
+    });
+    const frameZero = zeroOf.zero;
     // THE ROOT'S STEP AUDITION (docs/sequencer.md §11.2): the root
     // publishes its DERIVED window (windowActive/loopStart/loopEnd) —
     // the heard cycle is the step (map over sequence, S9). The FRAME
@@ -2312,7 +2697,15 @@ export function deriveViewModel(state, opts = {}) {
     // then the root's, which the seating reproduces wherever both apply.
     let playheadQ;
     const growing = rawClock !== null && qEstablished
-        ? recordingHeadQ(nodes, rawClock, frameZero, quantum, lcmQ)
+        ? recordingHeadQ(nodes, rawClock, frameZero, quantum, lcmQ,
+                         // The rest zero is where the glide LANDS — the
+                         // seat ± whole frames when it takes the short
+                         // way round — never the seat itself: folded on
+                         // the seat, a wrapping glide put the growing
+                         // take a whole frame off (the frame grew, every
+                         // lane rescaled, then snapped back).
+                         zeroOf.settling && Number.isFinite(zeroOf.landing)
+                             ? zeroOf.landing : frameZero)
         : null;
     if (growing !== null) {
         playheadQ = growing;
@@ -2364,9 +2757,16 @@ export function deriveViewModel(state, opts = {}) {
     // is armed; this is the display value for "if you arm now". Island Q
     // boundaries sit at loopStartQ + k (loopStartQ = 0 outside the
     // provisional trim view, where this reduces to plain ceil) — for a
-    // genuine 1Q selection the next boundary IS the selection end.
-    const relPosQ = playheadQ - loopStartQ;
-    const armAtQ = loopStartQ +
+    // genuine 1Q selection the next boundary IS the selection end. The
+    // boundaries are the ISLAND's: while the frame settles its zero sits
+    // a fraction `phiQ` of a Q off the grid, and the marker says where a
+    // take will start, not where the gliding frame's integers fall.
+    const phiQ = qEstablished && !provisionalDefiner
+        ? (f => (f < EPS || f > 1 - EPS ? 0 : f))(
+            posMod((frameZero - gridPhase) / quantum, 1))
+        : 0;
+    const relPosQ = playheadQ - loopStartQ + phiQ;
+    const armAtQ = loopStartQ - phiQ +
         (Math.ceil(relPosQ) === relPosQ ? relPosQ + 1 : Math.ceil(relPosQ));
 
     const lanes = [];
@@ -2374,6 +2774,7 @@ export function deriveViewModel(state, opts = {}) {
         state, lanes, maxDepth, fxOpen, quantum,
         frameZero, qEstablished, cycleQ, lcmQ,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
+        definerIds,
         // THE RECORDING GATE (bandGate): a live or pending take locks
         // every loop region.
         mapEditsLocked: anyTakeActive,
@@ -2399,9 +2800,11 @@ export function deriveViewModel(state, opts = {}) {
     // the frame is seated from the lanes, so the song's top sits at
     // (origin − zero) in Q. Zero whenever the root seats first (it
     // carries the song), which is every state the engine produces;
-    // a fixture may put the two apart.
+    // a fixture may put the two apart, and a hold keeps it whole Qs off.
+    // Exact, not rounded: while the frame SETTLES its zero glides off
+    // the grid, and the song's dims must ride the glide with the lanes.
     const rootAnchorQ = qEstablished
-        ? Math.round((rootSongTop(state) - frameZero) / quantum) : 0;
+        ? (rootSongTop(state) - frameZero) / quantum : 0;
     // The ROOT's active sequence projects onto the top-level lanes
     // (engine root = the song when tracks live loose at the top).
     {
@@ -2439,11 +2842,24 @@ export function deriveViewModel(state, opts = {}) {
 
     attachFrameHealth(lanes, state, nodes, quantum, qEstablished);
 
-    const ticks = buildRulerTicks(qEstablished, cycleQ);
+    // The grid rides the zero drawn (a settle's glide included), each
+    // line named where it lands (buildRulerTicks).
+    const ticks = buildRulerTicks(qEstablished, cycleQ, phiQ,
+        zeroOf.settling && Number.isFinite(zeroOf.landing)
+            ? (zeroOf.landing - frameZero) / quantum : 0);
 
     return {
         quantum,
         frameZero,
+        // THE SEAT — the unpinned, unheld zero the frame rests on when
+        // nothing holds it (frame.md §1); what a settle glides to.
+        seatedZero: seated,
+        frameZeroSource: zeroOf.source,
+        frameSettling: zeroOf.settling,
+        // The root's own frame (islandZero): the Q grid's phase, and
+        // what a seek moves together with every origin — a zero moving
+        // RELATIVE to it is the frame moving, not the transport.
+        rootFrame,
         cycleQ,          // the DISPLAY FRAME: what lanes tile and views fit
         lcmQ,            // the committed cycle (≤ cycleQ; equal unless recording extends)
         loopCycleQ: loopSamples / quantum, // the AUDIBLE cycle (E-C): < lcmQ when windows shorten it

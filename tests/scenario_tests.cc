@@ -1544,6 +1544,75 @@ class ScenarioTests : public juce::UnitTest {
         }, "bypassed: the take plays where it was performed" + tag);
       }
     }
+
+    // ------------------------------------------------------------------
+    beginTest("S41: a re-time moves a take in time by any amount (loop "
+              "selection §9, owner 2026-09-24) - a 4Q take under a 1Q loop "
+              "shifted +1Q, then freely +0.3Q; a swap keeps the shift; undo "
+              "and 'timing as played' return it; a round trip keeps it");
+    {
+      // THE SHIFT: the ↺ drag moves the take's origin — every sample
+      // sounds that much later, against a loop that did not move. The
+      // origin is the claim (the capture boundary plus the shift, never
+      // re-folded onto the grid); the render follows the plain loop and
+      // window laws from it.
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String b = is.record(4 * Q);
+      const int64_t cap = is.captured.at(b);
+      const int64_t zero0 = is.zero();
+      expectEquals(is.origin(b), cap, "the stored origin is the capture boundary");
+      is.engine.setTiming(b, Q);
+      expectOutput(is, 8 * Q, [&](int64_t t) {
+        return is.loopVal(c1, t) + is.val(b, posmod(t - cap - Q, 4 * Q));
+      }, "+1Q: the take sounds a Q later against the unmoved 1Q loop");
+      is.engine.setTiming(b, 3 * Q / 10);  // ⌥: free
+      const int64_t shift = Q + 3 * Q / 10;
+      expectEquals(is.origin(b), cap + shift, "+0.3Q more: exact, off the grid");
+      expectEquals(is.iprop(b, "retime"), shift, "the re-time reads the whole shift");
+      expectEquals(is.zero(), zero0, "the zero stays");
+      expectOutput(is, 8 * Q, [&](int64_t t) {
+        return is.loopVal(c1, t) + is.val(b, posmod(t - cap - shift, 4 * Q));
+      }, "…and the render follows it exactly");
+      // A SWAP keeps the shift: trim to [0,2Q) (the sounding sample's
+      // class holds, no re-anchor), slide to [Q,3Q) (a slide never
+      // re-anchors) — the window law from the RE-TIMED origin.
+      is.window(b, 0, 2 * Q);
+      is.window(b, Q, 3 * Q);
+      expectEquals(is.origin(b), cap + shift, "a swap keeps the re-timed origin");
+      expectEquals(is.iprop(b, "retime"), shift, "…and the re-time");
+      expectOutput(is, 8 * Q, [&](int64_t t) {
+        return is.loopVal(c1, t) +
+               is.val(b, Q + posmod(t - cap - shift - Q, 2 * Q));
+      }, "the slid window loops from the re-timed origin");
+      // Undo the swaps and the free shift: +1Q again, no window.
+      is.engine.undo();
+      is.engine.undo();
+      is.engine.undo();
+      expectEquals(is.origin(b), cap + Q, "undo: back to the whole-Q shift");
+      expectEquals(is.iprop(b, "retime"), Q, "…re-time Q");
+      // "Timing as played": shift = −retime.
+      is.engine.setTiming(b, -is.iprop(b, "retime"));
+      expectEquals(is.origin(b), cap, "as played: the performed origin");
+      expectOutput(is, 8 * Q, is.sumOfLoops({c1, b}), "as played: the plain loops");
+      // A ROUND TRIP keeps a free re-time and a top (QTime facts).
+      is.engine.setTiming(b, -Q / 4, 2 * Q);
+      auto dir = test_utils::freshTempDir("scenario_s41");
+      expect(is.engine.saveSession(dir.getFullPathName()), "saved");
+      Island other;
+      expect(other.engine.loadSession(dir.getFullPathName()), "loaded");
+      other.captured = is.captured;
+      expectEquals(other.origin(b) - other.zero(), cap - Q / 4 - zero0,
+                   "the re-timed origin persists");
+      expectEquals(other.iprop(b, "retime"), -Q / 4, "the re-time persists");
+      expectEquals(other.iprop(b, "loopTop"), 2 * Q, "the top persists");
+      if (!other.engine.isPlaying()) other.engine.togglePlayback();
+      expectOutput(other, 8 * Q, [&](int64_t t) {
+        return other.loopVal(c1, t) + other.val(b, posmod(t - other.o(b), 4 * Q));
+      }, "the loaded island renders the re-timed take", /*skip=*/BLOCK);
+      expectEquals(other.o(b) - other.zero(), cap - Q / 4 - zero0,
+                   "…from the re-timed origin");
+    }
   }
 };
 

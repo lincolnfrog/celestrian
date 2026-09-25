@@ -7,9 +7,11 @@
  * confused about where the current selection is." The fix is two
  * surfaces under one law: the SELECTED lane grows a panel showing the
  * raw take with the kept region as a box (slide / trim / cut), and a
- * lane handle drags at the lane's OWN scale, the grip glued to the
- * pointer, panning at the edges. Real mouse input throughout —
- * synthetic dispatch bypasses hit-testing (the 2026-07-23c law).
+ * lane handle drags at the lane's OWN scale, the bound glued to the
+ * pointer, panning at the edges (since 2026-09-24: ⇧ on a splice — the
+ * length there; splice_handles.spec.js pins the splice and ↺ drags).
+ * Real mouse input throughout — synthetic dispatch bypasses
+ * hit-testing (the 2026-07-23c law).
  *
  * Since loop-region phase 1 (2026-09-23) the panel's detail strip has
  * its own VIEW (fit-region by default): every strip x ↔ raw Q here goes
@@ -160,24 +162,30 @@ test.describe('Region panel', () => {
 });
 
 test.describe('Same-scale reveal', () => {
-    test('a lane grip drags at the lane\'s own scale, glued to the pointer, and pans at the edge', async ({ page }) => {
+    test('⇧ on a splice drags the loop\'s end at the lane\'s own scale, glued to the pointer, and pans at the edge', async ({ page }) => {
+        // (Since 2026-09-24 the reveal serves ⇧ on a splice — the LENGTH
+        // there, loop_selection.md P2.4; the plain-drag edge grips it
+        // used to serve are retired, time_maps.md §8.)
         await boot(page);
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
         await setLoop(page, id2, 6 * Q, 10 * Q);            // 4Q frame
         const lane = laneOf(page, id2);
         const body = lane.locator('.lane-body');
-        await expect(body.locator('.trim-grip.end')).toHaveCount(1);
+        const wrapTab = body.locator('.lr-layer > .lr-wrap:not(.lr-ghost) .lr-tab');
+        await expect(wrapTab).toHaveCount(1);
         const box = await body.boundingBox();
-        await body.hover();
-        // THE END GRIP, left by 1.2 frame-Q (= 1.2 raw Q: same scale).
-        const eb = await body.locator('.trim-grip.end').boundingBox();
+        // THE WRAP'S SPLICE (the region start, at the frame's left edge),
+        // ⇧-dragged right by 1.2 frame-Q (= 1.2 raw Q: same scale): the
+        // loop's END — the material before the splice — follows the hand.
+        const eb = await wrapTab.boundingBox();
         const gx = eb.x + eb.width / 2;
         const gy = eb.y + eb.height / 2;
         await page.mouse.move(gx, gy);
+        await page.keyboard.down('Shift');
         await page.mouse.down();
         await page.waitForTimeout(220);                    // engage (hold)
-        await page.mouse.move(gx - 6, gy);
+        await page.mouse.move(gx + 6, gy);
         await expect(body).toHaveClass(/revealing/);
         await expect(body).not.toHaveClass(/inspecting/);  // never rescaled
         await expect(body.locator('.reveal-layer canvas')).toHaveCount(1);
@@ -189,27 +197,28 @@ test.describe('Same-scale reveal', () => {
                 .boundingBox();
             return fb ? Math.abs((fb.x + fb.width) - x) < 12 : false;
         }).toBe(true);
-        await followNear(gx - 6);
-        await page.mouse.move(gx - box.width * (1.2 / 4), gy, { steps: 10 });
-        await followNear(gx - box.width * (1.2 / 4));
+        await followNear(gx + 6);
+        await page.mouse.move(gx + box.width * (1.2 / 4), gy, { steps: 10 });
+        await followNear(gx + box.width * (1.2 / 4));
         await page.screenshot({ path: test.info().outputPath('reveal-mid-drag.png') });
         await page.mouse.up();
-        await expect.poll(() => loopOf(page, id2, Q)).toBe('6,9');
+        await page.keyboard.up('Shift');
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('6,11');
         await expect(body).not.toHaveClass(/revealing/);
         await expect(body.locator('.reveal-layer')).toHaveCount(0);
         // The panel appeared with the grab (a handle claims the track)
         // and shows the new region.
         await expect(panelOf(page, id2)).toBeVisible();
-        await expect(lane.locator('.region-label')).toHaveText(/loop 3Q · 12Q take/);
+        await expect(lane.locator('.region-label')).toHaveText(/loop 5Q · 12Q take/);
 
-        // THE DIRECTION RULE (edge_pan.js; release-jump F5): the START
-        // grip rests at the frame's left edge, INSIDE the edge zone. A
-        // fine INWARD move must not pan (it used to run the loop
-        // outward by whole Qs)…
-        await body.hover();
-        const sb = await body.locator('.trim-grip.start').boundingBox();
+        // THE DIRECTION RULE (edge_pan.js; release-jump F5): the wrap's
+        // splice rests at the frame's left edge, its tab INSIDE the edge
+        // zone. A fine INWARD move must not pan (it used to run the
+        // loop outward by whole Qs)…
+        const sb = await wrapTab.boundingBox();
         const sx = sb.x + sb.width / 2;
         await page.mouse.move(sx, gy);
+        await page.keyboard.down('Shift');
         await page.mouse.down();
         await page.waitForTimeout(220);
         await page.mouse.move(sx + 10, gy, { steps: 3 });
@@ -226,12 +235,14 @@ test.describe('Same-scale reveal', () => {
         await expect.poll(() => body.evaluate(b => b._reveal ? b._reveal.view.q0 : 99),
             { timeout: 4000 }).toBeLessThan(q0Inward - 0.5);
         await page.mouse.up();
+        await page.keyboard.up('Shift');
         await expect.poll(async () => {
             const n = await node(page, id2);
-            return n.loopStart / Q;
-        }).toBeLessThan(6);
+            return n.loopEnd / Q;
+        }).toBeLessThan(11);
         const n = await node(page, id2);
-        expect(Number.isInteger(n.loopStart / Q)).toBe(true);
-        expect(Number.isInteger((n.loopEnd - n.loopStart) / Q)).toBe(true);
+        expect(n.loopStart / Q).toBe(6);
+        expect(Number.isInteger(n.loopEnd / Q)).toBe(true);
+        expect(n.loopEnd / Q).toBeGreaterThanOrEqual(7);   // never under 1Q
     });
 });

@@ -86,6 +86,9 @@ export function deleteNode(id) {
             survivor.loopStart = pre.ls;
             survivor.loopEnd = pre.le;
             survivor.origin = pre.origin;
+            // The top returns to the full take's coordinates (engine
+            // parity ClipNode::uncollapseContent).
+            if (survivor.storedTop != null) survivor.storedTop += pre.ls;
             delete survivor._precollapse;
             console.log('[MockBackend] Q13 re-open: uncollapsed', survivor.id);
         }
@@ -105,6 +108,7 @@ export function deleteNode(id) {
                 m.loopStart = 0;
                 m.loopEnd = 0;  // members whole (no window)
                 m.origin = (m.origin || 0) - shift;
+                if (m.storedTop != null) m.storedTop += shift;
                 delete m._precollapse;
             });
             ds.origin = (ds.origin || 0) - shift;

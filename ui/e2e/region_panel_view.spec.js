@@ -251,7 +251,8 @@ test.describe('Region panel view', () => {
             })).observe(document.body, { subtree: true, attributes: true,
                                          attributeFilter: ['class'] });
         });
-        const scrolls = [];
+        const scrolls = [await page.evaluate(() =>
+            document.getElementById('session').scrollLeft)];
         for (let i = 0; i < 6; i++) {
             await page.keyboard.press(']');
             scrolls.push(await page.evaluate(() =>
@@ -261,7 +262,9 @@ test.describe('Region panel view', () => {
         expect(flashes).not.toContain('panel');
         expect(flashes).toContain('lane');
         // The walk moved and then stopped at the last handle — it never
-        // creeps ~45 px per press on the panel's handle.
+        // creeps ~45 px per press on the panel's handle. (Since the edge
+        // grips retired, 2026-09-24, the lane's stops are its splices and
+        // ↺ — the walk may reach its last one in a single press.)
         expect(new Set(scrolls).size).toBeGreaterThan(1);
         expect(scrolls[scrolls.length - 1]).toBe(scrolls[scrolls.length - 2]);
     });

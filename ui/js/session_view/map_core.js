@@ -3,18 +3,22 @@
  *
  * A loop region (a clip's window, a group's map — one law, I5) is
  * edited from two places that speak one protocol:
- *   - the LANE (map_bands.js): trim grips and seam handles on the
- *     heard view, dragged at the lane's own scale (the same-scale
- *     reveal, 2026-09-11);
+ *   - the LANE (splice_handles.js; loop-region phase 2, 2026-09-24):
+ *     a SPLICE handle on every heard repeat of the wrap and each cut
+ *     (drag = swap, in heard time, previewed locally), the ↺ TOP (drag
+ *     = shift, a re-time), and ⇧ on a splice = the length there through
+ *     the same-scale reveal (map_bands.js);
  *   - the REGION PANEL (region_panel.js): the raw take under the
  *     selected lane through the panel's own zoomable view
  *     (panel_view.js), with the kept region as a box you trim, slide,
- *     and cut.
+ *     and cut, and the ↺ as Ableton's start marker.
  * Both build their gesture out of the pieces here: the `st` band
- * state, the whole-Q commit path (with the gesture-scoped undo latch),
- * the raw-frame preview renderer, and the three move laws — TRIM,
- * SEAM (slide / ⌥-resize a cut), and SLIDE (the whole region, length
- * held). The interval algebra itself lives in ../map_edit.js.
+ * state, the whole-Q commit path (with the gesture-scoped undo latch —
+ * shared by the re-time's commits), the raw-frame preview renderer, the
+ * gesture runner (raw by default, pluggable for the heard drags), and
+ * the move laws — TRIM, SEAM (slide / ⌥-resize a cut), SLIDE (the whole
+ * region, length held) and LENGTH (⇧ at a splice). The interval algebra
+ * itself lives in ../map_edit.js.
  */
 
 import { ctx } from './context.js';
@@ -23,7 +27,8 @@ import { beginGesture, holdOverlay, releaseOverlay, afterSettled,
          deferTeardown, runTeardown } from './gesture.js';
 import { buildWindowDims } from './dims.js';
 import { applyCut, healCut, resizeCutTarget, slideCutTarget, segsPeriod,
-         trimBoundTo, trimBoundForPeriod, slideSegs } from '../map_edit.js';
+         trimBoundTo, trimBoundForPeriod, slideSegs, lengthAtSeam,
+         coveredSet } from '../map_edit.js';
 import { mapOffset } from '../time_map.js';
 import { posMod } from '../math_utils.js';
 import { DEBUG } from '../debug_flags.js';
@@ -56,6 +61,9 @@ export { COMMIT_HOLD_MAX_MS } from './gesture.js';
  * this long a hold — a sloppy grab-release must not edit. */
 export const ENGAGE_SLOP_PX = 4;
 export const ENGAGE_HOLD_MS = 160;
+/* The tooltip of map chrome the recording gate holds inert (the lane's
+ * splices, ↺ and one-shot grips; the panel's ↺). */
+export const LOCKED_TITLE = 'Loop edits wait until the take finishes';
 
 /** Hold an overlay until a final commit settles (or the cap). */
 export function holdUntilSettled(host, p) {
@@ -176,6 +184,56 @@ export function commitBandSegs(st, segsQ, inGesture = false) {
     const live = inGesture && gestureLive;
     if (inGesture) gestureLive = true;
     return ctx.cb.onSetSegments(st.laneId, flat, live);
+}
+
+/** THE RE-TIME's commit (loop_selection.md §9.2; setTiming): move the
+ * clip's origin by `shiftSamples` — RELATIVE, so a live drag sends only
+ * what its last commit had not — and, with a finite `topSamples`, store
+ * the top. Under the same gesture latch as commitBandSegs: a gesture's
+ * first commit opens its undo step, the rest coalesce into it (the
+ * engine coalesces Timing into Timing only — a swap and a shift are
+ * different gestures). */
+export function commitTiming(st, shiftSamples, topSamples = null, inGesture = false) {
+    const live = inGesture && gestureLive;
+    if (inGesture) gestureLive = true;
+    return ctx.cb.onSetTiming(st.laneId, Math.round(shiftSamples),
+        Number.isFinite(topSamples) ? Math.round(topSamples) : null, live);
+}
+
+/* ---------- the readouts ---------- */
+
+/** A Q amount for a badge or readout: whole Qs bare, fractions to three
+ * decimals (a ⌥ re-time reads "0.025Q"), fp noise snapped. */
+export function fmtFineQ(q) {
+    const r = Math.round(q * 1000) / 1000;
+    return String(Math.abs(r) < 1e-9 ? 0 : r);
+}
+
+/** A signed Q amount ("+1", "−0.25"): the sign always shown, the minus
+ * a real minus (the badges' house style). */
+export const fmtSignedQ = q => (q >= 0 ? '+' : '−') + fmtFineQ(Math.abs(q));
+
+/**
+ * The take's TIMING against how it was played (the prototype's
+ * timingText) — the panel's readout and the ↺ drag's badge:
+ *   "timing: as played" · "timing: shifted +1Q" ·
+ *   "timing: shifted −0.025Q (40 ms earlier)" (under 1Q the milliseconds
+ *   say how far — a fine re-time is felt in ms, not in Q).
+ *
+ * @param {number} retimeQ  the cumulative user shift (lane.retimeQ)
+ * @param {number} msPerQ   one Q in milliseconds (quantum / rate × 1000)
+ * @returns {string}
+ */
+export function timingText(retimeQ, msPerQ) {
+    const d = Number.isFinite(retimeQ) ? retimeQ : 0;
+    if (Math.abs(d) < 1e-9) return 'timing: as played';
+    let text = 'timing: shifted ' + fmtSignedQ(d) + 'Q';
+    if (Math.abs(d) < 1 && msPerQ > 0) {
+        const ms = Math.abs(d) * msPerQ;
+        text += ' (' + (ms < 1 ? '<1' : String(Math.round(ms))) + ' ms ' +
+            (d < 0 ? 'earlier' : 'later') + ')';
+    }
+    return text;
 }
 
 /* Map-gesture flight recorder for flickers the mock cannot reproduce.
@@ -463,6 +521,53 @@ export function slideMoveFn(st, segs, grabQ) {
     };
 }
 
+/* How far past its whole-Q stops the length drag's follow element may
+ * run with the hand (Q): it rides the pointer, never far from a stop. */
+const LENGTH_FOLLOW_SLACK_Q = 0.45;
+
+/** ⇧ AT SPLICE `j` = THE LENGTH THERE (loop_selection.md P2.4;
+ * map_edit lengthAtSeam): the end of the material before the splice —
+ * the loop's end at the wrap (j = 0), segment j−1's end at a cut —
+ * follows the pointer and lands on whole Qs; right is more material.
+ * Run through the same-scale reveal, anchored at that bound. The follow
+ * element: the loop's end bracket at the wrap; at a cut, the band from
+ * the pointer to the cut's end (it closes as the material grows — a cut
+ * shrunk to nothing heals). */
+export function lengthMoveFn(st, segs0, j) {
+    const cov = coveredSet(segs0, st.totalQ);
+    const n = cov.length;
+    const cut = j > 0 && j < n;
+    const gi = cut ? j - 1 : n - 1;
+    const bound0 = cov[gi][1];
+    const cutEnd = cut ? cov[j][0] : null;
+    // The reachable stops, for the follow element's leash.
+    const lo = lengthAtSeam(cov, j, -1e9, st.totalQ).deltaQ;
+    const hi = lengthAtSeam(cov, j, 1e9, st.totalQ).deltaQ;
+    return rawQ => {
+        const { segs, deltaQ } = lengthAtSeam(cov, j,
+            rawQ === null ? 0 : rawQ - bound0, st.totalQ);
+        const at = bound0 + deltaQ;
+        const hand = rawQ === null ? bound0
+            : Math.max(bound0 + lo - LENGTH_FOLLOW_SLACK_Q,
+                       Math.min(bound0 + hi + LENGTH_FOLLOW_SLACK_Q, rawQ));
+        const p = segsPeriod(segs, st.totalQ);
+        const healed = cut && at >= cutEnd - EPS_PERIOD;
+        return { segs,
+            follow: cut ? { kind: 'band', a: Math.min(hand, cutEnd), b: cutEnd }
+                        : { kind: 'bracket', edge: 'end', q: hand },
+            active: {
+                q: at,
+                text: cut
+                    ? (healed ? 'cut healed · loop ' + fmtQ(p) + 'Q'
+                              : 'cut ' + fmtQ(cutEnd - at) + 'Q · loop ' + fmtQ(p) + 'Q')
+                    : 'loop ' + fmtQ(p) + 'Q (' + (deltaQ >= 0 ? '+' : '−') +
+                      fmtQ(Math.abs(deltaQ)) + ')',
+                incoherent: false,
+                ghost: Math.abs(hand - at) > SNAP_GHOST_MIN_Q,
+            } };
+    };
+}
+
 /* ---------- the shared raw-frame gesture runner ---------- */
 
 /**
@@ -499,31 +604,69 @@ export function slideMoveFn(st, segs, grabQ) {
  * in the same frame. Torn down at pointerup, the held overlay would
  * show the PRE-drag chrome for a round trip, then jump. The frame pin
  * holds for the same span (onEnd hands the gesture its commit).
+ *
+ * PLUGGABLE (loop-region phase 2, 2026-09-24): the HEARD drags — the
+ * lane's splice swap and ↺ shift, the panel's start marker — keep this
+ * lifecycle (the engage gate, the throttled live commits under one undo
+ * step, the freeze and the pin, the held commit, onEnd's promise) but
+ * neither draw the raw preview nor commit segments only. They pass:
+ *   clamp:    false — `rawQAt` returns the move function's own space
+ *             (a lane Q, a delta), not a raw position to clamp;
+ *   preview:  (res) → draw it (a pending edit + requestRender);
+ *   commit:   (res, final) → send it; the promise, or undefined when
+ *             nothing was sent (live calls are throttled here);
+ *   restore:  (last) → a cancel's commit putting back what the gesture
+ *             found (undefined: nothing to undo);
+ *   held:     (res | null) → the picture held after release (the
+ *             landing; null after a cancel) while the commit settles;
+ *   teardown: () → take the preview down (the deferred teardown).
+ * The defaults are the raw drag's own.
  */
-export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
-                                        engage = true, onEngage = null,
-                                        onPointer = null, onRelease = null,
-                                        onTeardown = null }) {
+export function runRawDrag(ev, o, st, { rawQAt, view = null, onMove,
+                                        freeze = [], engage = true,
+                                        onEngage = null, onPointer = null,
+                                        onRelease = null, onTeardown = null,
+                                        clamp = true, preview = null,
+                                        commit = null, restore = null,
+                                        held = null, teardown = null }) {
     const downX = ev.clientX;
     let engaged = false;
     let last = null;
-    let lastLive = 0;
+    // −∞, not 0: performance.now() counts from page (or process) start,
+    // so a gesture in the first throttle window must still commit.
+    let lastLive = -Infinity;
     let lastX = ev.clientX;
     let lastAlt = ev.altKey;
     const clampQ = q => Math.max(0, Math.min(st.totalQ, q));
+    // The raw drag's own preview / commit / restore / held picture /
+    // teardown — each replaceable (see PLUGGABLE above).
+    const restoredSegs = () =>
+        st.segs ? st.segs.map(sg => sg.slice()) : [[0, st.totalQ]];
+    const show = preview ||
+        (res => renderRawPreview(o, st, res.segs, res.active, res.follow, view()));
+    const send = commit ||
+        (res => res.segs ? commitBandSegs(st, res.segs, true) : undefined);
+    const unsend = restore ||
+        (l => (l && l.segs) ? commitBandSegs(st, restoredSegs(), true) : undefined);
+    const hold = held || (res => {
+        renderRawPreview(o, st, res ? res.segs : restoredSegs(), null, null, view());
+        o.classList.add('drag-held');
+    });
+    const down = teardown || (() => clearRawPreview(o));
     const apply = () => {
         if (!engaged || !g.live()) return;
-        const boundQ = clampQ(rawQAt(lastX));
+        const raw = rawQAt(lastX);
+        const boundQ = clamp ? clampQ(raw) : raw;
         const res = onMove(boundQ, lastAlt);
         if (!res) return;
         last = res;
-        renderRawPreview(o, st, res.segs, res.active, res.follow, view());
+        show(res);
         mapDbg('render', { bound: +boundQ.toFixed(3),
             segs: res.segs && res.segs.map(s => +((s[1] - s[0]).toFixed(2))) });
         const now = performance.now();
-        if (res.segs && now - lastLive > LIVE_COMMIT_THROTTLE_MS) {
+        if (now - lastLive > LIVE_COMMIT_THROTTLE_MS) {
             lastLive = now;
-            commitBandSegs(st, res.segs, true);  // LIVE: audible while dragging
+            send(res, false);  // LIVE: audible while dragging
         }
     };
     const doEngage = () => {
@@ -538,10 +681,7 @@ export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
         // Immediate feedback: the preview (dims + the followed handle at
         // rest) appears at engage, not on the first move.
         const initial = onMove(null, lastAlt);
-        if (initial) {
-            renderRawPreview(o, st, initial.segs, initial.active,
-                initial.follow, view());
-        }
+        if (initial) show(initial);
     };
     const holdT = engage ? setTimeout(doEngage, ENGAGE_HOLD_MS) : 0;
     newGesture();  // its first commit is a new undo step
@@ -566,12 +706,10 @@ export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
             mapDbg('up', {});
             // HONOR THE END KIND: a release commits the last preview; a
             // cancel restores the map the gesture began on.
-            const segs = !(last && last.segs) ? null
-                : committed ? last.segs
-                : (st.segs ? st.segs.map(sg => sg.slice()) : [[0, st.totalQ]]);
-            const p = segs ? commitBandSegs(st, segs, true) : undefined;
+            const p = committed ? (last ? send(last, true) : undefined)
+                                : unsend(last);
             const tearDown = () => {
-                clearRawPreview(o);
+                down();
                 if (onTeardown) onTeardown();
             };
             if (!p) {
@@ -583,8 +721,7 @@ export function runRawDrag(ev, o, st, { rawQAt, view, onMove, freeze = [],
             // THE HELD PICTURE: the landing just sent, no pointer
             // follow, no badge; the stale chrome under it stays hidden
             // and takes no presses (.drag-held) until the teardown.
-            renderRawPreview(o, st, segs, null, null, view());
-            o.classList.add('drag-held');
+            hold(committed ? last : null);
             const hosts = freeze.length ? freeze : [o];
             hosts.forEach(h => holdUntilSettled(h, p));
             deferTeardown(o, hosts, tearDown);

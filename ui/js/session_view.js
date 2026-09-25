@@ -16,6 +16,11 @@
  *   init.js      — one-time wiring + the view's key bindings (keys.js)
  *   patch.js     — patchSessionView (top-level per-poll patch)
  *   drag_pin.js  — the map-gesture frame pin (mapDragPinQ/…FoldQ)
+ *   frame_hold.js — the edit hold and the settle (frameHoldOptions,
+ *                  noteFrameShown, settleInMotion)
+ *   pending_edits.js — a gesture's local preview (pendingEditsFor)
+ *   render_request.js — requestRender's renderer (setRenderer)
+ *   gesture.js   — isGestureLive (a hand on the frame)
  *   selection.js — activeSelectedId (the keyboard verbs' target)
  *   sv_util.js   — isTypingTarget (the dispatcher's typing guard)
  *
@@ -29,5 +34,10 @@
 export { initSessionView } from './session_view/init.js';
 export { patchSessionView } from './session_view/patch.js';
 export { mapDragPinQ, mapDragPinFoldQ, mapDragPinZero } from './session_view/drag_pin.js';
+export { frameHoldOptions, noteFrameShown, settleInMotion }
+    from './session_view/frame_hold.js';
+export { pendingEditsFor } from './session_view/pending_edits.js';
+export { setRenderer } from './session_view/render_request.js';
+export { isGestureLive } from './session_view/gesture.js';
 export { activeSelectedId, selection, selectWhenPresent } from './session_view/selection.js';
 export { isTypingTarget } from './session_view/sv_util.js';

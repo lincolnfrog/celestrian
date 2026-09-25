@@ -8,10 +8,14 @@
  * a poll answered before the engine applied that commit would seat
  * the frame from the last live geometry and re-seat it a poll later.
  *
- * app.js reads the pins each poll (mapDragPinQ / mapDragPinFoldQ) and
- * feeds them to the view model; patchSessionView records the latest
- * frame each patch (noteFrame) so a gesture pins the value that was
- * on screen when it engaged.
+ * app.js reads the pins each render (mapDragPinQ / mapDragPinFoldQ /
+ * mapDragPinZero) and feeds them to the view model; patchSessionView
+ * records the latest frame each patch (noteFrame) so a gesture pins
+ * the value that was on screen when it engaged — the zero AT REST: in
+ * the middle of a settle (frame_hold.js) that is the settle's target,
+ * never the gliding value, so a hand always edits a grid-true frame
+ * (the glide completes as the hand comes down). The pin outranks the
+ * edit hold and the settle (view_model resolveFrameZero).
  */
 
 let dragPinQ = null;
@@ -19,7 +23,7 @@ let dragPinFoldQ = null;  // audible-cycle fold pinned with the frame
 let dragPinZero = null;   // the frame zero pinned with the frame
 let lastFrameQ = 0;  // vm.cycleQ as of the latest patch (pin source)
 let lastFoldQ = 0;   // vm.loopCycleQ ditto — the cursor's fold cycle
-let lastZero = null; // vm.frameZero ditto — the seated frame zero
+let lastZero = null; // the zero at rest ditto (see above)
 
 export function mapDragPinQ() { return dragPinQ; }
 export function mapDragPinFoldQ() { return dragPinFoldQ; }
@@ -27,7 +31,8 @@ export function mapDragPinZero() { return dragPinZero; }
 
 /** Record the frame the latest patch rendered (the pin source). The
  * zero is pinned too: a live commit re-anchors the edited lane's
- * origin, and the seating would follow it mid-drag. */
+ * origin, and the seating would follow it mid-drag. `zero` is the
+ * zero at rest — the caller passes a settling frame's target. */
 export function noteFrame(frameQ, foldQ, zero = null) {
     lastFrameQ = frameQ;
     lastFoldQ = foldQ;

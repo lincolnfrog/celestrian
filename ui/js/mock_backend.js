@@ -32,7 +32,9 @@
  *   scenarios.js  — test scenario loaders (boots 'empty', Q17 parity)
  */
 
-import { interceptUndoableCall, mockUndo, mockRedo } from './mock/undo.js';
+import {
+    interceptUndoableCall, noteGestureCommit, mockUndo, mockRedo,
+} from './mock/undo.js';
 import { QUIET_POLLS } from './protocol.js';
 import {
     createNode, deleteNode, renameNode, reorderNode,
@@ -43,7 +45,7 @@ import {
 import {
     saveTrackTemplate, listTrackTemplates, createFromTrackTemplate,
 } from './mock/track_templates.js';
-import { setLoopPoints, setSegments, toggleLoopWindow } from './mock/maps.js';
+import { setLoopPoints, setSegments, setTiming, toggleLoopWindow } from './mock/maps.js';
 import { someNode, state } from './mock/state.js';
 import { setSequence, toggleSequence, auditionStep } from './mock/sequence.js';
 import { startRecordingInNode, stopRecordingInNode, newTake } from './mock/recording.js';
@@ -170,6 +172,9 @@ export const handlers = {
     getPluginScanStatus,
     setLoopPoints,
     setSegments,
+    // The re-time (loop_selection.md §9): engine parity, undoable, the
+    // live-take gate below.
+    setTiming,
     // The mock cannot move the OS cursor — returning false makes the
     // expanded drag fall back to its eased-capture path.
     warpPointer: () => false,
@@ -197,10 +202,10 @@ export const handlers = {
  *
  * Undo interception (single point, mirrors AudioEngine::record): before
  * an UNDOABLE method's handler runs, a pre-edit snapshot is pushed —
- * except when a streamed setSegments on the same node COALESCES into
- * the previous one (live splice-preview drags = one undo step). A
- * handler that REFUSES calls popUndoForRefusal, so a refused edit
- * records nothing (see mock/undo.js).
+ * except when a live map or re-time commit COALESCES into its drag's
+ * logged step (live splice-preview drags = one undo step). A handler
+ * that REFUSES calls popUndoForRefusal, so a refused edit records
+ * nothing (see mock/undo.js).
  *
  * Unknown methods warn and resolve to null.
  */
@@ -218,7 +223,7 @@ export const handlers = {
 // monitor) and creating an empty node stay live.
 const REFUSED_UNDER_LIVE_TAKE = new Set([
     'deleteNode', 'reorderNode', 'combineNodes', 'setLoopPoints',
-    'toggleLoopWindow', 'setSegments', 'setPeriodSource',
+    'toggleLoopWindow', 'setSegments', 'setTiming', 'setPeriodSource',
     'createFromTrackTemplate', 'setSequence', 'toggleSequence',
     'auditionStep', 'selectTake', 'deleteTake', 'setComp', 'importAudio',
     'undo', 'redo', 'togglePlayback', 'seekTransport',
@@ -242,6 +247,10 @@ export async function callNative(method, ...args) {
     const isResume = method === 'togglePlayback' && !state.isPlaying;
     if (REFUSED_UNDER_LIVE_TAKE.has(method) && !isResume && takeIsLive()) {
         console.log(`[MockBackend] ${method} refused - a take is armed or capturing`);
+        // A refused map or re-time commit still ARRIVES: a non-live one
+        // opens its gesture (engine parity — the verbs open it before
+        // any gate).
+        noteGestureCommit(method, args[0], args);
         // Refusals answer like the engine's boolean verbs (seek, undo,
         // redo, import: false); combine answers no uuid.
         return method === 'combineNodes' ? null : false;

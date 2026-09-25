@@ -341,6 +341,52 @@ class BounceTests : public juce::UnitTest {
              "the last block is under the floor");
     }
 
+    // THE ↺ (loop_selection.md §9; owner, 2026-09-24): "Bounce
+    // selected…" on a clip opens on the loop's one — its top's moment —
+    // not on the splice. The loop is periodic, so the topped file is the
+    // plain one rotated by the top's heard offset, sample for sample
+    // (the ramp take makes every sample distinct).
+    beginTest("A clip bounces from its ↺ top, not from the splice");
+    {
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("clip");
+      recordTake(engine, lastTopLevelId(engine), D, clock);  // Q := D
+      engine.createNode("clip");
+      const juce::String b = lastTopLevelId(engine);
+      // A second take arms on the next Q line and stops on one: drive
+      // well past both, then let the commit settle.
+      engine.startRecordingInNode(b);
+      driveLive(engine, 5 * D, clock, /*ramp_input=*/true);
+      engine.stopRecordingInNode(b);
+      driveLive(engine, 2 * D, clock, /*ramp_input=*/true);
+      engine.setLoopPoints(b, D, 3 * D);  // loop [1Q, 3Q): one pass is 2Q
+      const int64_t span = 2 * D;
+
+      const juce::File plain = dir.getChildFile("plain.wav");
+      expect(engine.bounce(b, plain.getFullPathName()), "bounce, top unset");
+      const int64_t h = D / 2;  // the ↺ half a Q into the loop
+      engine.setTiming(b, 0, D + h);  // stores the top; moves no audio
+      const juce::File topped = dir.getChildFile("topped.wav");
+      expect(engine.bounce(b, topped.getFullPathName()), "bounce, top set");
+
+      const juce::AudioBuffer<float> f0 = readWav(plain, nullptr);
+      const juce::AudioBuffer<float> f1 = readWav(topped, nullptr);
+      expect(f0.getNumSamples() >= span && f1.getNumSamples() >= span,
+             "both files cover one pass");
+      int bad = 0;
+      for (int64_t i = 0; i < span; ++i) {
+        for (int ch = 0; ch < 2; ++ch) {
+          if (std::abs(f1.getSample(ch, (int)i) -
+                       f0.getSample(ch, (int)mod(i + h, span))) > 1e-6f) {
+            ++bad;
+          }
+        }
+      }
+      expectEquals(bad, 0, "the topped file is the plain one, rotated to the ↺");
+      expect(peakOf(f1, 0, (int)span) > 0.05f, "the render carries the take");
+    }
+
     dir.deleteRecursively();
   }
 };

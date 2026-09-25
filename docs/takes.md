@@ -65,6 +65,16 @@ committed clip; `newTake` is the sanctioned path.
 A whole-clip `Untake` applies only to a single-take slot: undo removes a
 slot's takes one by one and empties the clip last.
 
+**The re-time rider (owner, 2026-09-24; loop_selection.md §9).** A new
+take is recorded against the slot's current origin, so it plays exactly
+as performed even in a re-timed clip — and it RESETS the clip's
+`retime` to 0, so the timing readout and "Timing as played" describe
+the newest take; older takes keep their shift as a baked fact. The
+settled take's `Untake` carries the retime from before it (`setsRetime`,
+like the comp rider): undo gives the old shift back, redo zeroes it
+again. An IMPORTED take (import.md, the second form) does not reset it
+yet — open.
+
 ## 5. Persistence and metadata (additive — absent = one take, no comp)
 
 session_io keys `takes`, `activeTake`, `comp` + `compCellQ`; audio per take

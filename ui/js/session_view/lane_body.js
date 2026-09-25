@@ -14,13 +14,13 @@
  */
 
 import { ctx } from './context.js';
-import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ, tickSetSig } from './sv_util.js';
+import { el, pct, fmtQ, setStyle, snapThenAnimate, approxQ } from './sv_util.js';
 import { drawWaveform, drawEnvelope, drawMidiTile, mappedColumns, peaksBoost,
          canvasCssSize, MIDI_VELOCITY_LANE } from '../canvas_renderer.js';
 import { sliceNotesToTile } from '../midi_notes.js';
 import { generateCompositeWaveform } from '../composite_waveform.js';
 import { calculateStackLCM } from '../timeline_model.js';
-import { oneTakeDuration } from '../view_model.js';
+import { oneTakeDuration, buildRulerTicks } from '../view_model.js';
 import { liveBoost, PEAKS_PER_SECOND } from '../live_peaks.js';
 import { mapOffset } from '../time_map.js';
 import { posMod } from '../math_utils.js';
@@ -29,6 +29,7 @@ import { isAnimRunning } from './animator.js';
 import { buildWindowDims, dimComplementInto } from './dims.js';
 import { wireBandCreate, appendCutBands, appendTrimGrips, patchRevealCursor }
     from './map_bands.js';
+import { patchSpliceHandles } from './splice_handles.js';
 import { wireWindow } from './window_edit.js';
 import { isOverlayFrozen, isGestureLive } from './gesture.js';
 import { mapDragPinQ } from './drag_pin.js';
@@ -392,6 +393,33 @@ export function retireSurplusTiles(repsL, keep, instant) {
     return live.slice(0, keep);
 }
 
+/**
+ * The lane's gridlines — the ruler's Q lines (view_model
+ * buildRulerTicks) minus the frame's edges — PLACED on every patch in
+ * reused elements, never rebuilt: while the frame settles each line
+ * sits at (line − zero) / Q, so the grid scrolls with the tiles, frame
+ * by frame, and at rest a patch writes nothing (setStyle skips equal
+ * values). Edge suppression is epsilon-tolerant like the ruler's
+ * cycle-end label.
+ */
+function patchGridlines(grid, ticks, cycleQ) {
+    const lines = grid._lines || (grid._lines = []);
+    let n = 0;
+    for (const t of ticks) {
+        if (approxQ(t.q, 0) || approxQ(t.q, cycleQ)) continue;
+        let d = lines[n];
+        if (!d || d.parentNode !== grid) {
+            d = el('div', 'gridline');
+            grid.appendChild(d);
+            lines[n] = d;
+        }
+        setStyle(d, 'left', pct(t.q, cycleQ));
+        d.classList.toggle('major', !!t.major);
+        n++;
+    }
+    for (const d of lines.splice(n)) d.remove();
+}
+
 /** Keep `container`'s children to exactly the built descriptors. */
 function reconcileMarkers(container, key, build) {
     if (container._key === key) return;
@@ -401,16 +429,20 @@ function reconcileMarkers(container, key, build) {
 }
 
 /**
- * Patch one lane's body: state classes, grid layer, reps layer, then
- * ONE of three overlay branches, checked in this order:
+ * Patch one lane's body: state classes, grid layer, reps layer, the
+ * splice layer (splice_handles.js: a heard lane's splice handles and ↺,
+ * and a plain loop's lone ↺, outside the keyed overlay), then ONE of
+ * three overlay branches, checked in this order:
  *
- *   1. heard-view chrome (lane.windowChipQ && !windowEditing): chip +
- *      trim grips + seam handles — then return.
+ *   1. heard-view chrome (lane.windowChipQ && !windowEditing): the chip
+ *      (and a one-shot's edge grips + seam handles) — then return.
  *   2. multi-segment map on a group (lane.mapSegs): dims + seam ticks
  *      + one bypass chip + cut bands — then return.
  *   3. the bracket overlay: the lane's window, or the LATENT full-span
  *      window a resting take offers (latentWindow), or — when neither
- *      exists — just the arm marker and cut bands over the take.
+ *      exists — just the arm marker and cut bands over the take. (A
+ *      plain loop's ↺ sits on the latent start bracket, grabbed by its
+ *      tab only, so the bracket keeps its press.)
  *
  * The heard-time cursor is patched every poll OUTSIDE the keyed
  * rebuilds, and BEFORE the isOverlayFrozen gates — a frozen overlay
@@ -453,18 +485,12 @@ export function patchLaneBody(row, lane, vm, aux) {
     // cursor.
     body.classList.toggle('inspecting', !!lane.windowEditing);
 
-    // Grid layer: rebuilt only when the frame's tick set changes. The
-    // key is a content signature (tickSetSig), so count-equal
-    // re-buckets can't render stale; edge suppression is
-    // epsilon-tolerant like the ruler's cycle-end label.
-    reconcileMarkers(grid, 'g:' + cycleQ + ':' + tickSetSig(vm.ruler.ticks), g => {
-        vm.ruler.ticks.forEach(t => {
-            if (approxQ(t.q, 0) || approxQ(t.q, cycleQ)) return;
-            const d = el('div', 'gridline' + (t.major ? ' major' : ''));
-            d.style.left = pct(t.q, cycleQ);
-            g.appendChild(d);
-        });
-    });
+    // Grid layer: the ruler's Q lines, placed on every patch — they
+    // glide with the tiles while the frame settles (patchGridlines). A
+    // raw-framed lane (comp mode's inspector) shows raw time, which a
+    // settle never moves: its lines stay at their resting places.
+    patchGridlines(grid, lane.frameQ
+        ? buildRulerTicks(vm.qEstablished, vm.cycleQ) : vm.ruler.ticks, cycleQ);
 
     // SEQUENCE DIMS (docs/sequencer.md §9 — the lanes are the DISPLAY):
     // an enclosing sequence's gated-off spans dim this lane, tiled every
@@ -593,22 +619,29 @@ export function patchLaneBody(row, lane, vm, aux) {
     // state — refresh it before any early return so a lane changing
     // views never leaves a stale (wrong-frame) editor behind.
     wireBandCreate(body, lane, vm, cycleQ);
-    // HEARD-VIEW chrome (law 13 amendment): a quiet chip + edge grips
-    // + seam handles, edited IN PLACE at the lane's own scale (the
-    // same-scale reveal, map_bands.js); the whole raw take lives on
-    // the region panel under the selected lane (region_panel.js).
+    // THE SPLICE AND THE TOP (splice_handles.js, loop-region phase 2):
+    // a heard lane's splice handles (drag = swap, ⇧ = length) and ↺
+    // (drag = shift) — and a PLAIN loop's ↺ alone, over the bracket
+    // overlay below — live in their own layer, positioned on every
+    // patch BEFORE the frozen gates below — they move with a drag's
+    // local preview and glide — and cleared off every other lane.
+    patchSpliceHandles(body, overlay, lane, vm, cycleQ);
+    // HEARD-VIEW chrome (law 13 amendment): a quiet chip, the splice
+    // layer above; the whole raw take lives on the region panel under
+    // the selected lane (region_panel.js).
     if (lane.windowChipQ && !lane.windowEditing) {
-        // HEARD-VIEW chrome, MODELESS: the edge grips ARE trim handles
-        // (drag adjusts the outer bounds directly, whole-Q snap, commit
-        // on release); cuts render as SEAM HANDLES (drag slides the cut
-        // freely, ⌥-drag resizes, double-click heals); the chip is the
-        // readout + bypass toggle, as on every other lane (the raw take
-        // lives on the region panel — the chip-click inspector retired
-        // 2026-09-13).
+        // HEARD-VIEW chrome, MODELESS: the chip is the readout + bypass
+        // toggle, as on every other lane (the raw take lives on the
+        // region panel — the chip-click inspector retired 2026-09-13).
+        // A ONE-SHOT keeps its edge grips (trim through the same-scale
+        // reveal) and seam handles: its offset IS its placement (Q5),
+        // so it has no splice to swap and no ↺ to shift. (The paired
+        // `] [` grips, the "↺ loop top" chip and plain-drag trims on
+        // the other lanes retired 2026-09-24 — time_maps.md §8.)
         const heardKey = JSON.stringify(
             ['heard', lane.bandSegs, lane.bandTotalQ, lane.windowChipQ,
              lane.mapMulti, cycleQ, lane.takeStartQ, lane.bandEditable,
-             lane.reps.map(r => [r.startQ, r.endQ])]);
+             !!lane.oneShot, lane.reps.map(r => [r.startQ, r.endQ])]);
         // A revealing lane's amber cursor moves through the gesture
         // (the reconcile below is frozen; the ear isn't).
         patchRevealCursor(body, lane, vm, aux.nodesById.get(lane.id));
@@ -624,8 +657,10 @@ export function patchLaneBody(row, lane, vm, aux) {
                     fmtQ(lane.windowChipQ) + 'Q' });
             chip.addEventListener('click', () => ctx.cb.onToggleWindow(lane.id));
             o.appendChild(chip);
-            appendTrimGrips(o, lane, vm, body, cycleQ);
-            appendCutBands(o, lane, vm, body, cycleQ);  // heard → seams
+            if (lane.oneShot) {
+                appendTrimGrips(o, lane, vm, body, cycleQ);
+                appendCutBands(o, lane, vm, body, cycleQ);  // heard → seams
+            }
         });
         return;
     }

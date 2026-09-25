@@ -16,9 +16,10 @@
  * the pin's lifetime on commit, cancel, a bridge that never answers
  * and a throwing onEnd; the held preview (committed landing, .drag-held,
  * teardown only at the flush after settle); a cancel's held restore;
- * a newer gesture taking an older one's held preview; and, through the
- * real deriveViewModel, that no poll inside the window seats the frame
- * from pre-final geometry.
+ * a newer gesture taking an older one's held preview; the HEARD drags'
+ * pluggable preview and commit under the same lifecycle (2026-09-24);
+ * and, through the real deriveViewModel, that no poll inside the window
+ * seats the frame from pre-final geometry.
  */
 
 import test, { mock } from 'node:test';
@@ -81,7 +82,8 @@ const { beginGesture, isOverlayFrozen, flushTeardowns, isGestureLive,
         COMMIT_HOLD_MAX_MS } = await import('../session_view/gesture.js');
 const { noteFrame, mapDragPinQ, mapDragPinZero, mapDragPinFoldQ } =
     await import('../session_view/drag_pin.js');
-const { runRawDrag, slideMoveFn } = await import('../session_view/map_core.js');
+const { runRawDrag, slideMoveFn, commitTiming } =
+    await import('../session_view/map_core.js');
 const { deriveViewModel } = await import('../view_model.js');
 
 /** A promise the test settles by hand — the bridge's answer. */
@@ -288,6 +290,121 @@ test('a newer gesture on the same overlay takes the older one\'s held preview', 
     assert.equal(mapDragPinZero(), null, 'every pin released');
 });
 
+/* ---------- the heard drags: a pluggable preview and commit ----------
+ * (loop-region phase 2, 2026-09-24: the lane's splice swap and ↺ shift,
+ * the panel's start marker.) The same lifecycle — engage gate, throttled
+ * live commits under one undo step, freeze and pin, the held commit,
+ * onEnd's promise — with the gesture's own preview (a pending edit) and
+ * commit (a relative setTiming here), and no raw preview at all. */
+
+/** A ↺-style shift drag: grab at x = 0, the hand's Q past the grab →
+ * a whole-Q shift, committed RELATIVE (what the last commit had not). */
+function shiftGesture({ engage = false } = {}) {
+    const o = new FakeEl();
+    const host = new FakeEl();
+    const target = new FakeEl();
+    const s = st();
+    const log = [];
+    let sent = 0;
+    let lastP;
+    const ev = { clientX: 0, altKey: false, target, pointerId: 1,
+                 preventDefault() {}, stopPropagation() {} };
+    const run = runRawDrag(ev, o, s, {
+        rawQAt: x => x / pxPerQ,
+        clamp: false,
+        onMove: dx => ({ shift: dx === null ? 0 : Math.round(dx) * Q }),
+        preview: res => log.push(['preview', res.shift / Q]),
+        commit: res => {
+            const d = res.shift - sent;
+            if (!d) return lastP;
+            sent = res.shift;
+            return (lastP = commitTiming(s, d, null, true));
+        },
+        restore: () => {
+            if (!lastP) return undefined;
+            const d = -sent;
+            sent = 0;
+            return commitTiming(s, d, null, true);
+        },
+        held: res => log.push(['held', res ? res.shift / Q : null]),
+        teardown: () => log.push(['down']),
+        freeze: [host],
+        engage,
+        onTeardown: () => log.push(['teardown']),
+    });
+    const move = q => target.fire('pointermove', { clientX: q * pxPerQ, altKey: false });
+    return { o, host, log, move, run,
+             up: () => target.fire('pointerup', { pointerId: 1 }) };
+}
+function fakeTimingBridge() {
+    const calls = [];
+    ctx.cb = {
+        onSetTiming: (id, shift, top, live) => {
+            const d = deferred();
+            calls.push({ shift: shift / Q, top, live, answer: d.resolve });
+            return d.p;
+        },
+    };
+    return calls;
+}
+
+test('a heard drag keeps the lifecycle, with its own preview and commit', async () => {
+    const calls = fakeTimingBridge();
+    noteFrame(5, 5, 55 * Q);
+    const g = shiftGesture();
+    assert.deepEqual(g.log, [['preview', 0]], 'engaged: the at-rest preview');
+    g.move(-1.3);   // unclamped: a delta may be negative
+    assert.deepEqual(g.log.at(-1), ['preview', -1]);
+    assert.deepEqual(calls.map(c => [c.shift, c.live]), [[-1, false]],
+        'the first live commit opens the gesture\'s undo step');
+    g.move(2.2);    // inside the throttle: previewed, not sent
+    assert.deepEqual(g.log.at(-1), ['preview', 2]);
+    assert.equal(calls.length, 1);
+    assert.equal(g.o.querySelector(':scope > .drag-preview-layer'), null,
+        'no raw preview: the heard drag draws its own');
+    assert.ok(!g.o.cls.has('drag-live'));
+    g.up();
+    assert.deepEqual(calls.map(c => [c.shift, c.live]), [[-1, false], [3, true]],
+        'the release sends what the last commit had not, coalesced');
+    assert.deepEqual(g.log.at(-1), ['held', 2], 'the held picture: the landing');
+    assert.equal(mapDragPinZero(), 55 * Q, 'pinned until the final commit settles');
+    assert.ok(isOverlayFrozen(g.host), 'the host held');
+    calls[1].answer(true);
+    await flushMicrotasks();
+    assert.equal(mapDragPinZero(), null);
+    flushTeardowns();
+    assert.deepEqual(g.log.slice(-2), [['down'], ['teardown']], 'torn down at the flush');
+});
+
+test('a heard drag\'s cancel sends its own restore, held like a commit', async () => {
+    const calls = fakeTimingBridge();
+    noteFrame(5, 5, 55 * Q);
+    const g = shiftGesture();
+    g.move(2.1);
+    const onKey = winListeners.get('keydown');
+    onKey({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+    assert.deepEqual(calls.map(c => [c.shift, c.live]), [[2, false], [-2, true]],
+        'the cancel puts back what was sent, in the same undo step');
+    assert.deepEqual(g.log.at(-1), ['held', null], 'held with no landing');
+    assert.equal(mapDragPinZero(), 55 * Q);
+    calls[1].answer(true);
+    await flushMicrotasks();
+    assert.equal(mapDragPinZero(), null);
+    flushTeardowns();
+    assert.deepEqual(g.log.slice(-2), [['down'], ['teardown']]);
+});
+
+test('a heard drag that sent nothing tears down at once — no pin, no hold', () => {
+    const calls = fakeTimingBridge();
+    noteFrame(5, 5, 55 * Q);
+    const g = shiftGesture({ engage: true });
+    g.up();   // a click: never engaged
+    assert.equal(calls.length, 0);
+    assert.equal(mapDragPinZero(), null);
+    assert.equal(isOverlayFrozen(g.host), false);
+    assert.deepEqual(g.log, [['teardown']], 'the runner\'s own teardown only');
+});
+
 /* ---------- the pin, read by the real view model ---------- */
 
 const SQ = 48000;
@@ -297,7 +414,7 @@ const clip = (id, originQ, durationQ, extra = {}) => ({
     loopStart: 0, loopEnd: 0, loopBypassed: false, windowActive: false,
     isMuted: false, isRecording: false, isPendingStart: false, ...extra,
 });
-/** The field topology (seat_nearest.test.mjs) with B's window slid. */
+/** The field topology (frame_seat.test.mjs) with B's window slid. */
 const island = slideQ => ({
     id: 'root', type: 'stack', quantum: SQ, islandZero: 0, definerId: '',
     isPlaying: true, masterPos: 0, islandPos: Math.round(55.3 * SQ),
@@ -314,27 +431,29 @@ const pollOpts = () => ({ pinFrameQ: mapDragPinQ(), pinFoldQ: mapDragPinFoldQ(),
                           pinZero: mapDragPinZero() });
 
 test('no poll between release and settle seats the frame from the last LIVE geometry', async () => {
-    // The last live commit reached −0.55Q (past the half: seated alone
-    // it re-seats the frame); the final commit lands at −0.45Q (it does
-    // not). Unpinned at pointerup, the poll in flight would jump the
-    // frame 1Q and the next poll jump it back.
+    // The last live commit reached −0.3Q (past the ¼Q pickup: seated
+    // alone it re-seats the frame a Q earlier); the final commit lands
+    // at −0.2Q (a pickup: it does not). Unpinned at pointerup, the poll
+    // in flight would jump the frame 1Q and the next poll jump it back.
+    // (With a lane selected the edit hold keeps the zero anyway —
+    // frame_hold.test.mjs; this pins the pin itself.)
     const rest = deriveViewModel(island(0));
     assert.equal(rest.frameZero, 55 * SQ);
-    assert.equal(deriveViewModel(island(-0.55)).frameZero, 54 * SQ,
+    assert.equal(deriveViewModel(island(-0.3)).frameZero, 54 * SQ,
         'the live geometry, seated alone, re-seats');
-    assert.equal(deriveViewModel(island(-0.45)).frameZero, 55 * SQ,
+    assert.equal(deriveViewModel(island(-0.2)).frameZero, 55 * SQ,
         'the final geometry does not');
     const calls = fakeBridge();
     noteFrame(rest.cycleQ, rest.loopCycleQ, rest.frameZero);
     const g = slideGesture();
     g.up();
     // The poll answered before the engine applied the final commit.
-    const inFlight = deriveViewModel(island(-0.55), pollOpts());
+    const inFlight = deriveViewModel(island(-0.3), pollOpts());
     assert.equal(inFlight.frameZero, 55 * SQ, 'pinned: no jump');
     assert.equal(inFlight.cycleQ, rest.cycleQ);
     calls[calls.length - 1].answer(true);
     await flushMicrotasks();
-    const settled = deriveViewModel(island(-0.45), pollOpts());
+    const settled = deriveViewModel(island(-0.2), pollOpts());
     assert.equal(mapDragPinZero(), null, 'unpinned');
     assert.equal(settled.frameZero, 55 * SQ, 'the committed picture: still no jump');
     flushTeardowns();

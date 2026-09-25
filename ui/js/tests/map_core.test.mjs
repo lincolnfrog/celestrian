@@ -1,20 +1,23 @@
 /**
- * THE THREE MOVE LAWS (session_view/map_core.js) — the edit functions
- * both editing surfaces (the lane's same-scale reveal, the region
- * panel) run their gestures through. Pure: raw Q in, pending segments
+ * THE MOVE LAWS (session_view/map_core.js) — the edit functions both
+ * editing surfaces (the lane's same-scale reveal, the region panel)
+ * run their raw-time gestures through. Pure: raw Q in, pending segments
  * + follow + badge out. What this pins: (a) TRIM snaps the PERIOD to
  * whole Qs and lands the bound where that period lives, ⌥ slides the
  * whole region by any amount; (b) SLIDE moves the region by whole Qs
  * (⌥ any amount), length held, clamped to the take; (c) SEAM slides a
  * cut freely and ⌥-resizes its end on the whole-Q grid; (d) the
  * at-rest render (rawQ === null) proposes exactly the geometry it
- * started from.
+ * started from; (e) LENGTH (⇧ at a splice, 2026-09-24) moves the end
+ * of the material before the splice by whole Qs — a cut closes to a
+ * heal; (f) the timing readout's words.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { trimMoveFn, slideMoveFn, seamMoveFn, viewPct }
+import { trimMoveFn, slideMoveFn, seamMoveFn, lengthMoveFn, viewPct,
+         timingText, fmtSignedQ, fmtFineQ }
     from '../session_view/map_core.js';
 import { cutBounds } from '../map_edit.js';
 
@@ -121,4 +124,60 @@ test('viewPct: a view maps raw Q into its span', () => {
     assert.equal(viewPct(6, { q0: 0, spanQ: 12 }), '50%');
     assert.equal(viewPct(6, { q0: 4, spanQ: 4 }), '50%');
     assert.equal(viewPct(3, { q0: 4, spanQ: 4 }), '-25%');
+});
+
+/* THE LENGTH LAW (⇧ at a splice, loop_selection.md P2.4) — run through
+ * the same-scale reveal, anchored at the bound it moves. */
+test('length at the wrap: the loop end rides the hand and lands on whole Qs', () => {
+    const move = lengthMoveFn(st, [[6, 10]], 0);
+    let r = move(null, false);
+    assert.deepEqual(r.segs, [[6, 10]], 'at rest: the loop as it is');
+    assert.deepEqual(r.follow, { kind: 'bracket', edge: 'end', q: 10 });
+    assert.equal(r.active.ghost, false);
+    // 11.3: one more Q (right = more material); the bracket under the
+    // hand, the ghost at the landing.
+    r = move(11.3, false);
+    assert.deepEqual(r.segs, [[6, 11]]);
+    assert.equal(r.follow.q, 11.3);
+    assert.equal(r.active.q, 11);
+    assert.equal(r.active.ghost, true);
+    assert.match(r.active.text, /loop 5Q \(\+1\)/);
+    // Left = less, never under 1Q; the follow keeps near a real stop.
+    r = move(2, false);
+    assert.deepEqual(r.segs, [[6, 7]]);
+    assert.ok(r.follow.q >= 7 - 0.5, 'the leash: ' + r.follow.q);
+    assert.match(r.active.text, /loop 1Q \(−3\)/);
+});
+
+test('length at a cut: the material before it; the band closes to a heal', () => {
+    const segs = [[2, 5], [7, 10]];  // a 2Q cut at [5, 7)
+    const s2 = { ...st, segs, periodQ: 6 };
+    const move = lengthMoveFn(s2, segs, 1);
+    let r = move(null, false);
+    assert.deepEqual(r.follow, { kind: 'band', a: 5, b: 7 }, 'the cut as a band');
+    r = move(6.2, false);                    // +1Q of material: a 1Q cut
+    assert.deepEqual(r.segs, [[2, 6], [7, 10]]);
+    assert.deepEqual([r.follow.a, r.follow.b], [6.2, 7]);
+    assert.match(r.active.text, /cut 1Q · loop 7Q/);
+    r = move(7.4, false);                    // the cut closes: healed
+    assert.deepEqual(r.segs, [[2, 10]]);
+    assert.match(r.active.text, /cut healed · loop 8Q/);
+    assert.equal(r.follow.b, 7);
+    assert.ok(r.follow.a <= 7, 'the band never inverts');
+    r = move(3.6, false);                    // −1Q: a 3Q cut
+    assert.deepEqual(r.segs, [[2, 4], [7, 10]]);
+});
+
+test('the timing readout: as played, whole Q, or a fine shift in ms', () => {
+    assert.equal(timingText(0, 1000), 'timing: as played');
+    assert.equal(timingText(1, 1000), 'timing: shifted +1Q');
+    assert.equal(timingText(-2, 1000), 'timing: shifted −2Q');
+    assert.equal(timingText(-0.025, 1600), 'timing: shifted −0.025Q (40 ms earlier)');
+    assert.equal(timingText(0.04, 1000), 'timing: shifted +0.04Q (40 ms later)');
+    assert.equal(timingText(0.0002, 1000), 'timing: shifted +0Q (<1 ms later)');
+    assert.equal(timingText(undefined, 1000), 'timing: as played');
+    assert.equal(fmtSignedQ(1), '+1');
+    assert.equal(fmtSignedQ(-0.25), '−0.25');
+    assert.equal(fmtSignedQ(0), '+0');
+    assert.equal(fmtFineQ(1.0000000001), '1');
 });

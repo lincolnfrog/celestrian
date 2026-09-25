@@ -13,6 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCacheKey, generateCompositeWaveform, skippedInComposite }
     from '../composite_waveform.js';
+import { innerAt } from '../time_map.js';
 import { MOCK_Q as Q } from './helpers.mjs';
 
 // Lengths below are multiples of Q — the mock's quantum, i.e. 1 s of
@@ -336,6 +337,32 @@ test('generateCompositeWaveform', async (t) => {
         assert.equal(wf[70], 0.5, 'pass starts at origin with segment 1');
         assert.equal(wf[120], 1, 'segment 2 follows');
         assert.equal(wf[170], 0.5, 'next pass wraps the cycle');
+    });
+
+    await t.test('THE ANCHORING LAW: a window\'s pass begins at origin + a0', () => {
+        // A 4Q take, raw Q0..Q3 = 0.1..0.4, windowed to [1Q, 3Q): the
+        // heard period is 2Q and raw 1Q sounds at origin + 1Q
+        // (time_map innerAt) — so the pass starts 1Q in and the head
+        // carries raw 2Q. Anchored at the bare origin, the composite
+        // drew the group a0 off its own member lane (phase 2 audit).
+        const clip = {
+            id: 'c', type: 'clip', duration: 4 * Q, origin: 0,
+            loopStart: Q, loopEnd: 3 * Q, windowActive: true, loopBypassed: false,
+        };
+        const wf = generateCompositeWaveform({
+            stack: makeStack([clip]), stackDuration: 4 * Q,
+            effectiveQ: Q, canvasWidth: 100,
+            livePeaks: new Map([['c', [0.1, 0.2, 0.3, 0.4]]]),
+            cache: new Map(), frameZero: 0,
+        });
+        const at = q => wf[Math.floor((q + 0.5) * wf.length / 4)];
+        assert.deepEqual([0, 1, 2, 3].map(at), [0.3, 0.2, 0.3, 0.2]);
+        // …exactly the render equation, sample for sample.
+        [0, 1, 2, 3].forEach(q => {
+            const r = innerAt(q * Q + Q / 2, 0, { segs: [[Q, 3 * Q]] }, 2 * Q);
+            assert.equal(at(q), [0.1, 0.2, 0.3, 0.4][Math.floor(r.inner / Q)],
+                `Q${q}: what the law sounds there`);
+        });
     });
 
     await t.test('caches result and returns cached on second call', () => {

@@ -129,4 +129,11 @@ test('teleports skip the region panel, previews and ghosts', () => {
     // Drag previews and snap ghosts stay excluded.
     assert.equal(isTransientHandle(fakeNode(['win-bracket'], ['drag-preview-layer'])), true);
     assert.equal(isTransientHandle(fakeNode(['snap-ghost'])), true);
+    // A heard lane's splices and ↺ (2026-09-24): the take tile's are
+    // targets, a GHOST repeat's — the same splice again — is not.
+    assert.equal(isTransientHandle(fakeNode(['lr-splice', 'lr-wrap'], ['lr-layer'])), false);
+    assert.equal(isTransientHandle(fakeNode(['lr-top'], ['lr-layer'])), false);
+    assert.equal(isTransientHandle(fakeNode(['lr-splice', 'lr-cut', 'lr-ghost'],
+        ['lr-layer'])), true);
+    assert.equal(isTransientHandle(fakeNode(['lr-top', 'lr-ghost'], ['lr-layer'])), true);
 });

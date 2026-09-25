@@ -649,6 +649,7 @@ void AudioEngine::reconcileTakes() {
     // one hands the slot back to its previous take, the abandoned
     // reservation retiring through the reclaimer.
     std::vector<int> prev_active;
+    std::vector<int64_t> prev_retime;
     if (done.retake) {
       committed.clear();
       for (size_t k = 0; k < done.uuids.size(); ++k) {
@@ -661,6 +662,14 @@ void AudioEngine::reconcileTakes() {
           prev_active.push_back(k < done.prev_active.size()
                                     ? done.prev_active[k]
                                     : 0);
+          // A NEW TAKE PLAYS AS PERFORMED (owner 2026-09-24): armed at
+          // the slot's own top — the current, possibly re-timed origin
+          // — it sounds exactly where it was played, so the re-time
+          // now describes it: 0. The older takes keep their shift as a
+          // baked fact (they share the origin); the shift before the
+          // take rides its undo entry.
+          prev_retime.push_back(clip->retime());
+          clip->setRetime(0);
         } else {
           retireOwned(std::move(displaced.buffer));
           retireOwned(std::move(displaced.midi));
@@ -684,7 +693,8 @@ void AudioEngine::reconcileTakes() {
     // undo restores the grid with the content. applyEdit on Untake
     // builds the forward Take (owning the stripped content) for redo.
     // A new take's payload names its list index and the take that was
-    // active before it: undo removes the take and restores that one.
+    // active before it: undo removes the take and restores that one,
+    // with the re-time it reset.
     celestrian::Edit inv(celestrian::Edit::Kind::Untake);
     for (size_t k = 0; k < committed.size(); ++k) {
       celestrian::Edit::TakePayload tp;
@@ -692,6 +702,8 @@ void AudioEngine::reconcileTakes() {
       if (done.retake) {
         tp.take_index = committed[k]->activeTake();
         tp.prev_active = prev_active[k];
+        tp.setsRetime = true;
+        tp.retime = prev_retime[k];
       }
       // A MIDI take carries its instrument's state at commit
       // (docs/vst3.md §11): undo puts the instrument back as it was

@@ -101,7 +101,8 @@ struct Edit {
                      // committed slot (docs/takes.md): Untake removes
                      // that (last) take and restores prev_active; Take
                      // re-appends it as the active one. Never an empty
-                     // clip.
+                     // clip. The slot's re-time rides it
+                     // (TakePayload::setsRetime).
     SelectTake,      // index = the take to make active; inverse = the
                      // old index. An atomic content-pointer swap.
     DeleteTake,      // forward: index = the take to remove (never the
@@ -112,6 +113,14 @@ struct Edit {
                      // old comp (setsComp) — applying it reinserts.
     Comp,            // cells + cell_len = the new comp (empty = none);
                      // inverse = the old one. Audio clips only.
+    Timing,          // THE RE-TIME (loop_selection.md §9, setTiming):
+                     // a clip's origin (setsOrigin/iorg), its re-time
+                     // (setsRetime/iretime) and optionally its top
+                     // (setsTop/itop), all ABSOLUTE values — the verb
+                     // folds the shift in when it builds the edit, so
+                     // the inverse is the same shape and a live drag's
+                     // commits coalesce by dropping later inverses.
+                     // Clips only.
   };
   // Effect enable/param edits are NOT undoable (non-destructive knobs;
   // slider drags would flood the log without coalescing). Delete + all
@@ -139,8 +148,9 @@ struct Edit {
   // A LIVE mid-gesture update (owner ruling 2026-09-10): a drag streams
   // map commits so the splice is audible while dragging; every commit
   // after a gesture's first carries `live` and COALESCES into that
-  // gesture's undo entry. Separate gestures — however close in time —
-  // are separate undo steps.
+  // gesture's undo entry (logged by the first live commit to apply when
+  // the first commit recorded nothing — AudioEngine::record). Separate
+  // gestures — however close in time — are separate undo steps.
   bool live = false;
   // LoopPoints rider: clearing a node's geometry (whole) also drops a
   // stale BYPASS (nothing is left to bypass, and a later window would
@@ -162,6 +172,29 @@ struct Edit {
   // zero (root maps/sequences measure from it). Never set by the
   // locked-island riders (other content owns those ancestors).
   bool liftsAncestors = false;
+  // THE TOP RIDES THE MAP (loop_selection.md §9, owner 2026-09-24): a
+  // clip's stored top (ClipNode::storedTop; timing::kNoTop = a take
+  // never edited) is part of every map edit's undo state. `setsTop` sets
+  // it to `itop` EXACTLY after the edit's map change — an inverse
+  // restores the old top that way, and a Timing edit stores a new one.
+  // A forward map edit built by a verb leaves it false and the applier
+  // RECONCILES instead, storing the answer (timing::reconcileTop: the
+  // EFFECTIVE top before the edit while the new map plays it, else the
+  // new region start — never unset) — from `topBase` when `hasTopBase`:
+  // a live drag's commit reconciles from the effective top its gesture
+  // STARTED with (AudioEngine::record), so a drag that sweeps past the ↺
+  // and comes back keeps it. The inverse captures the old stored top in
+  // `itop`, and the base its forward reconciled from in `topBase` — the
+  // gesture's start, which the gesture's later live commits read off its
+  // undo entry. Raw content samples: a seek never touches them.
+  bool setsTop = false;
+  int64_t itop = 0;
+  bool hasTopBase = false;
+  int64_t topBase = 0;
+  // THE RE-TIME (Timing): the clip's cumulative user shift to set,
+  // samples (relative to the performance — seek-invariant).
+  bool setsRetime = false;
+  int64_t iretime = 0;
   // WINDOW RIDERS: further nodes whose single-window loop points this
   // edit sets alongside its main mutation (applied after it; the
   // inverse captures each node's old points the same way). Two
@@ -177,6 +210,11 @@ struct Edit {
     // rider clears the override (the inverse rider carries it back).
     bool setsMap = false;
     timing::TimeMap tmap{};
+    // The member's top rides its map like the edit's own (setsTop
+    // above): a forward rider reconciles it, the inverse rider carries
+    // the old top back exactly.
+    bool setsTop = false;
+    int64_t top = 0;
   };
   std::vector<WindowRider> windows;
   // ANCHOR RIDERS (Q18, composition.md §5): stacks whose anchoring
@@ -248,6 +286,15 @@ struct Edit {
     bool setsComp = false;
     std::vector<int> cells;
     int64_t cell_len = 0;
+    // THE RE-TIME rides a new take (loop_selection.md §9): a new take
+    // plays as performed (owner 2026-09-24), so its settle zeroes the
+    // slot's re-time — the older takes keep their shift, baked into the
+    // origin they share. A take-index payload with `setsRetime` sets it
+    // to `retime` after the list change: the Untake restores the re-time
+    // from before the take, the Take its applier builds the one after
+    // (0). A whole-clip strip carries it in `state` instead.
+    bool setsRetime = false;
+    int64_t retime = 0;
     // A MIDI take's INSTRUMENT (docs/vst3.md §11): the instrument
     // slot's uuid and its state blob as the take sounded. Applying the
     // payload restores that state; the inverse captures the state

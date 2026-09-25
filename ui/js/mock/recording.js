@@ -148,6 +148,10 @@ function lockCollapseAtArm(excludeIds) {
                 definer._precollapse = { dur: definer.duration, ls, le,
                                          origin: definer.origin || 0 };
                 definer.origin = (definer.origin || 0) + ls;
+                // The top rides the content view (engine parity
+                // ClipNode::collapseContent): the same sample sits `ls`
+                // earlier in the collapsed take, so its moment holds.
+                if (definer.storedTop != null) definer.storedTop -= ls;
                 definer.duration = len;
                 definer.loopStart = 0;
                 definer.loopEnd = 0;  // consumed: the take IS the window
@@ -186,6 +190,9 @@ function lockCollapseAtArm(excludeIds) {
                     m.duration = len;
                     m.loopStart = 0;
                     m.loopEnd = 0;  // members whole (no window)
+                    // A member's top shifts with its content view (a
+                    // plain, invertible shift — engine parity).
+                    if (m.storedTop != null) m.storedTop -= ls;
                 });
                 shiftOrigins(ds, ls);
                 ds._precollapse = { ls, le, shift: ls };
@@ -321,6 +328,13 @@ function reconcileTakes() {
             : members.filter(m => (m.duration || 0) > 0);
         members.forEach(m => { delete m._retakeDone; });
         if (!committed.length) continue;  // the whole performance cancelled
+        // A NEW TAKE PLAYS AS PERFORMED (owner, 2026-09-24; engine parity
+        // reconcileTakes): armed at the slot's own top — the current,
+        // possibly re-timed origin — it resets the re-time, which then
+        // describes the newest take; the older takes keep their shift as
+        // a baked fact. The arm-time snapshot restores the old re-time
+        // on undo; redo restores the 0.
+        if (p.retake) committed.forEach(m => { m.retime = 0; });
         pushUndoSnapshot(p.snap);
         console.log('[MockBackend] take logged (undoable) -', committed.length, 'clip(s)');
         if (p.gateStack != null && p.gateStep >= 0) applyAutoGate(p, committed);

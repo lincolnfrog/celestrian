@@ -86,6 +86,11 @@ juce::var ClipNode::getMetadata() const {
   juce::Array<juce::var> comp;
   for (const int c : compCells()) comp.add(c);
   obj->setProperty("comp", comp);
+  // THE TOP AND THE RE-TIME (loop_selection.md §9): the EFFECTIVE top
+  // (the stored one when set and kept, else the region start the base
+  // published) and the cumulative user shift, samples; 0 = as played.
+  obj->setProperty("loopTop", (double)effectiveTop());
+  obj->setProperty("retime", (double)retime_.load());
   return base;
 }
 

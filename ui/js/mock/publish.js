@@ -6,10 +6,9 @@
  */
 
 import { posMod } from '../math_utils.js';
-import { mapPeriod, mapActive, mapOffset } from '../time_map.js';
-import { isQ13SoleDefiner, activeGeometryOutside, state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
-         windowSuspendedOf, committedClipCount, findSoleCommittedClip,
-         definerStackNode, frameOriginOf } from './state.js';
+import { mapPeriod, mapActive, mapOffset, effectiveTop, regionStart } from '../time_map.js';
+import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
+         windowSuspendedOf, islandDefiner, frameOriginOf } from './state.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
@@ -79,6 +78,23 @@ export function enrichNodes(nodes) {
         }
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
+        // THE TOP (loop_selection.md §9; engine parity AudioNode /
+        // ClipNode::getMetadata): a clip publishes its EFFECTIVE top —
+        // the stored one (`storedTop`, raw samples, null = unset) while
+        // its map plays it, else the region start — and its re-time (the
+        // cumulative user shift, 0 = as played). A stack keeps no top in
+        // Phase 2: the region start of the window it publishes (a step
+        // audition's derived one included). The stored field stays
+        // private, as in the engine.
+        const regionMap = auditionOn ? audition : nodeMap(node);
+        if (node.type === 'stack') {
+            updatedNode.loopTop = regionStart(regionMap, windowActive);
+        } else {
+            updatedNode.loopTop = effectiveTop(regionMap, windowActive,
+                node.duration || 0, node.storedTop ?? null);
+            updatedNode.retime = node.retime || 0;
+        }
+        delete updatedNode.storedTop;
         if (node.type === 'stack') {
             updatedNode.windowDomain = node.windowDomain === 'sequence' ? 'sequence' : 'intrinsic';
             updatedNode.windowSuspended = windowSuspendedOf(node);
@@ -192,15 +208,11 @@ function mockMasterVu(phase) {
 }
 
 function publishedDefinerId() {
-    if (committedClipCount() === 1) {
-        const c = findSoleCommittedClip();
-        // Publish through the same gates the edits use (engine parity:
-        // wrappedInWarp in attachTransportState) — isQ13SoleDefiner
-        // carries the ancestor-warp walk.
-        return c && isQ13SoleDefiner(c) ? c.id : '';
-    }
-    const ds = definerStackNode();
-    return ds && !activeGeometryOutside(ds) ? ds.id : '';
+    // Published through the same gates the edits use (engine parity:
+    // engine_internal::definer in attachTransportState) — state.js
+    // islandDefiner carries the ancestor-warp walk.
+    const d = islandDefiner();
+    return d ? d.id : '';
 }
 
 export function getState() {

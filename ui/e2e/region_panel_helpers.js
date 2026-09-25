@@ -48,12 +48,13 @@ export async function boot(page, { bridgeDelayMs = 0, scenario = 'empty' } = {})
     await page.evaluate(s => window.__celestrianTest.loadScenario(s), scenario);
 }
 
-/** The bridge calls the page made that change geometry — the mock logs
- * every non-poll call; collect the map-edit ones from the console. */
+/** The bridge calls the page made that change geometry or timing — the
+ * mock logs every non-poll call; collect the map-edit and re-time ones
+ * from the console. */
 export function recordMapCalls(page) {
     const calls = [];
     page.on('console', msg => {
-        const m = /\[MockBackend\] callNative: (setSegments|setLoopPoints|toggleLoopWindow)/
+        const m = /\[MockBackend\] callNative: (setSegments|setLoopPoints|toggleLoopWindow|setTiming)/
             .exec(msg.text());
         if (m) calls.push(m[1]);
     });

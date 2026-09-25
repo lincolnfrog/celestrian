@@ -102,16 +102,8 @@ export const isTypingTarget = e => {
 };
 
 /** Approximate Q equality, matching fmtQ's fp-noise tolerance: display
- * decisions (cycle-end label, edge-tick suppression) must not hinge on
- * exact float identity for a fractionally-derived tick. */
+ * decisions (edge-tick suppression) must not hinge on exact float
+ * identity for a fractionally-derived tick. (The ruler and the
+ * gridlines are placed in reused elements every patch — they glide with
+ * a settling frame — so no tick-set signature keys a rebuild.) */
 export const approxQ = (a, b) => Math.abs(a - b) < 1e-6;
-
-/**
- * Content signature of a ruler tick set, for reconcile keys. A key of
- * `cycleQ + tick COUNT` would be silently stale the day ticks are
- * re-bucketed at equal count; keying on the rendered content itself
- * (position + major flag per tick, ≤65 entries at the 50ms cadence)
- * removes that class outright.
- */
-export const tickSetSig = ticks =>
-    ticks.map(t => t.q + (t.major ? 'M' : '')).join(',');

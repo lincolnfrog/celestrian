@@ -385,10 +385,12 @@ test.describe('Loop window brackets (phase 3)', () => {
         const id = await setWindow(page); // active [0, 2Q): the stack IS 2Q (E-C)
         const group = page.locator('.lane[data-kind="group"]').first();
         await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
-        // No selection brackets on the lane — only the edge TRIM GRIPS
-        // (the same `.win-bracket.latent.trim-grip` a heard clip grows).
-        await expect(group.locator('.win-bracket:not(.trim-grip)')).toHaveCount(0);
-        await expect(group.locator('.trim-grip')).toHaveCount(2);
+        // No brackets on the lane: its loop chrome is the SPLICE handle
+        // a heard clip wears too (splice_handles.js, 2026-09-24 — the
+        // edge trim grips retired); a group is never re-timed, so no ↺.
+        await expect(group.locator('.win-bracket')).toHaveCount(0);
+        await expect(group.locator('.lr-splice.lr-wrap').first()).toBeVisible();
+        await expect(group.locator('.lr-top')).toHaveCount(0);
 
         // Bypass through the engine verb: the raw 3Q frame returns with
         // the toggle chip + brackets (no dims — bypassed plays it all).
@@ -666,9 +668,10 @@ test.describe('Loop window brackets (phase 3)', () => {
             .toBe(2 * await mockQ(page));
         expect((await stackState(page)).windowActive).toBe(true);
         // The settled lane rests HEARD (2026-08-21): the chip names the
-        // part length; the brackets live in the inspector now.
+        // part length; no brackets — its splice is the loop's handle.
         await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
-        await expect(group.locator('.win-bracket:not(.trim-grip)')).toHaveCount(0);
+        await expect(group.locator('.win-bracket')).toHaveCount(0);
+        await expect(group.locator('.lr-splice.lr-wrap').first()).toBeVisible();
     });
 });
 
@@ -1435,37 +1438,41 @@ test.describe('Creation menu (Q17)', () => {
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,10');
 
-        // The heard view: a 4Q loop from its TOP. The view SEATS the
-        // frame's zero (docs/frame.md): the 1Q definer seats first, and
-        // this lane's top (1Q + 6Q) pulls the zero forward by whole 1Q
-        // cycles to 7Q — the island zero itself never moves for a map
-        // edit. BOTH grips exist at the frame EDGES — no mid-lane pair,
-        // no loop-top chip, nothing that looks like a cut band.
-        await expect.poll(async () => (await page.evaluate(async () =>
-            (await window.__celestrianTest.callNative('getGraphState')).islandZero)) / Q)
-            .toBe(0);
-        const start = body.locator('.trim-grip.start');
-        const end = body.locator('.trim-grip.end');
-        await expect(start).toHaveCount(1);
-        await expect(end).toHaveCount(1);
-        await expect(body.locator('.loop-top-chip')).toHaveCount(0);
-        await expect(body.locator('.cut-band, .seam-handle')).toHaveCount(0);
-        const sb = await start.boundingBox();
-        const eb = await end.boundingBox();
-        expect(sb.x - box.x).toBeLessThan(box.width * 0.03);            // start at the left edge
-        expect(box.x + box.width - (eb.x + eb.width)).toBeLessThan(box.width * 0.03); // end at the right
+        // THE EDIT HOLD (frame.md §1, 2026-09-24): the grab selected the
+        // lane, and a selected lane's edits never re-seat the frame —
+        // the zero stays on 1Q, where the take's top sat before the
+        // trim, so the 4Q loop shows its top 2Q in. Its ↺ and its
+        // splice (where the recording jumps back) mark it there — the
+        // "] [" grip pair and its "↺ loop top" chip retired 2026-09-24
+        // (splice_handles.js).
+        const lr = () => page.evaluate(() => {
+            const body = document.querySelectorAll('.lane[data-kind="clip"]')[1]
+                .querySelector('.lane-body');
+            const br = body.getBoundingClientRect();
+            return [...body.querySelectorAll('.lr-layer > :not(.lr-ghost)')]
+                .filter(h => h.style.display !== 'none' &&
+                             (h.classList.contains('lr-top') || h.classList.contains('lr-splice')))
+                .map(h => {
+                    const r = h.getBoundingClientRect();
+                    return (h.classList.contains('lr-top') ? 'top' : 'splice') + '@' +
+                        (((r.left + r.width / 2) - br.left) / br.width * body._cycleQ).toFixed(1);
+                }).sort();
+        });
+        await expect.poll(lr).toEqual(['splice@2.0', 'top@2.0']);
+        await expect(body.locator('.loop-top-chip, .trim-grip')).toHaveCount(0);
 
-        // STEP 2 — the right (END) grip to 9Q. THE SAME-SCALE REVEAL
-        // (2026-09-11): the grab does NOT rescale the lane — it unrolls
-        // the raw take at the lane's own px-per-Q with the grip glued
-        // to the pointer, so dragging LEFT by 1.2 frame-Q proposes the
-        // raw bound 8.8Q → period 2.8Q → snaps to 3Q → bound 9Q. Same
-        // top → the zero stays.
-        await body.hover();
-        const ebox = await end.boundingBox();
-        const gx = ebox.x + ebox.width / 2;
-        const gy = ebox.y + ebox.height / 2;
+        // STEP 2 — the loop's END to 9Q: ⇧ on the splice = the LENGTH
+        // there (loop_selection.md P2.4). THE SAME-SCALE REVEAL: the
+        // grab does NOT rescale the lane — it unrolls the raw take at
+        // the lane's own px-per-Q with the loop's end bound glued to the
+        // pointer, so dragging LEFT by 1.2 frame-Q proposes 8.8Q → the
+        // length snaps to whole Qs → 9Q.
+        const tab = await body.locator('.lr-layer > .lr-wrap:not(.lr-ghost) .lr-tab')
+            .boundingBox();
+        const gx = tab.x + tab.width / 2;
+        const gy = tab.y + tab.height / 2;
         await page.mouse.move(gx, gy);
+        await page.keyboard.down('Shift');
         await page.mouse.down();
         await page.waitForTimeout(220);                    // engage (hold)
         await page.mouse.move(gx - 6, gy);
@@ -1478,30 +1485,38 @@ test.describe('Creation menu (Q17)', () => {
         expect(Math.abs((fb.x + fb.width) - (gx - 6))).toBeLessThan(12);
         await page.mouse.move(gx - box.width * (1.2 / 4), gy, { steps: 12 });
         await page.mouse.up();
+        await page.keyboard.up('Shift');
         await expect(body).not.toHaveClass(/revealing/);
         await expect.poll(async () => {
             const n = await clip2();
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,9');
-        // A 3Q loop from the same top: still no mid-lane pair, and the
-        // island zero still where the first take put it.
-        await expect(body.locator('.loop-top-chip')).toHaveCount(0);
         await expect(body.locator('.win-chip')).toHaveText(/3Q/);
+
+        // Deselecting SETTLES the frame, once: the view seats the zero
+        // (docs/frame.md) — the 1Q definer seats first, and this lane's
+        // top (1Q + 6Q) pulls the zero forward by whole 1Q cycles to
+        // 7Q; the island zero itself never moves for a map edit. The
+        // heard view: a 3Q loop from its TOP — the ↺ and the splice at
+        // the left edge, nothing mid-lane, nothing that looks like a cut.
+        await page.keyboard.press('Escape');
+        await expect.poll(lr).toEqual(['splice@0.0', 'top@0.0']);
+        await expect(body.locator('.cut-band, .seam-handle, .trim-grip, .loop-top-chip'))
+            .toHaveCount(0);
         expect((await page.evaluate(async () =>
             (await window.__celestrianTest.callNative('getGraphState')).islandZero)) / Q).toBe(0);
 
-        // The mid-lane pair DOES exist for an off-grid loop: an ⌥-style
-        // fractional slide ([6.4Q, 9.4Q)) leaves the zero (the grid
-        // never moves), so the loop shows 0.4Q in, its end/start grips
-        // meet mid-lane, named by the chip and 16 px apart.
+        // An OFF-GRID loop ([6.4Q, 9.4Q) — an ⌥-style fractional slide)
+        // seats as a pickup (a top up to ¼Q late stays just after the
+        // left edge): the loop shows 0.4Q in, its ↺ and splice there
+        // together (the slide dropped the top's raw 6Q, so it reset to
+        // the region start) — no chip, no pair.
         await page.evaluate(async ({ id, Q }) => {
             await window.__celestrianTest.callNative('setSegments', id,
                 [Math.round(6.4 * Q), Math.round(9.4 * Q)]);
         }, { id: ids.id2, Q });
-        await expect(body.locator('.loop-top-chip')).toHaveText(/loop top/);
-        const ps = await body.locator('.trim-grip.start').boundingBox();
-        const pe = await body.locator('.trim-grip.end').boundingBox();
-        expect(ps.x).toBeGreaterThan(pe.x + pe.width + 8);   // "] end · start ["
+        await expect.poll(lr).toEqual(['splice@0.4', 'top@0.4']);
+        await expect(body.locator('.loop-top-chip, .trim-grip')).toHaveCount(0);
     });
 
 });

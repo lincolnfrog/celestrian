@@ -1124,6 +1124,565 @@ class TimeMapRecordTests : public juce::UnitTest {
       }
     }
 
+    // === Loop selection Phase 2: the top and the re-time (loop_selection
+    // .md §9; mock twin ui/js/tests/set_timing.test.mjs) ===
+
+    beginTest(
+        "ENGINE: setTiming - the shift moves the origin by any amount and "
+        "counts it into the re-time, moving no other fact; one undo step "
+        "restores origin, re-time and top together; a live drag is one "
+        "step; a re-time never coalesces into a map edit");
+    {
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String b = is.record(4 * Q);
+      const int64_t O = is.origin(b), O1 = is.origin(c1);
+      const int64_t zero = is.zero(), q = is.Q();
+      auto retime = [&](const juce::String& id) { return is.iprop(id, "retime"); };
+      auto top = [&](const juce::String& id) { return is.iprop(id, "loopTop"); };
+      expectEquals(retime(b), (int64_t)0, "a fresh take is as played");
+      expectEquals(top(b), (int64_t)0, "no map, no top: the take's start");
+
+      is.engine.setTiming(b, Q);  // the lane ↺ drag, whole Q
+      expectEquals(is.origin(b), O + Q, "the origin moved by the shift");
+      expectEquals(retime(b), Q, "…and the re-time counts it");
+      expectEquals(is.Q(), q, "Q stays");
+      expectEquals(is.zero(), zero, "the zero stays");
+      expectEquals(is.origin(c1), O1, "the other take stays");
+      expectEquals(retime(c1), (int64_t)0, "…as played");
+      expectEquals(is.dur(b), 4 * Q, "the take's length stays");
+      expectEquals(is.iprop(b, "loopEnd"), (int64_t)0, "no map appears");
+      is.engine.setTiming(b, 3 * Q / 10);  // ⌥: free, sub-Q
+      expectEquals(is.origin(b), O + Q + 3 * Q / 10,
+                   "a free shift lands exactly - never re-folded onto the grid");
+      expectEquals(retime(b), Q + 3 * Q / 10, "…counted");
+      is.engine.undo();
+      expectEquals(is.origin(b), O + Q, "undo takes back the free shift");
+      expectEquals(retime(b), Q, "…with its re-time");
+      is.engine.redo();
+      expectEquals(is.origin(b), O + Q + 3 * Q / 10, "redo");
+      expectEquals(retime(b), Q + 3 * Q / 10, "…re-time too");
+      is.engine.setTiming(b, -retime(b));  // "timing as played"
+      expectEquals(is.origin(b), O, "as played: the performed origin");
+      expectEquals(retime(b), (int64_t)0, "…re-time 0");
+
+      // THE PANEL'S START MARKER: a new top and the compensating shift
+      // in one call, so the ↺ keeps its moment. [Q, 3Q): the top (the
+      // region start Q, which the window stored) sounds at O + Q; a top
+      // at 2Q is heard Q in, so the shift is −Q.
+      is.window(b, Q, 3 * Q);
+      auto topMoment = [&](const juce::String& id) {
+        const int64_t a0 = is.iprop(id, "loopStart");
+        return is.origin(id) + a0 + (top(id) - a0);  // one segment
+      };
+      const int64_t moment0 = topMoment(b);
+      is.engine.setTiming(b, -Q, 2 * Q);
+      expectEquals(top(b), 2 * Q, "the top is stored");
+      expectEquals(is.origin(b), O - Q, "the origin compensates");
+      expectEquals(retime(b), -Q, "…and the re-time counts it");
+      expectEquals(topMoment(b), moment0, "the ↺ kept its moment");
+      is.engine.undo();
+      expectEquals(is.origin(b), O, "undo: the origin,");
+      expectEquals(retime(b), (int64_t)0, "the re-time,");
+      expectEquals(top(b), Q, "and the top (the region start the window stored)");
+      is.engine.redo();
+      expectEquals(is.origin(b), O - Q, "redo: the origin,");
+      expectEquals(retime(b), -Q, "the re-time,");
+      expectEquals(top(b), 2 * Q, "and the top, together");
+
+      // A LIVE drag: the first commit opens the step, the rest coalesce.
+      const int64_t Og = is.origin(b), Rg = retime(b);
+      is.engine.setTiming(b, Q / 10);
+      is.engine.setTiming(b, Q / 10, std::nullopt, true);
+      is.engine.setTiming(b, -Q / 20, std::nullopt, true);
+      expectEquals(is.origin(b), Og + 3 * Q / 20, "the streamed commits applied");
+      expectEquals(retime(b), Rg + 3 * Q / 20, "…and counted");
+      is.engine.undo();
+      expectEquals(is.origin(b), Og, "one undo takes the whole drag back");
+      expectEquals(retime(b), Rg, "…its re-time too");
+      expectEquals(top(b), 2 * Q, "…and leaves the top");
+      // Two gestures are two steps.
+      is.engine.setTiming(b, Q / 10);
+      is.engine.setTiming(b, Q / 10);
+      is.engine.undo();
+      expectEquals(is.origin(b), Og + Q / 10, "separate gestures: one step each");
+      is.engine.undo();
+      expectEquals(is.origin(b), Og, "…two undos");
+      // Swap and shift are different gestures: a live re-time never
+      // coalesces into a map edit's step.
+      is.window(b, 2 * Q, 4 * Q);
+      is.engine.setTiming(b, Q / 10, std::nullopt, true);
+      is.engine.undo();
+      expectEquals(is.origin(b), Og, "the re-time undid on its own");
+      expectEquals(is.iprop(b, "loopStart"), 2 * Q, "…the slide stands");
+    }
+
+    beginTest(
+        "ENGINE: setTiming refusals - the Q-definer, a stack, an empty clip, "
+        "an unknown node, a top outside the kept set (refused whole) and any "
+        "re-time while a take is armed or capturing record nothing");
+    {
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      const juce::String c1 = is.record(Q);
+      // THE Q-DEFINER: the island's only content — its frame top is the
+      // island zero.
+      const int64_t O1 = is.origin(c1);
+      is.engine.setTiming(c1, Q / 2);
+      expectEquals(is.origin(c1), O1, "the Q-definer refuses");
+      expectEquals(is.iprop(c1, "retime"), (int64_t)0, "…nothing counted");
+      const juce::String b = is.record(4 * Q);
+      is.window(b, Q, 3 * Q);
+      const juce::String g = is.createStack();
+      const juce::String e = is.createClip();
+      const int64_t Ob = is.origin(b);
+      // THE PROBE: a redo branch survives only when nothing is recorded.
+      is.engine.renameNode(b, "probe");
+      is.engine.undo();
+      expect(is.engine.canRedo(), "the probe's redo branch");
+      is.engine.setTiming(b, Q, 0);      // top before the window
+      is.engine.setTiming(b, Q, 3 * Q);  // top at the window's end
+      is.engine.setTiming(b, Q, 9 * Q);  // top past the take
+      expectEquals(is.origin(b), Ob, "a top outside the kept set refuses the whole call");
+      expectEquals(is.iprop(b, "retime"), (int64_t)0, "…no partial shift");
+      expectEquals(is.iprop(b, "loopTop"), Q, "…no top");
+      is.engine.setTiming(g, Q);          // a stack: no timing in Phase 2
+      is.engine.setTiming(e, Q);          // nothing committed
+      is.engine.setTiming("no-such-node", Q);
+      is.engine.setTiming(b, 0);          // the identity: records nothing
+      expect(is.engine.canRedo(), "none of them recorded (the redo branch survives)");
+      expectEquals(is.iprop(g, "origin"), (int64_t)0, "the stack is untouched");
+      expect(!is.node(g).hasProperty("retime"), "a stack publishes no re-time");
+      // THE RECORDING GATE: arm the empty clip — nothing re-times while
+      // the take is armed or capturing, the armed clip least of all.
+      is.engine.startRecordingInNode(e);
+      expect(is.engine.hasActiveTake(), "a take is armed");
+      is.engine.setTiming(b, Q);
+      expectEquals(is.origin(b), Ob, "refused under a live take");
+      is.waitFor([&] { return is.bprop(e, "isRecording"); });
+      is.engine.setTiming(b, Q);
+      expectEquals(is.origin(b), Ob, "refused while it captures");
+      is.drive(Q);
+      is.engine.stopRecordingInNode(e);
+      is.settle();
+      is.engine.setTiming(b, Q);
+      expectEquals(is.origin(b), Ob + Q, "the take settled: the re-time lands");
+    }
+
+    beginTest(
+        "ENGINE: a new take plays as performed and resets the re-time (owner "
+        "2026-09-24) - a 4Q take shifted +1Q, then a new take: armed at the "
+        "shifted slot top, it sounds where it was played with re-time 0, so "
+        "'timing as played' leaves it there; undo brings back the old take "
+        "with its +1Q, redo the 0");
+    {
+      // Mock twin: ui/js/tests/set_timing.test.mjs. The output checks are
+      // the scenario harness's (docs/scenarios.md, S15/S41): content[k] of
+      // a take is the ramp at its capture boundary + k.
+      using scenario::Island;
+      using scenario::posmod;
+      using scenario::rampAt;
+      constexpr int64_t Q = 20000;
+      Island is;
+      const juce::String c1 = is.record(Q);
+      const juce::String b = is.record(4 * Q);
+      const int64_t cap = is.captured.at(b);
+      auto retime = [&] { return is.iprop(b, "retime"); };
+      is.engine.setTiming(b, Q);
+      expectEquals(retime(), Q, "the take is shifted +1Q");
+      // A NEW TAKE, armed mid-period: it waits for the slot's own top —
+      // the SHIFTED origin — and captures exactly one period.
+      is.drive(Q / 2);
+      is.engine.newTake(b);
+      is.waitFor([&] { return is.bprop(b, "isRecording"); });
+      const int64_t start2 = is.clock - is.iprop(b, "duration");
+      expectEquals(posmod(start2 - (cap + Q), 4 * Q), (int64_t)0,
+                   "armed at the shifted slot top");
+      is.settle();
+      expectEquals(is.iprop(b, "takes"), (int64_t)2, "two takes");
+      expectEquals(is.iprop(b, "activeTake"), (int64_t)1, "the new one is active");
+      expectEquals(is.origin(b), cap + Q, "the slot keeps its origin");
+      expectEquals(retime(), (int64_t)0, "the re-time resets: the new take is as played");
+      auto asPlayed = [&](int64_t t) {
+        return is.loopVal(c1, t) + rampAt(start2 + posmod(t - start2, 4 * Q));
+      };
+      expectEquals(is.mismatches(8 * Q, asPlayed), 0,
+                   "the new take sounds exactly where it was played");
+      // "Timing as played" (−retime) is the identity now: the new take
+      // stays on its performance.
+      is.engine.setTiming(b, -retime());
+      expectEquals(is.origin(b), cap + Q, "'timing as played' leaves it there");
+      expectEquals(is.mismatches(4 * Q, asPlayed), 0, "…still as played");
+      is.engine.undo();
+      expectEquals(is.iprop(b, "takes"), (int64_t)1, "undo: the old take alone");
+      expectEquals(is.iprop(b, "activeTake"), (int64_t)0, "…active");
+      expectEquals(retime(), Q, "…with its +1Q");
+      expectEquals(is.mismatches(8 * Q, [&](int64_t t) {
+        return is.loopVal(c1, t) + is.val(b, posmod(t - cap - Q, 4 * Q));
+      }), 0, "the old take sounds a Q later than played again");
+      is.engine.redo();
+      expectEquals(is.iprop(b, "takes"), (int64_t)2, "redo: the new take");
+      expectEquals(is.iprop(b, "activeTake"), (int64_t)1, "…active");
+      expectEquals(retime(), (int64_t)0, "…re-time 0 again");
+      expectEquals(is.mismatches(4 * Q, asPlayed), 0, "…as played");
+      // The older take keeps its shift as a baked fact; ⌘Z still
+      // reaches it behind the new take.
+      is.engine.undo();
+      is.engine.undo();
+      expectEquals(is.origin(b), cap, "two undos: the shift is gone too");
+      expectEquals(retime(), (int64_t)0, "…as played");
+    }
+
+    beginTest(
+        "ENGINE: the top rides every map edit - kept while the new region "
+        "plays it, else the new region start, stored; undo restores it "
+        "exactly; a bypass leaves it; a live drag reconciles from its "
+        "gesture's start");
+    {
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      is.record(Q);
+      const juce::String b = is.record(8 * Q);
+      auto top = [&] { return is.iprop(b, "loopTop"); };
+      auto segs = [&](std::initializer_list<std::pair<int64_t, int64_t>> s) {
+        timing::TimeMap m;
+        for (const auto& [a, e] : s) m.segs[m.n++] = {a, e};
+        return m;
+      };
+      const int64_t O = is.origin(b);
+      is.window(b, Q, 3 * Q);
+      is.engine.setTiming(b, 0, 2 * Q);  // a top alone: no shift
+      expectEquals(top(), 2 * Q, "the top is stored");
+      expectEquals(is.origin(b), O, "…and nothing moved in time");
+      // setLoopPoints — a SWAP keeps the origin, so the top keeps its
+      // moment while the region still plays it.
+      is.window(b, 3 * Q / 2, 7 * Q / 2);
+      expectEquals(top(), 2 * Q, "a slide that still plays the top keeps it");
+      expectEquals(is.origin(b), O, "…and the origin (a swap)");
+      is.window(b, 3 * Q, 5 * Q);
+      expectEquals(top(), 3 * Q, "a slide past it resets it to the region start");
+      is.engine.undo();
+      expectEquals(top(), 2 * Q, "undo restores the old top exactly");
+      expectEquals(is.iprop(b, "loopStart"), 3 * Q / 2, "…with its region");
+      is.engine.redo();
+      expectEquals(top(), 3 * Q, "redo: the region start again");
+      // setSegments — a CELL CUT under the top drops it; a HEAL keeps it.
+      is.window(b, Q, 5 * Q);
+      is.engine.setTiming(b, 0, 7 * Q / 2);
+      expectEquals(top(), 7 * Q / 2, "a top in [3Q,4Q)");
+      is.engine.setSegments(b, segs({{Q, 3 * Q}, {4 * Q, 5 * Q}}));
+      expectEquals(top(), Q, "the cut removed its cell: the region start");
+      is.engine.undo();
+      expectEquals(top(), 7 * Q / 2, "undo: the top is back");
+      is.engine.setSegments(b, segs({{Q, 3 * Q}, {4 * Q, 5 * Q}}));
+      is.engine.setTiming(b, 0, 9 * Q / 2);
+      expectEquals(top(), 9 * Q / 2, "a top in the second segment");
+      is.engine.setSegments(b, segs({{Q, 5 * Q}}));  // heal (n = 1)
+      expectEquals(top(), 9 * Q / 2, "the heal still plays it");
+      // A bypass leaves it; a CLEAR keeps it (the whole take plays it).
+      is.engine.toggleLoopWindow(b);
+      expect(is.bprop(b, "loopBypassed"), "bypassed");
+      expectEquals(top(), 9 * Q / 2, "a bypass leaves the top alone");
+      is.engine.toggleLoopWindow(b);
+      is.window(b, 0, 0);
+      expectEquals(top(), 9 * Q / 2, "a cleared map keeps the top");
+      // THE GESTURE'S START: a live drag reconciles every commit against
+      // the top the drag started with, so sweeping past the ↺ and back
+      // keeps it; the one undo step restores it exactly.
+      is.window(b, Q, 5 * Q);
+      is.engine.setTiming(b, 0, 2 * Q);
+      is.engine.setLoopPoints(b, 3 * Q / 2, 11 * Q / 2);  // the drag's first commit
+      is.engine.setLoopPoints(b, 5 * Q / 2, 13 * Q / 2, true);
+      expectEquals(top(), 5 * Q / 2, "mid-drag the region left the top");
+      is.engine.setLoopPoints(b, 3 * Q / 2, 11 * Q / 2, true);
+      expectEquals(top(), 2 * Q, "…and back: the drag's own top returns");
+      is.engine.setSegments(b, segs({{3 * Q, 4 * Q}, {5 * Q, 8 * Q}}), true);
+      expectEquals(top(), 3 * Q, "a live cut that drops it");
+      is.engine.undo();
+      expectEquals(top(), 2 * Q, "one undo: the gesture's top");
+      expectEquals(is.iprop(b, "loopStart"), Q, "…and its region");
+    }
+
+    beginTest(
+        "ENGINE: an UNSET top (a take never edited) is its region start "
+        "until the first map edit STORES it - a left slide keeps the top "
+        "where it showed, a right slide past it takes the new start, a reset "
+        "stays put when the region slides back (P2; not v5's 'rides the "
+        "start'), and a live drag reconciles from where it showed");
+    {
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      is.record(Q);
+      const juce::String b = is.record(8 * Q);
+      auto* clip = dynamic_cast<ClipNode*>(is.nodePtr(b));
+      expect(clip != nullptr, "the take");
+      auto top = [&] { return is.iprop(b, "loopTop"); };
+      auto stored = [&] {
+        return (juce::int64)(clip != nullptr ? clip->storedTop() : 0);
+      };
+      // A window no edit has reconciled a top against — a take's
+      // commit-time window, a session saved before tops: set on the node
+      // itself, the top unset, the region start standing in.
+      auto fresh = [&](int64_t a, int64_t e) {
+        if (clip == nullptr) return;
+        clip->setLoopPoints(a, e);
+        clip->setStoredTop(timing::kNoTop);
+        expectEquals(top(), a, "unset: the region start stands in");
+      };
+      fresh(2 * Q, 4 * Q);
+      is.window(b, Q, 3 * Q);  // left 1Q
+      expectEquals(top(), 2 * Q,
+                   "a left slide keeps the top where it showed: the splice "
+                   "comes apart");
+      expectEquals(stored(), (juce::int64)(2 * Q), "…stored");
+      is.engine.undo();
+      expectEquals(stored(), (juce::int64)timing::kNoTop,
+                   "undo: unset, exactly as found");
+      expectEquals(top(), 2 * Q, "…the region start again");
+      is.window(b, 3 * Q, 5 * Q);  // right 1Q
+      expectEquals(top(), 3 * Q, "a right slide past it: the new start");
+      // THE RESET STAYS PUT (the owner's bars 1–4 → 3–6 → 2–5): stored at
+      // the reset, the top holds bar 3 when the region slides back over it.
+      fresh(0, 4 * Q);
+      is.window(b, 2 * Q, 6 * Q);
+      expectEquals(top(), 2 * Q, "bars 3–6 drop bar 1: the top resets to bar 3");
+      is.window(b, Q, 5 * Q);
+      expectEquals(top(), 2 * Q, "back to bars 2–5: the top stays on bar 3");
+      // A LIVE DRAG from an unset top reconciles every commit from the
+      // top it showed when the drag began (the gesture's first inverse
+      // carries it), not from the last commit's.
+      fresh(2 * Q, 4 * Q);
+      is.engine.setLoopPoints(b, 3 * Q, 5 * Q);  // the drag's first commit
+      expectEquals(top(), 3 * Q, "mid-drag the region left the top");
+      is.engine.setLoopPoints(b, Q, 3 * Q, true);
+      expectEquals(top(), 2 * Q, "…and back past it: the drag's own top");
+      is.engine.setSegments(b, [] {
+        timing::TimeMap m;
+        m.n = 2;
+        m.segs[0] = {Q, 2 * Q};
+        m.segs[1] = {3 * Q, 4 * Q};
+        return m;
+      }(), true);  // a live cut that drops it
+      expectEquals(top(), Q, "a live commit that drops it: the region start");
+      is.engine.undo();
+      expectEquals(stored(), (juce::int64)timing::kNoTop,
+                   "one undo: unset, as the drag found it");
+      expectEquals(is.iprop(b, "loopStart"), 2 * Q, "…with its region");
+    }
+
+    beginTest(
+        "ENGINE: a drag whose first commit records nothing (an identity - "
+        "engaged, no whole Q crossed yet - or a refusal) is still its own "
+        "undo step: two splice drags on one clip are two steps, each undo "
+        "restoring its start and its stored top exactly; two re-time drags "
+        "opening on a zero shift are two steps; a drag that returns to its "
+        "start and dwells is one step; an undo ends the gesture");
+    {
+      // Mock twin: ui/js/tests/set_timing.test.mjs.
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      is.record(Q);
+      const juce::String b = is.record(8 * Q);
+      auto* clip = dynamic_cast<ClipNode*>(is.nodePtr(b));
+      expect(clip != nullptr, "the take");
+      auto stored = [&] {
+        return clip != nullptr ? clip->storedTop() : int64_t{0};
+      };
+      auto region = [&] {
+        return juce::String(is.iprop(b, "loopStart") / Q) + "-" +
+               juce::String(is.iprop(b, "loopEnd") / Q);
+      };
+      auto expectRegion = [&](const char* want, const juce::String& why) {
+        expect(region() == want, why + " (" + region() + ")");
+      };
+      // A WHOLE-Q SPLICE DRAG over a window commits the slid window; its
+      // first commit is the window it found — an identity, recording
+      // nothing.
+      auto slide = [&](int64_t a, bool live) {
+        is.engine.setSegments(b, timing::TimeMap::single(a, a + 4 * Q), live);
+      };
+      is.window(b, Q, 5 * Q);
+      is.engine.setTiming(b, 0, 2 * Q);  // the ↺ on 2Q
+      // Drag 1: [Q,5Q) → [3Q,7Q) leaves the ↺ behind: the region start.
+      slide(Q, false);
+      slide(2 * Q, true);
+      slide(3 * Q, true);
+      expectEquals(stored(), 3 * Q, "drag 1 dropped the ↺");
+      // Drag 2 back to [Q,5Q) reconciles from ITS start (3Q, which the
+      // region keeps playing) — never drag 1's (2Q).
+      slide(3 * Q, false);
+      slide(2 * Q, true);
+      slide(Q, true);
+      expectEquals(stored(), 3 * Q, "drag 2 kept the ↺ it found");
+      is.engine.undo();
+      expectRegion("3-7", "undo: drag 2 alone");
+      expectEquals(stored(), 3 * Q, "…with its ↺");
+      is.engine.undo();
+      expectRegion("1-5", "undo: drag 1");
+      expectEquals(stored(), 2 * Q, "…its ↺ exactly");
+      is.engine.redo();
+      is.engine.redo();
+      expect(region() == "1-5" && stored() == 3 * Q, "redo: both drags");
+
+      // RE-TIME DRAGS opening on a zero shift (the ↺ grabbed, not yet
+      // moved): two drags, two steps.
+      const int64_t O = is.origin(b), R = is.iprop(b, "retime");
+      is.engine.setTiming(b, 0);
+      is.engine.setTiming(b, Q, std::nullopt, true);
+      is.engine.setTiming(b, Q, std::nullopt, true);
+      is.engine.setTiming(b, 0);
+      is.engine.setTiming(b, -Q / 2, std::nullopt, true);
+      is.engine.setTiming(b, -Q / 4, std::nullopt, true);
+      expectEquals(is.origin(b), O + 5 * Q / 4, "both drags applied");
+      is.engine.undo();
+      expectEquals(is.origin(b), O + 2 * Q, "undo: re-time drag 2 alone");
+      expectEquals(is.iprop(b, "retime"), R + 2 * Q, "…its re-time");
+      is.engine.undo();
+      expectEquals(is.origin(b), O, "undo: re-time drag 1");
+      expectEquals(is.iprop(b, "retime"), R, "…its re-time");
+
+      // A DRAG THAT DWELLS and RETURNS TO ITS START is one step: its
+      // identities (and a refused commit) record nothing and keep it —
+      // and so does a read between commits (only a logged step ends it).
+      slide(Q, false);
+      slide(Q, true);
+      slide(4 * Q, true);
+      is.engine.setLoopPoints(b, 4 * Q, 13 * Q / 2, true);  // off Q: refused
+      slide(4 * Q, true);
+      is.engine.getWaveform(b, 64);
+      slide(Q, true);  // back at its start
+      slide(Q, true);
+      slide(0, true);
+      expectRegion("0-4", "the drag landed");
+      expectEquals(stored(), 3 * Q, "…reconciled from its start");
+      is.engine.undo();
+      expectRegion("1-5", "one undo: the drag's start");
+      expectEquals(stored(), 3 * Q, "…and its ↺");
+      is.engine.undo();
+      expectRegion("3-7", "the next undo is drag 2's");
+
+      // AN UNDO ENDS THE GESTURE: a live commit after it logs its own
+      // step, never joining the entry the undo left on top (drag 1's).
+      slide(2 * Q, false);
+      is.engine.undo();
+      slide(4 * Q, true);
+      is.engine.undo();
+      expectRegion("3-7", "the stray live commit undid alone");
+      expectEquals(stored(), 3 * Q, "…with its ↺");
+      // A REFUSED first commit opens its gesture too.
+      is.engine.setLoopPoints(b, 3 * Q, 11 * Q / 2);  // off Q: refused
+      slide(2 * Q, true);
+      is.engine.undo();
+      expectRegion("3-7", "after a refused first commit");
+      is.engine.undo();
+      expectRegion("1-5", "drag 1's start, still one step away");
+    }
+
+    beginTest(
+        "ENGINE: an identity setSegments (the stored cell map again) records "
+        "nothing - the undo stack and the redo branch stand - and a drag "
+        "whose first commit it is still forms one undo step");
+    {
+      // Mock twin: ui/js/tests/noop_window_edit.test.mjs.
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      is.record(Q);
+      const juce::String b = is.record(8 * Q);
+      const AudioNode* node = is.nodePtr(b);
+      expect(node != nullptr, "the take");
+      // Two cells a Q apart, from `a`: period 2Q.
+      auto cells = [](int64_t a) {
+        timing::TimeMap m;
+        m.n = 2;
+        m.segs[0] = {a, a + Q};
+        m.segs[1] = {a + 2 * Q, a + 3 * Q};
+        return m;
+      };
+      auto mapIs = [&](const timing::TimeMap& want) {
+        if (node == nullptr) return false;
+        const timing::TimeMap m = node->storedMap();
+        bool same = m.n == want.n;
+        for (int i = 0; same && i < m.n; ++i)
+          same = m.segs[i].start == want.segs[i].start &&
+                 m.segs[i].end == want.segs[i].end;
+        return same;
+      };
+      expect(mapIs(timing::TimeMap::none()), "a fresh take: no map");
+      is.engine.setSegments(b, cells(Q));      // step A
+      is.engine.setSegments(b, cells(2 * Q));  // step B
+      is.engine.undo();
+      expect(is.engine.canRedo(), "B waits on the redo branch");
+      is.engine.setSegments(b, cells(Q));      // the stored map again
+      expect(mapIs(cells(Q)), "the identity changed nothing");
+      expect(is.engine.canRedo(), "…and kept the redo branch");
+      is.engine.redo();
+      expect(mapIs(cells(2 * Q)), "redo: B");
+      is.engine.undo();
+      is.engine.undo();
+      expect(mapIs(timing::TimeMap::none()),
+             "two undos reach A's own step: the identity stacked none");
+      // A DRAG whose first commit is the identity opens its gesture
+      // anyway: its live commits form ONE step, and a live commit that
+      // dwells on the stored map records nothing.
+      is.engine.redo();
+      expect(mapIs(cells(Q)), "A again");
+      is.engine.setSegments(b, cells(Q));  // the drag's first commit
+      is.engine.setSegments(b, cells(2 * Q), true);
+      is.engine.setSegments(b, cells(3 * Q), true);
+      is.engine.setSegments(b, cells(3 * Q), true);  // dwelling
+      expect(mapIs(cells(3 * Q)), "the drag landed");
+      is.engine.undo();
+      expect(mapIs(cells(Q)), "one undo takes the whole drag back");
+      is.engine.undo();
+      expect(mapIs(timing::TimeMap::none()), "…and the next is A's");
+    }
+
+    beginTest(
+        "ENGINE: the Q13 definer's re-trim reconciles its top; the "
+        "lock-collapse carries the top (raw - the window start) and the "
+        "undo puts it back");
+    {
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      const juce::String c = is.record(Q);
+      const juce::String d = is.record(2 * Q);
+      is.engine.setTiming(c, 0, Q / 2);  // c is not the definer while d exists
+      expectEquals(is.iprop(c, "loopTop"), Q / 2, "a top on the first take");
+      is.engine.deleteNode(d);  // c is the island's only content again
+      expectEquals(is.state().getProperty("definerId", "").toString(), c,
+                   "c defines Q again");
+      is.engine.setLoopPoints(c, Q / 4, 3 * Q / 4);  // Q13: Q := Q/2
+      expectEquals(is.Q(), Q / 2, "the re-trim re-established Q");
+      expectEquals(is.iprop(c, "loopTop"), Q / 2, "…and kept the top it plays");
+      const int64_t moment = is.origin(c) + is.iprop(c, "loopTop");
+      // A take armed against the trimmed island COLLAPSES the definer:
+      // its window becomes the take (base += Q/4, origin += Q/4).
+      const juce::String e = is.createClip();
+      is.engine.startRecordingInNode(e);
+      expectEquals(is.dur(c), Q / 2, "collapsed to the window");
+      expectEquals(is.iprop(c, "loopTop"), Q / 4, "the top, re-expressed in the collapsed take");
+      expectEquals(is.origin(c) + is.iprop(c, "loopTop"), moment,
+                   "…at the same moment");
+      is.engine.stopRecordingInNode(e);  // armed: a cancel
+      is.settle();
+      is.engine.undo();  // the collapse
+      expectEquals(is.dur(c), Q, "uncollapsed");
+      expectEquals(is.iprop(c, "loopTop"), Q / 2, "the raw top is back");
+      is.engine.setLoopPoints(c, 0, Q / 4);  // a re-trim that drops it
+      expectEquals(is.iprop(c, "loopTop"), (int64_t)0, "a re-trim past the top resets it");
+      is.engine.undo();
+      expectEquals(is.iprop(c, "loopTop"), Q / 2, "undo: the top with the trim");
+      expectEquals(is.Q(), Q / 2, "…and the grid it re-established");
+    }
+
     // === Phase 3, Stage 2: the fully-fractal clip kernel ===
 
     beginTest(
@@ -1198,12 +1757,18 @@ class TimeMapRecordTests : public juce::UnitTest {
                                 "re-activation restores the map");
 
       // SPLICE COLLAPSE: the kept cells become the take; playback at
-      // the same island moments is sample-identical.
+      // the same island moments is sample-identical. A stored top (raw
+      // 700, heard offset 250 — it sounds at 100 + 250 + 250 = 600)
+      // lands at its heard offset in the spliced take, keeping its
+      // moment (350 + 250).
+      clip.setStoredTop(700);
       auto old = clip.spliceToMap(cells);  // geometry := the new full span
       expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)400,
                    "spliced duration = period");
       expectEquals((juce::int64)clip.origin_samples.load(), (juce::int64)350,
                    "spliced origin = old origin + mapOffset(0)");
+      expectEquals((juce::int64)clip.storedTop(), (juce::int64)250,
+                   "spliced top = its heard offset (the moment holds)");
       expectWithinAbsoluteError(sampleAt(A), content[250], 1e-7f,
                                 "spliced: heard 0 unchanged");
       expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,
@@ -1213,12 +1778,29 @@ class TimeMapRecordTests : public juce::UnitTest {
 
       // UN-SPLICE: full material + map return; playback unchanged.
       auto displaced = clip.unspliceFromMap(std::move(old), 100, N, 0, N,
-                                            /*old_collapsed_from=*/0);
+                                            /*old_collapsed_from=*/0,
+                                            /*old_top=*/700);
       clip.setMap(cells);
       expectEquals((juce::int64)clip.getIntrinsicDuration(), (juce::int64)N,
                    "unspliced duration restored");
+      expectEquals((juce::int64)clip.storedTop(), (juce::int64)700,
+                   "unspliced top restored raw");
       expectWithinAbsoluteError(sampleAt(A + 200), content[650], 1e-7f,
                                 "unspliced: mapped playback unchanged");
+      // A stored top the map does NOT play (raw 500, in the cut) was not
+      // the effective one — the region start stood in — so the splice
+      // stores that start, 0: a top once set stays a fact (only a take
+      // never edited is unset).
+      clip.setStoredTop(500);
+      auto old2 = clip.spliceToMap(cells);
+      expectEquals((juce::int64)clip.storedTop(), (juce::int64)0,
+                   "a dropped top: the spliced take's start, stored");
+      auto displaced2 = clip.unspliceFromMap(std::move(old2), 100, N, 0, N,
+                                             /*old_collapsed_from=*/0,
+                                             /*old_top=*/500);
+      clip.setMap(cells);
+      expectEquals((juce::int64)clip.storedTop(), (juce::int64)500,
+                   "…and the un-splice puts the raw one back");
       clip.setLoopWindowBypassed(true);
       expectWithinAbsoluteError(sampleAt(100 + 999), content[999], 1e-7f,
                                 "unspliced: full material intact");

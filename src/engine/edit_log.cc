@@ -29,19 +29,40 @@ using celestrian::Edit;
 // A LIVE drag collapses into ONE undo step: seam/grip drags stream
 // throttled map commits so the splice is AUDIBLE while dragging
 // (time_maps.md), and every commit after the gesture's first arrives
-// with Edit::live. When such a commit targets the same node as the top
-// of the stack, the older inverse already restores further back, so
-// the new one is dropped. OWNER RULING 2026-09-10: only live commits
-// coalesce — two separate cut gestures on one lane, however close in
-// time, are two undo steps (they used to merge unconditionally). A
-// gesture's commits may change kind midway (a window becoming a
-// segment override), so both map kinds pair.
+// with Edit::live. When such a commit joins its gesture's logged entry
+// (the top of the stack), the older inverse already restores further
+// back, so the new one is dropped. OWNER RULING 2026-09-10: only live
+// commits coalesce — two separate cut gestures on one lane, however
+// close in time, are two undo steps (they used to merge
+// unconditionally). A gesture's commits may change kind midway (a
+// window becoming a segment override), so both map kinds pair. A
+// re-time drag (the ↺, the panel's start marker — setTiming) streams
+// the same way: Timing pairs with Timing, never with a map kind (swap
+// and shift are different gestures, loop_selection.md §9.2).
+// THE GESTURE IS TRACKED (AudioEngine::gesture_), never read off the
+// stack's top: a whole-Q drag's first commit is usually an IDENTITY —
+// the pointer engaged but crossed no whole Q yet — which records
+// nothing, so the top may be the PREVIOUS gesture's entry on the same
+// lane (joining it made two drags one step and reconciled the ↺ from
+// the wrong start). A non-live commit opens its gesture whatever it
+// records (openGesture); the gesture's first live commit to APPLY logs
+// its entry, pushed as usual — nothing changed since the gesture began,
+// so the top base it records is the gesture's own; the live commits
+// after it coalesce. A live commit that records nothing (an identity, a
+// refusal) keeps the gesture: a drag that dwells, or returns to its
+// start, is still one step. Any other entry logged — another node or
+// kind, a take — and an undo or redo end the gesture, so a stray live
+// commit logs its own step and never merges into an unrelated entry.
 bool isMapKind(Edit::Kind k) {
   return k == Edit::Kind::Segments || k == Edit::Kind::LoopPoints;
 }
-bool editsCoalesce(const Edit& top, const Edit& fresh, bool live) {
-  if (!live || top.uuid != fresh.uuid) return false;
-  return isMapKind(top.kind) && isMapKind(fresh.kind);
+bool isGestureKind(Edit::Kind k) {
+  return isMapKind(k) || k == Edit::Kind::Timing;
+}
+/** Do commits of kinds `a` and `b` belong to one gesture? */
+bool sameGesture(Edit::Kind a, Edit::Kind b) {
+  return (isMapKind(a) && isMapKind(b)) ||
+         (a == Edit::Kind::Timing && b == Edit::Kind::Timing);
 }
 }  // namespace
 
@@ -102,10 +123,48 @@ void stampWindowDomain(celestrian::AudioNode* node, const celestrian::Edit& e,
   stack->setWindowDomain((celestrian::StackNode::WindowDomain)fresh);
 }
 
+/** THE TOP A MAP EDIT STARTS FROM (loop_selection.md §9): the clip's
+ * EFFECTIVE top — the stored one while its map plays it, else the
+ * region start — read BEFORE the edit moves the geometry, so a top never
+ * set (a fresh take, an old session) reconciles from where it showed.
+ * kNoTop for a node that keeps no top (stacks, Phase 2). */
+int64_t topBeforeEdit(const celestrian::AudioNode* node) {
+  const auto* clip = dynamic_cast<const celestrian::ClipNode*>(node);
+  return clip != nullptr ? clip->effectiveTop() : celestrian::timing::kNoTop;
+}
+
+/** THE TOP RIDES THE MAP (loop_selection.md §9, owner 2026-09-24):
+ * call right after a map edit has set `node`'s new geometry, with the
+ * top it started from (topBeforeEdit, read before). The old stored top
+ * goes into the inverse; then the top is set exactly (an inverse
+ * restoring its own old top, `setsTop`) or RECONCILED and STORED — kept
+ * while the new kept set plays it, else the new region start — from the
+ * gesture's base when a live commit carries one. The inverse records
+ * that base: the gesture's later live commits reconcile from it
+ * (AudioEngine::record). Stacks keep no top (Phase 2). */
+void reconcileTopRider(celestrian::AudioNode* node, const celestrian::Edit& e,
+                       celestrian::Edit& inv, int64_t top_before) {
+  auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
+  if (clip == nullptr) return;
+  inv.setsTop = true;
+  inv.itop = clip->storedTop();
+  if (e.setsTop) {
+    clip->setStoredTop(e.itop);
+    return;
+  }
+  const int64_t base = e.hasTopBase ? e.topBase : top_before;
+  inv.hasTopBase = true;
+  inv.topBase = base;
+  clip->setStoredTop(celestrian::timing::reconcileTop(
+      clip->storedMap(), clip->isLoopWindowActive(),
+      clip->getIntrinsicDuration(), base));
+}
+
 /** Apply an edit's WINDOW RIDERS (Edit::windows): set each named node's
  * single-window loop points, capturing the old ones into the inverse
  * so the riders undo with the edit. A node with a multi-segment
- * override is left alone (its map is not a single window). */
+ * override is left alone (its map is not a single window). A clip
+ * member's top rides its geometry like the edit's own. */
 void applyWindowRiders(
     const std::function<celestrian::AudioNode*(const juce::String&)>& find,
     const celestrian::Edit& e, celestrian::Edit& inv) {
@@ -120,11 +179,25 @@ void applyWindowRiders(
     // shape — a cell map goes whole with the rest and comes back on undo.
     back.setsMap = true;
     back.tmap = node->storedMap();
+    auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
+    const int64_t top_before = topBeforeEdit(node);  // before it moves
+    if (clip != nullptr) {
+      back.setsTop = true;
+      back.top = clip->storedTop();
+    }
     inv.windows.push_back(std::move(back));
     if (r.setsMap && r.tmap.n >= 2) {
       node->setMap(r.tmap);
     } else {
       node->setLoopPoints(r.start, r.end);
+    }
+    if (clip != nullptr) {
+      clip->setStoredTop(r.setsTop ? r.top
+                                   : celestrian::timing::reconcileTop(
+                                         clip->storedMap(),
+                                         clip->isLoopWindowActive(),
+                                         clip->getIntrinsicDuration(),
+                                         top_before));
     }
   }
 }
@@ -481,12 +554,14 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // removed map back (setsMap) so undo restores it.
       inv.setsMap = true;
       inv.tmap = node->storedMap();  // the RAW old geometry, any shape
+      const int64_t top_before = topBeforeEdit(node);
       const bool clearing = !(e.setsMap && e.tmap.n >= 2) && (int64_t)e.d2 <= (int64_t)e.d1;
       if (e.setsMap && e.tmap.n >= 2) {
         node->setMap(e.tmap);  // undo path: the cell map comes back
       } else {
         node->setLoopPoints((int64_t)e.d1, (int64_t)e.d2);
       }
+      reconcileTopRider(node, e, inv, top_before);  // the top rides the map
       // A CLEAR drops a stale bypass with the geometry (Edit::restoresBypass):
       // "whole" is no window, so nothing remains to bypass, and the next
       // window drawn must sound. The inverse puts the flag back.
@@ -556,6 +631,11 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
           inv.d1 = (double)clip->getContentBase();
           inv.d2 = (double)clip->recordedLength();
           inv.collapsed_from = clip->collapsedFrom();  // the splice clears it
+          // The top rides the splice (spliceToMap re-expresses it, and
+          // may drop one the map does not play): the un-splice puts
+          // the raw one back.
+          inv.setsTop = true;
+          inv.itop = clip->storedTop();
           // Every other take of the slot splices the same way (one
           // period, one base — docs/takes.md); the inverse owns their
           // pre-splice records. BEFORE spliceToMap rewrites the base.
@@ -581,9 +661,10 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         // Un-splice: reinstall the pre-splice buffer + facts, retire
         // the displaced spliced buffer, and put the map back.
         const int64_t before_origin = clip->origin_samples.load();
-        retireOwned(clip->unspliceFromMap(std::move(e.buffer), e.iorg,
-                                          e.old_duration, (int64_t)e.d1,
-                                          (int64_t)e.d2, e.collapsed_from));
+        retireOwned(clip->unspliceFromMap(
+            std::move(e.buffer), e.iorg, e.old_duration, (int64_t)e.d1,
+            (int64_t)e.d2, e.collapsed_from,
+            e.setsTop ? e.itop : clip->storedTop()));
         liftAncestorsGated(*clip, clip->origin_samples.load() - before_origin,
                            0);
         if (e.midi) retireOwned(clip->unspliceMidi(std::move(e.midi)));
@@ -603,6 +684,8 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       return inv;
     }
     case K::LoopBypass: {
+      // The stored top stays (loop_selection.md §9): bypass toggles
+      // whether the region applies, not what it keeps.
       auto* node = find(e.uuid);
       if (!node) return {};
       Edit inv(K::LoopBypass);
@@ -625,8 +708,10 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       inv.uuid = e.uuid;
       inv.setsMap = true;
       inv.tmap = node->storedMap();  // the RAW old geometry, any shape
+      const int64_t top_before = topBeforeEdit(node);
       stampWindowDomain(node, e, inv);
       node->setMap(e.tmap);
+      reconcileTopRider(node, e, inv, top_before);  // the top rides the map
       // Q13 riders (multi-segment definer re-trim): identical shape to
       // LoopPoints — the grid, the members and the phase re-anchor undo
       // atomically with the map (window/origin riders serve the
@@ -720,6 +805,12 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
         out.prev_active = in.prev_active;
         if (in.take_index >= 0) {
           celestrian::ClipNode& clip = *clips[i];
+          // The re-time rides the take (TakePayload::setsRetime): the
+          // inverse captures the current one, the payload's lands after
+          // the list change — undo puts the older takes' shift back,
+          // redo zeroes it again.
+          out.setsRetime = true;
+          out.retime = clip.retime();
           if (strip) {
             // The comp rides the inverse; cells naming the removed
             // take fall back to the active one meanwhile.
@@ -736,6 +827,7 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
             clip.selectTake(in.take_index);
             if (in.setsComp) clip.setCompCells(in.cells, in.cell_len);
           }
+          if (in.setsRetime) clip.setRetime(in.retime);
         } else if (strip) {
           out.state = clips[i]->stripTake();
         } else {
@@ -934,6 +1026,32 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
                   .release())));
       return inv;
     }
+    case K::Timing: {
+      // THE RE-TIME (loop_selection.md §9, setTiming): the clip's origin,
+      // re-time and (optionally) top land as one edit; the inverse
+      // captures all three, absolute, so undo restores them together.
+      // The origin takes the continuity rider's gated path (a named
+      // island generation, published with the unchanged (Q, zero)) — a
+      // SHIFT, never re-folded: no continuity solve, no ancestor lift,
+      // no island fact moves.
+      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
+      if (!clip || clip->isArmedOrRecording()) return {};
+      Edit inv(K::Timing);
+      inv.uuid = e.uuid;
+      inv.setsTop = true;
+      inv.itop = clip->storedTop();
+      inv.setsRetime = true;
+      inv.iretime = clip->retime();
+      const uint32_t gen = e.setsOrigin ? root_node->nextIslandGeneration() : 0;
+      applySetsOrigin(*clip, e, inv, gen);
+      if (gen != 0) {
+        root_node->setIslandFacts(root_node->getQuantum(), root_node->getZero(),
+                                  gen);
+      }
+      if (e.setsRetime) clip->setRetime(e.iretime);
+      if (e.setsTop) clip->setStoredTop(e.itop);
+      return inv;
+    }
     case K::Nop:
       return {};
   }
@@ -981,6 +1099,7 @@ void AudioEngine::clearHistory() {
   undo_.clear();
   clearRedo();
   pending_takes_.clear();
+  gesture_ = {};
 }
 
 void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
@@ -990,6 +1109,7 @@ void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
     undo_.erase(undo_.begin());
   }
   clearRedo();
+  gesture_ = {};  // any entry logged ends the open gesture (record() re-opens)
 }
 
 bool AudioEngine::refusedUnderLiveTake(const char* verb) const {
@@ -1013,17 +1133,46 @@ bool liveUnderTake(celestrian::Edit::Kind k) {
 }
 }  // namespace
 
+void AudioEngine::openGesture(const juce::String& uuid,
+                              celestrian::Edit::Kind kind) {
+  gesture_ = {uuid, kind, false};
+}
+
 void AudioEngine::record(celestrian::Edit forward) {
   reconcileTakes();  // a settled take logs BEFORE any later edit
   if (!liveUnderTake(forward.kind) && refusedUnderLiveTake("edit")) return;
   const bool live = forward.live;
+  const juce::String uuid = forward.uuid;
+  const celestrian::Edit::Kind kind = forward.kind;
+  // A live commit coalesces only into its OWN gesture's logged entry —
+  // the top of the stack, since anything else logged would have ended
+  // the gesture.
+  const bool coalesces = live && gesture_.logged && gesture_.uuid == uuid &&
+                         sameGesture(gesture_.kind, kind) && !undo_.empty();
+  // THE GESTURE'S TOP (loop_selection.md §9): a live map commit that
+  // will coalesce into its gesture's undo entry reconciles the top from
+  // the EFFECTIVE top the gesture STARTED with — the base that entry
+  // (the gesture's first inverse) recorded, reconcileTopRider — never
+  // from the previous live commit's. A splice drag that sweeps past the
+  // ↺ and back keeps it, exactly as the drag previewed it (the
+  // prototype's reconcileTop(segs0, …, top0)); the gesture's one undo
+  // step still restores the old stored top exactly.
+  if (coalesces && isMapKind(kind) && !forward.setsTop &&
+      undo_.back().hasTopBase) {
+    forward.hasTopBase = true;
+    forward.topBase = undo_.back().topBase;
+  }
   celestrian::Edit inv = applyEdit(std::move(forward));
   if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
-  if (!undo_.empty() && editsCoalesce(undo_.back(), inv, live)) {
+  if (coalesces) {
     clearRedo();  // a fresh user action still invalidates the redo branch
     return;       // keep the older inverse (restores further back)
   }
   pushUndo(std::move(inv));
+  // A map or re-time entry is its gesture's FIRST — the gesture a
+  // non-live commit opened, or a stray live commit's own: its later
+  // live commits coalesce into it.
+  if (isGestureKind(kind)) gesture_ = {uuid, kind, true};
 }
 
 namespace {
@@ -1054,6 +1203,7 @@ void AudioEngine::undo() {
   // Refuse and KEEP the entry (a Nop would drop it from the log).
   if (refusedUnderLiveTake("undo")) return;
   juce::ignoreUnused(&movesIslandFacts);
+  gesture_ = {};  // a later live commit logs its own step
   celestrian::Edit inv = std::move(undo_.back());
   undo_.pop_back();
   celestrian::Edit fwd = applyEdit(std::move(inv));
@@ -1064,6 +1214,7 @@ void AudioEngine::redo() {
   reconcileTakes();
   if (redo_.empty()) return;
   if (refusedUnderLiveTake("redo")) return;
+  gesture_ = {};  // a later live commit logs its own step
   celestrian::Edit fwd = std::move(redo_.back());
   redo_.pop_back();
   celestrian::Edit inv = applyEdit(std::move(fwd));

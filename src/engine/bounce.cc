@@ -100,12 +100,24 @@ bool AudioEngine::bounce(const juce::String& uuid,
               : celestrian::period_law::ownPeriodOf(*target);
   const celestrian::timing::TimeMap map = target->activeTimeMap();
   const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
+  // A CLIP starts at its ↺ TOP (loop_selection.md §9; owner, 2026-09-24):
+  // the loop reads as starting there, so its bounce opens on the loop's
+  // one — the top's moment, origin + a0 + heardOffset(T) — not on the
+  // splice where the recording wraps (the two part after a swap). Unset,
+  // or on a stack (Phase 2 stores no stack top), the top IS the region
+  // start and the offset is 0: the frame top, as before tops existed.
+  int64_t top_offset = 0;
+  if (auto* clip = dynamic_cast<const celestrian::ClipNode*>(target)) {
+    const int64_t t = clip->effectiveTop();
+    const int64_t h = map.active() ? map.heardOffsetOf(t) : t;
+    if (h > 0) top_offset = h;
+  }
   const int64_t top =
       start.has_value()
           ? *start
           : (target->isAnchored() ? target->origin_samples.load()
                                   : islandZero()) +
-                a0;
+                a0 + top_offset;
   if (span <= 0) {
     juce::Logger::writeToLog("AudioEngine: bounce refused - " + uuid +
                              " has no committed content");

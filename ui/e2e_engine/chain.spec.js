@@ -27,7 +27,9 @@ test('1Q, 5Q, 3Q → window → 12Q → window: heard == law == lanes at every s
     // "Edit it to be only 1Q": a loop window on the 3Q take.
     await call(page, 'setLoopPoints', c3, Q, 2 * Q);
     expect((await engine(page, 'status')).cycle).toBe(5 * Q);
-    await expect(page.locator(`.lane[data-id="${c3}"] .win-bracket`).first()).toBeVisible();
+    // The heard lane's loop handle: its splice (the edge grips retired
+    // 2026-09-24 — splice_handles.js).
+    await expect(page.locator(`.lane[data-id="${c3}"] .lr-splice`).first()).toBeVisible();
     await verifyHeard(page);
 
     // A 12Q take under the 5Q heard cycle: its origin is its capture
