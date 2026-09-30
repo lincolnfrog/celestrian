@@ -318,10 +318,11 @@ in the doc that owns its feature, but each has a pointer here.
   seating below — the same pictures, derived instead of ruled.*
 - **THE FRAME IS A FUNCTION OF THE LOOPS (owner, 2026-09-16):** the
   shared frame's zero is not stored. The view seats it from the lanes
-  in the order shown: the first lane's top is the top; each next lane
-  pulls the zero forward by whole cycles-so-far until its own top lies
-  inside the current cycle, landing at the left edge when it can and
-  otherwise at its offset, wrap ghosted. The growth re-base, the
+  in the order shown. Since 2026-09-29 (owner): the first loop LONGER
+  than Q places it (its ↺ is the left edge; a 1Q loop never places),
+  and every later loop slots in where its ↺ falls, wrap ghosted —
+  editing a later loop never moves the frame (until then each later
+  lane pulled the zero forward by whole cycles-so-far). The growth re-base, the
   cycle-top rule, the free-move law and continuity's frame ride are
   consequences, no longer rules; no commit or map edit moves an island
   fact. Later lanes follow an earlier lane's edit (the one behaviour
@@ -379,16 +380,15 @@ in the doc that owns its feature, but each has a pointer here.
   (c) The ↺ and the splice are INDEPENDENT handles — the lane's upper
   and lower halves; tabs only on the take tile, ghost repeats faint;
   the paired `] [` grips and the "↺ loop top" chip are retired, and
-  ⇧-drag on a splice changes the length there. (d) THE EDIT HOLD:
-  while a lane is selected its edits never re-seat the frame; on
-  deselect the frame settles, animated (560 ms), onto the first lane's
-  bar lines from the top's moment — floor, with a ¼Q pickup —
-  "for overall clarity of the composite". Spec loop_selection.md §9–
+  ⇧-drag on a splice changes the length there. (d) THE EDIT HOLD
+  (2026-09-24) is REVOKED (owner, 2026-09-29): the main view shows the
+  loops' true alignment at once — an edit realigns it, no deselect;
+  the seat reads the top's moment, floor with a ¼Q pickup. Spec loop_selection.md §9–
   §10, frame.md §1, time_maps.md §6–§7; pinned by the goldens
   `top_reconcile_cases` and `effective_top_cases`, scenario S41,
-  `frame_seat`, `frame_hold`, `pending_edits`, `top_fields`,
+  `frame_seat`, `pending_edits`, `top_fields`,
   `set_timing` and `splice_handles` tests, and
-  `ui/e2e/splice_handles.spec.js` and `frame_settle.spec.js`.
+  `ui/e2e/splice_handles.spec.js`.
 - **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
   2026-09-17; frame.md §4):** a song authored on the root anchors the
   root — Q18 at depth 0 — at the zero the view had seated when the

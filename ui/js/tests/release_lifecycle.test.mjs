@@ -435,8 +435,7 @@ test('no poll between release and settle seats the frame from the last LIVE geom
     // alone it re-seats the frame a Q earlier); the final commit lands
     // at −0.2Q (a pickup: it does not). Unpinned at pointerup, the poll
     // in flight would jump the frame 1Q and the next poll jump it back.
-    // (With a lane selected the edit hold keeps the zero anyway —
-    // frame_hold.test.mjs; this pins the pin itself.)
+    // (There is no edit hold: the pin alone carries the release.)
     const rest = deriveViewModel(island(0));
     assert.equal(rest.frameZero, 55 * SQ);
     assert.equal(deriveViewModel(island(-0.3)).frameZero, 54 * SQ,

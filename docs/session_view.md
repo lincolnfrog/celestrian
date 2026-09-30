@@ -495,15 +495,12 @@ time_maps.md §6.
     by default; a ruler seek moves it to that seek's target, and a click
     back at the top restores the default.
 
-    **The top is the SEAT** (2026-09-29): where the loops' tops line up
-    (frame.md §1), which is ruler 0 whenever the frame is not held. An
-    edit hold keeps an older zero on screen, and a loop trimmed from its
-    left under it moves its ↺ off ruler 0 — played from ruler 0, the
-    edited loop started mid-section (the field report: drums trimmed to
-    their last 19Q started 11Q in). So the default start is measured
-    from the seat, and the cursor parks on the ↺ wherever the held
-    picture draws it. A ruler-set start is a spot pointed at in the
-    frame as drawn, and stays one.
+    **The top is the SEAT** (2026-09-29): the bar line at the ↺ of the
+    loop that places the frame (frame.md §1) — ruler 0 whenever no
+    drag's pin holds the frame (there is no edit hold since 2026-09-29;
+    before that, a held frame played the edited loop from mid-section:
+    drums trimmed to their last 19Q started 11Q in). A ruler-set start
+    is a spot pointed at in the frame as drawn, and stays one.
 
     This is **UI policy composed from two engine primitives** —
     `togglePlayback` (a pure pause/resume, which the engine's own flows
@@ -539,31 +536,19 @@ time_maps.md §6.
     `heard_tile_sampler.test.mjs` (with a reproduction of the old
     slicer proving the gate catches it) and `e2e/heard_tiles.spec.js`
     (the canvas pixels; no fading or cross-fading copy during a trim).
-17. **The frame holds while you edit, and settles once** (loop-region
-    phase 2, 2026-09-24; frame.md §1). While a lane is selected no edit
-    re-seats the frame's zero — every loop edit lands in a still
-    picture. A selection change, a clear or an armed take releases the
-    hold, and the frame glides onto its seat once: 560 ms, the
-    shortest way round, landing exactly (`session_view/frame_hold.js`).
-    The glide is animation-frame RE-DERIVES from the last poll — the
-    same path a gesture's local preview takes between polls
-    (`requestRender`, `pending_edits.js`) — so four things must hold
-    on a re-render: the ruler's ticks and every lane's gridlines are
-    PLACED from the zero drawn (reused elements, never a keyed
-    rebuild), so the grid scrolls with the picture, each label naming
-    its line where the glide lands it (`buildRulerTicks`); tiles drop
-    their own morph while the zero glides
-    (`#lanes.frame-settling`), or they would trail it; the playhead's
-    dead-reckoner is shifted, on every patch, by how far the zero moved
-    against the island zero, and a re-render feeds it nothing else
-    (`animatorFrame`) — fed as a poll, a stale clock reads as a jump
-    back and stalls the sweep, and a poll that folded a glide into its
-    delta would read it as speed (a seek, which moves the island zero
-    with the frame, still reads as a teleport); and a hand on the frame (a live
-    gesture, or its pin until the commit settles) is never moved under
-    — a glide in motion completes as the hand comes down.
-    `prefers-reduced-motion` jumps. Pinned by `frame_hold.test.mjs`
-    and `e2e/frame_settle.spec.js`.
+17. **The main view realigns at once; one loop places the frame** (owner,
+    2026-09-29; frame.md §1 — it replaced the 2026-09-24 edit hold and
+    its 560 ms settle glide). The first loop longer than Q places the
+    frame (its ↺ is the left edge); a 1Q loop never does, and every
+    later loop slots in where its ↺ falls, so editing a later loop never
+    moves the frame or the play start. Outside a live drag's pin the
+    frame IS the seat: an edit shows the true alignment immediately,
+    with no need to deselect. A re-render between polls (`requestRender`,
+    a gesture's `pending_edits.js` preview) still places the ruler's
+    ticks and every lane's gridlines from the zero drawn, and the
+    playhead's dead-reckoner is shifted by how far the zero moved
+    against the island zero — never fed a stale clock as a poll
+    (`animatorFrame`). Pinned by `frame_seat.test.mjs` (g).
 18. **A drifting loop shows the pass you hear** (Q22, 2026-09-24). A
     loop whose length fits no whole number of Qs (Q was handed to
     another track and re-trimmed, design_language Q22) lines up

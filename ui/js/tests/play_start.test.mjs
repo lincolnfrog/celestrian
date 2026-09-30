@@ -143,10 +143,10 @@ test('order: play seeks BEFORE resuming; stop pauses BEFORE returning', async ()
     ]);
 });
 
-test('an edit hold: the default play start is the SEAT, not ruler 0', async () => {
-    // A frame held one Q off its seat (a lane edited under the hold):
-    // the top is where the loops' tops line up, so the play-seek
-    // measures from the seat; a ruler-set start stays the spot drawn.
+test('a pinned frame: the default play start is the SEAT, not ruler 0', async () => {
+    // A frame pinned one Q off its seat (a drag's pin still up): the top
+    // is where the loops' tops line up, so the play-seek measures from
+    // the seat; a ruler-set start stays the spot drawn.
     const calls = [];
     const fake = async (method, ...args) => { calls.push([method, ...args]); return true; };
     notePlayStart(PID, 0);
@@ -164,18 +164,18 @@ test('an edit hold: the default play start is the SEAT, not ruler 0', async () =
     notePlayStart(PID, 0);
 });
 
-test('field: a loop trimmed from its left under the hold plays from its top', async () => {
-    // keys 1Q at 0, drums 5Q at 2Q; the drums lane selected (the hold
-    // keeps the zero on the drums' old top, 2Q) and trimmed to [3Q, 5Q):
-    // the ↺ now sounds at 2Q + 3Q = 5Q ≡ 1Q in the 2Q loop — ruler 0
-    // would start the drums a Q into their section.
+test('field: a loop trimmed from its left realigns at once and plays from its top', async () => {
+    // keys 1Q at 0, drums 5Q at 2Q, trimmed to [3Q, 5Q): the ↺ now
+    // sounds at 2Q + 3Q = 5Q. The drums — the first loop longer than Q —
+    // place the frame, and with no edit hold it realigns at once (owner
+    // 2026-09-29): the left edge IS the drums' ↺.
     loadScenario('keys-then-drums');
     notePlayStart('', 0);
     await callNative('setLoopPoints', 'drums', 3 * Q, 5 * Q);
     if (getState().isPlaying) await callNative('togglePlayback');
-    const held = () => frameNow({ hold: { zeroRel: 2 * Q, quantum: Q } });
-    const f = held();
-    assert.equal(posMod(f.zero - f.seat, f.loopSamples), Q, 'held a Q off the seat');
+    const f = frameNow();
+    assert.equal(f.zero, f.seat, 'the frame shown is the seat (no hold)');
+    assert.equal(posMod(f.zero - 5 * Q, f.loopSamples), 0, '…on the drums’ ↺');
     notePlayStartTransport(false, true, f);
     const intoDrums = () => {
         const st = getState();
@@ -187,7 +187,7 @@ test('field: a loop trimmed from its left under the hold plays from its top', as
     // (a poll while playing adds one mock tick)
     assert.ok(intoDrums() < Q / 4, 'play starts at the drums’ top, not a Q in');
     advanceBy(Q / 2);
-    notePlayStartTransport(true, true, held());
+    notePlayStartTransport(true, true, frameNow());
     await togglePlayFromStart(callNative, PID);  // stop
     near(intoDrums(), 0, 'stop returns to the drums’ top');
 });

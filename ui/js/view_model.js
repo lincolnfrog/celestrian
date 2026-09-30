@@ -1145,40 +1145,27 @@ function topOf(n, authored, quantum = 0) {
 /**
  * THE FRAME ZERO (docs/frame.md): the shared frame's left edge is not
  * a published fact — it is SEATED from the lanes in the order they are
- * shown. The first lane's top is the top; each next lane pulls the zero
- * forward by whole cycles-so-far until its own top lies inside the
- * current cycle, so it lands at the left edge whenever a whole
- * cycle-so-far reaches it and otherwise at its offset, wrap ghosted.
+ * shown. ONE loop places it (owner 2026-09-29): the first loop LONGER
+ * than Q — a 1Q loop's top is every bar line, so it places nothing —
+ * and every other loop slots in where its ↺ falls, wrap ghosted.
+ * Editing a loop that slots in never moves the frame.
  *
- *   Z₁ = [top₁]grid      Zₖ = Zₖ₋₁ + Cₖ₋₁·⌊([topₖ]grid − Zₖ₋₁) / Cₖ₋₁⌋
- *   Cₖ = lcm(Cₖ₋₁, periodₖ)
+ *   Z = [top_placer]grid
  *   top = origin + a0 + heardOffset(segs, T)   (the ↺'s MOMENT, topOf)
  *   [x]grid = gridPhase + ⌊(x − gridPhase)/Q + ¼⌋·Q
  *
- * So the zero lands on the first lane's bar lines (every Q for a 1Q
- * scratch loop, every 4Q under a 4-bar bass) at or just before the ↺:
- * the line AT OR BEFORE a top, with a top up to ¼Q early a PICKUP to
- * the next line (SEAT_PICKUP_Q). A take pulled a hair early does not
- * throw the picture back a whole Q, and a take a little late shows its
- * top just after the left edge — never wrapped to the right end.
- *
- * This replaced Phase 1's NEAREST line (2026-09-24). Nearest existed
- * so a map drag's release showed the picture the drag pin showed; the
- * EDIT HOLD now guarantees that for every edit (session_view/
- * frame_hold.js — while a lane is selected the zero never re-seats),
- * so the seat takes over only when the frame SETTLES — at deselect, at
- * arm, on a selection change, animated — or with nothing selected. A
- * seat that reads ½–1Q late as a pickup at the RIGHT end, as nearest
- * did, is the wrong picture to settle on. Pinned by
+ * So the zero lands on the bar line AT OR BEFORE the placer's ↺, with
+ * a top up to ¼Q early a PICKUP to the next line (SEAT_PICKUP_Q). There
+ * is no edit hold: outside a live drag's pin the frame rests on the
+ * seat, so an edit realigns the main view at once. Pinned by
  * ui/js/tests/frame_seat.test.mjs.
  *
  * The root seats first when it carries a song — the song owns the
- * frame, and its length is the first cycle-so-far. A group with a
- * window or a song seats as ONE lane (its pass is what its members are
- * heard through) from its region start — stacks store no top; a plain
- * group is transparent — its members seat in the order shown, exactly
- * as top-level lanes do, so a take recorded into a group starts at the
- * left edge just as one recorded loose would. One-shots do not seat
+ * frame. A group with a window or a song seats as ONE lane (its pass
+ * is what its members are heard through) from its ↺, exactly a clip's;
+ * a plain group is transparent — its members seat in the order shown,
+ * exactly as top-level lanes do, so a take recorded into a group starts
+ * at the left edge just as one recorded loose would. One-shots do not seat
  * (their offset IS their placement, Q5), nor do drifting loops (Q22:
  * every pass lands their top somewhere else). A recording take seats by its
  * top alone: its period is unknown until stop and must not move the
@@ -1219,53 +1206,24 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
             if (!(n.duration > 0)) return;
             const t = topOf(n, authored);
             seats.push({ top: (n.origin || 0) + t.a0 + t.heard,
-                         period: n.isRecording ? 0 : clipCycleContribution(n, quantum) });
+                         period: n.isRecording ? 0 : clipCycleContribution(n, quantum),
+                         recording: !!n.isRecording });
         }
     });
     visit(nodes);
     if (!seats.length) return null;
     const grid = x => gridPhase +
         Math.floor((x - gridPhase) / quantum + SEAT_PICKUP_Q + EPS) * quantum;
-    let zero = grid(seats[0].top);
-    let cycle = quantum;
-    seats.forEach((s, i) => {
-        // The zero and every cycle-so-far are on the Q grid, so pulling
-        // by the lane's grid top keeps the zero there too.
-        if (i > 0) zero += cycle * Math.floor((grid(s.top) - zero) / cycle);
-        const p = Math.round(s.period || 0);
-        if (p > 0) cycle = lcm(cycle, p);
-    });
-    return zero;
-}
-
-/**
- * THE SETTLE's path (docs/frame.md §1): the frame zero at linear
- * progress `t` ∈ [0, 1] of a glide from `from` to the seat `target`.
- * The glide runs the SHORTEST WAY round the frame: to the
- * representative of the target (mod the frame length `frameSamples`)
- * nearest `from` — every lane's period divides the frame, so all
- * representatives draw the same picture, and a settle never sweeps
- * more than half a frame. easeInOut (cubic), and at t = 1 the zero is
- * the seat itself, exactly. Exported for the tests.
- */
-export function settleZero(from, target, frameSamples, t) {
-    if (!(t < 1)) return target;
-    const via = settleLanding(from, target, frameSamples);
-    return from + (via - from) * easeInOut(Math.max(0, t));
-}
-
-/** Where a settle from `from` lands: the representative of the seat
- * `target` (mod the frame) nearest `from` — the glide's own end, whose
- * picture is the seat's. The ruler names its lines from it. */
-export function settleLanding(from, target, frameSamples) {
-    return frameSamples > 0
-        ? from + posMod(target - from + frameSamples / 2, frameSamples) - frameSamples / 2
-        : target;
-}
-
-/** Cubic ease-in-out (the prototype's settle curve). */
-export function easeInOut(p) {
-    return p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
+    // THE LOOP THAT PLACES THE FRAME (owner 2026-09-29): the first loop
+    // LONGER than Q, in the order shown — a root song first when it
+    // carries one; a take being recorded counts (its frame is the one
+    // it will commit to). A 1Q loop never places anything: every bar
+    // line is its top. Every other loop SLOTS IN where its ↺ falls —
+    // editing it never moves the frame. With nothing longer than Q, the
+    // first loop places it.
+    const placer = seats.find(s => s.recording ||
+        Math.round(s.period || 0) > quantum) || seats[0];
+    return grid(placer.top);
 }
 
 /**
@@ -2483,57 +2441,24 @@ function withPendingEdit(c, e) {
 /**
  * THE ZERO DRAWN (docs/frame.md §1), by precedence:
  *
- *   drag pin ?? settle ?? edit hold ?? seat ?? the root's frame
+ *   drag pin ?? seat ?? the root's frame
  *
- * - The DRAG PIN (drag_pin.js) holds the frame a gesture engaged on,
- *   past its release until the final commit settles: a live commit
- *   re-anchors the edited lane's origin, and the seating would follow
- *   it under the pointer. Ignored while a take records (the frame
- *   grows with it).
- * - The SETTLE (opts.settle = { fromRel, t }): the frame gliding from
- *   the zero it showed, `fromRel` samples past the root frame, to the
- *   seat — t is the linear progress; settleZero eases it and takes the
- *   shortest way round `frameSamples` (the island cycle).
- * - The EDIT HOLD (opts.hold = { zeroRel, quantum }): while a lane is
- *   selected, the zero shown when the hold began. Both it and the
- *   settle's start are kept RELATIVE to the root frame (islandZero), so
- *   a seek — which moves the island zero and every origin together —
- *   moves them too. Suspended while any take is live or armed; void
- *   across a Q change (the grid it sat on is gone).
- *
- * The Q13 TRIM VIEW takes neither a settle nor a hold: its frame is the
- * definer's buffer, and the cursor it maps into the selection needs the
- * island zero the re-trim sets (mapPlayheadToDisplay) — a zero held
- * across a re-trim would sit on the old Q's grid.
- *
- * session_view/frame_hold.js decides when each applies; this only
- * resolves them. Returns { zero, source: 'pin'|'settle'|'hold'|'seat'|
- * 'root', settling }.
+ * The DRAG PIN (drag_pin.js) holds the frame a gesture engaged on,
+ * past its release until the final commit settles: a live commit
+ * re-anchors the edited lane's origin, and the seating would follow it
+ * under the pointer. Ignored while a take records (the frame grows with
+ * it). Otherwise the seat — there is no edit hold and no settle glide
+ * (owner 2026-09-29: the main view shows the loops' true alignment at
+ * once). Returns { zero, source: 'pin'|'seat'|'root' }.
  */
-function resolveFrameZero({ opts, seated, rootFrame, quantum, qEstablished,
-                            anyRecording, anyTakeActive, frameSamples,
-                            provisionalDefiner }) {
+function resolveFrameZero({ opts, seated, rootFrame, qEstablished, anyRecording }) {
     if (opts.pinFrameQ > 0 && qEstablished && !anyRecording &&
         Number.isFinite(opts.pinZero)) {
-        return { zero: opts.pinZero, source: 'pin', settling: false };
-    }
-    const s = opts.settle;
-    if (s && seated !== null && !provisionalDefiner &&
-        Number.isFinite(s.fromRel) && Number.isFinite(s.t)) {
-        const from = rootFrame + s.fromRel;
-        return { zero: settleZero(from, seated, frameSamples, s.t),
-                 landing: settleLanding(from, seated, frameSamples),
-                 source: 'settle', settling: s.t < 1 };
-    }
-    const h = opts.hold;
-    if (h && qEstablished && !anyTakeActive && !provisionalDefiner &&
-        Number.isFinite(h.zeroRel) &&
-        (!(h.quantum > 0) || h.quantum === quantum)) {
-        return { zero: rootFrame + h.zeroRel, source: 'hold', settling: false };
+        return { zero: opts.pinZero, source: 'pin' };
     }
     return seated !== null
-        ? { zero: seated, source: 'seat', settling: false }
-        : { zero: rootFrame, source: 'root', settling: false };
+        ? { zero: seated, source: 'seat' }
+        : { zero: rootFrame, source: 'root' };
 }
 
 /**
@@ -2626,22 +2551,15 @@ function retimeableOnceIdle(node, ctx, underMap) {
  *                  content.
  * opts.pinFrameQ / opts.pinFoldQ / opts.pinZero: the map-gesture frame
  *                  pin (drag_pin).
- * opts.hold:       the EDIT HOLD, { zeroRel, quantum } — the held zero
- *                  relative to the root frame (session_view/
- *                  frame_hold.js; resolveFrameZero).
- * opts.settle:     the SETTLE, { fromRel, t } — a glide from the zero
- *                  shown to the seat at linear progress t (ditto).
  * opts.pendingEdits: Map lane id → { segments?, originShift?, top? } —
  *                  a gesture's preview (applyPendingEdits).
  *
  * Returns the Q-unit view model:
  * {
  *   quantum, frameZero, sampleRate, isPlaying, qEstablished,
- *   seatedZero,      // the SEAT (samples) — the unpinned, unheld zero the
- *                    // frame settles to; null with nothing to seat
- *   frameZeroSource, // which rule drew frameZero: 'pin' | 'settle' |
- *                    // 'hold' | 'seat' | 'root'
- *   frameSettling,   // the zero is mid-glide (off the Q grid)
+ *   seatedZero,      // the SEAT (samples) — the unpinned zero the frame
+ *                    // rests on; null with nothing to seat
+ *   frameZeroSource, // which rule drew frameZero: 'pin' | 'seat' | 'root'
  *   rootFrame,       // the island zero (the Q grid's phase), samples
  *   monitorLatencyMs, // Q20: the calibrated round trip (ms) or null
  *   cycleQ,          // the DISPLAY FRAME lanes tile
@@ -2768,8 +2686,7 @@ export function deriveViewModel(state, opts = {}) {
     // shortest way round the island cycle just known — else the edit
     // hold, else the seat (resolveFrameZero, frame.md §1).
     const zeroOf = resolveFrameZero({
-        opts, seated, rootFrame, quantum, qEstablished, anyRecording,
-        anyTakeActive, frameSamples: cycleSamples, provisionalDefiner,
+        opts, seated, rootFrame, qEstablished, anyRecording,
     });
     const frameZero = zeroOf.zero;
     // THE ROOT'S STEP AUDITION (docs/sequencer.md §11.2): the root
@@ -2822,15 +2739,7 @@ export function deriveViewModel(state, opts = {}) {
     // then the root's, which the seating reproduces wherever both apply.
     let playheadQ;
     const growing = rawClock !== null && qEstablished
-        ? recordingHeadQ(nodes, rawClock, frameZero, quantum, lcmQ,
-                         // The rest zero is where the glide LANDS — the
-                         // seat ± whole frames when it takes the short
-                         // way round — never the seat itself: folded on
-                         // the seat, a wrapping glide put the growing
-                         // take a whole frame off (the frame grew, every
-                         // lane rescaled, then snapped back).
-                         zeroOf.settling && Number.isFinite(zeroOf.landing)
-                             ? zeroOf.landing : frameZero)
+        ? recordingHeadQ(nodes, rawClock, frameZero, quantum, lcmQ, frameZero)
         : null;
     if (growing !== null) {
         playheadQ = growing;
@@ -2988,20 +2897,16 @@ export function deriveViewModel(state, opts = {}) {
 
     attachFrameHealth(lanes, state, nodes, quantum, qEstablished);
 
-    // The grid rides the zero drawn (a settle's glide included), each
-    // line named where it lands (buildRulerTicks).
-    const ticks = buildRulerTicks(qEstablished, cycleQ, phiQ,
-        zeroOf.settling && Number.isFinite(zeroOf.landing)
-            ? (zeroOf.landing - frameZero) / quantum : 0);
+    // The grid rides the zero drawn (buildRulerTicks).
+    const ticks = buildRulerTicks(qEstablished, cycleQ, phiQ, 0);
 
     return {
         quantum,
         frameZero,
-        // THE SEAT — the unpinned, unheld zero the frame rests on when
-        // nothing holds it (frame.md §1); what a settle glides to.
+        // THE SEAT — the unpinned zero the frame rests on outside a live
+        // drag (frame.md §1).
         seatedZero: seated,
         frameZeroSource: zeroOf.source,
-        frameSettling: zeroOf.settling,
         // The root's own frame (islandZero): the Q grid's phase, and
         // what a seek moves together with every origin — a zero moving
         // RELATIVE to it is the frame moving, not the transport.

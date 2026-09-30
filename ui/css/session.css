@@ -1335,14 +1335,6 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) {
     .reps-layer .rep { transition: none; }
 }
-/* THE SETTLE (frame.md §1): the frame's zero glides by per-frame
-   re-derives (patch.js toggles the class), so every tile must sit where
-   each frame puts it — a morph would trail the glide, and a tile div
-   re-used across a frame edge would sweep across the lane. The live
-   bar keeps its edge glide. */
-#lanes.frame-settling .reps-layer .rep:not(.recording-bar) {
-    transition: none;
-}
 /* Canvases stack absolutely so a content swap can CROSS-FADE: the
    live→fetched waveform replacement at commit swaps two different
    renderings of the same audio (features shift a few px) — a hard

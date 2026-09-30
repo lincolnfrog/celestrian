@@ -41,7 +41,7 @@ An eight-agent diagnosis reproduced every one of these. Phase 1 fixed the glitch
 | **Frame `F`** | The shared visible cycle: the LCM of the lanes' periods. |
 | **Frame zero `Z`** | The island time of the frame's left edge. The view picks it ("seats" it, frame.md); the engine does not store it. |
 | **Splice (seam)** | A heard instant where the recording jumps. There is one at the **wrap** (the loop's end jumping back to its start) and one per **inner cut**. |
-| **Top `↺`** | The loop's one: where it reads as starting, and where the frame settles on deselect. Phase 2 makes it a stored mark: region edits leave it put while they still play it (resetting it to the region start when they drop it), and its drag **shifts** the audio in time (§9). A take never edited reads its region start. |
+| **Top `↺`** | The loop's one: where it reads as starting. The first loop longer than Q places the frame at its ↺ (frame.md §1). Phase 2 makes it a stored mark: region edits leave it put while they still play it (resetting it to the region start when they drop it), and its drag **shifts** the audio in time (§9). A take never edited reads its region start. |
 | **Swap / shift** | A swap changes *what* plays (region, splice, cut, trim); a shift changes *when* (the ↺ drag moves the take's origin). §9.2. |
 
 ---
@@ -292,9 +292,11 @@ Both are real effects. A swap is subtle on a steady groove, because the swapped-
 
 **A shift moves the ↺ and the audio together** on the lane, and the splices ride along. In the panel, the ↺ is Ableton's start marker: drag it onto the hit that should land on the one, and the audio moves so that it does. Both are the same verb: a new origin.
 
-### 9.4 The deselect settle
+### 9.4 The deselect settle (revoked 2026-09-29)
 
-On deselect the frame settles, animated, onto the bar lines of the first lane (every Q for a 1Q loop, every 4Q for a 4-bar bass). The ↺ lands at the left edge when it sits on one of those lines. A top up to ¼Q early counts as a pickup to the next line, so a take pulled slightly early does not throw the picture back a whole Q. The whole picture glides as one: tiles, handles, cursor, arm marker, and the ruler and gridlines too, each tick labelled where the glide lands it (built 2026-09-24; frame.md §1). The consequences:
+**Superseded (owner, 2026-09-29):** there is no hold and no deselect settle. The main view shows the loops' true alignment at once: an edit realigns it immediately. The first loop longer than Q places the frame (its ↺ is the left edge; a 1Q loop never places), and every other loop slots in where its ↺ falls, so editing a later loop never moves the frame or the play start (frame.md §1). The history below is kept for the record.
+
+On deselect the frame settled, animated, onto the bar lines of the first lane (every Q for a 1Q loop, every 4Q for a 4-bar bass). The ↺ lands at the left edge when it sits on one of those lines. A top up to ¼Q early counts as a pickup to the next line, so a take pulled slightly early does not throw the picture back a whole Q. The whole picture glides as one: tiles, handles, cursor, arm marker, and the ruler and gridlines too, each tick labelled where the glide lands it (built 2026-09-24; frame.md §1). The consequences:
 - A swapped part never moves on deselect.
 - A re-timed part stays visibly shifted against the lane that sets the bar lines. That is the honest picture of a re-time.
 
@@ -321,7 +323,7 @@ Seven workstreams, then one review pass. The fixes the review confirmed are appl
 
 | Step | State | Where |
 |---|---|---|
-| P2.1 edit hold + settle | built | `session_view/frame_hold.js`, `animator.js`, `app.js`; frame.md §1; session_view.md law 17 |
+| P2.1 edit hold + settle | built, then REMOVED 2026-09-29 (owner: realign at once) | frame.md §1; session_view.md law 17 |
 | P2.2 stored top + shift verb | built as ONE verb, `setTiming` | `src/time_map.h`, `clip_node.h`, `engine/map_edits.cc`, `edit_log.cc`, `session_io`; the mock twin; time_maps.md §7 |
 | P2.3 splice handles | built | `session_view/splice_handles.js`, the pluggable `runRawDrag`, `map_edit.js` `slideSeam`; time_maps.md §6 |
 | P2.4 ⇧-length at a splice | built, except the frame-length tween on release | `lengthAtSeam`, `runRevealDrag` |

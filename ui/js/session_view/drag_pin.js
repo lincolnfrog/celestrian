@@ -11,11 +11,8 @@
  * app.js reads the pins each render (mapDragPinQ / mapDragPinFoldQ /
  * mapDragPinZero) and feeds them to the view model; patchSessionView
  * records the latest frame each patch (noteFrame) so a gesture pins
- * the value that was on screen when it engaged — the zero AT REST: in
- * the middle of a settle (frame_hold.js) that is the settle's target,
- * never the gliding value, so a hand always edits a grid-true frame
- * (the glide completes as the hand comes down). The pin outranks the
- * edit hold and the settle (view_model resolveFrameZero).
+ * the value that was on screen when it engaged. The pin outranks the
+ * seat (view_model resolveFrameZero).
  */
 
 let dragPinQ = null;

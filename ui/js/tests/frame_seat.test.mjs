@@ -234,7 +234,7 @@ const drums = (segsQ, extra = {}) => island([
 
 test('(d) the drums settle on the bass\'s bar lines, the late top just in', () => {
     const vm = deriveViewModel(drums([[0, 2], [2, 4]]));
-    assert.equal(zeroQ(vm), 4, 'on the bass\'s bar line at or before 4.025');
+    assert.equal(zeroQ(vm), 0, 'the bass (the first loop longer than Q) places the frame');
     near(laneOf(vm, 'drums').topHeardQ, 0.025, '40 ms late shows 40 ms in');
 });
 
@@ -258,7 +258,7 @@ test('(d) a shift stays visibly shifted against the bar lines', () => {
     // still on the bass's bar at 4 — one bar in, as it sounds.
     const vm = deriveViewModel(drums([[0, 2], [2, 4]], { origin: Math.round(5.025 * Q),
                                                          retime: Q }));
-    assert.equal(zeroQ(vm), 4);
+    assert.equal(zeroQ(vm), 0);
     const d = laneOf(vm, 'drums');
     near(d.topHeardQ, 1.025, 'the ↺ a bar in');
     near(d.retimeQ, 1, 'retimeQ reads the shift');
@@ -303,10 +303,11 @@ test('(f) frame.md §2 pictures are unchanged (every top on the grid)', () => {
         { nodes: [clip('A', 0, 4), clip('C', 2, 6)],
           cycleQ: 12, tops: { A: 0, C: 2 } },
         // A is a 2Q loop; B an 8Q take recorded 1Q late, windowed to
-        // 1Q..5Q: B's top is a whole cycle of A off → the zero moves 2Q,
-        // B lands at 0, A's picture is unchanged.
+        // 1Q..5Q: B's top falls 2Q after A's. A — the first loop longer
+        // than Q — places the frame; B slots in there (owner
+        // 2026-09-29: a later loop never moves the frame).
         { nodes: [clip('A', 0, 2), windowed('B', 1, 8, [1, 5])],
-          cycleQ: 4, tops: { A: 0, B: 0 } },
+          cycleQ: 4, tops: { A: 0, B: 2 } },
     ];
     cases.forEach(({ nodes, cycleQ, tops }, i) => {
         const vm = deriveViewModel(island(nodes, 0.3));
@@ -318,4 +319,28 @@ test('(f) frame.md §2 pictures are unchanged (every top on the grid)', () => {
     // Unwindowed, the last picture's B sits 1Q in.
     const vm = deriveViewModel(island([clip('A', 0, 2), clip('B', 1, 8)], 0.3));
     near(laneOf(vm, 'B').takeStartQ, 1, 'unwindowed B at 1Q');
+});
+
+test('(g) the first loop LONGER than Q places the frame; a 1Q loop never ' +
+     'does, and editing a later loop never moves it (owner 2026-09-29)', () => {
+    // The field project: a 1Q bass at 0, a 2Q drum loop whose ↺ sounds
+    // at 21 + 84 = 105Q, and a long third loop recorded later.
+    const nodes = cStart => [
+        clip('bass', 0, 1),
+        windowed('drums', 21, 95, [83.57, 85.57], { loopTop: 84 * Q }),
+        windowed('clip3', 187, 43, [cStart, cStart + 29]),
+    ];
+    const a = deriveViewModel(island(nodes(10)));
+    assert.equal(zeroQ(a), 105, 'the drums’ ↺ is the left edge');
+    near(laneOf(a, 'drums').topHeardQ, 0, 'the drums start from their ↺');
+    near(laneOf(a, 'bass').topHeardQ, 0, 'the 1Q bass is on its bar');
+    // Editing clip 3's region moves clip 3 only.
+    for (const s of [0, 3, 7, 13, 14]) {
+        const b = deriveViewModel(island(nodes(s)));
+        assert.equal(zeroQ(b), 105, `clip 3 region from ${s}Q: the frame stays`);
+        near(laneOf(b, 'drums').topHeardQ, 0, '…the drums still start from their ↺');
+    }
+    // With nothing longer than Q, the first loop places it.
+    const ones = deriveViewModel(island([clip('x', 3, 1), clip('y', 5, 1)]));
+    assert.equal(zeroQ(ones) % 1, 0);
 });

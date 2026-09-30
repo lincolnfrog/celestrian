@@ -30,11 +30,9 @@ const REC_SNAP_BACK_PX = 40;
  * the stale clock as a poll.
  */
 export function patchSessionView(vm, aux) {
-    // Pin source for map gestures (see drag_pin.js): the zero AT REST —
-    // mid-settle, the glide's target.
+    // Pin source for map gestures (see drag_pin.js): the zero on screen.
     noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ,
-              vm.frameSettling && Number.isFinite(vm.seatedZero)
-                  ? vm.seatedZero : vm.frameZero);
+              vm.frameZero);
     // Transport (all writes idempotent — see the setText note)
     setText(ctx.els.playBtn, vm.isPlaying ? '⏸' : '▶');
     ctx.els.playBtn.classList.toggle('playing', vm.isPlaying);
@@ -116,11 +114,6 @@ export function patchSessionView(vm, aux) {
     if (rootStyle.getPropertyValue('--rail-depth') !== String(railDepth)) {
         rootStyle.setProperty('--rail-depth', String(railDepth));
     }
-
-    // THE SETTLE (frame.md §1): the zero glides by per-frame re-derives,
-    // so tiles must land where each derive puts them — a tile's own
-    // left/width transition would trail the glide (session.css).
-    ctx.els.lanes.classList.toggle('frame-settling', !!vm.frameSettling);
 
     // Lanes: keyed reconciliation in VM order
     const seen = new Set();

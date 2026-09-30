@@ -13,8 +13,7 @@ import { deriveViewModel, findNodeInTree, armMode, hasInstrument }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
          mapDragPinZero, activeSelectedId, selection, selectWhenPresent,
-         frameHoldOptions, noteFrameShown, settleInMotion, pendingEditsFor,
-         setRenderer, isGestureLive }
+         pendingEditsFor, setRenderer }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { peakCountFor } from './peak_density.js';
@@ -783,59 +782,37 @@ function syncMidiTarget() {
 
 /* ---------- the render ---------- */
 /* The last POLLED state, and the patch inputs its poll built: a
- * re-render between polls (requestRender — the settle's glide, a
- * gesture's pending preview) derives from these, never from a poll of
- * its own. */
+ * re-render between polls (requestRender — a gesture's pending
+ * preview) derives from these, never from a poll of its own. */
 let lastState = null;
 let lastAux = null;
-let settleRaf = 0;          // the settle's pending animation frame
-
-/** prefers-reduced-motion: the settle jumps instead of gliding. */
-function prefersReducedMotion() {
-    try {
-        return !!(window.matchMedia &&
-            window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    } catch (_) {
-        return false;
-    }
-}
 
 /**
  * Derive the view model from `state` with everything the VIEW layers
  * over the engine's facts: the fold / fx / sequencer / comp view
- * state, the drag pin, the edit hold and its settle (frame_hold.js —
- * keyed on the active selection, suspended while a take is live or
- * armed, never moving under a hand), and a gesture's pending preview
- * (pending_edits.js). Records the frame facts every seek and placement
- * is computed against (lastFrame) — the zero ON SCREEN.
+ * state, the drag pin, and a gesture's pending preview
+ * (pending_edits.js). No edit hold (owner 2026-09-29): outside a live
+ * drag the frame rests on the seat, so an edit realigns the main view
+ * at once. Records the frame facts every seek and placement is
+ * computed against (lastFrame) — the zero ON SCREEN.
  */
 function deriveFrame(state) {
     const now = performance.now();
     const rootFrame = state.islandZero ?? state.origin ?? 0;
-    const { hold, settle } = frameHoldOptions({
-        key: activeSelectedId(),
-        takeActive: [...lastNodesById.values()].some(isHotClip),
-        handDown: isGestureLive() || mapDragPinQ() !== null,
-        now,
-        reducedMotion: prefersReducedMotion(),
-        islandId: state.id || '',
-    });
     const vm = deriveViewModel(state,
         { folded: foldedStacks(projectInfo.id),
           fxOpen, seqOpen, compMode, retakes,
           pinFrameQ: mapDragPinQ(),
           pinFoldQ: mapDragPinFoldQ(),
           pinZero: mapDragPinZero(),
-          hold, settle,
           pendingEdits: pendingEditsFor(id => lastNodesById.get(id),
                                         rootFrame, now) });
-    noteFrameShown(vm, rootFrame, now);
     lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
         Number.isFinite(state.islandPos)
         ? { zero: vm.frameZero,
-            // Where the loops' tops line up (frame.md §1) — the zero
-            // drawn, unless an edit hold keeps an older one on screen.
-            // The default play start is measured from here (law 15).
+            // The seat (frame.md §1) — the zero drawn, except under a
+            // live drag's pin. The default play start is measured from
+            // here (law 15).
             seat: Number.isFinite(vm.seatedZero) ? vm.seatedZero : vm.frameZero,
             rawClock: state.islandPos + (state.islandZero ?? 0),
             loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum,
@@ -844,8 +821,7 @@ function deriveFrame(state) {
     return vm;
 }
 
-/** Patch the view from `vm`; while the frame settles, re-derive and
- * patch once per animation frame until the glide lands. */
+/** Patch the view from `vm`. */
 function patchFrame(vm, aux) {
     patchSessionView(vm, Object.assign({}, aux, {
         vmQuantum: vm.quantum,
@@ -853,17 +829,11 @@ function patchFrame(vm, aux) {
         // computed in the island frame (one-frame rule)
         frameZero: vm.frameZero,
     }));
-    if (settleInMotion() && !settleRaf) {
-        settleRaf = requestAnimationFrame(() => {
-            settleRaf = 0;
-            renderNow();
-        });
-    }
 }
 
 /**
  * requestRender (session_view/render_request.js): re-derive from the
- * LAST polled state — pins, hold, settle and pending edits as they are
+ * LAST polled state — pins and pending edits as they are
  * now — and patch at once, without a poll. The playhead's
  * dead-reckoner takes the frame's move, never the stale clock
  * (aux.rerender; animator.js animatorFrame).

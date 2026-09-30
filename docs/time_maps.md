@@ -235,10 +235,9 @@ surfaces in §6, not by refusing to reframe.
 The anchoring law says where a loop's content *sounds*. Where the
 frame's left edge sits is a separate fact, and it is not stored: the
 view **seats** the zero from the lanes in the order they are shown —
-the first lane's top is the top, and each next lane pulls the zero
-forward by whole cycles-so-far until its own top lies inside the
-current cycle, landing at the left edge when it can and otherwise at
-its offset, wrap ghosted. The full statement, the pictures and the
+the first loop longer than Q places it (its ↺ is the left edge), and
+every other loop slots in where its ↺ falls, wrap ghosted (owner,
+2026-09-29). The full statement, the pictures and the
 rulings live in frame.md. No map edit and no commit moves an island
 fact; the island zero is the first take's origin, Q's grid phase, and
 only a Q13 re-trim or a seek moves it.

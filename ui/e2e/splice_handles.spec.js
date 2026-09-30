@@ -292,16 +292,14 @@ test.describe('The ↺ glide', () => {
         };
         const tick = () => {
             out.push({ top: xOf('.lr-layer > .lr-top:not(.lr-ghost)'),
-                       wrap: xOf('.lr-layer > .lr-wrap:not(.lr-ghost)'),
-                       settling: document.getElementById('lanes')
-                           .classList.contains('frame-settling') });
+                       wrap: xOf('.lr-layer > .lr-wrap:not(.lr-ghost)') });
             if (performance.now() - t0 < ms) requestAnimationFrame(tick);
             else done(out);
         };
         requestAnimationFrame(tick);
     }), { id, ms });
 
-    test('an instant edit that resets the ↺ glides it; a settle never waits on the glide', async ({ page }) => {
+    test('an instant edit that resets the ↺ glides it', async ({ page }) => {
         const { Q, id2 } = await setup(page);
         await page.evaluate(({ id, Q }) =>
             window.__celestrianTest.callNative('setTiming', id, 0, 7 * Q), { id: id2, Q });
@@ -322,24 +320,6 @@ test.describe('The ↺ glide', () => {
         expect(frames.at(-1).top).toBeCloseTo(2, 2);
         expect(frames.filter(f => f.wrap > 1.05 && f.wrap < 1.95).length,
             'the splice does not glide').toBe(0);
-
-        // Undo brings raw 7 back: the ↺ glides back — and a deselect
-        // right away SETTLES the frame, which the glide gives way to at
-        // once (the ↺ rides the frame with the audio, never behind it).
-        await page.waitForTimeout(1200);   // the nudge chain's pin lets go
-        const settleP = sampleFrames(page, id2, 900);
-        await page.keyboard.press('ControlOrMeta+z');
-        await page.waitForTimeout(60);
-        await page.keyboard.press('Escape');
-        const settle = await settleP;
-        expect(await loopOf(page, id2, Q)).toBe('7,11');
-        const settling = settle.filter(f => f.settling && f.top !== null && f.wrap !== null);
-        expect(settling.length, 'the frame settled').toBeGreaterThan(3);
-        for (const f of settling) {
-            // Raw 7 IS the region start again: the ↺ sits on the splice
-            // in every settling frame — no glide trailing the frame.
-            expect(Math.abs(f.top - f.wrap), JSON.stringify(f)).toBeLessThan(0.02);
-        }
     });
 });
 

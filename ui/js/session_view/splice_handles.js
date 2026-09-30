@@ -52,8 +52,7 @@
  * THE GLIDE: an instant edit that RESETS the ↺ — a cut, heal, nudge,
  * undo or redo moving the top's raw sample, and so where it sounds —
  * glides it TOP_GLIDE_MS to its new place instead of jumping. Never
- * under a hand, and never against the frame's own settle
- * (vm.frameSettling: the glide gives way and the ↺ rides the frame).
+ * under a hand.
  *
  * THE RECORDING GATE: under it every handle draws INERT (.lr-inert, the
  * gate's tooltip, no gesture) — where the loop is stays visible.
@@ -351,7 +350,7 @@ function noteTop(body, c, keep) {
     const prev = body._lrTopPrev;
     const cur = c.withTop ? { topQ: c.lane.topQ, heardQ: c.lane.topHeardQ } : null;
     body._lrTopPrev = cur;
-    if (!cur || keep || c.vm.frameSettling || reducedMotion()) {
+    if (!cur || keep || reducedMotion()) {
         body._lrGlide = null;
         return;
     }

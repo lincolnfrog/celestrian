@@ -79,11 +79,12 @@ test('take marking: performed PHASE is kept; whole cycles fold away', () => {
 test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', () => {
     // The 4-clip flow: 1Q, 4Q (zero definer), 2Q performed at heard 2Q,
     // then 5Q performed at a heard cycle TOP three old cycles later. The
-    // frame explodes to 20Q and the engine re-bases the zero to clip
-    // 4's heard top (whole old cycles — phase-neutral). Each committed
-    // take carries `contextCycle` (its heard frame): the bright tile
-    // marks at the heard PHASE — clip 4 at [0,5), clip 3 STILL at
-    // [2,4) even though its rel is now negative.
+    // frame explodes to 20Q. The 4Q clip — the first loop longer than Q
+    // — places the frame at its top (1Q); every later loop slots in
+    // where it falls (owner 2026-09-29). Each committed take carries
+    // `contextCycle` (its heard frame): the bright tile marks at the
+    // heard PHASE — clip 3 STILL at [2,4) even though its rel is now
+    // negative, clip 4 at its performed top, 12Q into the frame.
     const E = 13 * Q; // zero after clip 4's commit (= clip 4's origin)
     const vm = deriveViewModel(state([
         clip(1, { origin: 0 }),                          // pre-zero, ctx 0
@@ -94,9 +95,10 @@ test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', (
     assert.equal(vm.cycleQ, 20);
     const [c1, c2, c3, c4] = vm.lanes;
 
+    assert.equal(vm.frameZero, 1 * Q, 'the 4Q clip places the frame');
     const take4 = c4.reps.find(r => !r.ghost);
-    assert.equal(take4.startQ, 0, 'clip 4 reads from the top it was performed at');
-    assert.equal(take4.endQ, 5);
+    assert.equal(take4.startQ, 12, 'clip 4 reads from the top it was performed at');
+    assert.equal(take4.endQ, 17);
 
     const take3 = c3.reps.find(r => !r.ghost);
     assert.equal(take3.startQ, 2, 'clip 3 keeps its heard 2Q anchor (rel −6, ctx 4)');
@@ -111,7 +113,7 @@ test('FIELD 2026-07-16b: heard phases survive a polyrhythmic frame explosion', (
     // takeStartQ: the lane's content-frame origin — window brackets/dims
     // anchor here (field 2026-07-16c: they drew a phase off otherwise)
     assert.equal(c3.takeStartQ, 2);
-    assert.equal(c4.takeStartQ, 0);
+    assert.equal(c4.takeStartQ, 12);
     assert.equal(c1.takeStartQ, 0);
 });
 

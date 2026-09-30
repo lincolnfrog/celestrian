@@ -50,9 +50,10 @@ test('a committed looping clip can be re-timed; its fields read the node', () =>
     assert.equal(b.canRetime, true);
     assert.equal(b.topQ, 7);
     assert.equal(b.retimeQ, 0.5);
-    // The ↺ sounds at 2.5 + 6 + 1 = 9.5Q: 1.5Q into the 4Q frame at 8Q
-    // (the zero seats on A's bar line at or before B's top).
-    assert.equal(vm.frameZero, 8 * Q);
+    // The ↺ sounds at 2.5 + 6 + 1 = 9.5Q: 1.5Q into the 4Q frame. A —
+    // the first loop longer than Q — places the frame at its top (0);
+    // B slots in (owner 2026-09-29).
+    assert.equal(vm.frameZero, 0);
     assert.ok(Math.abs(b.topHeardQ - 1.5) < 1e-9, `topHeardQ ${b.topHeardQ}`);
     assert.ok(b.topHeardQ >= 0 && b.topHeardQ < b.periodQ, 'within one period');
     const a = laneOf(vm, 'A');
