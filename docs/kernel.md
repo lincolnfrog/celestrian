@@ -118,6 +118,41 @@ A bonus of the island frame: every committed sibling's phase is simply
 durations. That deleted the arm-path sibling launch-point scans and the
 playback offsets entirely.
 
+### The seam fade
+
+The playback equation is exact, and so it is also abrupt: wherever it
+jumps in the source — the loop wrap, a map splice, a comp cell changing
+takes, a one-shot's edges — the waveform steps, and a step is a click.
+`ClipNode::applySeamFades` smooths every such seam over 4 ms
+(`seamFadeSamples`, a raised-cosine pair summing to 1), on the dry
+content before the gate and the rack. Timing never moves: each seam
+takes the first of three treatments its material allows —
+
+1. **The outgoing runs on.** When the take holds material past the
+   outgoing run's end (a trimmed region's tail, the cut side of a
+   splice, the other take of a comp), it crossfades into the incoming
+   *after* the seam. The incoming lands on time; the outgoing ends
+   where it was cut, only faded instead of chopped.
+2. **The incoming leads in.** Else, when the take holds material
+   before the incoming run's start, the crossfade happens *before* the
+   seam and arrives at the incoming's first sample exactly on time.
+3. **A dip.** Else — a fresh loop, whose take is exactly the loop —
+   2 ms out, 2 ms in.
+
+Silence (a one-shot's rest) always extends, so a shot fades into its
+rest and back in at its top. The fade reads beyond a run only inside
+the take's own recorded content (`RunSource` — never a padded tail or
+the reservation past the write head), and it shortens to half the
+shortest segment, cell or rest so no two seams' windows meet.
+
+It is a pure function of `t` like the equation it smooths: a bounce
+hears exactly what playback does, and the block size never changes a
+sample (`tests/seam_fade_tests.cc`). The rest of the suite runs with
+the switch (`ClipNode::seam_fades_enabled`) off, so its oracles stay
+the bare law. Scope: a clip's OWN seams. A stack's map or cue step
+re-times its children's clocks (`StackNode::forEachSeamRun`) and is
+not smoothed here.
+
 ---
 
 ## 3. The transport and the recording lifecycle

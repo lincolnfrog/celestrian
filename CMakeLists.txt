@@ -288,6 +288,7 @@ target_sources(CelestrianTests PRIVATE
     tests/definer_handoff_tests.cc
     tests/graph_snapshot_tests.cc
     tests/render_purity_tests.cc
+    tests/seam_fade_tests.cc
     tests/project_manager_tests.cc
     tests/take_capacity_tests.cc
     tests/time_map_record_tests.cc

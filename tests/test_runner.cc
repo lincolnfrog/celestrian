@@ -3,6 +3,7 @@
 
 #include <iostream>
 
+#include "../src/clip_node.h"
 #include "../src/plugin_scan_worker.h"
 
 namespace {
@@ -36,6 +37,12 @@ int main(int argc, char* argv[]) {
   // every AudioEngine construction in the suite does. Tests that create
   // their own ScopedJuceInitialiser_GUI just nest (reference counted).
   const juce::ScopedJuceInitialiser_GUI juce_runtime;
+
+  // The suite's render oracles are the kernel law, sample-exact
+  // (content[(t − origin) mod period]); the seam fade smooths exactly
+  // the samples around each seam, so it is off here and
+  // seam_fade_tests.cc pins it on its own.
+  celestrian::ClipNode::seam_fades_enabled.store(false);
 
   ConsoleRunner runner;
   runner.setAssertOnFailure(false);

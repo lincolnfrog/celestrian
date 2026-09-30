@@ -320,6 +320,17 @@ class ClipNode : public AudioNode {
   juce::AudioBuffer<float>& contentForTest() { return *content_.load(); }
   bool capHit() const { return cap_hit_.load(); }
 
+  /** THE SEAM FADE's length (docs/kernel.md §2): 4 ms — long enough
+   * that no seam clicks, short enough to hear as a cut, not a fade. */
+  static int64_t seamFadeSamples(double sample_rate) {
+    return (int64_t)(sample_rate * 0.004);
+  }
+  /** THE SEAM FADE's switch: on in the app. The test runner turns it
+   * off so the kernel-law oracles stay sample-exact
+   * (content[(t − origin) mod period]); tests/seam_fade_tests.cc turns
+   * it back on for its own checks. Process-wide; read once per render. */
+  static inline std::atomic<bool> seam_fades_enabled{true};
+
   // --- Q13 lock-collapse ---
   /** Where this clip's committed content begins inside the storage
    * buffer. 0 for every normally-recorded take; a lock-collapse shifts
@@ -986,6 +997,9 @@ class ClipNode : public AudioNode {
   SeqLock take_lock_;
   std::atomic<int> take_table_count_{0};
   std::atomic<const juce::AudioBuffer<float>*> take_buffers_[kMaxTakes]{};
+  // Each inactive buffer's recorded extent (raw samples) — the seam
+  // fade reads past a run's end only inside it (never the reservation).
+  std::atomic<int64_t> take_recorded_[kMaxTakes]{};
   std::atomic<int> comp_n_{0};
   std::atomic<int64_t> comp_q_{0};
   std::atomic<int8_t> comp_cells_[kMaxCompCells]{};
@@ -997,8 +1011,33 @@ class ClipNode : public AudioNode {
     int active = 0;
     int8_t cells[kMaxCompCells] = {};
     const juce::AudioBuffer<float>* buffers[kMaxTakes] = {};
+    int64_t recorded[kMaxTakes] = {};
   };
   void readCompView(CompView& v) const;
+  /** One run's read source: the channel of the buffer the comp names at
+   * inner position `inner` (else the active buffer), its size, and the
+   * raw extent [lo, hi) the seam fade may read beyond a run — the
+   * take's own recorded content, never the reservation past it. Audio
+   * thread; the one pick rule for content reads and the seam fade. */
+  struct RunSource {
+    const float* data = nullptr;
+    int64_t cap = 0;
+    int64_t lo = 0, hi = 0;
+  };
+  RunSource runSource(const juce::AudioBuffer<float>& active, int c,
+                      int64_t inner, const CompView& comp) const;
+  /** THE SEAM FADE (docs/kernel.md §2, "The seam fade"): a pure pass
+   * over the rendered channel `scratch` for the block [t, t + n) that
+   * smooths every seam within `fade` samples of the block — the loop
+   * wrap, a map splice, a comp cell changing takes, a one-shot's edges
+   * — so a jump in the source never reaches the speaker as a step.
+   * Stateless in t, like the render equation itself (a bounce hears
+   * exactly what playback does). */
+  void applySeamFades(float* scratch, int c,
+                      const juce::AudioBuffer<float>& active,
+                      const CompView& comp, int64_t t, int n, int64_t origin,
+                      const timing::TimeMap& map, int64_t fold,
+                      int64_t cell_len, int64_t fade) const;
   /** Republish take_buffers_ from the list (message thread, after any
    * list change and before a detached buffer retires). */
   void publishTakeTable();

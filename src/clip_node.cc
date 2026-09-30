@@ -22,6 +22,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "graph_snapshot.h"
 #include "rt_log.h"
@@ -606,7 +607,6 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // the tail rings, the buffer rests.
         const int64_t cell_len = comp.n > 0 ? comp.q : 0;
         for (int c = 0; c < (stereo_content ? 2 : 1); ++c) {
-          const float* data = buffer.getReadPointer(c);
           float* scratch = c == 0 ? fx_scratch_.data() : fx_scratch2_.data();
           if (fully_off) {
             std::fill(scratch, scratch + context.num_samples, 0.0f);
@@ -620,24 +620,20 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
                   return;
                 }
                 const int64_t p0 = at.inner;
-                const float* src = data;
-                int64_t src_cap = cap;
-                if (cell_len > 0) {
-                  const int64_t cell = p0 / cell_len;
-                  const int pick = cell < comp.n ? comp.cells[cell] : -1;
-                  if (pick >= 0 && pick < comp.count && pick != comp.active &&
-                      comp.buffers[pick] != nullptr &&
-                      comp.buffers[pick]->getNumSamples() > 0) {
-                    const juce::AudioBuffer<float>& tb = *comp.buffers[pick];
-                    src = tb.getReadPointer(
-                        std::min(c, tb.getNumChannels() - 1));
-                    src_cap = tb.getNumSamples();
-                  }
-                }
+                const RunSource src = runSource(buffer, c, p0, comp);
                 for (int k = 0; k < run; ++k) {
-                  scratch[(size_t)(i + k)] = src[(base + p0 + k) % src_cap];
+                  scratch[(size_t)(i + k)] =
+                      src.data[(base + p0 + k) % src.cap];
                 }
               });
+          // THE SEAM FADE: every jump the runs above made (the wrap, a
+          // splice, a comp cell, a one-shot edge) is smoothed here, on
+          // the dry content — before monitoring, the gate and the rack.
+          applySeamFades(scratch, c, buffer, comp, context.master_pos,
+                         context.num_samples, org, map, cyc, cell_len,
+                         seam_fades_enabled.load(std::memory_order_relaxed)
+                             ? seamFadeSamples(context.sample_rate)
+                             : 0);
         }
         // SOFTWARE INPUT MONITORING (Q20): this block's arrivals, read
         // from the pre-record ring, join the dry signal HERE — ahead of
@@ -821,6 +817,130 @@ void ClipNode::sumOutputStage(float* const* output_channels,
                                                    g, n);
     }
   }
+}
+
+ClipNode::RunSource ClipNode::runSource(const juce::AudioBuffer<float>& active,
+                                        int c, int64_t inner,
+                                        const CompView& comp) const {
+  // The fade reads past a run only inside the take's own content
+  // [base, base + duration) — what a bypassed map plays, so committed —
+  // and only what was recorded: a padded take's tail, the unwritten
+  // head of a retake into a collapsed slot and the reservation past
+  // the write head are never read.
+  const int64_t base = content_base_.load();
+  const int64_t end = base + duration_samples.load();
+  if (comp.n > 0 && comp.q > 0 && inner >= 0) {
+    const int64_t cell = inner / comp.q;
+    const int pick = cell < comp.n ? comp.cells[cell] : -1;
+    if (pick >= 0 && pick < comp.count && pick != comp.active &&
+        comp.buffers[pick] != nullptr &&
+        comp.buffers[pick]->getNumSamples() > 0) {
+      const juce::AudioBuffer<float>& tb = *comp.buffers[pick];
+      const int64_t cap = tb.getNumSamples();
+      return {tb.getReadPointer(std::min(c, tb.getNumChannels() - 1)), cap,
+              base, std::min({cap, comp.recorded[pick], end})};
+    }
+  }
+  const int64_t cap = active.getNumSamples();
+  return {active.getReadPointer(c), cap, base,
+          std::min({cap, (int64_t)write_position.load(), end})};
+}
+
+namespace {
+/** The raised-cosine ramp 0 → 1 at sample j of a `len`-sample fade
+ * (sampled at centres, so the two ends mirror and the pair sums to 1). */
+float seamRamp(int64_t j, int64_t len) {
+  return 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi *
+                                ((float)j + 0.5f) / (float)len);
+}
+}  // namespace
+
+void ClipNode::applySeamFades(float* scratch, int c,
+                              const juce::AudioBuffer<float>& active,
+                              const CompView& comp, int64_t t, int n,
+                              int64_t origin, const timing::TimeMap& map,
+                              int64_t fold, int64_t cell_len,
+                              int64_t fade) const {
+  // Seams sit a segment, a cell or the rest apart at the least; half
+  // that bounds the fade, so no two seams' windows ever overlap and
+  // each window blends the plain reads the render just made.
+  const int64_t shot = map.period();
+  int64_t F = fade;
+  for (int s = 0; s < map.n; ++s) {
+    F = std::min(F, (map.segs[s].end - map.segs[s].start) / 2);
+  }
+  if (fold > shot) F = std::min(F, (fold - shot) / 2);
+  if (cell_len > 0) F = std::min(F, cell_len / 2);
+  if (F < 2) return;
+
+  // One side of a seam: the raw sample at its edge, or silence (a rest).
+  struct Edge {
+    RunSource src;
+    int64_t idx = 0;
+    bool silent = true;
+  };
+  const int64_t base = content_base_.load();
+  Edge out;
+  bool have_out = false;
+  // Walk [t − F, t + n + F): every seam whose window reaches the block.
+  // Each run boundary is a candidate; a continuous one (the same
+  // buffer, the next sample — cell edges, inner-adjacent segments) is
+  // no seam at all.
+  timing::forEachContentRun(
+      t - F, n + (int)(2 * F), origin, map, fold, cell_len,
+      [&](int i, int run, const timing::InnerAt& at) {
+        Edge in;
+        if (!at.rest) {
+          in.src = runSource(active, c, at.inner, comp);
+          in.idx = base + at.inner;
+          in.silent = false;
+        }
+        const bool seam =
+            have_out &&
+            (out.silent ? !in.silent
+                        : in.silent || in.src.data != out.src.data ||
+                              in.idx != out.idx + 1);
+        if (seam) {
+          const int64_t k0 = (int64_t)i - F;  // the seam's block offset
+          auto blend = [&](int64_t k, float keep, float add) {
+            if (k >= 0 && k < n) scratch[k] = keep * scratch[k] + add;
+          };
+          if (out.silent || out.idx + F < out.src.hi) {
+            // The outgoing material runs on past the seam (its recorded
+            // tail, or silence): cross it into the incoming AFTER the
+            // seam, so the incoming lands on time and the outgoing
+            // ends where it was cut.
+            for (int64_t j = 0; j < F; ++j) {
+              const float w = seamRamp(j, F);
+              const float tail =
+                  out.silent ? 0.0f : out.src.data[out.idx + 1 + j];
+              blend(k0 + j, w, (1.0f - w) * tail);
+            }
+          } else if (in.silent ||
+                     (in.idx - F >= in.src.lo && in.idx < in.src.hi)) {
+            // No tail, but the incoming has a lead-in: cross into it
+            // BEFORE the seam, arriving at the incoming's first sample.
+            for (int64_t j = 0; j < F; ++j) {
+              const float w = seamRamp(j, F);
+              const float lead =
+                  in.silent ? 0.0f : in.src.data[in.idx - F + j];
+              blend(k0 - F + j, 1.0f - w, w * lead);
+            }
+          } else {
+            // Neither side extends (a fresh loop's wrap — its take is
+            // exactly the loop): out and in through a brief dip.
+            const int64_t h = F / 2;
+            for (int64_t j = 0; j < h; ++j) {
+              const float w = seamRamp(j, h);
+              blend(k0 - h + j, 1.0f - w, 0.0f);
+              blend(k0 + j, w, 0.0f);
+            }
+          }
+        }
+        out = in;
+        if (!in.silent) out.idx = in.idx + run - 1;
+        have_out = true;
+      });
 }
 
 void ClipNode::renderMidi(float* const* output_channels,
@@ -1658,6 +1778,7 @@ void ClipNode::readCompView(CompView& v) const {
     }
     for (int i = 0; i < kMaxTakes; ++i) {
       v.buffers[i] = take_buffers_[i].load(std::memory_order_relaxed);
+      v.recorded[i] = take_recorded_[i].load(std::memory_order_relaxed);
     }
   });
   if (v.n < 0 || v.n > kMaxCompCells) v.n = 0;
@@ -1672,6 +1793,8 @@ void ClipNode::publishTakeTable() {
       const juce::AudioBuffer<float>* b =
           i < n ? takes_[(size_t)i].buffer.get() : nullptr;
       take_buffers_[i].store(b, std::memory_order_relaxed);
+      take_recorded_[i].store(i < n ? takes_[(size_t)i].recorded : 0,
+                              std::memory_order_relaxed);
     }
   });
 }
