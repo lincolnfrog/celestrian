@@ -76,6 +76,20 @@ class CelestrianApplication : public juce::JUCEApplication {
       JUCEApplication::getInstance()->systemRequestedQuit();
     }
 
+    // Coming back to the app (alt-tab, a taskbar click) must bring the
+    // keyboard back to the page — Space, R, +/− live there. Deferred:
+    // JUCE restores its own focus record during the activation itself,
+    // and the hand-off must land after it.
+    void activeWindowStatusChanged() override {
+      DocumentWindow::activeWindowStatusChanged();
+      if (!isActiveWindow()) return;
+      juce::Component::SafePointer<MainComponent> main(
+          dynamic_cast<MainComponent*>(getContentComponent()));
+      juce::MessageManager::callAsync([main] {
+        if (main != nullptr) main->focusWebView();
+      });
+    }
+
    private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainWindow)
   };

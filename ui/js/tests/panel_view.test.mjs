@@ -22,8 +22,8 @@ import assert from 'node:assert/strict';
 
 import { clampView, fitRegion, fitTake, zoomAbout, panBy, centerOn,
          keepInView, gridStep, gridLines, xOf, qAt, wheelZoomFactor,
-         wheelPanQ, boxDragView, boxEdgeView, regionBounds, sameView,
-         PANEL_MIN_SPAN_Q, FIT_REGION_FRAC, BOX_ZOOM_DEAD_PX }
+         wheelPanQ, boxEdgeView, keyZoomView, regionBounds, sameView,
+         PANEL_MIN_SPAN_Q, FIT_REGION_FRAC, PANEL_KEY_ZOOM_STEP }
     from '../session_view/panel_view.js';
 import { peaksBoost } from '../canvas_renderer.js';
 
@@ -184,20 +184,38 @@ test('wheel: ctrl/pinch zooms (down = out); shift or a sideways swipe pans', () 
     near(wheelPanQ({ deltaX: 100, deltaY: 0, shiftKey: true }, v, 800), 0.5);
 });
 
-test('overview box: sideways pans, vertical zooms (down = in) past a dead zone', () => {
+test('+/− keys: zoom about the playhead, which holds its place on the strip', () => {
     const v0 = { q0: 20, spanQ: 8 };
-    // Pure pan (a wobbly hand inside the dead zone does not zoom).
-    const p = boxDragView(v0, 3, BOX_ZOOM_DEAD_PX, 56);
-    assert.deepEqual(p, { q0: 23, spanQ: 8 });
-    // Down = zoom in about the box's centre.
-    const zin = boxDragView(v0, 0, 60, 56);
-    assert.ok(zin.spanQ < 8);
-    near(zin.q0 + zin.spanQ / 2, 24);
-    const zout = boxDragView(v0, 0, -60, 56);
-    assert.ok(zout.spanQ > 8);
-    near(zout.q0 + zout.spanQ / 2, 24);
-    // Clamped at the take.
-    assert.deepEqual(boxDragView(v0, -99, 0, 56), { q0: 0, spanQ: 8 });
+    // The playhead a quarter of the way in: in by one step, it stays a
+    // quarter of the way in.
+    const zin = keyZoomView(v0, 22, 1, 56);
+    near(zin.spanQ, 8 / PANEL_KEY_ZOOM_STEP);
+    near((22 - zin.q0) / zin.spanQ, 0.25);
+    // Out by one step: the same, the other way; in then out round-trips.
+    const zout = keyZoomView(v0, 22, -1, 56);
+    near(zout.spanQ, 8 * PANEL_KEY_ZOOM_STEP);
+    near((22 - zout.q0) / zout.spanQ, 0.25);
+    const back = keyZoomView(zin, 22, -1, 56);
+    near(back.q0, v0.q0);
+    near(back.spanQ, v0.spanQ);
+});
+
+test('+/− keys: a playhead outside the view is brought to its middle; none zooms the middle', () => {
+    const v0 = { q0: 20, spanQ: 8 };
+    const far = keyZoomView(v0, 45, 1, 56);
+    near(far.q0 + far.spanQ / 2, 45);
+    near(far.spanQ, 8 / PANEL_KEY_ZOOM_STEP);
+    // No playhead (not finite): about the view's own middle.
+    const mid = keyZoomView(v0, NaN, 1, 56);
+    near(mid.q0 + mid.spanQ / 2, 24);
+    // Clamped at the take's ends and at the deepest / widest zoom.
+    const edge = keyZoomView(v0, 55, 1, 56);
+    assert.ok(edge.q0 + edge.spanQ <= 56 + 1e-9);
+    let v = v0;
+    for (let i = 0; i < 40; i++) v = keyZoomView(v, 22, 1, 56);
+    near(v.spanQ, PANEL_MIN_SPAN_Q);
+    for (let i = 0; i < 40; i++) v = keyZoomView(v, 22, -1, 56);
+    assert.deepEqual(v, { q0: 0, spanQ: 56 });
 });
 
 test('overview box edges set the span; the other edge holds', () => {

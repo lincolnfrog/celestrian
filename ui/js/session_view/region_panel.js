@@ -7,12 +7,14 @@
  * map's structure need a home that never rescales the lane. The panel
  * is that home: a full-row, viewport-pinned panel under the selected
  * clip/group with
- *   - an OVERVIEW strip: the whole raw take (fixed gain), the kept
- *     region tinted, the cuts notched, the amber cursor, and the
- *     detail view as an outlined box — drag the box = pan (vertically
- *     = zoom, Ableton's clip-view selector), drag its edges = set the
- *     span, click elsewhere = centre there, double-click = the whole
- *     take;
+ *   - a NAVIGATOR bar (owner 2026-09-29: not a third waveform — the
+ *     detail below already draws the take): an abstract map of the
+ *     whole take — its extent as a line, the kept region as solid
+ *     blocks, cuts as the gaps between them, the ↺ tick, the amber
+ *     cursor, and the detail view as an outlined box — drag the box =
+ *     pan, drag its edges = set the span, click elsewhere = centre
+ *     there, double-click = the whole take. Always shown, so the loop's
+ *     two ends stay a click apart however far in the detail is zoomed;
  *   - a zoomable DETAIL strip: the raw take (waveform, or a MIDI
  *     clip's piano roll over its velocity lane) through the panel's
  *     own view {q0, spanQ} (panel_view.js), the excluded material
@@ -26,10 +28,12 @@
  * THE VIEW (panel_view.js): per lane, in THIS module's state (never
  * the view model — the 50 ms poll must not undo a zoom), remembered
  * for the session, reset when the take's length changes. First show =
- * FIT REGION. After that only explicit input zooms: Ctrl/⌘+wheel or a
- * pinch over the panel (about the pointer — the MAIN view no longer
- * zooms under the panel, diagnosis N2), Z / ⇧Z (init.js), the label's
- * "loop NQ" / "NQ take" terms, the overview box. Shift+wheel or a
+ * FIT REGION. After that only explicit input zooms: +/− (init.js —
+ * while a panel shows they zoom IT, about the playhead, keyZoomView;
+ * the main view only with no panel up), Ctrl/⌘+wheel or a pinch over
+ * the panel (about the pointer — the MAIN view no longer zooms under
+ * the panel, diagnosis N2), Z / ⇧Z (init.js), the label's "loop NQ" /
+ * "NQ take" terms, the navigator box's edges. Shift+wheel or a
  * horizontal swipe pans; a plain wheel scrolls the page. Commits and
  * nudges only PAN (keepInView). v1: the view holds still while a
  * panel drag is live or its commit is held — except the drag's own
@@ -69,7 +73,7 @@ import { ctx } from './context.js';
 import { el, pct, fmtQ, setText, setTitle, setStyle, snapThenAnimate } from './sv_util.js';
 import { isOverlayFrozen, isDragging, beginGesture, afterSettled } from './gesture.js';
 import { selectOnly, activeSelectedId } from './selection.js';
-import { drawWaveform, drawEnvelope, drawMidiTile, MIDI_VELOCITY_LANE, peaksBoost }
+import { drawEnvelope, drawMidiTile, MIDI_VELOCITY_LANE, peaksBoost }
     from '../canvas_renderer.js';
 import { sliceNotesToTile } from '../midi_notes.js';
 import { dimComplementInto } from './dims.js';
@@ -85,7 +89,7 @@ import { pinFrame, unpinFrame } from './drag_pin.js';
 import { makeEdgePanner, canPanView } from './edge_pan.js';
 import { clampView, fitRegion, fitTake, zoomAbout, panBy, centerOn,
          keepInView, regionBounds, gridStep, gridLines, qAt, xOf,
-         wheelZoomFactor, wheelPanQ, boxDragView, boxEdgeView, sameView,
+         wheelZoomFactor, wheelPanQ, boxEdgeView, keyZoomView, sameView,
          Q_LABEL_MIN_PX_PER_Q } from './panel_view.js';
 
 /* The panel's inset from the viewport's edges when #session has no
@@ -151,12 +155,12 @@ export function buildRegionPanel(row) {
     termTake.addEventListener('click', () => fitPanel(row, 'take'));
     timingReset.addEventListener('click', () => resetTiming(row));
     const col = el('div', 'region-col');
-    // The OVERVIEW: the whole take, always.
+    // The NAVIGATOR: a map of the whole take, always (no waveform).
     const overview = el('div', 'region-overview', {
-        title: 'The whole take — drag the box to move the view (up/down ' +
-            'zooms), its edges to set the span; click to jump there; ' +
-            'double-click for the whole take' });
-    overview.appendChild(document.createElement('canvas'));
+        title: 'Map of the whole take: the loop region, its cuts and the ' +
+            '↺ — drag the box to move the view, its edges to set how much ' +
+            'shows; click to jump there; double-click for the whole take. ' +
+            '+/− zoom the view about the playhead' });
     const ovMarks = el('div', 'region-ov-marks');
     const ovCursor = el('div', 'region-ov-cursor');
     // The ↺'s tick over the whole take (placed per paint, so it follows
@@ -292,14 +296,37 @@ function fitPanel(row, kind) {
                                  : fitRegion(c.lane.bandSegs, e.totalQ));
 }
 
-/** Z / ⇧Z (init.js): fit the SELECTED track's panel to its loop or the
- * whole take. False (the key falls through) when no panel is shown. */
-export function fitSelectedPanel(kind) {
+/** The SELECTED track's row while its panel is shown, else null. */
+function shownPanelRow() {
     const id = activeSelectedId();
     const row = id === null ? null : ctx.laneEls.get(id);
     const nav = row && row.querySelector(':scope > .lane-region');
-    if (!nav || nav.style.display === 'none' || !row._regionCtx) return false;
+    if (!nav || nav.style.display === 'none' || !row._regionCtx) return null;
+    return row;
+}
+
+/** Z / ⇧Z (init.js): fit the SELECTED track's panel to its loop or the
+ * whole take. False (the key falls through) when no panel is shown. */
+export function fitSelectedPanel(kind) {
+    const row = shownPanelRow();
+    if (!row) return false;
     fitPanel(row, kind);
+    return true;
+}
+
+/** +/− (init.js, owner 2026-09-29): with a panel shown, zoom IT one
+ * step (`dir` > 0 = in) about the playhead's raw position in the take
+ * (keyZoomView). False — the keys fall through to the main view's zoom
+ * — when no panel is shown. A drag or its held commit owns the view:
+ * the key is consumed, nothing moves. */
+export function zoomSelectedPanel(dir) {
+    const row = shownPanelRow();
+    if (!row) return false;
+    const e = entryOf(row);
+    if (!e || isOverlayFrozen(row._regionStrip)) return true;
+    const { lane, vm, aux } = row._regionCtx;
+    const node = aux && aux.nodesById ? aux.nodesById.get(lane.id) : null;
+    setView(row, keyZoomView(e.view, rawCursorQ(lane, vm, node), dir, e.totalQ));
     return true;
 }
 
@@ -344,7 +371,6 @@ function paintPanel(row) {
         ? aux.midiNotes.get(lane.id) || null : null;
     const isGroup = lane.kind === 'group';
     drawStripWave(strip, peaks, isGroup, midi, totalQ, v);
-    drawOverviewWave(row._regionOverview, peaks, isGroup, midi, totalQ);
     paintOverviewMarks(row._regionOverview, segs, active, totalQ);
     paintOverviewTop(row._regionOverview, lane, withTop, totalQ);
     paintViewBox(row._regionOverview, v, totalQ);
@@ -724,36 +750,8 @@ function drawStripWave(strip, peaks, isComposite, midi, totalQ, v) {
                                  fixedBoost: boost });
 }
 
-/** Draw the WHOLE take in the overview strip (same fixed gain as the
- * detail — one picture at two scales). */
-function drawOverviewWave(ov, peaks, isComposite, midi, totalQ) {
-    const canvas = ov.firstElementChild;
-    const w = ov.clientWidth;
-    const h = ov.clientHeight;
-    const c = stripContent(peaks, midi);
-    if (!c || !(w > 0) || !(h > 0)) {
-        if (canvas.style.display !== 'none') canvas.style.display = 'none';
-        return;
-    }
-    if (canvas.style.display !== '') canvas.style.display = '';
-    const key = c.content.length + ':' + w + ':' + h + ':' + isComposite +
-        (c.notes ? ':m' + midi.range.lo + '-' + midi.range.hi + ':' +
-            totalQ.toFixed(4) : '');
-    if (ov._peaksRef === c.content && ov._dk === key) return;
-    ov._peaksRef = c.content;
-    ov._dk = key;
-    canvas.style.width = w + 'px';
-    if (c.notes) {
-        drawMidiTile(canvas, sliceNotesToTile(c.notes, totalQ, null),
-            { cssWidth: w, cssHeight: h, range: midi.range });
-    } else {
-        drawWaveform(canvas, peaks,
-            { cssWidth: w, cssHeight: h, isComposite, fixedBoost: peaksBoost(peaks) });
-    }
-}
-
-/** The overview's region marks (keyed): the kept segments tinted, each
- * inner cut notched. */
+/** The navigator's region marks (keyed): the kept segments as solid
+ * blocks, each inner cut marked in the gap between them. */
 function paintOverviewMarks(ov, segs, active, totalQ) {
     const marks = ov.querySelector('.region-ov-marks');
     const key = JSON.stringify([segs, active, totalQ]);
@@ -886,7 +884,7 @@ function onPanelWheel(row, ev) {
     }
 }
 
-/** The overview's pointer verbs: drag the view box = pan (vertical =
+/** The navigator's pointer verbs: drag the view box = pan (the +/− keys
  * zoom), drag its edge = set the span, press elsewhere = centre the
  * view there and keep dragging to pan; double-click = the whole take.
  * One gesture (gesture.js): Escape / a lost capture restores the view
@@ -912,8 +910,7 @@ function wireOverview(row) {
             onMove: mv => {
                 const dq = (mv.clientX - ev.clientX) * qPerPx;
                 setView(row, edge ? boxEdgeView(v0, edge, dq, e.totalQ)
-                    : inBox ? boxDragView(v0, dq, mv.clientY - ev.clientY, e.totalQ)
-                    : panBy(v0, dq, e.totalQ));
+                                  : panBy(v0, dq, e.totalQ));
             },
             onEnd: committed => { if (!committed) setView(row, vStart); },
         });

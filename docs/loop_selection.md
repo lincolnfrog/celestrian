@@ -165,7 +165,7 @@ Phase 2 replaces the grips, the pair and the chip with splice handles (§10).
 
 ### 6.2 The region panel (raw time)
 
-The panel spans the full row under the selected track. It has a label, a whole-take **overview strip** with a view box, and a zoomable **detail strip**.
+The panel spans the full row under the selected track. It has a label, a whole-take **navigator** with a view box, and a zoomable **detail strip**. The navigator is an abstract map, not a waveform (owner, 2026-09-29: a second waveform of the take over the detail read as a redundant third track). It shows the take's extent as a line, the kept region as solid blocks with cuts as the gaps between them, the ↺ tick, the cursor, and the detail's view box. It is always shown, so both ends of a loop stay one click apart however far the detail is zoomed.
 
 | Element / input | Does |
 |---|---|
@@ -173,9 +173,10 @@ The panel spans the full row under the selected track. It has a label, a whole-t
 | Brackets | Drag = trim (the period snaps to whole Q); ⌥ = slide |
 | Cut chips / handles | Slide / resize a cut; heal |
 | Detail strip | Double-click = cell cut on the take's grid |
-| Ctrl/⌘+wheel, pinch | Zoom about the Q under the pointer. On the overview, this applies inside the view box; elsewhere the view zooms about its middle. |
+| +/− | Zoom the panel one step about the playhead (owner, 2026-09-29). A playhead in view keeps its place; one outside it is brought to the middle. The song view zooms only with no panel shown (`zoomSelectedPanel`, `keyZoomView`). |
+| Ctrl/⌘+wheel, pinch | Zoom about the Q under the pointer. On the navigator, this applies inside the view box; elsewhere the view zooms about its middle. |
 | Shift+wheel, sideways swipe | Pan |
-| Overview box | Drag = pan, drag vertically = zoom; its edges set the span; click elsewhere = centre; double-click = whole take |
+| Navigator box | Drag = pan; its edges set the span; click elsewhere = centre; double-click = whole take. (Drag-vertically-to-zoom is gone: +/− zoom.) |
 | Label terms, Z / ⇧Z | Fit the loop / fit the whole take |
 | Box or bracket drag at an edge | Edge pan |
 | ← / → | Nudge the region 1Q (⇧ 4Q, ⌥ ⅛Q). Presses within 800 ms form one pinned gesture (`makeChainPin`). |

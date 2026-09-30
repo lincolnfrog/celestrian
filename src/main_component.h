@@ -27,6 +27,14 @@ class MainComponent : public juce::Component, public juce::Timer {
   void resized() override;
   void timerCallback() override;
 
+  /** Hand keyboard focus to the web page (the whole UI lives there).
+   * Called when the main window becomes active: WebView2 receives focus
+   * only on a FRESH focus gain of its JUCE component, and a window
+   * re-activated after the page was clicked restores JUCE's own record
+   * instead — keys then went to the native window, so Space did nothing
+   * after switching away and back until a click. */
+  void focusWebView();
+
  private:
   AudioEngine audio_engine;
   // The project model (docs/projects.md): birth at first take +

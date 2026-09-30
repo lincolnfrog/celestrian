@@ -12,7 +12,8 @@ import { registerKey, SCOPE, ANY_MODIFIERS } from '../keys.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle } from './teleport.js';
-import { wireRegionScroll, nudgeRegion, fitSelectedPanel } from './region_panel.js';
+import { wireRegionScroll, nudgeRegion, fitSelectedPanel, zoomSelectedPanel }
+    from './region_panel.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
 import { closeTakeMenus, wireTakeMenuDismiss } from './take_menu.js';
 import { openCreationMenu, closeCreationMenu, wireCreationMenuDismiss }
@@ -127,9 +128,11 @@ function wireKeyboard() {
     } });
     const hotkey = (key, handler) => view({ key, ignore: ['shift'], handler });
     // '=' is the unshifted '+' on ANSI layouts — accept both so the
-    // zoom hotkey works without holding Shift.
-    hotkey(['+', '='], zoomIn);
-    hotkey(['-', '_'], zoomOut);
+    // zoom hotkey works without holding Shift. With a track selected
+    // and its region panel up, +/− zoom the PANEL about the playhead
+    // (owner 2026-09-29); the song view only with no panel shown.
+    hotkey(['+', '='], () => { if (!zoomSelectedPanel(1)) zoomIn(); });
+    hotkey(['-', '_'], () => { if (!zoomSelectedPanel(-1)) zoomOut(); });
     // [ / ] walk the selected track's handles; { / } jump to the
     // outer loop bounds (see teleport.js).
     hotkey('[', () => teleportToHandle(-1, false));
@@ -153,7 +156,7 @@ function wireKeyboard() {
     // the whole take (Ableton's zoom-to-selection; loop-region phase 1,
     // 2026-09-23). Only while a panel is shown — otherwise the key
     // falls through and plain z stays unbound (undo is ⌘/Ctrl+Z, which
-    // these never match). +/− stay on the main view.
+    // these never match). +/− zoom the panel too (above).
     const fit = (mods, kind) => view({
         key: 'z',
         modifiers: mods,

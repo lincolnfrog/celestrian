@@ -412,6 +412,15 @@ void MainComponent::paint(juce::Graphics& g) {
 }
 void MainComponent::resized() { web_browser.setBounds(getLocalBounds()); }
 
+void MainComponent::focusWebView() {
+  if (!web_browser.isShowing()) return;
+  // Drop, then re-take: grabbing a component JUCE already records as
+  // focused is a no-op, and only a real focus gain makes the embedded
+  // WebView2 component call MoveFocus into the page.
+  juce::Component::unfocusAllComponents();
+  web_browser.grabKeyboardFocus();
+}
+
 std::optional<juce::WebBrowserComponent::Resource> MainComponent::getResource(
     const juce::String& path) {
   juce::String cleanPath = path;

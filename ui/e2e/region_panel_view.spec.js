@@ -114,6 +114,23 @@ test.describe('Region panel view', () => {
         expect(await zoomLevel(page)).toBe('100%');
     });
 
+    test('(c2) +/− zoom the PANEL while it shows; the song view only with nothing selected', async ({ page }) => {
+        const { id2 } = await fieldCase(page);
+        const v0 = await viewOf(page, id2);
+        await page.keyboard.press('Equal');
+        await page.keyboard.press('Equal');
+        const v1 = await viewOf(page, id2);
+        expect(v1.spanQ).toBeLessThan(v0.spanQ * 0.5);
+        expect(await zoomLevel(page)).toBe('100%');
+        await page.keyboard.press('Minus');
+        expect((await viewOf(page, id2)).spanQ).toBeGreaterThan(v1.spanQ);
+        expect(await zoomLevel(page)).toBe('100%');
+        // Nothing selected: no panel, and the keys zoom the song view.
+        await page.keyboard.press('Escape');
+        await page.keyboard.press('Equal');
+        await expect.poll(() => zoomLevel(page)).not.toBe('100%');
+    });
+
     test('(d) Z / ⇧Z and the label terms fit the loop / the whole take', async ({ page }) => {
         const { id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
@@ -405,7 +422,7 @@ test.describe('Region panel view', () => {
 });
 
 test.describe('Region panel overview', () => {
-    test('the view box: drag pans, drag down zooms, edges set the span, click centres, dblclick = whole take', async ({ page }) => {
+    test('the view box: drag pans (never zooms), edges set the span, click centres, dblclick = whole take', async ({ page }) => {
         const { id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
         const ov = await lane.locator('.region-overview').boundingBox();
@@ -423,16 +440,19 @@ test.describe('Region panel overview', () => {
         let v = await viewOf(page, id2);
         expect(v.q0).toBeCloseTo(v0.q0 - 100 * qPerPx, 3);
         expect(v.spanQ).toBeCloseTo(v0.spanQ, 9);
-        // ZOOM: drag the box DOWN (in), centre held.
+        // A VERTICAL drag no longer zooms (2026-09-29: +/− zoom): the
+        // span holds, only the sideways travel pans.
         const b1 = await lane.locator('.region-viewbox').boundingBox();
-        const c1 = v.q0 + v.spanQ / 2;
         await page.mouse.move(b1.x + b1.width / 2, oy);
         await page.mouse.down();
         await page.mouse.move(b1.x + b1.width / 2, oy + 60, { steps: 6 });
         await page.mouse.up();
         v = await viewOf(page, id2);
+        expect(v.spanQ).toBeCloseTo(v0.spanQ, 9);
+        // (Narrow the view for the edge drag below.)
+        await page.keyboard.press('Equal');
+        v = await viewOf(page, id2);
         expect(v.spanQ).toBeLessThan(v0.spanQ * 0.7);
-        expect(v.q0 + v.spanQ / 2).toBeCloseTo(c1, 3);
         // EDGE: drag the box's end edge right → a wider span, start held.
         const b2 = await lane.locator('.region-viewbox').boundingBox();
         const q0 = v.q0;

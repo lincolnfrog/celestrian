@@ -15,8 +15,9 @@
  *   - DEFAULT = FIT REGION: the loop fills ~55% of the strip, centred,
  *     clamped to the take; the whole take when that span would be most
  *     of it anyway (≥ 80%) — a near-fit is not worth a hidden edge.
- *   - After that, ZOOM CHANGES ONLY ON EXPLICIT INPUT (wheel, pinch,
- *     Z / ⇧Z, the label terms, the overview box). Commits and nudges
+ *   - After that, ZOOM CHANGES ONLY ON EXPLICIT INPUT (+/− about the
+ *     playhead while the panel shows, wheel, pinch, Z / ⇧Z, the label
+ *     terms, the navigator box's edges). Commits and nudges
  *     only PAN, and only as far as it takes to keep the region in view
  *     (keepInView) — an auto re-fit after a commit rescales the box
  *     right after release, the "jump" the owner already dislikes.
@@ -48,11 +49,8 @@ export const Q_LABEL_MIN_PX_PER_Q = 40;
 const WHEEL_ZOOM_K_PINCH = 0.012;
 const WHEEL_ZOOM_MAX_STEP = 0.25;
 const WHEEL_LINE_PX = 16;
-/* The overview box's vertical drag: px of travel per e-fold of span
- * (drag down = zoom in, Ableton's clip-view selector), after a dead
- * zone so a sideways pan with a wobbly hand does not also zoom. */
-export const BOX_ZOOM_PX_PER_E = 80;
-export const BOX_ZOOM_DEAD_PX = 4;
+/* One +/− keystroke with a panel shown scales its span by this. */
+export const PANEL_KEY_ZOOM_STEP = 1.5;
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -178,15 +176,18 @@ export function wheelPanQ(e, v, w) {
     return w > 0 ? (d / w) * v.spanQ : 0;
 }
 
-/** THE OVERVIEW BOX, dragged from `v0`: horizontal travel pans (`dxQ`,
- * already in raw Q at the overview's scale), vertical travel past the
- * dead zone zooms about the box's centre (down = in). */
-export function boxDragView(v0, dxQ, dyPx, totalQ, minSpan = PANEL_MIN_SPAN_Q) {
-    const c = v0.q0 + v0.spanQ / 2 + dxQ;
-    const dy = Math.sign(dyPx) * Math.max(0, Math.abs(dyPx) - BOX_ZOOM_DEAD_PX);
-    const spanQ = clamp(v0.spanQ * Math.exp(-dy / BOX_ZOOM_PX_PER_E),
-        Math.min(minSpan, totalQ), totalQ);
-    return clampView({ q0: c - spanQ / 2, spanQ }, totalQ, minSpan);
+/** THE +/− KEYS with a panel shown (owner 2026-09-29): one step in
+ * (`dir` > 0) or out about the PLAYHEAD's raw Q. A playhead in view
+ * keeps its place on the strip; one outside it (or none — `playheadQ`
+ * not finite: the view's middle) is centred, so the keys always zoom
+ * toward where the sound is. */
+export function keyZoomView(v, playheadQ, dir, totalQ,
+                            step = PANEL_KEY_ZOOM_STEP) {
+    const factor = dir > 0 ? 1 / step : step;
+    const mid = v.q0 + v.spanQ / 2;
+    const q = Number.isFinite(playheadQ) ? clamp(playheadQ, 0, totalQ) : mid;
+    if (q >= v.q0 && q <= v.q0 + v.spanQ) return zoomAbout(v, q, factor, totalQ);
+    return zoomAbout(centerOn(v, q, totalQ), q, factor, totalQ);
 }
 
 /** An overview box EDGE dragged by `dq` raw Q from `v0`: that edge

@@ -347,8 +347,10 @@ in the doc that owns its feature, but each has a pointer here.
   per-subtree refusal (time_maps.md §7); pinned by
   `ui/js/tests/record_gate.test.mjs` and `ui/e2e/release_chrome.spec.js`.
   (c) The region panel is a full-row, constant-width panel with a
-  whole-take overview strip over a zoomable detail strip that opens
-  fit-to-loop; slides snap to WHOLE Q (⌥ = free), trims keep the
+  whole-take navigator (an abstract map of the region and its cuts,
+  no waveform — 2026-09-29) over a zoomable detail strip that opens
+  fit-to-loop and that +/− zoom about the playhead while it shows;
+  slides snap to WHOLE Q (⌥ = free), trims keep the
   whole-Q period snap, and there is no sub-Q grid — the grid is
   arbitrary relative to the music (a meter-aware snap is a MAYBE in
   tasks.md). time_maps.md §6; pinned by `panel_view.test.mjs`,
