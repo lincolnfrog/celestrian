@@ -1144,10 +1144,12 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // clip's top by construction (same origin, never re-derived). Judged
   // before the first-clip branch: a committed slot is never pre-Q.
   if (const int64_t P = retake_period_.load(); P > 0) {
+    // The first t ≥ the heard clock with t ≡ O (mod P) — O may lie
+    // AHEAD of the clock (the zero ahead of it: a backward seek moves
+    // every origin with it), and the slot's top recurs before it too.
     const int64_t O = origin_samples.load();
-    int64_t rel = compensated_pos - O;
-    if (rel < 0) rel = 0;
-    const int64_t target = O + ((rel + P - 1) / P) * P;
+    const int64_t target =
+        compensated_pos + timing::posMod(O - compensated_pos, P);
     awaiting_start_at.store(target);
     if (compensated_pos >= target || target - compensated_pos < 512) {
       beginCapture(context, target, compensated_pos);
@@ -1188,11 +1190,10 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // audibly-equivalent intrinsic slots to choose among.
   if (map_commit_cycle_.load() > 0 && context.map.active()) {
     const int64_t period = context.map.period();
-    int64_t heard =
-        context.island_pos - context.input_latency;
-    if (heard < 0) heard = 0;
-    int64_t rel_h = heard - context.map_heard_top;
-    if (rel_h < 0) rel_h = 0;
+    // Either may be negative — the clock behind the zero or the map's
+    // heard top; armTarget answers on the grid either way.
+    const int64_t heard = context.island_pos - context.input_latency;
+    const int64_t rel_h = heard - context.map_heard_top;
 
     const int64_t t_rel = timing::armTarget(rel_h, Q, period);
     const int64_t heard_target = context.map_heard_top + t_rel;
@@ -1239,8 +1240,11 @@ void ClipNode::armEvaluate(const ProcessContext& context) {
   // every depth (I5).
   const int64_t context_loop = std::max(Q, context.context_cycle);
 
-  int64_t rel = compensated_pos - zero;
-  if (rel < 0) rel = 0;
+  // Negative when the heard clock is behind the zero (a backward seek,
+  // a session from an earlier run): the grid extends back from the
+  // zero, so the target is still the NEXT boundary — clamping here once
+  // parked every arm at the zero itself, minutes away.
+  const int64_t rel = compensated_pos - zero;
 
   // THE canonical timing fact: this clip's content belongs at the arm
   // target — stored ABSOLUTE (docs/kernel.md). Anchor, launch point,

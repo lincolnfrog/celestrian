@@ -147,8 +147,11 @@ bool AudioEngine::loadSession(const juce::String& path) {
   // tearing the graph out from under it would corrupt the buffer.
   if (root_node->hasActiveTake()) return false;
 
+  // The live clock seats a zero saved by a longer-running earlier run
+  // (session_io::load): the island loads at its top, never in the future.
   auto loaded = celestrian::session_io::load(juce::File(path),
-                                             cached_sample_rate_.load());
+                                             cached_sample_rate_.load(),
+                                             global_transport_pos.load());
   if (!loaded.ok) return false;
 
   // Swap the root's CONTENTS in place: root_node's identity never

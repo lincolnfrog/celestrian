@@ -3,6 +3,7 @@
 #include <juce_core/juce_core.h>
 
 #include <functional>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -119,8 +120,14 @@ struct BundleInfo {
 };
 BundleInfo readBundleInfo(const juce::File& dir);
 
-/** Parse a bundle. `ok` is false on any failure (missing/invalid json). */
-LoadedSession load(const juce::File& dir, double device_sample_rate);
+/** Parse a bundle. `ok` is false on any failure (missing/invalid json).
+ * `clock` is the live transport clock: the saved zero is an ABSOLUTE
+ * clock reading from the run that saved it, so one AHEAD of `clock` (a
+ * relaunch restarts the clock) is seated AT `clock` — the island loads
+ * at its top, and every origin, stored zero-relative, rides along. A
+ * zero at or behind the clock loads as saved. */
+LoadedSession load(const juce::File& dir, double device_sample_rate,
+                   int64_t clock = std::numeric_limits<int64_t>::max());
 
 /** Where a sequence block lands: the island ROOT may carry a radio
  * (S12); a NESTED stack may not — its successors are dropped. */

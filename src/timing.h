@@ -212,11 +212,22 @@ inline int64_t nextStopBoundary(int64_t recorded_length, int64_t quantum) {
  * whole of the "pickup"/anticipatory behavior (E-A). No deferral
  * window sits on top of this: one overshoots the take by a full Q when
  * compensation is small.
+ *
+ * `rel` may be NEGATIVE — the heard clock behind the zero (a backward
+ * seek moves the zero ahead of the clock; so did a session reloaded in
+ * a later run). The grid extends back from the zero unchanged: the
+ * answer is the next boundary AFTER `rel`, never the zero itself.
  */
 inline int64_t armTarget(int64_t rel, int64_t quantum, int64_t context_loop) {
-  if (rel < 0) rel = 0;
-  if (quantum <= 0) return rel;
+  if (quantum <= 0) return rel < 0 ? 0 : rel;
   if (context_loop <= 0) context_loop = quantum;
+  if (rel < 0) {
+    // The grid is periodic in the context loop: fold forward by whole
+    // loops, answer there, fold back.
+    const int64_t k = (-rel + context_loop - 1) / context_loop;
+    return armTarget(rel + k * context_loop, quantum, context_loop) -
+           k * context_loop;
+  }
 
   if (context_loop == quantum) {
     // Single-clip context: the pure Q grid.

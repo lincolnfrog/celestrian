@@ -1613,6 +1613,71 @@ class ScenarioTests : public juce::UnitTest {
       expectEquals(other.o(b) - other.zero(), cap - Q / 4 - zero0,
                    "…from the re-timed origin");
     }
+
+    // ------------------------------------------------------------------
+    beginTest("S42: the clock BEHIND the zero — a backward seek, or a "
+              "session saved by a longer-running earlier run — still arms "
+              "at the next Q boundary, never parked at the zero");
+    {
+      Island is;
+      const juce::String c1 = is.record(Q);
+      is.blocks(4);
+      // Seeking back moves the zero (and every origin) AHEAD of the clock.
+      expect(is.engine.seekTransport(-(double)(10 * Q)), "seek back 10Q");
+      expect(is.islandPos() < -8 * Q, "the zero now sits ahead of the clock");
+      const int max_blocks = (int)(2 * Q / BLOCK) + 2;
+      const juce::String c2 = is.createClip();
+      is.engine.startRecordingInNode(c2);
+      expect(is.waitFor([&] { return is.bprop(c2, "isRecording"); }, max_blocks),
+             "capture begins within a Q — not 9Q later, at the zero");
+      expectEquals(posmod(is.origin(c2) - is.zero(), Q), (int64_t)0,
+                   "on the Q grid");
+      expect(is.origin(c2) < is.zero(), "…at a boundary BEFORE the zero");
+      is.captured[c2] = is.clock - is.iprop(c2, "duration");
+      is.drive(Q - BLOCK);
+      is.engine.stopRecordingInNode(c2);
+      is.settle();
+      expectEquals(is.dur(c2), Q, "a 1Q take");
+      expectOutput(is, 4 * Q, is.sumOfLoops({c1, c2}),
+                   "both loop by their origins", /*skip=*/BLOCK);
+
+      // THE RELAUNCH: a fresh engine's clock starts at 0, behind the
+      // saved zero. The load seats the zero at the clock and the island
+      // rides along, so nothing waits for a zero in the future.
+      auto dir = test_utils::freshTempDir("scenario_s42");
+      expect(is.engine.saveSession(dir.getFullPathName()), "saved");
+      Island other;
+      other.engine.togglePlayback();
+      other.drive(3 * BLOCK);  // the new run's clock: well behind the zero
+      expect(other.engine.loadSession(dir.getFullPathName()), "loaded");
+      other.captured = is.captured;
+      expectEquals(other.zero(), (int64_t)(3 * BLOCK),
+                   "the zero is seated at the live clock");
+      for (const auto& id : {c1, c2}) {
+        expectEquals(other.origin(id) - other.zero(), is.origin(id) - is.zero(),
+                     "every origin rode the zero");
+      }
+      if (!other.engine.isPlaying()) other.engine.togglePlayback();
+      expectOutput(other, 4 * Q, other.sumOfLoops({c1, c2}),
+                   "the loaded island renders its loops", /*skip=*/BLOCK);
+      const juce::String c3 = other.createClip();
+      other.engine.startRecordingInNode(c3);
+      expect(other.waitFor([&] { return other.bprop(c3, "isRecording"); },
+                           max_blocks),
+             "a take armed after the load starts at the next Q boundary");
+      expectEquals(posmod(other.origin(c3) - other.zero(), Q), (int64_t)0,
+                   "on the Q grid");
+      other.engine.stopRecordingInNode(c3);
+      other.settle();
+
+      // A zero BEHIND the clock (the same run, or a shorter earlier
+      // one) loads exactly as saved.
+      Island later;
+      later.engine.togglePlayback();
+      later.drive(is.zero() + 5 * BLOCK);
+      expect(later.engine.loadSession(dir.getFullPathName()), "loaded later");
+      expectEquals(later.zero(), is.zero(), "a past zero loads as saved");
+    }
   }
 };
 

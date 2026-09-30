@@ -82,9 +82,16 @@ export const SUBDIVISIONS = [2, 4, 8];
  * why no anticipatory-deferral window exists on top of this.
  */
 export function armTarget(rel, quantum, contextLoop) {
-    if (rel < 0) rel = 0;
-    if (quantum <= 0) return rel;
+    if (quantum <= 0) return rel < 0 ? 0 : rel;
     if (!contextLoop || contextLoop <= 0) contextLoop = quantum;
+    if (rel < 0) {
+        // The heard clock behind the zero (a backward seek, a reloaded
+        // session): the grid is periodic in the context loop — fold
+        // forward by whole loops, answer there, fold back.
+        const k = Math.ceil(-rel / contextLoop);
+        return armTarget(rel + k * contextLoop, quantum, contextLoop) -
+            k * contextLoop;
+    }
 
     if (contextLoop === quantum) {
         if (rel % quantum === 0) return rel;

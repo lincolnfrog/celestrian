@@ -292,8 +292,12 @@ class SessionIoTests : public juce::UnitTest {
              "clip name loaded");
       expectEquals((juce::int64)(double)state.getProperty("quantum", 0),
                    (juce::int64)Q, "island quantum loaded");
-      expectEquals((juce::int64)(double)state.getProperty("zero", 0),
+      // The bundle carries the zero; a fresh engine's clock (0) is
+      // behind it, so the engine seats it there (session_io::load).
+      expectEquals((juce::int64)session_io::load(dir, (double)Q).zero,
                    (juce::int64)zero, "island zero loaded");
+      expectEquals((juce::int64)(double)state.getProperty("zero", -1), (juce::int64)0,
+                   "…seated at the fresh engine's clock");
 
       // Re-save from the engine and reload into a second engine: stable.
       auto dir2 = freshTempDir("engine2");
@@ -444,7 +448,7 @@ class SessionIoTests : public juce::UnitTest {
       auto state = engine.getGraphState();
       // The island zero's key was `epoch` before version 3 (frame.md
       // §7): the legacy key loads as the zero, not as 0.
-      expectEquals((juce::int64)(double)state.getProperty("zero", 0),
+      expectEquals((juce::int64)session_io::load(legacy, (double)Q).zero,
                    (juce::int64)12345, "a legacy `epoch` key loads as the zero");
       expectWithinAbsoluteError((double)state.getProperty("gain", 1.0), 0.5,
                                 1e-6, "v1 rootGain");

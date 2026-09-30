@@ -644,7 +644,8 @@ bool save(const StackNode& root, double device_sample_rate,
   return dir.getChildFile("session.json").replaceWithText(json);
 }
 
-LoadedSession load(const juce::File& dir, double device_sample_rate) {
+LoadedSession load(const juce::File& dir, double device_sample_rate,
+                   int64_t clock) {
   LoadedSession out;
   const auto jf = dir.getChildFile("session.json");
   if (!jf.existsAsFile()) return out;
@@ -670,6 +671,12 @@ LoadedSession load(const juce::File& dir, double device_sample_rate) {
   out.zero = (int64_t)(double)(o->hasProperty("zero")
                                    ? o->getProperty("zero")
                                    : o->getProperty("epoch"));
+  // A zero from a LATER clock than this run's (the saving run ran
+  // longer before it saved than this one has so far) would sit the
+  // whole island in the future: arms would wait for it, the recording
+  // view would fold a negative phase. Seat it at the clock — before any
+  // origin below is resolved from it, so the island moves as one.
+  if (out.zero > clock) out.zero = clock;
   // The Q hand-off's designation (Q22): absent = none.
   if (o->hasProperty("definer")) out.definer = o->getProperty("definer").toString();
   out.sample_rate = o->hasProperty("sampleRate")

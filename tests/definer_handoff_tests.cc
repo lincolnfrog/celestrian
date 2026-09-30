@@ -593,7 +593,10 @@ class DefinerHandoffTests : public juce::UnitTest {
       expectEquals(st.getProperty("definerId", "").toString(), s.drums,
                    "the drums define Q after the load");
       expectEquals((int64_t)(double)st.getProperty("quantum", 0), (int64_t)2400, "Q");
-      expectEquals((int64_t)(double)st.getProperty("islandZero", 0), is.zero(), "zero");
+      // A fresh engine's clock (0) is behind the saved zero: the load
+      // seats the zero there (session_io::load).
+      expectEquals((int64_t)(double)st.getProperty("islandZero", -1), (int64_t)0,
+                   "zero seated at the fresh clock");
       // The loaded hand-off still re-grids with the drums' origin kept.
       auto* d = fresh.findNodeByUuidForTest(s.drums);
       const int64_t d0 = d != nullptr ? d->origin_samples.load() : 0;
