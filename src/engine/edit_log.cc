@@ -26,6 +26,52 @@
 
 namespace {
 using celestrian::Edit;
+
+/** An edit kind's name, for the origin-drift log. */
+const char* kindName(Edit::Kind k) {
+  using K = Edit::Kind;
+  switch (k) {
+    case K::Nop: return "Nop";
+    case K::Insert: return "Insert";
+    case K::Remove: return "Remove";
+    case K::Move: return "Move";
+    case K::Combine: return "Combine";
+    case K::Explode: return "Explode";
+    case K::Rename: return "Rename";
+    case K::Mute: return "Mute";
+    case K::LoopPoints: return "LoopPoints";
+    case K::LoopBypass: return "LoopBypass";
+    case K::Segments: return "Segments";
+    case K::PeriodSource: return "PeriodSource";
+    case K::Input: return "Input";
+    case K::InputR: return "InputR";
+    case K::Collapse: return "Collapse";
+    case K::MoveSlot: return "MoveSlot";
+    case K::AddSlot: return "AddSlot";
+    case K::RemoveSlot: return "RemoveSlot";
+    case K::Sequence: return "Sequence";
+    case K::SequenceBypass: return "SequenceBypass";
+    case K::Take: return "Take";
+    case K::Untake: return "Untake";
+    case K::SelectTake: return "SelectTake";
+    case K::DeleteTake: return "DeleteTake";
+    case K::Comp: return "Comp";
+    case K::Timing: return "Timing";
+    case K::Definer: return "Definer";
+  }
+  return "?";
+}
+
+/** "edit LoopPoints on Drums [7e1090]" — the origin-drift log's cause. */
+juce::String driftCause(celestrian::AudioNode* root, const char* verb,
+                        Edit::Kind k, const juce::String& uuid) {
+  juce::String s = juce::String(verb) + " " + kindName(k);
+  if (uuid.isEmpty()) return s;
+  const celestrian::AudioNode* n = root ? root->findByUuid(uuid) : nullptr;
+  return s + " on " + (n ? n->getName() + " [" + uuid.substring(0, 6) + "]"
+                         : "[" + uuid.substring(0, 6) + "]");
+}
+
 // A LIVE drag collapses into ONE undo step: seam/grip drags stream
 // throttled map commits so the splice is AUDIBLE while dragging
 // (time_maps.md), and every commit after the gesture's first arrives
@@ -1267,6 +1313,8 @@ void AudioEngine::record(celestrian::Edit forward) {
   }
   celestrian::Edit inv = applyEdit(std::move(forward));
   if (inv.kind == celestrian::Edit::Kind::Nop) return;  // did not apply
+  noteOriginDrift(driftCause(root_node.get(), live ? "live edit" : "edit",
+                             kind, uuid));
   if (coalesces) {
     clearRedo();  // a fresh user action still invalidates the redo branch
     return;       // keep the older inverse (restores further back)
@@ -1309,7 +1357,10 @@ void AudioEngine::undo() {
   gesture_ = {};  // a later live commit logs its own step
   celestrian::Edit inv = std::move(undo_.back());
   undo_.pop_back();
+  const juce::String cause =
+      driftCause(root_node.get(), "undo", inv.kind, inv.uuid);
   celestrian::Edit fwd = applyEdit(std::move(inv));
+  noteOriginDrift(cause);
   if (fwd.kind != celestrian::Edit::Kind::Nop) redo_.push_back(std::move(fwd));
 }
 
@@ -1320,7 +1371,10 @@ void AudioEngine::redo() {
   gesture_ = {};  // a later live commit logs its own step
   celestrian::Edit fwd = std::move(redo_.back());
   redo_.pop_back();
+  const juce::String cause =
+      driftCause(root_node.get(), "redo", fwd.kind, fwd.uuid);
   celestrian::Edit inv = applyEdit(std::move(fwd));
+  noteOriginDrift(cause);
   if (inv.kind != celestrian::Edit::Kind::Nop) undo_.push_back(std::move(inv));
 }
 

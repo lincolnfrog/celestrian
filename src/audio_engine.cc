@@ -198,6 +198,9 @@ bool AudioEngine::loadSession(const juce::String& path) {
   publishGraph();  // the audio thread sees the loaded topology
 
   clearHistory();  // a loaded session starts with no undo history
+  // A fresh baseline for the drift log (a loaded island is not a move).
+  origin_marks_.clear();
+  noteOriginDrift("load");
 
   juce::Logger::writeToLog("AudioEngine: session loaded from " + path);
   // The ONE post-load hook (all load paths funnel through here —

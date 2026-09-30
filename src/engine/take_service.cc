@@ -754,6 +754,13 @@ void AudioEngine::reconcileTakes() {
     juce::Logger::writeToLog(
         "AudioEngine: take logged (undoable) - " +
         juce::String((int)committed.size()) + " clip(s)");
+    // The take's settle (anchors, a lifted group window) may move the
+    // tracks that were already there; the new clips themselves are new.
+    noteOriginDrift("take settle (" + juce::String((int)committed.size()) +
+                    " clip(s): " +
+                    (committed.empty() ? juce::String()
+                                       : committed.front()->getName()) +
+                    ")");
     // Q ESTABLISHMENT SCRUB: geometry is
     // legal to author PRE-Q (the nested-maps arm refusal is pinned on
     // it), but a window/map whose length was free while Q was

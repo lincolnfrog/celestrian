@@ -699,3 +699,46 @@ void AudioEngine::scrubIncoherentGeometry(int64_t q) {
       };
   visit(root_node.get());
 }
+
+void AudioEngine::noteOriginDrift(const juce::String& cause) {
+  if (root_node == nullptr) return;
+  // Every COMMITTED node below the root: a clip with content, a stack
+  // anchored by its content. (Empty arms and unanchored stacks carry
+  // placeholder origins that nothing plays against.)
+  std::map<juce::String, OriginMark> now;
+  const std::function<void(celestrian::AudioNode&)> walk =
+      [&](celestrian::AudioNode& n) {
+        const bool is_stack = n.getNodeType() == celestrian::NodeType::Stack;
+        if (&n != root_node.get() &&
+            (is_stack ? n.isAnchored() : n.getIntrinsicDuration() > 0)) {
+          now[n.getUuid()] = {n.origin_samples.load(), n.getName()};
+        }
+        if (!is_stack) return;
+        for (const auto& child :
+             static_cast<celestrian::StackNode&>(n).ownedChildren()) {
+          walk(*child);
+        }
+      };
+  walk(*root_node);
+  // Group the nodes seen both times by how far they moved: one group is
+  // the island moving together (nothing, or a seek); two or more is a
+  // track moving against the others.
+  std::map<int64_t, juce::StringArray> by_delta;
+  for (const auto& [id, mark] : now) {
+    const auto it = origin_marks_.find(id);
+    if (it == origin_marks_.end()) continue;
+    by_delta[mark.origin - it->second.origin].add(mark.name + " [" +
+                                                   id.substring(0, 6) + "]");
+  }
+  if (by_delta.size() > 1) {
+    const int64_t q = root_node->getQuantum();
+    juce::String line = "ORIGIN DRIFT after " + cause + ":";
+    for (const auto& [delta, names] : by_delta) {
+      line += "  moved " + juce::String(delta) + " samples";
+      if (q > 0) line += " (" + juce::String((double)delta / (double)q, 3) + "Q)";
+      line += ": " + names.joinIntoString(", ") + ";";
+    }
+    juce::Logger::writeToLog(line);
+  }
+  origin_marks_ = std::move(now);
+}

@@ -3,6 +3,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -823,6 +824,23 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * measure from here — the same place the root's song folds from on
    * the audio thread (StackNode::frameOrigin). */
   int64_t rootFrameTop() const;
+
+  // --- THE ORIGIN DRIFT LOG (field report 2026-09-29: a drum group
+  // moved 13Q against the bass while another track's region was edited,
+  // and nothing recorded which step did it). Every committed node's
+  // origin, as of the last check; message thread only. A check after
+  // each applied edit, take settle and poll logs any step after which
+  // the tracks did NOT all move by the same amount — a seek moves every
+  // origin together and logs nothing; a re-time or a lock-collapse
+  // moves one subtree and logs, naming the step.
+  struct OriginMark {
+    int64_t origin = 0;
+    juce::String name;
+  };
+  std::map<juce::String, OriginMark> origin_marks_;
+  /** Compare every committed node's origin with the last check, log
+   * relative movement under `cause`, and remember the new state. */
+  void noteOriginDrift(const juce::String& cause);
 
   bool was_any_node_recording_ = false;  // audio thread only (view upkeep)
   // THE PLAY-START FADE (audio thread only): the master output ramps in

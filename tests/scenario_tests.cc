@@ -1678,6 +1678,101 @@ class ScenarioTests : public juce::UnitTest {
       expect(later.engine.loadSession(dir.getFullPathName()), "loaded later");
       expectEquals(later.zero(), is.zero(), "a past zero loads as saved");
     }
+
+    // ------------------------------------------------------------------
+    beginTest("S43 (field 2026-09-29): editing one loop's region never "
+              "moves another track — a 1Q bass, a long drum group trimmed "
+              "to a fractional 2Q region, a new 43Q bass trimmed to "
+              "[13Q, 43Q): the drums keep their offset from the bass");
+    {
+      Island is;
+      const juce::String bass = is.record(Q);
+      is.blocks(3);
+      const juce::String drums = is.recordGroup(5, 95 * Q);
+      const juce::StringArray mics = is.childIds(drums);
+      auto rel = [&](const juce::String& id) { return is.origin(id) - is.origin(bass); };
+      const int64_t d0 = rel(drums);
+      std::vector<int64_t> m0;
+      for (const auto& m : mics) m0.push_back(rel(m));
+      auto drumsHeld = [&](const juce::String& step) {
+        expectEquals(rel(drums), d0, step + ": the drum group's offset from the bass");
+        for (int i = 0; i < mics.size(); ++i)
+          expectEquals(rel(mics[i]), m0[(size_t)i], step + ": mic " + juce::String(i));
+      };
+      is.window(drums, 76 * Q, 95 * Q);
+      drumsHeld("trim to [76Q, 95Q)");
+      const int64_t f = 46 * Q / 100;  // an intentional fine slide
+      is.window(drums, 81 * Q + f, 85 * Q + f);
+      drumsHeld("fine slide to a 4Q region");
+      is.window(drums, 83 * Q + f, 85 * Q + f);
+      drumsHeld("length 4Q -> 2Q");
+      const juce::String bass2 = is.record(43 * Q);
+      drumsHeld("record a 43Q bass");
+      const int64_t b2 = rel(bass2);
+      is.window(bass2, 13 * Q, 43 * Q);
+      drumsHeld("the new bass's region -> [13Q, 43Q)");
+      expectEquals(rel(bass2), b2, "the edited bass itself keeps its origin");
+      // …and its region can be dragged around without the drums moving.
+      is.window(bass2, 10 * Q, 40 * Q);
+      is.window(bass2, 0, 43 * Q);
+      drumsHeld("the new bass's region moved again");
+      // Play-from-the-top (the UI's seek) and back: everything rides.
+      expect(is.engine.seekTransport((double)(5 * Q)), "seek");
+      drumsHeld("after a seek");
+      // UNDO ACROSS SEEKS (every Space press is a seek): an edit, seeks,
+      // then its undo — the history's absolutes ride every seek, so the
+      // undo puts back geometry, never a pre-seek position.
+      auto undoAcrossSeeks = [&](const juce::String& what, auto&& edit) {
+        edit();
+        expect(is.engine.seekTransport((double)(-13 * Q)), "seek back 13Q");
+        expect(is.engine.seekTransport((double)(Q / 3)), "seek a third");
+        is.engine.undo();
+        is.settle();
+        drumsHeld("undo of " + what + " across seeks");
+      };
+      undoAcrossSeeks("a drum trim", [&] { is.window(drums, 84 * Q + f, 85 * Q + f); });
+      undoAcrossSeeks("a bass2 trim", [&] { is.window(bass2, 13 * Q, 43 * Q); });
+      undoAcrossSeeks("a bass2 re-time", [&] { is.engine.setTiming(bass2, Q); });
+      const juce::String bass3 = is.record(4 * Q);
+      expect(is.engine.seekTransport((double)(7 * Q)), "seek");
+      is.engine.undo();  // the take
+      is.settle();
+      drumsHeld("undo of a take across a seek");
+      is.engine.redo();
+      is.settle();
+      drumsHeld("redo of the take");
+      (void)bass3;
+
+      // THE ORIGIN DRIFT LOG: silent while the island moves as one (a
+      // region edit, a seek); one line naming the step when a track
+      // moves against the others (a re-time here).
+      struct Capture : juce::Logger {
+        juce::StringArray lines;
+        void logMessage(const juce::String& m) override { lines.add(m); }
+      } cap;
+      juce::Logger* const prev = juce::Logger::getCurrentLogger();
+      juce::Logger::setCurrentLogger(&cap);
+      auto drift = [&] {
+        juce::StringArray out;
+        for (const auto& l : cap.lines)
+          if (l.startsWith("ORIGIN DRIFT")) out.add(l);
+        return out;
+      };
+      is.settle();
+      cap.lines.clear();
+      is.window(drums, 84 * Q + f, 86 * Q + f);
+      expect(is.engine.seekTransport((double)(3 * Q)), "seek");
+      is.settle();
+      expect(drift().isEmpty(), "no drift for a region edit or a seek: " +
+                                    drift().joinIntoString(" | "));
+      is.engine.setTiming(bass2, 2 * Q);
+      const juce::StringArray d = drift();
+      juce::Logger::setCurrentLogger(prev);
+      expectEquals(d.size(), 1, "one drift line for the re-time");
+      expect(d.size() == 1 && d[0].contains("edit Timing on") &&
+                 d[0].contains("moved " + juce::String(2 * Q) + " samples"),
+             "it names the step and the move: " + d.joinIntoString(" | "));
+    }
   }
 };
 

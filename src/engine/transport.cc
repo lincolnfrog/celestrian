@@ -130,6 +130,10 @@ void AudioEngine::tick() {
   // take keeps its storage headroom.
   reconcileTakes();
   growLiveTakes();
+  // The catch-all: any relative move no named step reported (an arm,
+  // the audio thread's commit, a path outside the edit log) surfaces at
+  // the next poll.
+  noteOriginDrift("an unlogged step (seen at a poll)");
 }
 
 juce::var AudioEngine::getGraphState() {
