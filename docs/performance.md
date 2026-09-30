@@ -81,13 +81,20 @@ node's time-map* is different: an inline seqlocked value
 the island facts), so a window edit is a value write with no heap and
 no retirement. *The seqlock is stated once* (`src/seq_locked.h`,
 `SeqLock`, audit D5-2, 2026-09-08): the map, the island triple and the
-take table all use it. Writer: odd bump (relaxed), RELEASE fence,
-payload stores, even bump (release). Reader: acquire load, payload
-loads, ACQUIRE fence, relaxed re-load. Any other order admits a torn
-read on ARM64 (x86 TSO hides it). Bounded retry (16); after the bound
-the reader takes what it has, clamped — the writer is the message
-thread, so the bound is never hit in practice (tests/seq_lock_tests.cc
-hammers all three). A multi-segment lock-collapse SPLICES a new content
+take table all use it. It is a LATCH (two copies, 2026-09-30): each
+write stores the record twice — odd bump, the primary; even bump, the
+shadow — and a reader reads the copy the mark's parity names, the one
+no write is touching. Each bump is a release RMW then a RELEASE fence;
+the reader: acquire load, payload loads, ACQUIRE fence, relaxed
+re-load. Any other order admits a torn read on ARM64 (x86 TSO hides
+it). The single-copy form tore on Windows: a writer preempted mid-write
+held the mark odd while the reader burned its bounded retry in under a
+microsecond and took a mixed record. With the latch a preempted writer
+costs the reader nothing; a retry needs the writer to make progress.
+Bounded retry (16); after the bound the reader takes what it has,
+clamped — unreachable with a message-thread writer
+(tests/seq_lock_tests.cc parks a writer mid-write and hammers all
+three). A multi-segment lock-collapse SPLICES a new content
 buffer in; the displaced buffer is owned by the undo entry (never freed
 inline) and the un-splice retires the spliced one.
 *Documented deviation (time_maps.md phase 2, 2026-07-21):* a

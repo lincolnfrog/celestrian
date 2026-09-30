@@ -588,7 +588,7 @@ class ClipNode : public AudioNode {
   // buffers are immutable once committed: a removed record travels into
   // the edit log and retires through the reclaimer, never freed inline.
   // The audio thread sees the list through the seqlocked take table
-  // (take_buffers_ + the comp cells), read once per render.
+  // (the buffers + the comp cells), read once per render.
   static constexpr int kMaxTakes = 32;
   static constexpr int kMaxCompCells = 256;
   /** Takes held: 0 for an empty clip, else max(1, list size). Message
@@ -655,7 +655,7 @@ class ClipNode : public AudioNode {
    * active take), cells = ceil(period / cell_len). Empty = no comp.
    * Written whole behind the take seqlock. Message thread. */
   std::vector<int> compCells() const;
-  int64_t compCellLength() const { return comp_q_.load(); }
+  int64_t compCellLength() const { return take_[0].comp_q.load(); }
   void setCompCells(const std::vector<int>& cells, int64_t cell_len);
   /** Peaks of take k over the committed span (the take-list view). */
   juce::var getTakeWaveform(int k, int num_peaks) const;
@@ -968,18 +968,24 @@ class ClipNode : public AudioNode {
   mutable bool take_files_dirty_ = false;  // session_io's rewrite flag
   // THE TAKE TABLE: the audio thread's view of the inactive buffers
   // and the comp, all-atomic behind one seqlock (the map's discipline)
-  // — no heap, no reclaimer. take_buffers_[active] is null (the active
+  // — no heap, no reclaimer. the buffers[active] is null (the active
   // buffer is content_); a cell naming the active, an out-of-range or
-  // a null entry reads the active buffer.
+  // a null entry reads the active buffer. Stored in the latch's two
+  // copies (take_[0] the primary, take_[1] the shadow — seq_locked.h);
+  // single-field readers read the primary.
   SeqLock take_lock_;
-  std::atomic<int> take_table_count_{0};
-  std::atomic<const juce::AudioBuffer<float>*> take_buffers_[kMaxTakes]{};
-  // Each inactive buffer's recorded extent (raw samples) — the seam
-  // fade reads past a run's end only inside it (never the reservation).
-  std::atomic<int64_t> take_recorded_[kMaxTakes]{};
-  std::atomic<int> comp_n_{0};
-  std::atomic<int64_t> comp_q_{0};
-  std::atomic<int8_t> comp_cells_[kMaxCompCells]{};
+  struct TakeTableCopy {
+    std::atomic<int> count{0};
+    std::atomic<const juce::AudioBuffer<float>*> buffers[kMaxTakes]{};
+    // Each inactive buffer's recorded extent (raw samples) — the seam
+    // fade reads past a run's end only inside it (never the
+    // reservation).
+    std::atomic<int64_t> recorded[kMaxTakes]{};
+    std::atomic<int> comp_n{0};
+    std::atomic<int64_t> comp_q{0};
+    std::atomic<int8_t> comp_cells[kMaxCompCells]{};
+  };
+  TakeTableCopy take_[2];
   /** A consistent copy of the table for one render (audio thread). */
   struct CompView {
     int n = 0;
@@ -1015,7 +1021,7 @@ class ClipNode : public AudioNode {
                       const CompView& comp, int64_t t, int n, int64_t origin,
                       const timing::TimeMap& map, int64_t fold,
                       int64_t cell_len, int64_t fade) const;
-  /** Republish take_buffers_ from the list (message thread, after any
+  /** Republish the take table from the list (message thread, after any
    * list change and before a detached buffer retires). */
   void publishTakeTable();
   /** Grow `takes_` to hold the active slot when it is still empty. */

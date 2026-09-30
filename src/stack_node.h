@@ -157,10 +157,16 @@ class StackNode : public AudioNode {
    * thread, or the audio-thread first-take establishment —
    * message-thread fact writers are refused under a live take. */
   void setIslandFacts(int64_t quantum, int64_t zero, uint32_t generation) {
-    island_lock_.write([&] {
-      quantum_samples_.store(quantum);
-      zero_samples_.store(zero);
-      island_generation_.store(generation);
+    island_lock_.write([&](int slot) {
+      if (slot == 0) {
+        quantum_samples_.store(quantum);
+        zero_samples_.store(zero);
+        island_generation_.store(generation);
+      } else {
+        island_shadow_.quantum.store(quantum);
+        island_shadow_.zero.store(zero);
+        island_shadow_.generation.store(generation);
+      }
     });
   }
   int64_t getQuantum() const { return quantum_samples_.load(); }
@@ -171,15 +177,21 @@ class StackNode : public AudioNode {
     uint32_t generation = 0;
   };
   /** (Q, zero) read consistently — never a mixed pair. Audio-thread
-   * safe: the writer's critical section is two stores, so the bounded
-   * retry never spins for real; after the bound it takes what it has
-   * (a write storm that long does not exist on the message thread). */
+   * safe: the latch hands the reader whichever copy no write is
+   * touching, so a writer preempted mid-write never stalls or tears it
+   * (seq_locked.h). */
   IslandFacts readIslandFacts() const {
     IslandFacts f;
-    island_lock_.read([&] {
-      f.quantum = quantum_samples_.load();
-      f.zero = zero_samples_.load();
-      f.generation = island_generation_.load();
+    island_lock_.read([&](int slot) {
+      if (slot == 0) {
+        f.quantum = quantum_samples_.load();
+        f.zero = zero_samples_.load();
+        f.generation = island_generation_.load();
+      } else {
+        f.quantum = island_shadow_.quantum.load();
+        f.zero = island_shadow_.zero.load();
+        f.generation = island_shadow_.generation.load();
+      }
     });
     return f;
   }
@@ -522,6 +534,13 @@ class StackNode : public AudioNode {
   std::atomic<uint32_t> island_generation_{0};
   SeqLock island_lock_;  // seqlock for (Q, zero, generation)
   std::atomic<int64_t> zero_samples_{0};
+  // The latch's shadow copy of (Q, zero, generation) (seq_locked.h):
+  // what readIslandFacts reads while a write rewrites the fields above.
+  struct {
+    std::atomic<int64_t> quantum{0};
+    std::atomic<int64_t> zero{0};
+    std::atomic<uint32_t> generation{0};
+  } island_shadow_;
   // The Q hand-off's designation (definerDesignation): message thread
   // only, a plain member.
   juce::String definer_designation_;

@@ -594,7 +594,7 @@ void ClipNode::render(float* const* output_channels, int num_output_channels,
         // ONCE per render (seqlock) and cell boundaries become seams —
         // a run never crosses a cell, so every run reads one buffer.
         CompView comp;
-        if (comp_n_.load(std::memory_order_relaxed) > 0) readCompView(comp);
+        if (take_[0].comp_n.load(std::memory_order_relaxed) > 0) readCompView(comp);
         // THE CONTENT RUN SPLITTER (timing::forEachContentRun — the one
         // statement of the render equation, shared with renderMidi):
         // runs never cross a map seam, the shot end, the rest, or a comp
@@ -1759,17 +1759,18 @@ juce::var ClipNode::audioPeaks(const juce::AudioBuffer<float>& buffer,
 // ===================================================================
 
 void ClipNode::readCompView(CompView& v) const {
-  take_lock_.read([&] {
-    v.n = comp_n_.load(std::memory_order_relaxed);
-    v.q = comp_q_.load(std::memory_order_relaxed);
-    v.count = take_table_count_.load(std::memory_order_relaxed);
+  take_lock_.read([&](int slot) {
+    const TakeTableCopy& c = take_[slot];
+    v.n = c.comp_n.load(std::memory_order_relaxed);
+    v.q = c.comp_q.load(std::memory_order_relaxed);
+    v.count = c.count.load(std::memory_order_relaxed);
     v.active = active_take_.load(std::memory_order_relaxed);
     for (int i = 0; i < kMaxCompCells; ++i) {
-      v.cells[i] = comp_cells_[i].load(std::memory_order_relaxed);
+      v.cells[i] = c.comp_cells[i].load(std::memory_order_relaxed);
     }
     for (int i = 0; i < kMaxTakes; ++i) {
-      v.buffers[i] = take_buffers_[i].load(std::memory_order_relaxed);
-      v.recorded[i] = take_recorded_[i].load(std::memory_order_relaxed);
+      v.buffers[i] = c.buffers[i].load(std::memory_order_relaxed);
+      v.recorded[i] = c.recorded[i].load(std::memory_order_relaxed);
     }
   });
   if (v.n < 0 || v.n > kMaxCompCells) v.n = 0;
@@ -1777,37 +1778,39 @@ void ClipNode::readCompView(CompView& v) const {
 }
 
 void ClipNode::publishTakeTable() {
-  take_lock_.write([&] {
+  take_lock_.write([&](int slot) {
+    TakeTableCopy& c = take_[slot];
     const int n = std::min<int>(kMaxTakes, (int)takes_.size());
-    take_table_count_.store(n, std::memory_order_relaxed);
+    c.count.store(n, std::memory_order_relaxed);
     for (int i = 0; i < kMaxTakes; ++i) {
       const juce::AudioBuffer<float>* b =
           i < n ? takes_[(size_t)i].buffer.get() : nullptr;
-      take_buffers_[i].store(b, std::memory_order_relaxed);
-      take_recorded_[i].store(i < n ? takes_[(size_t)i].recorded : 0,
-                              std::memory_order_relaxed);
+      c.buffers[i].store(b, std::memory_order_relaxed);
+      c.recorded[i].store(i < n ? takes_[(size_t)i].recorded : 0,
+                          std::memory_order_relaxed);
     }
   });
 }
 
 void ClipNode::setCompCells(const std::vector<int>& cells, int64_t cell_len) {
   const int n = std::min<int>(kMaxCompCells, (int)cells.size());
-  take_lock_.write([&] {
-    comp_n_.store(cell_len > 0 ? n : 0, std::memory_order_relaxed);
-    comp_q_.store(cell_len, std::memory_order_relaxed);
+  take_lock_.write([&](int slot) {
+    TakeTableCopy& t = take_[slot];
+    t.comp_n.store(cell_len > 0 ? n : 0, std::memory_order_relaxed);
+    t.comp_q.store(cell_len, std::memory_order_relaxed);
     for (int i = 0; i < kMaxCompCells; ++i) {
       const int c = i < n ? cells[(size_t)i] : -1;
-      comp_cells_[i].store((int8_t)std::clamp(c, -1, kMaxTakes - 1),
-                           std::memory_order_relaxed);
+      t.comp_cells[i].store((int8_t)std::clamp(c, -1, kMaxTakes - 1),
+                            std::memory_order_relaxed);
     }
   });
 }
 
 std::vector<int> ClipNode::compCells() const {
   std::vector<int> out;
-  const int n = std::clamp(comp_n_.load(), 0, kMaxCompCells);
+  const int n = std::clamp(take_[0].comp_n.load(), 0, kMaxCompCells);
   out.reserve((size_t)n);
-  for (int i = 0; i < n; ++i) out.push_back(comp_cells_[i].load());
+  for (int i = 0; i < n; ++i) out.push_back(take_[0].comp_cells[i].load());
   return out;
 }
 

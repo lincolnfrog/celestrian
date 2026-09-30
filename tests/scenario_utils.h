@@ -18,6 +18,7 @@
 #include <cmath>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -42,7 +43,12 @@ inline float rampAt(int64_t t) {
 inline int64_t posmod(int64_t a, int64_t m) { return ((a % m) + m) % m; }
 
 struct Island {
-  AudioEngine engine;
+  // On the HEAP: an engine carries its MIDI rings inline (~130 KB), and
+  // a suite's runTest holds dozens of islands in one frame — MSVC does
+  // not overlap sibling scopes' slots, so by value the frame outgrew
+  // Windows' 1 MB main-thread stack.
+  std::unique_ptr<AudioEngine> engine_storage = std::make_unique<AudioEngine>();
+  AudioEngine& engine = *engine_storage;
   int64_t clock = 0;  // mirror of the engine's monotonic transport
   // What each committed take holds: content[k] == rampAt(captured[id] + k).
   std::map<juce::String, int64_t> captured;

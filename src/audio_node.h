@@ -516,11 +516,12 @@ class AudioNode {
   /** The stored geometry, bypass ignored (message or audio thread). */
   timing::TimeMap storedMap() const {
     timing::TimeMap m;
-    map_lock_.read([&] {
-      m.n = map_n_.load(std::memory_order_relaxed);
+    map_lock_.read([&](int slot) {
+      const MapCopy& c = map_[slot];
+      m.n = c.n.load(std::memory_order_relaxed);
       for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
-        m.segs[i].start = map_start_[i].load(std::memory_order_relaxed);
-        m.segs[i].end = map_end_[i].load(std::memory_order_relaxed);
+        m.segs[i].start = c.start[i].load(std::memory_order_relaxed);
+        m.segs[i].end = c.end[i].load(std::memory_order_relaxed);
       }
     });
     if (m.n < 0 || m.n > timing::TimeMap::kMaxSegments) m.n = 0;
@@ -528,13 +529,14 @@ class AudioNode {
   }
   /** Replace the geometry (message thread). n == 0 clears it. */
   void setMap(const timing::TimeMap& m) {
-    map_lock_.write([&] {
-      map_n_.store(m.n, std::memory_order_relaxed);
+    map_lock_.write([&](int slot) {
+      MapCopy& c = map_[slot];
+      c.n.store(m.n, std::memory_order_relaxed);
       for (int i = 0; i < timing::TimeMap::kMaxSegments; ++i) {
-        map_start_[i].store(i < m.n ? m.segs[i].start : 0,
-                            std::memory_order_relaxed);
-        map_end_[i].store(i < m.n ? m.segs[i].end : 0,
-                          std::memory_order_relaxed);
+        c.start[i].store(i < m.n ? m.segs[i].start : 0,
+                         std::memory_order_relaxed);
+        c.end[i].store(i < m.n ? m.segs[i].end : 0,
+                       std::memory_order_relaxed);
       }
     });
   }
@@ -605,7 +607,7 @@ class AudioNode {
     loop_window_bypassed_.store(bypassed);
   }
   virtual bool isLoopWindowActive() const {
-    return !loop_window_bypassed_.load() && map_n_.load() > 0;
+    return !loop_window_bypassed_.load() && map_[0].n.load() > 0;
   }
 
   /** The period-source knob (Q5): true = one-shot (period := context
@@ -758,11 +760,15 @@ class AudioNode {
   std::atomic<int64_t> duration_samples{0};       // Length of the loop
   std::atomic<int64_t> live_duration_samples{0};  // Live count during recording
   // THE MAP's storage (see storedMap/setMap): a seqlock over all-atomic
-  // segment fields; n == 0 means no geometry.
+  // segment fields, in the latch's two copies (map_[0] the primary,
+  // map_[1] the shadow — seq_locked.h); n == 0 means no geometry.
   SeqLock map_lock_;
-  std::atomic<int> map_n_{0};
-  std::atomic<int64_t> map_start_[timing::TimeMap::kMaxSegments]{};
-  std::atomic<int64_t> map_end_[timing::TimeMap::kMaxSegments]{};
+  struct MapCopy {
+    std::atomic<int> n{0};
+    std::atomic<int64_t> start[timing::TimeMap::kMaxSegments]{};
+    std::atomic<int64_t> end[timing::TimeMap::kMaxSegments]{};
+  };
+  MapCopy map_[2];
   // Map bypass flag (time_maps.md). Window phase is pure arithmetic on
   // the received clock — no private counter, fractal.
   std::atomic<bool> loop_window_bypassed_{false};

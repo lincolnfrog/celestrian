@@ -39,23 +39,67 @@ class SeqLockTests : public juce::UnitTest {
               "takes what it has");
     {
       SeqLock lock;
-      int payload = 0;
-      lock.write([&] { payload = 7; });
+      int payload[2] = {0, 0};
+      lock.write([&](int slot) { payload[slot] = 7; });
+      expectEquals(payload[0], 7, "the write stores the primary…");
+      expectEquals(payload[1], 7, "…and the shadow");
       int seen = 0;
-      expect(lock.read([&] { seen = payload; }), "stable read");
+      expect(lock.read([&](int slot) { seen = payload[slot]; }), "stable read");
       expectEquals(seen, 7, "payload observed");
+    }
+
+    beginTest("latch: a writer stalled mid-write never stalls or tears a reader");
+    {
+      // THE BUG THE LATCH FIXES: the OS preempts the writer (the
+      // message thread) between its payload stores. Single-copy, the
+      // mark stayed odd and every read burned its retry bound and took
+      // a mixed record. Here the writer parks inside each copy's stores
+      // with the record half written; a read in between must come back
+      // at once, consistent, and whole — the previous record while the
+      // primary is half written, the new one while the shadow is.
+      SeqLock lock;
+      std::atomic<int64_t> a[2] = {{1}, {1}}, b[2] = {{-1}, {-1}};
+      std::atomic<int> parked{-1};  // the copy the writer is parked in
+      std::atomic<bool> go{false};
+      std::thread writer([&] {
+        lock.write([&](int slot) {
+          a[slot].store(2, std::memory_order_relaxed);  // half the record
+          parked.store(slot);
+          while (!go.load()) std::this_thread::yield();
+          go.store(false);
+          b[slot].store(-2, std::memory_order_relaxed);
+        });
+        parked.store(2);
+      });
+      auto readOnce = [&](int64_t& ra, int64_t& rb) {
+        return lock.read([&](int slot) {
+          ra = a[slot].load(std::memory_order_relaxed);
+          rb = b[slot].load(std::memory_order_relaxed);
+        });
+      };
+      int64_t ra = 0, rb = 0;
+      while (parked.load() != 0) std::this_thread::yield();
+      expect(readOnce(ra, rb), "primary half written: the read is consistent");
+      expect(ra == 1 && rb == -1, "…and is the previous record, whole");
+      go.store(true);
+      while (parked.load() != 1) std::this_thread::yield();
+      expect(readOnce(ra, rb), "shadow half written: the read is consistent");
+      expect(ra == 2 && rb == -2, "…and is the new record, whole");
+      go.store(true);
+      writer.join();
+      expect(readOnce(ra, rb) && ra == 2 && rb == -2, "after the write: the new record");
     }
 
     beginTest("hammer: a CONSISTENT read is never torn (tight writer)");
     {
       // Two payload words, two distinct records, a writer that never
-      // pauses: a read that reports consistent (even mark, unchanged
-      // across the payload loads) must be one of the two records. Reads
-      // that hit the retry bound under this storm are best effort by
+      // pauses: a read that reports consistent (unchanged mark across
+      // the payload loads) must be one of the two records. Reads that
+      // hit the retry bound under this storm are best effort by
       // contract (the real writer is the message thread, which writes
       // rarely) and are not judged here — the paced hammers below are.
       SeqLock lock;
-      std::atomic<int64_t> a{0}, b{0};
+      std::atomic<int64_t> a[2] = {{0}, {0}}, b[2] = {{0}, {0}};
       std::atomic<bool> done{false};
       std::atomic<int> torn{0};
       std::atomic<int> consistent{0};
@@ -63,9 +107,9 @@ class SeqLockTests : public juce::UnitTest {
       std::thread reader([&] {
         while (!done.load(std::memory_order_relaxed)) {
           int64_t ra = 0, rb = 0;
-          const bool ok_read = lock.read([&] {
-            ra = a.load(std::memory_order_relaxed);
-            rb = b.load(std::memory_order_relaxed);
+          const bool ok_read = lock.read([&](int slot) {
+            ra = a[slot].load(std::memory_order_relaxed);
+            rb = b[slot].load(std::memory_order_relaxed);
           });
           if (!ok_read) {
             bounded.fetch_add(1, std::memory_order_relaxed);
@@ -78,9 +122,9 @@ class SeqLockTests : public juce::UnitTest {
       });
       for (int i = 0; i < 200000; ++i) {
         const bool one = (i & 1) != 0;
-        lock.write([&] {
-          a.store(one ? 1 : 0, std::memory_order_relaxed);
-          b.store(one ? -1 : 0, std::memory_order_relaxed);
+        lock.write([&](int slot) {
+          a[slot].store(one ? 1 : 0, std::memory_order_relaxed);
+          b[slot].store(one ? -1 : 0, std::memory_order_relaxed);
         });
       }
       done.store(true);
@@ -122,10 +166,12 @@ class SeqLockTests : public juce::UnitTest {
       });
       // PACED like the real writer (the message thread writes rarely):
       // a spin between writes keeps the writer's duty cycle tiny, so
-      // sixteen consecutive collisions — the only way a read comes back
-      // unchecked — do not happen; every read must then be whole.
-      // (A yield is not a pause on macOS when the core has nothing
-      // else to run — hence the spin.)
+      // sixteen writes landing inside one read — the only way a read
+      // comes back unchecked — do not happen; every read must then be
+      // whole. A writer the OS preempts mid-write costs the reader
+      // nothing (the latch: it reads the other copy) — on Windows the
+      // single-copy form tore here. (A yield is not a pause on macOS
+      // when the core has nothing else to run — hence the spin.)
       for (int i = 0; i < 5000; ++i) {
         node.setMap((i & 1) ? B : A);
         pace();
