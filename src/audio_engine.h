@@ -59,6 +59,11 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    */
   bool isPlaying() const { return is_playing_global; }
 
+  /** The monotonic clock (kernel.md). It moves while the transport
+   * plays and through a stop's fade-out tail (after isPlaying() turns
+   * false). */
+  int64_t transportClock() const { return global_transport_pos.load(); }
+
   /**
    * Seeks the transport: a PHASE ADVANCE. The monotonic clock is never
    * touched (kernel.md): a seek moves the island's zero — and every
@@ -843,17 +848,22 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   void noteOriginDrift(const juce::String& cause);
 
   bool was_any_node_recording_ = false;  // audio thread only (view upkeep)
-  // THE PLAY-START FADE (audio thread only): the master output ramps in
-  // over the declick length after the transport starts, so playback
-  // that begins mid-waveform never pops (docs/kernel.md §3).
+  // THE TRANSPORT FADES (audio thread only; docs/kernel.md §3). Start:
+  // the master output ramps in over the declick length after the
+  // transport starts, so playback that begins mid-waveform never pops.
+  // Stop: the audio thread keeps rendering (and the clock keeps moving)
+  // for one declick length after the stop and ramps the master out;
+  // `stop_tail_pos_` counts the tail's samples, −1 when none runs.
   bool was_playing_ = false;
   int64_t play_fade_pos_ = 0;
+  int64_t stop_tail_pos_ = -1;
 
  public:
-  /** The play-start fade's switch: on in the app, off in the test
-   * runner (its oracles read the first samples after a start exactly);
-   * tests/seam_fade_tests.cc pins the fade. Process-wide. */
-  static inline std::atomic<bool> play_start_fade_enabled{true};
+  /** The transport fades' switch (start and stop): on in the app, off
+   * in the test runner (its oracles read the samples around a start or
+   * a stop exactly); tests/seam_fade_tests.cc pins the fades.
+   * Process-wide. */
+  static inline std::atomic<bool> transport_fades_enabled{true};
 
  private:
   std::atomic<int64_t> view_base_{0};

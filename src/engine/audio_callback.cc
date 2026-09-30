@@ -110,6 +110,23 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
   midi_history_.pushBlock(live_midi_buffer_, input_clock_);
 
   if (root_node) {
+    // THE TRANSPORT FADES' STATE (see the fades after process below).
+    // A stop starts a tail — one declick length still rendered and
+    // clocked, ramping out — beginning at the gain a start fade had
+    // reached; a play during the tail resumes from the gain the tail
+    // reached. Either way the master never steps.
+    const bool want_playing = is_playing_global.load();
+    const bool fades = transport_fades_enabled.load(std::memory_order_relaxed);
+    const int64_t fade_len =
+        celestrian::ClipNode::seamFadeSamples(cached_sample_rate_.load());
+    if (want_playing) {
+      if (stop_tail_pos_ >= 0) play_fade_pos_ = fade_len - stop_tail_pos_;
+      stop_tail_pos_ = -1;
+    } else if (was_playing_ && fades && stop_tail_pos_ < 0 && fade_len > 0) {
+      stop_tail_pos_ = std::max<int64_t>(0, fade_len - play_fade_pos_);
+    }
+    const bool playing = want_playing || stop_tail_pos_ >= 0;
+
     // Whole-graph snapshot + island facts: ONE structure load for the
     // entire callback; leaves read island state from the context
     // instead of walking parents. The render facts are built by the
@@ -120,7 +137,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     jassert(snap != nullptr);  // published at construction, never cleared
     celestrian::ProcessContext pc = celestrian::engine_internal::renderContext(
         *root_node, *snap, cached_sample_rate_.load(), num_samples,
-        global_transport_pos.load(), is_playing_global.load());
+        global_transport_pos.load(), playing);
     pc.live_midi = &live_midi_buffer_;
     if (ring_channels > 0) {
       pc.prerecord_ring = prerecord_ring_.getArrayOfReadPointers();
@@ -155,12 +172,9 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     // stands — usually mid-waveform — so the first blocks after a start
     // ramp in (the seam fade's length and curve). On the master, after
     // every node and plugin: whatever starts sounding, nothing steps.
-    if (pc.is_playing && !was_playing_) play_fade_pos_ = 0;
-    was_playing_ = pc.is_playing;
-    const int64_t fade_len =
-        celestrian::ClipNode::seamFadeSamples(pc.sample_rate);
-    if (pc.is_playing && play_fade_pos_ < fade_len &&
-        play_start_fade_enabled.load(std::memory_order_relaxed)) {
+    if (playing && !was_playing_) play_fade_pos_ = 0;
+    was_playing_ = playing;
+    if (want_playing && play_fade_pos_ < fade_len && fades) {
       const int n = (int)std::min<int64_t>(num_samples,
                                            fade_len - play_fade_pos_);
       for (int ch = 0; ch < num_output_channels; ++ch) {
@@ -173,10 +187,32 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
       }
       play_fade_pos_ += n;
     }
+    // THE STOP FADE: the tail ramps the master out (the start ramp
+    // mirrored); once it ends, the rest of the block is silence and the
+    // transport halts at the block's end.
+    if (stop_tail_pos_ >= 0) {
+      const int n =
+          (int)std::min<int64_t>(num_samples, fade_len - stop_tail_pos_);
+      for (int ch = 0; ch < num_output_channels; ++ch) {
+        float* out = output_channel_data[ch];
+        if (out == nullptr) continue;
+        for (int i = 0; i < n; ++i) {
+          out[i] *= celestrian::ClipNode::fadeRamp(
+              fade_len - 1 - (stop_tail_pos_ + i), fade_len);
+        }
+        if (n < num_samples)
+          juce::FloatVectorOperations::clear(out + n, num_samples - n);
+      }
+      stop_tail_pos_ += n;
+      if (stop_tail_pos_ >= fade_len) {
+        stop_tail_pos_ = -1;
+        was_playing_ = false;
+      }
+    }
 
     input_clock_ += num_samples;
 
-    if (is_playing_global.load()) {
+    if (playing) {
       // Monotonic transport (kernel.md step 3): the clock only moves
       // forward. Clips align by their stored origins, so commits have
       // nothing to wrap, snap, or reset. The cycle position shown to

@@ -168,9 +168,19 @@ usually mid-waveform, so the audio callback ramps the master output in
 over the seam fade's 4 ms and curve (§2) on the first blocks after the
 transport starts (`AudioEngine::play_fade_pos_`). It sits on the
 master, after every node and plugin, so nothing that starts sounding
-steps; it touches only what is heard, never what is recorded. The test
-runner switches it off (`AudioEngine::play_start_fade_enabled`);
-`tests/seam_fade_tests.cc` pins it.
+steps; it touches only what is heard, never what is recorded.
+
+**Every stop fades out.** A stop is a 4 ms tail: the callback keeps
+rendering and the clock keeps moving for one declick length after the
+stop, ramping the master out with the same curve mirrored
+(`AudioEngine::stop_tail_pos_`), then halts at that block's end, the
+rest of the block silent. A stop during a start's ramp begins the tail
+at the gain the ramp reached; a play during the tail resumes from the
+gain the tail reached, so nothing steps either way. The clock stands at
+most one audio block past the stop — below anything the view shows. The
+test runner switches both fades off
+(`AudioEngine::transport_fades_enabled`); `tests/seam_fade_tests.cc`
+pins them.
 
 **The island zero is data, not the clock.** The first arm stores its
 moment provisionally and the first commit makes the take's origin the

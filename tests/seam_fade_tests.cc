@@ -9,8 +9,9 @@
  * samples each produces against an independent oracle, that everything
  * away from a seam is the kernel law untouched, that the result is a
  * pure function of t (block size never changes a sample), and that a
- * seam that used to pop no longer steps. Also the engine's PLAY-START
- * fade: a resume mid-waveform ramps in on the master. The rest of the
+ * seam that used to pop no longer steps. Also the engine's TRANSPORT
+ * fades: a resume mid-waveform ramps in on the master, and a stop ramps
+ * out through a clocked tail. The rest of the
  * suite runs with both off (tests/test_runner.cc) so its oracles stay
  * the plain law; this file switches them on.
  */
@@ -18,6 +19,7 @@
 #include <juce_core/juce_core.h>
 
 #include <cmath>
+#include <functional>
 #include <vector>
 
 #include "../src/clip_node.h"
@@ -339,14 +341,14 @@ class SeamFadeTests : public juce::UnitTest {
       is.drive(3000);  // somewhere mid-loop
       is.refresh();
       auto resume = [&](bool fade) {
-        AudioEngine::play_start_fade_enabled.store(fade);
+        AudioEngine::transport_fades_enabled.store(fade);
         is.engine.togglePlayback();  // pause
         is.drive(2 * scenario::BLOCK);
         expect(!is.engine.isPlaying(), "paused");
         is.engine.togglePlayback();  // play
         std::vector<std::pair<int64_t, float>> out;
         is.drive(2 * scenario::BLOCK, &out);
-        AudioEngine::play_start_fade_enabled.store(false);
+        AudioEngine::transport_fades_enabled.store(false);
         return out;
       };
       const auto faded = resume(true);
@@ -371,6 +373,77 @@ class SeamFadeTests : public juce::UnitTest {
       const auto again = resume(true);
       expect(again.front().second < 0.01f * is.loopVal(c, again.front().first),
              "every start fades, not just the first");
+      ClipNode::seam_fades_enabled.store(true);
+    }
+
+    beginTest("the stop fade: a stop ramps out through a clocked tail, then halts");
+    {
+      ClipNode::seam_fades_enabled.store(false);
+      scenario::Island is;
+      const juce::String c = is.record(20000);
+      is.drive(3000);
+      is.refresh();
+      AudioEngine::transport_fades_enabled.store(true);
+      is.drive(scenario::BLOCK);  // past any start ramp
+      /** Count samples of `out` off gain g(i) · the loop law, and any
+       * break in the clock. */
+      auto off = [&](const std::vector<std::pair<int64_t, float>>& out,
+                     const std::function<float(int64_t)>& g) {
+        int bad = 0;
+        for (size_t i = 0; i < out.size(); ++i) {
+          if (i > 0 && out[i].first != out[i - 1].first + 1) ++bad;
+          if (std::abs(out[i].second - g((int64_t)i) * is.loopVal(c, out[i].first)) >
+              1e-6f)
+            ++bad;
+        }
+        return bad;
+      };
+
+      // A stop: the next F samples ramp out on the running clock, the
+      // rest of that block is silent, and the clock halts at its end.
+      const int64_t t0 = is.clock;
+      is.engine.togglePlayback();
+      expect(!is.engine.isPlaying(), "stopped at once");
+      std::vector<std::pair<int64_t, float>> out;
+      is.drive(scenario::BLOCK, &out);
+      expectEquals(off(out, [&](int64_t i) { return i < F ? ramp(F - 1 - i, F) : 0.0f; }),
+                   0, "g(i) = the start ramp mirrored, then silence");
+      expect(std::abs(out.front().second - is.loopVal(c, out.front().first)) <
+                 0.01f * std::abs(is.loopVal(c, out.front().first)) + 1e-6f,
+             "the first sample after the stop is still (nearly) full");
+      expect(std::abs(out[(size_t)F - 1].second) < 1e-3f, "the tail ends near silence");
+      expectEquals(is.clock, t0 + scenario::BLOCK, "the tail's block is clocked");
+      is.drive(2 * scenario::BLOCK);
+      expectEquals(is.clock, t0 + scenario::BLOCK, "…and then the clock halts");
+
+      // A stop inside a start's ramp starts the tail at the gain the
+      // ramp reached — no step up.
+      const int64_t q = F / 4;
+      is.engine.togglePlayback();  // play
+      std::vector<std::pair<int64_t, float>> s1, s2;
+      is.drive(q, &s1);
+      is.engine.togglePlayback();  // stop
+      is.drive(scenario::BLOCK, &s2);
+      expectEquals(off(s1, [&](int64_t i) { return ramp(i, F); }), 0, "the start ramp");
+      expectEquals(off(s2, [&](int64_t i) { return i < q ? ramp(q - 1 - i, F) : 0.0f; }),
+                   0, "the tail picks up where the start ramp stood");
+
+      // A play inside the tail resumes from the gain the tail reached.
+      is.engine.togglePlayback();  // play
+      is.drive(scenario::BLOCK);
+      const int64_t h = F / 2;
+      std::vector<std::pair<int64_t, float>> u1, u2;
+      is.engine.togglePlayback();  // stop
+      is.drive(h, &u1);
+      is.engine.togglePlayback();  // play again, mid-tail
+      is.drive(scenario::BLOCK, &u2);
+      expectEquals(off(u1, [&](int64_t i) { return ramp(F - 1 - i, F); }), 0, "half a tail");
+      expectEquals(off(u2, [&](int64_t i) { return F - h + i < F ? ramp(F - h + i, F) : 1.0f; }),
+                   0, "the resume ramps back up from the tail's gain");
+      expectEquals(u2.front().first, u1.back().first + 1, "one unbroken clock");
+      expect(is.engine.isPlaying(), "playing");
+
+      AudioEngine::transport_fades_enabled.store(false);
       ClipNode::seam_fades_enabled.store(true);
     }
   }

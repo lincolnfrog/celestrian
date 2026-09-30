@@ -56,8 +56,9 @@ struct Island {
 
   // ---- driving ----
   /** Drive `total` samples of ramp (or silent) input; append (clock, L)
-   * pairs to `out` when given. The clock mirror advances only while
-   * the transport plays. */
+   * pairs to `out` when given. The clock mirror follows the engine's
+   * clock: it advances while the transport plays (and through a stop's
+   * fade-out tail). */
   void drive(int64_t total, std::vector<std::pair<int64_t, float>>* out = nullptr,
              bool silent = false) {
     std::vector<float> in((size_t)BLOCK), l((size_t)BLOCK), r((size_t)BLOCK);
@@ -66,12 +67,12 @@ struct Island {
     int64_t remaining = total;
     while (remaining > 0) {
       const int n = (int)std::min<int64_t>(remaining, BLOCK);
-      const bool playing = engine.isPlaying();
+      const int64_t before = engine.transportClock();
       for (int i = 0; i < n; ++i) in[(size_t)i] = silent ? 0.0f : rampAt(clock + i);
       engine.audioDeviceIOCallbackWithContext(ins, 1, outs, 2, n, {});
       if (out != nullptr)
         for (int i = 0; i < n; ++i) out->push_back({clock + i, l[(size_t)i]});
-      if (playing) clock += n;
+      clock += engine.transportClock() - before;
       remaining -= n;
     }
   }

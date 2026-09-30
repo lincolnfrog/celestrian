@@ -44,7 +44,7 @@ int main(int argc, char* argv[]) {
   // fade smooth exactly the samples around a seam or a start, so both
   // are off here and seam_fade_tests.cc pins them on their own.
   celestrian::ClipNode::seam_fades_enabled.store(false);
-  AudioEngine::play_start_fade_enabled.store(false);
+  AudioEngine::transport_fades_enabled.store(false);
 
   ConsoleRunner runner;
   runner.setAssertOnFailure(false);
