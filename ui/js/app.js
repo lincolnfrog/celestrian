@@ -833,6 +833,10 @@ function deriveFrame(state) {
     lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
         Number.isFinite(state.islandPos)
         ? { zero: vm.frameZero,
+            // Where the loops' tops line up (frame.md §1) — the zero
+            // drawn, unless an edit hold keeps an older one on screen.
+            // The default play start is measured from here (law 15).
+            seat: Number.isFinite(vm.seatedZero) ? vm.seatedZero : vm.frameZero,
             rawClock: state.islandPos + (state.islandZero ?? 0),
             loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum,
             quantum: vm.quantum }

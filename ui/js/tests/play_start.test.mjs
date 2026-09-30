@@ -21,6 +21,7 @@ import {
     notePlayStart, notePlayStartTransport, playStartFor, togglePlayFromStart,
 } from '../play_start.js';
 import { seekDelta } from '../seek.js';
+import { posMod } from '../math_utils.js';
 import { deriveViewModel } from '../view_model.js';
 import {
     callNative, getState, loadScenario, advanceBy,
@@ -36,10 +37,11 @@ const near = (a, b, msg) =>
 const pos = () => getState().masterPos;
 
 /** The frame facts the app's poll would feed (app.js startPolling). */
-function frameNow() {
+function frameNow(opts = {}) {
     const st = getState();
-    const vm = deriveViewModel(st);
+    const vm = deriveViewModel(st, opts);
     return { rawClock: st.islandPos + st.islandZero, zero: vm.frameZero,
+             seat: vm.seatedZero,
              loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum };
 }
 
@@ -139,4 +141,53 @@ test('order: play seeks BEFORE resuming; stop pauses BEFORE returning', async ()
         ['seekTransport', Q, 8 * Q], ['togglePlayback'],
         ['togglePlayback'], ['seekTransport', Q, 8 * Q],
     ]);
+});
+
+test('an edit hold: the default play start is the SEAT, not ruler 0', async () => {
+    // A frame held one Q off its seat (a lane edited under the hold):
+    // the top is where the loops' tops line up, so the play-seek
+    // measures from the seat; a ruler-set start stays the spot drawn.
+    const calls = [];
+    const fake = async (method, ...args) => { calls.push([method, ...args]); return true; };
+    notePlayStart(PID, 0);
+    notePlayStartTransport(false, true,
+        { rawClock: 8 * Q, zero: 8 * Q, seat: 9 * Q, loopSamples: 4 * Q });
+    await togglePlayFromStart(fake, PID);  // play: seat phase 3Q → +1Q
+    await togglePlayFromStart(fake, PID);  // stop
+    notePlayStart(PID, 2 * Q);             // a ruler click: as drawn
+    await togglePlayFromStart(fake, PID);  // play: drawn phase 0 → +2Q
+    assert.deepEqual(calls, [
+        ['seekTransport', Q, 8 * Q], ['togglePlayback'],
+        ['togglePlayback'], ['seekTransport', Q, 8 * Q],
+        ['seekTransport', 2 * Q, 8 * Q], ['togglePlayback'],
+    ]);
+    notePlayStart(PID, 0);
+});
+
+test('field: a loop trimmed from its left under the hold plays from its top', async () => {
+    // keys 1Q at 0, drums 5Q at 2Q; the drums lane selected (the hold
+    // keeps the zero on the drums' old top, 2Q) and trimmed to [3Q, 5Q):
+    // the ↺ now sounds at 2Q + 3Q = 5Q ≡ 1Q in the 2Q loop — ruler 0
+    // would start the drums a Q into their section.
+    loadScenario('keys-then-drums');
+    notePlayStart('', 0);
+    await callNative('setLoopPoints', 'drums', 3 * Q, 5 * Q);
+    if (getState().isPlaying) await callNative('togglePlayback');
+    const held = () => frameNow({ hold: { zeroRel: 2 * Q, quantum: Q } });
+    const f = held();
+    assert.equal(posMod(f.zero - f.seat, f.loopSamples), Q, 'held a Q off the seat');
+    notePlayStartTransport(false, true, f);
+    const intoDrums = () => {
+        const st = getState();
+        const d = st.nodes.find(n => n.id === 'drums');
+        return posMod(st.islandPos + st.islandZero - (d.origin + d.loopStart),
+                      d.loopEnd - d.loopStart);
+    };
+    await togglePlayFromStart(callNative, PID);  // play
+    // (a poll while playing adds one mock tick)
+    assert.ok(intoDrums() < Q / 4, 'play starts at the drums’ top, not a Q in');
+    advanceBy(Q / 2);
+    notePlayStartTransport(true, true, held());
+    await togglePlayFromStart(callNative, PID);  // stop
+    near(intoDrums(), 0, 'stop returns to the drums’ top');
 });

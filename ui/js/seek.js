@@ -52,5 +52,7 @@ export function seekApplied(frame, result) {
     if (!frame || !result || typeof result !== 'object') return frame;
     const { advance, clock } = result;
     if (!Number.isFinite(advance) || !Number.isFinite(clock)) return frame;
-    return { ...frame, rawClock: clock, zero: frame.zero - advance };
+    const out = { ...frame, rawClock: clock, zero: frame.zero - advance };
+    if (Number.isFinite(frame.seat)) out.seat = frame.seat - advance;
+    return out;
 }

@@ -495,6 +495,16 @@ time_maps.md §6.
     by default; a ruler seek moves it to that seek's target, and a click
     back at the top restores the default.
 
+    **The top is the SEAT** (2026-09-29): where the loops' tops line up
+    (frame.md §1), which is ruler 0 whenever the frame is not held. An
+    edit hold keeps an older zero on screen, and a loop trimmed from its
+    left under it moves its ↺ off ruler 0 — played from ruler 0, the
+    edited loop started mid-section (the field report: drums trimmed to
+    their last 19Q started 11Q in). So the default start is measured
+    from the seat, and the cursor parks on the ↺ wherever the held
+    picture draws it. A ruler-set start is a spot pointed at in the
+    frame as drawn, and stays one.
+
     This is **UI policy composed from two engine primitives** —
     `togglePlayback` (a pure pause/resume, which the engine's own flows
     and tests rely on) and `seekTransport` (a whole-island phase jump).

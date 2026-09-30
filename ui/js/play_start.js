@@ -1,9 +1,11 @@
 /**
  * play_start.js — the PLAY START (session_view.md display law 15):
  * Space / ▶ always plays FROM the play start, and
- * stopping returns the playhead TO it. The play start is the top (0)
- * by default; a ruler seek moves it to the seek's target, and a click
- * back at the top restores the default.
+ * stopping returns the playhead TO it. The play start is the top by
+ * default — where the loops' tops line up (the seat), which is ruler 0
+ * unless an edit hold keeps an older frame on screen; a ruler seek
+ * moves it to the seek's target, and a click back at the top restores
+ * the default.
  *
  * UI policy composed from the engine's two primitives — togglePlayback
  * (a pure pause/resume, which the engine's own flows and tests rely on)
@@ -37,17 +39,32 @@ export function playStartFor(projectId) {
 }
 
 /** Poll feed: whether the transport runs, and the frame facts a seek
- * is computed against ({rawClock, zero, loopSamples}; null before a
- * frame exists — then no seek is sent). */
+ * is computed against ({rawClock, zero, seat, loopSamples}; null before
+ * a frame exists — then no seek is sent). `seat` (optional) is where the
+ * loops' tops line up — the default play start's zero (frameFor). */
 export function notePlayStartTransport(isPlaying, qEstablished, frame = null) {
     transport.isPlaying = !!isPlaying;
     transport.frame = qEstablished && frame ? frame : null;
     transport.seekable = transport.frame !== null;
 }
 
+/**
+ * The frame a return is measured in. A ruler-set play start is a spot
+ * the user pointed at in the frame AS DRAWN. The default — the top —
+ * is where the loops' tops line up: the SEAT (frame.md §1). The two
+ * are the same zero unless an edit hold keeps an older one on screen
+ * (a region trimmed from its left: the ↺ moves, the picture stays),
+ * where ruler 0 would start the edited loop mid-section.
+ */
+function frameFor(projectId) {
+    const f = transport.frame;
+    const custom = start.projectId === projectId && start.samples !== 0;
+    return !custom && Number.isFinite(f.seat) ? { ...f, zero: f.seat } : f;
+}
+
 async function returnToStart(call, projectId) {
     if (!transport.seekable) return;
-    const delta = seekDelta(playStartFor(projectId), transport.frame);
+    const delta = seekDelta(playStartFor(projectId), frameFor(projectId));
     if (delta === null) return;
     const result = await call('seekTransport', delta, transport.frame.rawClock);
     // Fold the applied seek into the frame facts (the next poll will
