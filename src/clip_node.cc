@@ -846,15 +846,6 @@ ClipNode::RunSource ClipNode::runSource(const juce::AudioBuffer<float>& active,
           std::min({cap, (int64_t)write_position.load(), end})};
 }
 
-namespace {
-/** The raised-cosine ramp 0 → 1 at sample j of a `len`-sample fade
- * (sampled at centres, so the two ends mirror and the pair sums to 1). */
-float seamRamp(int64_t j, int64_t len) {
-  return 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi *
-                                ((float)j + 0.5f) / (float)len);
-}
-}  // namespace
-
 void ClipNode::applySeamFades(float* scratch, int c,
                               const juce::AudioBuffer<float>& active,
                               const CompView& comp, int64_t t, int n,
@@ -911,7 +902,7 @@ void ClipNode::applySeamFades(float* scratch, int c,
             // seam, so the incoming lands on time and the outgoing
             // ends where it was cut.
             for (int64_t j = 0; j < F; ++j) {
-              const float w = seamRamp(j, F);
+              const float w = fadeRamp(j, F);
               const float tail =
                   out.silent ? 0.0f : out.src.data[out.idx + 1 + j];
               blend(k0 + j, w, (1.0f - w) * tail);
@@ -921,7 +912,7 @@ void ClipNode::applySeamFades(float* scratch, int c,
             // No tail, but the incoming has a lead-in: cross into it
             // BEFORE the seam, arriving at the incoming's first sample.
             for (int64_t j = 0; j < F; ++j) {
-              const float w = seamRamp(j, F);
+              const float w = fadeRamp(j, F);
               const float lead =
                   in.silent ? 0.0f : in.src.data[in.idx - F + j];
               blend(k0 - F + j, 1.0f - w, w * lead);
@@ -931,7 +922,7 @@ void ClipNode::applySeamFades(float* scratch, int c,
             // exactly the loop): out and in through a brief dip.
             const int64_t h = F / 2;
             for (int64_t j = 0; j < h; ++j) {
-              const float w = seamRamp(j, h);
+              const float w = fadeRamp(j, h);
               blend(k0 - h + j, 1.0f - w, 0.0f);
               blend(k0 + j, w, 0.0f);
             }

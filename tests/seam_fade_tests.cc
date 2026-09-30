@@ -9,9 +9,10 @@
  * samples each produces against an independent oracle, that everything
  * away from a seam is the kernel law untouched, that the result is a
  * pure function of t (block size never changes a sample), and that a
- * seam that used to pop no longer steps. The rest of the suite runs
- * with the fade off (tests/test_runner.cc) so its oracles stay the
- * plain law; this file switches it on.
+ * seam that used to pop no longer steps. Also the engine's PLAY-START
+ * fade: a resume mid-waveform ramps in on the master. The rest of the
+ * suite runs with both off (tests/test_runner.cc) so its oracles stay
+ * the plain law; this file switches them on.
  */
 
 #include <juce_core/juce_core.h>
@@ -20,6 +21,7 @@
 #include <vector>
 
 #include "../src/clip_node.h"
+#include "scenario_utils.h"
 #include "test_utils.h"
 
 namespace celestrian {
@@ -325,6 +327,51 @@ class SeamFadeTests : public juce::UnitTest {
           break;
         }
       }
+    }
+
+    beginTest("the play-start fade: a resume mid-waveform ramps in on the master");
+    {
+      // This case is about the start; keep the seams bare so the only
+      // shaping in the window is the start ramp.
+      ClipNode::seam_fades_enabled.store(false);
+      scenario::Island is;
+      const juce::String c = is.record(20000);
+      is.drive(3000);  // somewhere mid-loop
+      is.refresh();
+      auto resume = [&](bool fade) {
+        AudioEngine::play_start_fade_enabled.store(fade);
+        is.engine.togglePlayback();  // pause
+        is.drive(2 * scenario::BLOCK);
+        expect(!is.engine.isPlaying(), "paused");
+        is.engine.togglePlayback();  // play
+        std::vector<std::pair<int64_t, float>> out;
+        is.drive(2 * scenario::BLOCK, &out);
+        AudioEngine::play_start_fade_enabled.store(false);
+        return out;
+      };
+      const auto faded = resume(true);
+      int bad = 0;
+      for (size_t i = 0; i < faded.size(); ++i) {
+        const float g = (int64_t)i < F ? ramp((int64_t)i, F) : 1.0f;
+        if (std::abs(faded[i].second - g * is.loopVal(c, faded[i].first)) > 1e-6f)
+          ++bad;
+      }
+      expectEquals(bad, 0, "g(i) · the loop law, then the law untouched");
+      expect(faded.front().second < 0.01f * is.loopVal(c, faded.front().first),
+             "the first sample after the start is near silence");
+
+      const auto bare = resume(false);
+      expect(bare.front().second > 1e-3f,
+             "(the start really is mid-waveform: bare, it steps to " +
+                 juce::String(bare.front().second) + ")");
+      expectEquals(bare.front().second, is.loopVal(c, bare.front().first),
+                   "switched off, the start is the bare law");
+
+      // A second start after a pause fades again (the ramp re-arms).
+      const auto again = resume(true);
+      expect(again.front().second < 0.01f * is.loopVal(c, again.front().first),
+             "every start fades, not just the first");
+      ClipNode::seam_fades_enabled.store(true);
     }
   }
 };

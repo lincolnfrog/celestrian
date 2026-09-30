@@ -163,6 +163,15 @@ recording, so the cursor extends past the committed LCM. The clock
 itself is never wrapped, reset, or snapped — pinned by
 `tests/monotonic_clock_tests.cc`.
 
+**Every start fades in.** Play resumes wherever the clock stands,
+usually mid-waveform, so the audio callback ramps the master output in
+over the seam fade's 4 ms and curve (§2) on the first blocks after the
+transport starts (`AudioEngine::play_fade_pos_`). It sits on the
+master, after every node and plugin, so nothing that starts sounding
+steps; it touches only what is heard, never what is recorded. The test
+runner switches it off (`AudioEngine::play_start_fade_enabled`);
+`tests/seam_fade_tests.cc` pins it.
+
 **The island zero is data, not the clock.** The first arm stores its
 moment provisionally and the first commit makes the take's origin the
 island zero (`islandZero` in code); stop freezes the view and play

@@ -825,6 +825,19 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   int64_t rootFrameTop() const;
 
   bool was_any_node_recording_ = false;  // audio thread only (view upkeep)
+  // THE PLAY-START FADE (audio thread only): the master output ramps in
+  // over the declick length after the transport starts, so playback
+  // that begins mid-waveform never pops (docs/kernel.md §3).
+  bool was_playing_ = false;
+  int64_t play_fade_pos_ = 0;
+
+ public:
+  /** The play-start fade's switch: on in the app, off in the test
+   * runner (its oracles read the first samples after a start exactly);
+   * tests/seam_fade_tests.cc pins the fade. Process-wide. */
+  static inline std::atomic<bool> play_start_fade_enabled{true};
+
+ private:
   std::atomic<int64_t> view_base_{0};
   std::atomic<int64_t> view_anchor_t_{0};
   std::atomic<bool> view_recording_{false};

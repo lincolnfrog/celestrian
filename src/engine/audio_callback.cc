@@ -151,6 +151,29 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     root_node->process(input_channel_data, output_channel_data,
                        num_input_channels, num_output_channels, pc);
 
+    // THE PLAY-START FADE: content resumes wherever the transport
+    // stands — usually mid-waveform — so the first blocks after a start
+    // ramp in (the seam fade's length and curve). On the master, after
+    // every node and plugin: whatever starts sounding, nothing steps.
+    if (pc.is_playing && !was_playing_) play_fade_pos_ = 0;
+    was_playing_ = pc.is_playing;
+    const int64_t fade_len =
+        celestrian::ClipNode::seamFadeSamples(pc.sample_rate);
+    if (pc.is_playing && play_fade_pos_ < fade_len &&
+        play_start_fade_enabled.load(std::memory_order_relaxed)) {
+      const int n = (int)std::min<int64_t>(num_samples,
+                                           fade_len - play_fade_pos_);
+      for (int ch = 0; ch < num_output_channels; ++ch) {
+        float* out = output_channel_data[ch];
+        if (out == nullptr) continue;
+        for (int i = 0; i < n; ++i) {
+          out[i] *= celestrian::ClipNode::fadeRamp(play_fade_pos_ + i,
+                                                   fade_len);
+        }
+      }
+      play_fade_pos_ += n;
+    }
+
     input_clock_ += num_samples;
 
     if (is_playing_global.load()) {

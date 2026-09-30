@@ -3,6 +3,7 @@
 
 #include <iostream>
 
+#include "../src/audio_engine.h"
 #include "../src/clip_node.h"
 #include "../src/plugin_scan_worker.h"
 
@@ -39,10 +40,11 @@ int main(int argc, char* argv[]) {
   const juce::ScopedJuceInitialiser_GUI juce_runtime;
 
   // The suite's render oracles are the kernel law, sample-exact
-  // (content[(t − origin) mod period]); the seam fade smooths exactly
-  // the samples around each seam, so it is off here and
-  // seam_fade_tests.cc pins it on its own.
+  // (content[(t − origin) mod period]); the seam fade and the play-start
+  // fade smooth exactly the samples around a seam or a start, so both
+  // are off here and seam_fade_tests.cc pins them on their own.
   celestrian::ClipNode::seam_fades_enabled.store(false);
+  AudioEngine::play_start_fade_enabled.store(false);
 
   ConsoleRunner runner;
   runner.setAssertOnFailure(false);

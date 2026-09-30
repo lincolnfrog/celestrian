@@ -325,6 +325,14 @@ class ClipNode : public AudioNode {
   static int64_t seamFadeSamples(double sample_rate) {
     return (int64_t)(sample_rate * 0.004);
   }
+  /** The declick ramp shared by the seam fade and the engine's
+   * play-start fade: raised cosine, 0 → 1 at sample j of a `len`-sample
+   * fade (sampled at centres, so the two ends mirror and a crossfading
+   * pair sums to 1). */
+  static float fadeRamp(int64_t j, int64_t len) {
+    return 0.5f - 0.5f * std::cos(juce::MathConstants<float>::pi *
+                                  ((float)j + 0.5f) / (float)len);
+  }
   /** THE SEAM FADE's switch: on in the app. The test runner turns it
    * off so the kernel-law oracles stay sample-exact
    * (content[(t − origin) mod period]); tests/seam_fade_tests.cc turns
