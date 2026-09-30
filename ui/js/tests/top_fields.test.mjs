@@ -48,13 +48,13 @@ test('a committed looping clip can be re-timed; its fields read the node', () =>
         windowed('B', 2.5, 12, [6, 10], { loopTop: 7 * Q, retime: Q / 2 })]));
     const b = laneOf(vm, 'B');
     assert.equal(b.canRetime, true);
-    assert.equal(b.topQ, 7);
     assert.equal(b.retimeQ, 0.5);
-    // The ↺ sounds at 2.5 + 6 + 1 = 9.5Q: 1.5Q into the 4Q frame. A —
-    // the first loop longer than Q — places the frame at its top (0);
-    // B slots in (owner 2026-09-29).
+    // A — the first loop longer than Q — places the frame at its top
+    // (0); B slots in, and its ↺ is where it starts playing: the sample
+    // it sounds at the frame's left edge (owner 2026-09-29).
     assert.equal(vm.frameZero, 0);
-    assert.ok(Math.abs(b.topHeardQ - 1.5) < 1e-9, `topHeardQ ${b.topHeardQ}`);
+    assert.equal(b.topQ, 9.5);
+    assert.ok(Math.abs(b.topHeardQ) < 1e-9, `topHeardQ ${b.topHeardQ}`);
     assert.ok(b.topHeardQ >= 0 && b.topHeardQ < b.periodQ, 'within one period');
     const a = laneOf(vm, 'A');
     assert.equal(a.retimeQ, 0, 'no retime published: as played');
@@ -152,7 +152,9 @@ test('through an enclosing map and in comp mode: the parent / the comp own the l
     // A group is a loop like any other (fractal, 2026-09-29): the
     // mapping group itself re-times; only its members defer to it.
     assert.equal(g.canRetime, true, 'the mapping group re-times like a clip');
-    assert.equal(g.topQ, 2, 'the group\'s top: its region start (none stored)');
+    // Not the placer (A is): its ↺ is the sample it plays at the frame's
+    // left edge — raw 2 sounds at 2Q, so raw 4 sounds at 0.
+    assert.equal(g.topQ, 4, "the group's ↺: where it starts playing");
     assert.equal(g.retimeQ, 0);
     const comp = deriveViewModel(island([clip('A', 0, 4),
         windowed('B', 2, 12, [6, 10])]), { compMode: new Set(['B']) });

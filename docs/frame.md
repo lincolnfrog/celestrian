@@ -36,7 +36,13 @@ at its ↺. A 1Q loop never places anything — every bar line is its top.
 **Every other loop slots in** where its ↺ falls, wrap ghosted, so
 editing a later loop (its region, its ↺) never moves the frame and never
 changes where the others start. With no loop longer than Q, the first
-loop places it. A top is its ↺'s **moment** (loop_selection.md §9.3),
+loop places it. **A slotted-in loop's ↺ is where it starts playing**
+(owner, 2026-09-29): the sample it sounds at the frame's left edge,
+derived, not its stored top — so it always reads at the left edge, a
+region swap leaves it on the same sample (unless the swap cuts that
+sample away), and a re-time moves it to the sample the shift brings to
+the edge. Only the placing loop shows its stored ↺ (the drums at 84Q).
+A top is its ↺'s **moment** (loop_selection.md §9.3),
 read on the Q grid line **at or before** it — a top up to **¼Q early**
 is a pickup to the next line.
 
@@ -190,6 +196,7 @@ Everything else is the picture the old rules produced, now derived.
 | Anchoring law (2026-07-19); heard view / law 13; I8; I2; Q14 with the contextCycle fold | kept |
 | Cycle-top rule (2026-08-18), free-move law (2026-09-15), the growth re-base (Q14b), continuity's frame ride (2026-08-09, 2026-09-10) | superseded: consequences of §1, no longer rules |
 | "Editing one lane never moves the others" (2026-09-10) | kept, and complete since 2026-09-29: only the placing loop (the first longer than Q) positions the frame |
+| A slotted-in loop's ↺ is where it starts playing: the sample at the left edge, derived; only the placer shows its stored top (owner, 2026-09-29) | §1 |
 | "The grid you see is the grid you hear" (2026-09-09) | kept: a song owns the frame, and its zero is the island zero on both threads |
 | Q1 / S11 "Q survives its creator" | kept: Q and its zero are the island's, not a lane's |
 | A top seats on its nearest grid line, not the one below (2026-09-23, loop-region phase 1) | superseded 2026-09-24: the edit hold keeps every release in place |

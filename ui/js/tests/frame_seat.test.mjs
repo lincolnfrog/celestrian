@@ -232,35 +232,37 @@ const drums = (segsQ, extra = {}) => island([
     mapped('drums', 4.025, 8, segsQ, extra),
 ], 4.3);
 
-test('(d) the drums settle on the bass\'s bar lines, the late top just in', () => {
+/* Since 2026-09-29 (owner) the bass — the first loop longer than Q —
+ * places the frame, and every other loop's ↺ is where it STARTS
+ * PLAYING: the sample it plays at the frame's left edge. */
+test('(d) the drums’ ↺ is where they start: the sample on the bass’s bar', () => {
     const vm = deriveViewModel(drums([[0, 2], [2, 4]]));
     assert.equal(zeroQ(vm), 0, 'the bass (the first loop longer than Q) places the frame');
-    near(laneOf(vm, 'drums').topHeardQ, 0.025, '40 ms late shows 40 ms in');
+    const d = laneOf(vm, 'drums');
+    near(d.topHeardQ, 0, 'at the left edge');
+    // Played 40 ms late from raw 0, so on the bar sounds raw −0.025,
+    // i.e. the loop's last 40 ms: raw 3.975.
+    near(d.topQ, 3.975, 'the sample on the bar');
 });
 
-test('(d) a swap never moves the frame; the top the swap keeps stays put', () => {
+test('(d) a swap never moves the frame, nor what plays at the top unless cut away', () => {
     const rest = deriveViewModel(drums([[0, 2], [2, 4]]));
-    // Swap +1 bar: the region → bars 2–5, raw [1, 5). The reconcile
-    // resets a dropped top to the region start (the engine publishes
-    // loopTop = 1Q), which sounds where it was performed: 5.025Q.
+    // Swap +1 bar: the region → raw [1, 5). A swap keeps the audio in
+    // place, so the same sample (3.975) still plays on the bar.
     const swapped = deriveViewModel(drums([[1, 3], [3, 5]], topAt(1)));
     assert.equal(swapped.frameZero, rest.frameZero, 'the frame never moves');
-    near(laneOf(swapped, 'drums').topHeardQ, 1.025, 'the ↺ on bar 2, where it was played');
-    // A top the swapped region still plays keeps its sample and its
-    // moment: raw 2 at 4.025 + 1 + 1.
-    const kept = deriveViewModel(drums([[1, 3], [3, 5]], topAt(2)));
-    assert.equal(kept.frameZero, rest.frameZero);
-    near(laneOf(kept, 'drums').topHeardQ, 2.025);
+    near(laneOf(swapped, 'drums').topHeardQ, 0);
+    near(laneOf(swapped, 'drums').topQ, 3.975, 'the same sample starts it');
 });
 
-test('(d) a shift stays visibly shifted against the bar lines', () => {
-    // A +1 bar re-time moves the origin: the top now sounds at 5.025Q,
-    // still on the bass's bar at 4 — one bar in, as it sounds.
+test('(d) a shift changes which hit starts the loop', () => {
+    // A +1 bar re-time moves the origin: now raw 2.975 plays on the bar.
     const vm = deriveViewModel(drums([[0, 2], [2, 4]], { origin: Math.round(5.025 * Q),
                                                          retime: Q }));
     assert.equal(zeroQ(vm), 0);
     const d = laneOf(vm, 'drums');
-    near(d.topHeardQ, 1.025, 'the ↺ a bar in');
+    near(d.topHeardQ, 0, 'the ↺ stays at the left edge');
+    near(d.topQ, 2.975, 'a bar earlier in the take starts it');
     near(d.retimeQ, 1, 'retimeQ reads the shift');
 });
 
@@ -339,6 +341,8 @@ test('(g) the first loop LONGER than Q places the frame; a 1Q loop never ' +
         const b = deriveViewModel(island(nodes(s)));
         assert.equal(zeroQ(b), 105, `clip 3 region from ${s}Q: the frame stays`);
         near(laneOf(b, 'drums').topHeardQ, 0, '…the drums still start from their ↺');
+        near(laneOf(b, 'drums').topQ, 84, '…at their stored 84Q');
+        near(laneOf(b, 'clip3').topHeardQ, 0, '…and clip 3’s ↺ is where it starts');
     }
     // With nothing longer than Q, the first loop places it.
     const ones = deriveViewModel(island([clip('x', 3, 1), clip('y', 5, 1)]));

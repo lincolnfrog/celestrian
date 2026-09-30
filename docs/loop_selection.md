@@ -41,7 +41,7 @@ An eight-agent diagnosis reproduced every one of these. Phase 1 fixed the glitch
 | **Frame `F`** | The shared visible cycle: the LCM of the lanes' periods. |
 | **Frame zero `Z`** | The island time of the frame's left edge. The view picks it ("seats" it, frame.md); the engine does not store it. |
 | **Splice (seam)** | A heard instant where the recording jumps. There is one at the **wrap** (the loop's end jumping back to its start) and one per **inner cut**. |
-| **Top `↺`** | The loop's one: where it reads as starting. The first loop longer than Q places the frame at its ↺ (frame.md §1). Phase 2 makes it a stored mark: region edits leave it put while they still play it (resetting it to the region start when they drop it), and its drag **shifts** the audio in time (§9). A take never edited reads its region start. |
+| **Top `↺`** | The loop's one: where it reads as starting. The first loop longer than Q places the frame at its ↺; every other loop's ↺ reads where it starts playing — the sample at the left edge (frame.md §1). Phase 2 makes it a stored mark: region edits leave it put while they still play it (resetting it to the region start when they drop it), and its drag **shifts** the audio in time (§9). A take never edited reads its region start. |
 | **Swap / shift** | A swap changes *what* plays (region, splice, cut, trim); a shift changes *when* (the ↺ drag moves the take's origin). §9.2. |
 
 ---

@@ -1184,7 +1184,8 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
     const seats = [];
     const rootSeq = activeSeqSamples(state);
     if (rootSeq > 0) {
-        seats.push({ top: rootSongTop(state), period: lcm(quantum, Math.round(rootSeq)) });
+        seats.push({ id: state.id, top: rootSongTop(state),
+                     period: lcm(quantum, Math.round(rootSeq)) });
     }
     const visit = ns => (ns || []).forEach(n => {
         if (n.periodSource === 'context') return;
@@ -1197,7 +1198,7 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
             if (authored || activeSeqSamples(n) > 0) {
                 // The group's ↺ MOMENT, exactly a clip's (fractal).
                 const gt = topOf(n, authored, quantum);
-                seats.push({ top: (n.origin || 0) + gt.a0 + gt.heard,
+                seats.push({ id: n.id, top: (n.origin || 0) + gt.a0 + gt.heard,
                              period: stackEffectivePeriod(n, quantum) });
             } else {
                 visit(n.nodes);
@@ -1205,7 +1206,7 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
         } else {
             if (!(n.duration > 0)) return;
             const t = topOf(n, authored);
-            seats.push({ top: (n.origin || 0) + t.a0 + t.heard,
+            seats.push({ id: n.id, top: (n.origin || 0) + t.a0 + t.heard,
                          period: n.isRecording ? 0 : clipCycleContribution(n, quantum),
                          recording: !!n.isRecording });
         }
@@ -1223,7 +1224,7 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
     // first loop places it.
     const placer = seats.find(s => s.recording ||
         Math.round(s.period || 0) > quantum) || seats[0];
-    return grid(placer.top);
+    return { zero: grid(placer.top), placerId: placer.id };
 }
 
 /**
@@ -2485,10 +2486,24 @@ function resolveFrameZero({ opts, seated, rootFrame, qEstablished, anyRecording 
 function topFields(node, authored, ctx, canRetime, retimeLocked = false) {
     const { quantum, frameZero } = ctx;
     const t = topOf(node, authored, quantum);
+    // WHERE IT STARTS PLAYING (owner 2026-09-29): the loop that placed
+    // the frame keeps its own ↺ — it defines the song's top. Every OTHER
+    // loop's ↺ is the sample it plays at that top (the render equation
+    // at the seat: its heard phase there, walked through its segments),
+    // so the ↺ says where the loop starts when you press play. Dragging
+    // it re-times the loop so the chosen hit lands on the top.
+    let top = t.top;
+    let moment = (node.origin || 0) + t.a0 + t.heard;
+    if (t.periodS > 0 && Number.isFinite(ctx.seat) && ctx.placerId != null &&
+        node.id !== ctx.placerId) {
+        const h = posMod(ctx.seat - (node.origin || 0) - t.a0, t.periodS);
+        top = mapOffset({ segs: keptSegs(node, authored, quantum) }, h);
+        moment = ctx.seat;
+    }
     return {
-        topQ: t.top / quantum,
+        topQ: top / quantum,
         topHeardQ: t.periodS > 0
-            ? posMod((node.origin || 0) + t.a0 + t.heard - frameZero, t.periodS) / quantum
+            ? posMod(moment - frameZero, t.periodS) / quantum
             : 0,
         // As heard: folded to the loop's own period (foldShift).
         retimeQ: Number.isFinite(node.retime)
@@ -2648,9 +2663,10 @@ export function deriveViewModel(state, opts = {}) {
     const rootFrame = state.islandZero ?? state.origin ?? 0;
     const qEstablished = quantum > 1;
     const gridPhase = qEstablished ? posMod(rootFrame, quantum) : 0;
-    const seated = qEstablished
+    const seat = qEstablished
         ? seatFrameZero(state, nodes, quantum, gridPhase)
         : null;
+    const seated = seat ? seat.zero : null;
     // THE RAW CLOCK: islandPos is the unwrapped clock measured from the
     // root's frame; adding that frame back recovers the transport
     // sample itself. Absent (hand-built fixtures), the published
@@ -2818,6 +2834,10 @@ export function deriveViewModel(state, opts = {}) {
     const ctx = {
         state, lanes, maxDepth, fxOpen, quantum,
         frameZero, qEstablished, cycleQ, lcmQ,
+        // The song's top (the seat) and the loop that placed it: every
+        // OTHER loop's ↺ is the sample it plays there (topFields).
+        seat: seated,
+        placerId: seat ? seat.placerId : null,
         provisionalDefiner, soleQDefinerId, defSelStartQ, defSelEndQ,
         definerIds,
         // Q22: drifting lanes draw from the pass zero; in the trim view
