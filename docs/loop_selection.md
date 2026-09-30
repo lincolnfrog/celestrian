@@ -269,6 +269,10 @@ Both are real effects. A swap is subtle on a steady groove, because the swapped-
 
 **A new take plays as performed** (owner, 2026-09-24), so it resets the clip's `retime` to 0: the timing readout and "Timing as played" then describe the newest take, and the older takes keep their shift as a baked fact, which ⌘Z can still undo.
 
+**Groups are loops too** (owner, 2026-09-29: the fractal principle). A group has its own ↺, re-time, timing readout and "Timing as played", exactly as a clip does. Dragging a group's ↺ shifts the whole group, and its members move with it, so they keep their placement inside it. The group's top rides its region edits by the same rule as a clip's (§9.1, P2). Phase 2 had kept groups at their region start and never re-timed them. That exception is gone: `AudioEngine::setTiming` takes any committed node, and the top and re-time live on `AudioNode`. Pinned by scenario S44 and `set_timing.test.mjs`.
+
+**The timing readout shows only what you can hear** (owner, 2026-09-29). A loop sounds the same moved by any whole number of its own length, so the readout folds the re-time to the loop's period, into (−½, +½] of it. A 2Q drum loop moved 13Q reads "shifted +1Q", never "+13Q". "Timing as played" undoes that audible part, and a loop moved by whole periods reads "as played". The engine keeps the raw count; the fold is the view model's (`foldShift` in `math_utils.js`, `topFields`). Pinned by `top_fields.test.mjs`.
+
 ### 9.3 The ↺ and the splice are independent
 
 - **The ↺ is the loop's one.** It is a mark on the audio (a raw sample `T`), so it sounds at `O + a0 + heardOffsetOf(segs, T)`.

@@ -50,7 +50,9 @@ a lane's offset in the frame = (topₖ − Z) mod periodₖ
 kept set still plays it, else the region start. With no `loopTop` (an
 engine from before Phase 2), or one the kept set does not play, the
 top is the region start `a0`, and the seat is exactly the pre-Phase-2
-seat. A stack stores no top: it seats from its region start.
+seat. A group seats from its ↺ exactly like a clip (fractal, owner
+2026-09-29 — until then a stack stored no top and seated from its
+region start).
 
 - A group with a window or a song seats as **one** lane (its pass is
   what its members are heard through). A plain group is transparent:

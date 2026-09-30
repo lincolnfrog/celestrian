@@ -357,7 +357,7 @@ drum loop is 40 ms late").
 | Element | Gesture |
 |---|---|
 | **Splice** handle on every heard repeat of the wrap (where the loop's end jumps back to its start) and of each inner cut; grabbed by the lane's LOWER half, its tab on the bottom edge ("splice", "‖ 1Q") | drag = **swap** (`slideSeam`: the wrap moves the first start and the last end together, a cut slides between its neighbours; whole Q from the grab, ⌥ free); ⇧-drag = **length** at that splice (`lengthAtSeam`, through the reveal below); a cut's splice: double-click / right-click = heal |
-| **↺ top** on every heard repeat of the loop's one, wherever the clip can be re-timed (`canRetime`, or inert under the recording gate — `retimeLocked`): a heard map, and a plain loop (at `topHeardQ + k·S`, S its take). Grabbed by the UPPER half, its tab "↺ top" on the top edge — on a plain loop by the tab only, since its line sits on the latent start bracket, which keeps its press. Never on a group (never re-timed in Phase 2), a one-shot, the Q-definer, a child under a parent's map, comp mode (the cells own the take tile) or a **bypassed map** (its raw-framed brackets own the lane; the panel's "Timing as played" still reaches it) | drag = **shift**: the origin moves with the hand (`setTiming`; whole Q, ⌥ fine) — the audio, the ↺ and the splices move together |
+| **↺ top** on every heard repeat of the loop's one, wherever the clip can be re-timed (`canRetime`, or inert under the recording gate — `retimeLocked`): a heard map, and a plain loop (at `topHeardQ + k·S`, S its take). Grabbed by the UPPER half, its tab "↺ top" on the top edge — on a plain loop by the tab only, since its line sits on the latent start bracket, which keeps its press. Never on a one-shot, the Q-definer, a child under a parent's map, comp mode (the cells own the take tile) or a **bypassed map** (its raw-framed brackets own the lane; the panel's "Timing as played" still reaches it) | drag = **shift**: the origin moves with the hand (`setTiming`; whole Q, ⌥ fine) — the audio, the ↺ and the splices move together |
 | The lane body | double-click = a 1Q cell cut (§4) |
 | `[` / `]`, `{` / `}` | walk the viewport through the take tile's splices and ↺ / jump to the outermost |
 
@@ -586,10 +586,13 @@ it, beside the origin:
   moment. Metadata publishes `loopTop`, the EFFECTIVE top: the stored
   one while the stored map plays it, else the region start
   (`segments[0]`; else `loopStart` while the single window is active;
-  else 0). Stacks keep no top in Phase 2 and publish their region start.
-- **The re-time** (`ClipNode::retime`): the cumulative USER shift of
-  the origin, samples; 0 = as played. Published as `retime` (clips
-  only). The continuity re-anchor, a Q13 re-trim, a lock-collapse and a
+  else 0). Clip or group alike since 2026-09-29 (fractal, owner: a
+  group is a loop like any other); Phase 2 kept stacks at their region
+  start. Both facts live on `AudioNode`.
+- **The re-time** (`AudioNode::retime`): the cumulative USER shift of
+  the origin, samples; 0 = as played. Published as `retime` on every
+  node. A group's shift moves its whole subtree, so its members keep
+  their placement inside it. The continuity re-anchor, a Q13 re-trim, a lock-collapse and a
   seek move the origin without counting.
 - **The verb** is `setTiming(uuid, shiftSamples, topSamples?, live?)`:
   the origin moves by the shift — any amount, never re-folded (I4 as

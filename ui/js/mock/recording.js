@@ -197,6 +197,8 @@ function lockCollapseAtArm(excludeIds) {
                     // plain, invertible shift — engine parity).
                     if (m.storedTop != null) m.storedTop -= ls;
                 });
+                // The group's own top rides too (engine collapseNode).
+                if (ds.storedTop != null) ds.storedTop -= ls;
                 shiftOrigins(ds, ls);
                 ds._precollapse = { ls, le, shift: ls };
                 ds.loopStart = 0;

@@ -204,20 +204,23 @@ test('(c) an unmapped take plays whole — its top is any raw sample', () => {
     near(laneOf(vm, 'B').takeStartQ, 5, 'raw 0 sounds 5Q in');
 });
 
-test('(c) stacks keep the region start', () => {
+test('(c) a group seats at its ↺ exactly like a clip (fractal, 2026-09-29)', () => {
     const member = clip('m', 10, 8);
     const group = {
         id: 'G', name: 'G', type: 'stack', anchored: true,
         origin: 10 * Q, effectiveQuantum: Q, nodes: [member],
         loopStart: 4 * Q, loopEnd: 8 * Q, windowActive: true,
-        loopBypassed: false, loopTop: 6 * Q,  // ignored: stacks store none
+        loopBypassed: false, loopTop: 6 * Q,  // the stored top, 2Q in
     };
     const vm = deriveViewModel(island([group]));
-    assert.equal(zeroQ(vm), 14, 'the group seats from origin + a0');
+    assert.equal(zeroQ(vm), 16, 'the group seats from its ↺: origin + a0 + 2Q');
     const g = laneOf(vm, 'G');
-    near(g.topQ, 4, 'the group\'s top is its region start');
-    near(g.topHeardQ, 0);
-    assert.equal(g.canRetime, false, 'groups are never re-timed');
+    near(g.topQ, 6, 'the group\'s top is its stored ↺');
+    near(g.topHeardQ, 0, '…at the left edge');
+    assert.equal(g.canRetime, true, 'a group re-times like a clip');
+    // With no stored top the region start stands in, as for a clip.
+    const plain = deriveViewModel(island([{ ...group, loopTop: 4 * Q }]));
+    assert.equal(zeroQ(plain), 14, 'no stored top: origin + a0');
 });
 
 /* The owner's drum example (loop_selection.md §9.2, prototype v10): a

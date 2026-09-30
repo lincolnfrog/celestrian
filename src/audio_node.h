@@ -345,10 +345,10 @@ class AudioNode {
       obj->setProperty("segments", segs);
     }
     // THE TOP (↺, loop_selection.md §9): the raw inner position the
-    // loop reads as starting from. A node that keeps no top of its own
-    // publishes the region start — stacks in Phase 2; ClipNode
-    // publishes its effective top over this.
-    obj->setProperty("loopTop", (double)regionStart());
+    // loop reads as starting from — clip or group alike — and the
+    // re-time that has moved it from where it was played.
+    obj->setProperty("loopTop", (double)effectiveTop());
+    obj->setProperty("retime", (double)retime_.load());
     // Effect chain state (fractal like windows): {chain: [...slots],
     // scope: {...}?} — the chain array doubles as the save format
     // (docs/vst3.md §6); scope telemetry only while a panel watches.
@@ -560,6 +560,36 @@ class AudioNode {
    * (loop_selection.md §9). */
   int64_t regionStart() const {
     return timing::regionStart(storedMap(), isLoopWindowActive());
+  }
+
+  // --- THE TOP AND THE RE-TIME (loop_selection.md §9) — FRACTAL:
+  // every loop node has them, clip or group (owner 2026-09-29: a group
+  // is a loop like any other; Phase 2 had kept them clip-only). THE TOP
+  // (↺) is a raw inner position — where the loop reads as starting — or
+  // timing::kNoTop on a node never edited, when the region start stands
+  // in. Map edits RECONCILE it and store the answer (timing::reconcileTop,
+  // inside every map edit's applier, so undo restores it with the map);
+  // a bypass toggle leaves it alone. THE RE-TIME is the cumulative USER
+  // shift of the origin in samples (0 = as played): only setTiming moves
+  // it, by exactly what it moved the origin (a group's shift moves its
+  // whole subtree, so its members keep their placement inside it) — the
+  // continuity re-anchor, a Q13 re-trim, a collapse and a seek move the
+  // origin without counting. Message-thread facts: the audio thread
+  // never reads them.
+  int64_t storedTop() const { return loop_top_.load(); }
+  void setStoredTop(int64_t t) { loop_top_.store(t); }
+  int64_t retime() const { return retime_.load(); }
+  void setRetime(int64_t r) { retime_.store(r); }
+  /** Whether the stored map (or, with none, the node's inner span)
+   * plays raw position `t` — the kept set a top must lie in. */
+  bool keepsTop(int64_t t) const {
+    return timing::keepsTop(storedMap(), getIntrinsicDuration(), t);
+  }
+  /** The published `loopTop`: the stored top when set and kept, else
+   * the region start. */
+  int64_t effectiveTop() const {
+    return timing::effectiveTop(storedMap(), isLoopWindowActive(),
+                                getIntrinsicDuration(), loop_top_.load());
   }
 
   // --- Loop window state (time_maps.md phase 1, fractal per I5) ---
@@ -845,6 +875,9 @@ class AudioNode {
  protected:
   juce::String node_name;
   juce::String node_uuid;
+  // The top and the re-time (storedTop / retime above).
+  std::atomic<int64_t> loop_top_{timing::kNoTop};
+  std::atomic<int64_t> retime_{0};
 };
 
 }  // namespace celestrian

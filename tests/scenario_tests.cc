@@ -1773,6 +1773,66 @@ class ScenarioTests : public juce::UnitTest {
                  d[0].contains("moved " + juce::String(2 * Q) + " samples"),
              "it names the step and the move: " + d.joinIntoString(" | "));
     }
+
+    // ------------------------------------------------------------------
+    beginTest("S44 (fractal, 2026-09-29): a GROUP has a top and a re-time "
+              "exactly like a clip — a shift moves the group and every "
+              "member as one, the top rides its region edits, undo, and "
+              "a save round trip");
+    {
+      Island is;
+      const juce::String bass = is.record(Q);
+      is.blocks(3);
+      const juce::String drums = is.recordGroup(3, 8 * Q);
+      const juce::StringArray mics = is.childIds(drums);
+      auto rel = [&](const juce::String& id) { return is.origin(id) - is.origin(bass); };
+      const int64_t g0 = rel(drums);
+      std::vector<int64_t> m0;
+      for (const auto& m : mics) m0.push_back(rel(m));
+      expectEquals(is.iprop(drums, "retime"), (int64_t)0, "as played");
+
+      // THE SHIFT: the group and its members move together.
+      is.engine.setTiming(drums, -Q);
+      expectEquals(rel(drums), g0 - Q, "the group moved a Q earlier");
+      for (int i = 0; i < mics.size(); ++i)
+        expectEquals(rel(mics[i]), m0[(size_t)i] - Q, "member " + juce::String(i) + " rode it");
+      expectEquals(is.iprop(drums, "retime"), -Q, "…and the re-time counts it");
+      expectOutput(is, 8 * Q, [&](int64_t t) {
+        float s = is.loopVal(bass, t);
+        for (const auto& m : mics) s += is.val(m, posmod(t - is.o(m), 8 * Q));
+        return s;
+      }, "every member sounds from its moved origin", /*skip=*/BLOCK);
+      // Timing as played: shift by −retime.
+      is.engine.setTiming(drums, -is.iprop(drums, "retime"));
+      expectEquals(rel(drums), g0, "timing as played");
+      expectEquals(is.iprop(drums, "retime"), (int64_t)0, "…re-time 0");
+
+      // THE TOP: a region edit stores it; a start-marker move (a new top
+      // plus the compensating shift) keeps its moment.
+      is.window(drums, 2 * Q, 6 * Q);
+      expectEquals(is.iprop(drums, "loopTop"), 2 * Q, "the top is the region start");
+      is.engine.setTiming(drums, -Q, 3 * Q);  // the ↺ onto the next hit
+      expectEquals(is.iprop(drums, "loopTop"), 3 * Q, "the top moved to 3Q");
+      expectEquals(rel(drums), g0 - Q, "…the audio shifted so it keeps its moment");
+      is.window(drums, 3 * Q, 7 * Q);  // a slide that still plays the top
+      expectEquals(is.iprop(drums, "loopTop"), 3 * Q, "a swap that keeps the top keeps it");
+      is.window(drums, 4 * Q, 8 * Q);  // one that drops it
+      expectEquals(is.iprop(drums, "loopTop"), 4 * Q, "…one that drops it resets to the region start");
+      is.engine.undo();
+      expectEquals(is.iprop(drums, "loopTop"), 3 * Q, "undo restores the top with the map");
+      is.engine.setTiming(drums, 0, 99 * Q);  // outside the kept set
+      expectEquals(is.iprop(drums, "loopTop"), 3 * Q, "a top outside the kept set is refused");
+
+      // A SAVE ROUND TRIP keeps both.
+      auto dir = test_utils::freshTempDir("scenario_s44");
+      expect(is.engine.saveSession(dir.getFullPathName()), "saved");
+      Island other;
+      expect(other.engine.loadSession(dir.getFullPathName()), "loaded");
+      expectEquals(other.iprop(drums, "loopTop"), 3 * Q, "the group's top persists");
+      expectEquals(other.iprop(drums, "retime"), -Q, "the group's re-time persists");
+      expectEquals(other.origin(drums) - other.origin(bass), g0 - Q,
+                   "…and its placement");
+    }
   }
 };
 

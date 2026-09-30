@@ -1249,13 +1249,15 @@ class TimeMapRecordTests : public juce::UnitTest {
       expectEquals(is.origin(b), Ob, "a top outside the kept set refuses the whole call");
       expectEquals(is.iprop(b, "retime"), (int64_t)0, "…no partial shift");
       expectEquals(is.iprop(b, "loopTop"), Q, "…no top");
-      is.engine.setTiming(g, Q);          // a stack: no timing in Phase 2
+      is.engine.setTiming(g, Q);          // an EMPTY group: nothing committed
       is.engine.setTiming(e, Q);          // nothing committed
       is.engine.setTiming("no-such-node", Q);
       is.engine.setTiming(b, 0);          // the identity: records nothing
       expect(is.engine.canRedo(), "none of them recorded (the redo branch survives)");
       expectEquals(is.iprop(g, "origin"), (int64_t)0, "the stack is untouched");
-      expect(!is.node(g).hasProperty("retime"), "a stack publishes no re-time");
+      // Every loop node publishes its re-time (fractal, 2026-09-29): 0
+      // for a group nothing has moved.
+      expectEquals(is.iprop(g, "retime"), (int64_t)0, "the group is as played");
       // THE RECORDING GATE: arm the empty clip — nothing re-times while
       // the take is armed or capturing, the armed clip least of all.
       is.engine.startRecordingInNode(e);

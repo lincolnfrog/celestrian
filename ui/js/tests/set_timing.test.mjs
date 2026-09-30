@@ -166,7 +166,7 @@ test('refusals record nothing: the Q-definer, a stack, an empty clip, an ' +
     await callNative('setTiming', 'no-such-node', Q);
     await callNative('setTiming', b, 0);           // the identity
     assert.equal(getState().canRedo, true, 'none of them recorded');
-    assert.equal('retime' in pub(g), false, 'a stack publishes no re-time');
+    assert.equal(pub(g).retime, 0, 'an EMPTY group has nothing to re-time');
     assert.equal(pub(g).loopTop, 0, '…and its region start as its top');
 
     await callNative('startRecordingInNode', e);   // a take armed
@@ -451,19 +451,40 @@ test('a drag whose first commit records nothing (an identity — engaged, no ' +
     assert.equal(region(), '1-5', "drag 1's start, still one step away");
 });
 
-test('stacks publish their region start as loopTop and no re-time', async () => {
+test('a GROUP has a top and a re-time exactly like a clip (fractal, ' +
+     '2026-09-29): the region start by default, reconciled by its region ' +
+     'edits, and a shift moves the group and its members as one', async () => {
     const { b } = await island();
     const g = await callNative('createNode', 'stack', '');
     await callNative('reorderNode', b, g, 0);
     assert.equal(pub(g).loopTop, 0, 'no window: 0');
-    assert.equal('retime' in pub(g), false, 'no re-time');
+    assert.equal(pub(g).retime, 0, 'as played');
     await callNative('setLoopPoints', g, 2 * Q, 4 * Q);
     assert.equal(pub(g).loopTop, 2 * Q, 'an active window: its start');
     await callNative('toggleLoopWindow', g);
-    assert.equal(pub(g).loopTop, 0, 'bypassed: the take start');
+    assert.equal(pub(g).loopTop, 2 * Q,
+        'bypassed: the stored top stays (bypass toggles the region, not what it keeps)');
+    await callNative('toggleLoopWindow', g);
     const Og = pub(g).origin;
+    const Ob = origin(b);
     await callNative('setTiming', g, Q);
-    assert.equal(pub(g).origin, Og, 'a stack is never re-timed');
+    assert.equal(pub(g).origin, Og + Q, 'the group moved');
+    assert.equal(origin(b), Ob + Q, '…its member rode it');
+    assert.equal(pub(g).retime, Q, '…and the re-time counts it');
+    // The start marker onto the next hit: a new top plus the shift that
+    // keeps its moment.
+    await callNative('setTiming', g, -Q, 3 * Q);
+    assert.equal(pub(g).loopTop, 3 * Q, 'the stored top');
+    assert.equal(pub(g).origin, Og, '…the shift keeps its moment');
+    await callNative('setLoopPoints', g, 3 * Q, 5 * Q);  // still plays 3Q
+    assert.equal(pub(g).loopTop, 3 * Q, 'an edit that keeps the top keeps it');
+    await callNative('setLoopPoints', g, 4 * Q, 6 * Q);  // drops it
+    assert.equal(pub(g).loopTop, 4 * Q, '…one that drops it: the region start');
+    await callNative('undo');
+    assert.equal(pub(g).loopTop, 3 * Q, 'undo restores the top with the map');
+    await callNative('setTiming', g, -pub(g).retime);  // timing as played
+    assert.equal(pub(g).retime, 0, 'as played again');
+    assert.equal(origin(b), Ob, '…the member back where it was played');
 });
 
 test('the Q13 definer re-trim reconciles its top; the lock-collapse carries ' +

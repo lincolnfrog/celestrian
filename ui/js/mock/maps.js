@@ -135,12 +135,15 @@ const clipWindowActive = node => !node.loopBypassed && mapActive(nodeMap(node));
  * topBeforeEdit): the clip's EFFECTIVE top — the stored one while its
  * map plays it, else the region start — read BEFORE the edit moves the
  * geometry, so a top never set (a fresh take, an old session)
- * reconciles from where it showed. null for a stack (it keeps none). */
+ * reconciles from where it showed. Clip or group (fractal). */
 function topBeforeEdit(node) {
-    if (node.type === 'stack') return null;
     return effectiveTop(nodeMap(node), clipWindowActive(node),
-        node.duration || 0, node.storedTop ?? null);
+        nodeSpan(node), node.storedTop ?? null);
 }
+
+/** A node's whole inner span (engine AudioNode::getIntrinsicDuration):
+ * a clip's take, a group's inner cycle. */
+const nodeSpan = intrinsicOfNode;
 
 /** THE GESTURE'S TOP (engine parity AudioEngine::record): the top a map
  * commit reconciles from — `topBefore`, the node's effective top before
@@ -160,17 +163,15 @@ function topBaseFor(node, topBefore) {
  * engine parity edit_log.cc reconcileTopRider / applyWindowRiders): once
  * a map edit has set the node's new geometry, STORE the top it leaves —
  * `base` while the new kept set plays it, else the new region start
- * (time_map.js reconcileTop): never unset. Stacks keep no top (Phase 2).
+ * (time_map.js reconcileTop): never unset. Clip or group (fractal).
  * Undo needs nothing more: the dispatch snapshot holds the old top. */
 function storeReconciledTop(node, base) {
-    if (node.type === 'stack') return;
     node.storedTop = reconcileTop(nodeMap(node), clipWindowActive(node),
-        node.duration || 0, base);
+        nodeSpan(node), base);
 }
 
 /** The edit's own node: reconciled from its gesture's base. */
 function reconcileStoredTop(node, topBefore) {
-    if (node.type === 'stack') return;
     storeReconciledTop(node, topBaseFor(node, topBefore));
 }
 
@@ -616,17 +617,19 @@ export function setSegments(id, flat) {
 
 /**
  * THE RE-TIME (loop_selection.md §9.2, owner 2026-09-24; engine parity
- * AudioEngine::setTiming): move clip `id`'s origin by `shiftSamples` —
+ * AudioEngine::setTiming): move node `id`'s origin by `shiftSamples` —
  * any amount, sub-Q included, never re-folded — and count the same into
  * its re-time (`retime`, 0 = as played). A finite `topSamples` ≥ 0 also
- * stores the top (`storedTop`, raw samples), and must lie in the clip's
- * kept set or the whole call is refused. One undo step (the dispatch
- * snapshot); the trailing `live` coalesces into the gesture's step in
- * the dispatch (mock/undo.js interceptUndoableCall), as for setSegments.
- * Refused (recording nothing) for an unknown node, a stack, an empty
- * clip, a recording or pending clip, and the Q-definer; the live-take
- * gate refuses it in the dispatch. A zero shift with no new top is an
- * identity and records nothing.
+ * stores the top (`storedTop`, raw samples), and must lie in the node's
+ * kept set or the whole call is refused. FRACTAL (2026-09-29): a clip or
+ * a GROUP — a group's shift moves its whole subtree (shiftOrigins), so
+ * its members keep their placement inside it. One undo step (the
+ * dispatch snapshot); the trailing `live` coalesces into the gesture's
+ * step in the dispatch (mock/undo.js interceptUndoableCall), as for
+ * setSegments. Refused (recording nothing) for an unknown node or the
+ * root, an empty clip or unanchored group, a recording or pending one,
+ * and the Q-definer; the live-take gate refuses it in the dispatch. A
+ * zero shift with no new top is an identity and records nothing.
  */
 export function setTiming(id, shiftSamples, topSamples = null) {
     const refuse = (why) => {
@@ -635,11 +638,13 @@ export function setTiming(id, shiftSamples, topSamples = null) {
     };
     const node = findNode(id);
     if (!node) return refuse('no such node');
-    if (node.type === 'stack') return refuse('stacks keep no timing (Phase 2)');
-    if (node.isRecording || node.isPendingStart) {
+    const isStack = node.type === 'stack';
+    if (isStack ? subtreeRecording(node) : (node.isRecording || node.isPendingStart)) {
         return refuse('a take is recording or pending here');
     }
-    if (!((node.duration || 0) > 0)) return refuse('nothing committed here to re-time');
+    if (isStack ? !isAnchored(node) : !((node.duration || 0) > 0)) {
+        return refuse('nothing committed here to re-time');
+    }
     if (islandDefiner() === node) {
         return refuse("the Q-definer's origin is the island zero");
     }
@@ -648,14 +653,16 @@ export function setTiming(id, shiftSamples, topSamples = null) {
     const s = Math.round(shift);
     const top = typeof topSamples === 'number' && Number.isFinite(topSamples) &&
         topSamples >= 0 ? Math.round(topSamples) : null;
-    if (top !== null && !keepsTop(nodeMap(node), node.duration, top)) {
-        return refuse('top ' + top + " is outside the clip's kept set");
+    if (top !== null && !keepsTop(nodeMap(node), nodeSpan(node), top)) {
+        return refuse('top ' + top + " is outside the kept set");
     }
     if (s === 0 && (top === null || top === (node.storedTop ?? null))) {
         popUndoForRefusal();  // an identity records nothing
         return;
     }
-    node.origin = (node.origin || 0) + s;
+    // A group moves with its whole subtree (engine applySetsOrigin).
+    if (isStack) shiftOrigins(node, s);
+    else node.origin = (node.origin || 0) + s;
     node.retime = (node.retime || 0) + s;
     if (top !== null) node.storedTop = top;
     console.log('[MockBackend] setTiming:', id, 'shift', s,

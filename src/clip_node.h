@@ -156,37 +156,11 @@ class ClipNode : public AudioNode {
    * persist (session_io); 0 for the first take. */
   int64_t contextCycle() const { return take_context_cycle_.load(); }
 
-  // --- THE TOP AND THE RE-TIME (loop_selection.md §9; Phase 2) ---
-  // Two per-clip facts beside the origin. THE TOP (↺) is a raw content
-  // position — where the loop reads as starting — or timing::kNoTop on
-  // a take never edited, when the region start stands in. Map edits
-  // RECONCILE it and store the answer (timing::reconcileTop, inside
-  // every map edit's applier, so undo restores it with the map — the
-  // one way back to unset); a bypass toggle leaves it alone. THE
-  // RE-TIME is the cumulative USER shift of the origin in samples
-  // (0 = as played): only setTiming moves it, by exactly what it moved
-  // the origin — the continuity re-anchor, a Q13 re-trim, a collapse
-  // and a seek move the origin without counting — and a settled NEW
-  // TAKE resets it (it plays as performed, owner 2026-09-24: the
-  // re-time then describes the newest take; the older takes keep their
-  // shift, baked into the shared origin). Both are
-  // message-thread facts: the audio thread never reads them (the origin
-  // they pair with reaches it the usual gated way).
-  int64_t storedTop() const { return loop_top_.load(); }
-  void setStoredTop(int64_t t) { loop_top_.store(t); }
-  int64_t retime() const { return retime_.load(); }
-  void setRetime(int64_t r) { retime_.store(r); }
-  /** Whether the clip's stored map (or, with none, its take) plays raw
-   * position `t` — the kept set a top must lie in. */
-  bool keepsTop(int64_t t) const {
-    return timing::keepsTop(storedMap(), duration_samples.load(), t);
-  }
-  /** The published `loopTop`: the stored top when set and kept, else
-   * the region start. */
-  int64_t effectiveTop() const {
-    return timing::effectiveTop(storedMap(), isLoopWindowActive(),
-                                duration_samples.load(), loop_top_.load());
-  }
+  // THE TOP AND THE RE-TIME live on AudioNode (fractal, clip or group:
+  // storedTop / retime / keepsTop / effectiveTop). A clip adds one rule:
+  // a settled NEW TAKE resets its re-time (it plays as performed, owner
+  // 2026-09-24: the re-time then describes the newest take; the older
+  // takes keep their shift, baked into the shared origin).
   // Clip-specific methods
   /**
    * Starts capturing hardware input into the internal buffer.
@@ -908,11 +882,6 @@ class ClipNode : public AudioNode {
   // (recording clips always have base 0).
   std::atomic<int64_t> content_base_{0};
   std::atomic<int64_t> collapsed_from_{0};  // pre-collapse duration; 0 = not collapsed
-
-  // The top and the re-time (see storedTop / retime): message-thread
-  // facts, atomic only so a cross-thread metadata read stays defined.
-  std::atomic<int64_t> loop_top_{timing::kNoTop};
-  std::atomic<int64_t> retime_{0};
 
   // Pre-record capture window (docs/performance.md §3). When the engine
   // provides a pre-record ring, capture does not copy "whatever input

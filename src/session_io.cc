@@ -332,6 +332,12 @@ juce::var serializeNode(const AudioNode& node, int64_t q, int64_t zero,
       o->setProperty("anchored", true);
       o->setProperty("originQ", qvar(timing::originQ(node.origin_samples.load(),
                                                      zero, q)));
+      // The group's top and re-time (fractal, 2026-09-29) — the clip's
+      // keys, additive the same way (absent = unset / as played).
+      if (const int64_t t = node.storedTop(); t != timing::kNoTop)
+        o->setProperty("loopTopQ", qvar(timing::fromSamples(t, q)));
+      if (const int64_t r = node.retime(); r != 0)
+        o->setProperty("retimeQ", qvar(timing::fromSamples(r, q)));
     }
     // The SEQUENCE (docs/sequencer.md) — additive block. Stripped with
     // performances: a sequence references committed takes' children
@@ -372,6 +378,11 @@ std::unique_ptr<AudioNode> deserializeNode(const juce::var& v, int64_t q,
           true, zero + timing::toSamples(qread(o->getProperty("originQ")), q),
           0);
     }
+    // The group's top and re-time (fractal): absent = unset / as played.
+    if (o->hasProperty("loopTopQ"))
+      stack->setStoredTop(timing::toSamples(qread(o->getProperty("loopTopQ")), q));
+    if (o->hasProperty("retimeQ"))
+      stack->setRetime(timing::toSamples(qread(o->getProperty("retimeQ")), q));
     node = std::move(stack);
   } else {
     auto clip = std::make_unique<ClipNode>(name, sr);

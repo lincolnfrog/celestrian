@@ -148,8 +148,10 @@ test('through an enclosing map and in comp mode: the parent / the comp own the l
     assert.equal(m.underMap, true);
     assert.equal(m.canRetime, false, 'no ↺ on a lane the parent map owns');
     const g = laneOf(vm, 'G');
-    assert.equal(g.canRetime, false, 'groups are never re-timed');
-    assert.equal(g.topQ, 2, 'the group\'s top: its region start');
+    // A group is a loop like any other (fractal, 2026-09-29): the
+    // mapping group itself re-times; only its members defer to it.
+    assert.equal(g.canRetime, true, 'the mapping group re-times like a clip');
+    assert.equal(g.topQ, 2, 'the group\'s top: its region start (none stored)');
     assert.equal(g.retimeQ, 0);
     const comp = deriveViewModel(island([clip('A', 0, 4),
         windowed('B', 2, 12, [6, 10])]), { compMode: new Set(['B']) });
@@ -163,4 +165,33 @@ test('through an enclosing map and in comp mode: the parent / the comp own the l
     assert.equal(laneOf(plain, 'P').windowEditing, undefined);
     assert.equal(laneOf(plain, 'P').canRetime, false);
     assert.equal(laneOf(plain, 'P').retimeLocked, false);
+});
+
+test('the re-time reads AS HEARD: folded to the loop\'s own period ' +
+     '(a 2Q loop moved 13Q reads 1Q; owner 2026-09-29)', () => {
+    const vm = deriveViewModel(island([
+        clip('A', 0, 1),
+        windowed('D', 2, 8, [4, 6], { retime: 13 * Q }),   // 2Q loop, +13Q
+        windowed('E', 2, 8, [2, 6], { retime: 3 * Q }),    // 4Q loop, +3Q
+        windowed('F', 2, 8, [2, 6], { retime: 8 * Q }),    // whole periods
+        clip('G', 0, 8, { retime: -Q / 4 }),               // a fine shift
+    ]));
+    const D = laneOf(vm, 'D');
+    assert.equal(D.retimeQ, 1, '13Q on a 2Q loop sounds like 1Q');
+    assert.equal(D.retimePeriodQ, 2);
+    assert.equal(laneOf(vm, 'E').retimeQ, -1, '3Q later on a 4Q loop = 1Q earlier');
+    assert.equal(laneOf(vm, 'F').retimeQ, 0, 'whole periods sound as played');
+    assert.equal(laneOf(vm, 'G').retimeQ, -1 / 4, 'a fine shift reads as itself');
+});
+
+test('foldShift: into (−P/2, P/2]; a non-positive period leaves the shift', async () => {
+    const { foldShift } = await import('../math_utils.js');
+    assert.equal(foldShift(13, 2), 1);
+    assert.equal(foldShift(-13, 2), 1);
+    assert.equal(foldShift(3, 4), -1);
+    assert.equal(foldShift(2, 4), 2, 'exactly half: the positive side');
+    assert.equal(foldShift(-2, 4), 2);
+    assert.equal(foldShift(8, 4), 0);
+    assert.equal(foldShift(0.25, 8), 0.25);
+    assert.equal(foldShift(5, 0), 5);
 });

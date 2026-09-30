@@ -139,8 +139,8 @@ export function buildRegionPanel(row) {
         { title: 'Show the whole take in the panel (⇧Z)' });
     const termCuts = el('span', 'region-term-cuts');
     // THE TIMING (loop_selection.md §9.2): how far a re-time has moved
-    // the take from where it was played, and the way back. Clips only
-    // (a group is never re-timed); gated like the rest of the chrome.
+    // the take from where it was played, and the way back. Clip or
+    // group alike (fractal); gated like the rest of the chrome.
     const timing = el('div', 'region-timing');
     const timingRead = el('span', 'region-timing-read');
     const timingReset = el('button', 'region-timing-reset', {

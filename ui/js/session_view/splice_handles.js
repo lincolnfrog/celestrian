@@ -75,7 +75,7 @@ import { bandState, coveredSegs, commitBandSegs, commitTiming, runRawDrag,
          LOCKED_TITLE } from './map_core.js';
 import { runRevealDrag } from './map_bands.js';
 import { slideSeam, healCut } from '../map_edit.js';
-import { posMod } from '../math_utils.js';
+import { posMod, foldShift } from '../math_utils.js';
 import { setPendingEdit, clearPendingEdit, pendingEditOf } from './pending_edits.js';
 import { requestRender } from './render_request.js';
 
@@ -140,12 +140,14 @@ export function wantsTopHandle(lane) {
     return !!(lane.canRetime || lane.retimeLocked);
 }
 
-/** A PLAIN LOOP: a committed clip with no map of its own, its whole
- * take tiled where it sounds — the kept set is the take, [0, duration).
+/** A PLAIN LOOP: a committed clip or group with no map of its own, its
+ * whole take tiled where it sounds — the kept set is the take (a
+ * group's: its inner cycle).
  * Not a bypassed map (lane.window: the raw-framed bracket overlay), a
  * live take, nor comp mode's raw inspector. */
 export function isPlainLoop(lane) {
-    return lane.kind === 'clip' && !lane.window && !(lane.windowChipQ > 0) &&
+    return (lane.kind === 'clip' || lane.kind === 'group') && !lane.window &&
+        !(lane.windowChipQ > 0) &&
         !lane.windowEditing && !lane.recording;
 }
 
@@ -153,7 +155,7 @@ export function isPlainLoop(lane) {
  * and the lane shows HEARD time: a heard map, beside its splices, or a
  * plain loop, alone. */
 export function wantsLaneTop(lane) {
-    if (!wantsTopHandle(lane) || lane.kind !== 'clip') return false;
+    if (!wantsTopHandle(lane)) return false;
     return lane.windowChipQ > 0 ? !!lane.bandHeard : isPlainLoop(lane);
 }
 
@@ -666,12 +668,11 @@ export function previewer(laneId) {
     };
 }
 
-/** The lane's top as the engine will publish it after a swap (clips;
- * a group's top is its region start, never stored in Phase 2): the
+/** The lane's top as the engine will publish it after a swap (clip or
+ * group, fractal): the
  * reconcile from the effective top the gesture starts with — the one
  * every live commit of it reconciles from too (AudioEngine::record). */
 function topAfterSwap(lane, st) {
-    if (lane.kind !== 'clip') return () => undefined;
     const q = st.quantum;
     const T0 = Math.round((lane.topQ || 0) * q);
     return segsQ => predictTop(segsQ, T0, q);
@@ -822,7 +823,9 @@ function startTopDrag(ev, h, body) {
             d.ghost = Math.abs(res.dx - res.dq) * pxPerQ > SNAP_GHOST_MIN_PX;
             d.text = 'shift ' + fmtSignedQ(res.dq) + 'Q' +
                 (res.alt ? ' · fine' : '') + ' · ' +
-                timingText(retime0 + res.shift / q, msPerQ);
+                // The running total AS HEARD (foldShift, the readout's).
+                timingText(foldShift(retime0 + res.shift / q,
+                                     lane.retimePeriodQ || 0), msPerQ);
             pv.show({ originShift: res.shift });
             layoutDrag(body);
         },

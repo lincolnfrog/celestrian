@@ -29,7 +29,7 @@ import {
     activeSequenceSamples, sequenceProgram, sequenceTotalSamples,
     periodContribution, publishedNodeDrifts, driftsByRoundingOnly,
 } from './timeline_model.js';
-import { posMod } from './math_utils.js';
+import { posMod, foldShift } from './math_utils.js';
 import { assessBlowup, assessDrift, lcmAll } from './frame_health.js';
 import { flatSegPeriod, nodeWindowActive, mapOffset, seamDistance,
          heardOffsetOf } from './time_map.js';
@@ -1099,8 +1099,12 @@ function mapAuthored(n, m) {
  * The kept set a node PLAYS, as sample pairs: its authored map (the
  * segments override, else the single window), else the whole take.
  */
-function keptSegs(n, authored) {
-    if (!authored) return [[0, n.duration || 0]];
+function keptSegs(n, authored, quantum = 0) {
+    // With no map: the whole take — a group's is its inner cycle (it
+    // publishes no duration of its own).
+    if (!authored) {
+        return [[0, n.type === 'stack' ? intrinsicPeriod(n, quantum) : n.duration || 0]];
+    }
     if (n.segments && n.segments.length >= 4) {
         const segs = [];
         for (let i = 0; i + 1 < n.segments.length; i += 2) {
@@ -1122,15 +1126,17 @@ function keptSegs(n, authored) {
  * start. An old engine publishes none, and a top outside the kept set
  * (a preview the reconcile has not seen yet) cannot sound — both read
  * as the region start, a0, which is where every top sat before
- * Phase 2, so such a state derives exactly as it always did. Stacks
- * store no top in Phase 2: theirs is the region start. In samples:
+ * Phase 2, so such a state derives exactly as it always did. Clip or
+ * group alike (fractal, 2026-09-29 — Phase 2 kept groups at their
+ * region start). In samples:
  * { a0, top: T as read, heard: its heard offset, periodS: Σ segs }.
  */
-function topOf(n, authored) {
-    const segs = keptSegs(n, authored);
+function topOf(n, authored, quantum = 0) {
+    const segs = keptSegs(n, authored, quantum);
     const a0 = segs.length ? segs[0][0] : 0;
     const periodS = segs.reduce((p, [s, e]) => p + (e - s), 0);
-    const T = n.type === 'stack' ? NaN : n.loopTop;
+    // Clip or group alike (fractal, 2026-09-29): the published top.
+    const T = n.loopTop;
     const heard = Number.isFinite(T) ? heardOffsetOf({ segs }, T) : -1;
     return heard >= 0 ? { a0, top: T, heard, periodS }
                       : { a0, top: a0, heard: 0, periodS };
@@ -1202,7 +1208,9 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
         if (n.type === 'stack') {
             if (!n.anchored) return;
             if (authored || activeSeqSamples(n) > 0) {
-                seats.push({ top: (n.origin || 0) + topOf(n, authored).a0,
+                // The group's ↺ MOMENT, exactly a clip's (fractal).
+                const gt = topOf(n, authored, quantum);
+                seats.push({ top: (n.origin || 0) + gt.a0 + gt.heard,
                              period: stackEffectivePeriod(n, quantum) });
             } else {
                 visit(n.nodes);
@@ -1710,17 +1718,23 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
             bandTotalQ: intrinsicQ,
         }, bandGate(editable, ctx.mapEditsLocked));
     }
-    // THE TOP (topFields' group twin): a stack stores none in Phase 2 —
-    // its top is the region start, first heard at the lane's heard top
-    // (0 for an unanchored stack) — and a group is never re-timed.
+    // THE TOP AND THE TIMING — the clip's own (topFields), FRACTAL since
+    // 2026-09-29: a group stores a top, its ↺ drags re-time the whole
+    // group, and the panel's start marker and timing readout are the
+    // clip's. The gate is the clip's rule in group terms: committed
+    // (anchored by content), not one-shot, not the Q-definer, not shown
+    // through an enclosing map (the parent owns that chrome), nothing
+    // recording inside it — and the recording gate holds it inert.
     {
-        const a0Q = mapAuthored(node, gwin) ? gwin.segs[0][0] : 0;
-        Object.assign(lane, {
-            topQ: a0Q,
-            topHeardQ: periodQ > 0 ? posMod(gOffsetQ + a0Q, periodQ) : 0,
-            retimeQ: 0,
-            canRetime: false,
-        });
+        const underParentMap = !!(mapCtx && mapCtx.segs) && !(gwin && gwin.active);
+        const onceIdle = qEstablished && anchored && !oneShot &&
+            !underParentMap && !subtreeRec(node) &&
+            !(ctx.definerIds && ctx.definerIds.has(node.id));
+        Object.assign(lane, anchored
+            ? topFields(node, mapAuthored(node, gwin), ctx,
+                        onceIdle && !ctx.mapEditsLocked,
+                        onceIdle && ctx.mapEditsLocked)
+            : { topQ: 0, topHeardQ: 0, retimeQ: 0, canRetime: false });
     }
     // The SEQUENCER (docs/sequencer.md): the rail chip's facts, and the
     // grid row when expanded (view state, the fx-row pattern).
@@ -2523,7 +2537,7 @@ function resolveFrameZero({ opts, seated, rootFrame, quantum, qEstablished,
 }
 
 /**
- * THE TOP AND THE TIMING on a clip lane (loop_selection.md §9; the
+ * THE TOP AND THE TIMING on a clip or group lane (loop_selection.md §9; the
  * Phase 2 VM contract) — what the ↺ handle, the panel's start marker
  * and the timing readout read:
  *
@@ -2531,21 +2545,30 @@ function resolveFrameZero({ opts, seated, rootFrame, quantum, qEstablished,
  *   topHeardQ  the ↺'s first heard position from the frame zero, in
  *              [0, S): posMod(origin + a0 + heardOffset(T) − zero, S)
  *              with S the loop period (the kept set's length);
- *   retimeQ    the cumulative user shift (`retime` ÷ Q): 0 = as played,
- *              and on an engine that publishes none;
+ *   retimeQ    the user shift AS HEARD (`retime` ÷ Q, folded to the
+ *              loop's own period, foldShift): a loop sounds the same
+ *              shifted by any whole period, so the readout and "Timing
+ *              as played" show and undo only the audible part (owner
+ *              2026-09-29 — a 2Q loop moved 13Q reads "1Q"). 0 = as
+ *              played, and on an engine that publishes none;
+ *   retimePeriodQ  that period (the kept set's length), for a drag's
+ *              running readout;
  *   canRetime  the caller's verdict: a ↺ drag is offered here;
  *   retimeLocked  it would be, but for the recording gate: the ↺ still
  *              draws, INERT (splice_handles wantsTopHandle).
  */
 function topFields(node, authored, ctx, canRetime, retimeLocked = false) {
     const { quantum, frameZero } = ctx;
-    const t = topOf(node, authored);
+    const t = topOf(node, authored, quantum);
     return {
         topQ: t.top / quantum,
         topHeardQ: t.periodS > 0
             ? posMod((node.origin || 0) + t.a0 + t.heard - frameZero, t.periodS) / quantum
             : 0,
-        retimeQ: Number.isFinite(node.retime) ? node.retime / quantum : 0,
+        // As heard: folded to the loop's own period (foldShift).
+        retimeQ: Number.isFinite(node.retime)
+            ? foldShift(node.retime, t.periodS) / quantum : 0,
+        retimePeriodQ: t.periodS / quantum,
         canRetime: !!canRetime,
         retimeLocked: !canRetime && !!retimeLocked,
     };

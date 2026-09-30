@@ -113,6 +113,7 @@ export function uncollapseStack(ds) {
         delete m._precollapse;
     });
     ds.origin = (ds.origin || 0) - shift;
+    if (ds.storedTop != null) ds.storedTop += shift;  // the group's own top
     ds.loopStart = ds._precollapse.ls;
     ds.loopEnd = ds._precollapse.le;
     delete ds._precollapse;

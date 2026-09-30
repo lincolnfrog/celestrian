@@ -173,10 +173,9 @@ void stampWindowDomain(celestrian::AudioNode* node, const celestrian::Edit& e,
  * EFFECTIVE top — the stored one while its map plays it, else the
  * region start — read BEFORE the edit moves the geometry, so a top never
  * set (a fresh take, an old session) reconciles from where it showed.
- * kNoTop for a node that keeps no top (stacks, Phase 2). */
+ * Every loop node keeps a top, clip or group (fractal, 2026-09-29). */
 int64_t topBeforeEdit(const celestrian::AudioNode* node) {
-  const auto* clip = dynamic_cast<const celestrian::ClipNode*>(node);
-  return clip != nullptr ? clip->effectiveTop() : celestrian::timing::kNoTop;
+  return node != nullptr ? node->effectiveTop() : celestrian::timing::kNoTop;
 }
 
 /** THE TOP RIDES THE MAP (loop_selection.md §9, owner 2026-09-24):
@@ -187,23 +186,22 @@ int64_t topBeforeEdit(const celestrian::AudioNode* node) {
  * while the new kept set plays it, else the new region start — from the
  * gesture's base when a live commit carries one. The inverse records
  * that base: the gesture's later live commits reconcile from it
- * (AudioEngine::record). Stacks keep no top (Phase 2). */
+ * (AudioEngine::record). Clip or group alike. */
 void reconcileTopRider(celestrian::AudioNode* node, const celestrian::Edit& e,
                        celestrian::Edit& inv, int64_t top_before) {
-  auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
-  if (clip == nullptr) return;
+  if (node == nullptr) return;
   inv.setsTop = true;
-  inv.itop = clip->storedTop();
+  inv.itop = node->storedTop();
   if (e.setsTop) {
-    clip->setStoredTop(e.itop);
+    node->setStoredTop(e.itop);
     return;
   }
   const int64_t base = e.hasTopBase ? e.topBase : top_before;
   inv.hasTopBase = true;
   inv.topBase = base;
-  clip->setStoredTop(celestrian::timing::reconcileTop(
-      clip->storedMap(), clip->isLoopWindowActive(),
-      clip->getIntrinsicDuration(), base));
+  node->setStoredTop(celestrian::timing::reconcileTop(
+      node->storedMap(), node->isLoopWindowActive(),
+      node->getIntrinsicDuration(), base));
 }
 
 /** Apply an edit's WINDOW RIDERS (Edit::windows): set each named node's
@@ -225,26 +223,21 @@ void applyWindowRiders(
     // shape — a cell map goes whole with the rest and comes back on undo.
     back.setsMap = true;
     back.tmap = node->storedMap();
-    auto* clip = dynamic_cast<celestrian::ClipNode*>(node);
     const int64_t top_before = topBeforeEdit(node);  // before it moves
-    if (clip != nullptr) {
-      back.setsTop = true;
-      back.top = clip->storedTop();
-    }
+    back.setsTop = true;
+    back.top = node->storedTop();
     inv.windows.push_back(std::move(back));
     if (r.setsMap && r.tmap.n >= 2) {
       node->setMap(r.tmap);
     } else {
       node->setLoopPoints(r.start, r.end);
     }
-    if (clip != nullptr) {
-      clip->setStoredTop(r.setsTop ? r.top
-                                   : celestrian::timing::reconcileTop(
-                                         clip->storedMap(),
-                                         clip->isLoopWindowActive(),
-                                         clip->getIntrinsicDuration(),
-                                         top_before));
-    }
+    node->setStoredTop(r.setsTop ? r.top
+                                 : celestrian::timing::reconcileTop(
+                                       node->storedMap(),
+                                       node->isLoopWindowActive(),
+                                       node->getIntrinsicDuration(),
+                                       top_before));
   }
 }
 
@@ -327,6 +320,12 @@ bool AudioEngine::collapseNode(celestrian::AudioNode& node, CollapseFacts& f) {
   // follow. Audio-neutral: inner s + ((t − O − s) mod len) before ==
   // base s + ((t − (O + s)) mod len) after.
   for (auto* leaf : leaves) leaf->collapseContent(s, len);
+  // A GROUP's own top rides the collapse the way a clip's does inside
+  // collapseContent: the same raw sample, `s` earlier in the new take.
+  if (node.getNodeType() == celestrian::NodeType::Stack) {
+    if (const int64_t t = node.storedTop(); t != celestrian::timing::kNoTop)
+      node.setStoredTop(t - s);
+  }
   shiftOriginsGated(node, s, 0);
   liftAncestorsGated(node, s, 0);
   // The window is consumed (the take IS the window now) — clip or stack.
@@ -347,6 +346,10 @@ void AudioEngine::uncollapseNode(celestrian::AudioNode& node, int64_t shift,
     leaf->uncollapseContent(shift, old_duration);
     // Members stay whole (no window); the restored window is the stack's.
     if (is_stack) leaf->setLoopPoints(0, 0);
+  }
+  if (is_stack) {
+    if (const int64_t t = node.storedTop(); t != celestrian::timing::kNoTop)
+      node.setStoredTop(t + shift);
   }
   shiftOriginsGated(node, -shift, 0);
   liftAncestorsGated(node, -shift, 0);
@@ -1126,22 +1129,26 @@ celestrian::Edit AudioEngine::applyEditImpl(celestrian::Edit e) {
       // island generation, published with the unchanged (Q, zero)) — a
       // SHIFT, never re-folded: no continuity solve, no ancestor lift,
       // no island fact moves.
-      auto* clip = dynamic_cast<celestrian::ClipNode*>(find(e.uuid));
-      if (!clip || clip->isArmedOrRecording()) return {};
+      // Clip or group (fractal): a group's origin moves with its whole
+      // subtree (applySetsOrigin shifts it), so its members keep their
+      // placement inside it and the group re-times as one.
+      AudioNode* node = find(e.uuid);
+      if (!node || node == root_node.get() || node->isArmedOrRecording())
+        return {};
       Edit inv(K::Timing);
       inv.uuid = e.uuid;
       inv.setsTop = true;
-      inv.itop = clip->storedTop();
+      inv.itop = node->storedTop();
       inv.setsRetime = true;
-      inv.iretime = clip->retime();
+      inv.iretime = node->retime();
       const uint32_t gen = e.setsOrigin ? root_node->nextIslandGeneration() : 0;
-      applySetsOrigin(*clip, e, inv, gen);
+      applySetsOrigin(*node, e, inv, gen);
       if (gen != 0) {
         root_node->setIslandFacts(root_node->getQuantum(), root_node->getZero(),
                                   gen);
       }
-      if (e.setsRetime) clip->setRetime(e.iretime);
-      if (e.setsTop) clip->setStoredTop(e.itop);
+      if (e.setsRetime) node->setRetime(e.iretime);
+      if (e.setsTop) node->setStoredTop(e.itop);
       return inv;
     }
     case K::Definer: {

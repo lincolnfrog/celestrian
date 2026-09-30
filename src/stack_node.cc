@@ -67,8 +67,8 @@ juce::var StackNode::getMetadata() const {
     obj->setProperty("loopBypassed", false);
     obj->setProperty("windowActive", true);
     obj->removeProperty("segments");
-    // A stack keeps no top (Phase 2): its `loopTop` is the region
-    // start of the window it publishes — the derived one here.
+    // An audition's derived window reads from its own start (the stored
+    // top belongs to the authored region, which returns with it).
     obj->setProperty("loopTop", (double)a.segs[0].start);
   }
   // S16 (§11.8): the authored window's domain, and whether it is

@@ -47,3 +47,20 @@ export const posMod = (x, m) => {
     const r = x % m;
     return r < 0 ? r + m : r + 0;  // `+ 0` normalizes −0 to 0
 };
+
+/**
+ * A SHIFT AS HEARD: `x` folded to a loop's `period`, into (−period/2,
+ * period/2]. A loop sounds the same moved by any whole period, so this
+ * is the only part of a re-time anyone can hear (owner 2026-09-29: a
+ * 2Q loop moved 13Q must read "1Q", never "13Q"). A non-positive
+ * period leaves `x` as it is.
+ *
+ * @param {number} x       the shift (any unit, the period's)
+ * @param {number} period  the loop's length in the same unit
+ * @returns {number}
+ */
+export function foldShift(x, period) {
+    if (!(period > 0) || !Number.isFinite(x)) return x;
+    const r = posMod(x, period);
+    return r > period / 2 + 1e-9 ? r - period : r;
+}

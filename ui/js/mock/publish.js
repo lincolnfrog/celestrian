@@ -8,7 +8,8 @@
 import { posMod } from '../math_utils.js';
 import { mapPeriod, mapActive, mapOffset, effectiveTop, regionStart } from '../time_map.js';
 import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
-         windowSuspendedOf, islandDefiner, frameOriginOf } from './state.js';
+         windowSuspendedOf, islandDefiner, frameOriginOf, intrinsicOfNode }
+    from './state.js';
 import { canUndo, canRedo } from './undo.js';
 import { advanceTransport, viewMasterPos } from './transport.js';
 import { ensureEffects } from './effects.js';
@@ -78,22 +79,21 @@ export function enrichNodes(nodes) {
         }
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
-        // THE TOP (loop_selection.md §9; engine parity AudioNode /
-        // ClipNode::getMetadata): a clip publishes its EFFECTIVE top —
-        // the stored one (`storedTop`, raw samples, null = unset) while
-        // its map plays it, else the region start — and its re-time (the
-        // cumulative user shift, 0 = as played). A stack keeps no top in
-        // Phase 2: the region start of the window it publishes (a step
-        // audition's derived one included). The stored field stays
-        // private, as in the engine.
+        // THE TOP (loop_selection.md §9; engine parity AudioNode::
+        // getMetadata): every loop node — clip or group, fractal since
+        // 2026-09-29 — publishes its EFFECTIVE top (the stored one,
+        // `storedTop`, raw samples, null = unset, while its map plays
+        // it, else the region start) and its re-time (the cumulative
+        // user shift, 0 = as played). A step audition's derived window
+        // reads from its own start (the stored top belongs to the
+        // authored region). The stored field stays private, as in the
+        // engine.
         const regionMap = auditionOn ? audition : nodeMap(node);
-        if (node.type === 'stack') {
-            updatedNode.loopTop = regionStart(regionMap, windowActive);
-        } else {
-            updatedNode.loopTop = effectiveTop(regionMap, windowActive,
-                node.duration || 0, node.storedTop ?? null);
-            updatedNode.retime = node.retime || 0;
-        }
+        updatedNode.loopTop = auditionOn
+            ? regionStart(regionMap, windowActive)
+            : effectiveTop(regionMap, windowActive, intrinsicOfNode(node),
+                           node.storedTop ?? null);
+        updatedNode.retime = node.retime || 0;
         delete updatedNode.storedTop;
         if (node.type === 'stack') {
             updatedNode.windowDomain = node.windowDomain === 'sequence' ? 'sequence' : 'intrinsic';

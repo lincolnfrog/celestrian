@@ -426,24 +426,28 @@ void AudioEngine::setTiming(const juce::String& uuid, int64_t shift,
   // A gesture's first commit opens it before any gate (setLoopPoints) —
   // a ↺ drag may open on a zero shift.
   if (!live) openGesture(uuid, celestrian::Edit::Kind::Timing);
-  auto* clip = dynamic_cast<celestrian::ClipNode*>(
-      findNodeByUuid(root_node.get(), uuid));
-  if (clip == nullptr) {
-    // Stacks keep no timing in Phase 2 (their origin is their earliest
-    // content's, Q18); an unknown uuid lands here too.
+  // FRACTAL (owner 2026-09-29): a clip or a GROUP. A group's shift moves
+  // its whole subtree (the applier's shiftOriginsGated), so the members
+  // keep their placement inside it and the group re-times as one loop.
+  celestrian::AudioNode* node = findNodeByUuid(root_node.get(), uuid);
+  if (node == nullptr || node == root_node.get()) {
     juce::Logger::writeToLog("AudioEngine::setTiming refused - " + uuid +
-                             " is not a clip");
+                             " is not a track or group");
     return;
   }
   // THE RECORDING GATE (Phase 1): nothing re-times while any take is
   // armed or capturing — the performer is playing against this grid.
   if (refusedUnderLiveTake("setTiming")) return;
-  if (clip->isArmedOrRecording()) {
+  if (node->isArmedOrRecording()) {
     juce::Logger::writeToLog(
         "AudioEngine::setTiming refused - a take is recording or pending here");
     return;
   }
-  if (clip->getIntrinsicDuration() <= 0) {
+  // Committed: a clip with a take, a group anchored by its content.
+  const bool committed = node->getNodeType() == celestrian::NodeType::Stack
+                             ? node->isAnchored()
+                             : node->getIntrinsicDuration() > 0;
+  if (!committed) {
     juce::Logger::writeToLog(
         "AudioEngine::setTiming refused - nothing committed here to re-time");
     return;
@@ -452,7 +456,7 @@ void AudioEngine::setTiming(const juce::String& uuid, int64_t shift,
   // from it (Q13), so moving it re-times nothing against anything; its
   // own trims re-establish the grid instead. The same predicate the
   // state publishes as `definerId`, so the view's canRetime agrees.
-  if (celestrian::engine_internal::definer(*root_node) == clip) {
+  if (celestrian::engine_internal::definer(*root_node) == node) {
     juce::Logger::writeToLog(
         "AudioEngine::setTiming refused - the Q-definer's origin is the "
         "island zero");
@@ -460,21 +464,21 @@ void AudioEngine::setTiming(const juce::String& uuid, int64_t shift,
   }
   // A top must be one the region plays (the kept set) — refused whole
   // otherwise: no half-applied shift.
-  if (top.has_value() && !clip->keepsTop(*top)) {
+  if (top.has_value() && !node->keepsTop(*top)) {
     juce::Logger::writeToLog("AudioEngine::setTiming refused - top " +
                              juce::String(*top) +
-                             " is outside the clip's kept set");
+                             " is outside the kept set");
     return;
   }
   // IDENTITY EDITS RECORD NOTHING (the setLoopPoints rule): a zero shift
   // with no new top would log a no-op undo step and eat the redo branch.
-  if (shift == 0 && (!top.has_value() || *top == clip->storedTop())) return;
+  if (shift == 0 && (!top.has_value() || *top == node->storedTop())) return;
   celestrian::Edit e(celestrian::Edit::Kind::Timing);
   e.uuid = uuid;
   e.setsOrigin = true;
-  e.iorg = clip->origin_samples.load() + shift;
+  e.iorg = node->origin_samples.load() + shift;
   e.setsRetime = true;
-  e.iretime = clip->retime() + shift;
+  e.iretime = node->retime() + shift;
   if (top.has_value()) {
     e.setsTop = true;
     e.itop = *top;

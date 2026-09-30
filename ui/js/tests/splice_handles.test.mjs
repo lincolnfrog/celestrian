@@ -207,7 +207,7 @@ const island = nodes => ({
 });
 const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
 
-test('(f) a heard clip wears splices and the ↺; a group only splices; a one-shot neither; a raw lane no splice', () => {
+test('(f) a heard clip or group wears splices and the ↺ (fractal); a one-shot neither; a raw lane no splice', () => {
     const vm = deriveViewModel(island([
         clip('A', 0, 1),
         windowed('B', 1, 12, [6, 10], { loopTop: 7 * Q }),
@@ -228,8 +228,11 @@ test('(f) a heard clip wears splices and the ↺; a group only splices; a one-sh
     assert.ok(near(posModQ(B.topHeardQ - B.takeStartQ, B.periodQ), 1));
     const G = laneOf(vm, 'G');
     assert.equal(wantsSpliceChrome(G), true, 'a group\'s map swaps too');
-    assert.equal(wantsTopHandle(G), false, 'a group is never re-timed');
-    assert.equal(wantsLaneTop(G), false);
+    // A group is a loop like any other (fractal, 2026-09-29): its ↺ and
+    // its re-time are the clip's.
+    assert.equal(wantsTopHandle(G), true, 'a group re-times like a clip');
+    assert.equal(G.canRetime, true);
+    assert.equal(wantsLaneTop(G), true, '…and wears the ↺ on its heard lane');
     const O = laneOf(vm, 'O');
     assert.equal(wantsSpliceChrome(O), false, 'a one-shot keeps its edge grips');
     assert.equal(wantsLaneTop(O), false, '…and has no ↺: its offset IS its placement');
