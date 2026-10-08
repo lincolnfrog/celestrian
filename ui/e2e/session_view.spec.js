@@ -88,7 +88,14 @@ const clipState = (page, i = 0) => page.evaluate(idx =>
  *  releasing — for mid-drag assertions. REAL input, hit-tested (the
  *  2026-07-23c law: synthetic dispatch bypasses hit-testing). */
 async function dragHold(page, locator, toX, toY, steps = 5) {
-    const from = await locator.boundingBox();
+    // A lane's overlay is REBUILT from the settled state a patch or two
+    // after a commit (window_edit.js finish → o._key = ''). A handle
+    // resolved just before that rebuild is detached by the time its box
+    // is read — null — so a drag begun straight after another drag's
+    // release must take the box of a handle that is there.
+    let from = null;
+    await expect.poll(async () => (from = await locator.boundingBox()) !== null)
+        .toBe(true);
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
     await page.mouse.move(toX, toY, { steps });
@@ -387,10 +394,11 @@ test.describe('Loop window brackets (phase 3)', () => {
         await expect(group.locator('.win-heard-chip')).toHaveText(/window 2Q/);
         // No brackets on the lane: its loop chrome is the SPLICE handle
         // a heard clip wears too (splice_handles.js, 2026-09-24 — the
-        // edge trim grips retired); a group is never re-timed, so no ↺.
+        // edge trim grips retired) — and its ↺: a group is a loop like
+        // any other and re-times as a clip does (fractal, 2026-09-29).
         await expect(group.locator('.win-bracket')).toHaveCount(0);
         await expect(group.locator('.lr-splice.lr-wrap').first()).toBeVisible();
-        await expect(group.locator('.lr-top')).toHaveCount(0);
+        await expect(group.locator('.lr-top:not(.lr-ghost)')).toHaveCount(1);
 
         // Bypass through the engine verb: the raw 3Q frame returns with
         // the toggle chip + brackets (no dims — bypassed plays it all).
@@ -1438,13 +1446,14 @@ test.describe('Creation menu (Q17)', () => {
             return [n.loopStart / Q, n.loopEnd / Q].join(',');
         }).toBe('6,10');
 
-        // THE EDIT HOLD (frame.md §1, 2026-09-24): the grab selected the
-        // lane, and a selected lane's edits never re-seat the frame —
-        // the zero stays on 1Q, where the take's top sat before the
-        // trim, so the 4Q loop shows its top 2Q in. Its ↺ and its
-        // splice (where the recording jumps back) mark it there — the
-        // "] [" grip pair and its "↺ loop top" chip retired 2026-09-24
-        // (splice_handles.js).
+        // THE FRAME SEATS ON THE LOOP AT ONCE (frame.md §1, owner
+        // 2026-09-29 — no edit hold): this is the first loop longer than
+        // Q, so its ↺ places the frame. The 4Q loop shows from its top:
+        // the ↺ at the left edge, and its splice (where the recording
+        // jumps back) at BOTH edges — where the loop starts and, the
+        // right handle exactly where a right handle should be, where it
+        // ends (.lr-end, 2026-10-01). The "] [" grip pair and its "↺
+        // loop top" chip retired 2026-09-24 (splice_handles.js).
         const lr = () => page.evaluate(() => {
             const body = document.querySelectorAll('.lane[data-kind="clip"]')[1]
                 .querySelector('.lane-body');
@@ -1458,16 +1467,17 @@ test.describe('Creation menu (Q17)', () => {
                         (((r.left + r.width / 2) - br.left) / br.width * body._cycleQ).toFixed(1);
                 }).sort();
         });
-        await expect.poll(lr).toEqual(['splice@2.0', 'top@2.0']);
+        await expect.poll(lr).toEqual(['splice@0.0', 'splice@4.0', 'top@0.0']);
         await expect(body.locator('.loop-top-chip, .trim-grip')).toHaveCount(0);
 
-        // STEP 2 — the loop's END to 9Q: ⇧ on the splice = the LENGTH
-        // there (loop_selection.md P2.4). THE SAME-SCALE REVEAL: the
+        // STEP 2 — the loop's END to 9Q, by its RIGHT handle: ⇧ on the
+        // splice = the LENGTH there (loop_selection.md P2.4), and the
+        // loop ends at the frame's right edge. THE SAME-SCALE REVEAL: the
         // grab does NOT rescale the lane — it unrolls the raw take at
         // the lane's own px-per-Q with the loop's end bound glued to the
-        // pointer, so dragging LEFT by 1.2 frame-Q proposes 8.8Q → the
-        // length snaps to whole Qs → 9Q.
-        const tab = await body.locator('.lr-layer > .lr-wrap:not(.lr-ghost) .lr-tab')
+        // pointer, so dragging LEFT (inward) by 1.2 frame-Q proposes
+        // 8.8Q → the length snaps to whole Qs → 9Q.
+        const tab = await body.locator('.lr-layer > .lr-wrap.lr-end:not(.lr-ghost) .lr-tab')
             .boundingBox();
         const gx = tab.x + tab.width / 2;
         const gy = tab.y + tab.height / 2;
@@ -1493,14 +1503,16 @@ test.describe('Creation menu (Q17)', () => {
         }).toBe('6,9');
         await expect(body.locator('.win-chip')).toHaveText(/3Q/);
 
-        // Deselecting SETTLES the frame, once: the view seats the zero
-        // (docs/frame.md) — the 1Q definer seats first, and this lane's
-        // top (1Q + 6Q) pulls the zero forward by whole 1Q cycles to
-        // 7Q; the island zero itself never moves for a map edit. The
-        // heard view: a 3Q loop from its TOP — the ↺ and the splice at
-        // the left edge, nothing mid-lane, nothing that looks like a cut.
+        // The view seats the zero (docs/frame.md) on this lane's top
+        // (1Q + 6Q = 7Q) — the island zero itself never moves for a map
+        // edit. The heard view: a 3Q loop from its TOP — the ↺ at the
+        // left edge, the splice at the frame's two edges, nothing
+        // mid-lane, nothing that looks like a cut. Deselecting moves
+        // nothing (there is no hold to release).
+        await expect.poll(lr).toEqual(['splice@0.0', 'splice@3.0', 'top@0.0']);
         await page.keyboard.press('Escape');
-        await expect.poll(lr).toEqual(['splice@0.0', 'top@0.0']);
+        await page.waitForTimeout(200);
+        expect(await lr()).toEqual(['splice@0.0', 'splice@3.0', 'top@0.0']);
         await expect(body.locator('.cut-band, .seam-handle, .trim-grip, .loop-top-chip'))
             .toHaveCount(0);
         expect((await page.evaluate(async () =>

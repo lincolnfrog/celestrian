@@ -136,8 +136,12 @@ export function interceptUndoableCall(method, arg0, args = []) {
     undoPushedForCall = true;
     // A map or re-time step is its gesture's FIRST (engine parity
     // record) — the one a non-live commit opened, or a stray live
-    // commit's own. A refusal takes it back (popUndoForRefusal).
-    if (family !== undefined) gesture = { family, arg0, logged: true };
+    // commit's own. A refusal takes it back (popUndoForRefusal). The
+    // redo branch it invalidated rides the gesture for as long as it
+    // can be cancelled (cancelGesture puts it back).
+    if (family !== undefined) {
+        gesture = { family, arg0, logged: true, redo: redoSavedForCall };
+    }
 }
 
 /** Did the current dispatch push a snapshot? (Coalesced calls didn't.) */
@@ -203,5 +207,23 @@ export function mockRedo() {
     gesture = null;  // a later live commit logs its own step
     undoStack.push(serializeGraph());
     restoreGraph(redoStack.pop());
+    return true;
+}
+
+/**
+ * CANCEL THE OPEN GESTURE (engine parity AudioEngine::cancelGesture): a
+ * cancelled drag puts node `arg0` back exactly where its gesture found
+ * it and leaves no trace — the step its live commits coalesced into is
+ * restored and DROPPED (never pushed to redo), and the redo branch that
+ * step invalidated returns. A no-op (false) with no gesture open on
+ * `arg0`, or one that logged nothing: it changed nothing.
+ */
+export function mockCancelGesture(arg0) {
+    const g = gesture;
+    if (!g || g.arg0 !== arg0) return false;
+    gesture = null;
+    if (!g.logged || !undoStack.length) return false;
+    restoreGraph(undoStack.pop());
+    redoStack = g.redo || [];
     return true;
 }

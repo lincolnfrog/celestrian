@@ -45,11 +45,15 @@ const handles = (page, id) => page.evaluate(id => {
         .sort((a, b) => a.x - b.x);
 }, id);
 
-/** The page point of a handle's TAB (the take tile's, unless `ghost`). */
-async function tabPoint(page, id, kind, { ghost = false } = {}) {
+/** The page point of a handle's TAB (the take tile's, unless `ghost`).
+ * A splice resting on the frame's left edge shows at the right edge too
+ * (.lr-end — the loop's END handle, 2026-10-01): `end` picks that one,
+ * the default the one where the splice starts. */
+async function tabPoint(page, id, kind, { ghost = false, end = false } = {}) {
     const cls = kind === 'top' ? '.lr-top' : kind === 'cut' ? '.lr-cut' : '.lr-wrap';
     const tab = laneOf(page, id).locator(
-        `.lr-layer > ${cls}${ghost ? '.lr-ghost' : ':not(.lr-ghost)'} .lr-tab`).first();
+        `.lr-layer > ${cls}${ghost ? '.lr-ghost' : ':not(.lr-ghost)'}` +
+        `${end ? '.lr-end' : ':not(.lr-end)'} .lr-tab`).first();
     const b = await tab.boundingBox();
     return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
 }
@@ -101,8 +105,12 @@ const of = (hs, kind) => hs.filter(h => h.kind === kind);
 
 /** The owner's topology: a 1Q definer, a 12Q take from 1Q looped to
  * [6Q, 10Q) — a 4Q loop filling a 4Q frame, its region start (and ↺)
- * at the frame's left edge — and that lane selected (the edit hold
- * keeps the frame still through every edit below). */
+ * at the frame's left edge — and that lane selected. It is the first
+ * loop longer than Q, so it PLACES THE FRAME (frame.md §1, owner
+ * 2026-09-29): the frame's left edge is its ↺. A drag pins the frame
+ * while the hand is down; released, an edit that moved the ↺'s moment
+ * re-seats the frame AT ONCE — there is no edit hold. (A loop that
+ * slots into the frame instead: slotted_loop.spec.js.) */
 async function setup(page, opts = {}) {
     await boot(page, opts);
     const Q = await quantum(page);
@@ -116,14 +124,18 @@ async function setup(page, opts = {}) {
 test.describe('The splice (swap)', () => {
     test('a splice drag swaps only the swept strip; the ↺ stays — until the region drops it', async ({ page }) => {
         const { Q, id2 } = await setup(page);
-        // Store a top 1Q into the loop (raw 7Q): the ↺ comes apart from
-        // the splice.
-        await page.evaluate(({ id, Q }) =>
-            window.__celestrianTest.callNative('setTiming', id, 0, 7 * Q), { id: id2, Q });
-        await expect.poll(async () => {
+        /** The take tile's splice and ↺ (lane Q). */
+        const marks = async () => {
             const hs = await handles(page, id2);
             return [of(hs, 'wrap')[0].x, of(hs, 'top')[0].x].map(v => +v.toFixed(2));
-        }).toEqual([0, 1]);
+        };
+        // Store a top 1Q into the loop (raw 7Q): the ↺ comes apart from
+        // the splice. This loop places the frame, so the frame seats on
+        // the ↺ — the left edge — and the splice shows 1Q before it
+        // (−1 ≡ 3 of the 4Q frame).
+        await page.evaluate(({ id, Q }) =>
+            window.__celestrianTest.callNative('setTiming', id, 0, 7 * Q), { id: id2, Q });
+        await expect.poll(marks).toEqual([3, 0]);
         await page.waitForTimeout(200);  // settle any first-draw swap
         const before = await tileProfile(page, id2);
         const pxq = await lanePxPerQ(page, id2);
@@ -144,37 +156,41 @@ test.describe('The splice (swap)', () => {
         await expect(laneOf(page, id2).locator('.lr-tint')).toHaveCount(0);
         await page.waitForTimeout(200);
         const after = await tileProfile(page, id2);
-        // What the hand saw is what landed; ONLY the swept strip [0, 1Q)
-        // of the 4Q tile changed (a few px of smoothing either side).
+        // What the hand saw is what landed; ONLY the swept strip — the
+        // last Q of the 4Q tile, [3Q, 4Q), where the splice was — changed
+        // (a few px of smoothing either side, the wrap included).
         expect(changedCols(mid, after)).toEqual([]);
         const changed = changedCols(before, after);
         expect(changed.length).toBeGreaterThan(0);
         const slack = 10 / before.length;
         for (const f of changed) {
-            expect(f <= 0.25 + slack || f >= 1 - slack, `column ${f.toFixed(3)}`).toBe(true);
+            expect(f >= 0.75 - slack || f <= slack, `column ${f.toFixed(3)}`).toBe(true);
         }
-        // The swap kept the origin and the top; the splice moved, the ↺
-        // did not.
+        // The swap kept the origin and the top: the splice moved onto
+        // the ↺ (the left edge), the ↺ did not move — and neither did
+        // the frame, whose zero is the ↺'s moment.
         let n = await node(page, id2);
         expect(n.loopTop / Q).toBe(7);
         expect(n.retime).toBe(0);
         expect(n.origin / Q).toBe(1);
-        let hs = await handles(page, id2);
-        expect(near(of(hs, 'wrap')[0].x, 1)).toBe(true);
-        expect(near(of(hs, 'top')[0].x, 1)).toBe(true);
+        await expect.poll(marks).toEqual([0, 0]);
 
         // ANOTHER +1Q: [8, 12) no longer plays raw 7 — the top resets
-        // to the region start, back on the splice (at 2Q), and the ↺
-        // lands there with the release, no jump after.
-        await drag(page, await tabPoint(page, id2, 'wrap'), 1.2 * pxq);
-        await expect.poll(() => loopOf(page, id2, Q)).toBe('8,12');
+        // to the region start, back on the splice. Under the hand the
+        // frame is pinned, so the preview shows the ↺ where the engine
+        // will store it: 1Q in, beside the splice's landing …
+        await drag(page, await tabPoint(page, id2, 'wrap'), 1.2 * pxq, { hold: true });
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('8,12');   // a live commit
+        await expect.poll(async () =>
+            +of(await handles(page, id2), 'top')[0].x.toFixed(2)).toBe(1);
+        await page.mouse.up();
         n = await node(page, id2);
         expect(n.loopTop / Q).toBe(8);
-        hs = await handles(page, id2);
-        expect(near(of(hs, 'wrap')[0].x, 2)).toBe(true);
-        expect(near(of(hs, 'top')[0].x, 2)).toBe(true);
+        // … and released, the frame seats on the new ↺ at once: both at
+        // the left edge (no edit hold — frame.md §1).
+        await expect.poll(marks).toEqual([0, 0]);
         await page.waitForTimeout(300);
-        expect(near(of(await handles(page, id2), 'top')[0].x, 2)).toBe(true);
+        expect(await marks()).toEqual([0, 0]);
         // One undo step per drag.
         await page.evaluate(() => window.__celestrianTest.callNative('undo'));
         await expect.poll(() => loopOf(page, id2, Q)).toBe('7,11');
@@ -209,9 +225,9 @@ test.describe('The splice (swap)', () => {
         expect([await at('wrap'), await at('top')]).toEqual([3, 0]);
         // The owner's bars 1–4 → 3–6 → 2–5, as nudges: back to [6, 10);
         // [7, 11) drops raw 6 and [8, 12) raw 7 — the ↺ resets onto the
-        // region start each time, landing on raw 8 (2Q in) — then one
-        // back to [7, 11): raw 8 still plays, so the ↺ STAYS on it and
-        // only the splice moves (to 1Q).
+        // region start each time, landing on raw 8 — then one back to
+        // [7, 11): raw 8 still plays, so the ↺ STAYS on it (the engine's
+        // stored top) and only the splice moves.
         await page.keyboard.press('ArrowRight');
         await expect.poll(() => loopOf(page, id2, Q)).toBe('6,10');
         await page.keyboard.press('ArrowRight');
@@ -222,8 +238,10 @@ test.describe('The splice (swap)', () => {
         await page.keyboard.press('ArrowLeft');
         await expect.poll(() => loopOf(page, id2, Q)).toBe('7,11');
         expect((await node(page, id2)).loopTop / Q).toBe(8);
-        await expect.poll(() => at('wrap')).toBe(1);
-        await expect.poll(() => at('top')).toBe(2);
+        // The nudge chain is one pinned gesture (makeChainPin); once it
+        // lets the frame go, the frame seats on the ↺ — raw 8 at the
+        // left edge — and the splice (raw 7) reads 1Q before it: 3Q.
+        await expect.poll(async () => [await at('wrap'), await at('top')]).toEqual([3, 0]);
     });
 
     test('Escape mid-drag puts back what the live commits changed — the swap and the shift', async ({ page }) => {
@@ -252,20 +270,77 @@ test.describe('The splice (swap)', () => {
             .toBe(true);
     });
 
+    test('a cancelled drag leaves no undo step, and the redo it interrupted still works', async ({ page }) => {
+        // The cancel used to restore by one more commit: the gesture's
+        // undo step stayed on the stack reading (start → start) — a ⌘Z
+        // that did nothing — the redo branch its first commit had
+        // invalidated was gone, and the status line said "⌘Z to undo".
+        // The engine cancels the gesture instead (cancelGesture).
+        const { Q, id2 } = await setup(page);
+        const st = () => page.evaluate(() =>
+            window.__celestrianTest.callNative('getGraphState'));
+        const pxq = await lanePxPerQ(page, id2);
+        // A redo branch to interrupt: a swap, undone.
+        await drag(page, await tabPoint(page, id2, 'wrap'), -1.2 * pxq);
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('5,9');
+        await page.waitForTimeout(350);
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('6,10');
+        expect((await st()).canRedo).toBe(true);
+        // (The lane has re-drawn the undone loop before the next grab:
+        // its splice is back on the left edge.)
+        await expect.poll(async () => +of(await handles(page, id2), 'wrap')[0].x.toFixed(2))
+            .toBe(0);
+        // A drag, its live commits landed (redo is invalidated — for
+        // now) — and Escape.
+        await drag(page, await tabPoint(page, id2, 'wrap'), 1.3 * pxq, { hold: true });
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('7,11');
+        expect((await st()).canRedo).toBe(false);
+        await page.keyboard.press('Escape');
+        await page.mouse.up();
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('6,10');
+        await expect(page.locator('#log-line')).toHaveText('Cancelled — nothing changed');
+        await page.waitForTimeout(400);   // past any queued verdict
+        await expect(page.locator('#log-line')).toHaveText('Cancelled — nothing changed');
+        // REDO is back, and it is the swap that was undone.
+        expect((await st()).canRedo).toBe(true);
+        await page.keyboard.press('ControlOrMeta+Shift+z');
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('5,9');
+        // ⌘Z twice: that swap, then the loop itself — no step in
+        // between is the cancelled drag's.
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('6,10');
+        await page.keyboard.press('ControlOrMeta+z');
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('0,0');
+    });
+
     test('a cut\'s splice slides the cut (⌥ free) and heals on double-click', async ({ page }) => {
         const { Q, id2 } = await setup(page);
-        await page.evaluate(({ id, Q }) => window.__celestrianTest.callNative(
-            'setSegments', id, [2 * Q, 5 * Q, 6 * Q, 10 * Q]), { id: id2, Q });
-        await expect.poll(async () => of(await handles(page, id2), 'cut').length).toBe(1);
+        // A 1Q cut at [5, 6), the ↺ on the region start (raw 2): the 7Q
+        // loop shows from its top, the cut's splice 3Q in. (Left on raw
+        // 6 — where setup's region began — the ↺ would sit ON the cut's
+        // splice, at the frame's edge, and the slide below would drop it
+        // and re-seat the frame.)
+        await page.evaluate(async ({ id, Q }) => {
+            const c = window.__celestrianTest.callNative;
+            await c('setSegments', id, [2 * Q, 5 * Q, 6 * Q, 10 * Q]);
+            await c('setTiming', id, 0, 2 * Q);
+        }, { id: id2, Q });
+        await expect.poll(async () => of(await handles(page, id2), 'cut')
+            .map(h => +h.x.toFixed(2))).toEqual([3]);
         const cut = of(await handles(page, id2), 'cut')[0];
         expect(cut.text).toBe('‖ 1Q');
         const pxq = await lanePxPerQ(page, id2);
-        // ⌥: free — the cut slides 0.4Q, its length held.
+        // ⌥: free — the cut slides 0.4Q, its length held; the region
+        // still plays the ↺, so the frame holds and the splice rests
+        // where the hand left it.
         await drag(page, await tabPoint(page, id2, 'cut'), 0.4 * pxq, { mods: ['Alt'] });
         await expect.poll(async () => (await segsOf(page, id2, Q)).split(',')
             .map(v => (+v).toFixed(1)).join(',')).toBe('2.0,5.4,6.4,10.0');
         await expect.poll(async () => near(of(await handles(page, id2), 'cut')[0].x,
                                            cut.x + 0.4, 0.05)).toBe(true);
+        await page.waitForTimeout(300);   // …and stays, past the pin
+        expect(near(of(await handles(page, id2), 'cut')[0].x, cut.x + 0.4, 0.05)).toBe(true);
         // Double-click the cut's splice: healed — back to one window.
         const at = await tabPoint(page, id2, 'cut');
         await page.mouse.dblclick(at.x, at.y);
@@ -276,11 +351,12 @@ test.describe('The splice (swap)', () => {
     });
 });
 
-test.describe('The ↺ glide', () => {
+test.describe('A reset ↺', () => {
     /** Every animation frame for `ms`: the take tile's ↺ and splice
-     * positions (Q) and whether the frame is settling. */
+     * positions (Q) and whether the frame is moving onto a new seat. */
     const sampleFrames = (page, id, ms) => page.evaluate(({ id, ms }) => new Promise(done => {
         const body = document.querySelector(`.lane[data-id="${id}"] .lane-body`);
+        const lanes = document.getElementById('lanes');
         const out = [];
         const t0 = performance.now();
         const xOf = sel => {
@@ -292,34 +368,59 @@ test.describe('The ↺ glide', () => {
         };
         const tick = () => {
             out.push({ top: xOf('.lr-layer > .lr-top:not(.lr-ghost)'),
-                       wrap: xOf('.lr-layer > .lr-wrap:not(.lr-ghost)') });
+                       wrap: xOf('.lr-layer > .lr-wrap:not(.lr-ghost)'),
+                       moving: lanes.classList.contains('frame-tweening') });
             if (performance.now() - t0 < ms) requestAnimationFrame(tick);
             else done(out);
         };
         requestAnimationFrame(tick);
     }), { id, ms });
 
-    test('an instant edit that resets the ↺ glides it', async ({ page }) => {
+    test('an instant edit that resets the ↺ lands it at once; the frame then moves onto it', async ({ page }) => {
         const { Q, id2 } = await setup(page);
+        // A stored top 1Q into the loop (raw 7): the frame seats on it —
+        // the ↺ at the left edge, the splice 1Q before it (3Q). (The
+        // splice is the one that MOVES: wait on it — the ↺ reads 0
+        // before and after, and a nudge pressed before the view has
+        // re-seated would pin the old frame.)
         await page.evaluate(({ id, Q }) =>
             window.__celestrianTest.callNative('setTiming', id, 0, 7 * Q), { id: id2, Q });
-        await expect.poll(async () => of(await handles(page, id2), 'top')[0].x.toFixed(2))
-            .toBe('1.00');
-        // A nudge keeps raw 7 ([7, 11)): nothing to glide. The next drops
-        // it ([8, 12)): the top resets to the region start, and the ↺
-        // GLIDES from 1Q to 2Q while the splice simply lands there.
+        await expect.poll(async () => {
+            const hs = await handles(page, id2);
+            return [of(hs, 'wrap')[0].x, of(hs, 'top')[0].x].map(v => v.toFixed(2));
+        }).toEqual(['3.00', '0.00']);
+        // A nudge keeps raw 7 ([7, 11)): the ↺ stays — and it opens the
+        // nudge chain, which PINS the frame (makeChainPin). The next
+        // drops it ([8, 12)): the top resets to the region start. In
+        // the pinned frame the ↺ and the splice simply LAND there, 1Q
+        // on — the ↺ has no glide of its own (removed 2026-10-01).
         await page.keyboard.press('ArrowRight');
         await expect.poll(() => loopOf(page, id2, Q)).toBe('7,11');
         await page.waitForTimeout(150);
-        const framesP = sampleFrames(page, id2, 700);
+        const framesP = sampleFrames(page, id2, 500);
         await page.keyboard.press('ArrowRight');
-        const frames = await framesP;
+        const pinned = await framesP;
         expect(await loopOf(page, id2, Q)).toBe('8,12');
-        const between = frames.filter(f => f.top > 1.05 && f.top < 1.95);
-        expect(between.length, 'frames mid-glide').toBeGreaterThan(3);
-        expect(frames.at(-1).top).toBeCloseTo(2, 2);
-        expect(frames.filter(f => f.wrap > 1.05 && f.wrap < 1.95).length,
-            'the splice does not glide').toBe(0);
+        expect(pinned.at(-1).top).toBeCloseTo(1, 2);
+        expect(pinned.at(-1).wrap).toBeCloseTo(1, 2);
+        expect(pinned.filter(f => f.top > 0.05 && f.top < 0.95).length,
+            'the ↺ lands at once').toBe(0);
+        expect(pinned.filter(f => f.wrap > 0.05 && f.wrap < 0.95).length,
+            'so does the splice').toBe(0);
+        expect(pinned.some(f => f.moving), 'the pin holds the frame').toBe(false);
+        // The chain over (800 ms), the pin lets go and the FRAME moves
+        // onto the new ↺ — the ↺ and the splice ride it to the left
+        // edge (reseat_tween.spec.js pins the move itself).
+        const moved = await sampleFrames(page, id2, 900);
+        expect(moved.filter(f => f.moving).length, 'frames of the move')
+            .toBeGreaterThan(3);
+        expect(moved.filter(f => f.top > 0.05 && f.top < 0.95).length,
+            'the ↺ rides the frame').toBeGreaterThan(2);
+        expect(moved.at(-1).moving).toBe(false);
+        await expect.poll(async () => {
+            const hs = (await handles(page, id2)).filter(h => !h.ghost);
+            return [of(hs, 'wrap')[0].x, of(hs, 'top')[0].x].map(v => +v.toFixed(2));
+        }).toEqual([0, 0]);
     });
 });
 
@@ -338,6 +439,10 @@ test.describe('The top (shift)', () => {
             .toHaveText('shift +1Q · timing: shifted +1Q');
         await expect.poll(async () => changedCols(before, await tileProfile(page, id2)).length)
             .toBeGreaterThan(before.length / 4);
+        // Under the hand (the frame pinned) the splice moves with the
+        // audio: 1Q in.
+        await expect.poll(async () =>
+            +of(await handles(page, id2), 'wrap')[0].x.toFixed(2)).toBe(1);
         await page.mouse.up();
         await expect.poll(async () => (await node(page, id2)).origin / Q).toBe(2);
         let n = await node(page, id2);
@@ -345,10 +450,15 @@ test.describe('The top (shift)', () => {
         expect(await loopOf(page, id2, Q)).toBe('6,10');   // the region is untouched
         await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted +1Q');
         await expect(lane.locator('.region-timing-reset')).toBeEnabled();
-        // The ↺ and the splice moved together, with the audio.
-        let hs = await handles(page, id2);
-        expect(near(of(hs, 'top')[0].x, 1)).toBe(true);
-        expect(near(of(hs, 'wrap')[0].x, 1)).toBe(true);
+        // The ↺ and the splice moved together, with the audio — and this
+        // loop places the frame, so released, the frame seats on its ↺
+        // again: both back at the left edge (the shift shows against
+        // the OTHER lanes).
+        const marks = async () => {
+            const hs = await handles(page, id2);
+            return [of(hs, 'top')[0].x, of(hs, 'wrap')[0].x];
+        };
+        await expect.poll(async () => (await marks()).map(v => +v.toFixed(2))).toEqual([0, 0]);
 
         // ⌥ = fine: a few px left pulls the take early by that much.
         const dx = -12;
@@ -361,8 +471,10 @@ test.describe('The top (shift)', () => {
         expect(Number.isInteger(n.retime / Q)).toBe(false);
         await expect(lane.locator('.region-timing-read'))
             .toHaveText(/^timing: shifted \+0\.9\d+Q \(\d+ ms later\)$/);
-        hs = await handles(page, id2);
-        expect(near(of(hs, 'top')[0].x, 1 + fine, 0.01)).toBe(true);
+        // A top a little EARLY of its bar line is a pickup (¼Q, frame.md
+        // §1): the frame stays on that line and the ↺ reads just before
+        // the frame's end.
+        await expect.poll(async () => near((await marks())[0], 4 + fine, 0.01)).toBe(true);
     });
 
     test('"Timing as played" puts the take back where it was played', async ({ page }) => {
@@ -409,6 +521,59 @@ test.describe('⇧ on a splice (length)', () => {
         await expect(laneOf(page, id2).locator('.win-heard-chip')).toHaveText(/5Q/);
     });
 
+    test('the loop\'s END handle — the splice at the frame\'s right edge — shortens by dragging inward, and never runs away', async ({ page }) => {
+        // BOTH EDGES (2026-10-01): a wrap resting on the frame's left
+        // edge shows at the right edge too. ⇧ moves the end of the
+        // material BEFORE a splice, so with the left-edge handle alone a
+        // shorter loop meant dragging off the lane, where the reveal's
+        // edge pan ran the length away (1.2Q of hand took 3Q) — the
+        // owner's 2026-08-18 "the right handle is gone".
+        const { Q, id2 } = await setup(page);
+        const body = laneOf(page, id2).locator('.lane-body');
+        const pxq = await lanePxPerQ(page, id2);
+        // This loop fills the frame: both ends are the take's, tabbed.
+        expect(of(await handles(page, id2), 'wrap').map(h => [+h.x.toFixed(2), h.ghost]))
+            .toEqual([[0, false], [4, false]]);
+        await expect(body.locator('.lr-layer > .lr-wrap.lr-end')).toHaveCount(1);
+        const at = await tabPoint(page, id2, 'wrap', { end: true });
+        const bb = await body.boundingBox();
+        expect(at.x).toBeGreaterThan(bb.x + bb.width - 60);   // at the right edge …
+        expect(at.x).toBeLessThan(bb.x + bb.width);           // … inside the lane
+        // It takes the press itself (real hit-testing).
+        expect(await page.evaluate(({ x, y }) => {
+            const hit = document.elementFromPoint(x, y).closest('.lr-splice');
+            return !!hit && hit.classList.contains('lr-end');
+        }, at)).toBe(true);
+        // ⇧-drag it 1.2Q LEFT — inward: the take unrolls with the loop's
+        // end under the hand, the kept material in view to its left, and
+        // the length lands on 3Q …
+        await drag(page, at, -1.2 * pxq, { mods: ['Shift'], hold: true });
+        await expect(body).toHaveClass(/revealing/);
+        const chip = body.locator('.drag-preview-layer .cut-chip');
+        await expect(chip).toHaveText(/loop 3Q \(−1\)/);
+        // … and STAYS there under a still hand (inside the lane, clear
+        // of the edge pan).
+        await page.waitForTimeout(600);
+        await expect(chip).toHaveText(/loop 3Q \(−1\)/);
+        await page.mouse.up();
+        await page.keyboard.up('Shift');
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('6,9');
+        await expect(body).not.toHaveClass(/revealing/);
+        // The 3Q loop fills its 3Q frame: a handle at each end again.
+        await expect.poll(async () => of(await handles(page, id2), 'wrap')
+            .map(h => +h.x.toFixed(2))).toEqual([0, 3]);
+        // A PLAIN drag of the end handle is the same swap as any splice's:
+        // 1Q inward — [5, 8) still plays the ↺ (raw 6), so the frame holds
+        // and the splice rests 1Q before the frame's end.
+        await drag(page, await tabPoint(page, id2, 'wrap', { end: true }), -1.2 * pxq);
+        await expect.poll(() => loopOf(page, id2, Q)).toBe('5,8');
+        expect((await node(page, id2)).loopTop / Q).toBe(6);
+        await expect.poll(async () => {
+            const hs = await handles(page, id2);
+            return [of(hs, 'wrap').map(h => +h.x.toFixed(2)), +of(hs, 'top')[0].x.toFixed(2)];
+        }).toEqual([[2], 0]);
+    });
+
     test('at a cut: more material before it shrinks the cut — to nothing heals it', async ({ page }) => {
         const { Q, id2 } = await setup(page);
         await page.evaluate(({ id, Q }) => window.__celestrianTest.callNative(
@@ -420,8 +585,15 @@ test.describe('⇧ on a splice (length)', () => {
         await expect.poll(() => segsOf(page, id2, Q)).toBe('2,6,7,10');
         await expect.poll(async () => of(await handles(page, id2), 'cut')
             .map(h => h.text).join()).toBe('‖ 1Q');
+        // The loop is 7Q now: wait for the frame to settle on it before
+        // reading the handle's place (the drag's pin outlives the release
+        // until the commit settles — a point read under the pinned 6Q
+        // frame is off the handle once the lane re-lays out).
+        await expect.poll(() => laneOf(page, id2).locator('.lane-body')
+            .evaluate(b => b._cycleQ)).toBe(7);
         // Once more: the cut closes — healed, one window.
-        await drag(page, await tabPoint(page, id2, 'cut'), 1.1 * pxq, { mods: ['Shift'] });
+        await drag(page, await tabPoint(page, id2, 'cut'),
+                   1.1 * await lanePxPerQ(page, id2), { mods: ['Shift'] });
         await expect.poll(() => loopOf(page, id2, Q)).toBe('2,10');
         await expect.poll(async () => of(await handles(page, id2), 'cut').length).toBe(0);
     });
@@ -532,8 +704,12 @@ test.describe('A plain loop\'s ↺ (no map: the shift alone)', () => {
         expect(n1.loopTop).toBe(0);
         await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted +1Q');
         await expect(lane.locator('.region-timing-reset')).toBeEnabled();
-        // The ↺ moved with the audio, its tab with it; still no splice.
-        await expect.poll(() => topsAt(page, id2)).toEqual([[1, true]]);
+        // The ↺ moved with the audio — and this loop places the frame,
+        // so released, the frame seats on it again: the ↺ at the left
+        // edge, its tab with it; still no splice.
+        await expect.poll(() => topsAt(page, id2)).toEqual([[0, true]]);
+        await page.waitForTimeout(300);
+        expect(await topsAt(page, id2)).toEqual([[0, true]]);
         await expect(body.locator('.lr-splice')).toHaveCount(0);
 
         // "Timing as played": the origin goes back, the ↺ with it.
@@ -639,15 +815,19 @@ test.describe('Ghosts and what remains', () => {
         await expect.poll(async () => (await node(page, id3)).duration).toBe(4 * Q);
         await setLoop(page, id2, 6 * Q, 8 * Q);
         await selectLane(page, id2);
-        await expect.poll(async () => (await handles(page, id2)).length).toBe(4);
+        await expect.poll(async () => (await handles(page, id2)).length).toBe(5);
         const hs = await handles(page, id2);
         // Two repeats of the 2Q loop: one splice and one ↺ each; the take
-        // tile's wear their tabs, the ghost repeat's are faint lines.
-        expect(of(hs, 'wrap').map(h => h.ghost)).toEqual([false, true]);
+        // tile's wear their tabs, the ghost repeat's are faint lines —
+        // and so is the splice at the frame's right edge (the wrap rests
+        // on the left edge, so it shows at both: there it ends the ghost
+        // repeat).
+        expect(of(hs, 'wrap').map(h => [+h.x.toFixed(2), h.ghost]))
+            .toEqual([[0, false], [2, true], [4, true]]);
         expect(of(hs, 'top').map(h => h.ghost)).toEqual([false, true]);
         for (const h of hs) expect(h.tabOp).toBe(h.ghost ? 0 : 1);
         // Hover a ghost: its tab shows.
-        const ghost = laneOf(page, id2).locator('.lr-layer > .lr-wrap.lr-ghost');
+        const ghost = laneOf(page, id2).locator('.lr-layer > .lr-wrap.lr-ghost:not(.lr-end)');
         const gb = await ghost.boundingBox();
         await page.mouse.move(gb.x + gb.width / 2, gb.y + gb.height * 0.7);
         await expect.poll(() => ghost.locator('.lr-tab').evaluate(t =>

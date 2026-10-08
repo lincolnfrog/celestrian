@@ -172,7 +172,11 @@ test.describe('Same-scale reveal', () => {
         await setLoop(page, id2, 6 * Q, 10 * Q);            // 4Q frame
         const lane = laneOf(page, id2);
         const body = lane.locator('.lane-body');
-        const wrapTab = body.locator('.lr-layer > .lr-wrap:not(.lr-ghost) .lr-tab');
+        // (The wrap rests on the frame's left edge, so it shows at the
+        // right edge too — .lr-end, the loop's END handle; this is the
+        // left one.)
+        const wrapTab = body.locator(
+            '.lr-layer > .lr-wrap:not(.lr-ghost):not(.lr-end) .lr-tab');
         await expect(wrapTab).toHaveCount(1);
         const box = await body.boundingBox();
         // THE WRAP'S SPLICE (the region start, at the frame's left edge),
@@ -206,8 +210,8 @@ test.describe('Same-scale reveal', () => {
         await expect.poll(() => loopOf(page, id2, Q)).toBe('6,11');
         await expect(body).not.toHaveClass(/revealing/);
         await expect(body.locator('.reveal-layer')).toHaveCount(0);
-        // The panel appeared with the grab (a handle claims the track)
-        // and shows the new region.
+        // The gesture's end claimed the track (gesture.js `claim`): the
+        // panel is up and shows the new region.
         await expect(panelOf(page, id2)).toBeVisible();
         await expect(lane.locator('.region-label')).toHaveText(/loop 5Q · 12Q take/);
 

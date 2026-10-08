@@ -1587,6 +1587,109 @@ class TimeMapRecordTests : public juce::UnitTest {
     }
 
     beginTest(
+        "ENGINE: a CANCELLED drag (cancelGesture) leaves the log as it found "
+        "it - its step dropped, the redo branch back; a re-time's origin, "
+        "re-time and top exactly as they were, an unset top unset");
+    {
+      // Mock twin: ui/js/tests/undo.test.mjs ("a cancelled drag…"). The
+      // UI used to restore a cancelled drag by one more live commit: the
+      // gesture's entry then read (start → start), a no-op undo step,
+      // and the redo branch its first commit invalidated was gone.
+      using scenario::Island;
+      constexpr int64_t Q = 20000;
+      Island is;
+      is.record(Q);
+      const juce::String b = is.record(8 * Q);
+      const juce::String c = is.record(4 * Q);
+      auto region = [&] {
+        return juce::String(is.iprop(b, "loopStart") / Q) + "-" +
+               juce::String(is.iprop(b, "loopEnd") / Q);
+      };
+      auto slide = [&](int64_t a, bool live) {
+        is.engine.setSegments(b, timing::TimeMap::single(a, a + 4 * Q), live);
+      };
+      is.window(b, 2 * Q, 6 * Q);
+      // A redo branch to lose: a rename, undone.
+      is.engine.renameNode(b, "Bass");
+      is.engine.undo();
+      expect(is.engine.canRedo(), "redo holds the rename");
+
+      // THE DRAG: its first commit opens the gesture and logs its step
+      // (redo is invalidated - for now); the live ones coalesce.
+      slide(3 * Q, false);
+      expect(!is.engine.canRedo(), "an edit invalidates the redo branch");
+      slide(4 * Q, true);
+      expect(region() == "4-8", "the drag landed (" + region() + ")");
+      // ESCAPE.
+      is.engine.cancelGesture(b);
+      expect(region() == "2-6", "back where the gesture found it (" + region() + ")");
+      expect(is.engine.canRedo(), "the redo branch is back");
+      is.engine.redo();
+      expect(is.sprop(b, "name") == "Bass", "…and it is the same branch");
+      // No step is the cancelled drag's: ⌘Z undoes the rename, then the
+      // window itself.
+      is.engine.undo();
+      expect(is.sprop(b, "name") != "Bass", "undo: the rename");
+      is.engine.undo();
+      expect(region() == "0-0", "undo: the window (" + region() + ")");
+      is.engine.redo();
+      expect(region() == "2-6", "redo: the window");
+
+      // A gesture that logged NOTHING (its first commit an identity)
+      // cancels to nothing, and the stack is not touched.
+      slide(2 * Q, false);
+      is.engine.cancelGesture(b);
+      expect(region() == "2-6", "an identity gesture: nothing to put back");
+      is.engine.undo();
+      expect(region() == "0-0", "the step on top is still the window's");
+      is.engine.redo();
+      // Another node's gesture is not this node's to cancel…
+      slide(3 * Q, false);
+      is.engine.cancelGesture(c);
+      expect(region() == "3-7", "another node's cancel changes nothing");
+      // …and a gesture that has ENDED (another entry was logged) cannot
+      // be cancelled: the step on top is not its own.
+      is.engine.renameNode(b, "Keys");
+      is.engine.cancelGesture(b);
+      expect(is.sprop(b, "name") == "Keys" && region() == "3-7",
+             "an ended gesture is not cancelled");
+
+      // A RE-TIME drag on a plain loop whose top was never set: the
+      // cancel puts back origin and re-time, and the top is UNSET again
+      // (a restore by commit could only store it where it showed).
+      const AudioNode* cn = is.nodePtr(c);
+      expect(cn != nullptr && cn->storedTop() == timing::kNoTop, "never set");
+      const int64_t O = is.origin(c), R = is.iprop(c, "retime");
+      is.engine.setTiming(c, Q, 2 * Q);                    // opens: +1Q, ↺ on 2Q
+      is.engine.setTiming(c, Q / 2, 3 * Q, true);          // live
+      expectEquals(is.origin(c), O + 3 * Q / 2, "the re-time applied");
+      expectEquals(cn->storedTop(), 3 * Q, "the top stored");
+      is.engine.cancelGesture(c);
+      expectEquals(is.origin(c), O, "cancel: the origin");
+      expectEquals(is.iprop(c, "retime"), R, "…the re-time");
+      expect(cn->storedTop() == timing::kNoTop, "…and the top unset again");
+
+      // A SEEK while the gesture is open moves every absolute the log
+      // holds - the redo branch the gesture keeps too: put back by the
+      // cancel, it must land on the moved island.
+      is.engine.setTiming(c, Q);       // an entry whose redo carries an origin
+      is.engine.undo();
+      expectEquals(is.origin(c), O, "undone");
+      slide(2 * Q, false);             // b's gesture: the redo branch is kept
+      slide(4 * Q, true);
+      const int64_t z0 = is.zero();
+      expect(is.engine.seekTransport((double)(Q / 2 + 123)), "seek applied");
+      const int64_t moved = is.zero() - z0;
+      expect(moved != 0, "the seek moved the island");
+      expectEquals(is.origin(c), O + moved, "c rode the seek");
+      is.engine.cancelGesture(b);
+      expect(is.engine.canRedo(), "the kept branch is back");
+      is.engine.redo();
+      expectEquals(is.origin(c), O + moved + Q,
+                   "redo lands on the moved island, 1Q on");
+    }
+
+    beginTest(
         "ENGINE: an identity setSegments (the stored cell map again) records "
         "nothing - the undo stack and the redo branch stand - and a drag "
         "whose first commit it is still forms one undo step");

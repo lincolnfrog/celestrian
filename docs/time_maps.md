@@ -348,14 +348,15 @@ map, `setTiming` for the one gesture that re-times (the ↺, §7).
 A committed heard lane — clip or group, not a one-shot, not the
 Q-definer — wears two kinds of handle in their own layer
 (`splice_handles.js`, `.lr-*`), outside the keyed overlay: positioned on
-every patch, they move with a drag's local preview and glide. A **plain
+every patch, they move with a drag's local preview and with the frame
+when it moves onto a new seat. A **plain
 loop** — a clip with no map, its whole take looping — wears the ↺ alone:
 nothing to swap, so no splice, but its timing is the ↺'s to shift ("my
 drum loop is 40 ms late").
 
 | Element | Gesture |
 |---|---|
-| **Splice** handle on every heard repeat of the wrap (where the loop's end jumps back to its start) and of each inner cut; grabbed by the lane's LOWER half, its tab on the bottom edge ("splice", "‖ 1Q") | drag = **swap** (`slideSeam`: the wrap moves the first start and the last end together, a cut slides between its neighbours; whole Q from the grab, ⌥ free); ⇧-drag = **length** at that splice (`lengthAtSeam`, through the reveal below); a cut's splice: double-click / right-click = heal |
+| **Splice** handle on every heard repeat of the wrap (where the loop's end jumps back to its start) and of each inner cut — a splice resting on the frame's left edge shows at the right edge too (`.lr-end`, the loop's END); grabbed by the lane's LOWER half, its tab on the bottom edge ("splice", "‖ 1Q") | drag = **swap** (`slideSeam`: the wrap moves the first start and the last end together, a cut slides between its neighbours; whole Q from the grab — `slideSeamWhole`, never the clamp's fractional bound — ⌥ free); ⇧-drag = **length** at that splice (`lengthAtSeam`, through the reveal below); a cut's splice: double-click / right-click = heal |
 | **↺ top** on every heard repeat of the loop's one, wherever the clip can be re-timed (`canRetime`, or inert under the recording gate — `retimeLocked`): a heard map, and a plain loop (at `topHeardQ + k·S`, S its take). Grabbed by the UPPER half, its tab "↺ top" on the top edge — on a plain loop by the tab only, since its line sits on the latent start bracket, which keeps its press. Never on a one-shot, the Q-definer, a child under a parent's map, comp mode (the cells own the take tile) or a **bypassed map** (its raw-framed brackets own the lane; the panel's "Timing as played" still reaches it) | drag = **shift**: the origin moves with the hand (`setTiming`; whole Q, ⌥ fine) — the audio, the ↺ and the splices move together |
 | The lane body | double-click = a 1Q cell cut (§4) |
 | `[` / `]`, `{` / `}` | walk the viewport through the take tile's splices and ↺ / jump to the outermost |
@@ -370,7 +371,33 @@ drum loop is 40 ms late").
   way round"). The ↺ stays put — unless the new region drops its
   sample, when it resets to the region start (the reconcile rule, §7),
   as the preview already shows. The shift previews the same way (the
-  origin moved locally).
+  origin moved locally). The top previewed is the ENGINE's own
+  (`lane.storedTopQ`, the published `loopTop`), never the ↺ as shown:
+  on a loop that slots into the frame the ↺ shows where it starts
+  playing (frame.md §1), which the engine does not publish, and a
+  preview predicted from it never matched the commit's answer — it
+  outlived the commit by the whole hold cap, so an undo or a nudge made
+  meanwhile did not show (2026-10-01; `swap_preview.test.mjs`). An
+  undo or redo drops any preview still up (`app.js`
+  `dropStaleEditFeedback`): no poll will ever match it.
+- **Whole Qs, never a sliver (2026-10-01).** A plain drag moves by the
+  largest whole number of Qs its clamp allows (`slideSeamWhole`), 0
+  when none fits. `slideSeam`'s own bound — the take's edge, the 1/64 Q
+  segment floor — is fractional: asked for a whole Q it could not have,
+  it landed ON the bound, so a cut dragged toward a 1Q neighbour left a
+  1/64 Q sliver of material playing at the splice, and a drag into the
+  take's edge re-gridded a free offset. ⌥ still reaches the bound.
+- **Both edges (2026-10-01).** A splice ON the frame's left edge is the
+  end of the last repeat too, and shows at the right edge as well
+  (`spliceSpots`, `.lr-end`): the loop's END handle — the "right
+  handle" the owner missed on 2026-08-18. ⇧ moves the end of the
+  material BEFORE a splice, so the right-edge handle shortens by
+  dragging INWARD, the material it gives up in view; the left-edge one
+  lengthens the same way. Since 2026-09-29 the loop that places the
+  frame has its wrap on the left edge always; with that handle alone a
+  shorter loop meant dragging off the lane, where the reveal's edge pan
+  ran the length away (1.2Q of hand took 3Q). On a loop shorter than
+  the frame the right-edge handle ends a ghost repeat, and is a ghost.
 - **Independent handles.** The ↺ and a splice coincide on a fresh take
   (an unset top IS the region start) and come apart on a swap; each
   grabs by its own half, so either is always reachable.
@@ -385,10 +412,15 @@ drum loop is 40 ms late").
   mid-drag gets its handle at once; nothing is removed until the
   gesture ends (the grabbed handle holds the pointer capture), and the
   grabbed handle keeps standing for the repeat nearest the hand.
-- **The glide.** An instant edit that resets the ↺ — a cut, heal, nudge,
-  undo or redo moving its raw sample and where it sounds — glides it
-  ~380 ms instead of jumping. Never under a hand, and never against
-  the frame's own settle: the glide gives way (`vm.frameSettling`).
+- **A reset ↺ lands at once; the frame moves onto it.** An instant edit
+  that resets the ↺ — a cut, heal, nudge, undo or redo dropping its raw
+  sample — puts it on its new place with no glide of its own (the
+  ~380 ms ↺ glide of 2026-09-24 was retired 2026-10-01). On the loop
+  that places the frame that moves the seat, and the whole frame then
+  moves onto it — every lane, the ruler and the cursor together,
+  ~200 ms (the re-seat tween, frame.md §1) — once no pin holds the
+  frame (a nudge chain's, a drag's). A slotted-in loop's ↺ rests at the
+  left edge always: it never moves on screen.
 - **The recording gate** draws every handle inert (`.lr-inert`, the
   gate's tooltip, no gesture). The ↺ reads the VM's own verdict,
   `retimeLocked` (re-timeable but for the gate): the map chrome's
@@ -501,8 +533,27 @@ The panel appears with selection and leaves with it. Deselect with
 Escape, a click on empty canvas, or a click on the top bar's empty space
 (`#transport`, controls excluded).
 
+**A handle's gesture claims its track — when it ends (owner,
+2026-10-01).** An unselected lane wears its handles too (quieter, full
+on hover), so a splice, ↺, bracket, cut band, seam or grip can be
+grabbed on any track; doing so selects that track (which arms `[` /
+`]`). The claim lands when the gesture ENDS, however it ends
+(`gesture.js` `claim`), never at the press: the panel is a row under the
+selected lane, and claiming at the press closed the panel above a lower
+track and moved that track up by the panel's height — 74 px — out from
+under the hand (the drag went on by pointer capture alone; a
+double-click's second click landed on the panel). A press that was only
+a click claims after the double-click window (`CLAIM_CLICK_MS`); a new
+press, or any explicit selection, drops a claim still waiting. A
+double-click (heal a cut, cut a cell) claims at once — both clicks have
+landed. The lane still moves when the panel swaps, at the release, with
+no hand on it. Pinned by `gesture_latches.test.mjs` and
+`slotted_loop.spec.js` ("A handle on an unselected track").
+
 **Keyboard:** `←` / `→` slide the selected region by 1Q (⇧ 4Q, ⌥ ⅛Q),
-length held, one undo step per press (`nudgeRegion`). A **chain** of
+length held, one undo step per press (`nudgeRegion`). The step is a
+whole number of samples (`nudgeStepQ`): ⅛Q rarely is, and rounded per
+landing, ⌥→ then ⌥← came back a sample late (2026-10-01). A **chain** of
 nudges (presses within 800 ms) is one pinned gesture: the first press
 pins the frame (`drag_pin.js`), and the pin drops once the chain window
 has passed the last press and its commit has settled, so the frame
@@ -515,10 +566,20 @@ panel's (`isTransientHandle` skips `.lane-region`: the viewport-pinned
 panel cannot be centred, and the walk used to stick on its cut
 handles) nor a ghost repeat's; `{` / `}` jump to the outermost handle.
 
-Pinned by `ui/js/tests/map_edit.test.mjs` (`slideSeam`, `lengthAtSeam`),
+Pinned by `ui/js/tests/map_edit.test.mjs` (`slideSeam`,
+`slideSeamWhole`, `lengthAtSeam`),
 `map_core.test.mjs` (the move laws, the length law, the timing
-readout), `splice_handles.test.mjs` (where the splices and the ↺ sit,
-ghosts, the swap preview's top, the glide, the grabbed handle's
+readout), `swap_preview.test.mjs` (the swap preview's top is the
+engine's answer, mock parity), `ui/e2e/slotted_loop.spec.js` (a loop
+that slots into the frame: its ↺ and its panel marker, the swap, the
+re-time, the start marker and its cancel, no sliver, the nudge's round
+trip, a new take never moving the frame — real mouse),
+`reseat_tween.test.mjs` and `ui/e2e/reseat_tween.spec.js` (an edit
+that moves the seat ends in a ~200 ms move of the whole frame, never a
+jump; a re-layout snaps; never under a hand),
+`splice_handles.test.mjs` (where the splices and the ↺ sit — the frame's
+right edge too —
+ghosts, the swap preview's top, the grabbed handle's
 pairing, who wears what — the plain loop's lone ↺ and its tab in the
 take's pass, none on a bypassed map, inert under the gate — the
 panel's start marker and when the timing shows), `top_fields.test.mjs`
@@ -532,8 +593,8 @@ one gain per take), `edge_pan.test.mjs` (the direction-aware pan),
 filter), `ui/e2e/splice_handles.spec.js` (the swap changes only the
 swept strip and keeps or resets the ↺; the shift, whole Q and ⌥;
 Escape puts both back; ⇧ length at the wrap and at a cut, to a heal;
-the start marker; "Timing as played"; ghosts; the glide and the
-settle; the ↺ clear of the chip; no grips or chip; a plain loop's ↺
+the start marker; "Timing as played"; ghosts; a reset ↺ landing at
+once and the frame moving onto it; the ↺ clear of the chip; no grips or chip; a plain loop's ↺
 alone — its shift, its start marker over the whole take, its reset,
 inert under the gate, a 1Q loop's too),
 `ui/e2e/region_panel.spec.js` (panel on select / off on top-bar click
@@ -566,6 +627,24 @@ input).
   bypassed geometry survives undo. Drags stream throttled commits and
   `Edit::Segments` coalesces in the undo log, keeping one gesture to one
   undo step.
+- **A cancelled drag leaves no trace** (`cancelGesture(uuid)`,
+  2026-10-01). Escape — or a lost capture — mid-drag asks the engine to
+  CANCEL the open gesture: the entry its live commits coalesced into is
+  applied and dropped (never moved to redo), and the redo branch that
+  entry's first commit invalidated comes back (the engine keeps it with
+  the gesture, `gesture_redo_`, for as long as the gesture can be
+  cancelled; a seek shifts it like the rest of the log). The map, the
+  origin, the re-time and the top are exactly the gesture's start — an
+  unset top unset again. Until then the UI restored by one more live
+  commit: the gesture's entry read (start → start), a ⌘Z that did
+  nothing; the redo branch was gone; and the status line promised "⌘Z
+  to undo". A no-op with no gesture open on the node, or one that logged
+  nothing; refused under a live take, like undo. Mock twin
+  `mock/undo.js` `mockCancelGesture`; UI `map_core.js`
+  `cancelBandGesture` (every drag's cancel path). Pinned by
+  `tests/time_map_record_tests.cc` ("a CANCELLED drag"),
+  `undo.test.mjs`, `release_lifecycle.test.mjs`,
+  `e2e/splice_handles.spec.js` and `e2e_engine/loop_edits.spec.js`.
 - Bridged in all three places (`protocol.js` ↔ `main_component.cc` ↔
   mock); `segments` (flat samples) in metadata, `segmentsQ` (QTime
   pairs) in the save format (additive; templates strip it).

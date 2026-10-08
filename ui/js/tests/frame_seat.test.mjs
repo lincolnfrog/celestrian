@@ -348,3 +348,76 @@ test('(g) the first loop LONGER than Q places the frame; a 1Q loop never ' +
     const ones = deriveViewModel(island([clip('x', 3, 1), clip('y', 5, 1)]));
     assert.equal(zeroQ(ones) % 1, 0);
 });
+
+/* A NEW TAKE of a committed slot (docs/takes.md §2) keeps the slot's
+ * origin, period and top and commits back into them: it seats as the
+ * loop it IS, never as a growing take. Field audit 2026-10-01: counted
+ * as a growing take, a new take of the 1Q scratch loop shown above the
+ * placing loop took the frame — every lane jumped at its start and back
+ * at its commit. Both published shapes: the mock keeps `duration` the
+ * slot's; the engine publishes the live captured length (0, then
+ * growing) with the slot's own on `periodQ`. */
+const retaking = (id, originQ, slotQ, capturedQ) => ({
+    mock: clip(id, originQ, slotQ, { isRecording: true }),
+    engine: clip(id, originQ, capturedQ, { isRecording: true,
+                                           periodQ: { num: slotQ, den: 1 } }),
+});
+
+test('(h) a new take of a 1Q loop above the placing loop never moves the frame', () => {
+    // A 1Q scratch loop at 0; a 4Q bass performed from 6Q — its top is
+    // 2Q off the scratch loop's fourth bar line; C slots in.
+    const rest = deriveViewModel(island([clip('A', 0, 1), clip('bass', 6, 4),
+                                         clip('C', 12, 4)], 21.3));
+    assert.equal(zeroQ(rest), 6, 'the bass places the frame');
+    for (const capturedQ of [0, 0.4, 0.99]) {
+        for (const [shape, a] of Object.entries(retaking('A', 0, 1, capturedQ))) {
+            const vm = deriveViewModel(
+                island([a, clip('bass', 6, 4), clip('C', 12, 4)], 22 + capturedQ),
+                { retakes: new Set(['A']) });
+            assert.equal(zeroQ(vm), 6, `${shape}, ${capturedQ}Q in: the frame stays`);
+            near(laneOf(vm, 'bass').takeStartQ, laneOf(rest, 'bass').takeStartQ,
+                `${shape}: the bass stays put`);
+            near(laneOf(vm, 'C').takeStartQ, laneOf(rest, 'C').takeStartQ,
+                `${shape}: C stays put`);
+        }
+    }
+    // Armed and waiting for its top (isRecording with the mock, pending
+    // only with the engine): the same.
+    const armed = deriveViewModel(island([
+        clip('A', 0, 1, { isRecording: true, isPendingStart: true }),
+        clip('bass', 6, 4), clip('C', 12, 4)], 21.3), { retakes: new Set(['A']) });
+    assert.equal(zeroQ(armed), 6, 'armed: the frame stays');
+});
+
+test('(h) a new take of the placing loop itself keeps placing the frame', () => {
+    // The bass's stored top sits 1Q into its take: the frame is seated
+    // from that ↺ — through the new take's every poll, the engine's
+    // first (nothing captured yet) included.
+    const bassTop = topAt(1);
+    const rest = deriveViewModel(island([clip('A', 0, 1),
+        clip('bass', 6, 4, bassTop), clip('C', 12, 4)], 21.3));
+    assert.equal(zeroQ(rest), 7, 'seated at the bass\'s ↺');
+    for (const capturedQ of [0, 0.5, 1.5, 3.9]) {
+        for (const [shape, b] of Object.entries(retaking('bass', 6, 4, capturedQ))) {
+            const vm = deriveViewModel(
+                island([clip('A', 0, 1), { ...b, ...bassTop }, clip('C', 12, 4)],
+                       22 + capturedQ),
+                { retakes: new Set(['bass']) });
+            assert.equal(zeroQ(vm), 7, `${shape}, ${capturedQ}Q in: still the bass's ↺`);
+            near(laneOf(vm, 'C').takeStartQ, laneOf(rest, 'C').takeStartQ,
+                `${shape}: C stays put`);
+        }
+    }
+});
+
+test('(h) a FRESH take still counts as the placing loop when none longer than Q came before it', () => {
+    // Unchanged (frame.md §1): its period is unknown until stop, and
+    // the frame while it records is the frame it commits to.
+    const first = deriveViewModel(island([clip('A', 0, 1),
+        clip('N', 5, 0.6, { isRecording: true })], 5.6));
+    assert.equal(zeroQ(first), 5, 'the take\'s arm point');
+    // …and not when a longer loop came before it.
+    const later = deriveViewModel(island([clip('A', 0, 1), clip('bass', 6, 4),
+        clip('N', 13, 0.6, { isRecording: true })], 13.6));
+    assert.equal(zeroQ(later), 6, 'the bass still places it');
+});

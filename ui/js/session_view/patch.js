@@ -24,15 +24,16 @@ const REC_SNAP_BACK_PX = 40;
 
 /**
  * `aux.rerender`: a re-render between polls (app.js requestRender —
- * the settle's glide, a gesture's pending preview), derived from the
- * LAST poll's state: its clock is stale, so the playhead's
+ * the re-seat tween's frames, a gesture's pending preview), derived
+ * from the LAST poll's state: its clock is stale, so the playhead's
  * dead-reckoner takes only the frame's own move (animatorFrame), never
  * the stale clock as a poll.
  */
 export function patchSessionView(vm, aux) {
-    // Pin source for map gestures (see drag_pin.js): the zero on screen.
+    // Pin source for map gestures (see drag_pin.js): the zero AT REST —
+    // under a re-seat tween, the seat it is moving to.
     noteFrame(vm.cycleQ, vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ,
-              vm.frameZero);
+              Number.isFinite(vm.restZero) ? vm.restZero : vm.frameZero);
     // Transport (all writes idempotent — see the setText note)
     setText(ctx.els.playBtn, vm.isPlaying ? '⏸' : '▶');
     ctx.els.playBtn.classList.toggle('playing', vm.isPlaying);
@@ -114,6 +115,11 @@ export function patchSessionView(vm, aux) {
     if (rootStyle.getPropertyValue('--rail-depth') !== String(railDepth)) {
         rootStyle.setProperty('--rail-depth', String(railDepth));
     }
+
+    // THE RE-SEAT TWEEN (frame.md §1): the zero moves by per-frame
+    // re-derives, so tiles must land where each derive puts them — a
+    // tile's own left/width transition would trail it (session.css).
+    ctx.els.lanes.classList.toggle('frame-tweening', !!vm.frameTweening);
 
     // Lanes: keyed reconciliation in VM order
     const seen = new Set();

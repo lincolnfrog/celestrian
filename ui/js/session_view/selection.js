@@ -18,6 +18,32 @@ let userCleared = false;
 // PENDING_SELECT_MS without the lane appearing, drops it.
 let pendingSelect = null;   // { id, t }
 const PENDING_SELECT_MS = 3000;
+// A handle press that was only a CLICK claims its track a moment later
+// (claimSoon): the region panel sits under the selected lane, and
+// claiming at once would move the lanes under what may be the first
+// click of a double-click. Any explicit select or clear drops it.
+let pendingClaim = null;    // { id, timer }
+
+/** Drop a claim that is still waiting (claimSoon). */
+export function cancelClaim() {
+    if (!pendingClaim) return;
+    clearTimeout(pendingClaim.timer);
+    pendingClaim = null;
+}
+
+/** Claim track `id` after `ms` — unless it is selected or cleared, or a
+ * new press begins, before then. A no-op for the sole selection. */
+export function claimSoon(id, ms) {
+    cancelClaim();
+    if (selection.size === 1 && selection.has(id)) return;
+    pendingClaim = { id, timer: setTimeout(() => {
+        pendingClaim = null;
+        selectOnly(id);
+    }, ms) };
+}
+
+/** The track a waiting claim will select, or null (tests). */
+export const pendingClaimId = () => (pendingClaim ? pendingClaim.id : null);
 
 function updateSelectionBar() {
     const bar = document.getElementById('selection-bar');
@@ -30,6 +56,7 @@ function updateSelectionBar() {
 
 export function clearSelection() {
     pendingSelect = null;
+    cancelClaim();
     selection.clear();
     userCleared = true;  // an explicit clear sticks (see ensureDefaultSelection)
     document.querySelectorAll('.lane-rail.selected')
@@ -52,10 +79,13 @@ export function paintSelection() {
     });
 }
 
-/** Programmatic single-select: grabbing a loop handle claims the track,
- * which is what arms the [ ] teleport. */
+/** Programmatic single-select: a loop handle's gesture claims its track
+ * when it ENDS (gesture.js — never at the press: the region panel would
+ * move the lane out from under the hand), which is what arms the [ ]
+ * teleport. */
 export function selectOnly(id) {
     pendingSelect = null;
+    cancelClaim();
     if (selection.size === 1 && selection.has(id)) return;
     selection.clear();
     selection.add(id);
@@ -70,6 +100,7 @@ export function selectOnly(id) {
  * toggles the row in and out of the additive set. */
 export function toggleSelect(row, additive) {
     pendingSelect = null;
+    cancelClaim();
     const id = row._lane.id;
     if (!additive) {
         selection.clear();

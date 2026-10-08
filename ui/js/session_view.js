@@ -16,7 +16,10 @@
  *   init.js      — one-time wiring + the view's key bindings (keys.js)
  *   patch.js     — patchSessionView (top-level per-poll patch)
  *   drag_pin.js  — the map-gesture frame pin (mapDragPinQ/…FoldQ)
- *   pending_edits.js — a gesture's local preview (pendingEditsFor)
+ *   reseat_tween.js — the re-seat tween (reseatOptions, noteReseat,
+ *                  reseatInMotion)
+ *   pending_edits.js — a gesture's local preview (pendingEditsFor;
+ *                  clearAllPendingEdits when an undo replaces the graph)
  *   render_request.js — requestRender's renderer (setRenderer)
  *   gesture.js   — isGestureLive (a hand on the frame)
  *   selection.js — activeSelectedId (the keyboard verbs' target)
@@ -32,7 +35,9 @@
 export { initSessionView } from './session_view/init.js';
 export { patchSessionView } from './session_view/patch.js';
 export { mapDragPinQ, mapDragPinFoldQ, mapDragPinZero } from './session_view/drag_pin.js';
-export { pendingEditsFor } from './session_view/pending_edits.js';
+export { reseatOptions, noteReseat, reseatInMotion }
+    from './session_view/reseat_tween.js';
+export { pendingEditsFor, clearAllPendingEdits } from './session_view/pending_edits.js';
 export { setRenderer } from './session_view/render_request.js';
 export { isGestureLive } from './session_view/gesture.js';
 export { activeSelectedId, selection, selectWhenPresent } from './session_view/selection.js';

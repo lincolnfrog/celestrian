@@ -10,7 +10,7 @@ import {
     normalizeSegments, coveredSet, cutsOf, innerCuts, applyCut, healCut,
     cellCutAt, resizeCutTarget, slideCutTarget,
     segsPeriod, trimBoundTo, trimBoundForPeriod, cutBounds,
-    slideSeam, lengthAtSeam, SEAM_MIN_Q,
+    slideSeam, slideSeamWhole, lengthAtSeam, SEAM_MIN_Q,
 } from '../map_edit.js';
 
 const near = (a, b) => Math.abs(a - b) < 1e-9;
@@ -71,6 +71,70 @@ test('slideSeam: an inner CUT slides between its neighbours, length held', () =>
     assert.ok(near(r.segs[1][0] - r.segs[0][1], 1));
     // j past the last cut: nothing moves.
     assert.deepEqual(slideSeam(segs, 2, 1, 12), { segs, deltaQ: 0 });
+});
+
+/* THE PLAIN DRAG moves by WHOLE Qs only (owner ruling 2026-09-23) —
+ * never by slideSeam's fractional clamp bound (field audit 2026-10-01:
+ * a cut dragged 1Q toward a 1Q neighbour landed 1/64 Q short and left a
+ * 1/64 Q sliver playing at the splice). */
+test('slideSeamWhole: a whole-Q drag never lands on the clamp\'s fractional bound', () => {
+    // Inside the bounds it IS slideSeam on the rounded delta.
+    assert.deepEqual(slideSeamWhole([[6, 10]], 0, 1.3, 12), slideSeam([[6, 10]], 0, 1, 12));
+    assert.deepEqual(slideSeamWhole([[2, 5], [6, 10]], 1, -1.6, 12),
+        slideSeam([[2, 5], [6, 10]], 1, -2, 12));
+    // THE FIELD CASE: [7, 9) ∪ [10, 11), the cut dragged +1Q toward its
+    // 1Q neighbour. slideSeam answers the floor (a sliver) …
+    const field = [[7, 9], [10, 11]];
+    const sliver = slideSeam(field, 1, 1, 16);
+    assert.ok(near(sliver.segs[1][1] - sliver.segs[1][0], SEAM_MIN_Q), 'the old landing');
+    // … the whole-Q drag stays put: no whole Q fits.
+    let r = slideSeamWhole(field, 1, 1, 16);
+    assert.equal(r.deltaQ, 0);
+    assert.deepEqual(r.segs, field);
+    // With room for two of three Qs asked, it takes the two.
+    r = slideSeamWhole([[2, 5], [6, 9]], 1, 3, 12);
+    assert.equal(r.deltaQ, 2);
+    assert.deepEqual(r.segs, [[2, 7], [8, 9]]);
+    r = slideSeamWhole([[2, 5], [6, 9]], 1, -3, 12);
+    assert.equal(r.deltaQ, -2);
+    assert.deepEqual(r.segs, [[2, 3], [4, 9]]);
+    // The wrap of a cut map: the first segment keeps whole Qs of itself.
+    r = slideSeamWhole([[2, 5], [6, 10]], 0, 10, 20);
+    assert.equal(r.deltaQ, 2);
+    assert.deepEqual(r.segs, [[4, 5], [6, 12]]);
+    // Every landing keeps the period, and every segment at least the floor.
+    for (const want of [-4, -3, -2, -1, 1, 2, 3, 4]) {
+        for (const j of [0, 1]) {
+            const s = slideSeamWhole([[2, 5], [6, 9]], j, want, 12);
+            assert.ok(near(s.deltaQ, Math.round(s.deltaQ)), `whole: j${j} ${want}`);
+            assert.ok(near(segsPeriod(s.segs, 12), 6), 'period held');
+            for (const [a, b] of s.segs) assert.ok(b - a >= 1 - 1e-9, 'no sliver');
+        }
+    }
+});
+
+test('slideSeamWhole: a free offset set earlier is kept — at the take\'s edges too', () => {
+    // A region ⌥-slid to [0.3, 4.3): a plain drag moves it by whole Qs …
+    let r = slideSeamWhole([[0.3, 4.3]], 0, 2, 12);
+    assert.ok(sameSegs(r.segs, [[2.3, 6.3]]));
+    // … and into the take's start it does not re-grid to [0, 4): there
+    // is no whole Q of room, so it stays (⌥ reaches the edge).
+    r = slideSeamWhole([[0.3, 4.3]], 0, -1, 12);
+    assert.equal(r.deltaQ, 0);
+    assert.ok(sameSegs(r.segs, [[0.3, 4.3]]));
+    assert.equal(slideSeam([[0.3, 4.3]], 0, -1, 12).deltaQ, -0.3, '(slideSeam: the bound)');
+    // A take that is not whole Qs long (an import): the same at its end.
+    r = slideSeamWhole([[12, 16]], 0, 1, 16.4);
+    assert.equal(r.deltaQ, 0);
+    // Less than half a Q of travel is no move at all.
+    assert.deepEqual(slideSeamWhole([[6, 10]], 0, 0.4, 12), { segs: [[6, 10]], deltaQ: 0 });
+    // A segment ALREADY under the floor (a legacy sliver): a zero-Q drag
+    // moves nothing — slideSeam would push it out to the floor.
+    const legacy = [[2, 5], [6, 6.004]];
+    assert.equal(slideSeamWhole(legacy, 1, 0.2, 12).deltaQ, 0);
+    assert.deepEqual(slideSeamWhole(legacy, 1, 0.2, 12).segs, legacy);
+    assert.equal(slideSeamWhole(legacy, 1, 1, 12).deltaQ, 0, 'nor toward it');
+    assert.equal(slideSeamWhole(legacy, 1, -1, 12).deltaQ, -1, 'away from it: fine');
 });
 
 /* ⇧ AT A SPLICE = THE LENGTH THERE (P2.4). */

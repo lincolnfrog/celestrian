@@ -387,6 +387,137 @@ class BounceTests : public juce::UnitTest {
       expect(peakOf(f1, 0, (int)span) > 0.05f, "the render carries the take");
     }
 
+    // A GROUP's top is a clip's (fractal, owner 2026-09-29: the top
+    // lives on AudioNode), so the DEFAULT start is its ↺ too. Until
+    // 2026-10-01 the offset was read off clips alone, and a group
+    // bounced from its splice whatever its ↺ said.
+    beginTest("A group bounces from its ↺ top too");
+    {
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("clip");
+      recordTake(engine, lastTopLevelId(engine), D, clock);  // Q := D
+      engine.createNode("stack");
+      const juce::String g = lastTopLevelId(engine);
+      engine.createNode("clip", g);
+      engine.createNode("clip", g);
+      engine.startRecordingInNode(g);
+      driveLive(engine, 5 * D, clock, /*ramp_input=*/true);
+      engine.stopRecordingInNode(g);
+      driveLive(engine, 2 * D, clock, /*ramp_input=*/true);
+      engine.setLoopPoints(g, D, 3 * D);  // loop [1Q, 3Q): one pass is 2Q
+      const int64_t span = 2 * D;
+      const celestrian::AudioNode* node = engine.findNodeByUuidForTest(g);
+      expect(node != nullptr && node->isAnchored(), "the group is anchored");
+      expectEquals(celestrian::period_law::ownPeriodOf(*node), span,
+                   "one pass of the group's loop");
+
+      const juce::File plain = dir.getChildFile("group_plain.wav");
+      expect(engine.bounce(g, plain.getFullPathName()), "bounce, top unset");
+      const int64_t h = D / 2;  // the ↺ half a Q into the loop
+      engine.setTiming(g, 0, D + h);  // stores the group's top
+      expectEquals(node != nullptr ? node->effectiveTop() : -1, D + h,
+                   "the group stores its top");
+      const juce::File topped = dir.getChildFile("group_topped.wav");
+      expect(engine.bounce(g, topped.getFullPathName()), "bounce, top set");
+
+      const juce::AudioBuffer<float> f0 = readWav(plain, nullptr);
+      const juce::AudioBuffer<float> f1 = readWav(topped, nullptr);
+      expect(f0.getNumSamples() >= span && f1.getNumSamples() >= span,
+             "both files cover one pass");
+      int bad = 0;
+      for (int64_t i = 0; i < span; ++i) {
+        for (int ch = 0; ch < 2; ++ch) {
+          if (std::abs(f1.getSample(ch, (int)i) -
+                       f0.getSample(ch, (int)mod(i + h, span))) > 1e-6f) {
+            ++bad;
+          }
+        }
+      }
+      expectEquals(bad, 0, "the topped file is the plain one, rotated to the ↺");
+      expect(peakOf(f1, 0, (int)span) > 0.05f, "the render carries the take");
+    }
+
+    // A NAMED START (docs/bounce.md; owner, 2026-10-01): the app names
+    // the start of "Bounce selected…" — the ↺ AS SHOWN, which on a loop
+    // that slots into the frame is the FRAME's top: a moment that is
+    // not the node's own top, and may lie before the node's origin (the
+    // frame is seated from another loop). The render is the kernel
+    // equation at absolute time, so one pass from ANY moment is the
+    // loop's own pass, rotated — for a window, a cut map and a group.
+    beginTest("A named start: one pass from any moment is the loop's pass, rotated");
+    {
+      AudioEngine engine;
+      int64_t clock = 0;
+      engine.createNode("clip");
+      recordTake(engine, lastTopLevelId(engine), D, clock);  // Q := D
+      const auto longTake = [&](const juce::String& id) {
+        engine.startRecordingInNode(id);
+        driveLive(engine, 5 * D, clock, /*ramp_input=*/true);
+        engine.stopRecordingInNode(id);
+        driveLive(engine, 2 * D, clock, /*ramp_input=*/true);
+      };
+      engine.createNode("clip");
+      const juce::String win = lastTopLevelId(engine);
+      longTake(win);
+      engine.setLoopPoints(win, D, 3 * D);  // a window: [1Q, 3Q)
+      engine.createNode("clip");
+      const juce::String cut = lastTopLevelId(engine);
+      longTake(cut);
+      {
+        celestrian::timing::TimeMap m;  // a cut map: [1Q, 2Q) ∪ [3Q, 4Q)
+        m.n = 2;
+        m.segs[0] = {D, 2 * D};
+        m.segs[1] = {3 * D, 4 * D};
+        engine.setSegments(cut, m);
+      }
+      engine.createNode("stack");
+      const juce::String grp = lastTopLevelId(engine);
+      engine.createNode("clip", grp);
+      engine.createNode("clip", grp);
+      longTake(grp);
+      engine.setLoopPoints(grp, D, 3 * D);  // a group's window: [1Q, 3Q)
+
+      const int64_t span = 2 * D;  // each loop's one pass
+      int n = 0;
+      for (const juce::String& id : {win, cut, grp}) {
+        const juce::String tag = "named" + juce::String(n++);
+        const juce::var v = findVar(engine.getGraphState(), id);
+        const int64_t origin = (int64_t)(double)v.getProperty("origin", 0);
+        const int64_t top0 = origin + D;  // origin + a0: the default start
+        const juce::File plain = dir.getChildFile(tag + "_plain.wav");
+        expect(engine.bounce(id, plain.getFullPathName()), tag + ": the default");
+        const juce::AudioBuffer<float> f0 = readWav(plain, nullptr);
+        expect(f0.getNumSamples() >= span, tag + ": covers one pass");
+        expect(peakOf(f0, 0, (int)span) > 0.05f, tag + ": carries the take");
+        // Named AT the default start (the same file); later in the
+        // pass; whole passes later; before the take began; and before
+        // the clock's own zero (a seek moves origins, never the clock,
+        // so a frame's top can sit there).
+        for (const int64_t k :
+             {int64_t{0}, D / 3, 3 * span + D / 3, -(span + D / 4),
+              -(origin + 7 * D)}) {
+          const juce::File named = dir.getChildFile(tag + "_at.wav");
+          expect(engine.bounce(id, named.getFullPathName(), top0 + k),
+                 tag + ": bounce from a named start");
+          const juce::AudioBuffer<float> f1 = readWav(named, nullptr);
+          expectEquals((int64_t)f1.getNumSamples(), (int64_t)f0.getNumSamples(),
+                       tag + ": one pass, the same length");
+          int bad = 0;
+          for (int64_t i = 0; i < span && i < f1.getNumSamples(); ++i) {
+            for (int ch = 0; ch < 2; ++ch) {
+              if (std::abs(f1.getSample(ch, (int)i) -
+                           f0.getSample(ch, (int)mod(i + k, span))) > 1e-6f) {
+                ++bad;
+              }
+            }
+          }
+          expectEquals(bad, 0,
+                       tag + ": the default pass, rotated by " + juce::String(k));
+        }
+      }
+    }
+
     dir.deleteRecursively();
   }
 };

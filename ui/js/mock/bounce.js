@@ -32,7 +32,9 @@ export function bounceSpanOf(uuid) {
 
 /** `start` (optional, absolute samples) is the render's start the app
  * names — the frame zero the view seated, for the root (docs/frame.md);
- * absent, the node's own top. Recorded, not rendered. */
+ * a lane's ↺ as shown, for "Bounce selected…" (docs/bounce.md,
+ * view_model bounceStartOf); absent, the node's own top. Recorded, not
+ * rendered. */
 export function bounce(uuid, path, start) {
     if (takeIsLive()) return false;
     if (bounceSpanOf(uuid) > kMaxTakeSamples) return false;

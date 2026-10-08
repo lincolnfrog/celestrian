@@ -53,6 +53,9 @@ export function seekApplied(frame, result) {
     const { advance, clock } = result;
     if (!Number.isFinite(advance) || !Number.isFinite(clock)) return frame;
     const out = { ...frame, rawClock: clock, zero: frame.zero - advance };
+    // Every zero the facts carry rides the move: the seat, and the one
+    // the frame rests on (a re-seat tween's target).
     if (Number.isFinite(frame.seat)) out.seat = frame.seat - advance;
+    if (Number.isFinite(frame.rest)) out.rest = frame.rest - advance;
     return out;
 }

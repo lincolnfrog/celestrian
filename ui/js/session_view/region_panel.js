@@ -80,7 +80,8 @@ import { dimComplementInto } from './dims.js';
 import { innerCuts, slideSegs } from '../map_edit.js';
 import { heardOffsetOf } from '../time_map.js';
 import { bandState, coveredSegs, laneMapActive, rawCursorQ, commitBandSegs,
-         commitTiming, newGesture, runRawDrag, trimMoveFn, slideMoveFn, viewPct,
+         commitTiming, cancelBandGesture, newGesture, runRawDrag, trimMoveFn,
+         slideMoveFn, viewPct,
          timingText, fmtSignedQ, fmtFineQ, LOCKED_TITLE,
          COMMIT_HOLD_MAX_MS } from './map_core.js';
 import { previewer, wantsTopHandle, wantsLaneTop, isPlainLoop } from './splice_handles.js';
@@ -582,6 +583,9 @@ function startPanelTopDrag(row, ev, st, mark) {
     const segsS = coveredSegs(st).map(([a, b]) => [Math.round(a * q), Math.round(b * q)]);
     const map = { segs: segsS };
     const T0 = Math.round(lane.topQ * q);
+    // The engine's own top (what a cancel puts back): the ↺ as shown on
+    // the loop that places the frame, another sample on one that slots in.
+    const topStored = Math.round((lane.storedTopQ ?? lane.topQ) * q);
     const h0 = heardOffsetOf(map, T0);
     if (h0 < 0) return;  // a top the region does not play: nothing to hold
     selectOnly(lane.id);
@@ -656,16 +660,17 @@ function startPanelTopDrag(row, ev, st, mark) {
                 pv.restore(null);
                 return undefined;
             }
-            // Put back the shift AND the top the gesture found — the
-            // effective one: a top never set comes back STORED at the
-            // same sample, as any map edit would leave it (the reconcile
-            // materializes), and it plays the same. The gesture's one
-            // undo step still restores the stored top exactly, unset
-            // included (the verb itself has no "unset").
-            const p = commitTiming(st, -sent, T0, true);
+            // The engine puts back the shift AND the top the gesture
+            // found, exactly — a top never set is unset again — and
+            // drops the gesture's undo step (cancelBandGesture). The
+            // picture held meanwhile is the engine's effective top
+            // (lane.storedTopQ), which on a loop that slots into the
+            // frame is NOT the ↺ as shown (T0, the sample at the frame's
+            // top).
+            const p = cancelBandGesture(st);
             sent = 0;
             sentTop = T0;
-            pv.restore({ top: T0, originShift: 0 });
+            pv.restore({ top: topStored, originShift: 0 });
             return p;
         },
         held: res => {
@@ -979,6 +984,21 @@ export function makeChainPin({ pin = pinFrame, unpin = unpinFrame,
 }
 const nudgePin = makeChainPin();
 
+/** A nudge's step as a whole number of SAMPLES, in Q. The ⅛Q step is
+ * rarely whole samples (Q = 44100: 5512.5), and each landing is rounded
+ * to samples when it commits — so ⌥→ then ⌥← a moment later (outside
+ * the chain, which carries its own unrounded target) rounded up both
+ * ways and came back ONE SAMPLE LATE. On a loop whose region start sat
+ * on the frame's top, that sample moved its ↺ to the far end of the
+ * region (the sample at the frame's top was now its last). A whole-
+ * sample step, rounded by MAGNITUDE (Math.round alone takes −5512.5 to
+ * −5512 and +5512.5 to +5513), is the same forwards and back. Exported
+ * for the tests. */
+export function nudgeStepQ(deltaQ, quantum) {
+    if (!(quantum > 0)) return deltaQ;
+    return Math.sign(deltaQ) * Math.round(Math.abs(deltaQ) * quantum) / quantum;
+}
+
 /** ← / → (init.js): slide the selected track's loop region by
  * `deltaQ` (length held, clamped to the take — slideSegs). Reads the
  * strip's per-patch band state, so it works exactly when the panel
@@ -1003,7 +1023,8 @@ export function nudgeRegion(deltaQ) {
     const chain = strip._nudge;
     const base = chain && performance.now() - chain.t < NUDGE_CHAIN_MS
         ? chain.segs : coveredSegs(st);
-    const { segs, deltaQ: moved } = slideSegs(base, deltaQ, st.totalQ);
+    const { segs, deltaQ: moved } =
+        slideSegs(base, nudgeStepQ(deltaQ, st.quantum), st.totalQ);
     if (Math.abs(moved) < 1e-9) return true;  // at the take's edge: consumed, no-op
     strip._nudge = { segs, t: performance.now() };
     newGesture();

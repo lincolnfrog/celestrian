@@ -13,11 +13,47 @@
 
 import { ctx } from './context.js';
 import { pct, setText } from './sv_util.js';
-import { selectOnly } from './selection.js';
 import { beginGesture, isDragging, holdOverlay, releaseOverlay, afterSettled }
     from './gesture.js';
 import { buildWindowDims } from './dims.js';
 import { windowDragTarget } from '../view_model.js';
+
+/* Two brackets within this many Q of each other share one place. */
+const BRACKET_EPS_Q = 1e-9;
+
+/**
+ * WHERE A BRACKET SITS ON THE LANE (frame Q). Window Qs are
+ * content-relative and the content's origin is the take tile (anchorQ)
+ * — which the frame's end may CLIP: the rest of the take then sounds,
+ * and is drawn, from the frame's start. A bracket past the frame's end
+ * belongs there too. Left at `anchorQ + q` it sat off the lane, out of
+ * sight and out of reach: a bypassed window's end bracket and chip, and
+ * a plain loop's latent end (so a region could only ever be drawn in
+ * from its start).
+ *
+ * `q` is that unwrapped place. The START bracket of a region that
+ * begins exactly at the frame's end is the frame's start; the END
+ * bracket of one that ends there stays on the right edge.
+ */
+export function bracketQ(q, cycleQ, edge) {
+    if (!(cycleQ > 0)) return q;
+    while (edge === 'start' ? q >= cycleQ - BRACKET_EPS_Q
+                            : q > cycleQ + BRACKET_EPS_Q) q -= cycleQ;
+    return q;
+}
+
+/**
+ * THE CONTENT Q UNDER THE POINTER, for a lane whose take tile may wrap
+ * the frame: a frame position stands for content `cycleQ` apart on
+ * either side of the wrap, so take the one NEAREST `nearQ` — where the
+ * dragged edge last was. The edge then follows the hand continuously on
+ * whichever side of the frame's edge it sits (and past the lane's own
+ * edge, where the unwrapped line simply runs on).
+ */
+export function contentQNear(rawQ, nearQ, cycleQ) {
+    if (!(cycleQ > 0) || !Number.isFinite(nearQ)) return rawQ;
+    return rawQ + cycleQ * Math.round((nearQ - rawQ) / cycleQ);
+}
 
 /* The Q-definer drags FREE (sub-Q); this floor keeps Q positive.
  * (Deliberately distinct from map_bands' MIN_CUT_Q: this is the
@@ -58,17 +94,25 @@ export function wireWindow(o, lane, vm, body, win) {
     let cur = { startQ: win.startQ, endQ: win.endQ };
     const dimsLive = (win.active && !win.bypassed) || win.latent;
     // Window Qs are CONTENT-relative; the pointer moves in FRAME Qs.
-    // The lane's content-frame origin is its take tile.
+    // The lane's content-frame origin is its take tile — which the
+    // frame's end may clip, the rest of the take drawn at the frame's
+    // start: brackets wrap with it (bracketQ) and the pointer reads the
+    // content on its own side of the wrap (contentQNear).
     const anchorQ = lane.takeStartQ || 0;
+    /** The lane position (%) of content `q`'s bracket of `edge`. */
+    const at = (q, edge) => pct(bracketQ(anchorQ + q, laneCycleQ, edge), laneCycleQ);
+    /** The content Q under the pointer, nearest `nearQ`. */
+    const pointerQ = (clientX, r, nearQ) => contentQNear(
+        ((clientX - r.left) / r.width) * laneCycleQ - anchorQ, nearQ, laneCycleQ);
 
     /** Re-render the SNAPPED preview: ghost bracket, dims, chip badge. */
     const previewSnap = (t, edge, ghost) => {
         cur = t;
-        ghost.style.left =
-            pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), laneCycleQ);
+        ghost.style.left = at(edge === 'start' ? t.startQ : t.endQ, edge);
         if (chip) {
-            chip.style.left = pct(anchorQ + t.endQ, laneCycleQ);
-            chip.classList.toggle('at-end', anchorQ + t.endQ >= laneCycleQ);
+            chip.style.left = at(t.endQ, 'end');
+            chip.classList.toggle('at-end',
+                bracketQ(anchorQ + t.endQ, laneCycleQ, 'end') >= laneCycleQ);
             setText(chip, lane.isQDefiner
                 ? 'Q = ' + ((t.endQ - t.startQ) * vm.quantum / vm.sampleRate).toFixed(2) + 's'
                 : (t.endQ - t.startQ) + 'Q window');
@@ -85,12 +129,13 @@ export function wireWindow(o, lane, vm, body, win) {
         const bracket = brackets[edge];
         let ghost = null;
         let grab = null;
+        let lastQ = 0;       // the content Q the pointer last read
         let wasAlt = false;  // last move was an ⌥ free slide
         bracket.addEventListener('pointerdown', e => {
             if (isDragging(body)) return; // one gesture at a time (a second pointer)
             const g = beginGesture(e, {
                 node: bracket,
-                claim: lane.id, // grabbing a handle claims the track
+                claim: lane.id, // a handle's gesture claims the track, at its end
                 onMove: mv => onDrag(mv),
                 onEnd: committed => finish(committed),
             });
@@ -109,15 +154,17 @@ export function wireWindow(o, lane, vm, body, win) {
             // and the frame-Q under the pointer (deltas from here).
             const r0 = body.getBoundingClientRect();
             grab = { win: { ...cur },
-                     q: ((e.clientX - r0.left) / r0.width) * laneCycleQ - anchorQ };
+                     q: pointerQ(e.clientX, r0, edge === 'start' ? cur.startQ : cur.endQ) };
+            lastQ = grab.q;
             wasAlt = false;
         });
         const onDrag = e => {
             if (!ghost) return;
             const r = body.getBoundingClientRect();
             // Frame Q under the pointer → content Q for the snap math
-            const rawQ =
-                ((e.clientX - r.left) / r.width) * laneCycleQ - anchorQ;
+            // (on the side of a wrapped take the edge is on).
+            const rawQ = pointerQ(e.clientX, r, lastQ);
+            lastQ = rawQ;
             // ⌥ FREE SLIDE: the grabbed edge follows the pointer by ANY
             // fractional amount and the OTHER
             // end moves by the same delta — the window length is held,
@@ -130,9 +177,13 @@ export function wireWindow(o, lane, vm, body, win) {
                 let s = grab.win.startQ + (rawQ - grab.q);
                 s = Math.max(0, Math.min(maxQ - len, s));
                 const t = { startQ: s, endQ: s + len };
-                bracket.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), laneCycleQ);
-                const other = brackets[edge === 'start' ? 'end' : 'start'];
-                if (other) other.style.left = pct(anchorQ + (edge === 'start' ? t.endQ : t.startQ), laneCycleQ);
+                bracket.style.left = at(edge === 'start' ? t.startQ : t.endQ, edge);
+                const otherEdge = edge === 'start' ? 'end' : 'start';
+                const other = brackets[otherEdge];
+                if (other) {
+                    other.style.left =
+                        at(edge === 'start' ? t.endQ : t.startQ, otherEdge);
+                }
                 previewSnap(t, edge, ghost);
                 wasAlt = true;
                 return;
@@ -161,7 +212,7 @@ export function wireWindow(o, lane, vm, body, win) {
                 const t = edge === 'start'
                     ? { startQ: Math.min(Math.max(0, rawQ), cur.endQ - minLen), endQ: cur.endQ }
                     : { startQ: cur.startQ, endQ: Math.max(Math.min(extQ, rawQ), cur.startQ + minLen) };
-                bracket.style.left = pct(anchorQ + (edge === 'start' ? t.startQ : t.endQ), laneCycleQ);
+                bracket.style.left = at(edge === 'start' ? t.startQ : t.endQ, edge);
                 previewSnap(t, edge, ghost);
                 return;
             }
@@ -170,7 +221,7 @@ export function wireWindow(o, lane, vm, body, win) {
             const freeQ = edge === 'start'
                 ? Math.min(Math.max(0, rawQ), cur.endQ - 1)
                 : Math.max(Math.min(maxQ, rawQ), cur.startQ + 1);
-            bracket.style.left = pct(anchorQ + freeQ, laneCycleQ);
+            bracket.style.left = at(freeQ, edge);
             const t = windowDragTarget({ edge, rawQ, ...cur, maxQ });
             if (t.startQ !== cur.startQ || t.endQ !== cur.endQ) {
                 previewSnap(t, edge, ghost);

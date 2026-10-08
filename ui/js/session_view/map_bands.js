@@ -46,7 +46,7 @@ import { innerCuts, applyCut, healCut, cellCutAt, resizeCutTarget,
          slideCutTarget, cutBounds } from '../map_edit.js';
 import { mapOffset } from '../time_map.js';
 import { posMod } from '../math_utils.js';
-import { bandState, coveredSegs, commitBandSegs, newGesture,
+import { bandState, coveredSegs, commitBandSegs, cancelBandGesture, newGesture,
          holdUntilSettled, cutChipLabel, makeHealMenu, runRawDrag,
          trimMoveFn, seamMoveFn, viewPct, rawCursorQ,
          LIVE_COMMIT_THROTTLE_MS, CUT_HANDLE_W_PX, LOCKED_TITLE } from './map_core.js';
@@ -180,6 +180,7 @@ export function runRevealDrag(ev, o, lane, st, body, anchorQ, onMove) {
     });
     const stopPan = pan.stop;
     const run = runRawDrag(ev, o, st, {
+        claim: lane.id,  // a handle's gesture claims the track, at its end
         rawQAt: clientX => {
             const r = body.getBoundingClientRect();
             return view.q0 + (clientX - r.left) / pxPerQ;
@@ -255,6 +256,7 @@ export function wireBandCreate(body, lane, vm, cycleQ) {
     body.addEventListener('dblclick', ev => {
         const st = body._bandState;
         if (!st || !st.editable || st.totalQ < 2) return;
+        // A double-click has no hand left on the lane: claim at once.
         selectOnly(st.laneId); // editing a track claims it ([ ] target)
         // HEARD lanes: a cut has ZERO width (it IS the splice), so the
         // pointer can never be "inside" it — a dblclick meant to heal
@@ -350,7 +352,7 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
             newGesture();  // its first commit is a new undo step
             const g = beginGesture(ev, {
                 stop: true,
-                claim: lane.id, // grabbing a handle claims the track
+                claim: lane.id, // a handle's gesture claims the track, at its end
                 onMove: mv => move(mv),
                 onEnd: committed => {
                     // HONOR THE END KIND: live splices streamed while
@@ -366,9 +368,9 @@ export function appendCutBands(o, lane, vm, body, cycleQ) {
                         next = applyCut(next, target.inQ, target.outQ, st.totalQ);
                         p = commitBandSegs(st, next, true);
                     } else if (!committed && band._lastLive) {
-                        p = commitBandSegs(st,
-                            st.segs ? st.segs.map(sg => sg.slice())
-                                    : [[0, st.totalQ]], true);
+                        // …by cancelling the gesture: its undo step is
+                        // dropped, the redo branch returns (map_core).
+                        p = cancelBandGesture(st);
                     }
                     if (p) holdUntilSettled(body, p);
                     return p;
@@ -491,7 +493,7 @@ function appendSeamHandles(o, lane, st, body, cycleQ) {
         chip.addEventListener('contextmenu', healMenu);
         const startDrag = ev => {
             if (isDragging(body)) return;
-            selectOnly(lane.id); // grabbing a handle claims the track
+            // (The reveal drag claims the track, at its end.)
             // THE REVEAL: the lane unrolls at its own scale around the
             // seam; the cut is a real band over visible content. Drag
             // slides it (length held), ⌥-drag resizes (whole-Q snap).
@@ -559,7 +561,7 @@ export function appendTrimGrips(o, lane, vm, body, cycleQ) {
         if (inert) return;
         grip.addEventListener('pointerdown', ev => {
             if (isDragging(body)) return;
-            selectOnly(lane.id); // grabbing a handle claims the track
+            // (The reveal drag claims the track, at its end.)
             // THE REVEAL: the take unrolls around the grip at the
             // lane's scale; the bracket rides an ABSOLUTE raw bound
             // over visible content — dragging back over dimmed content

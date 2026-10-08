@@ -280,6 +280,27 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
     min-width: 15ch;
     flex: 0 1 auto;
 }
+/* THE STATE-METRICS LAW, in the transport (session_view.md law 3): the
+   readout's box does not change width with what it says. A drag that
+   pins the frame while its live commits lengthen the cycle adds
+   " · loop NQ" to the digits for as long as the hand is down; sized by
+   its content alone, the odometer grew and shrank with it and pushed
+   the meters, the fader and everything after them sideways under the
+   pointer. An invisible template line reserves the width of the
+   longest everyday readout, in the digits' own face, so the box rests
+   at that width (and still grows for a longer one, and still shrinks
+   — ellipsis — when the row is crowded). */
+#odometer::before {
+    content: '00.0Q / 00Q ↺ · loop 00Q';
+    display: block;
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    font-family: var(--font-mono);
+    font-size: 1.15rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
 #odometer .digits {
     font-family: var(--font-mono);
     font-size: 1.15rem;
@@ -1335,6 +1356,15 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 @media (prefers-reduced-motion: reduce) {
     .reps-layer .rep { transition: none; }
 }
+/* THE RE-SEAT TWEEN (frame.md §1): the frame's zero moves by per-frame
+   re-derives (patch.js toggles the class), so every tile must sit where
+   each frame puts it — a morph would trail the move, and a tile div
+   re-used across a frame edge would sweep across the lane. The lane's
+   heard cursor likewise. */
+#lanes.frame-tweening .reps-layer .rep:not(.recording-bar),
+#lanes.frame-tweening .win-cursor {
+    transition: none;
+}
 /* Canvases stack absolutely so a content swap can CROSS-FADE: the
    live→fetched waveform replacement at commit swaps two different
    renderings of the same audio (features shift a few px) — a hard
@@ -1900,6 +1930,12 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 }
 .win-bracket.start { border-right: none; border-radius: 4px 0 0 4px; }
 .win-bracket.end { border-left: none; border-radius: 0 4px 4px 0; transform: translateX(-100%); }
+/* Two brackets on ONE line — a whole take whose seam sits mid-lane (its
+   tile wraps the frame's end): "]" then "[". Each keeps its own side of
+   the line; with the full hit zones the end bracket, later in the DOM,
+   took every press on the start one. */
+.win-bracket.start.abut::after { left: 0; }
+.win-bracket.end.abut::after { right: 0; }
 .win-bracket.dragging { opacity: 1; z-index: 2; }
 /* Snap ghost: dashed twin of the handle marking where a release lands —
    the handle follows the pointer, the ghost previews the Q snap */

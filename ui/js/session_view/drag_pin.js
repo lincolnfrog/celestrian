@@ -11,8 +11,11 @@
  * app.js reads the pins each render (mapDragPinQ / mapDragPinFoldQ /
  * mapDragPinZero) and feeds them to the view model; patchSessionView
  * records the latest frame each patch (noteFrame) so a gesture pins
- * the value that was on screen when it engaged. The pin outranks the
- * seat (view_model resolveFrameZero).
+ * the value that was on screen when it engaged — the zero AT REST: in
+ * the middle of a re-seat tween (reseat_tween.js) that is the tween's
+ * target, never the passing value, so a hand always edits a grid-true
+ * frame (the tween completes as the hand comes down). The pin outranks
+ * the tween and the seat (view_model resolveFrameZero).
  */
 
 let dragPinQ = null;
@@ -29,7 +32,7 @@ export function mapDragPinZero() { return dragPinZero; }
 /** Record the frame the latest patch rendered (the pin source). The
  * zero is pinned too: a live commit re-anchors the edited lane's
  * origin, and the seating would follow it mid-drag. `zero` is the
- * zero at rest — the caller passes a settling frame's target. */
+ * zero at rest — the caller passes a tweening frame's target. */
 export function noteFrame(frameQ, foldQ, zero = null) {
     lastFrameQ = frameQ;
     lastFoldQ = foldQ;

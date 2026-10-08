@@ -3,9 +3,9 @@
  * Space / ▶ always plays FROM the play start, and
  * stopping returns the playhead TO it. The play start is the top by
  * default — where the loops' tops line up (the seat), which is ruler 0
- * unless an edit hold keeps an older frame on screen; a ruler seek
- * moves it to the seek's target, and a click back at the top restores
- * the default.
+ * unless a drag's pin or a re-seat tween has another zero on screen; a
+ * ruler seek moves it to the seek's target, and a click back at the top
+ * restores the default.
  *
  * UI policy composed from the engine's two primitives — togglePlayback
  * (a pure pause/resume, which the engine's own flows and tests rely on)
@@ -52,9 +52,10 @@ export function notePlayStartTransport(isPlaying, qEstablished, frame = null) {
  * The frame a return is measured in. A ruler-set play start is a spot
  * the user pointed at in the frame AS DRAWN. The default — the top —
  * is where the loops' tops line up: the SEAT (frame.md §1). The two
- * are the same zero unless an edit hold keeps an older one on screen
- * (a region trimmed from its left: the ↺ moves, the picture stays),
- * where ruler 0 would start the edited loop mid-section.
+ * are the same zero unless a drag's pin holds an older one on screen,
+ * or a re-seat tween is still on its way (a region swapped past its ↺:
+ * the ↺ moves, the picture follows a moment later) — there ruler 0
+ * would start the edited loop mid-section.
  */
 function frameFor(projectId) {
     const f = transport.frame;

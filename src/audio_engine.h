@@ -204,6 +204,22 @@ class AudioEngine : public juce::AudioIODeviceCallback,
   // buffers). See src/edit.h.
   void undo();
   void redo();
+  /**
+   * CANCEL THE OPEN GESTURE (loop_selection.md §14): a drag the user
+   * cancelled — Escape, a lost capture — puts node `uuid` back exactly
+   * where the gesture found it and leaves NO TRACE in the log. The
+   * entry its live commits coalesced into is applied and dropped (never
+   * moved to redo: a cancelled drag is not redo-able), and the redo
+   * branch that entry's first commit invalidated comes back — the
+   * graph is again the one that branch was recorded against. Restoring
+   * by a further commit instead, as the UI did, left a no-op undo step
+   * on the stack and the redo branch gone.
+   *
+   * A no-op when no gesture is open on `uuid`, or it logged nothing (it
+   * changed nothing). Refused under a live take, like undo. Message
+   * thread.
+   */
+  void cancelGesture(const juce::String& uuid);
   bool canUndo() const { return !undo_.empty(); }
   bool canRedo() const { return !redo_.empty(); }
   /** TEST/TOOLING: whether a performance is still waiting to settle
@@ -247,7 +263,9 @@ class AudioEngine : public juce::AudioIODeviceCallback,
    * when the file cannot be written. Parent directories are created.
    * `start` (absolute samples) names the render's start outright —
    * the app bounces the song from the frame zero the view seated
-   * (docs/frame.md); absent, the node's frame top, `origin + a0`.
+   * (docs/frame.md) and a lane from its ↺ as shown (docs/bounce.md);
+   * absent, the node's frame top, `origin + a0`, plus its ↺'s heard
+   * offset for a clip or an anchored group.
    */
   bool bounce(const juce::String& uuid, const juce::String& wav_path,
               std::optional<int64_t> start = std::nullopt);
@@ -546,17 +564,19 @@ class AudioEngine : public juce::AudioIODeviceCallback,
                    const celestrian::timing::TimeMap& map, bool live = false);
 
   /**
-   * THE RE-TIME (loop_selection.md §9.2, owner 2026-09-24): move clip
+   * THE RE-TIME (loop_selection.md §9.2, owner 2026-09-24): move node
    * `uuid`'s origin by `shift` samples — any amount, sub-Q included —
    * and count the same amount into its re-time (the cumulative user
-   * shift, 0 = as played). With `top`, also store the clip's top (a raw
-   * content position; it must lie in the clip's kept set, or the whole
-   * call is refused). ONE undoable edit (Edit::Timing, origin + re-time
-   * + top together); `live` coalesces into the gesture's undo entry as
-   * for setSegments. Not a continuity re-anchor: nothing is re-folded
-   * and no island fact moves. Refused (logged) for stacks, an empty
-   * clip, the Q-definer, a recording or pending clip, and anything
-   * while a take is armed or capturing. Message thread.
+   * shift, 0 = as played). A clip or a GROUP (fractal, owner
+   * 2026-09-29: a group's shift moves its whole subtree). With `top`,
+   * also store the node's top (a raw content position; it must lie in
+   * its kept set, or the whole call is refused). ONE undoable edit
+   * (Edit::Timing, origin + re-time + top together); `live` coalesces
+   * into the gesture's undo entry as for setSegments. Not a continuity
+   * re-anchor: nothing is re-folded and no island fact moves. Refused
+   * (logged) for the root, a node with nothing committed, the
+   * Q-definer, a recording or pending node, and anything while a take
+   * is armed or capturing. Message thread.
    */
   void setTiming(const juce::String& uuid, int64_t shift,
                  std::optional<int64_t> top = std::nullopt, bool live = false);
@@ -752,6 +772,12 @@ class AudioEngine : public juce::AudioIODeviceCallback,
     bool logged = false;
   };
   Gesture gesture_;
+  // The redo branch the open gesture's entry invalidated, kept for as
+  // long as that gesture can still be CANCELLED (cancelGesture restores
+  // it); retired with the gesture otherwise (endGesture).
+  std::vector<celestrian::Edit> gesture_redo_;
+  /** End the open gesture, retiring the redo branch it held. */
+  void endGesture();
 
   // --- TAKES ARE UNDOABLE (docs/sequencer.md §11.5). Commit is an
   // AUDIO-thread event, so a take cannot be logged where it happens;

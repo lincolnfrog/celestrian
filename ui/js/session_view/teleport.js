@@ -7,9 +7,10 @@
  * order — on a heard lane the take tile's splices and ↺ (the edge grips
  * retired 2026-09-24), on a raw lane its brackets and every cut edge —
  * from wherever the viewport currently is. Shift+[ / Shift+] go
- * straight to the outermost handle. Grabbing any handle selects its
- * track (see selectOnly callers), so the keys chain naturally with a
- * drag: grab a splice, swap it, hit the bracket key, drag the next one.
+ * straight to the outermost handle. A handle's gesture selects its
+ * track when it ENDS (gesture.js `claim`), so the keys chain naturally
+ * with a drag: grab a splice, swap it, hit the bracket key, drag the
+ * next one.
  * No selection → no-op.
  * (The keydown wiring itself lives in init.js' unified dispatcher.
  * The mouse face of these keys used to be a per-lane nav dock; the

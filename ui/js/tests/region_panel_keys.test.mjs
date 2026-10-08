@@ -10,13 +10,15 @@
  *       press;
  *   (b) [ ] { } never target the region panel's chrome (teleport.js
  *       isTransientHandle; diagnosis N5 — the walk got stuck on the
- *       viewport-pinned panel's cut handles).
+ *       viewport-pinned panel's cut handles);
+ *   (c) a nudge's step is a whole number of samples (nudgeStepQ), so
+ *       ⌥→ then ⌥← lands on the sample it left.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeChainPin } from '../session_view/region_panel.js';
+import { makeChainPin, nudgeStepQ } from '../session_view/region_panel.js';
 import { isTransientHandle } from '../session_view/teleport.js';
 
 /** A manual timer queue (setTimeout twin). */
@@ -136,4 +138,37 @@ test('teleports skip the region panel, previews and ghosts', () => {
     assert.equal(isTransientHandle(fakeNode(['lr-splice', 'lr-cut', 'lr-ghost'],
         ['lr-layer'])), true);
     assert.equal(isTransientHandle(fakeNode(['lr-top', 'lr-ghost'], ['lr-layer'])), true);
+});
+
+/* (c) THE ⌥ NUDGE'S STEP IS WHOLE SAMPLES (region_panel.js nudgeStepQ;
+ * field audit 2026-10-01): each landing commits rounded to samples, so
+ * a ⅛Q step that is not a whole number of samples (Q = 44100: 5512.5)
+ * rounded up both ways — ⌥→ then ⌥←, outside the chain window, came
+ * back one sample late. */
+test('a ⅛Q nudge forward and back lands on the sample it left', () => {
+    /** One nudge as the panel commits it: the region start read back
+     * in Q from the polled samples, slid, rounded to samples. */
+    const nudge = (startS, stepQ, Q) => Math.round((startS / Q + stepQ) * Q);
+    for (const Q of [44100, 48000, 159744, 22051, 96001]) {
+        const step = nudgeStepQ(0.125, Q);
+        assert.ok(Number.isInteger(Math.round(step * Q)) &&
+            Math.abs(step * Q - Math.round(step * Q)) < 1e-6, `Q ${Q}: whole samples`);
+        assert.ok(Math.abs(step - 0.125) <= 0.5 / Q + 1e-12,
+            `Q ${Q}: within half a sample of ⅛Q`);
+        assert.equal(nudgeStepQ(-0.125, Q), -step, `Q ${Q}: ← is → reversed`);
+        for (const startS of [0, 7 * Q, 7 * Q + 13, 53 * Q - 1]) {
+            const there = nudge(startS, step, Q);
+            assert.equal(nudge(there, -step, Q), startS, `Q ${Q} from ${startS}`);
+            assert.equal(nudge(there, nudgeStepQ(-0.125, Q), Q), startS,
+                `Q ${Q} from ${startS}: the ← key's own step`);
+        }
+    }
+    // The raw ⅛Q at 44.1 kHz was the bug: back one sample late.
+    const Q = 44100;
+    assert.equal(nudge(nudge(7 * Q, 0.125, Q), -0.125, Q), 7 * Q + 1);
+    // Whole-Q steps are whole samples already.
+    assert.equal(nudgeStepQ(1, Q), 1);
+    assert.equal(nudgeStepQ(-4, Q), -4);
+    // No Q yet: the step as asked.
+    assert.equal(nudgeStepQ(0.125, 0), 0.125);
 });

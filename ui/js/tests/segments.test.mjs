@@ -55,6 +55,21 @@ test('setSegments: publish, validation, delegation, undo', async () => {
         'undo restores the multi-segment map');
     await callNative('undo');
     assert.equal(nodeById(groupId).segments, undefined, 'undo to pristine');
+
+    // UNDER AN OVERRIDE THE SINGLE-WINDOW FIELDS PUBLISH 0 (engine
+    // parity, AudioNode::getMetadata: loopStart / loopEnd only for a
+    // one-segment stored map). A window first, then a cell map over it:
+    // the superseded window must not publish as the node's loop.
+    await callNative('setLoopPoints', groupId, 1000, 3000);
+    assert.equal(nodeById(groupId).loopStart, 1000);
+    await callNative('setSegments', groupId, [0, 1000, 2000, 3000]);
+    assert.equal(nodeById(groupId).loopStart, 0, 'no stale window under the override');
+    assert.equal(nodeById(groupId).loopEnd, 0);
+    assert.deepEqual(nodeById(groupId).segments, [0, 1000, 2000, 3000]);
+    // …and a heal back to one segment publishes it as the window again.
+    await callNative('setSegments', groupId, [0, 3000]);
+    assert.equal(nodeById(groupId).segments, undefined);
+    assert.deepEqual([nodeById(groupId).loopStart, nodeById(groupId).loopEnd], [0, 3000]);
 });
 
 test('cell map shortens the audible cycle; record-through-cells parity', async () => {

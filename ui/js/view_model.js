@@ -1169,7 +1169,15 @@ function topOf(n, authored, quantum = 0) {
  * (their offset IS their placement, Q5), nor do drifting loops (Q22:
  * every pass lands their top somewhere else). A recording take seats by its
  * top alone: its period is unknown until stop and must not move the
- * lanes after it as it grows. An unanchored stack has no content and
+ * lanes after it as it grows. A NEW TAKE of a committed slot
+ * (docs/takes.md) is no such take: its origin, period and top are the
+ * slot's, and it commits back into them — so it seats as the loop it
+ * IS: the caller hands this the tree as the frame reads it
+ * (settledForFrame), where a new take stands as its slot. Counted as a
+ * growing take, a new take of a 1Q loop shown above the placing loop
+ * took the frame for as long as it recorded: every lane jumped at its
+ * start and back at its commit (audit 2026-10-01). An unanchored stack
+ * has no content and
  * no top. The zero is always on the Q grid, so the arm marker and
  * every tile stay grid-true whatever a ⌥-slid window start or a free
  * re-time (a sub-Q origin) does.
@@ -1178,7 +1186,10 @@ function topOf(n, authored, quantum = 0) {
  * this seating, read off the lanes; the mock and the engine share it
  * here and store no frame zero of their own.
  *
- * @returns {number|null} the frame zero in samples, or null with nothing to seat
+ * @param {Array} nodes  the top-level nodes AS THE FRAME READS THEM
+ *                       (settledForFrame)
+ * @returns {?{zero: number, placerId: string}} the frame zero in samples
+ *     and the loop that placed it, or null with nothing to seat
  */
 function seatFrameZero(state, nodes, quantum, gridPhase) {
     const seats = [];
@@ -1228,6 +1239,92 @@ function seatFrameZero(state, nodes, quantum, gridPhase) {
 }
 
 /**
+ * THE RE-SEAT TWEEN's path (docs/frame.md §1; owner 2026-10-01): the
+ * frame zero at linear progress `t` ∈ [0, 1] of a move from `from` —
+ * the zero last drawn — to the seat `target`. It runs the SHORTEST WAY
+ * round the frame: to the representative of the target (mod the frame
+ * length `frameSamples`) nearest `from` — every lane's period divides
+ * the frame, so all representatives draw the same picture, and a
+ * re-seat never sweeps more than half a frame. Eased (easeInOut), and
+ * at t = 1 the zero is the seat itself, exactly. Exported for the
+ * tests.
+ */
+export function reseatZero(from, target, frameSamples, t) {
+    if (!(t < 1)) return target;
+    const via = reseatLanding(from, target, frameSamples);
+    return from + (via - from) * easeInOut(Math.max(0, t));
+}
+
+/** Where a re-seat from `from` lands: the representative of the seat
+ * `target` (mod the frame) nearest `from` — the tween's own end, whose
+ * picture is the seat's. The ruler names its lines from it. */
+export function reseatLanding(from, target, frameSamples) {
+    return frameSamples > 0
+        ? from + posMod(target - from + frameSamples / 2, frameSamples) - frameSamples / 2
+        : target;
+}
+
+/** The re-seat tween's curve: a sine ease-in-out. Over ~200 ms a cubic
+ * does all its travelling in the middle third — three times the mean
+ * speed, a quarter Q a frame on a 1Q move — which reads as the jump it
+ * replaces; the sine peaks at π/2 of the mean. */
+export function easeInOut(p) {
+    return 0.5 - 0.5 * Math.cos(Math.PI * p);
+}
+
+/**
+ * A NEW TAKE'S SLOT, AS IT STANDS (docs/takes.md §2): a new take keeps
+ * the slot's origin, period, region and top and commits back into them.
+ * While it captures, the engine publishes the LIVE captured length as
+ * `duration` (AudioNode::getMetadata — 0, then growing to the period);
+ * the slot's committed length rides `periodQ` ({num, den} of Q, from
+ * duration_samples). The mock keeps `duration` the slot's own and
+ * publishes no `periodQ`. Returns the node with the slot's length: what
+ * the frame (settledForFrame) and the take's own lane
+ * (pushRecordingLane) read, so both draw the loop the take will be.
+ */
+function retakeSlot(n, quantum) {
+    const pq = n.periodQ;
+    const d = pq && pq.den > 0 ? Math.round(pq.num / pq.den * quantum) : 0;
+    return d > 0 ? { ...n, duration: d } : n;
+}
+
+/**
+ * THE TREE AS THE FRAME READS IT: every clip taking a NEW TAKE of a
+ * committed slot (`retakes`) stands as that slot — committed, its own
+ * length (retakeSlot) — so the loop it re-takes keeps its place in the
+ * cycle and nothing "grows": the take captures exactly one period of a
+ * length already known. Read as a fresh take it dropped out of the
+ * cycle (recording lanes have no settled period) and drove the GROWING
+ * frame: a new take of the loop that alone made the frame 4Q collapsed
+ * it to the others' 1Q at its first sample and regrew it 2Q, 3Q, 4Q —
+ * every lane rescaling four times (engine probe, audit 2026-10-01; in
+ * the mock, whose retake keeps the slot's `duration`, the frame read 5Q).
+ * The seat reads it too (seatFrameZero): a new take never takes the
+ * frame from the loop that places it. The lanes and the gates read the
+ * tree as published — a new take is still a live take there. Unchanged
+ * (the same array) with no retake in it.
+ */
+function settledForFrame(nodes, retakes, quantum) {
+    if (!retakes || !retakes.size) return nodes;
+    let changed = false;
+    const out = (nodes || []).map(n => {
+        if (n.type === 'stack' && Array.isArray(n.nodes)) {
+            const kids = settledForFrame(n.nodes, retakes, quantum);
+            if (kids === n.nodes) return n;
+            changed = true;
+            return { ...n, nodes: kids };
+        }
+        if (n.type !== 'clip' || !n.isRecording || !retakes.has(n.id)) return n;
+        const slot = retakeSlot(n, quantum);
+        if (!(slot.duration > 0)) return n;
+        changed = true;
+        return { ...slot, isRecording: false, isPendingStart: false };
+    });
+    return changed ? out : nodes;
+}
+
+/**
  * THE ROOT'S SONG TOP (docs/frame.md §4): the root is anchored while
  * it carries a song — at the zero the view had seated when the song
  * was authored (Q18 at depth 0; the engine's setSequence and the mock
@@ -1253,10 +1350,11 @@ function rootSongTop(state) {
  * group and new takes of a slot. Null when no take has captured audio.
  *
  * The fold is read against `restZero` — the zero the frame rests on,
- * always on the Q grid — and the position against the zero drawn:
- * they differ only while the frame SETTLES (a take arming releases the
- * edit hold, frame.md §1), and a glide's fractional zero must slide the
- * bar with the lanes, never tip it into another cycle.
+ * always on the Q grid — and the position against the zero drawn. They
+ * are one and the same today: the only zero drawn off the grid is a
+ * re-seat tween's, which never runs under a take (resolveFrameZero).
+ * Kept apart so a fractional zero could only ever slide the bar with
+ * the lanes, never tip it into another cycle.
  */
 function recordingHeadQ(nodes, rawClock, zero, quantum, lcmQ, restZero = zero) {
     let head = null;
@@ -1438,20 +1536,21 @@ function mapPlayheadToDisplay({ playheadQ, frameQ, anyRecording,
  * drawable (a first take's frame is cycleQ ≈ its sample count — no
  * grid, and no DOM explosion).
  *
- * THE GRID RIDES THE ZERO (loop_selection.md §9.4, 2026-09-24): a line
- * sits at (line − zero) / Q, so while the frame SETTLES — its zero
- * gliding between grid lines for 560 ms — the ruler and the gridlines
- * scroll with the tiles, the cursor and the arm marker, and the whole
- * picture moves as one (the prototype's drawFrameGrid). `offQ` is how
- * far past a line the zero drawn sits (phiQ): 0 at rest, where the
- * lines fall on whole Qs from the left edge as they always have.
+ * THE GRID RIDES THE ZERO (2026-09-24; frame.md §1): a line sits at
+ * (line − zero) / Q, so while a RE-SEAT TWEEN moves the frame — its
+ * zero passing between grid lines for ~200 ms — the ruler and the
+ * gridlines scroll with the tiles, the cursor and the arm marker, and
+ * the whole picture moves as one (the prototype's drawFrameGrid).
+ * `offQ` is how far past a line the zero drawn sits (phiQ): 0 at rest,
+ * where the lines fall on whole Qs from the left edge as they always
+ * have.
  *
  * Each line is NAMED in the frame it lands in, the way the prototype's
- * drawRuler labels from the settle's target: `toZeroQ` is the landing
+ * drawRuler labels from the move's target: `toZeroQ` is the landing
  * zero minus the zero drawn (0 at rest). `at` is where the line rests
  * once the frame lands — its label and whether it is a major, every
  * 4Q — and `end` marks the landing frame's wrap (the cycle-end label).
- * A line keeps its name all the way through the glide: the numbers
+ * A line keeps its name all the way through the move: the numbers
  * ride their lines instead of swapping under them.
  *
  * @param {boolean} qEstablished
@@ -1580,7 +1679,15 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
         }
         return;
     }
-    const periodQ = displayPeriodQ(node, quantum);
+    // THE GROUP AS THE FRAME READS IT (settledForFrame): members taking
+    // a NEW TAKE stand as the slots they are re-taking, so the group's
+    // own period, map and ↺ are the loop's it will be again. Read as
+    // published — the engine's `duration` is the live captured length —
+    // a 4Q group re-tiled as four 1Q tiles for as long as its members
+    // captured (audit 2026-10-01). The arm state, the recording gate
+    // and the member lanes below read the REAL nodes.
+    const slot = settledForFrame([node], ctx.retakes || null, quantum)[0];
+    const periodQ = displayPeriodQ(slot, quantum);
     // A STEP AUDITION on this group (§11.2) publishes a DERIVED window
     // in SONG coordinates; group lanes tile at their intrinsic period,
     // so those brackets/dims would land in the wrong frame. The grid's
@@ -1588,8 +1695,8 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
     // authored window (if any) is hidden underneath for the duration.
     // (§12.2: a sequenced group lane tiles in SONG coordinates, so a
     // nested audition's derived brackets land where they mean.)
-    const gwin = mapOf(node, quantum);
-    const intrinsicQ = intrinsicPeriodQ(node, quantum);
+    const gwin = mapOf(slot, quantum);
+    const intrinsicQ = intrinsicPeriodQ(slot, quantum);
     const editable = qEstablished && intrinsicQ >= 2 && !subtreeRec(node);
     // THE ANCHOR (Q18): an anchored stack's origin is a stored fact the
     // engine publishes; the VM reads it and never derives it.
@@ -1690,7 +1797,7 @@ function pushGroupLane(node, depth, mapCtx, ctx, offsetQ = 0) {
             !underParentMap && !subtreeRec(node) &&
             !(ctx.definerIds && ctx.definerIds.has(node.id));
         Object.assign(lane, anchored
-            ? topFields(node, mapAuthored(node, gwin), ctx,
+            ? topFields(slot, mapAuthored(slot, gwin), ctx,
                         onceIdle && !ctx.mapEditsLocked,
                         onceIdle && ctx.mapEditsLocked)
             : { topQ: 0, topHeardQ: 0, retimeQ: 0, canRetime: false });
@@ -1844,17 +1951,27 @@ function pushDefinerLane(node, depth, ctx) {
  * flagged `silent` — the engine renders silence for the slot while
  * the take is live — and `armAtQ` marks the slot top a pending take
  * waits for.
+ *
+ * THE SLOT'S OWN LENGTH (retakeSlot): the mock keeps the slot's
+ * `duration` through a new take, but the ENGINE publishes the live
+ * captured length there while it captures (0, then growing) and the
+ * slot's own on `periodQ`. Read from `duration`, the resting tiles
+ * re-tiled at the captured length on every poll — thirty 0.26Q tiles
+ * across the frame a quarter Q in — and the bar's length, measured mod
+ * that, jumped about (engine probe, audit 2026-10-01; the mock could
+ * not show it).
  */
 function pushRecordingLane(node, depth, mapCtx, ctx, offsetQ) {
     const { quantum, fxOpen, lanes, state } = ctx;
-    const retake = !!(ctx.retakes && ctx.retakes.has(node.id)) &&
-        (node.duration || 0) > 0;
+    const retaking = !!(ctx.retakes && ctx.retakes.has(node.id));
+    const slot = retaking ? retakeSlot(node, quantum) : node;
+    const retake = retaking && (slot.duration || 0) > 0;
     let reps = [];
     let recordingLengthQ = (node.duration || 0) / quantum;
     let pendingStart = !(node.duration > 0);
     let armAtQ = 0;
     if (retake) {
-        const periodQ = intrinsicPeriodQ(node, quantum);
+        const periodQ = intrinsicPeriodQ(slot, quantum);
         reps = ctx.qEstablished && periodQ > 0
             ? unrollReps({ periodQ, offsetQ, cycleQ: ctx.cycleQ })
                 .map(r => Object.assign({}, r, { silent: true }))
@@ -1869,7 +1986,7 @@ function pushRecordingLane(node, depth, mapCtx, ctx, offsetQ) {
         kind: 'clip',
         depth,
         periodQ: 0,
-        intrinsicQ: retake ? intrinsicPeriodQ(node, quantum) : 0,
+        intrinsicQ: retake ? intrinsicPeriodQ(slot, quantum) : 0,
         takeStartQ: (reps.find(r => !r.ghost) || { startQ: 0 }).startQ,
         reps,
         window: null,
@@ -1886,9 +2003,9 @@ function pushRecordingLane(node, depth, mapCtx, ctx, offsetQ) {
         throughMap: !!mapCtx,
         mapPeriodQ: mapCtx ? mapCtx.periodQ : 0,
         mapStartQ: mapCtx ? mapCtx.startQ : 0,
-    }, retake ? takeFields(node, quantum, ctx) : {},
+    }, retake ? takeFields(slot, quantum, ctx) : {},
     // A live take is never re-timed (the recording gate).
-    topFields(node, mapAuthored(node, mapOf(node, quantum)), ctx, false)));
+    topFields(slot, mapAuthored(slot, mapOf(slot, quantum)), ctx, false)));
     if (fxOpen && fxOpen.has(node.id)) lanes.push(fxRow(node, depth + 1));
 }
 
@@ -2442,24 +2559,50 @@ function withPendingEdit(c, e) {
 /**
  * THE ZERO DRAWN (docs/frame.md §1), by precedence:
  *
- *   drag pin ?? seat ?? the root's frame
+ *   drag pin ?? re-seat tween ?? seat ?? the root's frame
  *
- * The DRAG PIN (drag_pin.js) holds the frame a gesture engaged on,
- * past its release until the final commit settles: a live commit
- * re-anchors the edited lane's origin, and the seating would follow it
- * under the pointer. Ignored while a take records (the frame grows with
- * it). Otherwise the seat — there is no edit hold and no settle glide
- * (owner 2026-09-29: the main view shows the loops' true alignment at
- * once). Returns { zero, source: 'pin'|'seat'|'root' }.
+ * - The DRAG PIN (drag_pin.js) holds the frame a gesture engaged on,
+ *   past its release until the final commit settles: a live commit
+ *   re-anchors the edited lane's origin, and the seating would follow
+ *   it under the pointer. Ignored while a take records (the frame
+ *   grows with it).
+ * - The RE-SEAT TWEEN (opts.reseat = { fromRel, t }; owner 2026-10-01):
+ *   when the seat moves, the frame is DRAWN moving onto it — from the
+ *   zero it last showed, `fromRel` samples past the root frame, at
+ *   linear progress t (reseatZero eases it and takes the shortest way
+ *   round `frameSamples`, the island cycle). There is no edit hold and
+ *   nothing waits (owner 2026-09-29: an edit realigns the main view at
+ *   once): the move starts the moment the seat does — it is only drawn
+ *   so the eye can follow it. `fromRel` is RELATIVE to the root frame
+ *   (islandZero), so a seek — which moves the island zero and every
+ *   origin together — carries it along. Never while a take is live or
+ *   armed (the frame is the take's), nor in the Q13 trim view (its
+ *   frame is the definer's buffer, and the cursor it maps into the
+ *   selection needs the island zero a re-trim sets).
+ * - Otherwise the seat.
+ *
+ * session_view/reseat_tween.js decides when a tween runs; this only
+ * resolves it. Returns { zero, source: 'pin'|'tween'|'seat'|'root',
+ * tweening, landing? } — `landing` the tween's own end (the seat, a
+ * whole number of frames away at most).
  */
-function resolveFrameZero({ opts, seated, rootFrame, qEstablished, anyRecording }) {
+function resolveFrameZero({ opts, seated, rootFrame, qEstablished, anyRecording,
+                            anyTakeActive, frameSamples, provisionalDefiner }) {
     if (opts.pinFrameQ > 0 && qEstablished && !anyRecording &&
         Number.isFinite(opts.pinZero)) {
-        return { zero: opts.pinZero, source: 'pin' };
+        return { zero: opts.pinZero, source: 'pin', tweening: false };
+    }
+    const r = opts.reseat;
+    if (r && seated !== null && !anyTakeActive && !provisionalDefiner &&
+        Number.isFinite(r.fromRel) && Number.isFinite(r.t)) {
+        const from = rootFrame + r.fromRel;
+        return { zero: reseatZero(from, seated, frameSamples, r.t),
+                 landing: reseatLanding(from, seated, frameSamples),
+                 source: 'tween', tweening: r.t < 1 };
     }
     return seated !== null
-        ? { zero: seated, source: 'seat' }
-        : { zero: rootFrame, source: 'root' };
+        ? { zero: seated, source: 'seat', tweening: false }
+        : { zero: rootFrame, source: 'root', tweening: false };
 }
 
 /**
@@ -2467,7 +2610,14 @@ function resolveFrameZero({ opts, seated, rootFrame, qEstablished, anyRecording 
  * Phase 2 VM contract) — what the ↺ handle, the panel's start marker
  * and the timing readout read:
  *
- *   topQ       the effective top T (topOf), raw Q of the take;
+ *   topQ       the ↺ AS SHOWN, raw Q of the take: the effective top T
+ *              (topOf) on the loop that places the frame; on every
+ *              other loop, the sample it plays at the frame's top;
+ *   storedTopQ the engine's effective top T itself (the published
+ *              `loopTop`), whatever the ↺ shows: what a region edit
+ *              reconciles FROM (the swap preview's prediction,
+ *              splice_handles topAfterSwap) and what a cancelled
+ *              start-marker drag puts back. Equal to topQ on the placer;
  *   topHeardQ  the ↺'s first heard position from the frame zero, in
  *              [0, S): posMod(origin + a0 + heardOffset(T) − zero, S)
  *              with S the loop period (the kept set's length);
@@ -2502,6 +2652,7 @@ function topFields(node, authored, ctx, canRetime, retimeLocked = false) {
     }
     return {
         topQ: top / quantum,
+        storedTopQ: t.top / quantum,
         topHeardQ: t.periodS > 0
             ? posMod(moment - frameZero, t.periodS) / quantum
             : 0,
@@ -2512,6 +2663,34 @@ function topFields(node, authored, ctx, canRetime, retimeLocked = false) {
         canRetime: !!canRetime,
         retimeLocked: !canRetime && !!retimeLocked,
     };
+}
+
+/**
+ * WHERE "BOUNCE SELECTED…" STARTS (docs/bounce.md; owner 2026-09-24,
+ * 2026-10-01): a loop's file opens on its ↺ — AS SHOWN. On the loop
+ * that places the frame that is its own top; on every other loop it is
+ * the frame's top (topFields), so a stem opens on the very sample the
+ * song bounce does and the two line up. The engine's default start is
+ * the node's STORED top, which on a loop that slots in is a moment
+ * nothing on screen marks — so the app names the start
+ * (`bounce(uuid, path, start)`).
+ *
+ * The ↺ sits `topHeardQ` from the zero DRAWN, so that sum is its moment
+ * (give or take whole periods — the same file) under a drag's pin or a
+ * re-seat tween too.
+ *
+ * @param {Object} vm      the view model on screen
+ * @param {string} laneId
+ * @returns {?number} absolute samples; null where the lane wears no ↺
+ *     (a one-shot, the Q-definer, a lane under a parent's map, a live
+ *     take): the engine's own default stands
+ */
+export function bounceStartOf(vm, laneId) {
+    if (!vm || !vm.qEstablished || !Number.isFinite(vm.frameZero)) return null;
+    const lane = (vm.lanes || []).find(l => l.id === laneId);
+    if (!lane || !(lane.canRetime || lane.retimeLocked) ||
+        !Number.isFinite(lane.topHeardQ)) return null;
+    return Math.round(vm.frameZero + lane.topHeardQ * vm.quantum);
 }
 
 /**
@@ -2566,6 +2745,10 @@ function retimeableOnceIdle(node, ctx, underMap) {
  *                  content.
  * opts.pinFrameQ / opts.pinFoldQ / opts.pinZero: the map-gesture frame
  *                  pin (drag_pin).
+ * opts.reseat:     the RE-SEAT TWEEN, { fromRel, t } — the frame moving
+ *                  from the zero it last showed (relative to the root
+ *                  frame) to the seat, at linear progress t
+ *                  (session_view/reseat_tween.js; resolveFrameZero).
  * opts.pendingEdits: Map lane id → { segments?, originShift?, top? } —
  *                  a gesture's preview (applyPendingEdits).
  *
@@ -2574,7 +2757,11 @@ function retimeableOnceIdle(node, ctx, underMap) {
  *   quantum, frameZero, sampleRate, isPlaying, qEstablished,
  *   seatedZero,      // the SEAT (samples) — the unpinned zero the frame
  *                    // rests on; null with nothing to seat
- *   frameZeroSource, // which rule drew frameZero: 'pin' | 'seat' | 'root'
+ *   frameZeroSource, // which rule drew frameZero: 'pin' | 'tween' |
+ *                    // 'seat' | 'root'
+ *   frameTweening,   // the zero is mid-move to the seat (off the Q grid)
+ *   restZero,        // the zero the frame rests on: frameZero, or the
+ *                    // seat a tween is moving to
  *   rootFrame,       // the island zero (the Q grid's phase), samples
  *   monitorLatencyMs, // Q20: the calibrated round trip (ms) or null
  *   cycleQ,          // the DISPLAY FRAME lanes tile
@@ -2605,9 +2792,9 @@ function retimeableOnceIdle(node, ctx, underMap) {
  *        bandTotalQ, bandHeard, bandEditable, bandLocked (bandGate),
  *        throughMap, underMap,
  *        armable + armMode (clips: 'stop'|'record'|'retake'|null),
- *        topQ / topHeardQ / retimeQ / canRetime / retimeLocked (the ↺
- *        and the timing — topFields; a group's top is its region start,
- *        never retimed),
+ *        topQ / storedTopQ / topHeardQ / retimeQ / canRetime /
+ *        retimeLocked (the ↺ and the timing — topFields; clips and
+ *        groups alike),
  *        takes / activeTake / comp / compCells / compMode (clips —
  *        docs/takes.md), recordingLengthQ + retake + armAtQ (recording
  *        lanes; a retake's reps are `silent`), folded /
@@ -2658,13 +2845,17 @@ export function deriveViewModel(state, opts = {}) {
     // origin the plain arm lands is on it) and, through islandPos, the
     // raw clock. Pre-Q there is nothing to seat: the first take's own
     // frame is the root's. The zero DRAWN may be another — the drag pin,
-    // the settle, the edit hold (resolveFrameZero, below, once the
-    // island cycle it settles round is known).
+    // a re-seat tween on its way to the seat (resolveFrameZero, below,
+    // once the island cycle it moves round is known).
     const rootFrame = state.islandZero ?? state.origin ?? 0;
     const qEstablished = quantum > 1;
     const gridPhase = qEstablished ? posMod(rootFrame, quantum) : 0;
+    // The seat, the cycle and the growing frame read a NEW TAKE as the
+    // slot it is re-taking (settledForFrame): its loop keeps its place
+    // and its length, and nothing grows.
+    const frameNodes = settledForFrame(nodes, opts.retakes || null, quantum);
     const seat = qEstablished
-        ? seatFrameZero(state, nodes, quantum, gridPhase)
+        ? seatFrameZero(state, frameNodes, quantum, gridPhase)
         : null;
     const seated = seat ? seat.zero : null;
     // THE RAW CLOCK: islandPos is the unwrapped clock measured from the
@@ -2674,14 +2865,14 @@ export function deriveViewModel(state, opts = {}) {
     const rawClock = Number.isFinite(state.islandPos)
         ? state.islandPos + rootFrame : null;
 
-    let cycleSamples = computeCycleSamples(nodes, quantum);
+    let cycleSamples = computeCycleSamples(frameNodes, quantum);
     // The AUDIBLE loop — what the engine wraps masterPos on — IS the
     // frame (every window is a part length, so the effective LCM is
     // the cycle). It diverges only
     // under a STEP AUDITION (a derived window over a song: the frame
     // stays the song, the cursor loops the step) — a nested group's
     // here, the root's below. Surfaced as loopCycleQ.
-    let loopSamples = computeCycleSamples(nodes, quantum, { audible: true });
+    let loopSamples = computeCycleSamples(frameNodes, quantum, { audible: true });
     // The island's INTRINSIC cycle in Q, captured BEFORE the sequence
     // reframes anything: the root grid's one-cycle unit (append/create
     // defaults). Reading the post-override lcmQ here would make every
@@ -2698,11 +2889,12 @@ export function deriveViewModel(state, opts = {}) {
             ? lcm(quantum, rootSeqSamples) : rootSeqSamples;
         loopSamples = cycleSamples;
     }
-    // THE ZERO DRAWN: the drag pin, else the settle — gliding the
-    // shortest way round the island cycle just known — else the edit
-    // hold, else the seat (resolveFrameZero, frame.md §1).
+    // THE ZERO DRAWN: the drag pin, else a re-seat tween on its way to
+    // the seat — the shortest way round the island cycle just known —
+    // else the seat (resolveFrameZero, frame.md §1).
     const zeroOf = resolveFrameZero({
         opts, seated, rootFrame, qEstablished, anyRecording,
+        anyTakeActive, frameSamples: cycleSamples, provisionalDefiner,
     });
     const frameZero = zeroOf.zero;
     // THE ROOT'S STEP AUDITION (docs/sequencer.md §11.2): the root
@@ -2755,7 +2947,7 @@ export function deriveViewModel(state, opts = {}) {
     // then the root's, which the seating reproduces wherever both apply.
     let playheadQ;
     const growing = rawClock !== null && qEstablished
-        ? recordingHeadQ(nodes, rawClock, frameZero, quantum, lcmQ, frameZero)
+        ? recordingHeadQ(frameNodes, rawClock, frameZero, quantum, lcmQ, frameZero)
         : null;
     if (growing !== null) {
         playheadQ = growing;
@@ -2766,7 +2958,7 @@ export function deriveViewModel(state, opts = {}) {
     }
 
     const rec = computeRecordingFrame({
-        nodes, quantum, qEstablished, anyRecording, lcmQ, playheadQ,
+        nodes: frameNodes, quantum, qEstablished, anyRecording, lcmQ, playheadQ,
     });
     let frameQ = rec.frameQ;
     playheadQ = rec.playheadQ;
@@ -2808,9 +3000,10 @@ export function deriveViewModel(state, opts = {}) {
     // boundaries sit at loopStartQ + k (loopStartQ = 0 outside the
     // provisional trim view, where this reduces to plain ceil) — for a
     // genuine 1Q selection the next boundary IS the selection end. The
-    // boundaries are the ISLAND's: while the frame settles its zero sits
-    // a fraction `phiQ` of a Q off the grid, and the marker says where a
-    // take will start, not where the gliding frame's integers fall.
+    // boundaries are the ISLAND's: while a re-seat tween moves the frame
+    // its zero sits a fraction `phiQ` of a Q off the grid, and the marker
+    // says where a take will start, not where the moving frame's
+    // integers fall.
     const phiQ = qEstablished && !provisionalDefiner
         ? (f => (f < EPS || f > 1 - EPS ? 0 : f))(
             posMod((frameZero - gridPhase) / quantum, 1))
@@ -2875,9 +3068,9 @@ export function deriveViewModel(state, opts = {}) {
     // the frame is seated from the lanes, so the song's top sits at
     // (origin − zero) in Q. Zero whenever the root seats first (it
     // carries the song), which is every state the engine produces;
-    // a fixture may put the two apart, and a hold keeps it whole Qs off.
-    // Exact, not rounded: while the frame SETTLES its zero glides off
-    // the grid, and the song's dims must ride the glide with the lanes.
+    // a fixture may put the two apart, and a drag pin keeps it whole Qs
+    // off. Exact, not rounded: under a re-seat tween the zero passes
+    // between grid lines, and the song's dims must ride it with the lanes.
     const rootAnchorQ = qEstablished
         ? (rootSongTop(state) - frameZero) / quantum : 0;
     // The ROOT's active sequence projects onto the top-level lanes
@@ -2917,8 +3110,11 @@ export function deriveViewModel(state, opts = {}) {
 
     attachFrameHealth(lanes, state, nodes, quantum, qEstablished);
 
-    // The grid rides the zero drawn (buildRulerTicks).
-    const ticks = buildRulerTicks(qEstablished, cycleQ, phiQ, 0);
+    // The grid rides the zero drawn (a re-seat tween included), each
+    // line named where it lands (buildRulerTicks).
+    const ticks = buildRulerTicks(qEstablished, cycleQ, phiQ,
+        zeroOf.tweening && Number.isFinite(zeroOf.landing)
+            ? (zeroOf.landing - frameZero) / quantum : 0);
 
     return {
         quantum,
@@ -2927,6 +3123,11 @@ export function deriveViewModel(state, opts = {}) {
         // drag (frame.md §1).
         seatedZero: seated,
         frameZeroSource: zeroOf.source,
+        frameTweening: zeroOf.tweening,
+        // Where the frame RESTS: the zero drawn — or, mid-move, the seat
+        // it is moving to. Always on the Q grid: what a drag pins
+        // (drag_pin.js) and what a placement lands on (app.js).
+        restZero: zeroOf.tweening && seated !== null ? seated : frameZero,
         // The root's own frame (islandZero): the Q grid's phase, and
         // what a seek moves together with every origin — a zero moving
         // RELATIVE to it is the frame moving, not the transport.

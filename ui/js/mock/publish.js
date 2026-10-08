@@ -6,6 +6,7 @@
  */
 
 import { posMod } from '../math_utils.js';
+import { fromSamples } from '../qtime.js';
 import { mapPeriod, mapActive, mapOffset, effectiveTop, regionStart } from '../time_map.js';
 import { state, nodeMap, someNode, activeMapOf, auditionMapOf, rootActiveMap,
          windowSuspendedOf, islandDefiner, frameOriginOf, intrinsicOfNode }
@@ -73,9 +74,17 @@ export function enrichNodes(nodes) {
             delete updatedNode.segments;
         }
         // Multi-segment map publish (engine parity: flat samples array,
-        // present only with an override).
+        // present only with an override) — and under it the single-window
+        // fields read 0, as the engine publishes them (AudioNode::
+        // getMetadata: loopStart / loopEnd only for a ONE-segment stored
+        // map). The window an override superseded stays in storage, as
+        // the engine's loop atomics do, but it is no fact about what
+        // plays: published, a spec reading the "loop" of a cut map got
+        // the stale window back (audit 2026-10-01).
         if (!auditionOn && node.segments && node.segments.length >= 2) {
             updatedNode.segments = node.segments.flat();
+            updatedNode.loopStart = 0;
+            updatedNode.loopEnd = 0;
         }
         updatedNode.loopBypassed = bypassed;
         updatedNode.windowActive = windowActive;
@@ -139,6 +148,30 @@ export function enrichNodes(nodes) {
             updatedNode.monitor = !!node.monitor;
             // The take list (docs/takes.md): takes / activeTake / comp.
             publishTakes(node, updatedNode);
+            // A TAKE'S STATE, as the engine publishes it (AudioNode /
+            // ClipNode::getMetadata; docs/takes.md §6):
+            //  - ARMED — waiting for its boundary — is `isPendingStart`
+            //    alone; `isRecording` means CAPTURING (through an
+            //    awaited stop). The mock's own state keeps isRecording
+            //    from the arm (its recorders ask "is a take up here"),
+            //    so the flag is narrowed here, at the boundary;
+            //  - `duration` is the LIVE captured length while capturing
+            //    — a NEW TAKE's too (0 at the slot's top, growing to its
+            //    period), though the slot keeps its own length;
+            //  - `periodQ` ({num, den} of Q) is the COMMITTED length,
+            //    always: a new take's slot; 0 for a first take.
+            // Until 2026-10-01 the mock published isRecording from the
+            // arm, the slot's duration all through a new take, and no
+            // periodQ — and three view bugs only the engine showed were
+            // invisible here (loop_selection.md §12.1 #5, #6).
+            const capturing = !!node.isRecording && !node.isPendingStart;
+            const retake = node.isRecording ? node._retake : null;
+            updatedNode.isRecording = capturing;
+            if (capturing && retake) updatedNode.duration = retake.captured;
+            updatedNode.periodQ = fromSamples(
+                retake ? retake.period : node.isRecording ? 0 : (node.duration || 0),
+                state.islandQ || 0);
+            delete updatedNode._retake;  // the mock's own bookkeeping
         }
         if (typeof updatedNode.gain !== 'number') updatedNode.gain = 1;
         if (typeof updatedNode.pan !== 'number') updatedNode.pan = 0;

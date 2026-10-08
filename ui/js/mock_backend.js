@@ -34,6 +34,7 @@
 
 import {
     interceptUndoableCall, noteGestureCommit, mockUndo, mockRedo,
+    mockCancelGesture,
 } from './mock/undo.js';
 import { QUIET_POLLS } from './protocol.js';
 import {
@@ -128,6 +129,8 @@ export const handlers = {
     deleteNode,
     undo: mockUndo,
     redo: mockRedo,
+    // A cancelled drag: its step is dropped, redo returns (mock/undo.js).
+    cancelGesture: mockCancelGesture,
     saveSession,
     loadSession,
     // Bounce (Q19): records the request; refuses under a live take.
@@ -231,7 +234,7 @@ const REFUSED_UNDER_LIVE_TAKE = new Set([
     'setDefiner',
     'createFromTrackTemplate', 'setSequence', 'toggleSequence',
     'auditionStep', 'selectTake', 'deleteTake', 'setComp', 'importAudio',
-    'undo', 'redo', 'togglePlayback', 'seekTransport',
+    'undo', 'redo', 'cancelGesture', 'togglePlayback', 'seekTransport',
     'startRecordingInNode', 'newTake',
 ]);
 const takeIsLive = () => someNode(n => n.isRecording || n.isPendingStart);

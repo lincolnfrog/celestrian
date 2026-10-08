@@ -9,11 +9,13 @@
 // and the Project menu.
 
 import { callNative, log, getState } from './backend.js';
-import { deriveViewModel, findNodeInTree, armMode, hasInstrument }
+import { deriveViewModel, findNodeInTree, armMode, hasInstrument,
+         bounceStartOf }
     from './view_model.js';
 import { initSessionView, patchSessionView, mapDragPinQ, mapDragPinFoldQ,
          mapDragPinZero, activeSelectedId, selection, selectWhenPresent,
-         pendingEditsFor, setRenderer }
+         reseatOptions, noteReseat, reseatInMotion,
+         pendingEditsFor, clearAllPendingEdits, isGestureLive, setRenderer }
     from './session_view.js';
 import { appendLivePeak } from './live_peaks.js';
 import { peakCountFor } from './peak_density.js';
@@ -122,6 +124,28 @@ function traceObserved(nodesById) {
  * per node: live splices stream through the same callback (~11/s) and
  * only the final state deserves a verdict. */
 const verifyTimers = new Map();  // node id → pending verification timer
+// The re-time verdict's target (onSetTiming): node id → {retime, top}
+// the commits since the last verdict asked to land on.
+const timingAsked = new Map();
+
+/**
+ * UNDO / REDO REPLACE THE GRAPH under everything a just-finished
+ * gesture left in flight, so both go with the keystroke:
+ *   - its pending preview (session_view/pending_edits.js) is kept until
+ *     the poll MATCHES it, and after an undo no poll ever will — the
+ *     lane would sit on the undone edit until the hold cap;
+ *   - its queued landed-state verdict would compare the undone graph
+ *     to what was asked and announce the edit "refused".
+ * A drag still under the hand keeps its preview (it re-sends it on the
+ * next move, and its shift is measured from a base the preview holds).
+ */
+function dropStaleEditFeedback() {
+    if (!isGestureLive()) clearAllPendingEdits();
+    for (const t of verifyTimers.values()) clearTimeout(t);
+    verifyTimers.clear();
+    timingAsked.clear();
+}
+
 function scheduleVerify(id, check, okMsg, refusedMsg) {
     clearTimeout(verifyTimers.get(id));
     verifyTimers.set(id, setTimeout(async () => {
@@ -782,37 +806,72 @@ function syncMidiTarget() {
 
 /* ---------- the render ---------- */
 /* The last POLLED state, and the patch inputs its poll built: a
- * re-render between polls (requestRender — a gesture's pending
- * preview) derives from these, never from a poll of its own. */
+ * re-render between polls (requestRender — the re-seat tween's frames,
+ * a gesture's pending preview) derives from these, never from a poll of
+ * its own. */
 let lastState = null;
 let lastAux = null;
+let lastVm = null;          // the view model on screen (the last derive)
+let reseatRaf = 0;          // the re-seat tween's pending animation frame
+
+/** prefers-reduced-motion: a re-seat jumps instead of moving. */
+function prefersReducedMotion() {
+    try {
+        return !!(window.matchMedia &&
+            window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {
+        return false;
+    }
+}
 
 /**
  * Derive the view model from `state` with everything the VIEW layers
  * over the engine's facts: the fold / fx / sequencer / comp view
- * state, the drag pin, and a gesture's pending preview
- * (pending_edits.js). No edit hold (owner 2026-09-29): outside a live
- * drag the frame rests on the seat, so an edit realigns the main view
- * at once. Records the frame facts every seek and placement is
- * computed against (lastFrame) — the zero ON SCREEN.
+ * state, the drag pin, the re-seat tween (reseat_tween.js) and a
+ * gesture's pending preview (pending_edits.js). No edit hold (owner
+ * 2026-09-29): outside a live drag the frame rests on the seat, so an
+ * edit realigns the main view at once — DRAWN as a ~200 ms move when
+ * the seat itself moves (owner 2026-10-01), never under a hand: the
+ * derive that would have jumped is derived again from the move's first
+ * step. Records the frame facts every seek and placement is computed
+ * against (lastFrame) — the zero ON SCREEN, and the one it rests on.
  */
 function deriveFrame(state) {
     const now = performance.now();
     const rootFrame = state.islandZero ?? state.origin ?? 0;
-    const vm = deriveViewModel(state,
+    const pendingEdits = pendingEditsFor(id => lastNodesById.get(id),
+                                         rootFrame, now);
+    const motion = {
+        now,
+        islandId: state.id || '',
+        handDown: isGestureLive() || mapDragPinQ() !== null,
+        reducedMotion: prefersReducedMotion(),
+        hidden: !!document.hidden,
+    };
+    const derive = () => deriveViewModel(state,
         { folded: foldedStacks(projectInfo.id),
           fxOpen, seqOpen, compMode, retakes,
           pinFrameQ: mapDragPinQ(),
           pinFoldQ: mapDragPinFoldQ(),
           pinZero: mapDragPinZero(),
-          pendingEdits: pendingEditsFor(id => lastNodesById.get(id),
-                                        rootFrame, now) });
+          reseat: reseatOptions(motion),
+          pendingEdits });
+    let vm = derive();
+    if (noteReseat(vm, motion)) {
+        vm = derive();
+        noteReseat(vm, motion);
+    }
+    lastVm = vm;
     lastFrame = vm.qEstablished && Number.isFinite(vm.frameZero) &&
         Number.isFinite(state.islandPos)
         ? { zero: vm.frameZero,
+            // Where the frame RESTS — what a placement lands on (an
+            // import, a bounce, a song's anchor): never a tween's
+            // passing zero.
+            rest: vm.restZero,
             // The seat (frame.md §1) — the zero drawn, except under a
-            // live drag's pin. The default play start is measured from
-            // here (law 15).
+            // live drag's pin or a tween. The default play start is
+            // measured from here (law 15).
             seat: Number.isFinite(vm.seatedZero) ? vm.seatedZero : vm.frameZero,
             rawClock: state.islandPos + (state.islandZero ?? 0),
             loopSamples: (vm.loopCycleQ > 0 ? vm.loopCycleQ : vm.cycleQ) * vm.quantum,
@@ -821,7 +880,8 @@ function deriveFrame(state) {
     return vm;
 }
 
-/** Patch the view from `vm`. */
+/** Patch the view from `vm`; while a re-seat tween runs, re-derive and
+ * patch once per animation frame until it lands. */
 function patchFrame(vm, aux) {
     patchSessionView(vm, Object.assign({}, aux, {
         vmQuantum: vm.quantum,
@@ -829,12 +889,18 @@ function patchFrame(vm, aux) {
         // computed in the island frame (one-frame rule)
         frameZero: vm.frameZero,
     }));
+    if (reseatInMotion() && !reseatRaf) {
+        reseatRaf = requestAnimationFrame(() => {
+            reseatRaf = 0;
+            renderNow();
+        });
+    }
 }
 
 /**
  * requestRender (session_view/render_request.js): re-derive from the
- * LAST polled state — pins and pending edits as they are
- * now — and patch at once, without a poll. The playhead's
+ * LAST polled state — pins, the re-seat tween and pending edits as they
+ * are now — and patch at once, without a poll. The playhead's
  * dead-reckoner takes the frame's move, never the stale clock
  * (aux.rerender; animator.js animatorFrame).
  */
@@ -973,7 +1039,7 @@ function importVerdict(result, what) {
  * view seats (docs/frame.md); 0 before a frame exists, when the engine
  * takes the clock instead (the first-take rule). */
 function importOriginAt(q) {
-    return lastFrame ? lastFrame.zero + q * lastFrame.quantum : 0;
+    return lastFrame ? lastFrame.rest + q * lastFrame.quantum : 0;
 }
 
 /** The native chooser, placed at `q` (whole Q of the frame). */
@@ -1129,18 +1195,22 @@ function buildProjectMenu(menu) {
             ? 'Bounce refused — a take is live'
             : 'Bounce cancelled';
     // The song bounces from the frame zero the view has SEATED, so the
-    // file starts where the picture starts (docs/frame.md); a single
-    // lane bounces from its own top (the engine's default).
+    // file starts where the picture starts (docs/frame.md). A single
+    // lane bounces from its ↺ AS SHOWN (bounceStartOf): its own top on
+    // the loop that places the frame, the frame's top on every other —
+    // so a stem opens on the sample the song bounce does. A lane with
+    // no ↺ keeps the engine's default.
     const bounceTo = (id, start = null) =>
         call('bounceWithDialog', start === null ? [id] : [id, start], bounceVerdict);
     const songHasContent = lastRootId &&
         [...lastNodesById.values()].some(hasCommittedClip);
     item('Bounce song…',
-         () => bounceTo(lastRootId, lastFrame ? lastFrame.zero : null),
+         () => bounceTo(lastRootId, lastFrame ? lastFrame.rest : null),
          !songHasContent);
     if (selection.size === 1) {
         const sel = lastNodesById.get(activeSelectedId());
-        if (sel) item('Bounce selected…', () => bounceTo(sel.id),
+        if (sel) item('Bounce selected…',
+                      () => bounceTo(sel.id, bounceStartOf(lastVm, sel.id)),
                       !hasCommittedClip(sel));
     }
 
@@ -1248,9 +1318,20 @@ function wireKeyboard() {
     } });
     // Undo / redo (edits-as-events, §2.2 Step 1). Cmd/Ctrl+Z undoes;
     // Cmd/Ctrl+Shift+Z (or Ctrl+Y) redoes. The next poll refreshes
-    // the view from the restored graph.
-    const undo = e => { e.preventDefault(); callNative('undo'); setLogLine('Undo'); };
-    const redo = e => { e.preventDefault(); callNative('redo'); setLogLine('Redo'); };
+    // the view from the restored graph — with no preview or verdict of
+    // the edit it replaces left standing (dropStaleEditFeedback).
+    const undo = e => {
+        e.preventDefault();
+        dropStaleEditFeedback();
+        callNative('undo');
+        setLogLine('Undo');
+    };
+    const redo = e => {
+        e.preventDefault();
+        dropStaleEditFeedback();
+        callNative('redo');
+        setLogLine('Redo');
+    };
     app({ key: 'z', modifiers: ['primary'], handler: undo });
     app({ key: 'z', modifiers: ['primary', 'shift'], handler: redo });
     app({ key: 'y', modifiers: ['ctrl'], handler: redo });
@@ -1368,29 +1449,47 @@ function initApp() {
         // undo entry). Shifts are relative, so the verdict tracks what
         // the commits since the last verdict asked for: the re-time the
         // last poll showed plus every shift sent, and the last top sent.
-        onSetTiming: (() => {
-            const asked = new Map();  // node id → {retime, top} to land on
-            return async (id, shiftSamples, topSamples = null, live = false) => {
-                const prev = asked.get(id);
-                const base = prev ? prev.retime
-                    : ((lastNodesById.get(id) || {}).retime || 0);
-                const want = {
-                    retime: base + Math.round(shiftSamples),
-                    top: topSamples ?? (prev ? prev.top : null),
-                };
-                asked.set(id, want);
-                const r = await callNative('setTiming', id, shiftSamples,
-                                           topSamples, live);
-                scheduleVerify(id, n => {
-                    asked.delete(id);
-                    return Math.abs((n.retime || 0) - want.retime) <= 1 &&
-                        (want.top === null ||
-                         Math.abs((n.loopTop ?? -1) - want.top) <= 1);
-                }, 'Timing shifted — ⌘Z to undo',
-                   'Re-time refused by the engine — timing unchanged');
-                return r;
+        onSetTiming: async (id, shiftSamples, topSamples = null, live = false) => {
+            const prev = timingAsked.get(id);
+            const base = prev ? prev.retime
+                : ((lastNodesById.get(id) || {}).retime || 0);
+            const want = {
+                retime: base + Math.round(shiftSamples),
+                top: topSamples ?? (prev ? prev.top : null),
             };
-        })(),
+            timingAsked.set(id, want);
+            const r = await callNative('setTiming', id, shiftSamples,
+                                       topSamples, live);
+            scheduleVerify(id, n => {
+                timingAsked.delete(id);
+                return Math.abs((n.retime || 0) - want.retime) <= 1 &&
+                    (want.top === null ||
+                     Math.abs((n.loopTop ?? -1) - want.top) <= 1);
+            }, 'Timing shifted — ⌘Z to undo',
+               'Re-time refused by the engine — timing unchanged');
+            return r;
+        },
+        // A CANCELLED DRAG (Escape, a lost capture): the engine puts
+        // the node back where the gesture found it, drops the
+        // gesture's undo step and restores the redo branch it
+        // invalidated (cancelGesture). The verdict its live commits
+        // queued goes too — the graph is the gesture's start again, and
+        // "refused" (or "⌘Z to undo") would be a lie.
+        onCancelGesture: async id => {
+            const dropVerdict = () => {
+                clearTimeout(verifyTimers.get(id));
+                verifyTimers.delete(id);
+                timingAsked.delete(id);
+            };
+            dropVerdict();
+            const r = await callNative('cancelGesture', id);
+            // A live commit still in flight when the cancel was sent
+            // answered first (the bridge is in order) and queued its
+            // verdict meanwhile.
+            dropVerdict();
+            setLogLine('Cancelled — nothing changed');
+            return r;
+        },
         getInputs,
         onSetInput: (id, channelIndex) =>
             call('setNodeInput', [id, channelIndex],
@@ -1445,7 +1544,7 @@ function initApp() {
         onSetSequence: (id, payload) =>
             call('setSequence',
                 payload && id === lastRootId && lastFrame
-                    ? [id, payload, lastFrame.zero] : [id, payload],
+                    ? [id, payload, lastFrame.rest] : [id, payload],
                 payload ? 'sequence updated (⌘Z to undo)'
                         : 'sequence cleared (⌘Z to undo)'),
         onToggleSequenceBypass: id =>

@@ -292,6 +292,19 @@ backend state ──▶ deriveViewModel(state)   pure, unit-testable:
   full-span brackets: dragging one in CREATES the window; dragging back
   out to the full span removes it. Creation and deletion are the same
   gesture.
+- **Brackets wrap with the take tile (2026-10-01).** Window Qs are
+  content-relative, measured from the take tile. When the frame's end
+  clips that tile — a take performed mid-frame, as long as the frame —
+  its rest is drawn from the frame's start, and a bracket past the
+  frame's end is drawn there with it (`window_edit.js` `bracketQ`); the
+  pointer reads the content on the dragged edge's own side of the wrap
+  (`contentQNear`). Placed unwrapped, a bypassed window's end bracket
+  and chip, and a plain loop's latent end, sat past the lane's right
+  edge — a region could only be drawn in from its start. A whole take's
+  two latent brackets then share one line (the take's seam, mid-lane);
+  each keeps its own side of it (`.win-bracket.abut`). Pinned by
+  `window_wrap.test.mjs` and `slotted_loop.spec.js` ("Brackets on a take
+  tile that wraps the frame").
 - **Two-layer drag feedback.** The handle follows the pointer
   CONTINUOUSLY while a dashed snap-ghost bracket — plus live dims and
   the chip's length badge — previews the Q-snapped landing. You see your
@@ -497,10 +510,11 @@ time_maps.md §6.
 
     **The top is the SEAT** (2026-09-29): the bar line at the ↺ of the
     loop that places the frame (frame.md §1) — ruler 0 whenever no
-    drag's pin holds the frame (there is no edit hold since 2026-09-29;
-    before that, a held frame played the edited loop from mid-section:
-    drums trimmed to their last 19Q started 11Q in). A ruler-set start
-    is a spot pointed at in the frame as drawn, and stays one.
+    drag's pin holds the frame and no re-seat tween is still on its way
+    there (there is no edit hold since 2026-09-29; before that, a held
+    frame played the edited loop from mid-section: drums trimmed to
+    their last 19Q started 11Q in). A ruler-set start is a spot pointed
+    at in the frame as drawn, and stays one.
 
     This is **UI policy composed from two engine primitives** —
     `togglePlayback` (a pure pause/resume, which the engine's own flows
@@ -543,12 +557,33 @@ time_maps.md §6.
     later loop slots in where its ↺ falls, so editing a later loop never
     moves the frame or the play start. Outside a live drag's pin the
     frame IS the seat: an edit shows the true alignment immediately,
-    with no need to deselect. A re-render between polls (`requestRender`,
-    a gesture's `pending_edits.js` preview) still places the ruler's
-    ticks and every lane's gridlines from the zero drawn, and the
-    playhead's dead-reckoner is shifted by how far the zero moved
-    against the island zero — never fed a stale clock as a poll
-    (`animatorFrame`). Pinned by `frame_seat.test.mjs` (g).
+    with no need to deselect.
+
+    **The realign is a move, not a jump** (owner, 2026-10-01; the
+    re-seat tween, frame.md §1). When the seat itself moves — a swap
+    that drops the placing loop's ↺, a ↺ drag, the undo of either — the
+    frame moves onto it over ~200 ms, the shortest way round, landing
+    exactly (`session_view/reseat_tween.js`). It starts on the render
+    that would have jumped: nothing is held. A re-layout still snaps
+    (law 11: the frame's length or Q changed, a take live or armed), a
+    hand on the frame is never moved under (a move in motion completes
+    as the hand comes down, and the pin holds the seat it was moving
+    to), and `prefers-reduced-motion` jumps. The move is
+    animation-frame RE-DERIVES from the last poll — the same path a
+    gesture's local preview takes between polls (`requestRender`,
+    `pending_edits.js`) — so on every re-render: the ruler's ticks and
+    every lane's gridlines are PLACED from the zero drawn (reused
+    elements, never a keyed rebuild), so the grid scrolls with the
+    picture, each label naming its line where the move lands it
+    (`buildRulerTicks`); tiles drop their own morph while the zero
+    moves (`#lanes.frame-tweening`), or they would trail it; and the
+    playhead's dead-reckoner is shifted, on every patch, by how far the
+    zero moved against the island zero, and fed nothing else
+    (`animatorFrame`) — fed as a poll, a stale clock reads as a jump
+    back and stalls the sweep (a seek, which moves the island zero with
+    the frame, still reads as the teleport it is). Pinned by
+    `frame_seat.test.mjs` (g), `reseat_tween.test.mjs` and
+    `e2e/reseat_tween.spec.js`.
 18. **A drifting loop shows the pass you hear** (Q22, 2026-09-24). A
     loop whose length fits no whole number of Qs (Q was handed to
     another track and re-trimmed, design_language Q22) lines up

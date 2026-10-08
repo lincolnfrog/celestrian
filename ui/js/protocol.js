@@ -67,6 +67,14 @@ export const BRIDGE_METHODS = [
     // this pass (non-destructive; a documented follow-up).
     { name: 'undo', params: [] },
     { name: 'redo', params: [] },
+    // A CANCELLED DRAG (Escape, a lost capture): the gesture open on
+    // `uuid` puts back exactly what it found and leaves no trace — the
+    // undo step its live commits coalesced into is applied and dropped
+    // (never redo-able), and the redo branch that step invalidated
+    // returns. A no-op with no gesture open there, or one that logged
+    // nothing. (Restoring by one more commit left a no-op undo step and
+    // the redo branch gone.)
+    { name: 'cancelGesture', params: ['uuid'] },
 
     // Save / Load (edits-as-events Step 2). A session is a bundle dir
     // (session.json + audio/*.wav), device-independent + QTime-based

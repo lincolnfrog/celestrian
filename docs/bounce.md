@@ -24,14 +24,33 @@ bounced the same way. No N-cycles dialog, no selection-dependent scope.
   bounces the song from the frame zero the view has seated, so the
   file starts where the picture starts (frame.md, 2026-09-17) — the
   engine reads no frame of its own.
-- **A clip starts at its ↺ top (owner, 2026-09-24;
-  loop_selection.md §9):** "Bounce selected…" on a clip opens the file
-  on the loop's one — the top's moment, `origin + a0 + heardOffset(T)`
-  — not on the splice where the recording wraps; the two part after a
-  swap (the ↺ stays on bar 5, the splice moves to bar 2), and a file
-  starting at the splice would open mid-phrase. An unset top is the
-  region start, so a clip never re-topped bounces exactly as before; a
-  stack stores no top in Phase 2 and keeps its frame top.
+- **A loop starts at its ↺ — as shown (owner, 2026-09-24 and
+  2026-10-01; loop_selection.md §9, §13.3):** "Bounce selected…" opens
+  the file on the loop's one, not on the splice where the recording
+  wraps; the two part after a swap (the ↺ stays on bar 5, the splice
+  moves to bar 2), and a file starting at the splice would open
+  mid-phrase. Which moment that is follows the ↺ the lane WEARS
+  (frame.md §1):
+  - the loop that **places the frame** shows its own top, and bounces
+    from it — the top's moment, `origin + a0 + heardOffset(T)`;
+  - every **other** loop's ↺ is the sample it plays at the frame's top,
+    so it bounces from the frame's top: the very sample "Bounce song…"
+    starts on. Stems of different tracks line up with each other and
+    with the song. (Its *stored* top is a moment nothing on screen
+    marks — until 2026-10-01 a clip-3 bounce opened there.)
+
+  The app names that start (`view_model.js` `bounceStartOf`: the zero
+  drawn plus the ↺'s place on the lane; `bounce(uuid, path, start)`). A
+  lane with no ↺ — a one-shot, the Q-definer, a member shown through
+  its parent's map — is left to the engine's default: its frame top
+  plus its own top's heard offset, for a clip and for an anchored
+  group alike (the top lives on `AudioNode`; until 2026-10-01 the
+  default read it off clips only). An unset top is the region start, so
+  a node never re-topped starts at its frame top, as before tops
+  existed. One pass from any moment is the loop's own pass, rotated —
+  the render is the kernel equation at absolute time — so a named start
+  before the node's origin, or before the clock's zero, is as good as
+  any (`tests/bounce_tests.cc` "A named start").
 - **The span — root:** one effective cycle
   (`calculateEffectiveCycleLength`; Q19 — the cycle the transport wraps
   on, so a root window shorter than Q repeats within it).
@@ -82,5 +101,9 @@ take is bounced, then the live callback is driven from the same frame
 top over the same cycle, and the WAV equals the output sample for
 sample on both channels. Alongside: a windowed group spans exactly its
 effective period, a live take refuses, an echo tail rings past the
-span and ends under the floor. UI: `ui/js/mock/bounce.js` is the mock
-twin; `ui/e2e/bounce.spec.js` drives the project menu.
+span and ends under the floor; a clip and a group each open on their
+↺; a named start renders the loop's own pass, rotated (a window, a cut
+map, a group). UI: `ui/js/mock/bounce.js` is the mock twin;
+`ui/js/tests/top_fields.test.mjs` pins the start the app names
+(`bounceStartOf`), and `ui/e2e/bounce.spec.js` drives the project menu
+— the song, and a selected loop that slots into the frame.

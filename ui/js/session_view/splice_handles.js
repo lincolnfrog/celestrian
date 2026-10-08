@@ -45,14 +45,26 @@
  * (.lr-layer), positioned on EVERY patch. The overlay rebuilds on key
  * changes and freezes through a drag, and these must move with a drag's
  * preview (the other repeats of the grabbed splice, the ↺ riding a
- * shift) and glide. A live edit's chrome is CREATED mid-gesture (a
- * repeat that enters the frame); nothing is REMOVED until the gesture
- * ends — the grabbed handle holds the pointer capture (§7).
+ * shift) and with the frame when it moves onto a new seat. A live
+ * edit's chrome is CREATED mid-gesture (a repeat that enters the
+ * frame); nothing is REMOVED until the gesture ends — the grabbed
+ * handle holds the pointer capture (§7).
  *
- * THE GLIDE: an instant edit that RESETS the ↺ — a cut, heal, nudge,
- * undo or redo moving the top's raw sample, and so where it sounds —
- * glides it TOP_GLIDE_MS to its new place instead of jumping. Never
- * under a hand.
+ * NO GLIDE OF ITS OWN (removed 2026-10-01): an edit that RESETS the ↺ —
+ * a cut, heal, nudge, undo or redo dropping its raw sample — lands it
+ * on its new place at once. Where that moves the frame's seat (the
+ * loop that places the frame), the whole frame then moves onto it
+ * (reseat_tween.js), the ↺ with it; on any other loop the ↺ rests at
+ * the frame's top and never moves on screen.
+ *
+ * BOTH EDGES (2026-10-01): a splice resting on the frame's left edge
+ * shows at the right edge too (.lr-end, spliceSpots) — the loop's END,
+ * grabbed where the loop ends. ⇧ moves the end of the material BEFORE a
+ * splice, so the right-edge handle shortens by dragging INWARD, with
+ * the material it gives up in view; the left-edge one lengthens the
+ * same way. With the left one alone (the placing loop's wrap sits there
+ * always) shortening meant dragging off the lane, where the reveal's
+ * edge pan ran the length away.
  *
  * THE RECORDING GATE: under it every handle draws INERT (.lr-inert, the
  * gate's tooltip, no gesture) — where the loop is stays visible.
@@ -70,16 +82,14 @@ import { el, pct, setStyle, setText, setTitle } from './sv_util.js';
 import { isGestureLive, isOverlayFrozen } from './gesture.js';
 import { selectOnly } from './selection.js';
 import { bandState, coveredSegs, commitBandSegs, commitTiming, runRawDrag,
-         lengthMoveFn, timingText, fmtSignedQ, WHOLE_Q_TOL,
+         cancelBandGesture, lengthMoveFn, timingText, fmtSignedQ, WHOLE_Q_TOL,
          LOCKED_TITLE } from './map_core.js';
 import { runRevealDrag } from './map_bands.js';
-import { slideSeam, healCut } from '../map_edit.js';
+import { slideSeam, slideSeamWhole, healCut } from '../map_edit.js';
 import { posMod, foldShift } from '../math_utils.js';
 import { setPendingEdit, clearPendingEdit, pendingEditOf } from './pending_edits.js';
 import { requestRender } from './render_request.js';
 
-/* The ↺'s glide to a reset top (the prototype's, owner-approved). */
-export const TOP_GLIDE_MS = 380;
 /* A splice within this of its period's end is ON the left edge (the
  * next repeat's), not a sliver past the right one. */
 const EDGE_EPS = 1e-7;
@@ -103,8 +113,6 @@ const CHIP_RIGHT_PX = 4;
 const SNAP_GHOST_MIN_PX = 1.5;
 /* The drag badge keeps this far inside the lane's edges (px). */
 const BADGE_INSET_PX = 4;
-/* A change of the ↺ smaller than this (Q) is not a move (fp noise). */
-const TOP_MOVE_EPS_Q = 1e-6;
 
 const TITLES = {
     wrap: 'Splice: where the recording jumps from the loop\'s end back ' +
@@ -162,24 +170,45 @@ export function wantsLaneTop(lane) {
  * Every heard splice across the frame: the WRAP (j = 0, at the region
  * start's heard position `anchorQ`) and one per inner cut (j ≥ 1, the
  * kept length before it later), each on every repeat of `periodQ`
- * inside [0, cycleQ).
+ * inside [0, cycleQ) — and, for a splice that sits ON the frame's left
+ * edge, at the frame's RIGHT edge too (`end: true`, x = cycleQ).
+ *
+ * BOTH EDGES (2026-10-01): a splice on the left edge is the end of the
+ * last repeat as much as the start of the first, and that end is the
+ * frame's right edge. Since 2026-09-29 the loop that places the frame
+ * has its ↺ — so, untouched, its wrap — on the left edge ALWAYS, and
+ * drawn there alone the loop had no handle at its end: ⇧ on a splice
+ * moves the end of the material BEFORE it, so shortening the loop meant
+ * dragging the left-edge handle further left, off the lane, where the
+ * reveal's edge pan ran the length away (a 1.2Q drag took 3Q). It is
+ * the owner's 2026-08-18 report again — "the right handle is gone".
+ * The right-edge handle is that right handle: the same splice, grabbed
+ * where the loop ends; dragged inward it shortens (⇧) or swaps, with
+ * the material it moves over in view. The left-edge one lengthens the
+ * same way.
  *
  * @param {Array<[number, number]>} segs  the covered set, raw Q
  * @param {number} anchorQ  where the wrap first sounds (lane.takeStartQ)
  * @returns {Array<{kind: 'wrap'|'cut', j: number, k: number, x: number,
- *                  cut: ?[number, number]}>}
+ *                  cut: ?[number, number], end?: boolean}>}
  */
 export function spliceSpots(segs, anchorQ, periodQ, cycleQ) {
     const out = [];
     if (!(periodQ > 0) || !(cycleQ > 0) || !segs || !segs.length) return out;
     let h = 0;
     segs.forEach(([s, e], j) => {
+        const spot = { kind: j === 0 ? 'wrap' : 'cut', j,
+                       cut: j ? [segs[j - 1][1], s] : null };
         let x = posMod(anchorQ + h, periodQ);
         if (x > periodQ - EDGE_EPS) x -= periodQ;  // ON the left edge
-        for (let k = 0; x < cycleQ - EDGE_EPS && out.length < MAX_SPOTS; k++) {
-            out.push({ kind: j === 0 ? 'wrap' : 'cut', j, k, x,
-                       cut: j ? [segs[j - 1][1], s] : null });
+        let k = 0;
+        for (; x < cycleQ - EDGE_EPS && out.length < MAX_SPOTS; k++) {
+            out.push({ ...spot, k, x });
             x += periodQ;
+        }
+        // The next repeat lands ON the right edge: the loop's end.
+        if (Math.abs(x - cycleQ) <= EDGE_EPS && out.length < MAX_SPOTS) {
+            out.push({ ...spot, k, x: cycleQ, end: true });
         }
         h += e - s;
     });
@@ -241,30 +270,11 @@ export function predictTop(segsQ, top, quantum) {
     return segs[0][0];
 }
 
-/** The ↺'s glide offset (Q) at `now`: from where it was toward where it
- * is, eased; 0 once landed. */
-export function glideOffset(glide, now) {
-    if (!glide) return 0;
-    const p = Math.min(1, Math.max(0, (now - glide.t0) / TOP_GLIDE_MS));
-    return (glide.from - glide.to) * (1 - easeInOut(p));
-}
-
-const easeInOut = p => p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
-
 /** A cut splice's tab: its length, whole Qs bare, a fraction flagged. */
 function cutTabText(cut) {
     const len = cut[1] - cut[0];
     const whole = Math.abs(len - Math.round(len)) < WHOLE_Q_TOL;
     return '‖ ' + (whole ? Math.round(len) : len.toFixed(2)) + 'Q' + (whole ? '' : ' ⚠');
-}
-
-function reducedMotion() {
-    try {
-        return !!(typeof window !== 'undefined' && window.matchMedia &&
-            window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-    } catch (_) {
-        return false;
-    }
 }
 
 /* ---------- the layer ---------- */
@@ -275,7 +285,6 @@ function layerOf(body) {
         body._lrLayer = el('div', 'body-layer lr-layer');
         body.appendChild(body._lrLayer);
         body._lrPools = new Map();   // 'wrap' | 'cut<j>' | 'top' → elements
-        body._lrTops = [];           // the placed ↺s: { el, x } (the glide)
     }
     return body._lrLayer;
 }
@@ -284,7 +293,6 @@ function layerOf(body) {
 function dropAll(body) {
     if (body._lrLayer) body._lrLayer.textContent = '';
     body._lrPools = new Map();
-    body._lrTops = [];
 }
 
 /** Every handle hidden but the grabbed one (a gesture still runs). */
@@ -293,7 +301,6 @@ function hideAll(body) {
     for (const els of (body._lrPools || new Map()).values()) {
         for (const h of els) if (!d || h !== d.el) setStyle(h, 'display', 'none');
     }
-    body._lrTops = [];
 }
 
 /**
@@ -315,8 +322,6 @@ export function patchSpliceHandles(body, overlay, lane, vm, cycleQ) {
     const withTop = wantsLaneTop(lane);
     if (!splices && !withTop) {
         body._lrCtx = null;
-        body._lrTopPrev = null;
-        body._lrGlide = null;
         if (body._lrLayer) {
             if (keep) hideAll(body);
             else dropAll(body);
@@ -337,29 +342,8 @@ export function patchSpliceHandles(body, overlay, lane, vm, cycleQ) {
         plain: isPlainLoop(lane),
     };
     body._lrCtx = c;
-    noteTop(body, c, keep);
     layoutHandles(body, keep);
     layoutDrag(body);
-}
-
-/** Watch the ↺ for a RESET — its raw sample changed AND so did where it
- * sounds, with no hand on it and no preview resolving — and glide it
- * (the prototype's glideTop: the ↺ glides, the splice lands). A heal or
- * a re-time moves the ↺ with its audio, its sample unchanged: no glide. */
-function noteTop(body, c, keep) {
-    const prev = body._lrTopPrev;
-    const cur = c.withTop ? { topQ: c.lane.topQ, heardQ: c.lane.topHeardQ } : null;
-    body._lrTopPrev = cur;
-    if (!cur || keep || reducedMotion()) {
-        body._lrGlide = null;
-        return;
-    }
-    if (!prev || pendingEditOf(c.lane.id)) return;
-    if (Math.abs(cur.topQ - prev.topQ) > TOP_MOVE_EPS_Q &&
-        Math.abs(cur.heardQ - prev.heardQ) > TOP_MOVE_EPS_Q) {
-        body._lrGlide = { from: prev.heardQ, to: cur.heardQ, t0: performance.now() };
-        glideLoop(body);
-    }
 }
 
 /**
@@ -407,8 +391,6 @@ function layoutHandles(body, keep) {
     // The heard chip (top-right): the ↺ tab keeps clear of it.
     const chipW = c.withTop ? chipWidth(c.overlay) : 0;
     const chipLeft = chipW > 0 ? W - CHIP_RIGHT_PX - chipW : Infinity;
-    const off = glideOffset(body._lrGlide, performance.now());
-    const tops = [];
     for (const [name, spots] of byPool) {
         const els = body._lrPools.get(name) || [];
         const kind = name === 'top' ? 'top' : name === 'wrap' ? 'wrap' : 'cut';
@@ -425,13 +407,12 @@ function layoutHandles(body, keep) {
             // snap ghost), even where its repeat has left the frame.
             let x;
             if (grabbed && (drag.kind !== 'length' || !sp)) x = drag.followX;
-            else if (sp) x = sp.x + (kind === 'top' ? off : 0);
+            else if (sp) x = sp.x;
             else continue;
             placeHandle(h, x, c, {
                 kind, sp, grabbed, chipLeft,
                 inert: kind === 'top' ? !lane.canRetime : !st.editable,
             });
-            if (kind === 'top' && !grabbed) tops.push({ el: h, x: sp.x });
         }
         // Left over: out when no gesture runs, else hidden (never the
         // grabbed one — pairHandles always places it).
@@ -446,7 +427,6 @@ function layoutHandles(body, keep) {
         if (next.length) body._lrPools.set(name, next);
         else body._lrPools.delete(name);
     }
-    body._lrTops = tops;
 }
 
 /** The heard chip's width (px), measured once per text — a layout read
@@ -463,8 +443,11 @@ function chipWidth(overlay) {
 }
 
 /** Does the handle at lane position `x` wear its tab — the take's
- * (inTakeTile; a plain loop's ↺: the take's pass, inTakePass)? */
-function isTakeSpot(c, x) {
+ * (inTakeTile; a plain loop's ↺: the take's pass, inTakePass)? A
+ * splice at the frame's right edge (`end`, spliceSpots) is the END of
+ * the tile before it: the take's when that tile is. */
+function isTakeSpot(c, x, end = false) {
+    if (end) return inTakeTile(c.lane.reps, x - 2 * TILE_EPS);
     return c.plain ? inTakePass(c.lane.reps, x, c.st.periodQ, c.cycleQ)
         : inTakeTile(c.lane.reps, x);
 }
@@ -478,7 +461,9 @@ function placeHandle(h, x, c, { kind, sp, grabbed, chipLeft, inert }) {
     const px = W * x / cycleQ;
     h.classList.toggle('lr-at-left', px < TAB_EDGE_LEFT_PX);
     h.classList.toggle('lr-at-right', px > W - TAB_EDGE_RIGHT_PX);
-    h.classList.toggle('lr-ghost', !grabbed && !isTakeSpot(c, x));
+    // The loop's END handle, at the frame's right edge (spliceSpots).
+    h.classList.toggle('lr-end', !!(sp && sp.end));
+    h.classList.toggle('lr-ghost', !grabbed && !isTakeSpot(c, x, !!(sp && sp.end)));
     h.classList.toggle('lr-inert', !!inert);
     setTitle(h, inert ? LOCKED_TITLE : TITLES[kind]);
     if (kind === 'top') {
@@ -508,39 +493,6 @@ function makeHandle(body, kind, pool) {
     h.addEventListener('dblclick', onHeal);
     if (kind === 'cut') h.addEventListener('contextmenu', onHeal);
     return h;
-}
-
-/** Re-place the gliding ↺s (the glide's animation frames). */
-function placeTops(body) {
-    const c = body._lrCtx;
-    if (!c) return;
-    const off = glideOffset(body._lrGlide, performance.now());
-    for (const { el: h, x } of body._lrTops || []) {
-        setStyle(h, 'left', pct(x + off, c.cycleQ));
-        h.classList.toggle('lr-ghost', !isTakeSpot(c, x + off));
-    }
-}
-
-const gliding = new Set();
-let glideRaf = 0;
-
-/** Run the glide's animation frames until every glide has landed. */
-function glideLoop(body) {
-    gliding.add(body);
-    if (glideRaf || typeof requestAnimationFrame !== 'function') return;
-    const tick = () => {
-        glideRaf = 0;
-        const now = performance.now();
-        for (const b of [...gliding]) {
-            if (!b.isConnected || !b._lrGlide) { gliding.delete(b); continue; }
-            const done = now - b._lrGlide.t0 >= TOP_GLIDE_MS;
-            if (done) b._lrGlide = null;
-            placeTops(b);
-            if (done) gliding.delete(b);
-        }
-        if (gliding.size) glideRaf = requestAnimationFrame(tick);
-    };
-    glideRaf = requestAnimationFrame(tick);
 }
 
 /* ---------- the drag chrome ---------- */
@@ -670,10 +622,17 @@ export function previewer(laneId) {
 /** The lane's top as the engine will publish it after a swap (clip or
  * group, fractal): the
  * reconcile from the effective top the gesture starts with — the one
- * every live commit of it reconciles from too (AudioEngine::record). */
-function topAfterSwap(lane, st) {
+ * every live commit of it reconciles from too (AudioEngine::record).
+ * That is the engine's OWN top (lane.storedTopQ), never the ↺ as shown:
+ * on a loop that slots into the frame the ↺ shows where it starts
+ * playing (view_model topFields), which the engine neither stores nor
+ * publishes — predicted from it, the preview's top never matched the
+ * engine's answer, so the preview outlived its commit by the whole
+ * hold cap and an undo, a nudge or a panel edit made meanwhile did not
+ * show. Exported for the tests. */
+export function topAfterSwap(lane, st) {
     const q = st.quantum;
-    const T0 = Math.round((lane.topQ || 0) * q);
+    const T0 = Math.round((lane.storedTopQ ?? lane.topQ ?? 0) * q);
     return segsQ => predictTop(segsQ, T0, q);
 }
 
@@ -707,6 +666,8 @@ function onHeal(ev) {
     const c = h._body._lrCtx;
     const sp = h._spot;
     if (!c || !sp || h._kind !== 'cut' || !sp.cut || !c.st.editable) return;
+    // Both clicks have landed: the claim is safe now (and drops the one
+    // the second click's gesture left waiting).
     selectOnly(c.lane.id);
     commitBandSegs(c.st, healCut(c.st.segs, sp.cut[0], sp.cut[1], c.st.totalQ));
 }
@@ -722,7 +683,6 @@ function startSpliceDrag(ev, h, body) {
     const c = body._lrCtx;
     const sp = h._spot;
     const { lane, st, cycleQ } = c;
-    selectOnly(lane.id);  // grabbing a handle claims the track
     const segs0 = coveredSegs(st).map(s => s.slice());
     const S = st.periodQ;
     const pxPerQ = body.getBoundingClientRect().width / cycleQ;
@@ -735,12 +695,16 @@ function startSpliceDrag(ev, h, body) {
     const show = segsQ => pv.show({ segments: flatOf(segsQ, st.quantum), top: topOf(segsQ) });
     const d = beginDrag(body, h, 'splice', sp.x);
     const run = runRawDrag(ev, c.overlay, st, {
+        claim: lane.id,  // a handle's gesture claims the track, at its end
         rawQAt: x => sp.x + (x - ev.clientX) / pxPerQ,
         clamp: false,
         onMove: (pq, alt) => {
             if (pq === null) return { segs: segs0, deltaQ: 0, pq: sp.x, alt };
             const free = pq - sp.x;
-            const r = slideSeam(segs0, sp.j, alt ? free : Math.round(free), st.totalQ);
+            // Whole Qs from the grab (never the clamp's fractional
+            // bound — a sliver, a re-gridded offset); ⌥ = free.
+            const r = alt ? slideSeam(segs0, sp.j, free, st.totalQ)
+                          : slideSeamWhole(segs0, sp.j, free, st.totalQ);
             return { segs: r.segs, deltaQ: r.deltaQ, pq, alt };
         },
         preview: res => {
@@ -754,7 +718,7 @@ function startSpliceDrag(ev, h, body) {
             layoutDrag(body);
         },
         restore: last => {
-            const p = last ? commitBandSegs(st, segs0, true) : undefined;
+            const p = last ? cancelBandGesture(st) : undefined;
             if (p) show(segs0);
             else pv.restore(null);
             return p;
@@ -781,7 +745,6 @@ function startLengthDrag(ev, h, body) {
     const c = body._lrCtx;
     const sp = h._spot;
     const { lane, st } = c;
-    selectOnly(lane.id);
     const segs0 = coveredSegs(st).map(s => s.slice());
     const j = sp.kind === 'cut' ? sp.j : 0;
     const gi = j > 0 ? j - 1 : segs0.length - 1;
@@ -799,7 +762,6 @@ function startTopDrag(ev, h, body) {
     const c = body._lrCtx;
     const sp = h._spot;
     const { lane, vm, st, cycleQ } = c;
-    selectOnly(lane.id);
     const q = st.quantum;
     const pxPerQ = body.getBoundingClientRect().width / cycleQ;
     const msPerQ = vm.sampleRate > 0 ? q / vm.sampleRate * 1000 : 0;
@@ -809,6 +771,7 @@ function startTopDrag(ev, h, body) {
     let sent = 0;        // samples this gesture has committed
     let lastP;           // its last commit
     const run = runRawDrag(ev, c.overlay, st, {
+        claim: lane.id,
         rawQAt: x => (x - ev.clientX) / pxPerQ,
         clamp: false,
         onMove: (dx, alt) => {
@@ -839,7 +802,9 @@ function startTopDrag(ev, h, body) {
                 pv.restore(null);
                 return undefined;
             }
-            const p = sent ? commitTiming(st, -sent, null, true) : lastP;
+            // Whatever was sent — a net shift of nothing included — its
+            // step goes: the log is as the gesture found it.
+            const p = cancelBandGesture(st);
             sent = 0;
             pv.restore({ originShift: 0 });
             return p;

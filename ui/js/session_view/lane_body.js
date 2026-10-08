@@ -30,7 +30,7 @@ import { buildWindowDims, dimComplementInto } from './dims.js';
 import { wireBandCreate, appendCutBands, appendTrimGrips, patchRevealCursor }
     from './map_bands.js';
 import { patchSpliceHandles } from './splice_handles.js';
-import { wireWindow } from './window_edit.js';
+import { wireWindow, bracketQ } from './window_edit.js';
 import { isOverlayFrozen, isGestureLive } from './gesture.js';
 import { mapDragPinQ } from './drag_pin.js';
 import { appendCompCells, patchCompCanvases, compKey } from './comp_cells.js';
@@ -334,11 +334,13 @@ function geometryChanged(prev, next) {
  * is one), the frame pin is held (drag_pin.js), this lane's overlay or
  * its region panel's strip is frozen or held for a commit, or the map
  * geometry of any lane changed since the last patch (a ← / → nudge, an
- * undo, the release commit landing) — and for EDIT_SETTLE_MS after
- * the last such sign. While true, patchLaneBody removes surplus tiles
- * at once and content swaps skip the cross-fade: each live splice
- * re-lays the heard tiles, and a fading copy of the old layout over
- * the new one is a double image on every whole-Q trim step.
+ * undo, the release commit landing), or the frame is moving onto a new
+ * seat (the re-seat tween re-lays every lane's tiles each frame) — and
+ * for EDIT_SETTLE_MS after the last such sign. While true,
+ * patchLaneBody removes surplus tiles at once and content swaps skip
+ * the cross-fade: each live splice re-lays the heard tiles, and a
+ * fading copy of the old layout over the new one is a double image on
+ * every whole-Q trim step.
  *
  * @param {?Element} row the lane row (its region panel's strip is read)
  * @param {?Element} body the lane body
@@ -358,6 +360,7 @@ export function mapEditInFlight(row, body, vm, now = performance.now()) {
     }
     const strip = row && row._regionStrip;
     if (isGestureLive() || mapDragPinQ() !== null ||
+        (vm && vm.frameTweening) ||
         (body && isOverlayFrozen(body)) || (strip && isOverlayFrozen(strip))) {
         editSeenAt = now;
     }
@@ -775,10 +778,19 @@ export function patchLaneBody(row, lane, vm, aux) {
             const qDef = !!lane.isQDefiner;
             const qCls = qDef ? ' q-definer' : '';
             const latentCls = latent ? ' latent' : '';
-            const b1 = el('div', 'win-bracket start' + latentCls + qCls);
-            b1.style.left = pct(anchorQ + startQ, cycleQ);
-            const b2 = el('div', 'win-bracket end' + latentCls + qCls);
-            b2.style.left = pct(anchorQ + endQ, cycleQ);
+            // A take tile the frame's end clips draws its rest at the
+            // frame's start: the brackets wrap with it (bracketQ) —
+            // unwrapped, an end bracket past the frame sat off the lane
+            // (a bypassed window's, a plain loop's latent one). Two
+            // brackets that land on one line (a whole take whose seam
+            // is mid-lane) each keep their own side of it (.abut).
+            const startAt = bracketQ(anchorQ + startQ, cycleQ, 'start');
+            const endAt = bracketQ(anchorQ + endQ, cycleQ, 'end');
+            const abut = Math.abs(startAt - endAt) < 1e-6 ? ' abut' : '';
+            const b1 = el('div', 'win-bracket start' + latentCls + qCls + abut);
+            b1.style.left = pct(startAt, cycleQ);
+            const b2 = el('div', 'win-bracket end' + latentCls + qCls + abut);
+            b2.style.left = pct(endAt, cycleQ);
             o.append(b1, b2);
             if (!latent || qDef) {
                 const chip = document.createElement('div');
@@ -798,8 +810,8 @@ export function patchLaneBody(row, lane, vm, aux) {
                     // A window ending AT the display cycle would put the
                     // chip past the lane's overflow clip — align it inward
                     chip.className = 'win-chip' +
-                        (anchorQ + endQ >= cycleQ ? ' at-end' : '');
-                    chip.style.left = pct(anchorQ + endQ, cycleQ);
+                        (endAt >= cycleQ ? ' at-end' : '');
+                    chip.style.left = pct(endAt, cycleQ);
                     chip.textContent = win.suspended
                         ? 'window · suspended (sequence off)'
                         : bypassed ? 'window · bypassed'

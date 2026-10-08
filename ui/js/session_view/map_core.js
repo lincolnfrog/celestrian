@@ -200,6 +200,19 @@ export function commitTiming(st, shiftSamples, topSamples = null, inGesture = fa
         Number.isFinite(topSamples) ? Math.round(topSamples) : null, live);
 }
 
+/** A CANCELLED gesture's undo (the engine's cancelGesture;
+ * loop_selection.md §14): the lane goes back exactly where the gesture
+ * found it — map, origin, re-time and top, an unset top unset again —
+ * and the log keeps no trace: the gesture's undo step is dropped and
+ * the redo branch it invalidated returns. Every cancel used to restore
+ * by one more live commit, which left a no-op undo step on the stack,
+ * the redo branch gone and "⌘Z to undo" on the status line. Returns the
+ * promise the caller holds its picture on, as a commit's. */
+export function cancelBandGesture(st) {
+    gestureLive = false;
+    return ctx.cb.onCancelGesture(st.laneId);
+}
+
 /* ---------- the readouts ---------- */
 
 /** A Q amount for a badge or readout: whole Qs bare, fractions to three
@@ -588,12 +601,17 @@ export function lengthMoveFn(st, segs0, j) {
  *     onRelease,(committed, engaged) at the pointer's end, once the
  *               final commit is sent (the preview may still be up)
  *     onTeardown,() when the preview comes down: see THE HELD PICTURE
+ *     claim,    the lane id this handle's gesture claims — when it ENDS
+ *               (gesture.js beginGesture: never under the hand)
  *   }) → { live, reapply }
  *
  * Live commits stream (throttled, audible) while dragging; release
  * commits the last preview; a cancel (Escape, lost capture, blur)
  * restores the map the gesture began on — the live splices already
- * reached the engine, so doing nothing would keep the preview.
+ * reached the engine, so doing nothing would keep the preview — by
+ * CANCELLING the gesture (cancelBandGesture): its undo step is dropped
+ * and the redo branch it invalidated returns, so a cancelled drag
+ * leaves the log exactly as it found it.
  * `reapply()` re-evaluates the pointer's last position against the
  * CURRENT view (the reveal calls it while it pans under a still hand).
  *
@@ -615,8 +633,9 @@ export function lengthMoveFn(st, segs0, j) {
  *   preview:  (res) → draw it (a pending edit + requestRender);
  *   commit:   (res, final) → send it; the promise, or undefined when
  *             nothing was sent (live calls are throttled here);
- *   restore:  (last) → a cancel's commit putting back what the gesture
- *             found (undefined: nothing to undo);
+ *   restore:  (last) → a cancel: put back what the gesture found
+ *             (cancelBandGesture) and its promise (undefined: nothing
+ *             was sent, nothing to undo);
  *   held:     (res | null) → the picture held after release (the
  *             landing; null after a cancel) while the commit settles;
  *   teardown: () → take the preview down (the deferred teardown).
@@ -628,7 +647,8 @@ export function runRawDrag(ev, o, st, { rawQAt, view = null, onMove,
                                         onRelease = null, onTeardown = null,
                                         clamp = true, preview = null,
                                         commit = null, restore = null,
-                                        held = null, teardown = null }) {
+                                        held = null, teardown = null,
+                                        claim = null }) {
     const downX = ev.clientX;
     let engaged = false;
     let last = null;
@@ -647,7 +667,7 @@ export function runRawDrag(ev, o, st, { rawQAt, view = null, onMove,
     const send = commit ||
         (res => res.segs ? commitBandSegs(st, res.segs, true) : undefined);
     const unsend = restore ||
-        (l => (l && l.segs) ? commitBandSegs(st, restoredSegs(), true) : undefined);
+        (l => (l && l.segs) ? cancelBandGesture(st) : undefined);
     const hold = held || (res => {
         renderRawPreview(o, st, res ? res.segs : restoredSegs(), null, null, view());
         o.classList.add('drag-held');
@@ -687,6 +707,7 @@ export function runRawDrag(ev, o, st, { rawQAt, view = null, onMove,
     newGesture();  // its first commit is a new undo step
     const g = beginGesture(ev, {
         stop: true,
+        claim,
         onMove: mv => {
             lastX = mv.clientX;
             lastAlt = mv.altKey;

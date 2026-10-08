@@ -383,12 +383,16 @@ in the doc that owns its feature, but each has a pointer here.
   ⇧-drag on a splice changes the length there. (d) THE EDIT HOLD
   (2026-09-24) is REVOKED (owner, 2026-09-29): the main view shows the
   loops' true alignment at once — an edit realigns it, no deselect;
-  the seat reads the top's moment, floor with a ¼Q pickup. Spec loop_selection.md §9–
-  §10, frame.md §1, time_maps.md §6–§7; pinned by the goldens
+  the seat reads the top's moment, floor with a ¼Q pickup. (e) THE
+  RE-SEAT TWEEN (owner, 2026-10-01): that realign is DRAWN, not jumped
+  — when the seat moves the whole frame moves onto it over ~200 ms,
+  starting at once, never under a hand, snapping only where the frame
+  is re-laid out; the ↺'s own glide is retired with it. Spec loop_selection.md §9–
+  §10, §12–§13, frame.md §1, time_maps.md §6–§7; pinned by the goldens
   `top_reconcile_cases` and `effective_top_cases`, scenario S41,
-  `frame_seat`, `pending_edits`, `top_fields`,
+  `frame_seat`, `reseat_tween`, `pending_edits`, `top_fields`,
   `set_timing` and `splice_handles` tests, and
-  `ui/e2e/splice_handles.spec.js`.
+  `ui/e2e/splice_handles.spec.js` and `reseat_tween.spec.js`.
 - **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
   2026-09-17; frame.md §4):** a song authored on the root anchors the
   root — Q18 at depth 0 — at the zero the view had seated when the

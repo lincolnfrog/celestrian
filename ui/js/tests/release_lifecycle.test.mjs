@@ -94,14 +94,19 @@ function deferred() {
 }
 const flushMicrotasks = () => new Promise(r => setImmediate(r));
 
-/** The bridge: every setSegments call is recorded and answered when
- * the test says so. */
+/** The bridge: every setSegments call — and a cancelled gesture's
+ * cancelGesture — is recorded and answered when the test says so. */
 function fakeBridge() {
     const calls = [];
     ctx.cb = {
         onSetSegments: (id, flat, live) => {
             const d = deferred();
             calls.push({ flat, live, answer: d.resolve });
+            return d.p;
+        },
+        onCancelGesture: id => {
+            const d = deferred();
+            calls.push({ cancel: id, answer: d.resolve });
             return d.p;
         },
     };
@@ -205,8 +210,13 @@ test('a cancel holds the restore — the pin and the preview wait for it too', a
     const g = slideGesture();
     const onKey = winListeners.get('keydown');
     onKey({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
-    assert.deepEqual(calls[calls.length - 1].flat, [6 * Q, 10 * Q],
-        'the cancel restores the map the gesture began on');
+    // The cancel is the engine's: the gesture's undo step is dropped
+    // and the map it began on returns (cancelGesture) — not one more
+    // commit, which left a no-op undo step and no redo.
+    assert.equal(calls[calls.length - 1].cancel, 'c',
+        'the cancel asks the engine to cancel the gesture');
+    assert.equal(calls.filter(c => c.cancel).length, 1);
+    assert.ok(calls.slice(0, -1).every(c => c.flat), 'after its live commits');
     assert.deepEqual(previewBrackets(g.o),
         ['win-bracket start@' + pctOf(6), 'win-bracket end@' + pctOf(10)],
         'the held preview shows the restore, not the cancelled drag');

@@ -58,6 +58,12 @@ export function buildWindowDims(o, win, lane, cycleQ) {
         // fractional-Q take, so the dimmed region and the brackets
         // disagree.
         dimComplementInto(o, cycleQ, segs, anchorQ, intrinsicQ);
+        // The frame's end may clip the take tile: its rest is drawn
+        // from the frame's start, and so are the dims over it (addDim
+        // clips each copy to the frame).
+        if (anchorQ + intrinsicQ > cycleQ + EPS_Q) {
+            dimComplementInto(o, cycleQ, segs, anchorQ - cycleQ, intrinsicQ);
+        }
         return;
     }
     // Groups: every tile shows the composite (raw material) — dim the

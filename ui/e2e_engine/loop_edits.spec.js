@@ -204,18 +204,63 @@ test('undo / redo through a chain of window edits', async ({ page }) => {
     void mod;
 });
 
-test('a shaped loop never moves an untouched lane, even when it owns the cycle', async ({ page }) => {
-    // THE FRAME BELONGS TO THE LOOPS ON SCREEN (time_maps.md §5): shaping
-    // B moves the frame to B's start only when the move is FREE — a
-    // whole number of every untouched lane's cycles. A is a 2Q loop; B
-    // is an 8Q take recorded 1Q into A's cycle, shaped into a 4Q loop
-    // that owns the cycle. B's commit re-bases the frame by whole
-    // pre-take cycles only (the same principle at commit), so B's
-    // origin lands an ODD number of Qs into the frame. A window whose
-    // start is an odd number of Qs off the frame cannot be reached for
-    // free: A holds still and B's tile starts mid-frame. A start 2Q off
-    // is a whole cycle of A: the frame moves there, B starts at the
-    // frame's left edge, and A reads exactly as before.
+test('a cancelled drag (cancelGesture) leaves the log as it found it: its step dropped, redo back', async ({ page }) => {
+    // Escape mid-drag used to restore by one more commit: a no-op undo
+    // step stayed on the stack and the redo branch was gone. The engine
+    // cancels the gesture instead (AudioEngine::cancelGesture) — this
+    // drives the verb through the real bridge.
+    await openEngine(page);
+    await rec(page, Q);
+    const c2 = await rec(page, 4 * Q);
+    const win = async () => {
+        const n = findNode(await state(page), c2);
+        return [n.loopStart / Q, n.loopEnd / Q];
+    };
+    await call(page, 'setLoopPoints', c2, 0, 2 * Q);
+    // A redo branch to interrupt: an edit, undone.
+    await call(page, 'setLoopPoints', c2, 2 * Q, 4 * Q);
+    await call(page, 'undo');
+    expect(await win()).toEqual([0, 2]);
+    expect((await state(page)).canRedo).toBe(true);
+    await verifyHeard(page);
+    // THE DRAG: the first commit opens the gesture (redo is invalidated
+    // — for now), the live ones coalesce into its one step.
+    await call(page, 'setLoopPoints', c2, 1 * Q, 3 * Q);
+    expect((await state(page)).canRedo).toBe(false);
+    await engine(page, 'advance', { samples: Q / 2 + 77 });
+    await call(page, 'setLoopPoints', c2, 2 * Q, 4 * Q, true);
+    expect(await win()).toEqual([2, 4]);
+    // ESCAPE.
+    await call(page, 'cancelGesture', c2);
+    expect(await win()).toEqual([0, 2]);
+    expect((await state(page)).canRedo).toBe(true);
+    await verifyHeard(page);
+    // The branch that comes back is the one that was interrupted…
+    await call(page, 'redo');
+    expect(await win()).toEqual([2, 4]);
+    await verifyHeard(page);
+    // …and no step is the cancelled drag's: two undos reach the whole
+    // take.
+    await call(page, 'undo');
+    expect(await win()).toEqual([0, 2]);
+    await call(page, 'undo');
+    expect(findNode(await state(page), c2).windowActive).toBe(false);
+    await verifyHeard(page);
+});
+
+test('a shaped loop never moves the frame or an untouched lane, even when it owns the cycle', async ({ page }) => {
+    // ONE LOOP PLACES THE FRAME (frame.md §1, owner 2026-09-29): the
+    // first loop longer than Q — here A, a 2Q loop. Every other loop
+    // SLOTS IN where it falls, so shaping B never moves the frame's
+    // zero, A, or the play start. B is an 8Q take recorded 1Q into A's
+    // cycle, shaped into a 4Q loop that owns the cycle's LENGTH; its
+    // origin lands an ODD number of Qs into the frame. Wherever its
+    // window starts — an odd number of Qs off the frame, or a whole
+    // cycle of A (2Q) — A holds still and B's tile starts where its
+    // region start sounds, its offset mod its own 4Q.
+    // (Until 2026-09-29 a later loop pulled the zero forward by whole
+    // cycles-so-far whenever that was "free" — a start 2Q off moved the
+    // frame to B — which read as editing one track moving another.)
     await openEngine(page);
     await rec(page, Q);
     const a = await rec(page, 4 * Q, { atPhase: 0 });
@@ -238,24 +283,23 @@ test('a shaped loop never moves an untouched lane, even when it owns the cycle',
     const originB = findNode(await state(page), b).origin;
     const inQ = mod(originB - zero0, 4 * Q) / Q;  // B's origin, Qs into the frame
     expect(inQ % 2, 'setup: B lands an odd number of Qs in').toBe(1);
-    const stuck = 2 * Q;                  // start (inQ + 2) Qs off: odd, not free
-    const free = inQ === 1 ? Q : 3 * Q;   // start (inQ + 1 or 3) Qs off: 2Q or 6Q, free
+    const odd = 2 * Q;                    // start (inQ + 2) Qs off the frame: odd
+    const even = inQ === 1 ? Q : 3 * Q;   // start (inQ + 1 or 3) Qs off: 2Q or 6Q — whole cycles of A
 
-    await call(page, 'setLoopPoints', b, stuck, stuck + 4 * Q);
+    await call(page, 'setLoopPoints', b, odd, odd + 4 * Q);
     const a1 = await laneOf(a);
-    // No free move reaches B's new top: the zero may still move by whole
-    // cycles of A (invisible to A), but never by less.
-    expect(mod(a1.zero - zero0, 2 * Q), 'the zero moves only by whole cycles of A').toBe(0);
+    expect(a1.zero, 'the frame stays on A').toBe(zero0);
     expect([a1.takeStartQ, a1.firstBright], 'A holds still').toEqual([a0.takeStartQ, a0.firstBright]);
-    // The seating pulls the zero forward by whole cycles of A (2Q) until
-    // B's top lies inside one, so B sits at its offset MOD 2Q.
-    expect((await laneOf(b)).takeStartQ, 'B\'s loop starts mid-frame').toBe((inQ + stuck / Q) % 2);
+    // B slots in where its region start sounds: its offset in A's
+    // frame, mod its own 4Q period.
+    expect((await laneOf(b)).takeStartQ, 'B\'s loop starts mid-frame').toBe((inQ + odd / Q) % 4);
 
-    await call(page, 'setLoopPoints', b, free, free + 4 * Q);
+    await call(page, 'setLoopPoints', b, even, even + 4 * Q);
     const a2 = await laneOf(a);
-    expect(a2.zero, 'free move: the frame moves to B\'s start').toBe(originB + free);
+    expect(a2.zero, 'a whole cycle of A off: the frame still stays on A').toBe(zero0);
     expect([a2.takeStartQ, a2.firstBright], 'A reads as before').toEqual([a0.takeStartQ, a0.firstBright]);
-    expect((await laneOf(b)).takeStartQ, 'B starts at the frame edge').toBe(0);
+    expect((await laneOf(b)).takeStartQ, 'B slots in 2Q in').toBe((inQ + even / Q) % 4);
+    expect((inQ + even / Q) % 4, '(setup: that is mid-frame, not the edge)').toBe(2);
 
     await call(page, 'togglePlayback');
     await verifyHeard(page);

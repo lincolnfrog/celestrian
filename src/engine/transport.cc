@@ -121,6 +121,9 @@ void AudioEngine::shiftHistoryAbsolutes(int64_t delta) {
   };
   for (auto& e : undo_) shiftEdit(e);
   for (auto& e : redo_) shiftEdit(e);
+  // …and the redo branch an open gesture keeps (cancelGesture may put
+  // it back).
+  for (auto& e : gesture_redo_) shiftEdit(e);
 }
 
 void AudioEngine::tick() {

@@ -21,7 +21,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deriveViewModel } from '../view_model.js';
+import { deriveViewModel, bounceStartOf } from '../view_model.js';
 import { SCENE_Q as Q, PERF } from './helpers.mjs';
 
 const clip = (id, originQ, durationQ, extra = {}) => ({
@@ -54,11 +54,15 @@ test('a committed looping clip can be re-timed; its fields read the node', () =>
     // it sounds at the frame's left edge (owner 2026-09-29).
     assert.equal(vm.frameZero, 0);
     assert.equal(b.topQ, 9.5);
+    // The engine's own top rides beside the ↺ as shown: what a region
+    // edit reconciles from (swap_preview.test.mjs).
+    assert.equal(b.storedTopQ, 7, 'storedTopQ: the published loopTop');
     assert.ok(Math.abs(b.topHeardQ) < 1e-9, `topHeardQ ${b.topHeardQ}`);
     assert.ok(b.topHeardQ >= 0 && b.topHeardQ < b.periodQ, 'within one period');
     const a = laneOf(vm, 'A');
     assert.equal(a.retimeQ, 0, 'no retime published: as played');
     assert.equal(a.topQ, 0, 'an unmapped take\'s top: raw 0');
+    assert.equal(a.storedTopQ, a.topQ, 'the placer shows its own top');
 });
 
 test('the Q-definer and the definer stack\'s mics are never re-timed', () => {
@@ -197,4 +201,84 @@ test('foldShift: into (−P/2, P/2]; a non-positive period leaves the shift', as
     assert.equal(foldShift(8, 4), 0);
     assert.equal(foldShift(0.25, 8), 0.25);
     assert.equal(foldShift(5, 0), 5);
+});
+
+/* ---------- where "Bounce selected…" starts (docs/bounce.md) ---------- */
+
+/** A (1Q); B — a 12Q take from `bOriginQ` looped to [4, 8): the first
+ * loop longer than Q, so it places the frame; C — a 16Q take from 14Q
+ * looped to [6, 10), which slots in (its region start sounds at 20Q,
+ * 3Q into a 4Q frame from 5Q). */
+const stems = (bOriginQ = 1, bExtra = {}, more = []) => island([clip('A', 0, 1),
+    windowed('B', bOriginQ, 12, [4, 8], bExtra),
+    windowed('C', 14, 16, [6, 10]), ...more],
+    { islandPos: Math.round(30.3 * Q) });
+const modQ = (x, pQ) => ((x / Q) % pQ + pQ) % pQ;
+
+test('a loop bounces from its ↺ AS SHOWN: the placing loop from its own ' +
+     'top, every other loop from the frame\'s top', () => {
+    let vm = deriveViewModel(stems());
+    assert.equal(vm.frameZero, 5 * Q);
+    assert.equal(bounceStartOf(vm, 'B'), 5 * Q, 'the placing loop: its own ↺');
+    // C's STORED top (its region start) sounds at 20Q — a moment nothing
+    // on screen marks. Its ↺ as shown is the frame's top: the very
+    // sample the song bounce starts on, so the two files line up.
+    assert.equal(laneOf(vm, 'C').storedTopQ, 6);
+    assert.equal(bounceStartOf(vm, 'C'), 5 * Q);
+    assert.equal(bounceStartOf(vm, 'C'), vm.restZero, 'the song bounce\'s start');
+    assert.equal(bounceStartOf(vm, 'A'), 5 * Q, 'a 1Q loop: every bar line is its top');
+    // A stored top 1Q into B's region: the frame seats on it, and both
+    // stems follow.
+    vm = deriveViewModel(stems(1, { loopTop: 5 * Q }));
+    assert.equal(vm.frameZero, 6 * Q);
+    assert.equal(bounceStartOf(vm, 'B'), 6 * Q);
+    assert.equal(bounceStartOf(vm, 'C'), 6 * Q);
+});
+
+test('the placing loop opens on its ↺ itself — a little late, or a pickup — ' +
+     'not on the bar line', () => {
+    // B a tenth of a Q late: its ↺ sounds at 5.1Q, the frame seats on 5Q.
+    let vm = deriveViewModel(stems(1.1));
+    assert.equal(vm.frameZero, 5 * Q);
+    assert.equal(bounceStartOf(vm, 'B'), Math.round(5.1 * Q), 'its own one');
+    assert.equal(bounceStartOf(vm, 'C'), 5 * Q, 'the others: the frame\'s top');
+    // B a tenth early — a pickup to the 5Q line: its ↺ sounds at 4.9Q
+    // (drawn at the frame's far end). Any whole period on is the same
+    // file.
+    vm = deriveViewModel(stems(0.9));
+    assert.equal(vm.frameZero, 5 * Q);
+    assert.ok(Math.abs(modQ(bounceStartOf(vm, 'B'), 4) - 0.9) < 1e-6,
+        'on the ↺: ' + bounceStartOf(vm, 'B') / Q);
+});
+
+test('the start is the ↺\'s moment whatever zero is drawn: a drag\'s pin, a ' +
+     're-seat tween', () => {
+    const s = stems();
+    const pinned = deriveViewModel(s, { pinFrameQ: 4, pinFoldQ: 4, pinZero: 3 * Q });
+    assert.equal(pinned.frameZero, 3 * Q);
+    assert.equal(bounceStartOf(pinned, 'B'), 5 * Q, 'B: its ↺, drawn 2Q along');
+    assert.equal(bounceStartOf(pinned, 'C'), 5 * Q, 'C: the frame\'s top (the seat)');
+    const moving = deriveViewModel(s, { reseat: { fromRel: 6 * Q, t: 0.5 } });
+    assert.equal(moving.frameTweening, true);
+    for (const id of ['B', 'C']) {
+        assert.ok(Math.abs(modQ(bounceStartOf(moving, id), 4) - 1) < 1e-6,
+            id + ': the seat (5Q ≡ 1 mod 4), not the passing zero');
+    }
+});
+
+test('a lane with no ↺ keeps the engine\'s default start', () => {
+    const vm = deriveViewModel(stems(1, {},
+        [clip('S', 1, 1, { periodSource: 'context' })]));
+    assert.equal(bounceStartOf(vm, 'S'), null, 'a one-shot: its own placement');
+    assert.equal(bounceStartOf(vm, 'nope'), null, 'no such lane');
+    assert.equal(bounceStartOf(null, 'B'), null);
+    // The Q-definer in its trim view wears none.
+    const sole = deriveViewModel(island([clip('D', 0, 3, { loopTop: Q })],
+                                        { definerId: 'D' }));
+    assert.equal(bounceStartOf(sole, 'D'), null);
+    // Before Q there is no frame.
+    const noQ = deriveViewModel(island([{ ...clip('A', 0, 4), effectiveQuantum: 1,
+                                          duration: 0 }], { quantum: 0 }));
+    assert.equal(noQ.qEstablished, false);
+    assert.equal(bounceStartOf(noQ, 'A'), null);
 });

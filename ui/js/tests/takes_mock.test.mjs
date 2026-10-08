@@ -14,7 +14,12 @@
  *      take never deletes; undo brings the take back;
  *  (e) setComp on a 4Q slot publishes the cells; bad cell counts and
  *      indices are refused; undo/redo; refused mid-take;
- *  (g) save → mutate → load restores takes, active and comp.
+ *  (g) save → mutate → load restores takes, active and comp;
+ *  (h) the published shape of a take is the ENGINE's (armed =
+ *      isPendingStart alone; capturing = the live captured length on
+ *      `duration`, the slot's on `periodQ`) — and through it the view
+ *      keeps its picture: the lane tiles the slot, the frame holds, a
+ *      group keeps its period.
  */
 
 import test from 'node:test';
@@ -22,6 +27,7 @@ import assert from 'node:assert/strict';
 
 import { callNative, getState, loadScenario, advanceBy }
     from '../mock_backend.js';
+import { deriveViewModel } from '../view_model.js';
 import { recordTake, nodeById } from './helpers.mjs';
 
 const clip = id => nodeById(id, getState().nodes);
@@ -35,17 +41,37 @@ async function newTakeAndFinish(id) {
     const before = clip(id);
     const raw = rawClock();
     await callNative('newTake', id);
+    // THE PUBLISHED SHAPE is the engine's (docs/takes.md §6; AudioNode /
+    // ClipNode::getMetadata). ARMED is `isPendingStart` alone, and the
+    // slot still publishes its own length.
     const armed = clip(id);
-    assert.equal(armed.isRecording, true, 'armed');
-    assert.equal(armed.isPendingStart, true, 'waits for the slot top');
+    assert.equal(armed.isPendingStart, true, 'armed: waits for the slot top');
+    assert.equal(armed.isRecording, false, 'armed is not capturing');
+    assert.equal(armed.duration, before.duration, 'pending: the slot\'s length');
+    assert.deepEqual(armed.periodQ, before.periodQ, 'periodQ: the slot\'s');
     const at = armed.pendingStartAt;
     assert.equal((at - (before.origin || 0)) % before.duration, 0,
         'arm target: t == origin (mod period)');
     assert.ok(at > raw, 'the NEXT top');
     advanceBy(at - raw);          // capture begins at the top
-    advanceBy(before.duration);   // exactly one period: auto-finish
+    // CAPTURING: `duration` is the LIVE captured length — 0 at the
+    // top, growing — and the slot's own rides `periodQ`.
+    let live = clip(id);
+    assert.equal(live.isRecording, true, 'capturing');
+    assert.equal(live.isPendingStart, false);
+    assert.equal(live.duration, 0, 'nothing captured yet');
+    assert.deepEqual(live.periodQ, before.periodQ, 'the slot stands on periodQ');
+    const part = Math.floor(before.duration / 4);
+    advanceBy(part);
+    live = clip(id);
+    assert.equal(live.duration, part, 'the live captured length');
+    assert.deepEqual(live.periodQ, before.periodQ);
+    assert.equal('_retake' in live, false, 'the mock\'s bookkeeping stays private');
+    advanceBy(before.duration - part);   // exactly one period: auto-finish
     const done = clip(id);
     assert.equal(done.isRecording, false, 'auto-finished');
+    assert.equal(done.isPendingStart, false);
+    assert.equal(done.duration, before.duration, 'the slot\'s length again');
     return at;
 }
 
@@ -201,4 +227,96 @@ test('(g) save -> mutate -> load restores takes, active and comp', async () => {
     assert.equal(c.takes, 2, 'takes restored');
     assert.equal(c.activeTake, 0, 'active restored');
     assert.deepEqual(c.comp, [1], 'comp restored');
+});
+
+/* ---------- the view through a new take ---------- */
+
+/** A take of `len` samples on `target` (a clip, or a group: every
+ * mic), once Q exists: the arm waits for its boundary, the stop lands
+ * on one. `probe` is a clip the take captures into. */
+async function takeInto(target, probe, len) {
+    await callNative('startRecordingInNode', target);
+    for (let i = 0; i < 4000 && !clip(probe).isRecording; i++) advanceBy(10);
+    assert.equal(clip(probe).isRecording, true, 'the take is live');
+    advanceBy(len - clip(probe).duration - 100);
+    await callNative('stopRecordingInNode', target);
+    advanceBy(200);
+    assert.equal(clip(probe).duration, len, 'committed at ' + len);
+}
+
+test('(h) the VIEW through a new take, on the mock\'s published state: the ' +
+     'lane tiles the slot, the frame holds, a group keeps its period', async () => {
+    // The integration the 2026-10-01 audit lacked. The mock used to keep
+    // the slot's `duration` (and publish no `periodQ`) all through a new
+    // take, so the view never met the engine's shape here — `duration`
+    // the LIVE captured length — and three view bugs passed every suite:
+    // the lane re-tiled at the captured length, the frame collapsed and
+    // regrew, a group's lane re-tiled at Q.
+    loadScenario('empty');
+    const Q = 1000;
+    await recordTake('', Q, { stopEarly: 0, settle: 0 });   // Q := 1000
+    const g = await callNative('createNode', 'stack', '');
+    const m1 = await callNative('createNode', 'clip', g);
+    const m2 = await callNative('createNode', 'clip', g);
+    await takeInto(g, m1, 4 * Q);                           // a 4Q kit: the frame
+    assert.equal(clip(m2).duration, 4 * Q, 'one take, both mics');
+
+    const laneOf = (vm, id) => vm.lanes.find(l => l.id === id);
+    /** What must not change while the take runs. */
+    const picture = vm => {
+        const G = laneOf(vm, g);
+        return { cycleQ: vm.cycleQ, lcmQ: vm.lcmQ, frameExtended: vm.frameExtended,
+                 frameZero: vm.frameZero,
+                 group: { periodQ: G.periodQ, intrinsicQ: G.intrinsicQ,
+                          reps: G.reps.map(r => [r.startQ, r.endQ, !!r.ghost]) } };
+    };
+    const tiles = lane => lane.reps.map(r => [r.startQ, r.endQ]);
+    const rest = deriveViewModel(getState());
+    const want = picture(rest);
+    assert.equal(want.cycleQ, 4, 'the kit alone makes the frame 4Q');
+    assert.equal(want.group.periodQ, 4);
+    const restTiles = tiles(laneOf(rest, m1));
+
+    // ● on the group: a new take of both mics. The app infers "new
+    // take" the way it does live (app.js trackRetakes): a committed
+    // clip that goes hot.
+    advanceBy(300);
+    const before = new Map([m1, m2].map(id => [id, clip(id)]));
+    await callNative('newTake', g);
+    const hot = n => n.isRecording || n.isPendingStart;
+    const retakes = new Set([m1, m2].filter(id =>
+        hot(clip(id)) && !hot(before.get(id)) && before.get(id).duration > 0));
+    assert.equal(retakes.size, 2, 'both mics are re-taking');
+    const view = () => deriveViewModel(getState(), { retakes });
+
+    // ARMED, waiting for the slot's top: nothing moved.
+    let vm = view();
+    assert.deepEqual(picture(vm), want, 'armed: the picture stands');
+    assert.equal(vm.mapEditsLocked, true, 'the recording gate is up');
+
+    // CAPTURING — at the top, a little in, most of the way.
+    const at = clip(m1).pendingStartAt;
+    advanceBy(at - rawClock());
+    for (const captured of [0, 260, 1760, 3760]) {
+        advanceBy(captured - clip(m1).duration);
+        assert.equal(clip(m1).duration, captured, 'published: the live captured length');
+        vm = view();
+        assert.deepEqual(picture(vm), want, `${captured} captured: the picture stands`);
+        for (const id of [m1, m2]) {
+            const lane = laneOf(vm, id);
+            assert.equal(lane.retake, true, id + ' is a new take');
+            assert.deepEqual(tiles(lane), restTiles, id + ': the slot\'s tiles');
+            assert.ok(lane.reps.every(r => r.silent), id + ': silent under the bar');
+            assert.equal(lane.intrinsicQ, 4, id + ': the slot\'s length');
+            assert.ok(Math.abs(lane.recordingLengthQ - captured / Q) < 1e-6,
+                `${id}: the bar runs from the slot top (${lane.recordingLengthQ})`);
+        }
+    }
+
+    // COMMITTED: two takes each, and the picture it always was.
+    advanceBy(4 * Q - clip(m1).duration);
+    assert.equal(clip(m1).takes, 2);
+    assert.equal(hot(clip(m1)), false);
+    vm = deriveViewModel(getState());
+    assert.deepEqual(picture(vm), want, 'committed: the same picture');
 });

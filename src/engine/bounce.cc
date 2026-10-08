@@ -102,15 +102,21 @@ bool AudioEngine::bounce(const juce::String& uuid,
                                                     root_node->getQuantum());
   const celestrian::timing::TimeMap map = target->activeTimeMap();
   const int64_t a0 = map.active() ? map.mapOffset(0) : 0;
-  // A CLIP starts at its ↺ TOP (loop_selection.md §9; owner, 2026-09-24):
+  // A LOOP starts at its ↺ TOP (loop_selection.md §9; owner, 2026-09-24):
   // the loop reads as starting there, so its bounce opens on the loop's
   // one — the top's moment, origin + a0 + heardOffset(T) — not on the
-  // splice where the recording wraps (the two part after a swap). Unset,
-  // or on a stack (Phase 2 stores no stack top), the top IS the region
-  // start and the offset is 0: the frame top, as before tops existed.
+  // splice where the recording wraps (the two part after a swap). A
+  // group's top is a clip's (fractal, owner 2026-09-29: the top lives
+  // on AudioNode). Unset, the top IS the region start and the offset is
+  // 0: the frame top, as before tops existed. The root wears no ↺, and
+  // an unanchored stack has no top: their frame top stands.
+  //
+  // This is the engine's DEFAULT. The app names the start for a lane
+  // (docs/bounce.md, owner 2026-10-01): the ↺ AS SHOWN — this top on
+  // the loop that places the frame, the frame's top on every other.
   int64_t top_offset = 0;
-  if (auto* clip = dynamic_cast<const celestrian::ClipNode*>(target)) {
-    const int64_t t = clip->effectiveTop();
+  if (!is_root && target->isAnchored()) {
+    const int64_t t = target->effectiveTop();
     const int64_t h = map.active() ? map.heardOffsetOf(t) : t;
     if (h > 0) top_offset = h;
   }

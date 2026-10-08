@@ -16,7 +16,8 @@
  *       the published effective top — one the new region plays stays
  *       (the old region start included: a fresh loop's left slide keeps
  *       its ↺), one it drops resets to the new region start;
- *   (d) THE GLIDE's easing lands exactly;
+ *   (d) — retired 2026-10-01 with the ↺'s own glide: a reset ↺ lands at
+ *       once and the frame moves onto it (reseat_tween.test.mjs);
  *   (e) THE GRABBED HANDLE keeps its element and stands for the repeat
  *       nearest the hand — no repeat twice, none lost;
  *   (f) WHO WEARS WHAT, through the real deriveViewModel: a heard clip
@@ -32,9 +33,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { spliceSpots, topSpots, inTakeTile, inTakePass, predictTop, glideOffset,
+import { spliceSpots, topSpots, inTakeTile, inTakePass, predictTop,
          pairHandles, wantsSpliceChrome, wantsTopHandle, wantsLaneTop,
-         isPlainLoop, TOP_GLIDE_MS }
+         isPlainLoop }
     from '../session_view/splice_handles.js';
 import { panelOffersTop, showsTiming } from '../session_view/region_panel.js';
 import { deriveViewModel } from '../view_model.js';
@@ -61,13 +62,31 @@ test('(a) the wrap and each cut, on every repeat', () => {
     assert.deepEqual(xs(spots), [5, 1]);
 });
 
-test('(a) a splice ON the left edge is the next repeat\'s; the frame bounds', () => {
+test('(a) a splice ON the left edge is the next repeat\'s — and shows at the right edge too', () => {
     // anchor ≈ S − ε (fp noise): the splice sits at 0, not a sliver at S.
     const spots = spliceSpots([[6, 10]], 4 - 1e-12, 4, 8);
     assert.ok(Math.abs(spots[0].x) < 1e-9, String(spots[0].x));
-    assert.equal(spots.length, 2);
-    // Nothing at or past the frame's right edge.
-    assert.deepEqual(xs(spliceSpots([[0, 2]], 0, 2, 4)), [0, 2]);
+    // BOTH EDGES (2026-10-01): on the frame's left edge it is the end of
+    // the last repeat too — the loop's END handle, at the right edge
+    // (the owner's "right handle", 2026-08-18).
+    assert.deepEqual(xs(spots).map(v => v || 0), [0, 4, 8]);  // (−0 → 0)
+    assert.deepEqual(spots.map(s => !!s.end), [false, false, true]);
+    assert.equal(spots[2].x, 8, 'exactly the frame\'s edge');
+    assert.deepEqual(xs(spliceSpots([[0, 2]], 0, 2, 4)), [0, 2, 4]);
+    // A loop that fills the frame: its wrap at both ends.
+    assert.deepEqual(spliceSpots([[6, 10]], 0, 4, 4).map(s => [s.x, !!s.end]),
+        [[0, false], [4, true]]);
+    // A splice anywhere else never shows on an edge, nor past it.
+    assert.deepEqual(xs(spliceSpots([[6, 10]], 1, 4, 8)), [1, 5]);
+    assert.ok(spliceSpots([[6, 10]], 1, 4, 8).every(s => !s.end));
+    // A CUT on the left edge is at both edges too; the wrap, mid-lane, not.
+    const cut = spliceSpots([[2, 5], [6, 10]], 4, 7, 7);
+    assert.deepEqual(cut.map(s => [s.kind, +s.x.toFixed(9), !!s.end]),
+        [['wrap', 4, false], ['cut', 0, false], ['cut', 7, true]]);
+    assert.deepEqual(cut[2].cut, [5, 6], 'the same raw cut behind it');
+    // A frame that is not whole periods long (pinned mid-trim): no
+    // repeat lands on the right edge, so nothing is drawn there.
+    assert.deepEqual(xs(spliceSpots([[6, 9]], 0, 3, 4)), [0, 3]);
     // Degenerate input: nothing, never a runaway loop.
     assert.deepEqual(spliceSpots([[0, 1]], 0, 0, 8), []);
     assert.deepEqual(spliceSpots([], 0, 4, 8), []);
@@ -148,19 +167,6 @@ test('(c) the top a swap lands on: kept stays, dropped resets to the new start',
     assert.equal(predictTop([[2, 5], [6, 10]], 550, q), 200);
     assert.equal(predictTop([[2, 5], [6, 10]], 650, q), 650);
     assert.equal(predictTop([], 650, q), undefined);
-});
-
-/* ---------- (d) the glide ---------- */
-
-test('(d) the glide eases from where the ↺ was to where it is, and lands', () => {
-    const g = { from: 3, to: 1, t0: 1000 };
-    assert.equal(glideOffset(g, 1000), 2, 'starts where it was');
-    assert.equal(glideOffset(g, 1000 + TOP_GLIDE_MS), 0, 'lands exactly');
-    assert.equal(glideOffset(g, 5000), 0);
-    const mid = glideOffset(g, 1000 + TOP_GLIDE_MS / 2);
-    assert.ok(near(mid, 1), 'halfway at half time (ease-in-out)');
-    assert.ok(glideOffset(g, 1000 + TOP_GLIDE_MS / 4) > 1.5, 'eases in');
-    assert.equal(glideOffset(null, 0), 0);
 });
 
 /* ---------- (e) the grabbed handle ---------- */

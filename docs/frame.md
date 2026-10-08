@@ -11,6 +11,8 @@
 > before it with a ¼Q pickup. Since 2026-09-29 (owner) ONE loop places
 > the frame — the first loop longer than Q — every other loop slots in,
 > and there is no edit hold: an edit realigns the main view at once (§1).
+> Since 2026-10-01 (owner) that realign is drawn as a ~200 ms move — the
+> re-seat tween (§1) — instead of a jump.
 
 ---
 
@@ -87,7 +89,16 @@ region start).
   selection.
 - A recording take counts as the placing loop when no loop longer than
   Q came before it; its period is unknown until stop, and the frame
-  during recording *is* the frame after commit.
+  during recording *is* the frame after commit. A **new take of a
+  committed slot** (takes.md §2) is not such a take: it keeps the
+  slot's origin, period and top and commits back into them, so it
+  seats as the loop it is — and stays in the cycle, growing nothing
+  (`settledForFrame` / `retakeSlot`: the engine publishes the live
+  captured length as `duration` while it captures, the slot's own on
+  `periodQ`; takes.md §6). Counted as a growing take, a new take of the 1Q loop shown
+  above the placing loop took the frame for as long as it recorded:
+  every lane and the cursor jumped at its start and back at its commit
+  (2026-10-01; `frame_seat.test.mjs` (h), `slotted_loop.spec.js`).
 - An unanchored stack has no content and no top.
 - The seat is always on the Q grid, so the arm marker and every tile
   stay grid-true whatever a ⌥-slid window start or a free (sub-Q)
@@ -96,8 +107,9 @@ region start).
 
 The view model does this (`seatFrameZero`, `ui/js/view_model.js`) once,
 for the mock and the engine alike, and publishes it as `vm.seatedZero`.
-The zero DRAWN is the drag pin while a gesture holds it, else the seat
-(`resolveFrameZero`). The map-gesture pin holds the zero for the length
+The zero DRAWN (`resolveFrameZero`) is, in order: the drag pin while a
+gesture holds it; a re-seat tween on its way to the seat; else the
+seat. The map-gesture pin holds the zero for the length
 of a drag, as it holds the frame width — and past the release until the
 gesture's final commit settles (capped at the commit hold,
 `COMMIT_HOLD_MAX_MS`), so no poll between the release and the engine's
@@ -109,6 +121,42 @@ then glided (560 ms) to the seat. The main view exists to show how the
 loops truly align, so that is gone: once a drag's pin drops, the frame
 IS the seat, and an edit realigns the view at once. The region panel
 (the whole take) is where editing context lives.
+
+**The re-seat tween (owner, 2026-10-01).** "At once" used to mean a
+jump: a swap that drops the placing loop's ↺, any ↺ drag, the undo of
+either, each ended with every lane leaping sideways in one frame. The
+realign is now DRAWN: when the seat moves, the frame moves onto it over
+~200 ms (`RESEAT_MS`) — every lane, the ruler, the gridlines, the
+cursor and the arm marker together, the shortest way round the frame,
+landing exactly. It is not the hold come back. Nothing is held and
+nothing waits: the move starts on the very render that would have
+jumped, and the seat is the truth from that moment (the play start, a
+placement and a drag's pin all read the seat, `vm.restZero`, never the
+passing zero).
+
+- It is one picture *moving*. Whatever re-lays the picture out still
+  snaps (session_view.md law 11): the frame's length or Q changed in
+  the same step (a trim, a cut that changes the cycle), a take is live
+  or armed (the frame is the take's, and grows), the Q13 trim view,
+  another island.
+- A seat a whole number of frames away is the same picture: nothing
+  moves.
+- Never under a hand. No move starts while a gesture is live or its pin
+  holds; a move in motion completes at once when a hand comes down, and
+  the pin captures the seat it was moving to — a hand always edits a
+  grid-true frame.
+- The zero is kept relative to the island zero, so a seek (which moves
+  the island zero and every origin together) carries a move and starts
+  none.
+- `prefers-reduced-motion`, or a hidden page: it jumps. Progress is
+  wall-clock time, so where animation frames are throttled the 50 ms
+  poll still lands it.
+
+`session_view/reseat_tween.js` decides when a move runs (`app.js`
+`deriveFrame` derives the frame that would have jumped once more, from
+the move's first step); `resolveFrameZero` only resolves it. Pinned by
+`ui/js/tests/reseat_tween.test.mjs` and `ui/e2e/reseat_tween.spec.js`
+(real mouse, every animation frame sampled).
 
 **Why floor, with a pickup (2026-09-24).** The seat reads a top on the
 grid line at or before it: the ↺ at the left edge when it sits on a bar
@@ -202,6 +250,7 @@ Everything else is the picture the old rules produced, now derived.
 | A top seats on its nearest grid line, not the one below (2026-09-23, loop-region phase 1) | superseded 2026-09-24: the edit hold keeps every release in place |
 | A top is its ↺'s moment, `origin + a0 + heardOffset(T)`; it seats on the first lane's bar line at or before it, a top up to ¼Q early a pickup to the next (2026-09-24, loop-region phase 2, P2.7) | §1 |
 | While a lane is selected its edits never re-seat the zero; a selection change, a clear or an armed take releases the hold, and the frame settles once — 560 ms, the shortest way round, onto the seat (2026-09-24, P2.1) | superseded 2026-09-29 (owner): no edit hold, no settle glide — an edit realigns the main view at once |
+| When the seat moves, the frame is drawn moving onto it — ~200 ms, at once, the shortest way round, never under a hand; a re-layout snaps (owner, 2026-10-01: the re-seat tween) | §1 |
 | The first loop longer than Q places the frame; a 1Q loop never does; every later loop slots in where its ↺ falls (owner, 2026-09-29) | §1 |
 
 ## 7. Pending

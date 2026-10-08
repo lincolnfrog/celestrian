@@ -53,12 +53,18 @@
  */
 
 import { capturePointer, guardGesture } from './sv_util.js';
-import { selectOnly } from './selection.js';
+import { selectOnly, claimSoon, cancelClaim } from './selection.js';
 import { pinFrame, unpinFrame } from './drag_pin.js';
 
 /* Post-commit cap: a hold — or a pin held past release — waiting on a
  * bridge that never answers lets go after this long. */
 export const COMMIT_HOLD_MAX_MS = 1500;
+/* A press that travelled less than this, and let go inside the claim
+ * window, was a CLICK — perhaps the first of a double-click (a cut's
+ * splice heals on one). Its claim of the track waits the window out, so
+ * the second click lands on the same picture. */
+export const CLICK_SLOP_PX = 4;
+export const CLAIM_CLICK_MS = 350;
 
 const frozen = new WeakMap();  // body → live-drag freeze count
 const held = new WeakMap();    // body → post-commit hold count
@@ -145,7 +151,16 @@ const INERT = Object.freeze({
  *
  *   beginGesture(ev, {
  *     node,      capture/listener target (default ev.target)
- *     claim,     lane id to select (grabbing a handle claims the track)
+ *     claim,     lane id to select: a handle's gesture claims its track
+ *                — WHEN IT ENDS, however it ends (owner 2026-10-01). The
+ *                region panel is a row under the selected lane, so a
+ *                claim at the press moved the lane out from under the
+ *                hand (74 px when the panel that closed was above it):
+ *                the drag went on by capture alone, and the second click
+ *                of a double-click landed on the panel. A press that
+ *                was only a click (CLICK_SLOP_PX, CLAIM_CLICK_MS) claims
+ *                after the claim window instead, and any new press
+ *                drops a claim still waiting — its own end decides.
  *     stop,      also stopPropagation() (default false)
  *     onMove,    (moveEvent, g) — pointermove while live
  *     onEnd,     (committed, g) — EXACTLY once, however the gesture
@@ -177,12 +192,16 @@ export function beginGesture(ev, { node = ev.target, claim = null,
     }
     ev.preventDefault();
     if (stop) ev.stopPropagation();
-    if (claim != null) selectOnly(claim);
+    // A claim still waiting on an earlier click (claimSoon) must not
+    // land under THIS hand: whatever this press claims, its end decides.
+    cancelClaim();
     capturePointer(node, ev);
 
     let live = true;
     const cleanups = [];
     let pins = 0;  // g.pin() holds, released after onEnd (see end)
+    const downAt = performance.now();
+    let travelled = false;  // the pointer left the click slop
     const g = {
         live: () => live,
         freeze(body) {
@@ -198,7 +217,11 @@ export function beginGesture(ev, { node = ev.target, claim = null,
     };
     activeGesture = g;
 
-    const move = mv => { if (onMove) onMove(mv, g); };
+    const move = mv => {
+        if (Math.abs(mv.clientX - ev.clientX) > CLICK_SLOP_PX ||
+            Math.abs(mv.clientY - ev.clientY) > CLICK_SLOP_PX) travelled = true;
+        if (onMove) onMove(mv, g);
+    };
     const endTrue = e => end(true, e);
     const endFalse = e => end(false, e);
     const onKey = e => {
@@ -239,6 +262,13 @@ export function beginGesture(ev, { node = ev.target, claim = null,
                 afterSettled(settles, unpin);
             } else {
                 unpin();
+            }
+            // THE CLAIM, now that no hand is on the lane (see `claim`).
+            if (claim != null) {
+                const click = !travelled &&
+                    performance.now() - downAt < CLAIM_CLICK_MS;
+                if (click) claimSoon(claim, CLAIM_CLICK_MS);
+                else selectOnly(claim);
             }
         }
     }

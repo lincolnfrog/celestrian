@@ -1250,12 +1250,21 @@ void AudioEngine::clearRedo() {
   redo_.clear();
 }
 
+void AudioEngine::endGesture() {
+  // The redo branch the gesture's entry invalidated can no longer come
+  // back (only cancelGesture restores it): retired like any dropped
+  // edit, never freed inline.
+  for (auto& e : gesture_redo_) retireEdit(std::move(e));
+  gesture_redo_.clear();
+  gesture_ = {};
+}
+
 void AudioEngine::clearHistory() {
   for (auto& e : undo_) retireEdit(std::move(e));
   undo_.clear();
   clearRedo();
   pending_takes_.clear();
-  gesture_ = {};
+  endGesture();
 }
 
 void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
@@ -1265,7 +1274,7 @@ void AudioEngine::pushUndo(celestrian::Edit&& inverse) {
     undo_.erase(undo_.begin());
   }
   clearRedo();
-  gesture_ = {};  // any entry logged ends the open gesture (record() re-opens)
+  endGesture();  // any entry logged ends the open gesture (record() re-opens)
 }
 
 bool AudioEngine::refusedUnderLiveTake(const char* verb) const {
@@ -1291,6 +1300,7 @@ bool liveUnderTake(celestrian::Edit::Kind k) {
 
 void AudioEngine::openGesture(const juce::String& uuid,
                               celestrian::Edit::Kind kind) {
+  endGesture();  // the previous gesture can no longer be cancelled
   gesture_ = {uuid, kind, false};
 }
 
@@ -1326,11 +1336,53 @@ void AudioEngine::record(celestrian::Edit forward) {
     clearRedo();  // a fresh user action still invalidates the redo branch
     return;       // keep the older inverse (restores further back)
   }
-  pushUndo(std::move(inv));
   // A map or re-time entry is its gesture's FIRST — the gesture a
   // non-live commit opened, or a stray live commit's own: its later
-  // live commits coalesce into it.
-  if (isGestureKind(kind)) gesture_ = {uuid, kind, true};
+  // live commits coalesce into it. The redo branch it invalidates is
+  // KEPT with the gesture for as long as the gesture can be cancelled
+  // (cancelGesture): a cancelled drag must leave the log as it found
+  // it, redo and all.
+  const bool gesture_entry = isGestureKind(kind);
+  std::vector<celestrian::Edit> kept_redo;
+  if (gesture_entry) kept_redo.swap(redo_);
+  pushUndo(std::move(inv));
+  if (gesture_entry) {
+    gesture_ = {uuid, kind, true};
+    gesture_redo_ = std::move(kept_redo);
+  }
+}
+
+void AudioEngine::cancelGesture(const juce::String& uuid) {
+  reconcileTakes();
+  if (gesture_.uuid != uuid) return;  // not this node's gesture
+  if (!gesture_.logged || undo_.empty()) {
+    // It logged nothing (identities, refusals): there is nothing to put
+    // back — and nothing was invalidated.
+    endGesture();
+    return;
+  }
+  // THE LIVE-TAKE GATE, as for undo: refuse and KEEP the entry.
+  if (refusedUnderLiveTake("cancelGesture")) return;
+  // While `logged`, the gesture's entry is the top of the stack: apply
+  // it — the graph is the gesture's start again — and DROP the forward
+  // it yields (a cancelled drag is not redo-able).
+  celestrian::Edit inv = std::move(undo_.back());
+  undo_.pop_back();
+  const juce::String cause =
+      driftCause(root_node.get(), "cancel", inv.kind, inv.uuid);
+  celestrian::Edit fwd = applyEdit(std::move(inv));
+  noteOriginDrift(cause);
+  if (fwd.kind == celestrian::Edit::Kind::Nop) {
+    endGesture();  // it did not apply: the kept branch is no longer valid
+    return;
+  }
+  retireEdit(std::move(fwd));
+  // The redo branch the gesture's first entry invalidated was recorded
+  // against exactly this graph: it stands again.
+  clearRedo();
+  redo_ = std::move(gesture_redo_);
+  gesture_redo_.clear();
+  gesture_ = {};
 }
 
 namespace {
@@ -1361,7 +1413,7 @@ void AudioEngine::undo() {
   // Refuse and KEEP the entry (a Nop would drop it from the log).
   if (refusedUnderLiveTake("undo")) return;
   juce::ignoreUnused(&movesIslandFacts);
-  gesture_ = {};  // a later live commit logs its own step
+  endGesture();  // a later live commit logs its own step
   celestrian::Edit inv = std::move(undo_.back());
   undo_.pop_back();
   const juce::String cause =
@@ -1375,7 +1427,7 @@ void AudioEngine::redo() {
   reconcileTakes();
   if (redo_.empty()) return;
   if (refusedUnderLiveTake("redo")) return;
-  gesture_ = {};  // a later live commit logs its own step
+  endGesture();  // a later live commit logs its own step
   celestrian::Edit fwd = std::move(redo_.back());
   redo_.pop_back();
   const juce::String cause =

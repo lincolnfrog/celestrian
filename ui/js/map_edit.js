@@ -286,6 +286,36 @@ export function slideSeam(segs, j, deltaQ, totalQ) {
 }
 
 /**
+ * THE SPLICE SWAP BY WHOLE Qs (the plain drag; owner ruling 2026-09-23:
+ * moves snap by whole Q, RELATIVE, so a free offset set earlier is
+ * kept — ⌥ alone moves freely): slideSeam by the whole number of Qs
+ * nearest `deltaQ` that its clamp allows. slideSeam's clamp is the
+ * hard bound — the take's edge, the SEAM_MIN_Q floor — and that bound
+ * is rarely a whole Q away: asked for a whole Q it cannot have, it
+ * answers with the bound itself, so a plain drag of a cut toward a 1Q
+ * neighbour landed 1/64 Q short of it and left a 1/64 Q sliver of
+ * material playing at the splice (field audit 2026-10-01), and a drag
+ * into the take's edge re-gridded a free offset. Here the move steps
+ * back to the largest whole number of Qs inside the bound instead — 0
+ * when no whole Q fits: the splice stays where it is, on its own grid.
+ * Returns { segs, deltaQ } like slideSeam.
+ */
+export function slideSeamWhole(segs, j, deltaQ, totalQ) {
+    const stay = () =>
+        ({ segs: coveredSet(segs, totalQ).map(s => s.slice()), deltaQ: 0 });
+    const want = Math.round(deltaQ);
+    if (want === 0) return stay();
+    const r = slideSeam(segs, j, want, totalQ);
+    if (Math.abs(r.deltaQ - want) < EPS) return r;
+    const whole = want > 0 ? Math.floor(r.deltaQ + EPS) : Math.ceil(r.deltaQ - EPS);
+    // The bound lies short of the first whole Q — or on the far side of
+    // 0 (a segment already under the floor): nothing moves.
+    if (whole === 0 || Math.sign(whole) !== Math.sign(want)) return stay();
+    const w = slideSeam(segs, j, whole, totalQ);
+    return Math.abs(w.deltaQ - whole) < EPS ? w : stay();
+}
+
+/**
  * ⇧ AT A SPLICE = THE LENGTH THERE (loop_selection.md P2.4): move the
  * END of the material just BEFORE splice `j` by whole Qs — the last
  * segment's end at the wrap (j = 0), segment j−1's end at cut j. Right

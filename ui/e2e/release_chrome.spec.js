@@ -327,9 +327,12 @@ test.describe('Recording gate', () => {
         // tooltip explains the gate (review 2026-09-23: a hit-test-
         // transparent handle could never show it). (The edge grips this
         // used to press retired 2026-09-24.)
-        const grip = body.locator('.lr-layer > .lr-wrap:not(.lr-ghost)');
+        // (The left-edge splice; its twin at the right edge — .lr-end,
+        // the loop's END handle — is held inert the same way.)
+        const grip = body.locator('.lr-layer > .lr-wrap:not(.lr-ghost):not(.lr-end)');
         const top = body.locator('.lr-layer > .lr-top:not(.lr-ghost)');
         await expect(grip).toHaveCount(1);
+        await expect(body.locator('.lr-layer > .lr-wrap.lr-end')).toHaveClass(/lr-inert/);
         await expect(grip).toHaveClass(/lr-inert/);
         await expect(top).toHaveClass(/lr-inert/);
         const gb = await grip.locator('.lr-tab').boundingBox();

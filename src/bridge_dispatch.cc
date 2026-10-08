@@ -193,6 +193,12 @@ std::vector<Method> engineMethods(Services s) {
       // Undo / redo
       voidMethod("undo", 0, [e](const auto&) { e->undo(); }),
       voidMethod("redo", 0, [e](const auto&) { e->redo(); }),
+      // A cancelled drag: (uuid) — the open gesture's step is applied
+      // and dropped, and the redo branch it invalidated returns.
+      voidMethod("cancelGesture", 1,
+                 [e](const auto& args) {
+                   e->cancelGesture(args[0].toString());
+                 }),
       // Sessions: the PATH forms. An empty path is the app shell's
       // native chooser (main_component.cc overrides both names); here
       // it is simply refused.

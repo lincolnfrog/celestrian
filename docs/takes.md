@@ -91,8 +91,39 @@ rewrites the slot's files and prunes stale ones. Templates strip takes. Metadata
   `newTake`; ● again cancels. The lane keeps its tiles, `silent`
   (dimmed) under the live bar, whose length runs from the slot top; the
   arm marker waits at the slot's next top. Published state cannot say
-  "retake" (the slot keeps its duration), so app.js infers it: a
-  committed clip that goes hot can only be retaking (`opts.retakes`).
+  "retake", so app.js infers it: a committed clip that goes hot can only
+  be retaking (`opts.retakes`).
+- **The published shape of a new take (2026-10-01).** The slot keeps
+  its facts, but while the take runs the engine PUBLISHES it this way
+  (`AudioNode` / `ClipNode::getMetadata`): pending (`isPendingStart`,
+  not `isRecording`) until its top, then `isRecording` with `duration` =
+  the LIVE captured length (0, growing to the period) and the slot's own
+  length on `periodQ` ({num, den} of Q). The mock publishes the same
+  (`mock/publish.js`, at the boundary — its own state keeps
+  `isRecording` from the arm and the slot's `duration`): until
+  2026-10-01 it published those instead, with no `periodQ`, and the
+  view never met the engine's shape in the mock suite. The view model
+  reads the slot through one helper, `retakeSlot`, wherever a new take
+  must stand as the loop it is re-taking:
+  - its lane tiles the slot's period and measures the bar from the slot
+    top (`pushRecordingLane`) — read off the live length, the resting
+    tiles re-tiled on every poll and the bar jumped about;
+  - the cycle and the growing-frame math keep it in the cycle and grow
+    nothing (`settledForFrame`) — read as a fresh take, a new take of
+    the loop that alone made the frame 4Q collapsed it to 1Q and regrew
+    it Q by Q;
+  - the seat reads its top and period (`seatFrameZero`, frame.md §1) —
+    counted as a growing take, a new take of a 1Q loop above the placing
+    loop took the frame for as long as it recorded.
+  - a GROUP's own lane reads its mics the same way
+    (`pushGroupLane`, through `settledForFrame`): read as published, a
+    4Q kit re-tiled as four 1Q tiles for as long as its mics captured.
+  All four were engine-only (the mock could not show them) and were
+  found with the headless engine; pinned by `takes_ui.test.mjs` and
+  `frame_seat.test.mjs` (h) on both shapes, and by
+  `takes_mock.test.mjs` (h), which runs the mock's own published state
+  through the view for a whole group take — armed, capturing,
+  committed.
 - **The take chip** `T<active+1>/<n>` on the rail head (quiet with one
   take, lit in comp mode) opens the take list under the rail: one row
   per take with its `getTakeWaveform` mini waveform (cached per take;

@@ -174,3 +174,72 @@ export async function ctrlWheel(page, x, y, notches) {
     }
     await page.keyboard.up('Control');
 }
+
+/* ---------- the lane's loop handles (splice_handles.js) ---------- */
+
+/** A lane's visible splice handles and ↺ (the take tile's and the
+ * ghosts'): kind, ghostliness, lane position (Q, the line's centre). */
+export const laneHandles = (page, id) => page.evaluate(id => {
+    const body = document.querySelector(`.lane[data-id="${id}"] .lane-body`);
+    const br = body.getBoundingClientRect();
+    return [...body.querySelectorAll('.lr-layer > .lr-splice, .lr-layer > .lr-top')]
+        .filter(h => h.style.display !== 'none')
+        .map(h => {
+            const r = h.getBoundingClientRect();
+            return {
+                kind: h.classList.contains('lr-top') ? 'top'
+                    : h.classList.contains('lr-cut') ? 'cut' : 'wrap',
+                ghost: h.classList.contains('lr-ghost'),
+                x: +(((r.left + r.width / 2) - br.left) / br.width * body._cycleQ).toFixed(2),
+            };
+        })
+        .sort((a, b) => a.x - b.x);
+}, id);
+
+/** The take tile's handles as 'kind@x', sorted. */
+export const laneMarks = async (page, id) => (await laneHandles(page, id))
+    .filter(h => !h.ghost).map(h => h.kind + '@' + h.x).sort();
+
+/** The page point of the take tile's handle TAB of `kind` ('wrap' |
+ * 'cut' | 'top'). `end`: the right-edge twin of a splice that rests on
+ * the frame's left edge (.lr-end) instead of the left one. */
+export async function handleTab(page, id, kind, { end = false } = {}) {
+    const cls = kind === 'top' ? '.lr-top' : kind === 'cut' ? '.lr-cut' : '.lr-wrap';
+    const b = await laneOf(page, id).locator(
+        `.lr-layer > ${cls}:not(.lr-ghost)${end ? '.lr-end' : ':not(.lr-end)'} .lr-tab`)
+        .first().boundingBox();
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+}
+
+export const lanePxPerQ = (page, id) => laneOf(page, id).locator('.lane-body')
+    .evaluate(b => b.getBoundingClientRect().width / b._cycleQ);
+
+/** A REAL-mouse drag of `dxPx` from `at` (synthetic dispatch bypasses
+ * hit-testing). `hold`: leave the button down; `mods`: keys held from
+ * before the press ('Shift', 'Alt'). */
+export async function dragBy(page, at, dxPx, { steps = 10, hold = false, mods = [] } = {}) {
+    await page.mouse.move(at.x, at.y);
+    for (const m of mods) await page.keyboard.down(m);
+    await page.mouse.down();
+    await page.mouse.move(at.x + dxPx, at.y, { steps });
+    if (hold) return;
+    await page.mouse.up();
+    for (const m of mods) await page.keyboard.up(m);
+}
+
+/** THE CLIP-3 TOPOLOGY (frame.md §1, owner 2026-09-29): a 1Q loop (A);
+ * a 12Q take from 1Q looped to [4, 8) — B, the first loop longer than
+ * Q: it PLACES the frame, its ↺ (raw 4, sounding at 5Q) the left edge;
+ * and a 16Q take from 14Q looped to [6, 10) — C, which SLOTS IN: its
+ * region start sounds at 20Q, 3Q into the 4Q frame, and the sample at
+ * the frame's top is raw 7. Nothing is selected by it. */
+export async function slottedTopology(page) {
+    await boot(page);
+    const Q = await quantum(page);
+    const { id1, id2 } = await recordDefinerAndTake(page, Q, 12);
+    const id3 = await recordTake(page, Q, 16);
+    await setLoop(page, id2, 4 * Q, 8 * Q);
+    await setLoop(page, id3, 6 * Q, 10 * Q);
+    expect((await node(page, id3)).origin / Q).toBe(14);
+    return { Q, a: id1, b: id2, c: id3 };
+}
