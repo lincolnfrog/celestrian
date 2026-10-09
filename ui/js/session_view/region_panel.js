@@ -1,12 +1,12 @@
 /**
  * THE REGION PANEL (owner-ruled 2026-09-11; ZOOMABLE since loop-region
- * phase 1, 2026-09-23) — the loop region's overview + editor, shown
- * under the SELECTED lane.
+ * phase 1, 2026-09-23; DOCKED since 2026-10-08) — the loop region's
+ * overview + editor for the SELECTED track, in the edit bar at the foot
+ * of the session view (#region-dock, Ableton's clip view).
  *
  * A heard-view lane shows only what sounds; the whole raw take and the
  * map's structure need a home that never rescales the lane. The panel
- * is that home: a full-row, viewport-pinned panel under the selected
- * clip/group with
+ * is that home, for the selected clip/group, with
  *   - a NAVIGATOR bar (owner 2026-09-29: not a third waveform — the
  *     detail below already draws the take): an abstract map of the
  *     whole take — its extent as a line, the kept region as solid
@@ -64,9 +64,14 @@
  * above renders the audible result as it changes — overview and
  * detail, both live.
  *
- * Positioning: the panel row spans the whole lane row (under the rail
- * too); the panel is pinned to the VIEWPORT by JS (patch + scroll) at a
- * constant width, independent of the main zoom and scroll (N3).
+ * THE DOCK (loop_selection.md §15, 2026-10-08): every lane builds its
+ * panel once, but mounts it in #region-dock, not in its row — so
+ * selecting a track swaps what the bar shows and never moves a lane
+ * (the panel used to open as a row under the selected lane, and every
+ * lane below it moved by the panel's height). One panel shows at a
+ * time; when the selected track has none, the bar says why
+ * (patchRegionDock). The bar sits outside the session's scroll, so the
+ * panel keeps one width at every main zoom and scroll (N3) for free.
  */
 
 import { ctx } from './context.js';
@@ -93,10 +98,6 @@ import { clampView, fitRegion, fitTake, zoomAbout, panBy, centerOn,
          wheelZoomFactor, wheelPanQ, boxEdgeView, keyZoomView, sameView,
          Q_LABEL_MIN_PX_PER_Q } from './panel_view.js';
 
-/* The panel's inset from the viewport's edges when #session has no
- * padding to read (px). Normally the inset IS #session's horizontal
- * padding, so at zoom 1 the panel lines up with the lanes above. */
-const PANEL_MARGIN_PX = 12;
 /* Waveform vertical inset inside the strips (px). */
 const STRIP_V_INSET_PX = 4;
 /* Arrow-key nudges within this window chain off the last target sent
@@ -124,16 +125,20 @@ const TOP_TITLE = '↺ The loop\'s top — Ableton\'s start marker: drag it onto
  * `segsKey` is the committed region the view last kept in view. */
 const views = new Map();
 
-/** Build the panel row once per lane (lane_build). Hidden until the
- * lane is selected and has a take to show. */
+/** Build the lane's panel once (lane_build) and mount it in the edit
+ * bar (`row._regionNav`; patch.js removes it with the lane). Hidden
+ * until the lane is selected and has a take to show. */
 export function buildRegionPanel(row) {
     const nav = el('div', 'lane-region');
+    nav.dataset.laneId = row.dataset.id;
     nav.style.display = 'none';
     const panel = el('div', 'region-panel');
-    // A press in the panel must never fall through to the lane below.
+    // A press in the panel must never fall through to the page.
     panel.addEventListener('pointerdown', e => e.stopPropagation());
-    // The label's two terms are the two zoom stops.
+    // The label names the track (the bar is not next to its lane); its
+    // two terms are the two zoom stops.
     const label = el('div', 'region-label mono');
+    const name = el('div', 'region-name');
     const termLoop = el('span', 'region-term loop',
         { title: 'Fit the loop region in the panel (Z)' });
     const termTake = el('span', 'region-term take',
@@ -150,8 +155,8 @@ export function buildRegionPanel(row) {
         title: 'Undo every shift: put the audio back where it was played ' +
             '(the ↺ and the audio move back together)' });
     timing.append(timingRead, timingReset);
-    label.append(termLoop, document.createTextNode(' · '), termTake, termCuts,
-                 timing);
+    label.append(name, termLoop, document.createTextNode(' · '), termTake,
+                 termCuts, timing);
     termLoop.addEventListener('click', () => fitPanel(row, 'region'));
     termTake.addEventListener('click', () => fitPanel(row, 'take'));
     timingReset.addEventListener('click', () => resetTiming(row));
@@ -182,10 +187,12 @@ export function buildRegionPanel(row) {
     col.append(overview, strip);
     panel.append(label, col);
     nav.appendChild(panel);
+    row._regionNav = nav;
     row._regionPanel = panel;
     row._regionStrip = strip;
     row._regionOverlay = overlay;
     row._regionLabel = label;
+    row._regionName = name;
     row._regionTerms = { loop: termLoop, take: termTake, cuts: termCuts };
     row._regionTiming = { block: timing, read: timingRead, reset: timingReset };
     row._regionOverview = overview;
@@ -197,22 +204,56 @@ export function buildRegionPanel(row) {
     Object.defineProperty(strip, '_view', {
         get: () => { const e = entryOf(row); return e ? { ...e.view } : null; },
     });
-    return nav;
+    const dock = ctx.els && ctx.els.regionDock;
+    if (dock) dock.appendChild(nav);
+}
+
+/** Why a SELECTED clip/group shows no panel — the edit bar's hint —
+ * or null when it shows one: a take of at least 2Q; not while the lane
+ * is its own raw inspector (windowEditing), a Q-definer (its trim law
+ * is different — it SETS Q, on the lane), a child shown through a
+ * parent's map (the parent owns the edit), or recording. Exported for
+ * the tests. */
+export function noPanelReason(lane) {
+    if (lane.recording) return 'Recording…';
+    if (lane.isQDefiner) return 'This track sets Q — drag its brackets on the lane';
+    if (lane.underMap || lane.definerMember) {
+        return 'Played through its group’s loop region — select the group to edit it';
+    }
+    if (lane.windowEditing) return null;
+    if (!(lane.bandTotalQ > 0)) return 'Nothing recorded yet';
+    if (!(lane.bandTotalQ >= 2)) {
+        return 'A ' + fmtQ(lane.bandTotalQ) + 'Q take — no loop region to edit';
+    }
+    return null;
 }
 
 /** Should this lane show the panel right now? The most recently
- * selected clip/group with a take of at least 2Q; not while the lane
- * is its own raw inspector (windowEditing), a Q-definer (its trim law
- * is different — it SETS Q), or a child shown through a parent's map
- * (the parent owns the edit). */
+ * selected clip/group with nothing in noPanelReason's way. */
 function wantPanel(row, lane) {
     if (lane.kind !== 'clip' && lane.kind !== 'group') return false;
     if (activeSelectedId() !== lane.id) return false;
-    if (!(lane.bandTotalQ >= 2)) return false;
-    if (lane.windowEditing || lane.isQDefiner) return false;
-    if (lane.underMap || lane.definerMember) return false;
-    if (lane.recording) return false;
-    return true;
+    if (lane.windowEditing) return false;
+    return noPanelReason(lane) === null;
+}
+
+/** The edit bar per patch (after every lane's patchRegionPanel): shown
+ * while there are lanes — a fixed height, so a selection never resizes
+ * the session view — with the selected track's panel, or a one-line
+ * hint saying why there is none. */
+export function patchRegionDock(vm) {
+    const dock = ctx.els && ctx.els.regionDock;
+    if (!dock) return;
+    const lanes = vm.lanes.filter(l => l.kind === 'clip' || l.kind === 'group');
+    dock.classList.toggle('open', lanes.length > 0);
+    const shown = !!shownPanelRow();
+    const id = activeSelectedId();
+    const lane = lanes.find(l => l.id === id) || null;
+    const hint = shown ? ''
+        : !lane ? 'Select a track to edit its loop'
+            : noPanelReason(lane) || '';
+    setText(dock.querySelector(':scope > .region-dock-hint'), hint);
+    dock.classList.toggle('empty', !shown);
 }
 
 /** The lane the strip's band code edits: the same take, framed RAW
@@ -256,10 +297,10 @@ function followRegion(row, lane, e) {
     e.view = keepInView(e.view, a, b, e.totalQ);
 }
 
-/** Patch one lane's panel per poll: visibility, viewport pinning, the
- * view's upkeep, then the paint. */
+/** Patch one lane's panel per poll: visibility, the view's upkeep, then
+ * the paint. */
 export function patchRegionPanel(row, lane, vm, aux, peaks) {
-    const nav = row.querySelector(':scope > .lane-region');
+    const nav = row._regionNav;
     if (!nav) return;
     const want = wantPanel(row, lane);
     const strip = row._regionStrip;
@@ -270,7 +311,7 @@ export function patchRegionPanel(row, lane, vm, aux, peaks) {
         return;
     }
     if (nav.style.display !== '') nav.style.display = '';
-    pinToViewport(row, nav);
+    setText(row._regionName, lane.name || '');
     row._regionCtx = { lane, vm, aux, peaks };
     followRegion(row, lane, ensureView(lane));
     paintPanel(row);
@@ -301,7 +342,7 @@ function fitPanel(row, kind) {
 function shownPanelRow() {
     const id = activeSelectedId();
     const row = id === null ? null : ctx.laneEls.get(id);
-    const nav = row && row.querySelector(':scope > .lane-region');
+    const nav = row && row._regionNav;
     if (!nav || nav.style.display === 'none' || !row._regionCtx) return null;
     return row;
 }
@@ -928,28 +969,6 @@ function wireOverview(row) {
     ov.addEventListener('dblclick', () => fitPanel(row, 'take'));
 }
 
-/** Pin the panel to the viewport horizontally at a CONSTANT width (N3):
- * the row spans the zoomed grid; the panel sits at the viewport's
- * content left (#session's padding in) with the viewport's content
- * width — the same at every main zoom and scroll. Returns true when
- * the width changed (the caller repaints). */
-function pinToViewport(row, nav) {
-    const panel = row._regionPanel;
-    const session = ctx.els.session;
-    if (!panel || !session) return false;
-    const sr = session.getBoundingClientRect();
-    const nr = nav.getBoundingClientRect();
-    if (!(sr.width > 0) || !(nr.width > 0)) return false;
-    const pad = parseFloat(getComputedStyle(session).paddingLeft);
-    const m = pad > 0 ? pad : PANEL_MARGIN_PX;
-    const l = Math.round(sr.left + session.clientLeft + m - nr.left) + 'px';
-    const w = Math.max(120, Math.round(session.clientWidth - 2 * m)) + 'px';
-    if (panel.style.left !== l) panel.style.left = l;
-    if (panel.style.width === w) return false;
-    panel.style.width = w;
-    return true;
-}
-
 /* ---------- the nudge keys ---------- */
 
 /**
@@ -984,35 +1003,21 @@ export function makeChainPin({ pin = pinFrame, unpin = unpinFrame,
 }
 const nudgePin = makeChainPin();
 
-/** A nudge's step as a whole number of SAMPLES, in Q. The ⅛Q step is
- * rarely whole samples (Q = 44100: 5512.5), and each landing is rounded
- * to samples when it commits — so ⌥→ then ⌥← a moment later (outside
- * the chain, which carries its own unrounded target) rounded up both
- * ways and came back ONE SAMPLE LATE. On a loop whose region start sat
- * on the frame's top, that sample moved its ↺ to the far end of the
- * region (the sample at the frame's top was now its last). A whole-
- * sample step, rounded by MAGNITUDE (Math.round alone takes −5512.5 to
- * −5512 and +5512.5 to +5513), is the same forwards and back. Exported
- * for the tests. */
-export function nudgeStepQ(deltaQ, quantum) {
-    if (!(quantum > 0)) return deltaQ;
-    return Math.sign(deltaQ) * Math.round(Math.abs(deltaQ) * quantum) / quantum;
-}
-
 /** ← / → (init.js): slide the selected track's loop region by
- * `deltaQ` (length held, clamped to the take — slideSegs). Reads the
- * strip's per-patch band state, so it works exactly when the panel
- * does. One undo step per press; the chain holds the frame still
- * (makeChainPin) and the view pans to keep the region in sight.
- * Returns false when nothing applies (no panel, not editable, nothing
- * to slide) so the key falls through. */
+ * `deltaQ` — a whole number of Qs (the ⌥ ⅛Q step is gone: no sub-Q
+ * grid, owner 2026-10-08; fine moves are the ⌥ DRAG's) — length held,
+ * clamped to the take (slideSegs). Reads the strip's per-patch band
+ * state, so it works exactly when the panel does. One undo step per
+ * press; the chain holds the frame still (makeChainPin) and the view
+ * pans to keep the region in sight. Returns false when nothing applies
+ * (no panel, not editable, nothing to slide) so the key falls through. */
 export function nudgeRegion(deltaQ) {
     const id = activeSelectedId();
     if (id === null) return false;
     const row = ctx.laneEls.get(id);
     const strip = row && row._regionStrip;
     const st = strip && strip._bandState;
-    const nav = row && row.querySelector(':scope > .lane-region');
+    const nav = row && row._regionNav;
     if (!st || !st.editable || !nav || nav.style.display === 'none') return false;
     if (isDragging(strip)) return false;
     // CHAINED PRESSES: key repeat fires faster than the poll that
@@ -1023,8 +1028,7 @@ export function nudgeRegion(deltaQ) {
     const chain = strip._nudge;
     const base = chain && performance.now() - chain.t < NUDGE_CHAIN_MS
         ? chain.segs : coveredSegs(st);
-    const { segs, deltaQ: moved } =
-        slideSegs(base, nudgeStepQ(deltaQ, st.quantum), st.totalQ);
+    const { segs, deltaQ: moved } = slideSegs(base, deltaQ, st.totalQ);
     if (Math.abs(moved) < 1e-9) return true;  // at the take's edge: consumed, no-op
     strip._nudge = { segs, t: performance.now() };
     newGesture();
@@ -1037,20 +1041,14 @@ export function nudgeRegion(deltaQ) {
     return true;
 }
 
-/** The panels track horizontal scroll live (the 50ms patch would lag
- * a flick); rAF-coalesced. A width change (the viewport resized, a
- * scrollbar came or went) repaints at once. */
-export function wireRegionScroll() {
-    let raf = 0;
-    ctx.els.session.addEventListener('scroll', () => {
-        if (raf) return;
-        raf = requestAnimationFrame(() => {
-            raf = 0;
-            ctx.laneEls.forEach(row => {
-                const nav = row.querySelector(':scope > .lane-region');
-                if (nav && nav.style.display !== 'none' &&
-                    pinToViewport(row, nav)) paintPanel(row);
-            });
-        });
-    }, { passive: true });
+/** The edit bar repaints its panel at once when its width changes (the
+ * window resized) — the 50 ms patch would lag, and idle polls are
+ * slower still. */
+export function wireRegionDock() {
+    const dock = ctx.els.regionDock;
+    if (!dock || typeof ResizeObserver === 'undefined') return;
+    new ResizeObserver(() => {
+        const row = shownPanelRow();
+        if (row) paintPanel(row);
+    }).observe(dock);
 }

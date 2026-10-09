@@ -12,7 +12,7 @@ import { registerKey, SCOPE, ANY_MODIFIERS } from '../keys.js';
 import { selection, clearSelection, activeSelectedId } from './selection.js';
 import { wireZoom, zoomIn, zoomOut } from './zoom.js';
 import { teleportToHandle } from './teleport.js';
-import { wireRegionScroll, nudgeRegion, fitSelectedPanel, zoomSelectedPanel }
+import { wireRegionDock, nudgeRegion, fitSelectedPanel, zoomSelectedPanel }
     from './region_panel.js';
 import { closeInputMenus, wireMenuDismiss } from './input_menu.js';
 import { closeTakeMenus, wireTakeMenuDismiss } from './take_menu.js';
@@ -98,7 +98,7 @@ export function initSessionView(callbacks) {
     // Ruler scrub: click/drag the ruler to seek — the callback is
     // onSeek (app.js → seekTransport).
     wireRulerSeek();
-    wireRegionScroll();
+    wireRegionDock();
     wireMenuDismiss();
     wireCreationMenuDismiss();
     wireTakeMenuDismiss();
@@ -140,8 +140,9 @@ function wireKeyboard() {
     hotkey('{', () => teleportToHandle(-1, true));
     hotkey('}', () => teleportToHandle(1, true));
     // ← / → NUDGE the selected track's loop region by 1Q (length held —
-    // the region panel's slide as a keystroke); ⇧ = 4Q, ⌥ = ⅛Q. Long
-    // takes get a deterministic, drag-free way to walk the region.
+    // the region panel's slide as a keystroke); ⇧ = 4Q. Long takes get
+    // a deterministic, drag-free way to walk the region. No ⌥ ⅛Q step
+    // (owner 2026-10-08: no sub-Q grid; fine moves are the ⌥ drag's).
     const nudge = (dir, step, mods) => view({
         key: dir < 0 ? 'ArrowLeft' : 'ArrowRight',
         modifiers: mods,
@@ -151,7 +152,6 @@ function wireKeyboard() {
         } });
     nudge(-1, 1, []);          nudge(1, 1, []);
     nudge(-1, 4, ['shift']);   nudge(1, 4, ['shift']);
-    nudge(-1, 0.125, ['alt']); nudge(1, 0.125, ['alt']);
     // Z / ⇧Z fit the selected track's REGION PANEL to its loop / to
     // the whole take (Ableton's zoom-to-selection; loop-region phase 1,
     // 2026-09-23). Only while a panel is shown — otherwise the key

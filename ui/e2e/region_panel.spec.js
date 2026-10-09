@@ -35,7 +35,7 @@ test.describe('Region panel', () => {
         await expect(panelOf(page, id1)).toBeHidden();
         await expect(panelOf(page, id2)).toBeHidden();
         await selectLane(page, id2);
-        await expect(laneOf(page, id2).locator('.region-label'))
+        await expect(panelOf(page, id2).locator('.region-label'))
             .toHaveText(/loop 4Q · 12Q take/);
         // FIT REGION: the kept box [6Q, 10Q) fills ~55% of the strip,
         // centred.
@@ -63,12 +63,13 @@ test.describe('Region panel', () => {
         await setLoop(page, id2, 6 * Q, 10 * Q);
         await selectLane(page, id2);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const strip = await stripOf(page, id2).boundingBox();
         const y = strip.y + strip.height / 2;
         // TRIM: the start bracket to 7.3Q — [7.3, 10) proposes a 2.7Q
         // period → 3Q → the bound lands at 7Q.
         await keptBoxAt(page, id2, 6, 10);
-        const sb = await lane.locator('.region-bracket.start').boundingBox();
+        const sb = await panel.locator('.region-bracket.start').boundingBox();
         await page.mouse.move(sb.x + sb.width / 2, y);
         await page.mouse.down();
         await page.mouse.move(await stripX(page, id2, 7.3), y, { steps: 8 });
@@ -92,12 +93,12 @@ test.describe('Region panel', () => {
         // at [9, 10): the map is [8, 9) ∪ [10, 11).
         await page.mouse.dblclick(await stripX(page, id2, 9.5), y);
         await expect.poll(() => segsOf(page, id2, Q)).toBe('8,9,10,11');
-        await expect(lane.locator('.region-overlay .cut-band')).toHaveCount(1);
-        await expect(lane.locator('.region-label')).toHaveText(/cuts/);
+        await expect(panel.locator('.region-overlay .cut-band')).toHaveCount(1);
+        await expect(panel.locator('.region-label')).toHaveText(/cuts/);
         // The overview notches the cut too.
-        await expect(lane.locator('.region-overview .region-ov-cut')).toHaveCount(1);
+        await expect(panel.locator('.region-overview .region-ov-cut')).toHaveCount(1);
         // HEAL: right-click the cut (its chip rides the band's center).
-        await lane.locator('.region-overlay .cut-chip').click({ button: 'right' });
+        await panel.locator('.region-overlay .cut-chip').click({ button: 'right' });
         await expect.poll(async () => {
             const n = await node(page, id2);
             return (n.segments || []).length;
@@ -111,22 +112,23 @@ test.describe('Region panel', () => {
         const { id2 } = await recordDefinerAndTake(page, Q, 4);
         await selectLane(page, id2);
         const lane = laneOf(page, id2);
-        await expect(lane.locator('.region-label')).toHaveText(/whole take · 4Q take/);
+        const panel = panelOf(page, id2);
+        await expect(panel.locator('.region-label')).toHaveText(/whole take · 4Q take/);
         // No loop: the view is the whole take.
         expect(await viewOf(page, id2)).toEqual({ q0: 0, spanQ: 4 });
         const strip = await stripOf(page, id2).boundingBox();
         const y = strip.y + strip.height / 2;
-        const eb = await lane.locator('.region-bracket.end').boundingBox();
+        const eb = await panel.locator('.region-bracket.end').boundingBox();
         await page.mouse.move(eb.x + eb.width / 2, y);
         await page.mouse.down();
         await page.mouse.move(await stripX(page, id2, 3.2), y, { steps: 8 });
         await page.mouse.up();
         await expect.poll(() => loopOf(page, id2, Q)).toBe('0,3');
         await expect.poll(async () => (await node(page, id2)).windowActive).toBe(true);
-        await expect(lane.locator('.region-label')).toHaveText(/loop 3Q · 4Q take/);
+        await expect(panel.locator('.region-label')).toHaveText(/loop 3Q · 4Q take/);
     });
 
-    test('← / → nudge the selected region: 1Q, ⇧ 4Q, ⌥ ⅛Q; clamped to the take; the view follows', async ({ page }) => {
+    test('← / → nudge the selected region: 1Q, ⇧ 4Q, no ⌥ step; clamped to the take; the view follows', async ({ page }) => {
         await boot(page);
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
@@ -147,13 +149,12 @@ test.describe('Region panel', () => {
             return v.q0 <= 5 && v.q0 + v.spanQ >= 8;
         }).toBe(true);
         expect((await viewOf(page, id2)).spanQ).toBeCloseTo(v0.spanQ, 9);
-        // ⌥: an eighth of a Q (sample-rounded by the engine).
+        // ⌥ is no nudge (owner 2026-10-08: no sub-Q grid; fine moves are
+        // the ⌥ DRAG's): the region stays where it is.
         await page.keyboard.press('Alt+ArrowRight');
-        await expect.poll(async () => (await node(page, id2)).loopStart / Q)
-            .toBeCloseTo(5.125, 3);
         await page.keyboard.press('Alt+ArrowLeft');
-        await expect.poll(async () => (await node(page, id2)).loopStart / Q)
-            .toBeCloseTo(5, 3);
+        await page.waitForTimeout(200);
+        expect((await node(page, id2)).loopStart / Q).toBe(5);
         // KEY REPEAT: presses faster than the poll chain off the last
         // target — five quick lefts move five Qs, not one.
         for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowLeft');
@@ -170,6 +171,7 @@ test.describe('Same-scale reveal', () => {
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
         await setLoop(page, id2, 6 * Q, 10 * Q);            // 4Q frame
+        await selectLane(page, id2);  // handles: the selected track's only (§15)
         const lane = laneOf(page, id2);
         const body = lane.locator('.lane-body');
         // (The wrap rests on the frame's left edge, so it shows at the
@@ -210,10 +212,10 @@ test.describe('Same-scale reveal', () => {
         await expect.poll(() => loopOf(page, id2, Q)).toBe('6,11');
         await expect(body).not.toHaveClass(/revealing/);
         await expect(body.locator('.reveal-layer')).toHaveCount(0);
-        // The gesture's end claimed the track (gesture.js `claim`): the
-        // panel is up and shows the new region.
+        // The panel (the track was selected first) shows the new region.
         await expect(panelOf(page, id2)).toBeVisible();
-        await expect(lane.locator('.region-label')).toHaveText(/loop 5Q · 12Q take/);
+        await expect(panelOf(page, id2).locator('.region-label'))
+            .toHaveText(/loop 5Q · 12Q take/);
 
         // THE DIRECTION RULE (edge_pan.js; release-jump F5): the wrap's
         // splice rests at the frame's left edge, its tab INSIDE the edge

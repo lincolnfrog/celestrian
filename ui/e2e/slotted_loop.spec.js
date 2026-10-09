@@ -19,7 +19,7 @@
  *   (b) the lane ↺ re-times; the panel's ↺ puts the chosen hit on the
  *       frame's top; a cancelled marker drag puts the engine's top back;
  *   (c) a whole-Q drag of a cut never leaves a sliver segment;
- *   (d) ⌥→ then ⌥←, a moment apart, lands on the sample it left;
+ *   (d) → then ←, a moment apart, lands on the sample it left;
  *   (e) a NEW TAKE of the 1Q loop above the placing loop never moves the
  *       frame;
  *   (f) editing the slotted loop never moves the frame or the others;
@@ -30,12 +30,12 @@
 import { test, expect } from '@playwright/test';
 import { node, loopOf, segsOf, laneOf, stripOf, viewOf, selectLane,
          laneHandles as handles, laneMarks as marks, handleTab as tabPoint,
-         lanePxPerQ, dragBy as drag, slottedTopology }
+         lanePxPerQ, dragBy as drag, slottedTopology, panelOf }
     from './region_panel_helpers.js';
 
 /** The raw Q the panel's ↺ mark sits on. */
 async function panelTopQ(page, id) {
-    const b = await laneOf(page, id).locator('.region-top').boundingBox();
+    const b = await panelOf(page, id).locator('.region-top').boundingBox();
     const s = await stripOf(page, id).boundingBox();
     const v = await viewOf(page, id);
     return +(v.q0 + (b.x + b.width / 2 - s.x) / s.width * v.spanQ).toFixed(2);
@@ -132,12 +132,12 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
         // shift brought there — raw 6, the region start.
         await expect.poll(() => marks(page, c)).toEqual(['top@0', 'wrap@0', 'wrap@4']);
         await expect.poll(() => panelTopQ(page, c)).toBe(6);
-        await expect(laneOf(page, c).locator('.region-timing-read'))
+        await expect(panelOf(page, c).locator('.region-timing-read'))
             .toHaveText('timing: shifted +1Q');
         // The loop that places the frame did not move.
         expect(await marks(page, b)).toEqual(bBefore);
         // "Timing as played" puts it back.
-        await laneOf(page, c).locator('.region-timing-reset').click();
+        await panelOf(page, c).locator('.region-timing-reset').click();
         await expect.poll(async () => (await node(page, c)).origin / Q).toBe(14);
         await expect.poll(() => marks(page, c)).toEqual(['top@0', 'wrap@3']);
         await expect.poll(() => panelTopQ(page, c)).toBe(7);
@@ -146,7 +146,8 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
     test('(b) the panel\'s ↺ puts the chosen hit on the frame\'s top; Escape puts the engine\'s own top back', async ({ page }) => {
         const { Q, c } = await setup(page);
         const lane = laneOf(page, c);
-        const tab = lane.locator('.region-top-tab');
+        const panel = panelOf(page, c);
+        const tab = panel.locator('.region-top-tab');
         const tb = await tab.boundingBox();
         const v = await viewOf(page, c);
         const s = await stripOf(page, c).boundingBox();
@@ -155,7 +156,7 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
         // Onto raw 8 (+1.3Q of hand → +1Q): the take moves 1Q EARLIER so
         // raw 8 lands where raw 7 did — on the frame's top.
         await drag(page, at, 1.3 * pxq, { hold: true });
-        await expect(lane.locator('.region-badge')).toHaveText('↺ on 8Q · shift −1Q');
+        await expect(panel.locator('.region-badge')).toHaveText('↺ on 8Q · shift −1Q');
         await expect.poll(async () => (await node(page, c)).origin / Q).toBe(13);  // live
         // ESCAPE: the origin goes back — and so does the engine's top,
         // to the one it HAD (raw 6), not to the ↺ as shown (raw 7).
@@ -166,10 +167,10 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
         expect(n0.retime).toBe(0);
         expect(n0.loopTop / Q).toBe(6);
         await expect.poll(() => panelTopQ(page, c)).toBe(7);
-        await expect(lane.locator('.region-overlay')).not.toHaveClass(/drag-held/);
+        await expect(panel.locator('.region-overlay')).not.toHaveClass(/drag-held/);
 
         // The same drag, released: it lands.
-        const tb2 = await lane.locator('.region-top-tab').boundingBox();
+        const tb2 = await panel.locator('.region-top-tab').boundingBox();
         await drag(page, { x: tb2.x + tb2.width / 2, y: tb2.y + tb2.height / 2 }, 1.3 * pxq);
         await expect.poll(async () => (await node(page, c)).loopTop / Q).toBe(8);
         const n1 = await node(page, c);
@@ -177,7 +178,7 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
         expect(n1.retime / Q).toBe(-1);
         await expect.poll(() => panelTopQ(page, c)).toBe(8);
         await expect.poll(() => marks(page, c)).toEqual(['top@0', 'wrap@2']);
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted −1Q');
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: shifted −1Q');
     });
 
     test('(c) a whole-Q drag of a cut never leaves a sliver: no room, no move', async ({ page }) => {
@@ -211,16 +212,19 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
             .map(v => (+v).toFixed(1)).join()).toBe('6.0,7.4,8.4,10.0');
     });
 
-    test('(d) ⌥→ then ⌥←, a moment apart, lands on the sample it left', async ({ page }) => {
+    test('(d) → then ←, a moment apart, lands on the sample it left', async ({ page }) => {
+        // (Until 2026-10-08 this pinned the ⌥ ⅛Q nudge's whole-sample
+        // step; the ⌥ nudge is gone — no sub-Q grid — and the round trip
+        // is pinned with the whole-Q keys.)
         const { Q, c } = await setup(page);
         const before = await node(page, c);
-        await page.keyboard.press('Alt+ArrowRight');
+        await page.keyboard.press('ArrowRight');
         await expect.poll(async () => (await node(page, c)).loopStart)
-            .toBe(before.loopStart + Math.round(Q / 8));
+            .toBe(before.loopStart + Q);
         // Past the nudge chain's window (800 ms): the next press reads
         // the region back from the polled samples.
         await page.waitForTimeout(1000);
-        await page.keyboard.press('Alt+ArrowLeft');
+        await page.keyboard.press('ArrowLeft');
         await expect.poll(async () => (await node(page, c)).loopStart).toBe(before.loopStart);
         expect((await node(page, c)).loopEnd).toBe(before.loopEnd);
         // …so its ↺ stays on the same sample.
@@ -308,107 +312,101 @@ test.describe('A loop that slots into the frame (clip 3+)', () => {
     });
 });
 
-/* THE CLAIM (owner 2026-10-01; gesture.js `claim`): a handle's gesture
- * selects its track when it ENDS. The region panel is a row under the
- * selected lane, so a claim at the PRESS — as it was — closed the panel
- * above a lower track and moved that track up by the panel's height
- * (74 px) out from under the hand: the drag went on by pointer capture
- * alone, and the second click of a double-click landed on the panel.
- * An unselected track wears its handles too (quieter), so this is one
- * press away on any session with two long loops. */
-test.describe('A handle on an unselected track', () => {
-    /** B (above) selected, its panel open between B and C. */
+/* HANDLES ON THE SELECTED TRACK ONLY (owner 2026-10-08; loop_selection.md
+ * §15). An unselected lane's loop section shows how its loop aligns
+ * with the song — the ↺ and splices as quiet lines — and is not an edit
+ * surface: a press there selects the track and does nothing else, its
+ * double-click never cuts, and its chip still toggles. The region panel
+ * is in the edit bar at the foot of the view, so a selection never
+ * moves a lane. (Until 2026-10-08 every lane wore handles and a gesture
+ * claimed its track when it ENDED, because the panel opened as a row
+ * under the selected lane and moved the lanes below it — 74 px under
+ * the hand on a press.) */
+test.describe('An unselected track', () => {
+    /** B selected; C — below it — is not. */
     async function setupUpper(page) {
         const t = await setup(page);
         await selectLane(page, t.b);
-        await expect(laneOf(page, t.c).locator('.lane-region')).toBeHidden();
+        await expect(panelOf(page, t.c)).toBeHidden();
         return t;
     }
     const bodyTop = (page, id) => laneOf(page, id).locator('.lane-body')
         .evaluate(el => Math.round(el.getBoundingClientRect().top));
     const isSel = (page, id) => laneOf(page, id)
         .evaluate(row => row.classList.contains('sel'));
-
-    test('the lane does not move under the hand; the drag\'s end claims the track', async ({ page }) => {
-        const { Q, b, c } = await setupUpper(page);
-        const top0 = await bodyTop(page, c);
-        const at = await tabPoint(page, c, 'wrap');
-        const pxq = await lanePxPerQ(page, c);
-        // PRESS: nothing moves, nothing is claimed.
-        await page.mouse.move(at.x, at.y);
-        await page.mouse.down();
-        await page.waitForTimeout(120);
-        expect(await bodyTop(page, c), 'at the press').toBe(top0);
-        expect(await isSel(page, c)).toBe(false);
-        // DRAG −1Q: the swap runs under a hand that is still on its lane.
-        await page.mouse.move(at.x - 1.2 * pxq, at.y, { steps: 10 });
-        await expect(laneOf(page, c).locator('.lr-badge')).toHaveText(/swap · splice −1Q/);
-        expect(await bodyTop(page, c), 'mid-drag').toBe(top0);
-        expect(await isSel(page, b), 'the panel above stays open').toBe(true);
-        await expect(laneOf(page, b).locator('.lane-region')).toBeVisible();
-        // RELEASE: the edit lands, and now the track is claimed.
-        await page.mouse.up();
-        await expect.poll(() => loopOf(page, c, Q)).toBe('5,9');
-        await expect.poll(() => isSel(page, c)).toBe(true);
-        expect(await isSel(page, b)).toBe(false);
-        await expect(laneOf(page, c).locator('.lane-region')).toBeVisible();
-        await expect(laneOf(page, b).locator('.lane-region')).toBeHidden();
+    /** The wrap splice's line on the lane (page px), tab or no tab. */
+    const wrapLine = (page, id) => laneOf(page, id).locator('.lane-body').evaluate(body => {
+        const h = body.querySelector('.lr-layer > .lr-wrap:not(.lr-ghost):not(.lr-end)');
+        const r = h.getBoundingClientRect();
+        const b = body.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: b.top + b.height * 0.75 };
     });
 
-    test('Escape cancels the drag — and still claims the track it touched', async ({ page }) => {
-        const { Q, c } = await setupUpper(page);
-        const top0 = await bodyTop(page, c);
-        const at = await tabPoint(page, c, 'top');
-        await drag(page, at, 1.3 * await lanePxPerQ(page, c), { hold: true });
-        await expect(laneOf(page, c).locator('.lr-badge')).toHaveText(/shift \+1Q/);
-        expect(await bodyTop(page, c)).toBe(top0);
-        await page.keyboard.press('Escape');
-        await page.mouse.up();
-        await expect.poll(async () => (await node(page, c)).origin / Q).toBe(14);
-        await expect.poll(() => isSel(page, c)).toBe(true);
-    });
-
-    test('a double-click heals a cut there at the first try', async ({ page }) => {
-        const { Q, c } = await setupUpper(page);
-        await page.evaluate(({ id, Q }) => window.__celestrianTest.callNative(
-            'setSegments', id, [6 * Q, 8 * Q, 9 * Q, 10 * Q]), { id: c, Q });
-        await expect.poll(async () => (await handles(page, c))
-            .filter(h => h.kind === 'cut' && !h.ghost).length).toBe(1);
-        await expect.poll(() => laneOf(page, c).locator('.lane-body')
-            .evaluate(el => el._cycleQ)).toBe(12);
-        const top0 = await bodyTop(page, c);
-        const at = await tabPoint(page, c, 'cut');
-        // Both clicks land on the handle: the first one's claim waits.
-        await page.mouse.move(at.x, at.y);
-        await page.mouse.down();
-        await page.mouse.up();
-        expect(await bodyTop(page, c), 'after the first click').toBe(top0);
-        expect(await isSel(page, c)).toBe(false);
-        await page.mouse.down({ clickCount: 2 });
-        await page.mouse.up({ clickCount: 2 });
-        await expect.poll(() => loopOf(page, c, Q)).toBe('6,10');
-        expect((await node(page, c)).segments || []).toEqual([]);
-        await expect.poll(() => isSel(page, c)).toBe(true);
-    });
-
-    test('a mere click on a handle claims the track a moment later', async ({ page }) => {
+    test('shows its loop as marks: lines, no tabs, nothing to grab', async ({ page }) => {
         const { c } = await setupUpper(page);
-        const at = await tabPoint(page, c, 'wrap');
-        await page.mouse.click(at.x, at.y);
-        expect(await isSel(page, c), 'not under what may be a double-click').toBe(false);
-        await expect.poll(() => isSel(page, c), { timeout: 1500 }).toBe(true);
-        await expect(laneOf(page, c).locator('.lane-region')).toBeVisible();
+        const body = laneOf(page, c).locator('.lane-body');
+        // The ↺ and the splice are still where they are…
+        await expect.poll(() => marks(page, c)).toEqual(['top@0', 'wrap@3']);
+        // …as lines: no tab shows, and no handle takes a press.
+        for (const tab of await body.locator('.lr-layer .lr-tab').all()) {
+            await expect(tab).toBeHidden();
+        }
+        expect(await body.locator('.lr-layer > :is(.lr-splice, .lr-top)').evaluateAll(hs =>
+            hs.map(h => getComputedStyle(h).pointerEvents))).not.toContain('auto');
+        // Selected, the same lane wears them.
+        await selectLane(page, c);
+        await expect(body.locator('.lr-layer > .lr-wrap:not(.lr-ghost):not(.lr-end) .lr-tab'))
+            .toBeVisible();
     });
 
-    test('a rail click while a click\'s claim waits is the user\'s own choice: it wins', async ({ page }) => {
-        const { a, c } = await setupUpper(page);
-        const at = await tabPoint(page, c, 'wrap');
-        await page.mouse.click(at.x, at.y);
-        await laneOf(page, a).locator('.rail-name').click();
-        expect(await isSel(page, a)).toBe(true);
-        await page.waitForTimeout(600);   // past the claim window
-        expect(await isSel(page, a), 'the explicit selection stands').toBe(true);
-        expect(await isSel(page, c)).toBe(false);
+    test('a press on it selects it and does nothing else; no lane moves', async ({ page }) => {
+        const { Q, a, b, c } = await setupUpper(page);
+        const tops = async () => [await bodyTop(page, a), await bodyTop(page, b),
+                                  await bodyTop(page, c)];
+        const tops0 = await tops();
+        // A DRAG from the splice's line: the press selects; the drag swaps
+        // nothing (there was no handle under it).
+        const at = await wrapLine(page, c);
+        const pxq = await lanePxPerQ(page, c);
+        await page.mouse.move(at.x, at.y);
+        await page.mouse.down();
+        await expect.poll(() => isSel(page, c)).toBe(true);
+        expect(await tops(), 'at the press: the edit bar moves no lane').toEqual(tops0);
+        await page.mouse.move(at.x - 1.2 * pxq, at.y, { steps: 10 });
+        await expect(laneOf(page, c).locator('.lr-badge')).toHaveCount(0);
+        await page.mouse.up();
+        await page.waitForTimeout(200);
+        expect(await loopOf(page, c, Q)).toBe('6,10');
+        expect(await isSel(page, b)).toBe(false);
+        await expect(panelOf(page, c)).toBeVisible();
+        await expect(panelOf(page, b)).toBeHidden();
+        expect(await tops(), 'after: still no lane moved').toEqual(tops0);
+        // Now selected, the same splice drags: −1Q, a swap.
+        await drag(page, await tabPoint(page, c, 'wrap'), -1.2 * pxq);
+        await expect.poll(() => loopOf(page, c, Q)).toBe('5,9');
+        expect(await tops()).toEqual(tops0);
+    });
+
+    test('its double-click selects it and never cuts', async ({ page }) => {
+        const { Q, c } = await setupUpper(page);
+        const bb = await laneOf(page, c).locator('.lane-body').boundingBox();
+        await page.mouse.dblclick(bb.x + bb.width * 0.4, bb.y + bb.height / 2);
+        await expect.poll(() => isSel(page, c)).toBe(true);
+        await page.waitForTimeout(200);
+        expect(await loopOf(page, c, Q)).toBe('6,10');
+        expect((await node(page, c)).segments || []).toEqual([]);
+        // Selected, the same double-click cuts the cell.
+        await page.mouse.dblclick(bb.x + bb.width * 0.4, bb.y + bb.height / 2);
+        await expect.poll(async () => ((await node(page, c)).segments || []).length).toBe(4);
+    });
+
+    test('its chip still toggles the loop — and selects the track', async ({ page }) => {
+        const { c } = await setupUpper(page);
+        const chip = laneOf(page, c).locator('.win-heard-chip');
+        await expect(chip).toHaveText(/window 4Q/);
+        await chip.click();
+        await expect.poll(async () => (await node(page, c)).loopBypassed).toBe(true);
+        await expect.poll(() => isSel(page, c)).toBe(true);
     });
 });
 

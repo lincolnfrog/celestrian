@@ -2,7 +2,7 @@
 
 How a track's **loop region** works: what it is in the model, what each edit does to the sound and to the picture, the two surfaces that edit it, and what keeps the picture steady while you edit. It also records what Phase 1 shipped (2026-09-23) and the proposed roadmap for Phase 2.
 
-§12 is the 2026-10-01 audit of the surface as it stands after the 2026-09-29 rulings (one loop places the frame; no edit hold; a slotted-in loop's ↺ is where it starts playing): what it found, what was fixed, and what was proposed and ruled. §13 is the work list the rulings became, and **§14 is what was built from it** (the same day) and what is still open.
+§12 is the 2026-10-01 audit of the surface as it stands after the 2026-09-29 rulings (one loop places the frame; no edit hold; a slotted-in loop's ↺ is where it starts playing): what it found, what was fixed, and what was proposed and ruled. §13 is the work list the rulings became, and **§14 is what was built from it** (the same day) and what is still open. **§15 (2026-10-08) is the current surface:** the region panel moved to an edit bar at the foot of the session view, and only the selected track wears handles.
 
 It builds on three canon docs and does not restate them:
 - [time_maps.md](time_maps.md): the map primitive, coherence, recording through maps, rejected alternatives (§8).
@@ -119,7 +119,7 @@ Everything after the splice is re-tiled, and the frame length often changes (the
 - **Moves:** whole Q, relative, so a free offset set earlier is kept. ⌥ moves freely.
 - **Lengths:** always whole Q.
 - **No sub-Q grid,** because it would be arbitrary relative to the music; a meter-aware grid is a "maybe" in tasks.md Tier D.
-- **Keys:** ←/→ nudge 1Q, ⇧ 4Q. ⌥ nudges ⅛Q, which predates the ruling and is an open question.
+- **Keys:** ←/→ nudge 1Q, ⇧ 4Q. (The ⌥ ⅛Q nudge, which predated the ruling, was removed on 2026-10-08, §15.)
 
 ---
 
@@ -167,7 +167,7 @@ Phase 2 replaces the grips, the pair and the chip with splice handles (§10).
 
 ### 6.2 The region panel (raw time)
 
-The panel spans the full row under the selected track. It has a label, a whole-take **navigator** with a view box, and a zoomable **detail strip**. The navigator is an abstract map, not a waveform (owner, 2026-09-29: a second waveform of the take over the detail read as a redundant third track). It shows the take's extent as a line, the kept region as solid blocks with cuts as the gaps between them, the ↺ tick, the cursor, and the detail's view box. It is always shown, so both ends of a loop stay one click apart however far the detail is zoomed.
+The panel shows in the **edit bar** at the foot of the session view (since 2026-10-08, §15; until then it was a row under the selected track). It has a label (the track's name over its terms), a whole-take **navigator** with a view box, and a zoomable **detail strip**. The navigator is an abstract map, not a waveform (owner, 2026-09-29: a second waveform of the take over the detail read as a redundant third track). It shows the take's extent as a line, the kept region as solid blocks with cuts as the gaps between them, the ↺ tick, the cursor, and the detail's view box. It is always shown, so both ends of a loop stay one click apart however far the detail is zoomed.
 
 | Element / input | Does |
 |---|---|
@@ -181,7 +181,7 @@ The panel spans the full row under the selected track. It has a label, a whole-t
 | Navigator box | Drag = pan; its edges set the span; click elsewhere = centre; double-click = whole take. (Drag-vertically-to-zoom is gone: +/− zoom.) |
 | Label terms, Z / ⇧Z | Fit the loop / fit the whole take |
 | Box or bracket drag at an edge | Edge pan |
-| ← / → | Nudge the region 1Q (⇧ 4Q, ⌥ ⅛Q). Presses within 800 ms form one pinned gesture (`makeChainPin`). |
+| ← / → | Nudge the region 1Q (⇧ 4Q). Presses within 800 ms form one pinned gesture (`makeChainPin`). |
 
 The panel shows for the most recently selected lane with a take of 2Q or more. It does not show for the Q-definer (its trim sets Q), a pinned inspector, a child under a parent's map, or a recording lane. time_maps.md §6 has the full table, with the code behind each row.
 
@@ -563,9 +563,9 @@ Pinned by `reseat_tween.test.mjs` (19) and `reseat_tween.spec.js` (7, real mouse
 
 ### 14.5 Still open
 
-- The owner's rulings listed at the end of §13.4; the handles question of §14.1 — now leaning one way, §14.6; and whether the re-seat tween should move every re-seat (as built) or only the two gestures the proposal named (§14.2). Nothing else from §13 is open.
+- The owner's rulings listed at the end of §13.4; the handles question of §14.1 — now leaning one way, §14.6; and whether the re-seat tween should move every re-seat (as built) or only the two gestures the proposal named (§14.2). Nothing else from §13 is open. *(All ruled 2026-10-08 except the late slotted-in loop's ↺ — §15.)*
 
-### 14.6 Handles on the selected track only (owner's note, 2026-10-08 — not yet built)
+### 14.6 Handles on the selected track only (owner's note, 2026-10-08 — reading 1 BUILT the same day, §15)
 
 The owner, shown that unselected tracks wear their handles (§14.1): *"handles on selected tracks only seems like the only UX that makes sense to me. I don't see how handles on the looping section work — that section is visualizing how the loop aligns with the song."* Not sure yet, but that is the direction. Two readings, in order of size:
 
@@ -582,3 +582,39 @@ The owner, shown that unselected tracks wear their handles (§14.1): *"handles o
 ### 14.7 The suites
 
 Node 621 · mock e2e 156 · engine e2e 32 · C++ all passing (`CelestrianTests`, ~7 min; the new cases: `bounce_tests.cc` "A group bounces from its ↺ top too", "A named start…"; `time_map_record_tests.cc` "a CANCELLED drag…"). Every new e2e test was run against a mutation of the code it pins (the module served altered through `page.route` from a scratch copy of the spec — nothing in the tree is touched): each failed where it should.
+
+---
+
+## 15. The edit bar; handles on the selected track only (2026-10-08)
+
+The §12–§14 batch was committed on 2026-10-08 (suites green: node 621, mock e2e 156, engine e2e 32, C++). The owner then ruled on what §14.5 left open and asked for the dock §13.1 had priced.
+
+### 15.1 Rulings (owner, 2026-10-08)
+
+- **The edit bar** — "matching Ableton's fixed edit bar at the bottom": yes.
+- **Handles on the selected track only** (§14.6, reading 1): the lane's loop section shows how the loop aligns with the song; it is not an edit surface for every track.
+- **The re-seat tween's scope:** keep it as built — every re-seat at rest moves (§14.2).
+- **The ⌥ ⅛Q nudge:** drop it ("I never use it"). No sub-Q grid; fine moves are the ⌥ drag's.
+- **A right-edge handle on loops shorter than the frame** (§13.4): leave it unless someone misses it.
+
+### 15.2 What was built
+
+**The edit bar** (`#region-dock` in `index.html` / `index_test.html`, a row of `#app` between the session and the status strip). Every lane still builds its own panel (`region_panel.js` `buildRegionPanel`, `row._regionNav`, `.lane-region[data-lane-id]`), but mounts it in the bar instead of its row; one shows at a time. So:
+- selecting a track swaps what the bar shows and **no lane ever moves** — the panel was a row under the selected lane, and every lane below it moved by its height (74 px) on a selection;
+- the bar has a **fixed height** (132 px) while there are lanes, so a selection never resizes the session either; when the selected track has no panel the bar says why (`noPanelReason`: "A 1Q take — no loop region to edit", "This track sets Q — drag its brackets on the lane", a member under its group's map, "Recording…", "Nothing recorded yet"; "Select a track to edit its loop" when nothing is);
+- the label names the track (the bar is not next to its lane) and is a rail wide, so the detail strip starts where a top-level lane's body does;
+- the bar sits outside the session's scroll: the panel keeps one width at every main zoom and scroll with no JS (`pinToViewport` and the scroll listener are gone; a `ResizeObserver` repaints on a window resize, `wireRegionDock`), and the playhead never crosses it (`playhead_mask.js` no longer masks the panel);
+- the recording gate reaches the bar (`#region-dock.map-locked`, patch.js).
+
+**Handles on the selected track only** (`session.css` `.lane:not(.sel)`, `lane_build.js`). An unselected lane draws its ↺ and splices as quiet lines — no tabs, badges or tints, no grab — and its brackets, grips and cut handles and chips not at all; dims, cut bands, a one-shot's seam marks, the chip's readout, the arm marker and the cursors stay (they are what the loop IS). A press anywhere on it SELECTS the track and does nothing else — a capture-phase listener on the lane body, ahead of every handle, band and cut; ⌘/⇧ add to the selection as on the rail. A double-click whose first press selected never cuts (it owns exactly one double-click). The chip keeps its click — a readout and a switch, not a handle — and selects too. Handing Q to a track (its Q lamp) selects it, since the trim view's brackets set Q.
+
+The claim-at-end machinery of §14.1 stays and is a no-op: every handle is on the selected track now.
+
+**The ⌥ ⅛Q nudge** is gone (`init.js`; `nudgeStepQ` deleted — whole-Q steps are whole samples already).
+
+Pinned by `region_panel_keys.test.mjs` (c) (the bar's hint) and `slotted_loop.spec.js` "An unselected track" (marks, not handles; a press selects and nothing else, no lane moves at the press or after; its double-click never cuts; its chip still toggles) — each checked against a mutation (the capture listener off; the double-click guard off). The specs reach the panel through `panelOf(page, id)` (`region_panel_helpers.js`), not the lane's row.
+
+### 15.3 Open
+
+- **A slotted-in loop that starts a hair late** reads its ↺ at the END of its region in the panel (§12.2 item 5): explained to the owner in plain terms, not yet ruled. The proposal is the placing loop's tolerance for every loop.
+- **"The song has a one"** — a proposal for which edits move the frame (the second clip is special only while nothing else can tell where bar 1 is): with the owner, not written up yet.

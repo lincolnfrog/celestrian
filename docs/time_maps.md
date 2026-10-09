@@ -467,12 +467,20 @@ swap (above), so on those lanes the reveal serves length changes only.
 
 ### The region panel
 
-The selected clip or group grows a 68 px row under its lane
-(`.lane-region`), spanning the **whole row** (under the rail too — its
-cell there is empty). The panel (`region_panel.js`) is pinned to the
-viewport at a **constant width** (the viewport minus `#session`'s
-padding), whatever the main zoom and scroll. It holds a label ("loop 4Q
-· 52Q take") and a column of two strips (2026-09-23, zoomable):
+The selected clip or group's panel shows in **the edit bar** at the foot
+of the session view (`#region-dock`, 2026-10-08 — Ableton's clip view;
+loop_selection.md §15). Every lane builds its panel (`region_panel.js`,
+`.lane-region[data-lane-id]`) but mounts it in the bar, so selecting a
+track swaps what the bar shows and never moves a lane (until 2026-10-08
+the panel was a 68 px row under the selected lane, and every lane below
+moved by its height). The bar has a fixed height while there are lanes;
+for a selected track with no panel it says why (`noPanelReason`: a 1Q
+loop, the Q-definer, a member under its group's map, a take in
+progress). It sits outside the session's scroll, so the panel keeps one
+width whatever the main zoom and scroll, and the label column is a rail
+wide, so the detail strip starts where a lane's body does. It holds a
+label (the track's name over "loop 4Q · 52Q take") and a column of two
+strips (2026-09-23, zoomable):
 
 - the **overview**, 12 px: the WHOLE raw take (clip peaks; a group's map
   mixdown — the same array the heard tiles slice), the kept segments
@@ -533,27 +541,31 @@ The panel appears with selection and leaves with it. Deselect with
 Escape, a click on empty canvas, or a click on the top bar's empty space
 (`#transport`, controls excluded).
 
-**A handle's gesture claims its track — when it ends (owner,
-2026-10-01).** An unselected lane wears its handles too (quieter, full
-on hover), so a splice, ↺, bracket, cut band, seam or grip can be
-grabbed on any track; doing so selects that track (which arms `[` /
-`]`). The claim lands when the gesture ENDS, however it ends
-(`gesture.js` `claim`), never at the press: the panel is a row under the
-selected lane, and claiming at the press closed the panel above a lower
-track and moved that track up by the panel's height — 74 px — out from
-under the hand (the drag went on by pointer capture alone; a
-double-click's second click landed on the panel). A press that was only
-a click claims after the double-click window (`CLAIM_CLICK_MS`); a new
-press, or any explicit selection, drops a claim still waiting. A
-double-click (heal a cut, cut a cell) claims at once — both clicks have
-landed. The lane still moves when the panel swaps, at the release, with
-no hand on it. Pinned by `gesture_latches.test.mjs` and
-`slotted_loop.spec.js` ("A handle on an unselected track").
+**Handles on the selected track only (owner, 2026-10-08).** An
+unselected lane's loop section shows how its loop aligns with the song,
+and is not an edit surface: its ↺ and splices draw as quiet lines (no
+tabs, no grab), and its brackets, grips and cut handles and chips are
+not drawn (`session.css`, `.lane:not(.sel)`). A press anywhere on it
+SELECTS the track and does nothing else — captured on the lane body
+before any handle, band or cut sees it (`lane_build.js`) — and a
+double-click whose first press selected never cuts. The chip keeps its
+click (a readout and a switch, not a handle) and selects the track too.
+Selected, the lane wears its handles, and the edit bar shows its panel;
+no lane moves. Handing Q to a track (its Q lamp) selects it, since its
+trim view's brackets set Q. Pinned by `slotted_loop.spec.js` ("An
+unselected track").
 
-**Keyboard:** `←` / `→` slide the selected region by 1Q (⇧ 4Q, ⌥ ⅛Q),
-length held, one undo step per press (`nudgeRegion`). The step is a
-whole number of samples (`nudgeStepQ`): ⅛Q rarely is, and rounded per
-landing, ⌥→ then ⌥← came back a sample late (2026-10-01). A **chain** of
+(History: from 2026-10-01 to 10-08 every lane wore its handles, and a
+handle's gesture claimed its track when it ENDED — `gesture.js` `claim`,
+`CLAIM_CLICK_MS` — because the panel was then a row under the selected
+lane and a claim at the press moved a lower lane 74 px out from under
+the hand. That machinery stays and is a no-op now: every handle is on
+the selected track.)
+
+**Keyboard:** `←` / `→` slide the selected region by 1Q (⇧ 4Q), length
+held, one undo step per press (`nudgeRegion`). There is no ⌥ step: the
+⌥ ⅛Q nudge was removed on 2026-10-08 (owner: no sub-Q grid; fine moves
+are the ⌥ drag's). A **chain** of
 nudges (presses within 800 ms) is one pinned gesture: the first press
 pins the frame (`drag_pin.js`), and the pin drops once the chain window
 has passed the last press and its commit has settled, so the frame
@@ -562,8 +574,8 @@ the nudged region in sight. `Z` / `⇧Z` fit the panel to the loop / the
 whole take, only while a panel is shown (plain `z` is otherwise
 unbound). `[` / `]` walk the viewport through the selected track's
 **lane** handles — a heard lane's take-tile splices and ↺ — never the
-panel's (`isTransientHandle` skips `.lane-region`: the viewport-pinned
-panel cannot be centred, and the walk used to stick on its cut
+panel's (`isTransientHandle` skips `.lane-region`: the panel cannot be
+centred by scrolling the session, and the walk used to stick on its cut
 handles) nor a ghost repeat's; `{` / `}` jump to the outermost handle.
 
 Pinned by `ui/js/tests/map_edit.test.mjs` (`slideSeam`,
@@ -590,7 +602,7 @@ drags' pluggable preview and commit under the raw drag's lifecycle),
 pan, keep-in-view, the whole-Q grid, the wheel and overview-box laws,
 one gain per take), `edge_pan.test.mjs` (the direction-aware pan),
 `region_panel_keys.test.mjs` (the nudge chain's pin, the teleport
-filter), `ui/e2e/splice_handles.spec.js` (the swap changes only the
+filter, the edit bar's hint), `ui/e2e/splice_handles.spec.js` (the swap changes only the
 swept strip and keeps or resets the ↺; the shift, whole Q and ⌥;
 Escape puts both back; ⇧ length at the wrap and at a cut, to a heal;
 the start marker; "Timing as played"; ghosts; a reset ↺ landing at

@@ -1,6 +1,7 @@
 /**
- * Lane construction: the per-lane row (rail + body + region panel) built
- * once per lane id; patchRail/patchLaneBody keep it current in place.
+ * Lane construction: the per-lane row (rail + body; its region panel
+ * mounts in the edit bar) built once per lane id;
+ * patchRail/patchLaneBody keep it current in place.
  * Also the inline rename editor (the one piece of rail chrome that
  * must survive the 50ms patch tick).
  */
@@ -8,7 +9,7 @@
 import { ctx } from './context.js';
 import { el, setText, parseDropIds } from './sv_util.js';
 import { dragHasFiles, dropFrameQ } from '../import_drop.js';
-import { selection, clearSelection, toggleSelect } from './selection.js';
+import { selection, clearSelection, toggleSelect, selectOnly } from './selection.js';
 import { buildGainDial, buildPanDial } from './dials.js';
 import { buildRegionPanel } from './region_panel.js';
 import { toggleInputMenu } from './input_menu.js';
@@ -17,11 +18,16 @@ import { openCreationMenu } from './creation_menu.js';
 import { buildFxRow } from './fx_row.js';
 import { buildSeqGrid } from './seq_grid.js';
 
+/* A double-click whose first press selected the lane is the selection's,
+ * not a cut: its dblclick lands within this long of that press (ms). */
+const SELECT_DBLCLICK_MS = 600;
+
 /**
  * Build one lane row for the vm lane: synthetic fx/add rows get their
  * own shapes; clips and groups get the two-line rail (name row on top;
  * controls + status below — nothing ever competes with the name for
- * width), the body, and the region panel. Wired once; all state patches in
+ * width), the body, and the region panel (mounted in the edit bar).
+ * Wired once; all state patches in
  * patchRail / patchLaneBody.
  */
 export function buildLane(lane) {
@@ -120,7 +126,11 @@ export function buildLane(lane) {
     tempo.style.display = 'none';
     tempo.addEventListener('click', () => {
         const l = row._lane;
-        if (l && l.canDefine && ctx.cb.onSetDefiner) ctx.cb.onSetDefiner(l.id);
+        if (!l || !l.canDefine || !ctx.cb.onSetDefiner) return;
+        // Handing Q opens the track's trim view — its brackets set Q, and
+        // handles show on the selected track only: select it too.
+        selectOnly(l.id);
+        ctx.cb.onSetDefiner(l.id);
     });
     head.appendChild(tempo);
     if (lane.kind === 'group') {
@@ -280,7 +290,34 @@ export function buildLane(lane) {
         ctx.cb.onImportDrop(l.id, q, Array.from(e.dataTransfer.files || []));
     });
 
-    row.append(rail, body, buildRegionPanel(row));
+    // HANDLES ON THE SELECTED TRACK ONLY (loop_selection.md §15, owner
+    // 2026-10-08): an unselected lane's loop section shows how the loop
+    // aligns with the song — its ↺ and splices draw as marks — and is
+    // not an edit surface. A press on it SELECTS the track and does
+    // nothing else (captured before any handle, band or cut sees it);
+    // the handles appear with the selection, and the edit bar below
+    // shows its panel — no lane moves. Its chip keeps its click (a
+    // readout and a switch, not a handle). The press's double-click
+    // never cuts: the lane was not selected when it began.
+    body.addEventListener('pointerdown', e => {
+        const l = row._lane;
+        if (e.button !== 0 || !l || selection.has(l.id)) return;
+        toggleSelect(row, e.metaKey || e.ctrlKey || e.shiftKey);
+        row._selectPressAt = e.timeStamp;
+        if (e.target.closest('.win-chip.toggle')) return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+    body.addEventListener('dblclick', e => {
+        const at = row._selectPressAt;
+        row._selectPressAt = undefined;  // it owns ONE double-click at most
+        if (!(e.timeStamp - (at ?? -Infinity) < SELECT_DBLCLICK_MS)) return;
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+
+    row.append(rail, body);
+    buildRegionPanel(row);
     return row;
 }
 

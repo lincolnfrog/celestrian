@@ -51,5 +51,6 @@ export function initCtx(callbacks) {
         emptyState: document.getElementById('empty-state'),
         gridArea: document.getElementById('grid-area'),
         session: document.getElementById('session'),
+        regionDock: document.getElementById('region-dock'),
     };
 }

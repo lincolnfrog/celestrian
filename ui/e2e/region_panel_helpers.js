@@ -121,8 +121,11 @@ export const setLoop = (page, id, a, b) => page.evaluate(
     { id, a, b });
 
 export const laneOf = (page, id) => page.locator(`.lane[data-id="${id}"]`);
-export const panelOf = (page, id) => laneOf(page, id).locator('.lane-region');
-export const stripOf = (page, id) => laneOf(page, id).locator('.region-strip');
+/** A track's region panel: in the edit bar at the foot of the session
+ * view (#region-dock, loop_selection.md §15), not in its lane's row. */
+export const panelOf = (page, id) =>
+    page.locator(`#region-dock .lane-region[data-lane-id="${id}"]`);
+export const stripOf = (page, id) => panelOf(page, id).locator('.region-strip');
 
 /** The panel's live view {q0, spanQ} (null before its first show). */
 export const viewOf = (page, id) => stripOf(page, id).evaluate(s => s._view);
@@ -152,16 +155,16 @@ export async function selectLane(page, id) {
  * (after a commit the overlay is HELD until the bridge answers — poll
  * the element's geometry, never grab it straight after an engine poll). */
 export async function keptBoxAt(page, id, a, b) {
-    const lane = laneOf(page, id);
+    const panel = panelOf(page, id);
     await expect.poll(async () => {
         // (null for a tick while the overlay rebuilds — keep polling)
-        const k = await lane.locator('.region-kept').boundingBox();
+        const k = await panel.locator('.region-kept').boundingBox();
         if (!k) return false;
         const xa = await stripX(page, id, a);
         const xb = await stripX(page, id, b);
         return Math.abs(k.x - xa) < 2 && Math.abs(k.x + k.width - xb) < 2;
     }).toBe(true);
-    return lane.locator('.region-kept').boundingBox();
+    return panel.locator('.region-kept').boundingBox();
 }
 
 /** Ctrl+wheel (the panel's zoom) at page (x, y): `notches` of −100

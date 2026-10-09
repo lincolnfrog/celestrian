@@ -39,8 +39,8 @@ test('the playhead follows the island phase over the frame', async ({ page }) =>
 
 test('the region panel\'s amber cursor sits at the heard moment inside the kept region', async ({ page }) => {
     // Heard lanes tile the window's content, so the white playhead is
-    // honest on them. The RAW view — the region panel under the
-    // selected lane: the whole take, the kept region boxed — carries
+    // honest on them. The RAW view — the selected track's region panel
+    // in the edit bar: the whole take, the kept region boxed — carries
     // the amber cursor: heard time inside the box, sweeping the kept
     // material.
     await openEngine(page);
@@ -50,7 +50,9 @@ test('the region panel\'s amber cursor sits at the heard moment inside the kept 
     expect((await engine(page, 'status')).cycle).toBe(2 * Q);
     const lane = page.locator(`.lane[data-id="${c2}"]`);
     await lane.locator('.rail-name').click();
-    await expect(lane.locator('.region-cursor')).toHaveCount(1);
+    // The panel: in the edit bar at the foot of the view (2026-10-08).
+    const panel = page.locator(`#region-dock .lane-region[data-lane-id="${c2}"]`);
+    await expect(panel.locator('.region-cursor')).toHaveCount(1);
     for (const step of [777, Q / 2, Q + 4321]) {
         await engine(page, 'advance', { samples: step });
         const st = await state(page);
@@ -62,9 +64,10 @@ test('the region panel\'s amber cursor sits at the heard moment inside the kept 
         // position of the heard moment.
         const expected = (at.inner / Q) / 4;
         await expect.poll(() => page.evaluate(id => {
-            const lane = document.querySelector('.lane[data-id="' + id + '"]');
-            const cur = lane.querySelector('.region-cursor');
-            const strip = lane.querySelector('.region-strip');
+            const panel = document.querySelector(
+                '#region-dock .lane-region[data-lane-id="' + id + '"]');
+            const cur = panel.querySelector('.region-cursor');
+            const strip = panel.querySelector('.region-strip');
             if (!cur) return null;
             const r = cur.getBoundingClientRect(), b = strip.getBoundingClientRect();
             return (r.left + r.width / 2 - b.left) / b.width;

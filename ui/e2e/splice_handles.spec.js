@@ -18,7 +18,7 @@
 
 import { test, expect } from '@playwright/test';
 import { boot, quantum, node, loopOf, segsOf, recordDefinerAndTake, setLoop,
-         laneOf, stripOf, viewOf, stripX, selectLane }
+         laneOf, stripOf, viewOf, stripX, selectLane, panelOf }
     from './region_panel_helpers.js';
 
 /** A heard lane's visible splice handles and ↺: kind, ghostliness,
@@ -428,8 +428,9 @@ test.describe('The top (shift)', () => {
     test('the ↺ drag re-times: whole Q moves the origin, the readout follows, ⌥ is fine', async ({ page }) => {
         const { Q, id2 } = await setup(page);
         const lane = laneOf(page, id2);
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: as played');
-        await expect(lane.locator('.region-timing-reset')).toBeDisabled();
+        const panel = panelOf(page, id2);
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: as played');
+        await expect(panel.locator('.region-timing-reset')).toBeDisabled();
         await page.waitForTimeout(200);
         const before = await tileProfile(page, id2);
         const pxq = await lanePxPerQ(page, id2);
@@ -448,8 +449,8 @@ test.describe('The top (shift)', () => {
         let n = await node(page, id2);
         expect(n.retime / Q).toBe(1);
         expect(await loopOf(page, id2, Q)).toBe('6,10');   // the region is untouched
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted +1Q');
-        await expect(lane.locator('.region-timing-reset')).toBeEnabled();
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: shifted +1Q');
+        await expect(panel.locator('.region-timing-reset')).toBeEnabled();
         // The ↺ and the splice moved together, with the audio — and this
         // loop places the frame, so released, the frame seats on its ↺
         // again: both back at the left edge (the shift shows against
@@ -469,7 +470,7 @@ test.describe('The top (shift)', () => {
         const fine = n.retime / Q - 1;
         expect(Math.abs(fine - dx / pxq)).toBeLessThan(0.01);
         expect(Number.isInteger(n.retime / Q)).toBe(false);
-        await expect(lane.locator('.region-timing-read'))
+        await expect(panel.locator('.region-timing-read'))
             .toHaveText(/^timing: shifted \+0\.9\d+Q \(\d+ ms later\)$/);
         // A top a little EARLY of its bar line is a pickup (¼Q, frame.md
         // §1): the frame stays on that line and the ↺ reads just before
@@ -482,14 +483,15 @@ test.describe('The top (shift)', () => {
         await page.evaluate(({ id, Q }) => window.__celestrianTest.callNative(
             'setTiming', id, Math.round(-0.04 * Q)), { id: id2, Q });
         const lane = laneOf(page, id2);
-        await expect(lane.locator('.region-timing-read'))
+        const panel = panelOf(page, id2);
+        await expect(panel.locator('.region-timing-read'))
             .toHaveText('timing: shifted −0.04Q (40 ms earlier)');
-        const reset = lane.locator('.region-timing-reset');
+        const reset = panel.locator('.region-timing-reset');
         await expect(reset).toBeEnabled();
         await reset.click();
         await expect.poll(async () => (await node(page, id2)).retime).toBe(0);
         expect((await node(page, id2)).origin / Q).toBe(1);
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: as played');
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: as played');
         await expect(reset).toBeDisabled();
     });
 });
@@ -603,7 +605,8 @@ test.describe('The panel\'s ↺ (the start marker)', () => {
     test('dragging the ↺ onto another hit re-times the take so the ↺ keeps its moment', async ({ page }) => {
         const { Q, id2 } = await setup(page);
         const lane = laneOf(page, id2);
-        const tab = lane.locator('.region-top-tab');
+        const panel = panelOf(page, id2);
+        const tab = panel.locator('.region-top-tab');
         await expect(tab).toBeVisible();
         const tb = await tab.boundingBox();
         expect(Math.abs(tb.x + tb.width / 2 - await stripX(page, id2, 6))).toBeLessThan(26);
@@ -611,19 +614,19 @@ test.describe('The panel\'s ↺ (the start marker)', () => {
         const s = await stripOf(page, id2).boundingBox();
         const pxq = s.width / v.spanQ;
         // The overview ticks the ↺ too.
-        await expect(lane.locator('.region-ov-top')).toBeVisible();
+        await expect(panel.locator('.region-ov-top')).toBeVisible();
         // Onto raw 7Q (+1.3Q of hand → +1Q): the ↺ keeps its moment,
         // so the take moves 1Q EARLIER under it.
         await drag(page, { x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 },
                    1.3 * pxq, { hold: true });
-        await expect(lane.locator('.region-badge')).toHaveText('↺ on 7Q · shift −1Q');
+        await expect(panel.locator('.region-badge')).toHaveText('↺ on 7Q · shift −1Q');
         await page.mouse.up();
         await expect.poll(async () => (await node(page, id2)).loopTop / Q).toBe(7);
         const n = await node(page, id2);
         expect(n.retime / Q).toBe(-1);
         expect(n.origin / Q).toBe(0);
         expect(await loopOf(page, id2, Q)).toBe('6,10');
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted −1Q');
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: shifted −1Q');
         // On the lane: the ↺ held its place, the splice moved with the
         // audio (a whole Q earlier: 0 → −1 ≡ 3 of the 4Q frame).
         const hs = await handles(page, id2);
@@ -631,14 +634,14 @@ test.describe('The panel\'s ↺ (the start marker)', () => {
         expect(near(of(hs, 'wrap')[0].x, 3)).toBe(true);
         // The panel's mark sits on the new top.
         await expect.poll(async () => {
-            const b = await lane.locator('.region-top-tab').boundingBox();
+            const b = await panel.locator('.region-top-tab').boundingBox();
             return b ? Math.abs(b.x + b.width / 2 - await stripX(page, id2, 7)) < 26 : false;
         }).toBe(true);
         // The ↺'s line never steals a box slide: a press on the line
         // below the tab grabs the kept box (once the held commit has
         // let go — .drag-held keeps the stale chrome press-proof).
-        await expect(lane.locator('.region-overlay')).not.toHaveClass(/drag-held/);
-        const line = await lane.locator('.region-top').boundingBox();
+        await expect(panel.locator('.region-overlay')).not.toHaveClass(/drag-held/);
+        const line = await panel.locator('.region-top').boundingBox();
         expect(await page.evaluate(({ x, y }) => {
             const hit = document.elementFromPoint(x, y);
             return hit && hit.className;
@@ -666,6 +669,7 @@ test.describe('A plain loop\'s ↺ (no map: the shift alone)', () => {
     test('it wears the ↺ and no splice; one Q right re-times it by 1Q; "Timing as played" puts it back', async ({ page }) => {
         const { Q, id2 } = await plainSetup(page);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const body = lane.locator('.lane-body');
         const n0 = await node(page, id2);
         expect(n0.windowActive).toBe(false);
@@ -686,8 +690,8 @@ test.describe('A plain loop\'s ↺ (no map: the shift alone)', () => {
             return [!!hit.closest('.lr-top'), !!hit.closest('.win-bracket.start')];
         }, { x: bb.x + 3, y: bb.y + bb.height * 0.45 })).toEqual([false, true]);
         // The panel reads its timing.
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: as played');
-        await expect(lane.locator('.region-timing-reset')).toBeDisabled();
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: as played');
+        await expect(panel.locator('.region-timing-reset')).toBeDisabled();
 
         // +1.3Q of hand → +1Q: held, the badge names the shift.
         const pxq = await lanePxPerQ(page, id2);
@@ -702,8 +706,8 @@ test.describe('A plain loop\'s ↺ (no map: the shift alone)', () => {
         expect(n1.windowActive).toBe(false);
         expect(await loopOf(page, id2, Q)).toBe(loop0);
         expect(n1.loopTop).toBe(0);
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted +1Q');
-        await expect(lane.locator('.region-timing-reset')).toBeEnabled();
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: shifted +1Q');
+        await expect(panel.locator('.region-timing-reset')).toBeEnabled();
         // The ↺ moved with the audio — and this loop places the frame,
         // so released, the frame seats on it again: the ↺ at the left
         // edge, its tab with it; still no splice.
@@ -713,25 +717,26 @@ test.describe('A plain loop\'s ↺ (no map: the shift alone)', () => {
         await expect(body.locator('.lr-splice')).toHaveCount(0);
 
         // "Timing as played": the origin goes back, the ↺ with it.
-        await lane.locator('.region-timing-reset').click();
+        await panel.locator('.region-timing-reset').click();
         await expect.poll(async () => (await node(page, id2)).origin / Q).toBe(1);
         expect((await node(page, id2)).retime).toBe(0);
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: as played');
-        await expect(lane.locator('.region-timing-reset')).toBeDisabled();
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: as played');
+        await expect(panel.locator('.region-timing-reset')).toBeDisabled();
         await expect.poll(() => topsAt(page, id2)).toEqual([[0, true]]);
     });
 
     test('the panel\'s start marker walks the whole take: the top moves, the ↺ keeps its moment', async ({ page }) => {
         const { Q, id2 } = await plainSetup(page);
         const lane = laneOf(page, id2);
-        await expect(lane.locator('.region-label')).toHaveText(/whole take · 4Q take/);
+        const panel = panelOf(page, id2);
+        await expect(panel.locator('.region-label')).toHaveText(/whole take · 4Q take/);
         // The ↺ at raw 0 (the take's own start), ticked on the overview.
-        const mark = lane.locator('.region-top');
-        await expect(lane.locator('.region-top-tab')).toBeVisible();
-        await expect(lane.locator('.region-ov-top')).toBeVisible();
+        const mark = panel.locator('.region-top');
+        await expect(panel.locator('.region-top-tab')).toBeVisible();
+        await expect(panel.locator('.region-ov-top')).toBeVisible();
         const mb = await mark.boundingBox();
         expect(Math.abs(mb.x + mb.width / 2 - await stripX(page, id2, 0))).toBeLessThan(2);
-        const tb = await lane.locator('.region-top-tab').boundingBox();
+        const tb = await panel.locator('.region-top-tab').boundingBox();
         const v = await viewOf(page, id2);
         const s = await stripOf(page, id2).boundingBox();
         // Onto raw 1Q (+1.3Q of hand → +1Q): the ↺ keeps its moment, so
@@ -739,14 +744,14 @@ test.describe('A plain loop\'s ↺ (no map: the shift alone)', () => {
         // heardOffset(T′), on the whole take simply T0 − T′.
         await drag(page, { x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 },
                    1.3 * s.width / v.spanQ, { hold: true });
-        await expect(lane.locator('.region-badge')).toHaveText('↺ on 1Q · shift −1Q');
+        await expect(panel.locator('.region-badge')).toHaveText('↺ on 1Q · shift −1Q');
         await page.mouse.up();
         await expect.poll(async () => (await node(page, id2)).loopTop / Q).toBe(1);
         const n = await node(page, id2);
         expect(n.retime / Q).toBe(-1);
         expect(n.origin / Q).toBe(0);
         expect(n.windowActive).toBe(false);   // still a plain loop
-        await expect(lane.locator('.region-timing-read')).toHaveText('timing: shifted −1Q');
+        await expect(panel.locator('.region-timing-read')).toHaveText('timing: shifted −1Q');
         // On the lane the ↺ held its place (its moment) — and its tab: raw
         // 0 now sounds 1Q before the left edge, so the take tile is the
         // clipped [3, 4) and the ↺ sits in the take's pass wrapped to the

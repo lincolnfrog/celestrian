@@ -453,8 +453,9 @@ time_maps.md §6.
     the children's effective LCM, nested windows shortening it all the
     way up).
 
-    The raw extent lives on the REGION PANEL under the selected lane
-    and, mid-gesture, in the lane's same-scale reveal — a ⇧-drag at a
+    The raw extent lives on the selected track's REGION PANEL (the
+    edit bar at the foot of the view, loop_selection.md §15) and,
+    mid-gesture, in the lane's same-scale reveal — a ⇧-drag at a
     splice, a length change (time_maps.md §6); a plain splice drag is a
     swap, previewed on the heard lane itself; the chip toggles bypass. Children under an active group map show the
     slice the map selects of them (`childSrcSegsUnderMap`) — no

@@ -21,7 +21,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { node, loopOf, laneOf, selectLane, laneMarks as marks,
+import { node, loopOf, laneOf, panelOf, selectLane, laneMarks as marks,
          handleTab as tabPoint, lanePxPerQ, dragBy as drag, slottedTopology }
     from './region_panel_helpers.js';
 
@@ -257,7 +257,7 @@ test.describe('The re-seat tween', () => {
         // The panel's navigator is raw time, pinned to the viewport — it
         // does not move with the frame — and a press on its view box is
         // a gesture that changes nothing (a pan by 0).
-        const vb = await laneOf(page, b).locator('.region-viewbox').boundingBox();
+        const vb = await panelOf(page, b).locator('.region-viewbox').boundingBox();
         const press = { x: vb.x + vb.width / 2, y: vb.y + vb.height / 2 };
         await drag(page, await tabPoint(page, b, 'wrap'), 1.2 * pxq, { hold: true });
         await expect.poll(async () => (await frameNow(page)).topC).toBeCloseTo(1, 2);

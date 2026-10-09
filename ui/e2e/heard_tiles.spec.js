@@ -12,7 +12,7 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { boot, quantum, laneOf } from './region_panel_helpers.js';
+import { boot, quantum, laneOf, panelOf } from './region_panel_helpers.js';
 
 /** Record takes of the given lengths (Q) in order, each waiting out its
  * pending start and its awaiting-stop; the first take sets Q. */
@@ -119,8 +119,9 @@ test.describe('Heard tiles', () => {
     test('a panel TRIM drag re-lays tiles in place: no fading surplus, no cross-fading composite', async ({ page }) => {
         await boot(page, { scenario: 'stack-with-clips' });
         const lane = laneOf(page, 'clip-2');   // 3Q, inside a 6Q group
+        const panel = panelOf(page, 'clip-2');
         await lane.locator('.rail-name').click();
-        const strip = lane.locator('.region-strip');
+        const strip = panel.locator('.region-strip');
         await expect(strip).toBeVisible();
         // Let the load settle: the composite's first regenerations (as
         // the members' peaks arrive) legitimately cross-fade.
@@ -159,9 +160,9 @@ test.describe('Heard tiles', () => {
 
         // Px per Q from the kept box (the whole 3Q take): robust to any
         // panel zoom.
-        const kept = await lane.locator('.region-kept').boundingBox();
+        const kept = await panel.locator('.region-kept').boundingBox();
         const pxQ = kept.width / 3;
-        const eb = await lane.locator('.region-bracket.end').boundingBox();
+        const eb = await panel.locator('.region-bracket.end').boundingBox();
         const x0 = eb.x + eb.width / 2;
         const y = eb.y + eb.height / 2;
         await page.mouse.move(x0, y);

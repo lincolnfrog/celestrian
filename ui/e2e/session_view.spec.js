@@ -514,6 +514,8 @@ test.describe('Loop window brackets (phase 3)', () => {
         // A 1Q lane has no sub-window to make; the 3Q lane offers latents
         await expect(clip1Q.locator('.win-bracket')).toHaveCount(0);
         await expect(clip3Q.locator('.win-bracket.latent')).toHaveCount(2);
+        // Handles show on the SELECTED track only (loop_selection.md §15).
+        await clip3Q.locator('.rail-name').click();
 
         // Drag the clip's latent end bracket 3Q → 2Q: window created
         await dragBracket(page, clip3Q.locator('.win-bracket.end'),
@@ -562,10 +564,13 @@ test.describe('Loop window brackets (phase 3)', () => {
         // kept region at [0, 2Q) and the amber cursor carrying heard
         // time in raw coordinates.
         await group.locator('.rail-name').click();
-        await expect(group.locator('.lane-region')).toBeVisible();
+        // Its panel: in the edit bar, not its row (2026-10-08).
+        const panel = page.locator(
+            `#region-dock .lane-region[data-lane-id="${await group.getAttribute('data-id')}"]`);
+        await expect(panel).toBeVisible();
         const cursorPct = () => page.evaluate(() =>
             parseFloat(document.querySelector('.region-cursor').style.left));
-        await expect(group.locator('.region-cursor')).toBeVisible();
+        await expect(panel.locator('.region-cursor')).toBeVisible();
 
         // masterPos 1.5Q → window phase (1.5 mod 2)/2 = 0.75 → heard
         // position 1.5Q of the 3Q take = 50%
@@ -583,7 +588,7 @@ test.describe('Loop window brackets (phase 3)', () => {
         // Not playing → no cursor. Bypassed → the lane frames its raw
         // take again with brackets, still no lane cursor element.
         await page.evaluate(() => window.celestrian.setIsPlaying(false));
-        await expect(group.locator('.region-cursor')).toBeHidden();
+        await expect(panel.locator('.region-cursor')).toBeHidden();
         await page.evaluate(i => window.celestrian.callNative('toggleLoopWindow', i), id);
         await expect(group.locator('.win-cursor')).toHaveCount(0);
     });
@@ -1434,6 +1439,8 @@ test.describe('Creation menu (Q17)', () => {
         const lane = page.locator('.lane[data-kind="clip"]').nth(1);
         const body = lane.locator('.lane-body');
         await expect(body.locator('.win-bracket.start')).toHaveCount(1);
+        // Handles show on the SELECTED track only (loop_selection.md §15).
+        await lane.locator('.rail-name').click();
 
         // STEP 1 — the left (start) bracket to 6Q of the 10Q lane
         // (mid-Q offset: only the period snap can land exactly on 6).

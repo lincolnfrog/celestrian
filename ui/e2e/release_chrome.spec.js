@@ -63,7 +63,7 @@ test.describe('Release lifecycle', () => {
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
         await setLoop(page, id2, 6 * Q, 10 * Q);
         await laneOf(page, id2).locator('.rail-name').click();
-        const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         await expect(panelOf(page, id2)).toBeVisible();
         // The panel opens FIT TO THE LOOP; ⇧Z shows the whole 12Q take,
         // the geometry the sampler below reads positions in.
@@ -72,8 +72,8 @@ test.describe('Release lifecycle', () => {
         const strip = await stripOf(page, id2).boundingBox();
         const y = strip.y + strip.height / 2;
         await startSampler(page, id => {
-            const lane = document.querySelector(`.lane[data-id="${id}"]`);
-            const o = lane.querySelector('.region-overlay');
+            const o = document.querySelector(
+                `#region-dock .lane-region[data-lane-id="${id}"] .region-overlay`);
             const seen = el => {
                 const cs = getComputedStyle(el);
                 return cs.display !== 'none' && parseFloat(cs.opacity) > 0.05;
@@ -90,7 +90,7 @@ test.describe('Release lifecycle', () => {
             };
         }, id2);
         // SLIDE the box +2Q (whole-Q steps): [6, 10) → [8, 12).
-        const kept = await lane.locator('.region-kept').boundingBox();
+        const kept = await panel.locator('.region-kept').boundingBox();
         const kx = kept.x + kept.width / 2;
         await page.mouse.move(kx, y);
         await page.mouse.down();
@@ -98,7 +98,7 @@ test.describe('Release lifecycle', () => {
         await releaseMarked(page);
         await expect.poll(() => loopOf(page, id2, Q)).toBe('8,12');
         await expect.poll(async () => {
-            const k = await lane.locator('.region-kept').boundingBox();
+            const k = await panel.locator('.region-kept').boundingBox();
             return k ? (k.x - strip.x) / strip.width : -1;
         }).toBeCloseTo(8 / 12, 2);
         await page.waitForTimeout(150);
@@ -133,6 +133,7 @@ test.describe('Release lifecycle', () => {
         await page.evaluate(({ id, Q }) => window.__celestrianTest.callNative(
             'setSegments', id, [2 * Q, 5 * Q, 7 * Q, 10 * Q]), { id: id2, Q });
         await expect.poll(() => segsOf(page, id2, Q)).toBe('2,5,7,10');
+        await selectLane(page, id2);  // handles: the selected track's only (§15)
         const lane = laneOf(page, id2);
         const body = lane.locator('.lane-body');
         const cutTab = body.locator('.lr-layer > .lr-cut:not(.lr-ghost) .lr-tab');
@@ -232,9 +233,10 @@ test.describe('Release lifecycle', () => {
         await page.keyboard.press('Shift+Z');
         await expect.poll(async () => (await viewOf(page, id2)).spanQ).toBe(12);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const body = lane.locator('.lane-body');
         await expect.poll(() => body.evaluate(b => b._cycleQ)).toBe(7);
-        const h = lane.locator('.region-overlay .cut-handle.end');
+        const h = panel.locator('.region-overlay .cut-handle.end');
         await expect(h).toHaveCount(1);
         const hb = await h.boundingBox();
         const y = hb.y + hb.height / 2;
@@ -269,7 +271,7 @@ test.describe('Release lifecycle', () => {
 });
 
 test.describe('Playhead mask', () => {
-    test('the white playhead never crosses the region panel', async ({ page }) => {
+    test('the white playhead never crosses the region panel (it is in the edit bar, below it)', async ({ page }) => {
         await boot(page);
         const Q = await quantum(page);
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
@@ -278,19 +280,20 @@ test.describe('Playhead mask', () => {
         await expect(panelOf(page, id2)).toBeVisible();
         await page.evaluate(() => window.__celestrianTest.startTransport());
         await expect(page.locator('#playhead')).toBeVisible();
+        // Since 2026-10-08 the panel is in the edit bar BELOW the session
+        // view the line crosses: what the line can show (the session's
+        // box) ends above the panel, so no carve-out is needed — none
+        // is made.
         await expect.poll(() => page.evaluate(id => {
             const ph = document.getElementById('playhead');
+            const sr = document.getElementById('session').getBoundingClientRect();
+            const nr = document.querySelector(
+                `#region-dock .lane-region[data-lane-id="${id}"]`).getBoundingClientRect();
             const pr = ph.getBoundingClientRect();
-            const nr = document.querySelector(`.lane[data-id="${id}"] .lane-region`)
-                .getBoundingClientRect();
-            const top = (nr.top - pr.top) / pr.height * 100;
-            const bot = (nr.bottom - pr.top) / pr.height * 100;
-            const bands = [...(ph.style.maskImage || '').matchAll(
-                /transparent ([\d.]+)%, transparent ([\d.]+)%/g)]
-                .map(m => [+m[1], +m[2]]);
-            return bands.some(([a, b]) => a <= top + 0.5 && b >= bot - 0.5);
+            return pr.height > 0 && nr.height > 0 && sr.bottom <= nr.top &&
+                !(ph.style.maskImage || '');
         }, id2)).toBe(true);
-        // Deselect: the panel goes, and so does its carve-out.
+        // Deselect: the panel goes; still no carve-out.
         await page.keyboard.press('Escape');
         await expect(panelOf(page, id2)).toBeHidden();
         await expect.poll(() => page.evaluate(() =>
@@ -305,6 +308,7 @@ test.describe('Recording gate', () => {
         const { id2 } = await recordDefinerAndTake(page, Q, 12);
         await setLoop(page, id2, 6 * Q, 10 * Q);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const body = lane.locator('.lane-body');
         await lane.locator('.rail-name').click();
         await expect(panelOf(page, id2)).toBeVisible();
@@ -367,13 +371,13 @@ test.describe('Recording gate', () => {
         await expect(body.locator('.lr-badge')).toHaveCount(0);
         await page.mouse.up();
         // THE PANEL'S ↺ and the timing reset: drawn, never grabbable.
-        await expect(lane.locator('.region-top')).toHaveClass(/inert/);
-        expect(await lane.locator('.region-top-tab').evaluate(t =>
+        await expect(panel.locator('.region-top')).toHaveClass(/inert/);
+        expect(await panel.locator('.region-top-tab').evaluate(t =>
             getComputedStyle(t).pointerEvents)).toBe('none');
-        await expect(lane.locator('.region-timing-reset')).toBeDisabled();
+        await expect(panel.locator('.region-timing-reset')).toBeDisabled();
         // THE PANEL BOX: drawn, not grabbable.
-        const kept = await lane.locator('.region-kept').boundingBox();
-        expect(await lane.locator('.region-kept').evaluate(k =>
+        const kept = await panel.locator('.region-kept').boundingBox();
+        expect(await panel.locator('.region-kept').evaluate(k =>
             getComputedStyle(k).cursor)).toBe('default');
         await page.mouse.move(kept.x + kept.width / 2, kept.y + kept.height / 2);
         await page.mouse.down();
@@ -401,7 +405,7 @@ test.describe('Recording gate', () => {
         await expect.poll(() => page.evaluate(({ x, y }) =>
             !!document.elementFromPoint(x, y).closest('.lr-splice'), { x: gx, y: gy }))
             .toBe(true);
-        expect(await lane.locator('.region-top-tab').evaluate(t =>
+        expect(await panel.locator('.region-top-tab').evaluate(t =>
             getComputedStyle(t).pointerEvents)).toBe('auto');
     });
 

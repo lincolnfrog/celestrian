@@ -36,7 +36,7 @@
 
 /* Z-INDEX LAYERING SCALE (whole app):
      1–8   lane internals — snap-ghost 1, dragging bracket 2, drag-live
-           win-cursor 3, cut-band / .lane-region 4, sticky group headers 5,
+           win-cursor 3, cut-band 4, sticky group headers 5,
            playhead / cut- & seam-handles / lr-splice 6, inspecting body /
            cut-chip / lr-top / region-top 7, cut-ghost / lr-badge / lr-snap 8
      20    in-rail popups (rename editor layer, .input-menu)
@@ -154,7 +154,8 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 /* ===== 3. App shell ===== */
 #app {
     display: grid;
-    grid-template-rows: auto 1fr auto;
+    /* transport · session · the edit bar (#region-dock) · status */
+    grid-template-rows: auto 1fr auto auto;
     /* minmax(0, 1fr), NOT the implicit `auto` column: an auto grid
        track grows to its widest row's MAX-content — a long transport
        readout ("loop 3.07 s · sets tempo") would silently widen the
@@ -588,33 +589,46 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .lane {
     display: grid;
     grid-template-columns: var(--rail-w) 1fr;
-    /* Small row gap: the selected lane grows a region-panel row */
     gap: 6px 12px;
 }
 
+/* THE EDIT BAR (#region-dock; loop_selection.md §15, 2026-10-08): the
+   SELECTED track's region panel, docked at the foot of the session
+   view — Ableton's clip view. A fixed height while there are lanes, so
+   selecting a track never moves a lane nor resizes the session; one
+   panel shows at a time, or a one-line hint says why the selected
+   track has none. It sits outside the session's scroll, so the panel
+   keeps one width at every main zoom and scroll. The label column is
+   a rail wide, so the detail strip starts where the lanes' bodies do. */
+#region-dock {
+    display: none;
+    position: relative;
+    height: 132px;
+    padding: 8px 18px;
+    box-sizing: border-box;
+    background: var(--chassis-face);
+    border-top: 1px solid var(--chassis-border);
+    box-shadow: inset 0 1px 0 var(--bevel-hi);
+}
+#region-dock.open { display: block; }
+.region-dock-hint {
+    display: none;
+    height: 100%;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+#region-dock.open.empty > .region-dock-hint { display: flex; }
+.lane-region { height: 100%; }
 /* THE REGION PANEL (region_panel.js, 2026-09-11; zoomable since
-   2026-09-23): the loop region's overview + editor, in its own grid
-   row UNDER the SELECTED clip/group, spanning the WHOLE row (under the
-   rail too — its cell there is empty). Label | a column of the
+   2026-09-23; docked since 2026-10-08): Label | a column of the
    whole-take OVERVIEW strip (the view as a box) over the zoomable
    DETAIL strip: excluded material dimmed, the kept region a bright box
    (drag = slide) with bracket handles (drag = trim), inner cuts as
-   bands, whole-Q gridlines, the amber sound cursor in raw coordinates.
-   Pinned to the VIEWPORT by JS at a constant width (no horizontal
-   sticky — the webview lands a gutter inside the lane). Unselected
-   lanes have no panel and pay no space. */
-.lane-region {
-    grid-column: 1 / -1;
-    position: relative;
-    height: 68px;
-    pointer-events: none;   /* only the panel itself is interactive */
-    z-index: 4;
-}
+   bands, whole-Q gridlines, the amber sound cursor in raw coordinates. */
 .region-panel {
-    pointer-events: auto;
-    position: absolute;
-    top: 0;
-    left: 0;                /* JS pins it to the viewport */
+    position: relative;
     height: 100%;
     display: flex;
     align-items: stretch;
@@ -630,7 +644,10 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .region-label {
     flex: 0 0 auto;
     align-self: center;
-    width: 164px;
+    /* A rail wide less the bar's and panel's insets (18 + 8 + the 8 gap
+       vs the session's 18 + the lane's 12 gap): the strip starts where
+       a top-level lane's body does. */
+    width: calc(var(--rail-base) - 4px);
     max-height: 100%;
     font-size: 10px;
     line-height: 1.25;
@@ -639,6 +656,17 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
        a clip's timing readout and its reset under them. */
     white-space: normal;
     overflow: hidden;
+}
+/* The track's name heads the label: the bar is not next to its lane. */
+.region-name {
+    margin-bottom: 3px;
+    font-family: Archivo, "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 /* The label's two terms are the panel's two zoom stops: "loop NQ" =
    fit the region (Z), "NQ take" = the whole take (⇧Z). */
@@ -1523,18 +1551,19 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
    The grips and seams the gate keeps drawing are .inert (map_bands);
    the rest of the map chrome — window brackets, the heard chip's
    bypass toggle, the panel's box and brackets — goes quiet under
-   #lanes.map-locked (patch.js). Nothing offers a grab. The .inert
+   #lanes.map-locked and, for the panel in the edit bar,
+   #region-dock.map-locked (patch.js). Nothing offers a grab. The .inert
    grips/seams stay HOVERABLE (no listeners are attached) so their
    "loop edits wait" tooltip can explain the gate; comp mode's "done"
    chip is a view toggle, not a map edit, and stays live. */
 .overlay-layer > .inert { cursor: default !important; }
-#lanes.map-locked .overlay-layer > :is(.win-bracket,
+:is(#lanes, #region-dock).map-locked .overlay-layer > :is(.win-bracket,
     .win-chip.toggle:not(.comp-done-chip),
     .seam-handle, .cut-handle, .cut-chip, .cut-band, .region-kept,
     .region-bracket, .region-top):not(.inert),
 #lanes.map-locked .lr-layer > :is(.lr-splice, .lr-top):not(.lr-inert),
-#lanes.map-locked .region-top-tab,
-#lanes.map-locked .region-timing-reset {
+#region-dock.map-locked .region-top-tab,
+#region-dock.map-locked .region-timing-reset {
     pointer-events: none !important;
     cursor: default !important;
 }
@@ -1687,9 +1716,20 @@ button:focus-visible { outline: 2px solid var(--tape); outline-offset: 1px; }
 .lr-ghost::before { opacity: 0.3; }
 .lr-ghost:hover .lr-tab { opacity: 1; }
 .lr-ghost:hover::before { opacity: 1; }
-/* An unselected lane's handles rest quieter; hover brings them up. */
-.lane:not(.sel) .lr-layer { opacity: 0.55; }
-.lane:not(.sel) .lane-body:hover .lr-layer { opacity: 1; }
+/* HANDLES ON THE SELECTED TRACK ONLY (loop_selection.md §15, owner
+   2026-10-08). An unselected lane's loop section shows how the loop
+   aligns with the song: its ↺ and splices stay as quiet LINES — no
+   tabs, no badges, no hover, no grab — and its brackets, grips and
+   cut handles and chips are not drawn. A press there selects the track
+   (lane_build.js captures it), and the handles appear. Dims, cut
+   bands, a one-shot's seam marks, the chip's readout, the arm marker
+   and the cursors stay: they are what the loop IS. */
+.lane:not(.sel) .lr-layer { opacity: 0.45; }
+.lane:not(.sel) .lr-layer > * { pointer-events: none !important; }
+.lane:not(.sel) .lr-layer :is(.lr-tab, .lr-badge, .lr-tint) { display: none; }
+.lane:not(.sel) .overlay-layer :is(.win-bracket, .cut-handle, .cut-chip) { display: none; }
+.lane:not(.sel) > .lane-body,
+.lane:not(.sel) > .lane-body * { cursor: pointer !important; }
 /* The recording gate's INERT handles: drawn, hoverable (their tooltip
    explains), never a grab cursor. */
 .lr-layer > .lr-inert { cursor: default !important; opacity: 0.6; }

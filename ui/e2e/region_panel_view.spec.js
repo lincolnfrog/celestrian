@@ -134,15 +134,16 @@ test.describe('Region panel view', () => {
     test('(d) Z / ⇧Z and the label terms fit the loop / the whole take', async ({ page }) => {
         const { id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const fit = await viewOf(page, id2);
         await page.keyboard.press('Shift+Z');
         expect(await viewOf(page, id2)).toEqual({ q0: 0, spanQ: 56 });
         await page.keyboard.press('z');
         expect(await viewOf(page, id2)).toEqual(fit);
-        await lane.locator('.region-term.take').click();
+        await panel.locator('.region-term.take').click();
         expect(await viewOf(page, id2)).toEqual({ q0: 0, spanQ: 56 });
-        await expect(lane.locator('.region-term.loop')).toHaveText('loop 5Q');
-        await lane.locator('.region-term.loop').click();
+        await expect(panel.locator('.region-term.loop')).toHaveText('loop 5Q');
+        await panel.locator('.region-term.loop').click();
         expect(await viewOf(page, id2)).toEqual(fit);
         // No panel shown (nothing selected): z is unbound — no error,
         // and the remembered view is untouched.
@@ -156,6 +157,7 @@ test.describe('Region panel view', () => {
     test('(e) slide, trim and double-click cut under a zoomed view (the cut lands on the take\'s Q grid)', async ({ page }) => {
         const { Q, id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const s = await stripOf(page, id2).boundingBox();
         const y = s.y + s.height / 2;
         await ctrlWheel(page, s.x + s.width / 2, y, -1);
@@ -183,7 +185,7 @@ test.describe('Region panel view', () => {
             .toBeCloseTo(a + 1, 4);
         // TRIM the end in by 1.2Q: the period snaps to whole Qs (4Q).
         await keptBoxAt(page, id2, a + 1, a + 6);
-        const eb = await lane.locator('.region-bracket.end').boundingBox();
+        const eb = await panel.locator('.region-bracket.end').boundingBox();
         await page.mouse.move(eb.x + eb.width / 2, y);
         await page.mouse.down();
         await page.mouse.move(eb.x + eb.width / 2 - 1.2 * pxPerQ, y, { steps: 8 });
@@ -202,19 +204,20 @@ test.describe('Region panel view', () => {
             return segs.length === 4 &&
                 Math.abs(segs[1] - 43) < 1e-3 && Math.abs(segs[2] - 44) < 1e-3;
         }).toBe(true);
-        await expect(lane.locator('.region-overlay .cut-band')).toHaveCount(1);
+        await expect(panel.locator('.region-overlay .cut-band')).toHaveCount(1);
     });
 
     test('(f) a trim held at the strip\'s edge pans the view and lands beyond it', async ({ page }) => {
         const { Q, id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
+        const panel = panelOf(page, id2);
         const s = await stripOf(page, id2).boundingBox();
         const y = s.y + s.height / 2;
         await ctrlWheel(page, await stripX(page, id2, 45), y, -2);
         const v0 = await viewOf(page, id2);
         expect(v0.q0 + v0.spanQ).toBeLessThan(49);
         await keptBoxAt(page, id2, 40, 45);
-        const eb = await lane.locator('.region-bracket.end').boundingBox();
+        const eb = await panel.locator('.region-bracket.end').boundingBox();
         await page.mouse.move(eb.x + eb.width / 2, y);
         await page.mouse.down();
         await page.mouse.move(s.x + s.width - 4, y, { steps: 8 });
@@ -255,7 +258,7 @@ test.describe('Region panel view', () => {
         await page.keyboard.press('Shift+Z');
         await page.mouse.dblclick(await stripX(page, id2, 5.5), s.y + s.height / 2);
         await expect.poll(() => segsOf(page, id2, Q)).toBe('2,5,6,10');
-        await expect(laneOf(page, id2).locator('.lane-region .cut-handle')).toHaveCount(2);
+        await expect(panelOf(page, id2).locator('.cut-handle')).toHaveCount(2);
         for (let i = 0; i < 6; i++) await page.click('#zoom-in-btn');
         // Record every flash for the whole walk.
         await page.evaluate(() => {
@@ -319,7 +322,7 @@ test.describe('Region panel view', () => {
 
     test('(j) the panel keeps one width at every main zoom and scroll; the kept box stays on screen', async ({ page }) => {
         const { id2 } = await fieldCase(page);
-        const panel = laneOf(page, id2).locator('.region-panel');
+        const panel = panelOf(page, id2).locator('.region-panel');
         const p0 = await panel.boundingBox();
         const v0 = await viewOf(page, id2);
         const sess = await page.locator('#session').boundingBox();
@@ -328,7 +331,7 @@ test.describe('Region panel view', () => {
                 const p = await panel.boundingBox();
                 return Math.abs(p.x - p0.x) < 1 && Math.abs(p.width - p0.width) < 1;
             }).toBe(true);
-            const k = await laneOf(page, id2).locator('.region-kept').boundingBox();
+            const k = await panelOf(page, id2).locator('.region-kept').boundingBox();
             expect(k.x).toBeGreaterThanOrEqual(sess.x);
             expect(k.x + k.width).toBeLessThanOrEqual(sess.x + sess.width);
         };
@@ -373,7 +376,7 @@ test.describe('Region panel view', () => {
         await expect.poll(() => loopOf(page, id2, Q)).toBe('43,44');
         // The brackets still trim, from outside the box.
         const k2 = await keptBoxAt(page, id2, 43, 44);
-        const eb = await laneOf(page, id2).locator('.region-bracket.end').boundingBox();
+        const eb = await panelOf(page, id2).locator('.region-bracket.end').boundingBox();
         expect(eb.x).toBeGreaterThanOrEqual(k2.x + k2.width - 1);
         await page.mouse.move(eb.x + eb.width / 2, cy);
         await page.mouse.down();
@@ -386,11 +389,12 @@ test.describe('Region panel view', () => {
         const { Q, id2 } = await fieldCase(page);
         await page.keyboard.press('Shift+Z');               // raw 0 = the strip's left
         await page.keyboard.press('Space');                 // play
-        await expect(laneOf(page, id2).locator('.region-cursor')).toBeVisible();
+        await expect(panelOf(page, id2).locator('.region-cursor')).toBeVisible();
         // Sample every frame while the map changes (each change is a
         // keyed overlay rebuild).
         const samples = await page.evaluate(async ({ id, Q }) => {
-            const strip = document.querySelector(`.lane[data-id="${id}"] .region-strip`);
+            const strip = document.querySelector(
+                `#region-dock .lane-region[data-lane-id="${id}"] .region-strip`);
             const out = [];
             let run = true;
             const tick = () => {
@@ -417,7 +421,7 @@ test.describe('Region panel view', () => {
             expect(s.f).toBeGreaterThan(39 / 56);            // inside the loops
         }
         // One cursor node for the panel's whole life.
-        await expect(laneOf(page, id2).locator('.region-cursor')).toHaveCount(1);
+        await expect(panelOf(page, id2).locator('.region-cursor')).toHaveCount(1);
     });
 });
 
@@ -425,11 +429,12 @@ test.describe('Region panel overview', () => {
     test('the view box: drag pans (never zooms), edges set the span, click centres, dblclick = whole take', async ({ page }) => {
         const { id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
-        const ov = await lane.locator('.region-overview').boundingBox();
+        const panel = panelOf(page, id2);
+        const ov = await panel.locator('.region-overview').boundingBox();
         const oy = ov.y + ov.height / 2;
         const qPerPx = 56 / ov.width;
         const v0 = await viewOf(page, id2);
-        const box = await lane.locator('.region-viewbox').boundingBox();
+        const box = await panel.locator('.region-viewbox').boundingBox();
         expect((box.x - ov.x) * qPerPx).toBeCloseTo(v0.q0, 0);
         // PAN: drag the box left 100 px.
         const bx = box.x + box.width / 2;
@@ -442,7 +447,7 @@ test.describe('Region panel overview', () => {
         expect(v.spanQ).toBeCloseTo(v0.spanQ, 9);
         // A VERTICAL drag no longer zooms (2026-09-29: +/− zoom): the
         // span holds, only the sideways travel pans.
-        const b1 = await lane.locator('.region-viewbox').boundingBox();
+        const b1 = await panel.locator('.region-viewbox').boundingBox();
         await page.mouse.move(b1.x + b1.width / 2, oy);
         await page.mouse.down();
         await page.mouse.move(b1.x + b1.width / 2, oy + 60, { steps: 6 });
@@ -454,7 +459,7 @@ test.describe('Region panel overview', () => {
         v = await viewOf(page, id2);
         expect(v.spanQ).toBeLessThan(v0.spanQ * 0.7);
         // EDGE: drag the box's end edge right → a wider span, start held.
-        const b2 = await lane.locator('.region-viewbox').boundingBox();
+        const b2 = await panel.locator('.region-viewbox').boundingBox();
         const q0 = v.q0;
         await page.mouse.move(b2.x + b2.width - 1, oy);
         await page.mouse.down();
@@ -479,7 +484,8 @@ test.describe('Region panel overview', () => {
         // DETAIL strip's fraction of the view, not at the overview Q.
         const { id2 } = await fieldCase(page);
         const lane = laneOf(page, id2);
-        const ov = await lane.locator('.region-overview').boundingBox();
+        const panel = panelOf(page, id2);
+        const ov = await panel.locator('.region-overview').boundingBox();
         const oy = ov.y + ov.height / 2;
         const v0 = await viewOf(page, id2);
         // A point INSIDE the view box, a quarter of the way in: it holds

@@ -155,6 +155,13 @@
             </div>
         </div>
 
+        <!-- THE EDIT BAR (loop_selection.md §15): the selected track's
+             region panel, docked at the foot of the session view so
+             selecting a track never re-flows the lanes. region_panel.js
+             mounts every lane's panel here; one shows at a time. Keep
+             in lockstep with index_test.html. -->
+        <div id="region-dock"><div class="region-dock-hint mono"></div></div>
+
         <!-- STATUS STRIP -->
         <div id="status-strip">
             <span id="ready-lamp" title="Engine ready"></span>

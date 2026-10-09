@@ -2,7 +2,7 @@
  * The region panel's keyboard laws (loop-region phase 1, 2026-09-23),
  * DOM-free:
  *   (a) THE NUDGE CHAIN IS ONE PINNED GESTURE (region_panel.js
- *       makeChainPin; diagnosis release-jump F3): the first ⌥← of a
+ *       makeChainPin; diagnosis release-jump F3): the first ← of a
  *       chain pins the frame, later presses inside the chain window
  *       extend it, and the pin drops exactly once — after the window
  *       elapses past the LAST press and that press's commit settles
@@ -11,14 +11,13 @@
  *   (b) [ ] { } never target the region panel's chrome (teleport.js
  *       isTransientHandle; diagnosis N5 — the walk got stuck on the
  *       viewport-pinned panel's cut handles);
- *   (c) a nudge's step is a whole number of samples (nudgeStepQ), so
- *       ⌥→ then ⌥← lands on the sample it left.
+ *   (c) the edit bar's hint: why a selected track shows no panel.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { makeChainPin, nudgeStepQ } from '../session_view/region_panel.js';
+import { makeChainPin, noPanelReason } from '../session_view/region_panel.js';
 import { isTransientHandle } from '../session_view/teleport.js';
 
 /** A manual timer queue (setTimeout twin). */
@@ -140,35 +139,22 @@ test('teleports skip the region panel, previews and ghosts', () => {
     assert.equal(isTransientHandle(fakeNode(['lr-top', 'lr-ghost'], ['lr-layer'])), true);
 });
 
-/* (c) THE ⌥ NUDGE'S STEP IS WHOLE SAMPLES (region_panel.js nudgeStepQ;
- * field audit 2026-10-01): each landing commits rounded to samples, so
- * a ⅛Q step that is not a whole number of samples (Q = 44100: 5512.5)
- * rounded up both ways — ⌥→ then ⌥←, outside the chain window, came
- * back one sample late. */
-test('a ⅛Q nudge forward and back lands on the sample it left', () => {
-    /** One nudge as the panel commits it: the region start read back
-     * in Q from the polled samples, slid, rounded to samples. */
-    const nudge = (startS, stepQ, Q) => Math.round((startS / Q + stepQ) * Q);
-    for (const Q of [44100, 48000, 159744, 22051, 96001]) {
-        const step = nudgeStepQ(0.125, Q);
-        assert.ok(Number.isInteger(Math.round(step * Q)) &&
-            Math.abs(step * Q - Math.round(step * Q)) < 1e-6, `Q ${Q}: whole samples`);
-        assert.ok(Math.abs(step - 0.125) <= 0.5 / Q + 1e-12,
-            `Q ${Q}: within half a sample of ⅛Q`);
-        assert.equal(nudgeStepQ(-0.125, Q), -step, `Q ${Q}: ← is → reversed`);
-        for (const startS of [0, 7 * Q, 7 * Q + 13, 53 * Q - 1]) {
-            const there = nudge(startS, step, Q);
-            assert.equal(nudge(there, -step, Q), startS, `Q ${Q} from ${startS}`);
-            assert.equal(nudge(there, nudgeStepQ(-0.125, Q), Q), startS,
-                `Q ${Q} from ${startS}: the ← key's own step`);
-        }
-    }
-    // The raw ⅛Q at 44.1 kHz was the bug: back one sample late.
-    const Q = 44100;
-    assert.equal(nudge(nudge(7 * Q, 0.125, Q), -0.125, Q), 7 * Q + 1);
-    // Whole-Q steps are whole samples already.
-    assert.equal(nudgeStepQ(1, Q), 1);
-    assert.equal(nudgeStepQ(-4, Q), -4);
-    // No Q yet: the step as asked.
-    assert.equal(nudgeStepQ(0.125, 0), 0.125);
+/* (c) THE EDIT BAR'S HINT (region_panel.js noPanelReason, 2026-10-08):
+ * the panel lives in a bar at the foot of the session view, so a
+ * selected track with no panel says why instead of leaving the bar
+ * blank; a track with a take of 2Q or more shows its panel (null). */
+test('the edit bar says why a selected track has no panel', () => {
+    const lane = extra => ({ kind: 'clip', bandTotalQ: 8, ...extra });
+    assert.equal(noPanelReason(lane()), null);
+    assert.equal(noPanelReason(lane({ bandTotalQ: 2 })), null);
+    assert.match(noPanelReason(lane({ bandTotalQ: 1 })), /^A 1Q take/);
+    assert.match(noPanelReason(lane({ bandTotalQ: 1.5 })), /^A 1\.5Q take/);
+    assert.match(noPanelReason(lane({ bandTotalQ: 0 })), /Nothing recorded/);
+    assert.match(noPanelReason(lane({ isQDefiner: true })), /sets Q/);
+    assert.match(noPanelReason(lane({ underMap: true })), /group/);
+    assert.match(noPanelReason(lane({ definerMember: true })), /group/);
+    // A take in progress outranks the rest: no region exists yet.
+    assert.match(noPanelReason(lane({ recording: true, isQDefiner: true })), /Recording/);
+    // The raw inspector has its own surface: no hint, no panel.
+    assert.equal(noPanelReason(lane({ windowEditing: true })), null);
 });

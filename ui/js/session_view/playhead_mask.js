@@ -4,9 +4,9 @@
  * axis, where a frame-x line would be a lie:
  *   - an inspecting lane (the raw-take edit view, its own scale);
  *   - a revealing lane (the same-scale reveal, raw coordinates for the
- *     length of a map gesture — map_bands.js);
- *   - the region panel under the selected lane (the whole raw take —
- *     region_panel.js; its amber cursor is the honest one there).
+ *     length of a map gesture — map_bands.js).
+ * (The region panel, raw time too, needs no mask since 2026-10-08: it
+ * lives in the edit bar, below the session the line crosses.)
  * A vertical mask carves those rows' bands out of the line itself —
  * paint-order-independent: the z-index scheme (an opaque body above
  * the line) leaves stray frames where the webview compositor lets the
@@ -19,15 +19,14 @@
 import { ctx } from './context.js';
 
 /* The rows the island playhead must not cross. */
-const MASKED_ROWS = '.lane-body.inspecting, .lane-body.revealing, .lane-region';
+const MASKED_ROWS = '.lane-body.inspecting, .lane-body.revealing';
 
 export function maskPlayheadOverInspectors() {
     const ph = ctx.els && ctx.els.playhead;
     if (!ph) return;
     const pr = ph.getBoundingClientRect();
     if (!(pr.height > 0)) return;
-    // Hidden rows (an unselected lane's panel is display:none) measure
-    // empty and carve nothing.
+    // Hidden rows measure empty and carve nothing.
     const bands = [...document.querySelectorAll(MASKED_ROWS)]
         .map(b => b.getBoundingClientRect())
         .map(r => [Math.max(0, (r.top - pr.top) / pr.height * 100),

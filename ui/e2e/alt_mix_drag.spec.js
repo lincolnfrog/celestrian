@@ -26,6 +26,8 @@ test('⌥→plain mixed bracket drag lands a whole-Q window', async ({ page }) =
         window.celestrian.getState().perf.sampleRate);
     const clip3Q = page.locator('.lane[data-kind="clip"]').nth(1);
     const body = clip3Q.locator('.lane-body');
+    // Its region panel: in the edit bar, not its row (2026-10-08).
+    const panel = page.locator('#region-dock .lane-region[data-lane-id="clip-3q"]');
 
     // Create a real 1Q window [1Q, 2Q) so ⌥-slide has room both ways.
     await page.evaluate(q => window.celestrian.callNative(
@@ -33,12 +35,12 @@ test('⌥→plain mixed bracket drag lands a whole-Q window', async ({ page }) =
     // Select the clip: the region panel's brackets edit the raw take
     // (the chip-click inspector retired 2026-09-13).
     await clip3Q.locator('.rail-name').click();
-    const start = clip3Q.locator('.region-bracket.start');
+    const start = panel.locator('.region-bracket.start');
     await expect(start).toBeVisible();
     // The panel opens FIT TO THE LOOP (2026-09-23); ⇧Z shows the whole
     // take, the geometry this spec measures in.
     await page.keyboard.press('Shift+Z');
-    await expect.poll(() => clip3Q.locator('.region-strip')
+    await expect.poll(() => panel.locator('.region-strip')
         .evaluate(s => s._view.spanQ)).toBe(3);
 
     const st0 = await page.evaluate(() =>
@@ -46,7 +48,7 @@ test('⌥→plain mixed bracket drag lands a whole-Q window', async ({ page }) =
             .nodes.find(c => c.id === 'clip-3q'));
 
     // The strip spans the whole 3Q take, like the old inspector.
-    const bb = await clip3Q.locator('.region-strip').boundingBox();
+    const bb = await panel.locator('.region-strip').boundingBox();
     const sb = await start.boundingBox();
     const y = bb.y + bb.height / 2;
     void body;

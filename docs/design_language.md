@@ -393,6 +393,21 @@ in the doc that owns its feature, but each has a pointer here.
   `frame_seat`, `reseat_tween`, `pending_edits`, `top_fields`,
   `set_timing` and `splice_handles` tests, and
   `ui/e2e/splice_handles.spec.js` and `reseat_tween.spec.js`.
+- **THE EDIT BAR; HANDLES ON THE SELECTED TRACK ONLY (owner,
+  2026-10-08):** (a) the lane's loop section VISUALIZES how the loop
+  aligns with the song; it is not an edit surface for every track
+  ("that section is visualizing how the loop aligns with the song").
+  Only the SELECTED track wears handles; an unselected lane shows its
+  ↺ and splices as quiet lines, and a press there selects it and does
+  nothing else (its chip keeps its click). (b) The region panel lives
+  in ONE fixed edit bar at the foot of the session view — Ableton's
+  clip view — not as a row under the selected lane, so selecting a
+  track never moves a lane. (c) The ⌥ ⅛Q nudge is gone (no sub-Q grid;
+  fine moves are the ⌥ drag's). (d) The re-seat tween keeps its scope
+  as built: every re-seat at rest moves, not only the two gestures the
+  proposal named. Spec loop_selection.md §15, time_maps.md §6; pinned
+  by `region_panel_keys` and `ui/e2e/slotted_loop.spec.js` ("An
+  unselected track").
 - **THE ROOT'S ANCHOR RIDES ITS SONG (owner, 2026-09-16; built
   2026-09-17; frame.md §4):** a song authored on the root anchors the
   root — Q18 at depth 0 — at the zero the view had seated when the

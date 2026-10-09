@@ -11,7 +11,7 @@ import { patchRuler } from './ruler.js';
 import { buildLane } from './lane_build.js';
 import { patchRail } from './rail.js';
 import { patchLaneBody } from './lane_body.js';
-import { patchRegionPanel } from './region_panel.js';
+import { patchRegionPanel, patchRegionDock } from './region_panel.js';
 import { animatorPoll, animatorFrame, stopAnimator } from './animator.js';
 import { ensureDefaultSelection } from './selection.js';
 import { noteSeekVm } from './ruler_seek.js';
@@ -147,6 +147,7 @@ export function patchSessionView(vm, aux) {
     ctx.laneEls.forEach((row, id) => {
         if (!seen.has(id)) {
             row.remove();
+            if (row._regionNav) row._regionNav.remove();  // in the edit bar
             ctx.laneEls.delete(id);
         }
     });
@@ -158,15 +159,16 @@ export function patchSessionView(vm, aux) {
         vm.lanes.filter(l => l.kind === 'clip' || l.kind === 'group')
             .map(l => l.id));
 
-    // The region panel under the SELECTED lane (after the selection
-    // settled above): the whole raw take + the kept region, from the
-    // peaks the body patch just resolved.
+    // The SELECTED track's region panel in the edit bar (after the
+    // selection settled above): the whole raw take + the kept region,
+    // from the peaks the body patch just resolved.
     vm.lanes.forEach(lane => {
         const row = ctx.laneEls.get(lane.id);
         if (!row || (lane.kind !== 'clip' && lane.kind !== 'group')) return;
         const body = row.querySelector(':scope > .lane-body');
         patchRegionPanel(row, lane, vm, aux, body ? body._peaks : null);
     });
+    patchRegionDock(vm);
     // A finished map gesture's held preview comes down HERE — after its
     // body / strip rebuilt from the committed state above, in the same
     // frame, so nothing shows in between (gesture.js deferTeardown).
@@ -175,6 +177,9 @@ export function patchSessionView(vm, aux) {
     // pending every loop region is display-only; the lanes' map chrome
     // takes no presses and shows no grab cursor (session.css).
     ctx.els.lanes.classList.toggle('map-locked', !!vm.mapEditsLocked);
+    if (ctx.els.regionDock) {
+        ctx.els.regionDock.classList.toggle('map-locked', !!vm.mapEditsLocked);
+    }
 
     ctx.els.emptyState.style.display = vm.lanes.length ? 'none' : 'block';
     // The ruler row measures LANES — with zero lanes it would be a
